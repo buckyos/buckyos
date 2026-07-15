@@ -70,8 +70,9 @@ pub struct UserTunnelBinding {
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_id: Option<String>,
+    /// Stable tunnel instance id (e.g. `tg-main-tunnel`), NOT the transport DID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tunnel_id: Option<String>,
+    pub tunnel_instance_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

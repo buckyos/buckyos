@@ -93,3 +93,4 @@ test/**/target/
 src/rootfs/bin/workflow/workflow
 *.codex
 src/deno.lock
+src/kernel/node_active/pnpm-lock.yaml

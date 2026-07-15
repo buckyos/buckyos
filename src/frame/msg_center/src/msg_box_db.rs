@@ -1,16 +1,25 @@
 /*!
- * Unified msg-box + msg-ref storage for the msg-center.
+ * Storage for the msg-center: mailbox records, the delivery queue and
+ * ui-session state.
+ *
+ * beta2.2 split the legacy single `msg_records` table into two tables that
+ * mirror the frozen data model (`doc/message_hub/Message Center.md` §2/§6):
+ *
+ *   mailbox_records   MailboxRecord — an owner's reference to one MsgObject
+ *                     (INBOX / SENT / GROUP_INBOX / REQUEST_BOX, RecipientState)
+ *   delivery_records  DeliveryRecord — the DELIVERY_QUEUE, keyed by executor
+ *                     `transport_did` (DeliveryState, retries, results)
  *
  * Uses an `sqlx::AnyPool` so the backend (sqlite / postgres) is driven by the
  * zone's rdb instance config; the pool itself is `Send + Sync + Clone` and
- * manages its own locking, so an `Arc<MsgBoxDbMgr>` is safe to share without
- * an outer Rust-level lock. Every row carries an `owner` column so a single
- * database holds mailboxes for every zone user.
+ * manages its own locking. Every mailbox row carries an `owner` column so a
+ * single database holds mailboxes for every zone user.
  */
 
 use buckyos_api::{
-    get_rdb_instance, msg_center_default_rdb_instance_config, BoxKind, DeliveryInfo, MsgRecord,
-    MsgState, RdbBackend, RouteInfo, UiSessionStateEntry, MSG_CENTER_RDB_INSTANCE_ID,
+    get_rdb_instance, msg_center_default_rdb_instance_config, DeliveryEnvelope, DeliveryError,
+    DeliveryRecord, DeliveryState, IngressContext, MailboxKind, MailboxRecord, RdbBackend,
+    RecipientState, UiSessionStateEntry, MSG_CENTER_RDB_INSTANCE_ID,
     MSG_CENTER_RDB_SCHEMA_POSTGRES, MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_SERVICE_NAME,
 };
 use kRPC::RPCErrors;
@@ -29,6 +38,14 @@ fn ensure_any_drivers_installed() {
     INSTALL_DRIVERS.call_once(install_default_drivers);
 }
 
+/// Per-session aggregate used by `list_sessions`.
+#[derive(Debug, Clone)]
+pub struct SessionIndexEntry {
+    pub session_id: String,
+    pub updated_at_ms: u64,
+    pub unread_count: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct MsgBoxDbMgr {
     inner: Arc<MsgBoxDbInner>,
@@ -40,25 +57,38 @@ struct MsgBoxDbInner {
     backend: RdbBackend,
 }
 
-#[derive(Debug)]
-struct MsgRecordRow {
-    record_id: String,
-    box_kind: String,
-    msg_id: String,
-    msg_kind: Option<String>,
-    msg_from: Option<String>,
-    msg_to: Option<String>,
-    state: String,
-    created_at_ms: i64,
-    updated_at_ms: i64,
-    thread_key: Option<String>,
-    session_id: Option<String>,
-    sort_key: i64,
-    tags_json: String,
-    route_tunnel_did: Option<String>,
-    route_json: Option<String>,
-    delivery_json: Option<String>,
-}
+const MAILBOX_COLUMNS: &str = r#"
+    owner,
+    record_id,
+    box_kind,
+    msg_id,
+    msg_kind,
+    msg_from,
+    msg_to,
+    state,
+    session_id,
+    sort_key,
+    tags_json,
+    ingress_json,
+    created_at_ms,
+    updated_at_ms
+"#;
+
+const DELIVERY_COLUMNS: &str = r#"
+    delivery_id,
+    transport_did,
+    msg_id,
+    target_did,
+    envelope_json,
+    state,
+    attempts,
+    next_retry_at_ms,
+    external_msg_id,
+    delivered_at_ms,
+    last_error_json,
+    created_at_ms,
+    updated_at_ms
+"#;
 
 impl MsgBoxDbMgr {
     /// Open a pool against `connection`. `schema` is the DDL to apply (usually
@@ -151,42 +181,41 @@ impl MsgBoxDbMgr {
         }
     }
 
-    pub async fn upsert_record(&self, record: &MsgRecord) -> std::result::Result<(), RPCErrors> {
+    // ------------------------------------------------------------------
+    // Mailbox records
+    // ------------------------------------------------------------------
+
+    pub async fn upsert_record(
+        &self,
+        record: &MailboxRecord,
+    ) -> std::result::Result<(), RPCErrors> {
         self.upsert_record_with_msg(record, None).await
     }
 
     pub async fn upsert_record_with_msg(
         &self,
-        record: &MsgRecord,
+        record: &MailboxRecord,
         msg: Option<&MsgObject>,
     ) -> std::result::Result<(), RPCErrors> {
-        let owner = owner_from_record_id(&record.record_id)?;
-        self.upsert_record_with_owner(&owner, record, msg).await?;
-        self.touch_message(&owner, &record.msg_id, record.created_at_ms)
+        self.upsert_record_row(record, msg).await?;
+        self.touch_message(&record.owner, &record.msg_id, record.created_at_ms)
             .await?;
         Ok(())
     }
 
-    async fn upsert_record_with_owner(
+    async fn upsert_record_row(
         &self,
-        owner: &DID,
-        record: &MsgRecord,
+        record: &MailboxRecord,
         msg: Option<&MsgObject>,
     ) -> std::result::Result<(), RPCErrors> {
         let tags_json = serde_json::to_string(&record.tags).map_err(|error| {
             RPCErrors::ReasonError(format!(
-                "failed to encode tags of msg record {}: {}",
+                "failed to encode tags of mailbox record {}: {}",
                 record.record_id, error
             ))
         })?;
-
-        let route_tunnel_did = record
-            .route
-            .as_ref()
-            .and_then(|route| route.tunnel_did.as_ref().map(|did| did.to_string()));
-        let route_json = encode_optional_json(record.route.as_ref(), &record.record_id, "route")?;
-        let delivery_json =
-            encode_optional_json(record.delivery.as_ref(), &record.record_id, "delivery")?;
+        let ingress_json =
+            encode_optional_json(record.ingress.as_ref(), &record.record_id, "ingress")?;
         let msg_from = Some(
             msg.map(|obj| obj.from.clone())
                 .unwrap_or_else(|| record.from.clone())
@@ -199,69 +228,46 @@ impl MsgBoxDbMgr {
         );
         let msg_kind = msg.map(|obj| obj.kind).unwrap_or(record.msg_kind);
 
-        let sql = self.render_sql(
+        let sql = self.render_sql(&format!(
             r#"
-INSERT INTO msg_records (
-    owner,
-    record_id,
-    box_kind,
-    msg_id,
-    msg_from,
-    msg_to,
-    msg_kind,
-    state,
-    created_at_ms,
-    updated_at_ms,
-    thread_key,
-    session_id,
-    sort_key,
-    tags_json,
-    route_tunnel_did,
-    route_json,
-    delivery_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO mailbox_records ({MAILBOX_COLUMNS})
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(owner, record_id) DO UPDATE SET
     box_kind = excluded.box_kind,
     msg_id = excluded.msg_id,
-    msg_from = COALESCE(excluded.msg_from, msg_records.msg_from),
-    msg_to = COALESCE(excluded.msg_to, msg_records.msg_to),
-    msg_kind = COALESCE(excluded.msg_kind, msg_records.msg_kind),
+    msg_kind = COALESCE(excluded.msg_kind, mailbox_records.msg_kind),
+    msg_from = COALESCE(excluded.msg_from, mailbox_records.msg_from),
+    msg_to = COALESCE(excluded.msg_to, mailbox_records.msg_to),
     state = excluded.state,
-    created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms,
-    thread_key = excluded.thread_key,
-    session_id = COALESCE(excluded.session_id, msg_records.session_id),
+    session_id = COALESCE(excluded.session_id, mailbox_records.session_id),
     sort_key = excluded.sort_key,
     tags_json = excluded.tags_json,
-    route_tunnel_did = excluded.route_tunnel_did,
-    route_json = excluded.route_json,
-    delivery_json = excluded.delivery_json
-"#,
-        );
+    ingress_json = COALESCE(excluded.ingress_json, mailbox_records.ingress_json),
+    created_at_ms = excluded.created_at_ms,
+    updated_at_ms = excluded.updated_at_ms
+"#
+        ));
 
         sqlx::query(&sql)
-            .bind(owner.to_string())
+            .bind(record.owner.to_string())
             .bind(record.record_id.clone())
-            .bind(box_kind_name(&record.box_kind).to_string())
+            .bind(mailbox_kind_name(&record.box_kind).to_string())
             .bind(record.msg_id.to_string())
+            .bind(Some(msg_obj_kind_name(&msg_kind).to_string()))
             .bind(msg_from)
             .bind(msg_to)
-            .bind(Some(msg_obj_kind_name(&msg_kind).to_string()))
-            .bind(msg_state_name(&record.state).to_string())
-            .bind(to_sql_i64(record.created_at_ms))
-            .bind(to_sql_i64(record.updated_at_ms))
-            .bind(record.ui_session_id.clone())
-            .bind(record.ui_session_id.clone())
+            .bind(recipient_state_name(&record.state).to_string())
+            .bind(record.session_id.clone())
             .bind(to_sql_i64(record.sort_key))
             .bind(tags_json)
-            .bind(route_tunnel_did)
-            .bind(route_json)
-            .bind(delivery_json)
+            .bind(ingress_json)
+            .bind(to_sql_i64(record.created_at_ms))
+            .bind(to_sql_i64(record.updated_at_ms))
             .execute(self.pool())
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to upsert msg record {}: {}",
+                    "failed to upsert mailbox record {}: {}",
                     record.record_id, error
                 ))
             })?;
@@ -272,30 +278,10 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
         &self,
         owner: &DID,
         record_id: &str,
-    ) -> std::result::Result<Option<MsgRecord>, RPCErrors> {
-        let sql = self.render_sql(
-            r#"
-SELECT
-    record_id,
-    box_kind,
-    msg_id,
-    msg_kind,
-    msg_from,
-    msg_to,
-    state,
-    created_at_ms,
-    updated_at_ms,
-    thread_key,
-    session_id,
-    sort_key,
-    tags_json,
-    route_tunnel_did,
-    route_json,
-    delivery_json
-FROM msg_records
-WHERE owner = ? AND record_id = ?
-"#,
-        );
+    ) -> std::result::Result<Option<MailboxRecord>, RPCErrors> {
+        let sql = self.render_sql(&format!(
+            "SELECT {MAILBOX_COLUMNS} FROM mailbox_records WHERE owner = ? AND record_id = ?"
+        ));
 
         let row = sqlx::query(&sql)
             .bind(owner.to_string())
@@ -304,78 +290,382 @@ WHERE owner = ? AND record_id = ?
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to query msg record {}: {}",
+                    "failed to query mailbox record {}: {}",
                     record_id, error
                 ))
             })?;
 
-        match row {
-            Some(row) => {
-                let decoded = decode_record_row(&row, record_id)?;
-                Ok(Some(row_to_record(owner, decoded)?))
-            }
-            None => Ok(None),
-        }
+        row.as_ref().map(row_to_mailbox_record).transpose()
     }
 
     pub async fn list_records(
         &self,
         owner: &DID,
-        box_kind: &BoxKind,
-        state_filter: Option<&[MsgState]>,
+        box_kind: &MailboxKind,
+        state_filter: Option<&[RecipientState]>,
         descending: bool,
-    ) -> std::result::Result<Vec<MsgRecord>, RPCErrors> {
+    ) -> std::result::Result<Vec<MailboxRecord>, RPCErrors> {
         let order_clause = if descending {
             "ORDER BY sort_key DESC, record_id DESC"
         } else {
             "ORDER BY sort_key ASC, record_id ASC"
         };
-        let sql = format!(
-            r#"
-SELECT
-    record_id,
-    box_kind,
-    msg_id,
-    msg_kind,
-    msg_from,
-    msg_to,
-    state,
-    created_at_ms,
-    updated_at_ms,
-    thread_key,
-    session_id,
-    sort_key,
-    tags_json,
-    route_tunnel_did,
-    route_json,
-    delivery_json
-FROM msg_records
-WHERE owner = ? AND box_kind = ?
-{}
-"#,
-            order_clause
-        );
-        let sql = self.render_sql(&sql);
+        let sql = self.render_sql(&format!(
+            "SELECT {MAILBOX_COLUMNS} FROM mailbox_records WHERE owner = ? AND box_kind = ? {order_clause}"
+        ));
 
         let rows = sqlx::query(&sql)
             .bind(owner.to_string())
-            .bind(box_kind_name(box_kind).to_string())
+            .bind(mailbox_kind_name(box_kind).to_string())
             .fetch_all(self.pool())
             .await
             .map_err(|error| {
-                RPCErrors::ReasonError(format!("failed to list msg records: {}", error))
+                RPCErrors::ReasonError(format!("failed to list mailbox records: {}", error))
             })?;
 
         let mut records = Vec::with_capacity(rows.len());
         for row in &rows {
-            let decoded = decode_record_row(row, "")?;
-            if !state_matches_filter(state_filter, &decoded.state) {
+            let record = row_to_mailbox_record(row)?;
+            if !recipient_state_matches(state_filter, &record.state) {
                 continue;
             }
-            records.push(row_to_record(owner, decoded)?);
+            records.push(record);
         }
         Ok(records)
     }
+
+    /// Cursor-paged records of one `(owner, session_id)` timeline across all
+    /// mailbox kinds. DELETED records are hidden from the projection.
+    pub async fn list_session_records(
+        &self,
+        owner: &DID,
+        session_id: &str,
+        limit: usize,
+        cursor_sort_key: Option<u64>,
+        cursor_record_id: Option<&str>,
+        descending: bool,
+    ) -> std::result::Result<Vec<MailboxRecord>, RPCErrors> {
+        let (order_clause, cursor_clause) = if descending {
+            (
+                "ORDER BY sort_key DESC, record_id DESC",
+                "AND (sort_key < ? OR (sort_key = ? AND record_id < ?))",
+            )
+        } else {
+            (
+                "ORDER BY sort_key ASC, record_id ASC",
+                "AND (sort_key > ? OR (sort_key = ? AND record_id > ?))",
+            )
+        };
+        let cursor_sql = if cursor_sort_key.is_some() {
+            cursor_clause
+        } else {
+            ""
+        };
+        let sql = self.render_sql(&format!(
+            r#"
+SELECT {MAILBOX_COLUMNS} FROM mailbox_records
+WHERE owner = ? AND session_id = ? AND state != 'DELETED'
+{cursor_sql}
+{order_clause}
+LIMIT ?
+"#
+        ));
+
+        let mut query = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(session_id.to_string());
+        if let Some(sort_key) = cursor_sort_key {
+            let record_id = cursor_record_id.unwrap_or("").to_string();
+            query = query
+                .bind(to_sql_i64(sort_key))
+                .bind(to_sql_i64(sort_key))
+                .bind(record_id);
+        }
+        let rows = query
+            .bind(limit as i64)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to list session records for {}: {}",
+                    session_id, error
+                ))
+            })?;
+
+        rows.iter().map(row_to_mailbox_record).collect()
+    }
+
+    /// Session index for `list_sessions`: per session id, last activity and
+    /// unread count, newest first, cursor on (updated_at_ms, session_id).
+    pub async fn list_session_index(
+        &self,
+        owner: &DID,
+        limit: usize,
+        cursor_updated_at_ms: Option<u64>,
+        cursor_session_id: Option<&str>,
+    ) -> std::result::Result<Vec<SessionIndexEntry>, RPCErrors> {
+        let cursor_sql = if cursor_updated_at_ms.is_some() {
+            "HAVING (MAX(updated_at_ms) < ? OR (MAX(updated_at_ms) = ? AND session_id < ?))"
+        } else {
+            ""
+        };
+        let sql = self.render_sql(&format!(
+            r#"
+SELECT
+    session_id,
+    MAX(updated_at_ms) AS last_updated_at_ms,
+    SUM(CASE WHEN state = 'UNREAD' THEN 1 ELSE 0 END) AS unread_count
+FROM mailbox_records
+WHERE owner = ? AND session_id IS NOT NULL AND state != 'DELETED'
+GROUP BY session_id
+{cursor_sql}
+ORDER BY last_updated_at_ms DESC, session_id DESC
+LIMIT ?
+"#
+        ));
+
+        let mut query = sqlx::query(&sql).bind(owner.to_string());
+        if let Some(cursor) = cursor_updated_at_ms {
+            let session_id = cursor_session_id.unwrap_or("").to_string();
+            query = query
+                .bind(to_sql_i64(cursor))
+                .bind(to_sql_i64(cursor))
+                .bind(session_id);
+        }
+        let rows = query
+            .bind(limit as i64)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to list session index: {}", error))
+            })?;
+
+        let mut entries = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            let session_id: String = row
+                .try_get("session_id")
+                .map_err(|e| decode_err("session_id", &e))?;
+            let updated_at_ms: i64 = row
+                .try_get("last_updated_at_ms")
+                .map_err(|e| decode_err("last_updated_at_ms", &e))?;
+            let unread_count: i64 = row
+                .try_get("unread_count")
+                .map_err(|e| decode_err("unread_count", &e))?;
+            entries.push(SessionIndexEntry {
+                session_id,
+                updated_at_ms: updated_at_ms.max(0) as u64,
+                unread_count: unread_count.max(0) as u64,
+            });
+        }
+        Ok(entries)
+    }
+
+    // ------------------------------------------------------------------
+    // Delivery queue
+    // ------------------------------------------------------------------
+
+    pub async fn upsert_delivery(
+        &self,
+        record: &DeliveryRecord,
+    ) -> std::result::Result<(), RPCErrors> {
+        let envelope_json = serde_json::to_string(&record.envelope).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode delivery envelope {}: {}",
+                record.delivery_id, error
+            ))
+        })?;
+        let last_error_json =
+            encode_optional_json(record.last_error.as_ref(), &record.delivery_id, "last_error")?;
+
+        let sql = self.render_sql(&format!(
+            r#"
+INSERT INTO delivery_records ({DELIVERY_COLUMNS})
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(delivery_id) DO UPDATE SET
+    state = excluded.state,
+    attempts = excluded.attempts,
+    next_retry_at_ms = excluded.next_retry_at_ms,
+    external_msg_id = excluded.external_msg_id,
+    delivered_at_ms = excluded.delivered_at_ms,
+    last_error_json = excluded.last_error_json,
+    updated_at_ms = excluded.updated_at_ms
+"#
+        ));
+
+        sqlx::query(&sql)
+            .bind(record.delivery_id.clone())
+            .bind(record.envelope.transport_did.to_string())
+            .bind(record.envelope.msg_id.to_string())
+            .bind(record.envelope.target_did.to_string())
+            .bind(envelope_json)
+            .bind(delivery_state_name(&record.state).to_string())
+            .bind(record.attempts as i64)
+            .bind(record.next_retry_at_ms.map(to_sql_i64))
+            .bind(record.external_msg_id.clone())
+            .bind(record.delivered_at_ms.map(to_sql_i64))
+            .bind(last_error_json)
+            .bind(to_sql_i64(record.created_at_ms))
+            .bind(to_sql_i64(record.updated_at_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert delivery record {}: {}",
+                    record.delivery_id, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    /// Insert-if-absent for `post_send`: an existing delivery (idempotent
+    /// resubmission) keeps its current state/attempts untouched.
+    pub async fn create_delivery_if_absent(
+        &self,
+        record: &DeliveryRecord,
+    ) -> std::result::Result<(), RPCErrors> {
+        if self.get_delivery(&record.delivery_id).await?.is_some() {
+            return Ok(());
+        }
+        self.upsert_delivery(record).await
+    }
+
+    pub async fn get_delivery(
+        &self,
+        delivery_id: &str,
+    ) -> std::result::Result<Option<DeliveryRecord>, RPCErrors> {
+        let sql = self.render_sql(&format!(
+            "SELECT {DELIVERY_COLUMNS} FROM delivery_records WHERE delivery_id = ?"
+        ));
+        let row = sqlx::query(&sql)
+            .bind(delivery_id.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query delivery record {}: {}",
+                    delivery_id, error
+                ))
+            })?;
+        row.as_ref().map(row_to_delivery_record).transpose()
+    }
+
+    /// Reclaim SENDING rows whose lease expired (executor crash): back to WAIT
+    /// with attempts+1 and a duplicate-risk marker.
+    pub async fn reclaim_stale_sending(
+        &self,
+        transport_did: &DID,
+        lease_deadline_ms: u64,
+        now_ms: u64,
+    ) -> std::result::Result<u64, RPCErrors> {
+        let stale_error = serde_json::to_string(&DeliveryError {
+            error_code: Some("lease_expired".to_string()),
+            message: "SENDING lease expired; reclaimed by sweep".to_string(),
+            retryable: true,
+            duplicate_risk: true,
+        })
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to encode stale delivery error: {}", error))
+        })?;
+        let sql = self.render_sql(
+            r#"
+UPDATE delivery_records
+SET state = 'WAIT', attempts = attempts + 1, last_error_json = ?, updated_at_ms = ?
+WHERE transport_did = ? AND state = 'SENDING' AND updated_at_ms < ?
+"#,
+        );
+        let result = sqlx::query(&sql)
+            .bind(stale_error)
+            .bind(to_sql_i64(now_ms))
+            .bind(transport_did.to_string())
+            .bind(to_sql_i64(lease_deadline_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to reclaim stale deliveries: {}", error))
+            })?;
+        Ok(result.rows_affected())
+    }
+
+    /// Take the next due WAIT delivery of an executor. When `lock_on_take` the
+    /// row is CAS-moved to SENDING (owner-crash-safe via the lease sweep).
+    pub async fn take_next_delivery(
+        &self,
+        transport_did: &DID,
+        now_ms: u64,
+        lock_on_take: bool,
+    ) -> std::result::Result<Option<DeliveryRecord>, RPCErrors> {
+        let sql = self.render_sql(&format!(
+            r#"
+SELECT {DELIVERY_COLUMNS} FROM delivery_records
+WHERE transport_did = ? AND state = 'WAIT'
+  AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)
+ORDER BY created_at_ms ASC, delivery_id ASC
+LIMIT 1
+"#
+        ));
+        let row = sqlx::query(&sql)
+            .bind(transport_did.to_string())
+            .bind(to_sql_i64(now_ms))
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to take next delivery: {}", error))
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut record = row_to_delivery_record(&row)?;
+        if !lock_on_take {
+            return Ok(Some(record));
+        }
+
+        let cas_sql = self.render_sql(
+            "UPDATE delivery_records SET state = 'SENDING', updated_at_ms = ? \
+             WHERE delivery_id = ? AND state = 'WAIT'",
+        );
+        let cas = sqlx::query(&cas_sql)
+            .bind(to_sql_i64(now_ms))
+            .bind(record.delivery_id.clone())
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to lock delivery record: {}", error))
+            })?;
+        if cas.rows_affected() == 0 {
+            // Lost the race to a concurrent taker; report empty this round.
+            return Ok(None);
+        }
+        record.state = DeliveryState::Sending;
+        record.updated_at_ms = now_ms;
+        Ok(Some(record))
+    }
+
+    /// All delivery records referencing one message (outbound aggregation).
+    pub async fn list_deliveries_for_msg(
+        &self,
+        msg_id: &ObjId,
+    ) -> std::result::Result<Vec<DeliveryRecord>, RPCErrors> {
+        let sql = self.render_sql(&format!(
+            "SELECT {DELIVERY_COLUMNS} FROM delivery_records WHERE msg_id = ? \
+             ORDER BY target_did ASC, delivery_id ASC"
+        ));
+        let rows = sqlx::query(&sql)
+            .bind(msg_id.to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to list deliveries for msg {}: {}",
+                    msg_id.to_string(),
+                    error
+                ))
+            })?;
+        rows.iter().map(row_to_delivery_record).collect()
+    }
+
+    // ------------------------------------------------------------------
+    // Message refs + ui session state (unchanged model)
+    // ------------------------------------------------------------------
 
     pub async fn touch_message(
         &self,
@@ -531,27 +821,25 @@ ORDER BY state_key ASC
     }
 }
 
+fn decode_err(field: &str, err: &sqlx::Error) -> RPCErrors {
+    RPCErrors::ReasonError(format!("failed to decode column {}: {}", field, err))
+}
+
 fn decode_ui_session_state_row(
     row: &AnyRow,
 ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
-    let decode = |field: &str, err: sqlx::Error| {
-        RPCErrors::ReasonError(format!(
-            "failed to decode ui_session_states.{}: {}",
-            field, err
-        ))
-    };
     let session_id: String = row
         .try_get("session_id")
-        .map_err(|e| decode("session_id", e))?;
+        .map_err(|e| decode_err("session_id", &e))?;
     let key: String = row
         .try_get("state_key")
-        .map_err(|e| decode("state_key", e))?;
+        .map_err(|e| decode_err("state_key", &e))?;
     let value_json: String = row
         .try_get("value_json")
-        .map_err(|e| decode("value_json", e))?;
+        .map_err(|e| decode_err("value_json", &e))?;
     let updated_at_ms: i64 = row
         .try_get("updated_at_ms")
-        .map_err(|e| decode("updated_at_ms", e))?;
+        .map_err(|e| decode_err("updated_at_ms", &e))?;
     let value = serde_json::from_str(&value_json).map_err(|error| {
         RPCErrors::ReasonError(format!(
             "failed to parse ui session state {}:{}: {}",
@@ -568,126 +856,135 @@ fn decode_ui_session_state_row(
     })
 }
 
-fn decode_record_row(
-    row: &AnyRow,
-    fallback_id: &str,
-) -> std::result::Result<MsgRecordRow, RPCErrors> {
-    let decode = |field: &str, err: sqlx::Error| {
+fn row_to_mailbox_record(row: &AnyRow) -> std::result::Result<MailboxRecord, RPCErrors> {
+    let record_id: String = row
+        .try_get("record_id")
+        .map_err(|e| decode_err("record_id", &e))?;
+    let owner_raw: String = row.try_get("owner").map_err(|e| decode_err("owner", &e))?;
+    let owner = DID::from_str(&owner_raw).map_err(|error| {
         RPCErrors::ReasonError(format!(
-            "failed to decode msg_records.{} (record {}): {}",
-            field, fallback_id, err
+            "invalid owner for mailbox record {}: {}",
+            record_id, error
         ))
-    };
-    Ok(MsgRecordRow {
-        record_id: row
-            .try_get("record_id")
-            .map_err(|e| decode("record_id", e))?,
-        box_kind: row.try_get("box_kind").map_err(|e| decode("box_kind", e))?,
-        msg_id: row.try_get("msg_id").map_err(|e| decode("msg_id", e))?,
-        msg_kind: row.try_get("msg_kind").map_err(|e| decode("msg_kind", e))?,
-        msg_from: row.try_get("msg_from").map_err(|e| decode("msg_from", e))?,
-        msg_to: row.try_get("msg_to").map_err(|e| decode("msg_to", e))?,
-        state: row.try_get("state").map_err(|e| decode("state", e))?,
-        created_at_ms: row
-            .try_get("created_at_ms")
-            .map_err(|e| decode("created_at_ms", e))?,
-        updated_at_ms: row
-            .try_get("updated_at_ms")
-            .map_err(|e| decode("updated_at_ms", e))?,
-        thread_key: row
-            .try_get("thread_key")
-            .map_err(|e| decode("thread_key", e))?,
-        session_id: row
-            .try_get("session_id")
-            .map_err(|e| decode("session_id", e))?,
-        sort_key: row.try_get("sort_key").map_err(|e| decode("sort_key", e))?,
-        tags_json: row
-            .try_get("tags_json")
-            .map_err(|e| decode("tags_json", e))?,
-        route_tunnel_did: row
-            .try_get("route_tunnel_did")
-            .map_err(|e| decode("route_tunnel_did", e))?,
-        route_json: row
-            .try_get("route_json")
-            .map_err(|e| decode("route_json", e))?,
-        delivery_json: row
-            .try_get("delivery_json")
-            .map_err(|e| decode("delivery_json", e))?,
-    })
-}
+    })?;
+    let box_kind_raw: String = row
+        .try_get("box_kind")
+        .map_err(|e| decode_err("box_kind", &e))?;
+    let box_kind = mailbox_kind_from_name(&box_kind_raw)?;
+    let msg_id_raw: String = row
+        .try_get("msg_id")
+        .map_err(|e| decode_err("msg_id", &e))?;
+    let msg_id = parse_obj_id(&msg_id_raw, &record_id)?;
+    let msg_kind_raw: Option<String> = row
+        .try_get("msg_kind")
+        .map_err(|e| decode_err("msg_kind", &e))?;
+    let msg_kind = parse_msg_obj_kind(msg_kind_raw.as_deref(), &box_kind);
+    let state_raw: String = row.try_get("state").map_err(|e| decode_err("state", &e))?;
+    let state = recipient_state_from_name(&state_raw)?;
+    let msg_from_raw: Option<String> = row
+        .try_get("msg_from")
+        .map_err(|e| decode_err("msg_from", &e))?;
+    let msg_to_raw: Option<String> = row
+        .try_get("msg_to")
+        .map_err(|e| decode_err("msg_to", &e))?;
+    let session_id: Option<String> = row
+        .try_get("session_id")
+        .map_err(|e| decode_err("session_id", &e))?;
+    let sort_key: i64 = row
+        .try_get("sort_key")
+        .map_err(|e| decode_err("sort_key", &e))?;
+    let tags_json: String = row
+        .try_get("tags_json")
+        .map_err(|e| decode_err("tags_json", &e))?;
+    let ingress_json: Option<String> = row
+        .try_get("ingress_json")
+        .map_err(|e| decode_err("ingress_json", &e))?;
+    let created_at_ms: i64 = row
+        .try_get("created_at_ms")
+        .map_err(|e| decode_err("created_at_ms", &e))?;
+    let updated_at_ms: i64 = row
+        .try_get("updated_at_ms")
+        .map_err(|e| decode_err("updated_at_ms", &e))?;
 
-fn row_to_record(owner: &DID, row: MsgRecordRow) -> std::result::Result<MsgRecord, RPCErrors> {
-    let box_kind = box_kind_from_name(&row.box_kind)?;
-    let state = msg_state_from_name(&row.state)?;
-    let msg_kind = parse_msg_obj_kind(row.msg_kind.as_deref(), &box_kind);
-    let msg_id = parse_obj_id(&row.msg_id, &row.record_id)?;
-    let created_at_ms = from_sql_i64(row.created_at_ms, "created_at_ms", &row.record_id)?;
-    let updated_at_ms = from_sql_i64(row.updated_at_ms, "updated_at_ms", &row.record_id)?;
-    let sort_key = from_sql_i64(row.sort_key, "sort_key", &row.record_id)?;
-    let tags: Vec<String> = parse_json(&row.tags_json, &row.record_id, "tags_json")?;
-    let msg_from = parse_record_did(row.msg_from.as_deref(), owner);
+    let from = parse_record_did(msg_from_raw.as_deref(), &owner);
     let to_fallback = match box_kind {
-        BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => owner.clone(),
-        BoxKind::Outbox | BoxKind::TunnelOutbox => msg_from.clone(),
+        MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => owner.clone(),
+        MailboxKind::Sent => from.clone(),
     };
-    let msg_to = parse_record_did(row.msg_to.as_deref(), &to_fallback);
+    let to = parse_record_did(msg_to_raw.as_deref(), &to_fallback);
+    let tags: Vec<String> = parse_json(&tags_json, &record_id, "tags_json")?;
+    let ingress: Option<IngressContext> =
+        parse_optional_json(ingress_json.as_deref(), &record_id, "ingress_json")?;
 
-    let mut route: Option<RouteInfo> =
-        parse_optional_json(row.route_json.as_deref(), &row.record_id, "route_json")?;
-
-    if let Some(tunnel_did_raw) = row.route_tunnel_did.as_deref() {
-        let tunnel_did = DID::from_str(tunnel_did_raw).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "invalid route_tunnel_did for record {}: {}",
-                row.record_id, error
-            ))
-        })?;
-        if let Some(route_obj) = route.as_mut() {
-            if route_obj.tunnel_did.is_none() {
-                route_obj.tunnel_did = Some(tunnel_did);
-            }
-        } else {
-            route = Some(RouteInfo {
-                tunnel_did: Some(tunnel_did),
-                ..Default::default()
-            });
-        }
-    }
-
-    let delivery: Option<DeliveryInfo> = parse_optional_json(
-        row.delivery_json.as_deref(),
-        &row.record_id,
-        "delivery_json",
-    )?;
-
-    Ok(MsgRecord {
-        record_id: row.record_id,
+    Ok(MailboxRecord {
+        record_id: record_id.clone(),
+        owner,
         box_kind,
         msg_id,
         msg_kind,
         state,
-        from: msg_from,
+        from,
         from_name: None,
-        to: msg_to,
-        created_at_ms,
-        updated_at_ms,
-        route,
-        delivery,
-        ui_session_id: row.thread_key.or(row.session_id),
-        sort_key,
+        to,
+        session_id,
+        sort_key: from_sql_i64(sort_key, "sort_key", &record_id)?,
         tags,
+        ingress,
+        created_at_ms: from_sql_i64(created_at_ms, "created_at_ms", &record_id)?,
+        updated_at_ms: from_sql_i64(updated_at_ms, "updated_at_ms", &record_id)?,
     })
 }
 
-fn owner_from_record_id(record_id: &str) -> std::result::Result<DID, RPCErrors> {
-    let owner = record_id.split('|').next().ok_or_else(|| {
-        RPCErrors::ReasonError(format!("invalid record id '{}': missing owner", record_id))
-    })?;
-    DID::from_str(owner).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "invalid record id '{}': owner DID parse failed: {}",
-            record_id, error
-        ))
+fn row_to_delivery_record(row: &AnyRow) -> std::result::Result<DeliveryRecord, RPCErrors> {
+    let delivery_id: String = row
+        .try_get("delivery_id")
+        .map_err(|e| decode_err("delivery_id", &e))?;
+    let envelope_json: String = row
+        .try_get("envelope_json")
+        .map_err(|e| decode_err("envelope_json", &e))?;
+    let envelope: DeliveryEnvelope = parse_json(&envelope_json, &delivery_id, "envelope_json")?;
+    let state_raw: String = row.try_get("state").map_err(|e| decode_err("state", &e))?;
+    let state = delivery_state_from_name(&state_raw)?;
+    let attempts: i64 = row
+        .try_get("attempts")
+        .map_err(|e| decode_err("attempts", &e))?;
+    let next_retry_at_ms: Option<i64> = row
+        .try_get("next_retry_at_ms")
+        .map_err(|e| decode_err("next_retry_at_ms", &e))?;
+    let external_msg_id: Option<String> = row
+        .try_get("external_msg_id")
+        .map_err(|e| decode_err("external_msg_id", &e))?;
+    let delivered_at_ms: Option<i64> = row
+        .try_get("delivered_at_ms")
+        .map_err(|e| decode_err("delivered_at_ms", &e))?;
+    let last_error_json: Option<String> = row
+        .try_get("last_error_json")
+        .map_err(|e| decode_err("last_error_json", &e))?;
+    let created_at_ms: i64 = row
+        .try_get("created_at_ms")
+        .map_err(|e| decode_err("created_at_ms", &e))?;
+    let updated_at_ms: i64 = row
+        .try_get("updated_at_ms")
+        .map_err(|e| decode_err("updated_at_ms", &e))?;
+
+    let last_error: Option<DeliveryError> =
+        parse_optional_json(last_error_json.as_deref(), &delivery_id, "last_error_json")?;
+
+    Ok(DeliveryRecord {
+        delivery_id: delivery_id.clone(),
+        envelope,
+        state,
+        attempts: attempts.clamp(0, u32::MAX as i64) as u32,
+        next_retry_at_ms: next_retry_at_ms
+            .map(|v| from_sql_i64(v, "next_retry_at_ms", &delivery_id))
+            .transpose()?,
+        external_msg_id,
+        delivered_at_ms: delivered_at_ms
+            .map(|v| from_sql_i64(v, "delivered_at_ms", &delivery_id))
+            .transpose()?,
+        last_error,
+        created_at_ms: from_sql_i64(created_at_ms, "created_at_ms", &delivery_id)?,
+        updated_at_ms: from_sql_i64(updated_at_ms, "updated_at_ms", &delivery_id)?,
     })
 }
 
@@ -735,7 +1032,7 @@ fn msg_obj_kind_name(kind: &ndn_lib::MsgObjKind) -> &'static str {
     }
 }
 
-fn parse_msg_obj_kind(raw: Option<&str>, box_kind: &BoxKind) -> ndn_lib::MsgObjKind {
+fn parse_msg_obj_kind(raw: Option<&str>, box_kind: &MailboxKind) -> ndn_lib::MsgObjKind {
     let normalized = raw
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -748,14 +1045,10 @@ fn parse_msg_obj_kind(raw: Option<&str>, box_kind: &BoxKind) -> ndn_lib::MsgObjK
         Some("notify") => ndn_lib::MsgObjKind::Notify,
         Some("event") => ndn_lib::MsgObjKind::Event,
         Some("operation") => ndn_lib::MsgObjKind::Operation,
-        _ => infer_msg_obj_kind_from_box(box_kind),
-    }
-}
-
-fn infer_msg_obj_kind_from_box(box_kind: &BoxKind) -> ndn_lib::MsgObjKind {
-    match box_kind {
-        BoxKind::GroupInbox => ndn_lib::MsgObjKind::GroupMsg,
-        _ => ndn_lib::MsgObjKind::Chat,
+        _ => match box_kind {
+            MailboxKind::GroupInbox => ndn_lib::MsgObjKind::GroupMsg,
+            _ => ndn_lib::MsgObjKind::Chat,
+        },
     }
 }
 
@@ -799,71 +1092,81 @@ fn encode_optional_json<T: serde::Serialize>(
     }
 }
 
-fn box_kind_name(box_kind: &BoxKind) -> &'static str {
+pub(crate) fn mailbox_kind_name(box_kind: &MailboxKind) -> &'static str {
     match box_kind {
-        BoxKind::Inbox => "INBOX",
-        BoxKind::Outbox => "OUTBOX",
-        BoxKind::GroupInbox => "GROUP_INBOX",
-        BoxKind::TunnelOutbox => "TUNNEL_OUTBOX",
-        BoxKind::RequestBox => "REQUEST_BOX",
+        MailboxKind::Inbox => "INBOX",
+        MailboxKind::Sent => "SENT",
+        MailboxKind::GroupInbox => "GROUP_INBOX",
+        MailboxKind::RequestBox => "REQUEST_BOX",
     }
 }
 
-fn box_kind_from_name(raw: &str) -> std::result::Result<BoxKind, RPCErrors> {
+fn mailbox_kind_from_name(raw: &str) -> std::result::Result<MailboxKind, RPCErrors> {
     match raw {
-        "INBOX" => Ok(BoxKind::Inbox),
-        "OUTBOX" => Ok(BoxKind::Outbox),
-        "GROUP_INBOX" => Ok(BoxKind::GroupInbox),
-        "TUNNEL_OUTBOX" => Ok(BoxKind::TunnelOutbox),
-        "REQUEST_BOX" => Ok(BoxKind::RequestBox),
+        "INBOX" => Ok(MailboxKind::Inbox),
+        "SENT" => Ok(MailboxKind::Sent),
+        "GROUP_INBOX" => Ok(MailboxKind::GroupInbox),
+        "REQUEST_BOX" => Ok(MailboxKind::RequestBox),
         _ => Err(RPCErrors::ReasonError(format!(
-            "invalid box kind '{}', expected one of INBOX/OUTBOX/GROUP_INBOX/TUNNEL_OUTBOX/REQUEST_BOX",
+            "invalid mailbox kind '{}', expected one of INBOX/SENT/GROUP_INBOX/REQUEST_BOX",
             raw
         ))),
     }
 }
 
-fn msg_state_name(state: &MsgState) -> &'static str {
+fn recipient_state_name(state: &RecipientState) -> &'static str {
     match state {
-        MsgState::Unread => "UNREAD",
-        MsgState::Reading => "READING",
-        MsgState::Readed => "READED",
-        MsgState::Wait => "WAIT",
-        MsgState::Sending => "SENDING",
-        MsgState::Sent => "SENT",
-        MsgState::Failed => "FAILED",
-        MsgState::Dead => "DEAD",
-        MsgState::Deleted => "DELETED",
-        MsgState::Archived => "ARCHIVED",
+        RecipientState::Unread => "UNREAD",
+        RecipientState::Reading => "READING",
+        RecipientState::Read => "READ",
+        RecipientState::Archived => "ARCHIVED",
+        RecipientState::Deleted => "DELETED",
     }
 }
 
-fn msg_state_from_name(raw: &str) -> std::result::Result<MsgState, RPCErrors> {
+fn recipient_state_from_name(raw: &str) -> std::result::Result<RecipientState, RPCErrors> {
     match raw {
-        "UNREAD" => Ok(MsgState::Unread),
-        "READING" => Ok(MsgState::Reading),
-        "READED" => Ok(MsgState::Readed),
-        "WAIT" => Ok(MsgState::Wait),
-        "SENDING" => Ok(MsgState::Sending),
-        "SENT" => Ok(MsgState::Sent),
-        "FAILED" => Ok(MsgState::Failed),
-        "DEAD" => Ok(MsgState::Dead),
-        "DELETED" => Ok(MsgState::Deleted),
-        "ARCHIVED" => Ok(MsgState::Archived),
+        "UNREAD" => Ok(RecipientState::Unread),
+        "READING" => Ok(RecipientState::Reading),
+        "READ" => Ok(RecipientState::Read),
+        "ARCHIVED" => Ok(RecipientState::Archived),
+        "DELETED" => Ok(RecipientState::Deleted),
         _ => Err(RPCErrors::ReasonError(format!(
-            "invalid msg state '{}', expected enum value",
+            "invalid recipient state '{}', expected UNREAD/READING/READ/ARCHIVED/DELETED",
             raw
         ))),
     }
 }
 
-fn state_matches_filter(state_filter: Option<&[MsgState]>, state_name: &str) -> bool {
-    match state_filter {
+fn delivery_state_name(state: &DeliveryState) -> &'static str {
+    match state {
+        DeliveryState::Wait => "WAIT",
+        DeliveryState::Sending => "SENDING",
+        DeliveryState::Sent => "SENT",
+        DeliveryState::Failed => "FAILED",
+        DeliveryState::Dead => "DEAD",
+    }
+}
+
+fn delivery_state_from_name(raw: &str) -> std::result::Result<DeliveryState, RPCErrors> {
+    match raw {
+        "WAIT" => Ok(DeliveryState::Wait),
+        "SENDING" => Ok(DeliveryState::Sending),
+        "SENT" => Ok(DeliveryState::Sent),
+        "FAILED" => Ok(DeliveryState::Failed),
+        "DEAD" => Ok(DeliveryState::Dead),
+        _ => Err(RPCErrors::ReasonError(format!(
+            "invalid delivery state '{}', expected WAIT/SENDING/SENT/FAILED/DEAD",
+            raw
+        ))),
+    }
+}
+
+fn recipient_state_matches(filter: Option<&[RecipientState]>, state: &RecipientState) -> bool {
+    match filter {
         None => true,
         Some(filters) if filters.is_empty() => true,
-        Some(filters) => filters
-            .iter()
-            .any(|item| msg_state_name(item) == state_name),
+        Some(filters) => filters.iter().any(|item| item == state),
     }
 }
 
@@ -942,6 +1245,7 @@ fn split_sql_statements(ddl: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::TransportKind;
     use tempfile::tempdir;
 
     async fn setup_test_mgr() -> (MsgBoxDbMgr, tempfile::TempDir) {
@@ -956,31 +1260,62 @@ mod tests {
         DID::from_str("did:bns:alice").unwrap()
     }
 
-    fn sample_record(owner: &DID, box_kind: BoxKind, suffix: &str) -> MsgRecord {
+    fn sample_msg_id(seed: char) -> ObjId {
+        serde_json::from_value(Value::String(format!(
+            "mobjchat:{}",
+            seed.to_string().repeat(40)
+        )))
+        .unwrap()
+    }
+
+    fn sample_record(owner: &DID, box_kind: MailboxKind, suffix: &str) -> MailboxRecord {
         let record_id = format!(
             "{}|{}|{}",
             owner.to_string(),
-            box_kind_name(&box_kind),
+            mailbox_kind_name(&box_kind),
             suffix
         );
-        let msg_id: ObjId =
-            serde_json::from_value(Value::String(format!("mobjchat:{}", "a".repeat(40)))).unwrap();
-        MsgRecord {
+        MailboxRecord {
             record_id,
+            owner: owner.clone(),
             box_kind,
-            msg_id,
+            msg_id: sample_msg_id('a'),
             msg_kind: ndn_lib::MsgObjKind::Chat,
-            state: MsgState::Unread,
+            state: RecipientState::Unread,
             from: owner.clone(),
             from_name: None,
             to: owner.clone(),
-            created_at_ms: 1_700_000_000_000,
-            updated_at_ms: 1_700_000_000_000,
-            route: None,
-            delivery: None,
-            ui_session_id: Some("topic-1".to_string()),
+            session_id: Some("topic-1".to_string()),
             sort_key: 1_700_000_000_000,
             tags: vec!["tag".to_string()],
+            ingress: None,
+            created_at_ms: 1_700_000_000_000,
+            updated_at_ms: 1_700_000_000_000,
+        }
+    }
+
+    fn sample_delivery(transport: &DID, target: &DID, seed: char) -> DeliveryRecord {
+        let msg_id = sample_msg_id(seed);
+        DeliveryRecord {
+            delivery_id: format!("dlv-{}-{}", seed, target.to_string()),
+            envelope: DeliveryEnvelope {
+                msg_id,
+                target_did: target.clone(),
+                transport_did: transport.clone(),
+                transport: TransportKind::Tunnel {
+                    platform: "telegram".to_string(),
+                    tunnel_instance_id: "tg-main-tunnel".to_string(),
+                },
+                address: None,
+            },
+            state: DeliveryState::Wait,
+            attempts: 0,
+            next_retry_at_ms: None,
+            external_msg_id: None,
+            delivered_at_ms: None,
+            last_error: None,
+            created_at_ms: 1_700_000_000_000,
+            updated_at_ms: 1_700_000_000_000,
         }
     }
 
@@ -988,44 +1323,118 @@ mod tests {
     async fn open_and_upsert_record_roundtrip() {
         let (mgr, _tmp) = setup_test_mgr().await;
         let owner = sample_owner();
-        let record = sample_record(&owner, BoxKind::Inbox, "one");
+        let record = sample_record(&owner, MailboxKind::Inbox, "one");
         mgr.upsert_record(&record).await.unwrap();
         let got = mgr.get_record(&owner, &record.record_id).await.unwrap();
         assert!(got.is_some());
         let got = got.unwrap();
         assert_eq!(got.record_id, record.record_id);
-        assert_eq!(got.box_kind, BoxKind::Inbox);
-        assert_eq!(got.state, MsgState::Unread);
+        assert_eq!(got.box_kind, MailboxKind::Inbox);
+        assert_eq!(got.state, RecipientState::Unread);
+        assert_eq!(got.session_id.as_deref(), Some("topic-1"));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn list_records_and_state_filter() {
         let (mgr, _tmp) = setup_test_mgr().await;
         let owner = sample_owner();
-        let r1 = sample_record(&owner, BoxKind::Inbox, "one");
-        let mut r2 = sample_record(&owner, BoxKind::Inbox, "two");
-        r2.state = MsgState::Readed;
+        let r1 = sample_record(&owner, MailboxKind::Inbox, "one");
+        let mut r2 = sample_record(&owner, MailboxKind::Inbox, "two");
+        r2.state = RecipientState::Read;
         mgr.upsert_record(&r1).await.unwrap();
         mgr.upsert_record(&r2).await.unwrap();
         let all = mgr
-            .list_records(&owner, &BoxKind::Inbox, None, true)
+            .list_records(&owner, &MailboxKind::Inbox, None, true)
             .await
             .unwrap();
         assert_eq!(all.len(), 2);
         let unread = mgr
-            .list_records(&owner, &BoxKind::Inbox, Some(&[MsgState::Unread]), true)
+            .list_records(
+                &owner,
+                &MailboxKind::Inbox,
+                Some(&[RecipientState::Unread]),
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(unread.len(), 1);
-        assert_eq!(unread[0].state, MsgState::Unread);
+        assert_eq!(unread[0].state, RecipientState::Unread);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_index_groups_by_session() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let owner = sample_owner();
+        let mut r1 = sample_record(&owner, MailboxKind::Inbox, "one");
+        r1.session_id = Some("s-a".to_string());
+        let mut r2 = sample_record(&owner, MailboxKind::Sent, "two");
+        r2.session_id = Some("s-a".to_string());
+        r2.state = RecipientState::Read;
+        r2.updated_at_ms += 10;
+        let mut r3 = sample_record(&owner, MailboxKind::Inbox, "three");
+        r3.session_id = Some("s-b".to_string());
+        r3.updated_at_ms += 20;
+        for r in [&r1, &r2, &r3] {
+            mgr.upsert_record(r).await.unwrap();
+        }
+
+        let index = mgr.list_session_index(&owner, 10, None, None).await.unwrap();
+        assert_eq!(index.len(), 2);
+        assert_eq!(index[0].session_id, "s-b");
+        assert_eq!(index[1].session_id, "s-a");
+        assert_eq!(index[1].unread_count, 1);
+
+        let page = mgr
+            .list_session_records(&owner, "s-a", 10, None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delivery_take_and_reclaim() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let transport = DID::from_str("did:bns:tg-tunnel").unwrap();
+        let target = DID::from_str("did:msgtunnel:1.user.tg-main-tunnel").unwrap();
+        let record = sample_delivery(&transport, &target, 'c');
+        mgr.create_delivery_if_absent(&record).await.unwrap();
+        // Idempotent re-create keeps the row.
+        mgr.create_delivery_if_absent(&record).await.unwrap();
+
+        let taken = mgr
+            .take_next_delivery(&transport, 1_700_000_000_100, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(taken.state, DeliveryState::Sending);
+
+        // Nothing else to take.
+        assert!(mgr
+            .take_next_delivery(&transport, 1_700_000_000_100, true)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Lease expiry reclaims the SENDING row back to WAIT.
+        let reclaimed = mgr
+            .reclaim_stale_sending(&transport, 1_700_000_000_200, 1_700_000_000_200)
+            .await
+            .unwrap();
+        assert_eq!(reclaimed, 1);
+        let again = mgr
+            .take_next_delivery(&transport, 1_700_000_000_300, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.attempts, 1);
+        assert!(again.last_error.is_none() || again.last_error.unwrap().duplicate_risk);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn touch_message_and_has_message() {
         let (mgr, _tmp) = setup_test_mgr().await;
         let owner = sample_owner();
-        let msg_id: ObjId =
-            serde_json::from_value(Value::String(format!("mobjchat:{}", "b".repeat(40)))).unwrap();
+        let msg_id = sample_msg_id('b');
         assert!(!mgr.has_message(&owner, &msg_id).await.unwrap());
         mgr.touch_message(&owner, &msg_id, 1_700_000_000_000)
             .await

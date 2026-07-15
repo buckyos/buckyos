@@ -421,19 +421,21 @@ capability 挂在 tunnel registry 条目上，供管理界面与平台裁剪使�
 - UI 不读取 Delivery Queue；投递进度全部来自 SessionProjection 聚合。
 - 平台升级或新旧版本互通不因未知字段宕机或损坏数据。
 
-## 15. 现状对照与迁移（P3）
+## 15. 现状对照与迁移（P3，已完成）
 
-当前代码（beta2.2）与冻结设计的差异，迁移项见 `notepads/msg-center-design-freeze-todo.md` P3：
+P3 迁移已于 2026-07-14 全部落地（明细见 `notepads/msg-center-design-freeze-todo.md`），
+代码与冻结设计一致，无旧名兼容层：
 
-| 冻结设计 | 当前代码 | 迁移动作 |
-|---|---|---|
-| `DELIVERY_QUEUE` / `DeliveryRecord` | `BoxKind::TunnelOutbox` 里的 `MsgRecord` | 重命名 + 拆表/拆结构 |
-| `DeliveryEnvelope` | `RouteInfo`（字段身兼路由输入与记录） | 重定义为解析结果快照 |
-| `transport_did` 与 `tunnel_instance_id` 分离 | `tunnel_id`/`tunnel_did` 局部混用（scheduler 写 binding 时） | 全量排查修正 |
-| shadow DID `…<tunnel_instance_id>` 尾段 | `did:msgtunnel:12345.user.tg-main` | 实例 id 迁移为 `tg-main-tunnel` 风格 |
-| registry 重复 id 启动失败 | 静默覆盖 | 改为 fail-fast |
-| 无隐式 `resolve_target` | Workflow 中存在 `"telegram"/"tg-main"` 隐式解析 | 删除 |
-| 无 `default_chat_id` fallback | TgTunnel 存在 fallback | 删除 |
-| `thread.tunnel_id` 不存在 | `ndn_lib::TopicThread.tunnel_id` | 删除字段 |
-| 群消息 `to`=group，无兼容回退 | `to` 为空时回退 `from` 的旧数据兼容 | 删除兼容逻辑 |
-| `list_session/list_sessions` | 未实现 | 新增 API + 索引；Desktop 弃用 mock reader |
+| 冻结设计 | 落地状态 |
+|---|---|
+| `DELIVERY_QUEUE` / `DeliveryRecord` | ✅ 独立 `delivery_records` 表 + `DeliveryRecord` 结构，owner = `transport_did` |
+| `DeliveryEnvelope` / `DeliverySnapshot` | ✅ `post_send` 解析结果快照；`RouteInfo` 已删除 |
+| `transport_did` 与 `tunnel_instance_id` 分离 | ✅ 全量重命名；scheduler binding 写 `tunnel_instance_id`（短 id），不再写 DID |
+| shadow DID `…<tunnel_instance_id>` 尾段 | ✅ 默认实例 id `tg-main-tunnel` |
+| registry 重复 id 启动失败 | ✅ `register_tunnel` fail-fast，启动装配失败即退出 |
+| 无隐式 `resolve_target` | ✅ Workflow 发送路径只收确定 DID；`resolve_target` 仅存于 UI/联系人查看辅助 |
+| 无 `default_chat_id` fallback | ✅ 地址只来自 envelope 快照；缺 chat → 不可重试失败（DEAD） |
+| `thread.tunnel_id` 不存在 | ✅ 已从 `ndn_lib::TopicThread` 删除（cyfs-ndn beta2.2） |
+| 群消息 `to`=group，无兼容回退 | ✅ 空 `to` 的群消息直接报错 |
+| `list_session/list_sessions` | ✅ 新 RPC + Session/Delivery 索引；Desktop MessageHub 走 Session API |
+| MessageHub 原生投递 | ✅ `DeliveryExecutor` 落地（本 Zone 本地 dispatch）；跨 Zone HTTP hop 为已知后续项，未实现时明确失败 |

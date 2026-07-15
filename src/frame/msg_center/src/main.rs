@@ -1,5 +1,6 @@
 mod contact_mgr;
 mod group_mgr;
+mod message_hub;
 mod msg_box_db;
 mod msg_center;
 mod msg_tunnel;
@@ -11,8 +12,8 @@ use ::kRPC::*;
 use anyhow::{Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
-    BoxKind, BuckyOSRuntimeType, DeliveryReportResult, MsgCenterClient, MsgCenterServerHandler,
-    MsgState, SystemConfigClient, UserContactSettings, UserPrivateProfile, UserSettings, UserState,
+    BuckyOSRuntimeType, DeliveryReportResult, MsgCenterClient, MsgCenterServerHandler,
+    SystemConfigClient, UserContactSettings, UserPrivateProfile, UserSettings, UserState,
     MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
@@ -34,8 +35,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::contact_mgr::ZoneUserContactSeed;
+use crate::message_hub::MessageHubExecutor;
 use crate::msg_center::MessageCenter;
-use crate::msg_tunnel::{MsgTunnel, MsgTunnelInstanceMgr, MsgTunnelInstanceState};
+use crate::msg_tunnel::{DeliveryExecutor, DeliveryExecutorMgr, ExecutorInstanceState};
 use crate::tg_tunnel::{GrammersTgGatewayConfig, TgBotBinding, TgTunnel, TgTunnelConfig};
 
 const MSG_CENTER_HTTP_PATH: &str = "/kapi/msg-center";
@@ -46,9 +48,9 @@ const METHOD_RELOAD_SETTINGS: &str = "reload_settings";
 const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
 const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
 const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
-const TUNNEL_EGRESS_IDLE_SLEEP_MS: u64 = 300;
-const TUNNEL_EGRESS_ERROR_SLEEP_MS: u64 = 1_000;
-const TUNNEL_EGRESS_RETRY_AFTER_MS: u64 = 2_000;
+const DELIVERY_PUMP_IDLE_SLEEP_MS: u64 = 300;
+const DELIVERY_PUMP_ERROR_SLEEP_MS: u64 = 1_000;
+const DELIVERY_PUMP_RETRY_AFTER_MS: u64 = 2_000;
 
 #[derive(Debug, Clone, Default)]
 struct MsgCenterSettings {
@@ -56,17 +58,9 @@ struct MsgCenterSettings {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-struct LegacyMsgTunnelsSettings {
-    #[serde(default)]
-    telegram_tunnel: Option<TelegramTunnelSettings>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
 struct RawMsgCenterSettings {
     #[serde(default)]
     telegram_tunnel: Option<TelegramTunnelSettings>,
-    #[serde(default)]
-    msg_tunnels: LegacyMsgTunnelsSettings,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,8 +96,6 @@ struct TelegramBindingSettings {
     #[serde(default)]
     bot_account_id: Option<String>,
     #[serde(default)]
-    default_chat_id: Option<String>,
-    #[serde(default)]
     extra: HashMap<String, String>,
 }
 
@@ -111,11 +103,13 @@ struct TelegramBindingSettings {
 struct TelegramTunnelSettings {
     #[serde(default = "default_tg_tunnel_enabled")]
     enabled: bool,
-    #[serde(default = "default_tg_tunnel_did")]
-    tunnel_did: String,
-    /// Stable short tunnel id embedded in second-level DIDs (e.g. `tg-main`).
-    #[serde(default = "default_tg_tunnel_id")]
-    tunnel_id: String,
+    /// The tunnel instance's own DID: DELIVERY_QUEUE owner / delivery executor.
+    #[serde(default = "default_tg_transport_did")]
+    transport_did: String,
+    /// Stable tunnel instance id embedded in shadow endpoint DIDs
+    /// (e.g. `tg-main-tunnel`). Locally unique, never reused.
+    #[serde(default = "default_tg_tunnel_instance_id")]
+    tunnel_instance_id: String,
     #[serde(default = "default_true")]
     supports_ingress: bool,
     #[serde(default = "default_true")]
@@ -130,8 +124,8 @@ impl Default for TelegramTunnelSettings {
     fn default() -> Self {
         Self {
             enabled: default_tg_tunnel_enabled(),
-            tunnel_did: default_tg_tunnel_did(),
-            tunnel_id: default_tg_tunnel_id(),
+            transport_did: default_tg_transport_did(),
+            tunnel_instance_id: default_tg_tunnel_instance_id(),
             supports_ingress: default_true(),
             supports_egress: default_true(),
             gateway: TelegramGatewaySettings::default(),
@@ -142,14 +136,14 @@ impl Default for TelegramTunnelSettings {
 
 struct MsgCenterHttpServer {
     rpc_handler: MsgCenterServerHandler<MessageCenter>,
-    tunnel_mgr: Arc<MsgTunnelInstanceMgr>,
+    executor_mgr: Arc<DeliveryExecutorMgr>,
 }
 
 impl MsgCenterHttpServer {
-    fn new(center: MessageCenter, tunnel_mgr: Arc<MsgTunnelInstanceMgr>) -> Self {
+    fn new(center: MessageCenter, executor_mgr: Arc<DeliveryExecutorMgr>) -> Self {
         Self {
             rpc_handler: MsgCenterServerHandler::new(center),
-            tunnel_mgr,
+            executor_mgr,
         }
     }
 
@@ -168,7 +162,7 @@ impl MsgCenterHttpServer {
         };
 
         let tunnel_result =
-            apply_tg_tunnel_settings(&self.rpc_handler.0, self.tunnel_mgr.as_ref(), &settings)
+            apply_tg_tunnel_settings(&self.rpc_handler.0, self.executor_mgr.as_ref(), &settings)
                 .await
                 .map_err(|err| {
                     RPCErrors::ReasonError(format!("reload msg-center settings failed: {}", err))
@@ -242,12 +236,12 @@ fn default_tg_tunnel_enabled() -> bool {
     true
 }
 
-fn default_tg_tunnel_did() -> String {
+fn default_tg_transport_did() -> String {
     MSG_CENTER_DEFAULT_TG_TUNNEL_DID.to_string()
 }
 
-fn default_tg_tunnel_id() -> String {
-    "tg-main".to_string()
+fn default_tg_tunnel_instance_id() -> String {
+    "tg-main-tunnel".to_string()
 }
 
 fn default_tg_session_dir() -> PathBuf {
@@ -261,14 +255,7 @@ fn parse_msg_center_settings(settings: &Value) -> Result<MsgCenterSettings> {
     let raw = serde_json::from_value::<RawMsgCenterSettings>(settings.clone())
         .map_err(|err| anyhow::anyhow!("parse msg-center settings failed: {}", err))?;
 
-    if raw.telegram_tunnel.is_none() && raw.msg_tunnels.telegram_tunnel.is_some() {
-        info!("msg-center settings uses legacy key: msg_tunnels.telegram_tunnel");
-    }
-
-    let telegram_tunnel = raw
-        .telegram_tunnel
-        .or(raw.msg_tunnels.telegram_tunnel)
-        .unwrap_or_default();
+    let telegram_tunnel = raw.telegram_tunnel.unwrap_or_default();
     Ok(MsgCenterSettings { telegram_tunnel })
 }
 
@@ -316,144 +303,113 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-async fn pump_tunnel_egress_once(
+/// One round of the delivery pump: for every running egress-capable executor,
+/// take the next due DeliveryRecord from its DELIVERY_QUEUE (WAIT → SENDING),
+/// execute it, and report the result back (SENT / WAIT-with-backoff / DEAD).
+/// The periodic poll doubles as the SENDING lease sweep — real-time
+/// notifications are only an accelerator, never the source of truth.
+async fn pump_delivery_queue_once(
     msg_center: &MsgCenterClient,
-    tunnel_mgr: &MsgTunnelInstanceMgr,
+    executor_mgr: &DeliveryExecutorMgr,
 ) -> Result<bool> {
-    let instances = tunnel_mgr
+    let instances = executor_mgr
         .list_instances()
-        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+        .map_err(|err| anyhow::anyhow!("list delivery executors failed: {}", err))?;
     let mut worked = false;
 
     for instance in instances {
-        if instance.state != MsgTunnelInstanceState::Running || !instance.supports_egress {
+        if instance.state != ExecutorInstanceState::Running || !instance.supports_egress {
             continue;
         }
 
-        let tunnel_did = instance.tunnel_did.clone();
+        let transport_did = instance.transport_did.clone();
         let maybe_record = msg_center
-            .get_next(
-                tunnel_did.clone(),
-                BoxKind::TunnelOutbox,
-                Some(vec![MsgState::Wait]),
-                Some(true),
-                None,
-            )
+            .get_next_delivery(transport_did.clone(), Some(true), Some(true))
             .await
             .map_err(|err| {
                 anyhow::anyhow!(
-                    "load tunnel outbox next record failed for {}: {}",
-                    tunnel_did.to_string(),
+                    "take next delivery failed for {}: {}",
+                    transport_did.to_string(),
                     err
                 )
             })?;
         let Some(record) = maybe_record else {
             continue;
         };
-        let record_id = record.record.record_id.clone();
-        if let Some(next_retry_at_ms) = record
-            .record
-            .delivery
-            .as_ref()
-            .and_then(|delivery| delivery.next_retry_at_ms)
-        {
-            if next_retry_at_ms > now_ms() {
-                let _ = msg_center
-                    .update_record_state(record_id.clone(), MsgState::Wait, None)
-                    .await;
-                continue;
-            }
-        }
+        let delivery_id = record.record.delivery_id.clone();
         worked = true;
 
-        match tunnel_mgr.send_record(record).await {
-            Ok(report) => {
-                let report_ok = report.ok;
-                if let Err(err) = msg_center.report_delivery(record_id.clone(), report).await {
-                    warn!(
-                        "msg-center tunnel egress report_delivery failed: tunnel={} record_id={} err={}",
-                        tunnel_did.to_string(),
-                        record_id,
-                        err
-                    );
-                    let _ = msg_center
-                        .update_record_state(
-                            record_id.clone(),
-                            MsgState::Wait,
-                            Some(format!("report_delivery_failed: {}", err)),
-                        )
-                        .await;
-                } else if report_ok {
-                    info!(
-                        "msg-center tunnel egress delivered: tunnel={} record_id={}",
-                        tunnel_did.to_string(),
-                        record_id
-                    );
-                } else {
-                    warn!(
-                        "msg-center tunnel egress reported failure: tunnel={} record_id={}",
-                        tunnel_did.to_string(),
-                        record_id
-                    );
-                }
-            }
+        let report = match executor_mgr
+            .execute_via(&transport_did, record)
+            .await
+        {
+            Ok(report) => report,
             Err(err) => {
+                // Executor-level failure (not running, transport error). Feed
+                // it into the same state machine as a retryable failure.
                 let reason = err.to_string();
                 warn!(
-                    "msg-center tunnel egress send failed: tunnel={} record_id={} err={}",
-                    tunnel_did.to_string(),
-                    record_id,
+                    "msg-center delivery execute failed: executor={} delivery_id={} err={}",
+                    transport_did.to_string(),
+                    delivery_id,
                     reason
                 );
-
-                let report = DeliveryReportResult {
+                DeliveryReportResult {
                     ok: false,
-                    error_message: Some(reason.clone()),
-                    retry_after_ms: Some(TUNNEL_EGRESS_RETRY_AFTER_MS),
+                    error_message: Some(reason),
+                    retry_after_ms: Some(DELIVERY_PUMP_RETRY_AFTER_MS),
                     retryable: Some(true),
                     ..Default::default()
-                };
-                if let Err(report_err) = msg_center.report_delivery(record_id.clone(), report).await
-                {
-                    warn!(
-                        "msg-center tunnel egress fallback report_delivery failed: tunnel={} record_id={} err={}",
-                        tunnel_did.to_string(),
-                        record_id,
-                        report_err
-                    );
-                    let _ = msg_center
-                        .update_record_state(
-                            record_id.clone(),
-                            MsgState::Wait,
-                            Some(format!("send_failed: {}", reason)),
-                        )
-                        .await;
                 }
             }
+        };
+
+        let report_ok = report.ok;
+        if let Err(err) = msg_center.report_delivery(delivery_id.clone(), report).await {
+            // The SENDING lease sweep will reclaim this row if the report is
+            // lost for good.
+            warn!(
+                "msg-center report_delivery failed: executor={} delivery_id={} err={}",
+                transport_did.to_string(),
+                delivery_id,
+                err
+            );
+        } else if report_ok {
+            info!(
+                "msg-center delivery done: executor={} delivery_id={}",
+                transport_did.to_string(),
+                delivery_id
+            );
+        } else {
+            warn!(
+                "msg-center delivery reported failure: executor={} delivery_id={}",
+                transport_did.to_string(),
+                delivery_id
+            );
         }
     }
 
     Ok(worked)
 }
 
-fn start_tunnel_egress_worker(center: MessageCenter, tunnel_mgr: Arc<MsgTunnelInstanceMgr>) {
+fn start_delivery_pump(center: MessageCenter, executor_mgr: Arc<DeliveryExecutorMgr>) {
     tokio::spawn(async move {
         let msg_center = MsgCenterClient::new_in_process(Box::new(center));
-        info!("msg-center tunnel egress worker started");
+        info!("msg-center delivery pump started");
 
         loop {
-            match pump_tunnel_egress_once(&msg_center, tunnel_mgr.as_ref()).await {
+            match pump_delivery_queue_once(&msg_center, executor_mgr.as_ref()).await {
                 Ok(true) => {}
                 Ok(false) => {
                     tokio::time::sleep(std::time::Duration::from_millis(
-                        TUNNEL_EGRESS_IDLE_SLEEP_MS,
+                        DELIVERY_PUMP_IDLE_SLEEP_MS,
                     ))
                     .await;
                 }
                 Err(err) => {
-                    warn!("msg-center tunnel egress worker error: {}", err);
+                    warn!("msg-center delivery pump error: {}", err);
                     tokio::time::sleep(std::time::Duration::from_millis(
-                        TUNNEL_EGRESS_ERROR_SLEEP_MS,
+                        DELIVERY_PUMP_ERROR_SLEEP_MS,
                     ))
                     .await;
                 }
@@ -523,18 +479,18 @@ fn build_zone_user_seed(
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| account_id.clone());
-            let tunnel_id = binding
-                .tunnel_id
+            let tunnel_instance_id = binding
+                .tunnel_instance_id
                 .as_ref()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| format!("{}-default", platform.to_ascii_lowercase()));
+                .unwrap_or_else(|| format!("{}-default-tunnel", platform.to_ascii_lowercase()));
 
             bindings.push(AccountBinding {
                 platform,
                 account_id,
                 display_id,
-                tunnel_id,
+                tunnel_instance_id,
                 account_type: String::new(),
                 endpoint_did: None,
                 last_active_at: now_ms(),
@@ -661,11 +617,11 @@ async fn sync_zone_user_contacts_once(center: &MessageCenter, raw_settings: &Val
     Ok(())
 }
 
-fn resolve_tg_tunnel_did(settings: &TelegramTunnelSettings) -> Result<DID> {
-    DID::from_str(settings.tunnel_did.trim()).map_err(|e| {
+fn resolve_tg_transport_did(settings: &TelegramTunnelSettings) -> Result<DID> {
+    DID::from_str(settings.transport_did.trim()).map_err(|e| {
         anyhow::anyhow!(
-            "invalid telegram tunnel did {}, err={}",
-            settings.tunnel_did,
+            "invalid telegram tunnel transport_did {}, err={}",
+            settings.transport_did,
             e
         )
     })
@@ -720,8 +676,8 @@ fn build_tg_tunnel(cfg: TgTunnelConfig, settings: &TelegramTunnelSettings) -> Re
                 api_id,
                 api_hash,
                 session_dir,
-                tunnel_did: Some(cfg.tunnel_did.clone()),
-                tunnel_id: Some(cfg.tunnel_id.clone()),
+                transport_did: Some(cfg.transport_did.clone()),
+                tunnel_instance_id: Some(cfg.tunnel_instance_id.clone()),
             };
             info!(
                 "telegram tunnel initialized with grammers gateway (session_dir={})",
@@ -763,7 +719,6 @@ fn bind_tg_tunnel_bots(tg_tunnel: &TgTunnel, settings: &TelegramTunnelSettings) 
                     binding.bot_account_id.as_deref(),
                 ),
                 bot_token_env_key: None,
-                default_chat_id: binding.default_chat_id.clone(),
                 extra,
             })
             .with_context(|| {
@@ -776,53 +731,70 @@ fn bind_tg_tunnel_bots(tg_tunnel: &TgTunnel, settings: &TelegramTunnelSettings) 
     Ok(())
 }
 
-async fn clear_tunnel_instances(tunnel_mgr: &MsgTunnelInstanceMgr) -> Result<()> {
-    let instances = tunnel_mgr
+/// Stop and unregister every registered *tunnel* executor (the message hub is
+/// kept — it is zone infrastructure, not settings-driven), and drop the
+/// matching tunnel routes so a reload can re-register them.
+async fn clear_tunnel_instances(
+    center: &MessageCenter,
+    executor_mgr: &DeliveryExecutorMgr,
+) -> Result<()> {
+    let hub_did = center.message_hub_did();
+    let instances = executor_mgr
         .list_instances()
-        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+        .map_err(|err| anyhow::anyhow!("list delivery executors failed: {}", err))?;
     for instance in instances.iter() {
-        if let Err(err) = tunnel_mgr.stop_instance(&instance.tunnel_did).await {
+        if Some(&instance.transport_did) == hub_did.as_ref() {
+            continue;
+        }
+        if let Err(err) = executor_mgr.stop_instance(&instance.transport_did).await {
             warn!(
-                "stop tunnel {} failed during reload: {}",
-                instance.tunnel_did.to_string(),
+                "stop executor {} failed during reload: {}",
+                instance.transport_did.to_string(),
                 err
             );
         }
     }
 
-    let instances = tunnel_mgr
+    let instances = executor_mgr
         .list_instances()
-        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
+        .map_err(|err| anyhow::anyhow!("list delivery executors failed: {}", err))?;
     for instance in instances.iter() {
-        if let Err(err) = tunnel_mgr.unregister(&instance.tunnel_did) {
+        if Some(&instance.transport_did) == hub_did.as_ref() {
+            continue;
+        }
+        if let Err(err) = executor_mgr.unregister(&instance.transport_did) {
             warn!(
-                "unregister tunnel {} failed during reload: {}",
-                instance.tunnel_did.to_string(),
+                "unregister executor {} failed during reload: {}",
+                instance.transport_did.to_string(),
                 err
             );
         }
     }
-    let remaining = tunnel_mgr
+    let remaining = executor_mgr
         .list_instances()
-        .map_err(|err| anyhow::anyhow!("list tunnel instances failed: {}", err))?;
-    if !remaining.is_empty() {
+        .map_err(|err| anyhow::anyhow!("list delivery executors failed: {}", err))?
+        .into_iter()
+        .filter(|instance| Some(&instance.transport_did) != hub_did.as_ref())
+        .count();
+    if remaining != 0 {
         return Err(anyhow::anyhow!(
             "clear tunnel instances incomplete, {} instance(s) still registered",
-            remaining.len()
+            remaining
         ));
     }
+    center.clear_tunnel_registry();
     Ok(())
 }
 
 async fn apply_tg_tunnel_settings(
     center: &MessageCenter,
-    tunnel_mgr: &MsgTunnelInstanceMgr,
+    executor_mgr: &DeliveryExecutorMgr,
     raw_settings: &Value,
 ) -> Result<serde_json::Value> {
     let settings = parse_msg_center_settings(raw_settings)?;
     if !settings.telegram_tunnel.enabled {
         info!("telegram tunnel is disabled by settings");
-        clear_tunnel_instances(tunnel_mgr).await?;
+        clear_tunnel_instances(center, executor_mgr).await?;
         return Ok(serde_json::json!({
             "ok": true,
             "tunnel_enabled": false,
@@ -831,49 +803,60 @@ async fn apply_tg_tunnel_settings(
         }));
     }
 
-    let tunnel_did = resolve_tg_tunnel_did(&settings.telegram_tunnel)?;
-    let tunnel_id = settings.telegram_tunnel.tunnel_id.trim().to_string();
-    let tunnel_id = if tunnel_id.is_empty() {
-        default_tg_tunnel_id()
+    let transport_did = resolve_tg_transport_did(&settings.telegram_tunnel)?;
+    let tunnel_instance_id = settings.telegram_tunnel.tunnel_instance_id.trim().to_string();
+    let tunnel_instance_id = if tunnel_instance_id.is_empty() {
+        default_tg_tunnel_instance_id()
     } else {
-        tunnel_id
+        tunnel_instance_id
     };
-    let mut cfg = TgTunnelConfig::new(tunnel_did.clone());
-    cfg.tunnel_id = tunnel_id.clone();
+    let mut cfg = TgTunnelConfig::new(transport_did.clone());
+    cfg.tunnel_instance_id = tunnel_instance_id.clone();
     cfg.supports_ingress = settings.telegram_tunnel.supports_ingress;
     cfg.supports_egress = settings.telegram_tunnel.supports_egress;
-    // Register the tunnel route so post_send can map a second-level DID's short
-    // tunnel_id back to this tunnel box-owner DID.
-    center.register_tunnel(
-        tunnel_id.clone(),
-        tunnel_did.clone(),
-        "telegram".to_string(),
-    );
+
+    // Rebuild the executor set + tunnel route registry from settings.
+    clear_tunnel_instances(center, executor_mgr).await?;
     let tg_tunnel = Arc::new(build_tg_tunnel(cfg, &settings.telegram_tunnel)?);
 
     tg_tunnel
         .bind_msg_center_handler(Arc::new(center.clone()))
         .context("bind msg_center handler to telegram tunnel failed")?;
     bind_tg_tunnel_bots(tg_tunnel.as_ref(), &settings.telegram_tunnel)?;
+    // Bot owners (agents) receive replies natively via the message hub.
+    let binding_owner_dids = settings
+        .telegram_tunnel
+        .bindings
+        .iter()
+        .filter_map(|binding| DID::from_str(binding.owner_did.trim()).ok());
+    center.register_local_recipients(binding_owner_dids);
     info!(
-        "telegram tunnel {} loaded {} binding(s)",
-        tunnel_did.to_string(),
+        "telegram tunnel {} (instance '{}') loaded {} binding(s)",
+        transport_did.to_string(),
+        tunnel_instance_id,
         settings.telegram_tunnel.bindings.len()
     );
 
-    clear_tunnel_instances(tunnel_mgr).await?;
-    tunnel_mgr
+    executor_mgr
         .register(tg_tunnel.clone())
         .map_err(|e| anyhow::anyhow!("register telegram tunnel failed: {}", e))?;
+    // Route registration comes after the executor exists so post_send can
+    // never plan onto a tunnel with no consumer. A duplicate instance id is a
+    // hard error (never silently overwritten).
+    center.register_tunnel(
+        tunnel_instance_id.clone(),
+        transport_did.clone(),
+        "telegram".to_string(),
+    )?;
 
     let mut started = false;
     let mut start_error: Option<String> = None;
-    match tunnel_mgr.start_instance(&tunnel_did).await {
+    match executor_mgr.start_instance(&transport_did).await {
         Ok(_) => {
             started = true;
             info!(
                 "telegram tunnel {} started (ingress={}, egress={})",
-                tunnel_did.to_string(),
+                transport_did.to_string(),
                 tg_tunnel.supports_ingress(),
                 tg_tunnel.supports_egress()
             );
@@ -881,7 +864,7 @@ async fn apply_tg_tunnel_settings(
         Err(err) => {
             warn!(
                 "telegram tunnel {} start failed, continue without tg tunnel: {}",
-                tunnel_did.to_string(),
+                transport_did.to_string(),
                 err
             );
             start_error = Some(err.to_string());
@@ -891,11 +874,45 @@ async fn apply_tg_tunnel_settings(
     Ok(serde_json::json!({
         "ok": true,
         "tunnel_enabled": true,
-        "tunnel_did": tunnel_did.to_string(),
+        "transport_did": transport_did.to_string(),
+        "tunnel_instance_id": tunnel_instance_id,
         "tunnel_started": started,
         "bindings": settings.telegram_tunnel.bindings.len(),
         "start_error": start_error
     }))
+}
+
+/// Derive the MessageHub transport DID from the zone DID
+/// (`did:web:example.com` → `did:web:msg-hub.example.com`).
+fn resolve_message_hub_did() -> DID {
+    match get_buckyos_api_runtime() {
+        Ok(runtime) if runtime.zone_id != DID::undefined() => DID::new(
+            runtime.zone_id.method.as_str(),
+            format!("msg-hub.{}", runtime.zone_id.id).as_str(),
+        ),
+        _ => DID::new("bns", "msg-hub"),
+    }
+}
+
+/// Register the MessageHub executor: the native delivery path for shareable
+/// DID targets. Must succeed — without it `post_send` cannot plan any
+/// shareable-DID delivery.
+async fn register_message_hub(
+    center: &MessageCenter,
+    executor_mgr: &DeliveryExecutorMgr,
+) -> Result<DID> {
+    let hub_did = resolve_message_hub_did();
+    center.set_message_hub_did(hub_did.clone());
+    let hub = Arc::new(MessageHubExecutor::new(hub_did.clone(), center.clone()));
+    executor_mgr
+        .register(hub)
+        .map_err(|err| anyhow::anyhow!("register message hub executor failed: {}", err))?;
+    executor_mgr
+        .start_instance(&hub_did)
+        .await
+        .map_err(|err| anyhow::anyhow!("start message hub executor failed: {}", err))?;
+    info!("message hub executor started: {}", hub_did.to_string());
+    Ok(hub_did)
 }
 
 pub async fn start_msg_center_service() -> Result<()> {
@@ -936,23 +953,20 @@ pub async fn start_msg_center_service() -> Result<()> {
         .await
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
 
-    let tunnel_mgr = Arc::new(MsgTunnelInstanceMgr::new());
-    match apply_tg_tunnel_settings(&center, tunnel_mgr.as_ref(), &settings).await {
-        Ok(result) => {
-            info!("msg-center settings initialized: {}", result);
-        }
-        Err(err) => {
-            warn!(
-                "msg-center settings apply failed during startup, continue without tunnel: {}",
-                err
-            );
-        }
-    }
+    let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
+    register_message_hub(&center, executor_mgr.as_ref()).await?;
+    // Tunnel assembly must fail startup on configuration errors — most
+    // importantly a duplicate tunnel_instance_id must never be silently
+    // overwritten (shadow endpoint DID stability depends on it).
+    let tunnel_result = apply_tg_tunnel_settings(&center, executor_mgr.as_ref(), &settings)
+        .await
+        .map_err(|err| anyhow::anyhow!("assemble tunnel registry failed: {}", err))?;
+    info!("msg-center settings initialized: {}", tunnel_result);
     if let Err(error) = sync_zone_user_contacts_once(&center, &settings).await {
         warn!("zone-user sync failed during startup: {}", error);
     }
-    start_tunnel_egress_worker(center.clone(), tunnel_mgr.clone());
-    let server = MsgCenterHttpServer::new(center, tunnel_mgr);
+    start_delivery_pump(center.clone(), executor_mgr.clone());
+    let server = MsgCenterHttpServer::new(center, executor_mgr);
 
     let runner = Runner::new(MSG_CENTER_SERVICE_PORT);
     if let Err(err) = runner.add_http_server(MSG_CENTER_HTTP_PATH.to_string(), Arc::new(server)) {

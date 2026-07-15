@@ -988,7 +988,7 @@ impl ControlPanelServer {
         let platform = Self::require_param_str(&req, "platform")?;
         let account_id = Self::require_param_str(&req, "account_id")?;
         let display_id = Self::param_str(&req, "display_id");
-        let tunnel_id = Self::param_str(&req, "tunnel_id");
+        let tunnel_instance_id = Self::param_str(&req, "tunnel_instance_id");
         let status = Self::param_str(&req, "status");
         let last_sync_at = Self::param_u64(&req, "last_sync_at");
         let meta: HashMap<String, String> = req
@@ -1009,7 +1009,7 @@ impl ControlPanelServer {
             platform: platform.clone(),
             account_id,
             display_id,
-            tunnel_id,
+            tunnel_instance_id,
             status,
             last_sync_at,
             meta,
@@ -2064,7 +2064,7 @@ impl ControlPanelServer {
         let account_id = Self::require_param_str(&req, "account_id")?;
 
         let display_id = Self::param_str(&req, "display_id");
-        let tunnel_id = Self::param_str(&req, "tunnel_id");
+        let tunnel_instance_id = Self::param_str(&req, "tunnel_instance_id");
         let status = Self::param_str(&req, "status");
         let last_sync_at = Self::param_u64(&req, "last_sync_at");
         let meta: HashMap<String, String> = req
@@ -2077,7 +2077,7 @@ impl ControlPanelServer {
             platform: platform.clone(),
             account_id,
             display_id,
-            tunnel_id,
+            tunnel_instance_id,
             status,
             last_sync_at,
             meta,

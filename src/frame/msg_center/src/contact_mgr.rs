@@ -39,7 +39,7 @@ struct ContactStore {
 struct MessageTunnelEndpointDid {
     did: DID,
     account_type: String,
-    tunnel_id: String,
+    tunnel_instance_id: String,
     encoded_account_id: String,
 }
 
@@ -132,11 +132,11 @@ impl ContactMgr {
                         ) {
                             binding.display_id = display_id;
                         }
-                        if let Some(tunnel_id) = Self::extract_hint_string(
+                        if let Some(tunnel_instance_id) = Self::extract_hint_string(
                             profile_hint.as_ref(),
-                            &["tunnel_id", "tunnel"],
+                            &["tunnel_instance_id", "tunnel"],
                         ) {
-                            binding.tunnel_id = tunnel_id;
+                            binding.tunnel_instance_id = tunnel_instance_id;
                         }
                         Self::merge_hint_meta(binding, profile_hint.as_ref());
                         Self::merge_endpoint_meta(binding, &endpoint_did, &did);
@@ -218,11 +218,11 @@ impl ContactMgr {
                         ) {
                             binding.display_id = display_id;
                         }
-                        if let Some(tunnel_id) = Self::extract_hint_string(
+                        if let Some(tunnel_instance_id) = Self::extract_hint_string(
                             profile_hint.as_ref(),
-                            &["tunnel_id", "tunnel"],
+                            &["tunnel_instance_id", "tunnel"],
                         ) {
-                            binding.tunnel_id = tunnel_id;
+                            binding.tunnel_instance_id = tunnel_instance_id;
                         }
                         Self::merge_hint_meta(binding, profile_hint.as_ref());
                     }
@@ -297,7 +297,7 @@ impl ContactMgr {
         platform: String,
         account_id: String,
         account_type: String,
-        tunnel_id: String,
+        tunnel_instance_id: String,
         _owner: Option<DID>,
     ) -> std::result::Result<DID, RPCErrors> {
         let account_id = account_id.trim();
@@ -308,19 +308,19 @@ impl ContactMgr {
         }
         let hint = serde_json::json!({
             "account_type": account_type,
-            "tunnel_id": tunnel_id,
+            "tunnel_instance_id": tunnel_instance_id,
         });
         let endpoint =
             Self::message_tunnel_endpoint_did(account_id, Some(&hint))?.ok_or_else(|| {
                 RPCErrors::ParseRequestError(
-                    "account_type and tunnel_id are required to build endpoint did".to_string(),
+                    "account_type and tunnel_instance_id are required to build endpoint did".to_string(),
                 )
             })?;
         Ok(endpoint.did)
     }
 
     /// Construction-time target resolver. `selector` matches a binding's
-    /// `tunnel_id` first, then `platform`. Must match exactly one endpoint
+    /// `tunnel_instance_id` first, then `platform`. Must match exactly one endpoint
     /// binding — never falls back.
     pub async fn resolve_target(
         &self,
@@ -352,16 +352,16 @@ impl ContactMgr {
             .iter()
             .filter(|binding| {
                 binding.endpoint_did.is_some()
-                    && (binding.tunnel_id.eq_ignore_ascii_case(selector)
+                    && (binding.tunnel_instance_id.eq_ignore_ascii_case(selector)
                         || binding.platform.eq_ignore_ascii_case(selector))
             })
             .collect();
-        // Prefer an exact tunnel_id match when both kinds are present.
+        // Prefer an exact tunnel_instance_id match when both kinds are present.
         if matches
             .iter()
-            .any(|b| b.tunnel_id.eq_ignore_ascii_case(selector))
+            .any(|b| b.tunnel_instance_id.eq_ignore_ascii_case(selector))
         {
-            matches.retain(|b| b.tunnel_id.eq_ignore_ascii_case(selector));
+            matches.retain(|b| b.tunnel_instance_id.eq_ignore_ascii_case(selector));
         }
 
         match matches.as_slice() {
@@ -1661,7 +1661,7 @@ impl ContactMgr {
         let Some(account_type) = Self::extract_hint_string(profile_hint, &["account_type"]) else {
             return Ok(None);
         };
-        let Some(tunnel_id) = Self::extract_hint_string(profile_hint, &["tunnel_id", "tunnel"])
+        let Some(tunnel_instance_id) = Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
         else {
             return Ok(None);
         };
@@ -1672,15 +1672,15 @@ impl ContactMgr {
                 "account_type is required for message tunnel endpoint did".to_string(),
             ));
         }
-        let tunnel_id = tunnel_id.trim().to_string();
-        if tunnel_id.is_empty() {
+        let tunnel_instance_id = tunnel_instance_id.trim().to_string();
+        if tunnel_instance_id.is_empty() {
             return Err(RPCErrors::ParseRequestError(
-                "tunnel_id is required for message tunnel endpoint did".to_string(),
+                "tunnel_instance_id is required for message tunnel endpoint did".to_string(),
             ));
         }
 
         let encoded_account_id = Self::percent_encode_did_component(account_id);
-        let encoded_tunnel_id = Self::percent_encode_did_component(&tunnel_id);
+        let encoded_tunnel_id = Self::percent_encode_did_component(&tunnel_instance_id);
         let subject = format!(
             "{}.{}.{}",
             encoded_account_id, account_type, encoded_tunnel_id
@@ -1688,7 +1688,7 @@ impl ContactMgr {
         Ok(Some(MessageTunnelEndpointDid {
             did: DID::new("msgtunnel", &subject),
             account_type,
-            tunnel_id,
+            tunnel_instance_id,
             encoded_account_id,
         }))
     }
@@ -1703,13 +1703,13 @@ impl ContactMgr {
     ) -> AccountBinding {
         let display_id = Self::extract_hint_string(profile_hint, &["display_id", "username"])
             .unwrap_or_else(|| account_id.clone());
-        let tunnel_id = Self::extract_hint_string(profile_hint, &["tunnel_id", "tunnel"])
-            .unwrap_or_else(|| endpoint.tunnel_id.clone());
+        let tunnel_instance_id = Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
+            .unwrap_or_else(|| endpoint.tunnel_instance_id.clone());
         let mut binding = AccountBinding {
             platform,
             account_id,
             display_id,
-            tunnel_id,
+            tunnel_instance_id,
             account_type: endpoint.account_type.clone(),
             endpoint_did: Some(did.clone()),
             last_active_at: now_ms,
@@ -1726,10 +1726,10 @@ impl ContactMgr {
         did: &DID,
     ) {
         // Promote the endpoint identity onto the typed binding fields so callers
-        // do not have to read `meta`. `tunnel_id` stays the stable short id.
+        // do not have to read `meta`. `tunnel_instance_id` stays the stable short id.
         binding.account_type = endpoint.account_type.clone();
         binding.endpoint_did = Some(did.clone());
-        binding.tunnel_id = endpoint.tunnel_id.clone();
+        binding.tunnel_instance_id = endpoint.tunnel_instance_id.clone();
         binding
             .meta
             .insert("account_type".to_string(), endpoint.account_type.clone());
@@ -1742,7 +1742,7 @@ impl ContactMgr {
         );
         binding
             .meta
-            .insert("message_tunnel_id".to_string(), endpoint.tunnel_id.clone());
+            .insert("message_tunnel_id".to_string(), endpoint.tunnel_instance_id.clone());
     }
 
     fn normalize_account_type(raw: &str) -> String {
@@ -1794,9 +1794,9 @@ impl ContactMgr {
     }
 
     /// Decompose a second-level endpoint DID
-    /// `did:msgtunnel:<encoded_account_id>.<account_type>.<tunnel_id>`.
-    /// Returns `(account_id, account_type, tunnel_id)` with `account_id` /
-    /// `tunnel_id` percent-decoded. `None` if `did` is not a well-formed
+    /// `did:msgtunnel:<encoded_account_id>.<account_type>.<tunnel_instance_id>`.
+    /// Returns `(account_id, account_type, tunnel_instance_id)` with `account_id` /
+    /// `tunnel_instance_id` percent-decoded. `None` if `did` is not a well-formed
     /// `did:msgtunnel:*`.
     pub fn parse_msgtunnel_did(did: &DID) -> Option<(String, String, String)> {
         if did.method != "msgtunnel" {
@@ -1808,11 +1808,11 @@ impl ContactMgr {
         }
         let account_id = Self::decode_did_component(parts[0]);
         let account_type = parts[1].to_string();
-        let tunnel_id = Self::decode_did_component(parts[2]);
-        if account_id.is_empty() || account_type.is_empty() || tunnel_id.is_empty() {
+        let tunnel_instance_id = Self::decode_did_component(parts[2]);
+        if account_id.is_empty() || account_type.is_empty() || tunnel_instance_id.is_empty() {
             return None;
         }
-        Some((account_id, account_type, tunnel_id))
+        Some((account_id, account_type, tunnel_instance_id))
     }
 
     fn blank_contact_with_source(did: DID, now_ms: u64, source: ContactSource) -> Contact {
@@ -1849,7 +1849,7 @@ impl ContactMgr {
         let note = Self::extract_hint_string(profile_hint, &["note", "bio", "desc"]);
         let display_id = Self::extract_hint_string(profile_hint, &["display_id", "username"])
             .unwrap_or_else(|| account_id.clone());
-        let tunnel_id = Self::extract_hint_string(profile_hint, &["tunnel_id", "tunnel"])
+        let tunnel_instance_id = Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
             .unwrap_or_else(|| format!("{}-default", platform.to_ascii_lowercase()));
         let account_type = Self::extract_hint_string(profile_hint, &["account_type"])
             .map(|raw| Self::normalize_account_type(&raw))
@@ -1859,7 +1859,7 @@ impl ContactMgr {
             platform,
             account_id,
             display_id,
-            tunnel_id,
+            tunnel_instance_id,
             account_type,
             endpoint_did: None,
             last_active_at: now_ms,
@@ -1930,8 +1930,8 @@ impl ContactMgr {
             if binding.display_id.trim().is_empty() {
                 binding.display_id = binding.account_id.clone();
             }
-            if binding.tunnel_id.trim().is_empty() {
-                binding.tunnel_id = format!("{}-default", binding.platform.to_ascii_lowercase());
+            if binding.tunnel_instance_id.trim().is_empty() {
+                binding.tunnel_instance_id = format!("{}-default", binding.platform.to_ascii_lowercase());
             }
             if binding.last_active_at == 0 {
                 binding.last_active_at = now_ms;
@@ -1964,7 +1964,7 @@ impl ContactMgr {
             if binding.last_active_at >= existing.last_active_at {
                 existing.last_active_at = binding.last_active_at;
                 existing.display_id = binding.display_id;
-                existing.tunnel_id = binding.tunnel_id;
+                existing.tunnel_instance_id = binding.tunnel_instance_id;
             }
             if !binding.account_type.is_empty() {
                 existing.account_type = binding.account_type;
@@ -2260,7 +2260,7 @@ impl ContactMgr {
             binding.platform.to_ascii_lowercase().contains(keyword)
                 || binding.account_id.to_ascii_lowercase().contains(keyword)
                 || binding.display_id.to_ascii_lowercase().contains(keyword)
-                || binding.tunnel_id.to_ascii_lowercase().contains(keyword)
+                || binding.tunnel_instance_id.to_ascii_lowercase().contains(keyword)
                 || binding.meta.iter().any(|(key, value)| {
                     key.to_ascii_lowercase().contains(keyword)
                         || value.to_ascii_lowercase().contains(keyword)
@@ -2329,7 +2329,7 @@ mod tests {
             platform: platform.to_string(),
             account_id: account_id.to_string(),
             display_id: account_id.to_string(),
-            tunnel_id: format!("{}-default", platform),
+            tunnel_instance_id: format!("{}-default", platform),
             account_type: String::new(),
             endpoint_did: None,
             last_active_at: 1,
@@ -2373,7 +2373,7 @@ mod tests {
         let owner = DID::new("web", "jarvis.test.buckyos.io");
         let profile_hint = json!({
             "account_type": "user",
-            "tunnel_id": "did:web:tg-tunnel.test.buckyos.io",
+            "tunnel_instance_id": "did:web:tg-tunnel.test.buckyos.io",
             "display_id": "@alice",
             "bot_account_id": "@jarvis_bot"
         });
@@ -2463,7 +2463,7 @@ mod tests {
                 "12345".to_string(),
                 Some(json!({
                     "account_type": "user",
-                    "tunnel_id": "did:web:tg-tunnel.test.buckyos.io"
+                    "tunnel_instance_id": "did:web:tg-tunnel.test.buckyos.io"
                 })),
                 Some(owner),
             )
@@ -2630,7 +2630,7 @@ mod tests {
         ];
 
         for (account_id, account_type, expected) in cases {
-            let hint = json!({ "account_type": account_type, "tunnel_id": "tg-main" });
+            let hint = json!({ "account_type": account_type, "tunnel_instance_id": "tg-main" });
             let first = mgr
                 .resolve_did(
                     "telegram".to_string(),
@@ -2661,7 +2661,7 @@ mod tests {
                 .unwrap();
             assert_eq!(contact.bindings[0].account_type, account_type);
             assert_eq!(contact.bindings[0].endpoint_did.as_ref(), Some(&first));
-            assert_eq!(contact.bindings[0].tunnel_id, "tg-main");
+            assert_eq!(contact.bindings[0].tunnel_instance_id, "tg-main");
         }
     }
 
@@ -2694,7 +2694,7 @@ mod tests {
                         platform: "telegram".to_string(),
                         account_id: "12345".to_string(),
                         display_id: "@bob".to_string(),
-                        tunnel_id: "tg-main".to_string(),
+                        tunnel_instance_id: "tg-main".to_string(),
                         account_type: "user".to_string(),
                         endpoint_did: Some(tg_endpoint.clone()),
                         last_active_at: 1,
@@ -2704,7 +2704,7 @@ mod tests {
                         platform: "email".to_string(),
                         account_id: "bob@example.com".to_string(),
                         display_id: "bob@example.com".to_string(),
-                        tunnel_id: "email-main".to_string(),
+                        tunnel_instance_id: "email-main".to_string(),
                         account_type: "addr".to_string(),
                         endpoint_did: Some(DID::new(
                             "msgtunnel",
@@ -2722,7 +2722,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Selector by tunnel_id resolves to the right endpoint DID.
+        // Selector by tunnel_instance_id resolves to the right endpoint DID.
         let resolved = mgr
             .resolve_target(
                 contact_did.clone(),

@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
-use crate::msg_tunnel::MsgTunnel;
+use crate::msg_tunnel::DeliveryExecutor;
 use anyhow::{bail, Context, Result as AnyResult};
 use async_trait::async_trait;
 use buckyos_api::{
-    build_telegram_ui_session_id, get_buckyos_api_runtime, DeliveryReportResult, IngressContext,
-    MsgCenterHandler, MsgRecordWithObject, MSG_CENTER_SERVICE_NAME, UI_SESSION_STATE_ACTIVE_KEY,
-    UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
+    build_telegram_ui_session_id, get_buckyos_api_runtime, DeliveryRecordWithObject,
+    DeliveryReportResult, IngressContext, MsgCenterHandler, MSG_CENTER_SERVICE_NAME,
+    UI_SESSION_STATE_ACTIVE_KEY, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use grammers_client::grammers_tl_types as tl;
@@ -60,21 +60,22 @@ const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Debug, Clone)]
 pub struct TgTunnelConfig {
-    pub tunnel_did: DID,
-    /// Stable short tunnel id (e.g. `tg-main`) embedded in second-level DIDs.
-    /// Defaults to the tunnel DID subject when not set explicitly.
-    pub tunnel_id: String,
+    /// The tunnel instance's DID: DELIVERY_QUEUE owner / delivery executor.
+    pub transport_did: DID,
+    /// Stable tunnel instance id (e.g. `tg-main-tunnel`) embedded in shadow
+    /// endpoint DIDs. Defaults to the transport DID subject when not set.
+    pub tunnel_instance_id: String,
     pub name: String,
     pub supports_ingress: bool,
     pub supports_egress: bool,
 }
 
 impl TgTunnelConfig {
-    pub fn new(tunnel_did: DID) -> Self {
+    pub fn new(transport_did: DID) -> Self {
         Self {
-            name: format!("{}-tg-tunnel", tunnel_did.to_string()),
-            tunnel_id: tunnel_did.id.clone(),
-            tunnel_did,
+            name: format!("{}-tg-tunnel", transport_did.to_string()),
+            tunnel_instance_id: transport_did.id.clone(),
+            transport_did,
             supports_ingress: true,
             supports_egress: true,
         }
@@ -86,7 +87,6 @@ pub struct TgBotBinding {
     pub owner_did: DID,
     pub bot_account_id: String,
     pub bot_token_env_key: Option<String>,
-    pub default_chat_id: Option<String>,
     pub extra: HashMap<String, String>,
 }
 
@@ -805,7 +805,7 @@ impl TgMessageConverter {
         chat: &TgPeer,
         sender_chat: &TgPeer,
         bot_account_id: &str,
-        tunnel_did: Option<DID>,
+        transport_did: Option<DID>,
         message: &TgMessage,
     ) -> AnyResult<TgIngressDispatch> {
         let chat_id = chat.id().bot_api_dialog_id();
@@ -925,7 +925,7 @@ impl TgMessageConverter {
         msg.thread.topic = Some(build_telegram_ui_session_id(bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
-            tunnel_did,
+            transport_did,
             platform: Some(TELEGRAM_PLATFORM.to_string()),
             chat_id: Some(chat_id.to_string()),
             source_account_id: Some(sender_account_id),
@@ -1083,9 +1083,9 @@ pub struct GrammersTgGatewayConfig {
     pub api_id: i32,
     pub api_hash: String,
     pub session_dir: PathBuf,
-    pub tunnel_did: Option<DID>,
+    pub transport_did: Option<DID>,
     /// Stable short tunnel id embedded in second-level DIDs (e.g. `tg-main`).
-    pub tunnel_id: Option<String>,
+    pub tunnel_instance_id: Option<String>,
 }
 
 impl GrammersTgGatewayConfig {
@@ -1112,8 +1112,8 @@ impl GrammersTgGatewayConfig {
             api_id,
             api_hash,
             session_dir: PathBuf::from(session_dir),
-            tunnel_did: None,
-            tunnel_id: None,
+            transport_did: None,
+            tunnel_instance_id: None,
         })
     }
 }
@@ -1334,7 +1334,7 @@ impl GrammersTgGateway {
     fn profile_hint_from_chat(
         chat: &TgPeer,
         bot_account_id: &str,
-        tunnel_id: Option<&str>,
+        tunnel_instance_id: Option<&str>,
     ) -> Value {
         let chat_id = chat.id().bot_api_dialog_id();
         let username = chat.username().map(|value| value.to_string());
@@ -1350,7 +1350,7 @@ impl GrammersTgGateway {
             "username": username,
             "display_id": display_id,
             "bot_account_id": bot_account_id,
-            "tunnel_id": tunnel_id.unwrap_or_default(),
+            "tunnel_instance_id": tunnel_instance_id.unwrap_or_default(),
         })
     }
 
@@ -1359,7 +1359,7 @@ impl GrammersTgGateway {
         owner_scope: Option<DID>,
         chat: &TgPeer,
         bot_account_id: &str,
-        tunnel_id: Option<&str>,
+        tunnel_instance_id: Option<&str>,
     ) -> AnyResult<(DID, String)> {
         let account_id = Self::chat_account_id(chat);
         let did = dispatcher
@@ -1369,7 +1369,7 @@ impl GrammersTgGateway {
                 Some(Self::profile_hint_from_chat(
                     chat,
                     bot_account_id,
-                    tunnel_id,
+                    tunnel_instance_id,
                 )),
                 owner_scope,
                 RPCContext::default(),
@@ -1384,8 +1384,8 @@ impl GrammersTgGateway {
         ui_session_tracker: Option<Arc<TgUiSessionTracker>>,
         owner_did: DID,
         bot_account_id: String,
-        tunnel_did: Option<DID>,
-        tunnel_id: Option<String>,
+        transport_did: Option<DID>,
+        tunnel_instance_id: Option<String>,
         message: TgMessage,
     ) -> AnyResult<()> {
         if message.outgoing() {
@@ -1406,14 +1406,14 @@ impl GrammersTgGateway {
         };
         let sender_chat = message.sender().cloned().unwrap_or_else(|| chat.clone());
         let owner_scope = Some(owner_did.clone());
-        let tunnel_id_ref = tunnel_id.as_deref();
+        let tunnel_instance_id_ref = tunnel_instance_id.as_deref();
 
         let (sender_did, sender_account_id) = Self::resolve_chat_did(
             &dispatcher,
             owner_scope.clone(),
             &sender_chat,
             &bot_account_id,
-            tunnel_id_ref,
+            tunnel_instance_id_ref,
         )
         .await
         .map_err(|error| {
@@ -1432,7 +1432,7 @@ impl GrammersTgGateway {
                 owner_scope.clone(),
                 &chat,
                 &bot_account_id,
-                tunnel_id_ref,
+                tunnel_instance_id_ref,
             )
             .await
             .map_err(|error| {
@@ -1458,7 +1458,7 @@ impl GrammersTgGateway {
             &chat,
             &sender_chat,
             &bot_account_id,
-            tunnel_did,
+            transport_did,
             &message,
         )
         .await
@@ -1562,8 +1562,8 @@ impl GrammersTgGateway {
     ) -> JoinHandle<()> {
         let dispatcher = self.dispatcher.clone();
         let ui_session_tracker = self.ui_session_tracker.clone();
-        let tunnel_did = self.cfg.tunnel_did.clone();
-        let tunnel_id = self.cfg.tunnel_id.clone();
+        let transport_did = self.cfg.transport_did.clone();
+        let tunnel_instance_id = self.cfg.tunnel_instance_id.clone();
         tokio::spawn(async move {
             let mut updates = client.stream_updates(
                 updates_rx,
@@ -1599,8 +1599,8 @@ impl GrammersTgGateway {
                             ui_session_tracker,
                             owner_did.clone(),
                             bot_account_id.clone(),
-                            tunnel_did.clone(),
-                            tunnel_id.clone(),
+                            transport_did.clone(),
+                            tunnel_instance_id.clone(),
                             message,
                         )
                         .await
@@ -2250,21 +2250,21 @@ pub struct BotApiTgGateway {
     dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
     ui_session_tracker: Arc<Mutex<Option<Arc<TgUiSessionTracker>>>>,
     ingress_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
-    tunnel_did: Option<DID>,
-    tunnel_id: Option<String>,
+    transport_did: Option<DID>,
+    tunnel_instance_id: Option<String>,
     poll_timeout_secs: u64,
 }
 
 impl BotApiTgGateway {
-    pub fn new(tunnel_did: Option<DID>, tunnel_id: Option<String>) -> Self {
+    pub fn new(transport_did: Option<DID>, tunnel_instance_id: Option<String>) -> Self {
         Self {
             http: HttpClient::new(),
             runtimes: Mutex::new(HashMap::new()),
             dispatcher: Arc::new(Mutex::new(None)),
             ui_session_tracker: Arc::new(Mutex::new(None)),
             ingress_tasks: Mutex::new(HashMap::new()),
-            tunnel_did,
-            tunnel_id,
+            transport_did,
+            tunnel_instance_id,
             poll_timeout_secs: 20,
         }
     }
@@ -2358,7 +2358,7 @@ impl BotApiTgGateway {
         display_name: Option<&str>,
         username: Option<&str>,
         bot_account_id: &str,
-        tunnel_id: Option<&str>,
+        tunnel_instance_id: Option<&str>,
     ) -> Value {
         let display_id = username
             .filter(|value| !value.trim().is_empty())
@@ -2372,7 +2372,7 @@ impl BotApiTgGateway {
             "username": username,
             "display_id": display_id,
             "bot_account_id": bot_account_id,
-            "tunnel_id": tunnel_id.unwrap_or_default(),
+            "tunnel_instance_id": tunnel_instance_id.unwrap_or_default(),
         })
     }
 
@@ -2628,11 +2628,11 @@ impl BotApiTgGateway {
         ui_session_tracker: Option<Arc<TgUiSessionTracker>>,
         owner_did: DID,
         bot_account_id: String,
-        tunnel_did: Option<DID>,
-        tunnel_id: Option<String>,
+        transport_did: Option<DID>,
+        tunnel_instance_id: Option<String>,
         message: TgBotApiMessage,
     ) -> AnyResult<()> {
-        let tunnel_id_ref = tunnel_id.as_deref();
+        let tunnel_instance_id_ref = tunnel_instance_id.as_deref();
         let chat_kind = Self::normalize_chat_kind(message.chat.kind.as_str());
         let chat_id = message.chat.id;
         let sender_kind;
@@ -2661,7 +2661,7 @@ impl BotApiTgGateway {
                     sender_name.as_deref(),
                     sender_username.as_deref(),
                     &bot_account_id,
-                    tunnel_id_ref,
+                    tunnel_instance_id_ref,
                 )),
                 Some(owner_did.clone()),
                 RPCContext::default(),
@@ -2689,7 +2689,7 @@ impl BotApiTgGateway {
                         Self::chat_name(&message.chat).as_deref(),
                         message.chat.username.as_deref(),
                         &bot_account_id,
-                        tunnel_id_ref,
+                        tunnel_instance_id_ref,
                     )),
                     Some(owner_did.clone()),
                     RPCContext::default(),
@@ -2839,7 +2839,7 @@ impl BotApiTgGateway {
         msg.thread.topic = Some(build_telegram_ui_session_id(&bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
-            tunnel_did,
+            transport_did,
             platform: Some(TELEGRAM_PLATFORM.to_string()),
             chat_id: Some(chat_id.to_string()),
             source_account_id: Some(sender_account_id),
@@ -2959,8 +2959,8 @@ impl BotApiTgGateway {
         let http = self.http.clone();
         let dispatcher = self.dispatcher.clone();
         let ui_session_tracker = self.ui_session_tracker.clone();
-        let tunnel_did = self.tunnel_did.clone();
-        let tunnel_id = self.tunnel_id.clone();
+        let transport_did = self.transport_did.clone();
+        let tunnel_instance_id = self.tunnel_instance_id.clone();
         let poll_timeout_secs = self.poll_timeout_secs;
         tokio::spawn(async move {
             let mut offset = 0_i64;
@@ -3020,8 +3020,8 @@ impl BotApiTgGateway {
                         ui_session_tracker,
                         runtime.owner_did.clone(),
                         runtime.bot_account_id.clone(),
-                        tunnel_did.clone(),
-                        tunnel_id.clone(),
+                        transport_did.clone(),
+                        tunnel_instance_id.clone(),
                         message,
                     )
                     .await
@@ -3422,11 +3422,11 @@ impl TgTunnel {
         grammers_cfg: GrammersTgGatewayConfig,
     ) -> Self {
         let mut grammers_cfg = grammers_cfg;
-        if grammers_cfg.tunnel_did.is_none() {
-            grammers_cfg.tunnel_did = Some(cfg.tunnel_did.clone());
+        if grammers_cfg.transport_did.is_none() {
+            grammers_cfg.transport_did = Some(cfg.transport_did.clone());
         }
-        if grammers_cfg.tunnel_id.is_none() {
-            grammers_cfg.tunnel_id = Some(cfg.tunnel_id.clone());
+        if grammers_cfg.tunnel_instance_id.is_none() {
+            grammers_cfg.tunnel_instance_id = Some(cfg.tunnel_instance_id.clone());
         }
         Self::with_gateway(cfg, Arc::new(GrammersTgGateway::new(grammers_cfg)))
     }
@@ -3439,9 +3439,9 @@ impl TgTunnel {
     }
 
     pub fn with_bot_api_gateway(cfg: TgTunnelConfig) -> Self {
-        let tunnel_did = Some(cfg.tunnel_did.clone());
-        let tunnel_id = Some(cfg.tunnel_id.clone());
-        Self::with_gateway(cfg, Arc::new(BotApiTgGateway::new(tunnel_did, tunnel_id)))
+        let transport_did = Some(cfg.transport_did.clone());
+        let tunnel_instance_id = Some(cfg.tunnel_instance_id.clone());
+        Self::with_gateway(cfg, Arc::new(BotApiTgGateway::new(transport_did, tunnel_instance_id)))
     }
 
     pub fn with_gateway(cfg: TgTunnelConfig, gateway: Arc<dyn TgGateway>) -> Self {
@@ -3502,13 +3502,11 @@ impl TgTunnel {
         owner_did: DID,
         bot_account_id: String,
         bot_token_env_key: Option<String>,
-        default_chat_id: Option<String>,
     ) -> AnyResult<()> {
         self.bind_bot(TgBotBinding {
             owner_did,
             bot_account_id,
             bot_token_env_key,
-            default_chat_id,
             extra: HashMap::new(),
         })
     }
@@ -3556,115 +3554,41 @@ impl TgTunnel {
         msg.from.clone()
     }
 
-    fn parse_chat_id_from_route_extra(extra: &Value) -> Option<String> {
-        let raw = extra
-            .pointer("/route/chat_id")
-            .or_else(|| extra.get("chat_id"))
-            .and_then(Self::json_value_to_chat_id)?;
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        Some(trimmed.to_string())
-    }
-
-    fn parse_chat_id_from_account_id(account_id: &str) -> Option<String> {
-        let trimmed = account_id.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-
-        if Self::is_telegram_chat_id(trimmed) {
-            return Some(trimmed.to_string());
-        }
-
-        if let Some((_, tail)) = trimmed.split_once(':') {
-            let candidate = tail.trim();
-            if !candidate.is_empty() && Self::is_telegram_chat_id(candidate) {
-                return Some(candidate.to_string());
-            }
-        }
-        Self::parse_numeric_chat_id_tail(trimmed)
-    }
-
-    fn json_value_to_chat_id(value: &Value) -> Option<String> {
-        match value {
-            Value::String(text) => Some(text.to_string()),
-            Value::Number(number) => Some(number.to_string()),
-            _ => None,
-        }
-    }
-
-    fn is_telegram_chat_id(value: &str) -> bool {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
-        if GrammersTgGateway::username_from_chat_id(trimmed).is_some() {
-            return true;
-        }
-        trimmed.parse::<i64>().is_ok()
-    }
-
-    fn parse_numeric_chat_id_tail(value: &str) -> Option<String> {
-        let bytes = value.as_bytes();
-        if bytes.is_empty() {
-            return None;
-        }
-
-        let mut end = bytes.len();
-        while end > 0 && !bytes[end - 1].is_ascii_digit() {
-            end = end.saturating_sub(1);
-        }
-        if end == 0 {
-            return None;
-        }
-
-        let mut start = end;
-        while start > 0 && bytes[start - 1].is_ascii_digit() {
-            start = start.saturating_sub(1);
-        }
-        if start > 0 && bytes[start - 1] == b'-' {
-            start = start.saturating_sub(1);
-        }
-
-        let candidate = value[start..end].trim();
-        if candidate.is_empty() {
-            return None;
-        }
-        if candidate.parse::<i64>().is_ok() {
-            Some(candidate.to_string())
-        } else {
-            None
-        }
+    /// The delivery address comes exclusively from the envelope's resolved
+    /// address snapshot (`Message Tunnel Design.md` §5.2). A record without a
+    /// chat is incomplete and must fail — no `extra`/`account_id`/default-chat
+    /// guessing chain.
+    fn chat_id_from_envelope(record: &DeliveryRecordWithObject) -> AnyResult<String> {
+        let snapshot = record.record.envelope.address.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "delivery {} has no resolved address snapshot",
+                record.record.delivery_id
+            )
+        })?;
+        snapshot
+            .chat_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "delivery {} is missing the target chat_id in its address snapshot",
+                    record.record.delivery_id
+                )
+            })
     }
 
     async fn build_egress_envelope(
         &self,
-        record: &MsgRecordWithObject,
+        record: &DeliveryRecordWithObject,
         binding: &TgBotBinding,
+        msg: &MsgObject,
     ) -> AnyResult<TgEgressEnvelope> {
-        let msg = record
-            .get_msg()
-            .await
-            .map_err(|error| anyhow::anyhow!("load message for egress record failed: {}", error))?;
-        let sender_did = Self::resolve_sender_did(&msg);
-        let route = record.record.route.as_ref();
-        let chat_id = route
-            .and_then(|route| route.chat_id.clone())
-            .or_else(|| {
-                route
-                    .and_then(|route| route.extra.as_ref())
-                    .and_then(Self::parse_chat_id_from_route_extra)
-            })
-            .or_else(|| {
-                route
-                    .and_then(|route| route.account_id.as_deref())
-                    .and_then(Self::parse_chat_id_from_account_id)
-            })
-            .or_else(|| binding.default_chat_id.clone());
+        let sender_did = Self::resolve_sender_did(msg);
+        let chat_id = Self::chat_id_from_envelope(record)?;
 
-        let (text, payload, attachments) = TgMessageConverter::msg_object_to_tg_content(&msg);
+        let (text, payload, attachments) = TgMessageConverter::msg_object_to_tg_content(msg);
         let parse_mode = msg
             .meta
             .get("parse_mode")
@@ -3676,11 +3600,11 @@ impl TgTunnel {
         Ok(TgEgressEnvelope {
             sender_did,
             bot_account_id: binding.bot_account_id.clone(),
-            chat_id,
+            chat_id: Some(chat_id),
             text,
             attachments,
             payload,
-            record_id: record.record.record_id.clone(),
+            record_id: record.record.delivery_id.clone(),
             replace_message_id: None,
             parse_mode,
         })
@@ -3974,9 +3898,9 @@ impl TgTunnel {
 }
 
 #[async_trait]
-impl MsgTunnel for TgTunnel {
-    fn tunnel_did(&self) -> DID {
-        self.cfg.tunnel_did.clone()
+impl DeliveryExecutor for TgTunnel {
+    fn transport_did(&self) -> DID {
+        self.cfg.transport_did.clone()
     }
 
     fn name(&self) -> &str {
@@ -4029,18 +3953,30 @@ impl MsgTunnel for TgTunnel {
         Ok(())
     }
 
-    async fn send_record(&self, record: MsgRecordWithObject) -> AnyResult<DeliveryReportResult> {
+    async fn execute_delivery(
+        &self,
+        record: DeliveryRecordWithObject,
+    ) -> AnyResult<DeliveryReportResult> {
         if !self.cfg.supports_egress {
             bail!(
                 "tg tunnel {} does not support egress",
-                self.cfg.tunnel_did.to_string()
+                self.cfg.transport_did.to_string()
             );
         }
 
         if !self.is_running() {
             bail!(
                 "tg tunnel {} is not running",
-                self.cfg.tunnel_did.to_string()
+                self.cfg.transport_did.to_string()
+            );
+        }
+
+        if record.record.envelope.transport_did != self.cfg.transport_did {
+            bail!(
+                "delivery {} belongs to executor {}, not tg tunnel {}",
+                record.record.delivery_id,
+                record.record.envelope.transport_did.to_string(),
+                self.cfg.transport_did.to_string()
             );
         }
 
@@ -4052,18 +3988,27 @@ impl MsgTunnel for TgTunnel {
         if record.msg.is_none() {
             record.msg = Some(msg.clone());
         }
-        let ui_session_id = record
-            .record
-            .ui_session_id
-            .clone()
-            .or_else(|| msg.thread.topic.clone());
+        let ui_session_id = msg.thread.topic.clone();
         let msg_turn_nonce = Self::msg_turn_nonce(&msg);
         let sender_did = Self::resolve_sender_did(&msg);
         let binding = self.get_binding(&sender_did)?.ok_or_else(|| {
             anyhow::anyhow!("missing tg bot binding for {}", sender_did.to_string())
         })?;
 
-        let mut envelope = self.build_egress_envelope(&record, &binding).await?;
+        // An incomplete envelope (no chat address) is a deterministic,
+        // non-retryable failure — never guessed around (DEAD in the queue).
+        let mut envelope = match self.build_egress_envelope(&record, &binding, &msg).await {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                return Ok(DeliveryReportResult {
+                    ok: false,
+                    error_code: Some("missing_delivery_address".to_string()),
+                    error_message: Some(error.to_string()),
+                    retryable: Some(false),
+                    ..Default::default()
+                });
+            }
+        };
         let chat_id = envelope.chat_id.clone();
         if let Some(op_lock) = self
             .ui_session_tracker
@@ -4146,7 +4091,10 @@ mod tests {
     use super::*;
     use crate::msg_box_db::MsgBoxDbMgr;
     use crate::msg_center::MessageCenter;
-    use buckyos_api::{BoxKind, MsgCenterHandler, MsgRecord, MsgState, RdbBackend, RouteInfo};
+    use buckyos_api::{
+        DeliveryEnvelope, DeliveryRecord, DeliverySnapshot, DeliveryState, MsgCenterHandler,
+        RdbBackend, TransportKind,
+    };
     use ndn_lib::{
         MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject, ObjId, RefItem, RefRole,
         RefTarget,
@@ -4332,11 +4280,12 @@ mod tests {
     }
 
     fn build_record(
+        transport_did: DID,
         from: DID,
         to: Vec<DID>,
         kind: MsgObjKind,
         route_chat_id: Option<&str>,
-    ) -> MsgRecordWithObject {
+    ) -> DeliveryRecordWithObject {
         let mut msg = MsgObject {
             from,
             to,
@@ -4352,28 +4301,35 @@ mod tests {
         msg.thread.topic = Some("thread-a".to_string());
         let msg_id = msg.gen_obj_id().0;
 
-        let record = MsgRecord {
-            record_id: format!("tg-{}", msg_id.to_string()),
-            box_kind: BoxKind::TunnelOutbox,
-            msg_id: msg_id.clone(),
-            msg_kind: msg.kind,
-            state: MsgState::Wait,
-            from: msg.from.clone(),
-            from_name: None,
-            to: msg.to.first().cloned().unwrap_or_else(|| msg.from.clone()),
+        let target_did = msg.to.first().cloned().unwrap_or_else(|| msg.from.clone());
+        let tunnel_instance_id = transport_did.id.clone();
+        let record = DeliveryRecord {
+            delivery_id: format!("tg-{}", msg_id.to_string()),
+            envelope: DeliveryEnvelope {
+                msg_id: msg_id.clone(),
+                target_did,
+                transport_did,
+                transport: TransportKind::Tunnel {
+                    platform: TELEGRAM_PLATFORM.to_string(),
+                    tunnel_instance_id,
+                },
+                address: route_chat_id.map(|value| DeliverySnapshot {
+                    platform: Some(TELEGRAM_PLATFORM.to_string()),
+                    chat_id: Some(value.to_string()),
+                    ..Default::default()
+                }),
+            },
+            state: DeliveryState::Wait,
+            attempts: 0,
+            next_retry_at_ms: None,
+            external_msg_id: None,
+            delivered_at_ms: None,
+            last_error: None,
             created_at_ms: 1,
             updated_at_ms: 1,
-            route: Some(RouteInfo {
-                chat_id: route_chat_id.map(|value| value.to_string()),
-                ..Default::default()
-            }),
-            delivery: None,
-            ui_session_id: msg.thread.topic.clone(),
-            sort_key: 1,
-            tags: Vec::new(),
         };
 
-        MsgRecordWithObject {
+        DeliveryRecordWithObject {
             record,
             msg: Some(msg),
         }
@@ -4389,14 +4345,13 @@ mod tests {
                 owner.clone(),
                 "@alice_bot".to_string(),
                 Some("ALICE_BOT_TOKEN".to_string()),
-                Some("10001".to_string()),
             )
             .unwrap();
         assert!(tunnel.get_binding(&owner).unwrap().is_some());
 
         tunnel.start().await.unwrap();
         let bind_err = tunnel
-            .bind_bot_simple(DID::new("bns", "bob"), "@bob_bot".to_string(), None, None)
+            .bind_bot_simple(DID::new("bns", "bob"), "@bob_bot".to_string(), None)
             .unwrap_err();
         assert!(bind_err
             .to_string()
@@ -4427,7 +4382,7 @@ mod tests {
         assert_eq!(hint["account_type"], "channel");
         assert_eq!(hint["chat_type"], "channel");
         assert_eq!(hint["chat_id"], -10012345);
-        assert_eq!(hint["tunnel_id"], "tg-main");
+        assert_eq!(hint["tunnel_instance_id"], "tg-main");
     }
 
     #[tokio::test]
@@ -4440,19 +4395,19 @@ mod tests {
                 agent_did.clone(),
                 "@agent_bot".to_string(),
                 Some("AGENT_BOT_TOKEN".to_string()),
-                Some("fallback-chat".to_string()),
             )
             .unwrap();
 
         tunnel.start().await.unwrap();
 
         let record = build_record(
+            tunnel.transport_did(),
             agent_did,
             vec![DID::new("bns", "group-a")],
             MsgObjKind::GroupMsg,
             Some("route-chat-1"),
         );
-        let report = tunnel.send_record(record).await.unwrap();
+        let report = tunnel.execute_delivery(record).await.unwrap();
 
         assert!(report.ok);
         assert!(report.external_msg_id.is_some());
@@ -4478,19 +4433,19 @@ mod tests {
                 owner.clone(),
                 "@alice_bot".to_string(),
                 Some("ALICE_BOT_TOKEN".to_string()),
-                None,
             )
             .unwrap();
         tunnel.start().await.unwrap();
 
         let record = build_record(
+            tunnel.transport_did(),
             owner.clone(),
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
             Some("route-chat-1"),
         );
-        let session_id = record.record.ui_session_id.clone().unwrap();
-        let report = tunnel.send_record(record).await.unwrap();
+        let session_id = record.msg.as_ref().unwrap().thread.topic.clone().unwrap();
+        let report = tunnel.execute_delivery(record).await.unwrap();
         assert!(report.ok);
 
         let active = center
@@ -4540,6 +4495,7 @@ mod tests {
         );
 
         let mut final_record = build_record(
+            tunnel.transport_did(),
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
@@ -4551,7 +4507,7 @@ mod tests {
             .unwrap()
             .meta
             .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("turn-1"));
-        let final_report = tunnel.send_record(final_record).await.unwrap();
+        let final_report = tunnel.execute_delivery(final_record).await.unwrap();
         assert!(final_report.ok);
         assert_eq!(
             final_report.external_msg_id.as_deref(),
@@ -4625,7 +4581,6 @@ mod tests {
                 owner.clone(),
                 "@alice_bot".to_string(),
                 Some("ALICE_BOT_TOKEN".to_string()),
-                None,
             )
             .unwrap();
         tunnel.start().await.unwrap();
@@ -4647,6 +4602,7 @@ mod tests {
         }
 
         let mut record = build_record(
+            tunnel.transport_did(),
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
@@ -4667,7 +4623,7 @@ mod tests {
             label: Some("text/plain".to_string()),
         });
 
-        let report = tunnel.send_record(record).await.unwrap();
+        let report = tunnel.execute_delivery(record).await.unwrap();
         assert!(report.ok);
         assert_eq!(report.external_msg_id.as_deref(), Some("blocking-sent"));
         assert_eq!(
@@ -4702,7 +4658,6 @@ mod tests {
                 owner.clone(),
                 "@alice_bot".to_string(),
                 Some("ALICE_BOT_TOKEN".to_string()),
-                None,
             )
             .unwrap();
         tunnel.start().await.unwrap();
@@ -4724,6 +4679,7 @@ mod tests {
         }
 
         let mut record = build_record(
+            tunnel.transport_did(),
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
@@ -4736,7 +4692,7 @@ mod tests {
             .meta
             .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("new-turn"));
 
-        let report = tunnel.send_record(record).await.unwrap();
+        let report = tunnel.execute_delivery(record).await.unwrap();
         assert!(report.ok);
         assert_eq!(report.external_msg_id.as_deref(), Some("blocking-sent"));
         assert_eq!(
@@ -4770,18 +4726,25 @@ mod tests {
                 owner.clone(),
                 "@alice_bot".to_string(),
                 Some("ALICE_BOT_TOKEN".to_string()),
-                None,
             )
             .unwrap();
         tunnel.start().await.unwrap();
 
         let mut final_record = build_record(
+            tunnel.transport_did(),
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
             Some("route-chat-1"),
         );
-        let session_id = final_record.record.ui_session_id.clone().unwrap();
+        let session_id = final_record
+            .msg
+            .as_ref()
+            .unwrap()
+            .thread
+            .topic
+            .clone()
+            .unwrap();
         final_record
             .msg
             .as_mut()
@@ -4789,7 +4752,7 @@ mod tests {
             .meta
             .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("turn-1"));
 
-        let report = tunnel.send_record(final_record).await.unwrap();
+        let report = tunnel.execute_delivery(final_record).await.unwrap();
         assert!(report.ok);
         {
             let guard = tunnel.ui_session_tracker.sessions.lock().await;
@@ -4843,7 +4806,6 @@ mod tests {
                 owner.clone(),
                 "@alice_bot".to_string(),
                 Some("ALICE_BOT_TOKEN".to_string()),
-                None,
             )
             .unwrap();
         tunnel.start().await.unwrap();
@@ -4886,6 +4848,7 @@ mod tests {
         gateway.status_entered.notified().await;
 
         let mut final_record = build_record(
+            tunnel.transport_did(),
             owner,
             vec![DID::new("bns", "group-room")],
             MsgObjKind::GroupMsg,
@@ -4899,7 +4862,7 @@ mod tests {
             .insert(TG_TURN_NONCE_META_KEY.to_string(), json!("turn-1"));
         let send_task = tokio::spawn({
             let tunnel = tunnel.clone();
-            async move { tunnel.send_record(final_record).await.unwrap() }
+            async move { tunnel.execute_delivery(final_record).await.unwrap() }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         gateway.status_allow.notify_waiters();
@@ -4927,6 +4890,7 @@ mod tests {
         let tunnel = new_tunnel();
         let sender = DID::new("bns", "no-binding");
         let record = build_record(
+            tunnel.transport_did(),
             sender,
             vec![DID::new("bns", "receiver")],
             MsgObjKind::Chat,
@@ -4934,7 +4898,7 @@ mod tests {
         );
 
         tunnel.start().await.unwrap();
-        let err = tunnel.send_record(record).await.unwrap_err();
+        let err = tunnel.execute_delivery(record).await.unwrap_err();
         assert!(err
             .to_string()
             .contains("missing tg bot binding for did:bns:no-binding"));
@@ -4965,7 +4929,6 @@ mod tests {
             owner_did: DID::new("bns", "tg-live-test-owner"),
             bot_account_id: "@tg_live_test_bot".to_string(),
             bot_token_env_key: None,
-            default_chat_id: None,
             extra,
         };
 

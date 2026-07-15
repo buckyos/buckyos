@@ -22,6 +22,8 @@ buckyos-http-server = { workspace = true }
 
 kRPC = { workspace = true }
 name-lib = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 ndn-lib = { workspace = true }
 buckyos-kit = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }

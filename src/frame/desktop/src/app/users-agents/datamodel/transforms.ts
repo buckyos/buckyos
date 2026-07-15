@@ -144,7 +144,7 @@ function socialAccountsFromUnknown(value: unknown): SocialAccount[] {
       platform,
       account_id: accountId,
       display_id: stringValue(record.display_id ?? record.displayId),
-      tunnel_id: stringValue(record.tunnel_id ?? record.tunnelId),
+      tunnel_instance_id: stringValue(record.tunnel_instance_id ?? record.tunnelId),
       status: stringValue(record.status),
       last_sync_at: typeof record.last_sync_at === 'number'
         ? record.last_sync_at

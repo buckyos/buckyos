@@ -38,26 +38,25 @@ Local shadow endpoint DID    did:msgtunnel:<encoded_account_id>.<account_type>.<
 
 ## 3. 复用现有类型
 
-不要重新定义以下基础类型（括号内为冻结名，代码重命名进行中，见主文档"现状对照"）：
+不要重新定义以下基础类型（P3 迁移已完成，代码与冻结名一致）：
 
 - `ndn_lib::MsgObject` / `MsgContent` / `MsgObjKind`：不可变消息本体。
-- `buckyos_api::MsgRecord`（→ 拆分为 `MailboxRecord` + `DeliveryRecord`）。
-- `buckyos_api::BoxKind`：`INBOX / OUTBOX(→SENT) / GROUP_INBOX / TUNNEL_OUTBOX(→DELIVERY_QUEUE) / REQUEST_BOX`。
-- `buckyos_api::MsgState`（→ 拆分为 `RecipientState` 与 `DeliveryState` 两个状态机）。
-- `buckyos_api::RouteInfo`（→ `DeliveryEnvelope`：post_send 解析结果快照，不是路由输入）。
+- `buckyos_api::MailboxRecord`：owner 的本地消息引用（`MailboxKind`：`INBOX / SENT / GROUP_INBOX / REQUEST_BOX`）。
+- `buckyos_api::DeliveryRecord` / `DeliveryEnvelope` / `DeliverySnapshot`：DELIVERY_QUEUE 条目与解析结果快照。
+- `buckyos_api::RecipientState` 与 `DeliveryState`：两个独立状态机。
 - `buckyos_api::IngressContext`：入站元数据。
 - `buckyos_api::DeliveryReportResult`：投递结果回报。
 
-当前通用 tunnel trait：
+通用 delivery executor trait（`frame/msg_center/src/msg_tunnel.rs`；MessageHub 与各 tunnel 共同实现）：
 
 ```rust
 #[async_trait]
-pub trait MsgTunnel: Send + Sync {
+pub trait DeliveryExecutor: Send + Sync {
     /// 本实例 transport DID：DELIVERY_QUEUE owner / DeliveryRecord executor。
-    fn tunnel_did(&self) -> DID;
+    fn transport_did(&self) -> DID;
     /// 人类可读名称（日志/配置/管理界面）。
     fn name(&self) -> &str;
-    /// 平台标识："telegram" / "lark" / "email" / ...
+    /// 平台标识："telegram" / "lark" / "email" / "messagehub" / ...
     fn platform(&self) -> &str;
     /// 能力声明。supports_egress()=false 的实例不注册为 delivery executor。
     fn supports_ingress(&self) -> bool { true }
@@ -66,7 +65,10 @@ pub trait MsgTunnel: Send + Sync {
     async fn start(&self) -> AnyResult<()>;
     async fn stop(&self) -> AnyResult<()>;
     /// 执行一条投递任务，返回平台投递结果。
-    async fn send_record(&self, record: MsgRecordWithObject) -> AnyResult<DeliveryReportResult>;
+    async fn execute_delivery(
+        &self,
+        record: DeliveryRecordWithObject,
+    ) -> AnyResult<DeliveryReportResult>;
 }
 ```
 
@@ -118,8 +120,8 @@ flowchart TD
     A[Agent / User / Service] --> P[MessageCenter.post_send]
     P --> S[SENT MailboxRecord]
     P --> Q[DELIVERY_QUEUE: DeliveryRecord × N targets]
-    Q --> W[delivery worker: get_next WAIT lock=true]
-    W --> T[MsgTunnel.send_record]
+    Q --> W[delivery worker: get_next_delivery lock=true]
+    W --> T[DeliveryExecutor.execute_delivery]
     T --> IM[External Platform]
     T --> R[DeliveryReportResult]
     R --> D[MessageCenter.report_delivery]

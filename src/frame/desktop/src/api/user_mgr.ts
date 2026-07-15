@@ -24,7 +24,7 @@ export interface UserTunnelBinding {
   platform: string
   account_id: string
   display_id?: string | null
-  tunnel_id?: string | null
+  tunnel_instance_id?: string | null
   status?: string | null
   last_sync_at?: number | null
   meta?: Record<string, string>
@@ -339,7 +339,7 @@ export const setUserMsgTunnel = async (input: {
   }
   if (input.userId) params.user_id = input.userId
   if (input.displayId !== undefined) params.display_id = input.displayId
-  if (input.tunnelId !== undefined) params.tunnel_id = input.tunnelId
+  if (input.tunnelId !== undefined) params.tunnel_instance_id = input.tunnelId
   if (input.status !== undefined) params.status = input.status
   if (input.lastSyncAt !== undefined) params.last_sync_at = input.lastSyncAt
   if (input.meta !== undefined) params.meta = input.meta
@@ -554,7 +554,7 @@ export const setAgentMsgTunnel = async (input: {
     account_id: input.accountId,
   }
   if (input.displayId !== undefined) params.display_id = input.displayId
-  if (input.tunnelId !== undefined) params.tunnel_id = input.tunnelId
+  if (input.tunnelId !== undefined) params.tunnel_instance_id = input.tunnelId
   if (input.status !== undefined) params.status = input.status
   if (input.lastSyncAt !== undefined) params.last_sync_at = input.lastSyncAt
   if (input.meta !== undefined) params.meta = input.meta

@@ -1,16 +1,30 @@
 #![allow(dead_code)]
 
+//! Delivery executor registry.
+//!
+//! `DeliveryExecutor` is the shared interface both transport families
+//! implement (see `doc/message_hub/Message Tunnel Design.md` §2):
+//!
+//! - MessageHub — native zone↔zone transport for shareable DIDs;
+//! - MessageTunnel — external platform adapters (Telegram/Email/Lark…)
+//!   addressed by local shadow endpoint DIDs.
+//!
+//! Executors consume complete `DeliveryRecord`s from their own
+//! `DELIVERY_QUEUE` (owner = `transport_did`) and report results back through
+//! `report_delivery`; they never see mailbox records or session projections.
+
 use anyhow::{bail, Result as AnyResult};
 use async_trait::async_trait;
-use buckyos_api::{DeliveryReportResult, MsgRecordWithObject};
+use buckyos_api::{DeliveryRecordWithObject, DeliveryReportResult};
 use name_lib::DID;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 #[async_trait]
-pub trait MsgTunnel: Send + Sync {
-    fn tunnel_did(&self) -> DID;
+pub trait DeliveryExecutor: Send + Sync {
+    /// The executor's DID: owner key of its DELIVERY_QUEUE.
+    fn transport_did(&self) -> DID;
     fn name(&self) -> &str;
     fn platform(&self) -> &str;
 
@@ -25,17 +39,22 @@ pub trait MsgTunnel: Send + Sync {
     async fn start(&self) -> AnyResult<()>;
     async fn stop(&self) -> AnyResult<()>;
 
-    async fn send_record(&self, record: MsgRecordWithObject) -> AnyResult<DeliveryReportResult> {
+    /// Execute one delivery task. The envelope is a complete delivery
+    /// instruction; executors must fail (not guess) when it is incomplete.
+    async fn execute_delivery(
+        &self,
+        record: DeliveryRecordWithObject,
+    ) -> AnyResult<DeliveryReportResult> {
         let _ = record;
         bail!(
-            "tunnel {} does not implement send_record",
-            self.tunnel_did().to_string()
+            "executor {} does not implement execute_delivery",
+            self.transport_did().to_string()
         )
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MsgTunnelInstanceState {
+pub enum ExecutorInstanceState {
     Registered,
     Starting,
     Running,
@@ -45,39 +64,39 @@ pub enum MsgTunnelInstanceState {
 }
 
 #[derive(Debug, Clone)]
-pub struct MsgTunnelInstanceInfo {
-    pub tunnel_did: DID,
+pub struct ExecutorInstanceInfo {
+    pub transport_did: DID,
     pub name: String,
     pub platform: String,
     pub supports_ingress: bool,
     pub supports_egress: bool,
-    pub state: MsgTunnelInstanceState,
+    pub state: ExecutorInstanceState,
     pub registered_at_ms: u64,
     pub updated_at_ms: u64,
     pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct MsgTunnelOpReport {
-    pub tunnel_did: DID,
+pub struct ExecutorOpReport {
+    pub transport_did: DID,
     pub ok: bool,
-    pub state: Option<MsgTunnelInstanceState>,
+    pub state: Option<ExecutorInstanceState>,
     pub error: Option<String>,
 }
 
-impl MsgTunnelOpReport {
-    fn success(info: MsgTunnelInstanceInfo) -> Self {
+impl ExecutorOpReport {
+    fn success(info: ExecutorInstanceInfo) -> Self {
         Self {
-            tunnel_did: info.tunnel_did,
+            transport_did: info.transport_did,
             ok: true,
             state: Some(info.state),
             error: None,
         }
     }
 
-    fn failed(tunnel_did: DID, error: MsgTunnelMgrError) -> Self {
+    fn failed(transport_did: DID, error: ExecutorMgrError) -> Self {
         Self {
-            tunnel_did,
+            transport_did,
             ok: false,
             state: None,
             error: Some(error.to_string()),
@@ -86,64 +105,62 @@ impl MsgTunnelOpReport {
 }
 
 #[derive(Debug, Error)]
-pub enum MsgTunnelMgrError {
-    #[error("msg tunnel instance lock poisoned")]
+pub enum ExecutorMgrError {
+    #[error("delivery executor instance lock poisoned")]
     LockPoisoned,
-    #[error("msg tunnel {0} already registered")]
+    #[error("delivery executor {0} already registered")]
     AlreadyRegistered(String),
-    #[error("msg tunnel {0} not found")]
+    #[error("delivery executor {0} not found")]
     NotFound(String),
-    #[error("msg tunnel {0} is not running")]
+    #[error("delivery executor {0} is not running")]
     NotRunning(String),
-    #[error("msg tunnel {0} does not support egress send")]
+    #[error("delivery executor {0} does not support egress send")]
     EgressNotSupported(String),
-    #[error("record {0} has no route.tunnel_did")]
-    MissingRouteTunnelDid(String),
-    #[error("msg tunnel {tunnel} cannot {op} from state {state:?}")]
+    #[error("delivery executor {executor} cannot {op} from state {state:?}")]
     InvalidStateTransition {
-        tunnel: String,
+        executor: String,
         op: &'static str,
-        state: MsgTunnelInstanceState,
+        state: ExecutorInstanceState,
     },
-    #[error("msg tunnel {tunnel} {op} failed: {error}")]
+    #[error("delivery executor {executor} {op} failed: {error}")]
     OperationFailed {
-        tunnel: String,
+        executor: String,
         op: &'static str,
         error: String,
     },
 }
 
-pub type MsgTunnelMgrResult<T> = std::result::Result<T, MsgTunnelMgrError>;
+pub type ExecutorMgrResult<T> = std::result::Result<T, ExecutorMgrError>;
 
-struct MsgTunnelEntry {
-    tunnel: Arc<dyn MsgTunnel>,
-    info: MsgTunnelInstanceInfo,
+struct ExecutorEntry {
+    executor: Arc<dyn DeliveryExecutor>,
+    info: ExecutorInstanceInfo,
 }
 
 #[derive(Clone, Default)]
-pub struct MsgTunnelInstanceMgr {
-    entries: Arc<RwLock<HashMap<String, MsgTunnelEntry>>>,
+pub struct DeliveryExecutorMgr {
+    entries: Arc<RwLock<HashMap<String, ExecutorEntry>>>,
 }
 
-impl MsgTunnelInstanceMgr {
+impl DeliveryExecutorMgr {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn register(
         &self,
-        tunnel: Arc<dyn MsgTunnel>,
-    ) -> MsgTunnelMgrResult<MsgTunnelInstanceInfo> {
-        let tunnel_did = tunnel.tunnel_did();
-        let key = tunnel_did.to_string();
+        executor: Arc<dyn DeliveryExecutor>,
+    ) -> ExecutorMgrResult<ExecutorInstanceInfo> {
+        let transport_did = executor.transport_did();
+        let key = transport_did.to_string();
         let now_ms = Self::now_ms();
-        let info = MsgTunnelInstanceInfo {
-            tunnel_did: tunnel_did.clone(),
-            name: tunnel.name().to_string(),
-            platform: tunnel.platform().to_string(),
-            supports_ingress: tunnel.supports_ingress(),
-            supports_egress: tunnel.supports_egress(),
-            state: MsgTunnelInstanceState::Registered,
+        let info = ExecutorInstanceInfo {
+            transport_did: transport_did.clone(),
+            name: executor.name().to_string(),
+            platform: executor.platform().to_string(),
+            supports_ingress: executor.supports_ingress(),
+            supports_egress: executor.supports_egress(),
+            state: ExecutorInstanceState::Registered,
             registered_at_ms: now_ms,
             updated_at_ms: now_ms,
             last_error: None,
@@ -152,130 +169,133 @@ impl MsgTunnelInstanceMgr {
         let mut entries = self
             .entries
             .write()
-            .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
         if entries.contains_key(&key) {
-            return Err(MsgTunnelMgrError::AlreadyRegistered(key));
+            return Err(ExecutorMgrError::AlreadyRegistered(key));
         }
 
         entries.insert(
             key,
-            MsgTunnelEntry {
-                tunnel,
+            ExecutorEntry {
+                executor,
                 info: info.clone(),
             },
         );
         Ok(info)
     }
 
-    pub fn unregister(&self, tunnel_did: &DID) -> MsgTunnelMgrResult<MsgTunnelInstanceInfo> {
-        let key = tunnel_did.to_string();
+    pub fn unregister(&self, transport_did: &DID) -> ExecutorMgrResult<ExecutorInstanceInfo> {
+        let key = transport_did.to_string();
         let mut entries = self
             .entries
             .write()
-            .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
         let state = entries
             .get(&key)
-            .ok_or_else(|| MsgTunnelMgrError::NotFound(key.clone()))?
+            .ok_or_else(|| ExecutorMgrError::NotFound(key.clone()))?
             .info
             .state;
 
         if !matches!(
             state,
-            MsgTunnelInstanceState::Registered
-                | MsgTunnelInstanceState::Stopped
-                | MsgTunnelInstanceState::Faulted
+            ExecutorInstanceState::Registered
+                | ExecutorInstanceState::Stopped
+                | ExecutorInstanceState::Faulted
         ) {
-            return Err(MsgTunnelMgrError::InvalidStateTransition {
-                tunnel: key,
+            return Err(ExecutorMgrError::InvalidStateTransition {
+                executor: key,
                 op: "unregister",
                 state,
             });
         }
 
         let removed = entries
-            .remove(&tunnel_did.to_string())
-            .ok_or_else(|| MsgTunnelMgrError::NotFound(tunnel_did.to_string()))?;
+            .remove(&transport_did.to_string())
+            .ok_or_else(|| ExecutorMgrError::NotFound(transport_did.to_string()))?;
         Ok(removed.info)
     }
 
-    pub fn get_tunnel(&self, tunnel_did: &DID) -> MsgTunnelMgrResult<Option<Arc<dyn MsgTunnel>>> {
+    pub fn get_executor(
+        &self,
+        transport_did: &DID,
+    ) -> ExecutorMgrResult<Option<Arc<dyn DeliveryExecutor>>> {
         let entries = self
             .entries
             .read()
-            .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
         Ok(entries
-            .get(&tunnel_did.to_string())
-            .map(|entry| entry.tunnel.clone()))
+            .get(&transport_did.to_string())
+            .map(|entry| entry.executor.clone()))
     }
 
     pub fn get_instance(
         &self,
-        tunnel_did: &DID,
-    ) -> MsgTunnelMgrResult<Option<MsgTunnelInstanceInfo>> {
+        transport_did: &DID,
+    ) -> ExecutorMgrResult<Option<ExecutorInstanceInfo>> {
         let entries = self
             .entries
             .read()
-            .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
         Ok(entries
-            .get(&tunnel_did.to_string())
+            .get(&transport_did.to_string())
             .map(|entry| entry.info.clone()))
     }
 
-    pub fn list_instances(&self) -> MsgTunnelMgrResult<Vec<MsgTunnelInstanceInfo>> {
+    pub fn list_instances(&self) -> ExecutorMgrResult<Vec<ExecutorInstanceInfo>> {
         let entries = self
             .entries
             .read()
-            .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
         let mut result: Vec<_> = entries.values().map(|entry| entry.info.clone()).collect();
         result.sort_by(|left, right| {
-            left.tunnel_did
+            left.transport_did
                 .to_string()
-                .cmp(&right.tunnel_did.to_string())
+                .cmp(&right.transport_did.to_string())
         });
         Ok(result)
     }
 
     pub async fn start_instance(
         &self,
-        tunnel_did: &DID,
-    ) -> MsgTunnelMgrResult<MsgTunnelInstanceInfo> {
-        let key = tunnel_did.to_string();
-        let tunnel = {
+        transport_did: &DID,
+    ) -> ExecutorMgrResult<ExecutorInstanceInfo> {
+        let key = transport_did.to_string();
+        let executor = {
             let mut entries = self
                 .entries
                 .write()
-                .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+                .map_err(|_| ExecutorMgrError::LockPoisoned)?;
             let entry = entries
                 .get_mut(&key)
-                .ok_or_else(|| MsgTunnelMgrError::NotFound(key.clone()))?;
+                .ok_or_else(|| ExecutorMgrError::NotFound(key.clone()))?;
             match entry.info.state {
-                MsgTunnelInstanceState::Running => return Ok(entry.info.clone()),
-                MsgTunnelInstanceState::Starting | MsgTunnelInstanceState::Stopping => {
-                    return Err(MsgTunnelMgrError::InvalidStateTransition {
-                        tunnel: key.clone(),
+                ExecutorInstanceState::Running => return Ok(entry.info.clone()),
+                ExecutorInstanceState::Starting | ExecutorInstanceState::Stopping => {
+                    return Err(ExecutorMgrError::InvalidStateTransition {
+                        executor: key.clone(),
                         op: "start",
                         state: entry.info.state,
                     });
                 }
-                MsgTunnelInstanceState::Registered
-                | MsgTunnelInstanceState::Stopped
-                | MsgTunnelInstanceState::Faulted => {}
+                ExecutorInstanceState::Registered
+                | ExecutorInstanceState::Stopped
+                | ExecutorInstanceState::Faulted => {}
             }
-            entry.info.state = MsgTunnelInstanceState::Starting;
+            entry.info.state = ExecutorInstanceState::Starting;
             entry.info.updated_at_ms = Self::now_ms();
             entry.info.last_error = None;
-            entry.tunnel.clone()
+            entry.executor.clone()
         };
 
-        let start_result = tunnel.start().await;
+        let start_result = executor.start().await;
         match start_result {
-            Ok(()) => self.update_state(&key, MsgTunnelInstanceState::Running, None),
+            Ok(()) => self.update_state(&key, ExecutorInstanceState::Running, None),
             Err(error) => {
                 let reason = error.to_string();
                 let _ =
-                    self.update_state(&key, MsgTunnelInstanceState::Faulted, Some(reason.clone()));
-                Err(MsgTunnelMgrError::OperationFailed {
-                    tunnel: key,
+                    self.update_state(&key, ExecutorInstanceState::Faulted, Some(reason.clone()));
+                Err(ExecutorMgrError::OperationFailed {
+                    executor: key,
                     op: "start",
                     error: reason,
                 })
@@ -285,44 +305,44 @@ impl MsgTunnelInstanceMgr {
 
     pub async fn stop_instance(
         &self,
-        tunnel_did: &DID,
-    ) -> MsgTunnelMgrResult<MsgTunnelInstanceInfo> {
-        let key = tunnel_did.to_string();
-        let tunnel = {
+        transport_did: &DID,
+    ) -> ExecutorMgrResult<ExecutorInstanceInfo> {
+        let key = transport_did.to_string();
+        let executor = {
             let mut entries = self
                 .entries
                 .write()
-                .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+                .map_err(|_| ExecutorMgrError::LockPoisoned)?;
             let entry = entries
                 .get_mut(&key)
-                .ok_or_else(|| MsgTunnelMgrError::NotFound(key.clone()))?;
+                .ok_or_else(|| ExecutorMgrError::NotFound(key.clone()))?;
             match entry.info.state {
-                MsgTunnelInstanceState::Registered | MsgTunnelInstanceState::Stopped => {
+                ExecutorInstanceState::Registered | ExecutorInstanceState::Stopped => {
                     return Ok(entry.info.clone());
                 }
-                MsgTunnelInstanceState::Starting | MsgTunnelInstanceState::Stopping => {
-                    return Err(MsgTunnelMgrError::InvalidStateTransition {
-                        tunnel: key.clone(),
+                ExecutorInstanceState::Starting | ExecutorInstanceState::Stopping => {
+                    return Err(ExecutorMgrError::InvalidStateTransition {
+                        executor: key.clone(),
                         op: "stop",
                         state: entry.info.state,
                     });
                 }
-                MsgTunnelInstanceState::Running | MsgTunnelInstanceState::Faulted => {}
+                ExecutorInstanceState::Running | ExecutorInstanceState::Faulted => {}
             }
-            entry.info.state = MsgTunnelInstanceState::Stopping;
+            entry.info.state = ExecutorInstanceState::Stopping;
             entry.info.updated_at_ms = Self::now_ms();
-            entry.tunnel.clone()
+            entry.executor.clone()
         };
 
-        let stop_result = tunnel.stop().await;
+        let stop_result = executor.stop().await;
         match stop_result {
-            Ok(()) => self.update_state(&key, MsgTunnelInstanceState::Stopped, None),
+            Ok(()) => self.update_state(&key, ExecutorInstanceState::Stopped, None),
             Err(error) => {
                 let reason = error.to_string();
                 let _ =
-                    self.update_state(&key, MsgTunnelInstanceState::Faulted, Some(reason.clone()));
-                Err(MsgTunnelMgrError::OperationFailed {
-                    tunnel: key,
+                    self.update_state(&key, ExecutorInstanceState::Faulted, Some(reason.clone()));
+                Err(ExecutorMgrError::OperationFailed {
+                    executor: key,
                     op: "stop",
                     error: reason,
                 })
@@ -330,98 +350,92 @@ impl MsgTunnelInstanceMgr {
         }
     }
 
-    pub async fn start_all(&self) -> MsgTunnelMgrResult<Vec<MsgTunnelOpReport>> {
+    pub async fn start_all(&self) -> ExecutorMgrResult<Vec<ExecutorOpReport>> {
         let instances = self.list_instances()?;
         let mut reports = Vec::with_capacity(instances.len());
         for info in instances {
-            let did = info.tunnel_did.clone();
+            let did = info.transport_did.clone();
             let report = match self.start_instance(&did).await {
-                Ok(updated) => MsgTunnelOpReport::success(updated),
-                Err(error) => MsgTunnelOpReport::failed(did, error),
+                Ok(updated) => ExecutorOpReport::success(updated),
+                Err(error) => ExecutorOpReport::failed(did, error),
             };
             reports.push(report);
         }
         Ok(reports)
     }
 
-    pub async fn stop_all(&self) -> MsgTunnelMgrResult<Vec<MsgTunnelOpReport>> {
+    pub async fn stop_all(&self) -> ExecutorMgrResult<Vec<ExecutorOpReport>> {
         let instances = self.list_instances()?;
         let mut reports = Vec::with_capacity(instances.len());
         for info in instances {
-            let did = info.tunnel_did.clone();
+            let did = info.transport_did.clone();
             let report = match self.stop_instance(&did).await {
-                Ok(updated) => MsgTunnelOpReport::success(updated),
-                Err(error) => MsgTunnelOpReport::failed(did, error),
+                Ok(updated) => ExecutorOpReport::success(updated),
+                Err(error) => ExecutorOpReport::failed(did, error),
             };
             reports.push(report);
         }
         Ok(reports)
     }
 
-    pub async fn send_via(
+    pub async fn execute_via(
         &self,
-        tunnel_did: &DID,
-        record: MsgRecordWithObject,
-    ) -> MsgTunnelMgrResult<DeliveryReportResult> {
-        let key = tunnel_did.to_string();
-        let (tunnel, info) = {
+        transport_did: &DID,
+        record: DeliveryRecordWithObject,
+    ) -> ExecutorMgrResult<DeliveryReportResult> {
+        let key = transport_did.to_string();
+        let (executor, info) = {
             let entries = self
                 .entries
                 .read()
-                .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+                .map_err(|_| ExecutorMgrError::LockPoisoned)?;
             let entry = entries
                 .get(&key)
-                .ok_or_else(|| MsgTunnelMgrError::NotFound(key.clone()))?;
-            (entry.tunnel.clone(), entry.info.clone())
+                .ok_or_else(|| ExecutorMgrError::NotFound(key.clone()))?;
+            (entry.executor.clone(), entry.info.clone())
         };
 
-        if info.state != MsgTunnelInstanceState::Running {
-            return Err(MsgTunnelMgrError::NotRunning(key));
+        if info.state != ExecutorInstanceState::Running {
+            return Err(ExecutorMgrError::NotRunning(key));
         }
         if !info.supports_egress {
-            return Err(MsgTunnelMgrError::EgressNotSupported(
-                tunnel_did.to_string(),
+            return Err(ExecutorMgrError::EgressNotSupported(
+                transport_did.to_string(),
             ));
         }
 
-        tunnel
-            .send_record(record)
+        executor
+            .execute_delivery(record)
             .await
-            .map_err(|error| MsgTunnelMgrError::OperationFailed {
-                tunnel: tunnel_did.to_string(),
-                op: "send",
+            .map_err(|error| ExecutorMgrError::OperationFailed {
+                executor: transport_did.to_string(),
+                op: "execute_delivery",
                 error: error.to_string(),
             })
     }
 
-    pub async fn send_record(
+    /// Execute a delivery on the executor named by its envelope.
+    pub async fn execute_delivery(
         &self,
-        record: MsgRecordWithObject,
-    ) -> MsgTunnelMgrResult<DeliveryReportResult> {
-        let tunnel_did = record
-            .record
-            .route
-            .as_ref()
-            .and_then(|route| route.tunnel_did.clone())
-            .ok_or_else(|| {
-                MsgTunnelMgrError::MissingRouteTunnelDid(record.record.record_id.clone())
-            })?;
-        self.send_via(&tunnel_did, record).await
+        record: DeliveryRecordWithObject,
+    ) -> ExecutorMgrResult<DeliveryReportResult> {
+        let transport_did = record.record.envelope.transport_did.clone();
+        self.execute_via(&transport_did, record).await
     }
 
     fn update_state(
         &self,
         key: &str,
-        state: MsgTunnelInstanceState,
+        state: ExecutorInstanceState,
         last_error: Option<String>,
-    ) -> MsgTunnelMgrResult<MsgTunnelInstanceInfo> {
+    ) -> ExecutorMgrResult<ExecutorInstanceInfo> {
         let mut entries = self
             .entries
             .write()
-            .map_err(|_| MsgTunnelMgrError::LockPoisoned)?;
+            .map_err(|_| ExecutorMgrError::LockPoisoned)?;
         let entry = entries
             .get_mut(key)
-            .ok_or_else(|| MsgTunnelMgrError::NotFound(key.to_string()))?;
+            .ok_or_else(|| ExecutorMgrError::NotFound(key.to_string()))?;
         entry.info.state = state;
         entry.info.updated_at_ms = Self::now_ms();
         entry.info.last_error = last_error;
@@ -439,11 +453,11 @@ impl MsgTunnelInstanceMgr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{BoxKind, MsgRecord, MsgState, RouteInfo};
+    use buckyos_api::{DeliveryEnvelope, DeliveryRecord, DeliveryState, TransportKind};
     use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject, NamedObject};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    fn build_tunnel_record(tunnel_did: DID) -> MsgRecordWithObject {
+    fn build_delivery_record(transport_did: DID) -> DeliveryRecordWithObject {
         let msg = MsgObject {
             from: DID::new("bns", "author"),
             to: vec![DID::new("bns", "receiver")],
@@ -457,39 +471,35 @@ mod tests {
             ..Default::default()
         };
         let msg_id = msg.gen_obj_id().0;
-        let record = MsgRecord {
-            record_id: format!("record-{}", msg_id.to_string()),
-            box_kind: BoxKind::TunnelOutbox,
-            msg_id,
-            msg_kind: msg.kind,
-            state: MsgState::Wait,
-            from: msg.from.clone(),
-            from_name: None,
-            to: msg
-                .to
-                .first()
-                .cloned()
-                .unwrap_or_else(|| tunnel_did.clone()),
+        let record = DeliveryRecord {
+            delivery_id: format!("dlv-{}", msg_id.to_string()),
+            envelope: DeliveryEnvelope {
+                msg_id,
+                target_did: msg.to.first().cloned().unwrap(),
+                transport_did,
+                transport: TransportKind::Tunnel {
+                    platform: "telegram".to_string(),
+                    tunnel_instance_id: "tg-main-tunnel".to_string(),
+                },
+                address: None,
+            },
+            state: DeliveryState::Wait,
+            attempts: 0,
+            next_retry_at_ms: None,
+            external_msg_id: None,
+            delivered_at_ms: None,
+            last_error: None,
             created_at_ms: 1,
             updated_at_ms: 1,
-            route: Some(RouteInfo {
-                tunnel_did: Some(tunnel_did),
-                platform: Some("telegram".to_string()),
-                ..Default::default()
-            }),
-            delivery: None,
-            ui_session_id: msg.thread.topic.clone(),
-            sort_key: 1,
-            tags: Vec::new(),
         };
 
-        MsgRecordWithObject {
+        DeliveryRecordWithObject {
             record,
             msg: Some(msg),
         }
     }
 
-    struct MockTunnel {
+    struct MockExecutor {
         did: DID,
         name: String,
         platform: String,
@@ -500,7 +510,7 @@ mod tests {
         send_calls: AtomicUsize,
     }
 
-    impl MockTunnel {
+    impl MockExecutor {
         fn new(subject: &str, platform: &str, egress_enabled: bool) -> Self {
             Self {
                 did: DID::new("bns", subject),
@@ -528,8 +538,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl MsgTunnel for MockTunnel {
-        fn tunnel_did(&self) -> DID {
+    impl DeliveryExecutor for MockExecutor {
+        fn transport_did(&self) -> DID {
             self.did.clone()
         }
 
@@ -557,15 +567,15 @@ mod tests {
             Ok(())
         }
 
-        async fn send_record(
+        async fn execute_delivery(
             &self,
-            _record: MsgRecordWithObject,
+            _record: DeliveryRecordWithObject,
         ) -> AnyResult<DeliveryReportResult> {
             if !self.egress_enabled {
                 bail!("egress is disabled");
             }
             if !self.running.load(Ordering::SeqCst) {
-                bail!("tunnel is not running");
+                bail!("executor is not running");
             }
 
             let seq = self.send_calls.fetch_add(1, Ordering::SeqCst) + 1;
@@ -579,75 +589,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_rejects_duplicate_tunnel_did() {
-        let mgr = MsgTunnelInstanceMgr::new();
-        let tunnel = Arc::new(MockTunnel::new("tg-main", "telegram", true));
-        let tunnel_did = tunnel.tunnel_did();
+    async fn register_rejects_duplicate_transport_did() {
+        let mgr = DeliveryExecutorMgr::new();
+        let executor = Arc::new(MockExecutor::new("tg-main", "telegram", true));
+        let transport_did = executor.transport_did();
 
-        let first = mgr.register(tunnel.clone()).unwrap();
-        assert_eq!(first.state, MsgTunnelInstanceState::Registered);
+        let first = mgr.register(executor.clone()).unwrap();
+        assert_eq!(first.state, ExecutorInstanceState::Registered);
 
-        let duplicate_err = mgr.register(tunnel).unwrap_err();
+        let duplicate_err = mgr.register(executor).unwrap_err();
         assert!(matches!(
             duplicate_err,
-            MsgTunnelMgrError::AlreadyRegistered(ref did) if did == &tunnel_did.to_string()
+            ExecutorMgrError::AlreadyRegistered(ref did) if did == &transport_did.to_string()
         ));
     }
 
     #[tokio::test]
-    async fn lifecycle_and_send_flow_work_for_running_tunnel() {
-        let mgr = MsgTunnelInstanceMgr::new();
-        let tunnel = Arc::new(MockTunnel::new("tg-send", "telegram", true));
-        let tunnel_did = tunnel.tunnel_did();
-        mgr.register(tunnel.clone()).unwrap();
+    async fn lifecycle_and_send_flow_work_for_running_executor() {
+        let mgr = DeliveryExecutorMgr::new();
+        let executor = Arc::new(MockExecutor::new("tg-send", "telegram", true));
+        let transport_did = executor.transport_did();
+        mgr.register(executor.clone()).unwrap();
 
         let before_start_err = mgr
-            .send_via(&tunnel_did, build_tunnel_record(tunnel_did.clone()))
+            .execute_via(&transport_did, build_delivery_record(transport_did.clone()))
             .await
             .unwrap_err();
-        assert!(matches!(before_start_err, MsgTunnelMgrError::NotRunning(_)));
+        assert!(matches!(before_start_err, ExecutorMgrError::NotRunning(_)));
 
-        let running = mgr.start_instance(&tunnel_did).await.unwrap();
-        assert_eq!(running.state, MsgTunnelInstanceState::Running);
+        let running = mgr.start_instance(&transport_did).await.unwrap();
+        assert_eq!(running.state, ExecutorInstanceState::Running);
 
         let report = mgr
-            .send_record(build_tunnel_record(tunnel_did.clone()))
+            .execute_delivery(build_delivery_record(transport_did.clone()))
             .await
             .unwrap();
         assert!(report.ok);
 
-        let stopped = mgr.stop_instance(&tunnel_did).await.unwrap();
-        assert_eq!(stopped.state, MsgTunnelInstanceState::Stopped);
-        assert_eq!(tunnel.start_count(), 1);
-        assert_eq!(tunnel.stop_count(), 1);
-        assert_eq!(tunnel.send_count(), 1);
+        let stopped = mgr.stop_instance(&transport_did).await.unwrap();
+        assert_eq!(stopped.state, ExecutorInstanceState::Stopped);
+        assert_eq!(executor.start_count(), 1);
+        assert_eq!(executor.stop_count(), 1);
+        assert_eq!(executor.send_count(), 1);
     }
 
     #[tokio::test]
     async fn start_stop_all_and_unregister_follow_state_rules() {
-        let mgr = MsgTunnelInstanceMgr::new();
-        let tunnel_a = Arc::new(MockTunnel::new("tg-a", "telegram", true));
-        let tunnel_b = Arc::new(MockTunnel::new("slack-b", "slack", false));
+        let mgr = DeliveryExecutorMgr::new();
+        let executor_a = Arc::new(MockExecutor::new("tg-a", "telegram", true));
+        let executor_b = Arc::new(MockExecutor::new("slack-b", "slack", false));
 
-        let did_a = tunnel_a.tunnel_did();
-        let did_b = tunnel_b.tunnel_did();
-        mgr.register(tunnel_a).unwrap();
-        mgr.register(tunnel_b).unwrap();
+        let did_a = executor_a.transport_did();
+        let did_b = executor_b.transport_did();
+        mgr.register(executor_a).unwrap();
+        mgr.register(executor_b).unwrap();
 
         let start_reports = mgr.start_all().await.unwrap();
         assert_eq!(start_reports.len(), 2);
         assert!(start_reports.iter().all(|report| report.ok));
 
         let send_err = mgr
-            .send_via(&did_b, build_tunnel_record(did_b.clone()))
+            .execute_via(&did_b, build_delivery_record(did_b.clone()))
             .await
             .unwrap_err();
-        assert!(matches!(send_err, MsgTunnelMgrError::EgressNotSupported(_)));
+        assert!(matches!(send_err, ExecutorMgrError::EgressNotSupported(_)));
 
         let unregister_running_err = mgr.unregister(&did_a).unwrap_err();
         assert!(matches!(
             unregister_running_err,
-            MsgTunnelMgrError::InvalidStateTransition { .. }
+            ExecutorMgrError::InvalidStateTransition { .. }
         ));
 
         let stop_reports = mgr.stop_all().await.unwrap();

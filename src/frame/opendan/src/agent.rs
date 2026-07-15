@@ -60,7 +60,6 @@ use crate::tool_plan::{self, ResolvedToolPlan, SessionBinRenderer, ToolPlanToml}
 
 /// Reason string we tag msg-center ack updates with so audit logs can tell
 /// "the opendan agent picked this up" apart from other consumers.
-const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
 const SELF_CHECK_HARD_BARRIER_INTERVAL_MS: u64 = 60_000;
 const SELF_IMPROVE_SCHEDULER_INTERVAL_MS: u64 = 60_000;
 const SELF_IMPROVE_THRESHOLD_PENDING_ROUNDS: u64 = 20;
@@ -1523,11 +1522,7 @@ impl AIAgent {
             return;
         };
         if let Err(err) = msg_center
-            .update_record_state(
-                record_id.clone(),
-                buckyos_api::MsgState::Readed,
-                Some(MSG_ROUTED_REASON.to_string()),
-            )
+            .update_record_state(record_id.clone(), buckyos_api::RecipientState::Read)
             .await
         {
             warn!(

@@ -337,33 +337,60 @@
 
 ---
 
-## P3：文档冻结后的实现 TODO
+## P3：文档冻结后的实现 TODO（2026-07-14 完成）
 
-- [ ] 删除 Workflow 中 `"telegram" / "tg-main"` 隐式 `resolve_target`。
+- [x] 删除 Workflow 中 `"telegram" / "tg-main"` 隐式 `resolve_target`。
+  （`kernel/workflow/src/send_message_executor.rs`：send 路径只接受确定 DID，
+  `build_did_probe_message` 一并删除。）
 
-- [ ] 实现一级/shareable DID 的 MessageHub delivery plan。
+- [x] 实现一级/shareable DID 的 MessageHub delivery plan。
+  （`build_delivery_envelope` 两条确定分支：shadow DID → tunnel、其余 → MessageHub
+  `TransportKind::Native`；新增 `frame/msg_center/src/message_hub.rs` executor —
+  本 Zone 目标走本地 dispatch 原生投递，跨 Zone HTTP hop 明确报错 DEAD 待后续。）
 
-- [ ] 删除 Telegram `default_chat_id` 路由 fallback。
+- [x] 删除 Telegram `default_chat_id` 路由 fallback。
+  （投递地址只来自 `DeliveryEnvelope.address` 快照；缺 chat 立即不可重试失败；
+  settings/scheduler/dev_configs 里的 default_chat_id 全部移除。）
 
-- [ ] 修复 `tunnel_id` 与 `tunnel_did` 混用（冻结术语：`tunnel_instance_id` vs `transport_did`）。
+- [x] 修复 `tunnel_id` 与 `tunnel_did` 混用（冻结术语：`tunnel_instance_id` vs `transport_did`）。
+  （AccountBinding/UserTunnelBinding/TgTunnelConfig/settings key 全量重命名；
+  scheduler `build_zone_user_contact_settings` 不再把 transport DID 写进 binding
+  的 instance id 字段。）
 
-- [ ] Tunnel registry 重复 ID 改为启动失败。
+- [x] Tunnel registry 重复 ID 改为启动失败。
+  （`MessageCenter::register_tunnel` 返回 Err；msg-center 启动装配失败即退出。）
 
-- [ ] 拆分 mailbox state 与 delivery state。
+- [x] 拆分 mailbox state 与 delivery state。
+  （`RecipientState`（UNREAD/READING/READ/ARCHIVED/DELETED，READ 取代 READED）+
+  `DeliveryState`（WAIT/SENDING/SENT/FAILED/DEAD）；`MsgState` 删除。）
 
-- [ ] 将 `OUTBOX` 重命名为 `SENT`。
+- [x] 将 `OUTBOX` 重命名为 `SENT`（`MailboxKind::Sent`，SENT 记录无阅读语义）。
 
-- [ ] 将 `TUNNEL_OUTBOX` 泛化为 `DELIVERY_QUEUE`。
+- [x] 将 `TUNNEL_OUTBOX` 泛化为 `DELIVERY_QUEUE`。
+  （独立 `delivery_records` 表 + `DeliveryRecord/DeliveryEnvelope/DeliverySnapshot`；
+  幂等键 hash(msg_id+target+transport) + 唯一索引；SENDING 租约 sweep 内建于
+  `get_next_delivery`；`MsgTunnel` trait 改名 `DeliveryExecutor`。）
 
-- [ ] 增加 `list_session/list_sessions` 及数据库索引。
+- [x] 增加 `list_session/list_sessions` 及数据库索引。
+  （`msg.list_sessions` / `msg.list_session` RPC；`(owner, session_id, sort_key)`、
+  `(owner, updated_at_ms)`、`(transport_did, state, next_retry_at_ms)`、
+  `(msg_id, target_did)` 唯一索引；schema v4，旧 `msg_records` 表 DROP。）
 
-- [ ] 聚合 DeliveryRecord 状态到 Session message view。
+- [x] 聚合 DeliveryRecord 状态到 Session message view。
+  （出站条目带 `delivery.overall`（sending/delivered/partial_failed/failed）+
+  per_target 明细。）
 
-- [ ] 删除 `MsgObject.thread.tunnel_id`（在 cyfs-ndn 仓库 `ndn-lib/src/msgobj.rs`）。
+- [x] 删除 `MsgObject.thread.tunnel_id`（cyfs-ndn `ndn-lib/src/msgobj.rs`，
+  含 object.rs 测试；cyfs-ndn 仓库改动待 commit+push，buckyos 侧无使用点，
+  两个版本均可编译）。
 
-- [ ] 删除旧群消息 `to` 为空时回退到 `from` 的兼容逻辑。
+- [x] 删除旧群消息 `to` 为空时回退到 `from` 的兼容逻辑。
+  （`group_did_from_message` 对空 `to` 直接报错；post_send 的 targets 空回退
+  一并删除。）
 
-- [ ] Desktop MessageHub 从 mock reader 切换到 Session API。
+- [x] Desktop MessageHub 从 mock reader 切换到 Session API。
+  （`app/messagehub/datamodel/sessionApi.ts` + `SessionApiConversationMessageReader`，
+  会话列表/时间线走 `msg.list_sessions`/`msg.list_session`，发送走 `msg.post_send`。）
 
 ---
 

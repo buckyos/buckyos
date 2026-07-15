@@ -60,7 +60,6 @@ export interface TopicThread {
   topic?: string
   reply_to?: ObjId
   correlation_id?: string
-  tunnel_id?: string
 }
 
 export type CanonValue =

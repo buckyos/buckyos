@@ -1,7 +1,7 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, BoxKind,
+    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, MailboxKind,
     Capability, ModelSpec, MsgCenterClient, Requirements, SystemConfigClient,
 };
 use log::info;
@@ -1272,7 +1272,7 @@ impl ControlPanelServer {
         let inbox = msg_center
             .list_box_by_time(
                 owner_did.clone(),
-                BoxKind::Inbox,
+                MailboxKind::Inbox,
                 None,
                 Some(60),
                 None,
@@ -1284,7 +1284,7 @@ impl ControlPanelServer {
         let outbox = msg_center
             .list_box_by_time(
                 owner_did.clone(),
-                BoxKind::Outbox,
+                MailboxKind::Sent,
                 None,
                 Some(60),
                 None,

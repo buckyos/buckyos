@@ -1,7 +1,9 @@
 use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use buckyos_api::{
-    BoxKind, DeliveryReportResult, IngressContext, MsgCenterHandler, MsgState, ReadReceiptState,
+    DeliveryReportResult, DeliveryState, IngressContext, MailboxKind, MsgCenterHandler,
+    ReadReceiptState, RecipientState, SessionDeliveryOverall, SessionMessageDirection,
+    TransportKind,
 };
 use kRPC::RPCContext;
 use name_lib::DID;
@@ -79,21 +81,40 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
     assert_eq!(dispatch.delivered_recipients, vec![recipient.clone()]);
 
     let inbox = center
-        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(inbox.len(), 1);
-    assert_eq!(inbox[0].record.state, MsgState::Unread);
+    assert_eq!(inbox[0].record.state, RecipientState::Unread);
+    // DM records key their session on the peer DID.
+    assert_eq!(
+        inbox[0].record.session_id.as_deref(),
+        Some(format!("dm:{}", sender.to_string()).as_str())
+    );
 
     let next = center
-        .handle_get_next(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
+        .handle_get_next(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(next.record.state, MsgState::Reading);
+    assert_eq!(next.record.state, RecipientState::Reading);
 
     let no_more_unread = center
-        .handle_get_next(recipient, BoxKind::Inbox, None, None, None, ctx())
+        .handle_get_next(recipient, MailboxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert!(no_more_unread.is_none());
@@ -114,17 +135,24 @@ async fn dispatch_stranger_goes_to_request_box() {
     assert!(dispatch.delivered_recipients.contains(&recipient));
 
     let inbox = center
-        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(inbox.len(), 0);
 
     let request_box = center
-        .handle_peek_box(recipient, BoxKind::RequestBox, None, None, None, ctx())
+        .handle_peek_box(recipient, MailboxKind::RequestBox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(request_box.len(), 1);
-    assert_eq!(request_box[0].record.state, MsgState::Unread);
+    assert_eq!(request_box[0].record.state, RecipientState::Unread);
 }
 
 #[tokio::test]
@@ -156,7 +184,7 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
     let group_box = center
         .handle_peek_box(
             group_id.clone(),
-            BoxKind::GroupInbox,
+            MailboxKind::GroupInbox,
             None,
             None,
             None,
@@ -165,94 +193,144 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
         .await
         .unwrap();
     assert_eq!(group_box.len(), 1);
+    // Group records key their session on the group DID.
+    assert_eq!(
+        group_box[0].record.session_id.as_deref(),
+        Some(group_id.to_string().as_str())
+    );
 
     let agent1_box = center
-        .handle_peek_box(agent_1, BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(agent_1, MailboxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(agent1_box.len(), 1);
 
     let agent2_box = center
-        .handle_peek_box(agent_2, BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(agent_2, MailboxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     assert_eq!(agent2_box.len(), 1);
 }
 
 #[tokio::test]
-async fn post_send_to_endpoint_did_creates_owner_and_tunnel_outbox_records() {
+async fn dispatch_group_message_without_group_target_fails() {
+    let (center, _tmp) = new_center("dispatch_group_no_target").await;
+    let author = DID::new("bns", "author-empty-group");
+    // Legacy group messages used to fall back to `from` when `to` was empty;
+    // the frozen model requires from=actor, to=group with no fallback.
+    let msg = make_msg(author, Vec::new(), MsgObjKind::GroupMsg);
+
+    let err = center.handle_dispatch(msg, None, None, ctx()).await;
+    assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn post_send_to_endpoint_did_creates_sent_and_delivery_records() {
     let (center, _tmp) = new_center("post_send").await;
-    let tunnel_did = DID::new("bns", "tg-tunnel-box");
-    center.register_tunnel(
-        "tg-main".to_string(),
-        tunnel_did.clone(),
-        "telegram".to_string(),
-    );
+    let transport_did = DID::new("bns", "tg-tunnel-box");
+    center
+        .register_tunnel(
+            "tg-main-tunnel".to_string(),
+            transport_did.clone(),
+            "telegram".to_string(),
+        )
+        .unwrap();
 
     let author = DID::new("bns", "author-b");
-    // A determined second-level endpoint DID carries its own routing.
-    let target = DID::new("msgtunnel", "12345.user.tg-main");
-    let msg = make_msg(author.clone(), vec![target], MsgObjKind::Chat);
+    // A determined shadow endpoint DID carries its own routing identity.
+    let target = DID::new("msgtunnel", "12345.user.tg-main-tunnel");
+    let msg = make_msg(author.clone(), vec![target.clone()], MsgObjKind::Chat);
 
     let post_send = center.handle_post_send(msg, None, ctx()).await.unwrap();
     assert!(post_send.ok);
     assert_eq!(post_send.deliveries.len(), 1);
-    assert_eq!(post_send.deliveries[0].tunnel_did, tunnel_did);
+    assert_eq!(post_send.deliveries[0].transport_did, transport_did);
+    assert!(matches!(
+        post_send.deliveries[0].transport,
+        TransportKind::Tunnel { .. }
+    ));
 
-    let owner_outbox = center
-        .handle_peek_box(author, BoxKind::Outbox, None, None, None, ctx())
+    let sent_box = center
+        .handle_peek_box(author, MailboxKind::Sent, None, None, None, ctx())
         .await
         .unwrap();
-    assert_eq!(owner_outbox.len(), 1);
-    assert_eq!(owner_outbox[0].record.state, MsgState::Sent);
+    assert_eq!(sent_box.len(), 1);
+    // SENT is send history, not delivery success.
+    assert_eq!(sent_box[0].record.state, RecipientState::Read);
 
-    let tunnel_outbox = center
-        .handle_peek_box(
-            tunnel_did.clone(),
-            BoxKind::TunnelOutbox,
-            None,
-            None,
-            None,
-            ctx(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(tunnel_outbox.len(), 1);
-    assert_eq!(tunnel_outbox[0].record.state, MsgState::Wait);
-    // The decoded chat account id rides RouteInfo.account_id so the egress
-    // pump can derive the platform chat_id without an extra route hint.
-    let route = tunnel_outbox[0].record.route.as_ref().unwrap();
-    assert_eq!(route.account_id.as_deref(), Some("12345"));
-    assert_eq!(route.platform.as_deref(), Some("telegram"));
-
-    let next = center
-        .handle_get_next(tunnel_did, BoxKind::TunnelOutbox, None, None, None, ctx())
+    // The executor consumes the DELIVERY_QUEUE: the envelope carries the full
+    // address snapshot (decoded from the shadow DID), never guessed later.
+    let taken = center
+        .handle_get_next_delivery(transport_did.clone(), Some(true), None, ctx())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(next.record.state, MsgState::Sending);
+    assert_eq!(taken.record.state, DeliveryState::Sending);
+    assert_eq!(taken.record.envelope.target_did, target);
+    let snapshot = taken.record.envelope.address.as_ref().unwrap();
+    assert_eq!(snapshot.chat_id.as_deref(), Some("12345"));
+    assert_eq!(snapshot.platform.as_deref(), Some("telegram"));
+
+    // Queue drained (single record moved to SENDING).
+    let empty = center
+        .handle_get_next_delivery(transport_did, Some(true), None, ctx())
+        .await
+        .unwrap();
+    assert!(empty.is_none());
 }
 
 #[tokio::test]
-async fn post_send_to_first_level_did_fails_without_silent_fallback() {
-    let (center, _tmp) = new_center("post_send_first_level").await;
+async fn post_send_to_shareable_did_uses_message_hub_plan() {
+    let (center, _tmp) = new_center("post_send_hub").await;
+    let hub_did = DID::new("bns", "msg-hub");
+    center.set_message_hub_did(hub_did.clone());
+
+    let author = DID::new("bns", "author-hub");
+    let target = DID::new("bns", "bob");
+    let msg = make_msg(author.clone(), vec![target.clone()], MsgObjKind::Chat);
+
+    let post_send = center.handle_post_send(msg, None, ctx()).await.unwrap();
+    assert!(post_send.ok);
+    assert_eq!(post_send.deliveries.len(), 1);
+    assert_eq!(post_send.deliveries[0].transport_did, hub_did);
+    assert_eq!(post_send.deliveries[0].transport, TransportKind::Native);
+
+    let taken = center
+        .handle_get_next_delivery(hub_did, Some(true), None, ctx())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(taken.record.envelope.target_did, target);
+    assert!(taken.record.envelope.address.is_none());
+}
+
+#[tokio::test]
+async fn post_send_to_shareable_did_fails_without_message_hub() {
+    let (center, _tmp) = new_center("post_send_no_hub").await;
     let author = DID::new("bns", "author-c");
     let target = DID::new("bns", "bob");
     let msg = make_msg(author.clone(), vec![target], MsgObjKind::Chat);
 
     let post_send = center.handle_post_send(msg, None, ctx()).await.unwrap();
-    // No Message Hub direct delivery and no implicit binding selection: the
-    // post_send fails with a clear reason instead of routing to a default tunnel.
+    // No registered hub executor and no implicit binding selection: post_send
+    // fails with a clear reason instead of routing to a default tunnel.
     assert!(!post_send.ok);
     assert!(post_send.deliveries.is_empty());
     assert!(post_send.reason.is_some());
+
+    // Phase-1 failure keeps the database clean: no SENT record was written.
+    let sent_box = center
+        .handle_peek_box(author, MailboxKind::Sent, None, None, None, ctx())
+        .await
+        .unwrap();
+    assert!(sent_box.is_empty());
 }
 
 #[tokio::test]
 async fn post_send_to_unknown_tunnel_fails() {
     let (center, _tmp) = new_center("post_send_unknown_tunnel").await;
     let author = DID::new("bns", "author-d");
-    // Endpoint DID whose tunnel_id has no registered route.
+    // Endpoint DID whose tunnel_instance_id has no registered route.
     let target = DID::new("msgtunnel", "12345.user.ghost-tunnel");
     let msg = make_msg(author.clone(), vec![target], MsgObjKind::Chat);
 
@@ -270,31 +348,67 @@ async fn post_send_rejects_message_without_target() {
     let err = center.handle_post_send(msg, None, ctx()).await.unwrap_err();
 
     assert!(matches!(err, kRPC::RPCErrors::ParseRequestError(_)));
-    let owner_outbox = center
-        .handle_peek_box(author, BoxKind::Outbox, None, None, None, ctx())
+    let sent_box = center
+        .handle_peek_box(author, MailboxKind::Sent, None, None, None, ctx())
         .await
         .unwrap();
-    assert!(owner_outbox.is_empty());
+    assert!(sent_box.is_empty());
+}
+
+#[tokio::test]
+async fn tunnel_registry_rejects_duplicate_instance_id() {
+    let (center, _tmp) = new_center("registry_duplicate").await;
+    center
+        .register_tunnel(
+            "tg-main-tunnel".to_string(),
+            DID::new("bns", "tg-a"),
+            "telegram".to_string(),
+        )
+        .unwrap();
+    // Same instance id again — even with a different transport DID — must fail
+    // instead of silently overwriting (shadow DID stability).
+    let err = center.register_tunnel(
+        "tg-main-tunnel".to_string(),
+        DID::new("bns", "tg-b"),
+        "telegram".to_string(),
+    );
+    assert!(err.is_err());
+
+    // After an explicit clear (settings reload) the id can be reused.
+    center.clear_tunnel_registry();
+    center
+        .register_tunnel(
+            "tg-main-tunnel".to_string(),
+            DID::new("bns", "tg-b"),
+            "telegram".to_string(),
+        )
+        .unwrap();
 }
 
 #[tokio::test]
 async fn report_delivery_handles_success_and_failure_paths() {
     let (center, _tmp) = new_center("report_delivery").await;
-    let tunnel_did = DID::new("bns", "tg-tunnel-box");
-    center.register_tunnel("tg-main".to_string(), tunnel_did, "telegram".to_string());
+    let transport_did = DID::new("bns", "tg-tunnel-box");
+    center
+        .register_tunnel(
+            "tg-main-tunnel".to_string(),
+            transport_did.clone(),
+            "telegram".to_string(),
+        )
+        .unwrap();
     let sender = DID::new("bns", "sender-c");
-    let target = DID::new("msgtunnel", "777.user.tg-main");
+    let target = DID::new("msgtunnel", "777.user.tg-main-tunnel");
 
     let fail_msg = make_msg(sender.clone(), vec![target.clone()], MsgObjKind::Chat);
     let fail_post = center
         .handle_post_send(fail_msg, None, ctx())
         .await
         .unwrap();
-    let fail_record_id = fail_post.deliveries[0].record_id.clone();
+    let fail_delivery_id = fail_post.deliveries[0].delivery_id.clone();
 
     let failed_record = center
         .handle_report_delivery(
-            fail_record_id,
+            fail_delivery_id,
             DeliveryReportResult {
                 ok: false,
                 error_message: Some("unrecoverable".to_string()),
@@ -305,19 +419,20 @@ async fn report_delivery_handles_success_and_failure_paths() {
         )
         .await
         .unwrap();
-    assert_eq!(failed_record.state, MsgState::Dead);
-    assert_eq!(failed_record.delivery.unwrap().attempts, 1);
+    assert_eq!(failed_record.state, DeliveryState::Dead);
+    assert_eq!(failed_record.attempts, 1);
+    assert!(failed_record.last_error.is_some());
 
     let success_msg = make_msg(sender, vec![target], MsgObjKind::Chat);
     let success_post = center
         .handle_post_send(success_msg, None, ctx())
         .await
         .unwrap();
-    let success_record_id = success_post.deliveries[0].record_id.clone();
+    let success_delivery_id = success_post.deliveries[0].delivery_id.clone();
 
     let success_record = center
         .handle_report_delivery(
-            success_record_id,
+            success_delivery_id,
             DeliveryReportResult {
                 ok: true,
                 external_msg_id: Some("ext-1".to_string()),
@@ -327,11 +442,50 @@ async fn report_delivery_handles_success_and_failure_paths() {
         )
         .await
         .unwrap();
-    assert_eq!(success_record.state, MsgState::Sent);
-    assert_eq!(
-        success_record.delivery.unwrap().external_msg_id,
-        Some("ext-1".to_string())
-    );
+    assert_eq!(success_record.state, DeliveryState::Sent);
+    assert_eq!(success_record.external_msg_id, Some("ext-1".to_string()));
+}
+
+#[tokio::test]
+async fn retryable_failure_requeues_with_backoff() {
+    let (center, _tmp) = new_center("report_retry").await;
+    let transport_did = DID::new("bns", "tg-retry");
+    center
+        .register_tunnel(
+            "tg-retry-tunnel".to_string(),
+            transport_did.clone(),
+            "telegram".to_string(),
+        )
+        .unwrap();
+    let sender = DID::new("bns", "sender-retry");
+    let target = DID::new("msgtunnel", "42.user.tg-retry-tunnel");
+    let msg = make_msg(sender, vec![target], MsgObjKind::Chat);
+    let post = center.handle_post_send(msg, None, ctx()).await.unwrap();
+    let delivery_id = post.deliveries[0].delivery_id.clone();
+
+    let retried = center
+        .handle_report_delivery(
+            delivery_id.clone(),
+            DeliveryReportResult {
+                ok: false,
+                error_message: Some("HTTP 429".to_string()),
+                retryable: Some(true),
+                retry_after_ms: Some(60_000),
+                ..Default::default()
+            },
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried.state, DeliveryState::Wait);
+    assert!(retried.next_retry_at_ms.is_some());
+
+    // The retry is not due yet, so the executor gets nothing.
+    let not_due = center
+        .handle_get_next_delivery(transport_did, Some(true), None, ctx())
+        .await
+        .unwrap();
+    assert!(not_due.is_none());
 }
 
 #[tokio::test]
@@ -366,26 +520,27 @@ async fn update_record_state_checks_transition_rules() {
         .unwrap();
 
     let inbox = center
-        .handle_peek_box(recipient, BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     let record_id = inbox[0].record.record_id.clone();
 
     let updated = center
-        .handle_update_record_state(record_id.clone(), MsgState::Readed, None, ctx())
+        .handle_update_record_state(record_id.clone(), RecipientState::Read, ctx())
         .await
         .unwrap();
-    assert_eq!(updated.state, MsgState::Readed);
+    assert_eq!(updated.state, RecipientState::Read);
 
+    // READ can go back to READING but never directly to UNREAD.
     let invalid = center
-        .handle_update_record_state(record_id, MsgState::Sent, None, ctx())
+        .handle_update_record_state(record_id, RecipientState::Unread, ctx())
         .await;
     assert!(invalid.is_err());
 }
 
 #[tokio::test]
-async fn update_record_ui_session_sets_ui_session_id() {
-    let (center, _tmp) = new_center("update_record_ui_session").await;
+async fn update_record_session_sets_session_id() {
+    let (center, _tmp) = new_center("update_record_session").await;
     let sender = DID::new("bns", "sender-ui-session");
     let recipient = DID::new("bns", "recipient-ui-session");
 
@@ -415,20 +570,16 @@ async fn update_record_ui_session_sets_ui_session_id() {
         .unwrap();
 
     let inbox = center
-        .handle_peek_box(recipient, BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
         .await
         .unwrap();
     let record_id = inbox[0].record.record_id.clone();
 
     let updated = center
-        .handle_update_record_ui_session(
-            record_id.clone(),
-            " ui-session-record ".to_string(),
-            ctx(),
-        )
+        .handle_update_record_session(record_id.clone(), " ui-session-record ".to_string(), ctx())
         .await
         .unwrap();
-    assert_eq!(updated.ui_session_id.as_deref(), Some("ui-session-record"));
+    assert_eq!(updated.session_id.as_deref(), Some("ui-session-record"));
 
     let loaded = center
         .handle_get_record(record_id, None, ctx())
@@ -436,7 +587,7 @@ async fn update_record_ui_session_sets_ui_session_id() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        loaded.record.ui_session_id.as_deref(),
+        loaded.record.session_id.as_deref(),
         Some("ui-session-record")
     );
 }
@@ -547,7 +698,7 @@ async fn list_box_by_time_supports_pagination() {
     let page_1 = center
         .handle_list_box_by_time(
             recipient.clone(),
-            BoxKind::Inbox,
+            MailboxKind::Inbox,
             None,
             Some(1),
             None,
@@ -565,7 +716,7 @@ async fn list_box_by_time_supports_pagination() {
     let page_2 = center
         .handle_list_box_by_time(
             recipient,
-            BoxKind::Inbox,
+            MailboxKind::Inbox,
             None,
             Some(1),
             page_1.next_cursor_sort_key,
@@ -577,6 +728,129 @@ async fn list_box_by_time_supports_pagination() {
         .await
         .unwrap();
     assert_eq!(page_2.items.len(), 1);
+}
+
+#[tokio::test]
+async fn session_projection_merges_directions_and_aggregates_delivery() {
+    let (center, _tmp) = new_center("session_projection").await;
+    let transport_did = DID::new("bns", "tg-session-tunnel");
+    center
+        .register_tunnel(
+            "tg-main-tunnel".to_string(),
+            transport_did.clone(),
+            "telegram".to_string(),
+        )
+        .unwrap();
+
+    let owner = DID::new("bns", "alice");
+    let peer = DID::new("msgtunnel", "999.user.tg-main-tunnel");
+
+    // Outbound: post_send writes SENT + one delivery record.
+    let out_msg = make_msg(owner.clone(), vec![peer.clone()], MsgObjKind::Chat);
+    let post = center.handle_post_send(out_msg, None, ctx()).await.unwrap();
+    assert!(post.ok);
+    let delivery_id = post.deliveries[0].delivery_id.clone();
+
+    // Inbound reply from the same peer endpoint (allowed via temporary grant).
+    center
+        .handle_grant_temporary_access(
+            vec![peer.clone()],
+            "ctx-session".to_string(),
+            60,
+            Some(owner.clone()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let in_msg = make_msg(peer.clone(), vec![owner.clone()], MsgObjKind::Chat);
+    center
+        .handle_dispatch(
+            in_msg,
+            Some(IngressContext {
+                context_id: Some("ctx-session".to_string()),
+                ..Default::default()
+            }),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    // Both directions land in the same peer-keyed session.
+    let session_id = format!("dm:{}", peer.to_string());
+    let sessions = center
+        .handle_list_sessions(owner.clone(), None, None, None, None, ctx())
+        .await
+        .unwrap();
+    assert_eq!(sessions.items.len(), 1);
+    assert_eq!(sessions.items[0].session_id, session_id);
+    assert_eq!(sessions.items[0].unread_count, 1);
+
+    let timeline = center
+        .handle_list_session(
+            owner.clone(),
+            session_id.clone(),
+            None,
+            None,
+            None,
+            Some(false),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(timeline.items.len(), 2);
+    let out_item = timeline
+        .items
+        .iter()
+        .find(|item| item.direction == SessionMessageDirection::Out)
+        .unwrap();
+    let in_item = timeline
+        .items
+        .iter()
+        .find(|item| item.direction == SessionMessageDirection::In)
+        .unwrap();
+    assert_eq!(in_item.recipient_state, Some(RecipientState::Unread));
+    let delivery = out_item.delivery.as_ref().unwrap();
+    assert_eq!(delivery.overall, SessionDeliveryOverall::Sending);
+    assert_eq!(delivery.per_target.len(), 1);
+    assert_eq!(delivery.per_target[0].state, DeliveryState::Wait);
+
+    // Transport accepted → the aggregated view flips to delivered.
+    center
+        .handle_report_delivery(
+            delivery_id,
+            DeliveryReportResult {
+                ok: true,
+                external_msg_id: Some("tg-msg-1".to_string()),
+                ..Default::default()
+            },
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    let timeline = center
+        .handle_list_session(
+            owner,
+            session_id,
+            None,
+            None,
+            None,
+            Some(false),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let out_item = timeline
+        .items
+        .iter()
+        .find(|item| item.direction == SessionMessageDirection::Out)
+        .unwrap();
+    let delivery = out_item.delivery.as_ref().unwrap();
+    assert_eq!(delivery.overall, SessionDeliveryOverall::Delivered);
+    assert_eq!(delivery.per_target[0].state, DeliveryState::Sent);
 }
 
 #[tokio::test]
@@ -619,11 +893,17 @@ async fn read_receipt_can_be_set_and_queried() {
 #[tokio::test]
 async fn idempotency_key_prevents_duplicate_records() {
     let (center, _tmp) = new_center("idempotency").await;
-    let tunnel_did = DID::new("bns", "tg-tunnel-box");
-    center.register_tunnel("tg-main".to_string(), tunnel_did, "telegram".to_string());
+    let transport_did = DID::new("bns", "tg-tunnel-box");
+    center
+        .register_tunnel(
+            "tg-main-tunnel".to_string(),
+            transport_did.clone(),
+            "telegram".to_string(),
+        )
+        .unwrap();
     let sender = DID::new("bns", "sender-f");
     let recipient = DID::new("bns", "recipient-f");
-    let endpoint_target = DID::new("msgtunnel", "888.user.tg-main");
+    let endpoint_target = DID::new("msgtunnel", "888.user.tg-main-tunnel");
 
     center
         .handle_grant_temporary_access(
@@ -664,7 +944,14 @@ async fn idempotency_key_prevents_duplicate_records() {
     assert_eq!(first_dispatch.msg_id, second_dispatch.msg_id);
 
     let inbox = center
-        .handle_peek_box(recipient.clone(), BoxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(inbox.len(), 1);
@@ -685,10 +972,15 @@ async fn idempotency_key_prevents_duplicate_records() {
     assert_eq!(first_post.deliveries.len(), 1);
     assert_eq!(first_post.deliveries, second_post.deliveries);
 
-    let tunnel = first_post.deliveries[0].tunnel_did.clone();
-    let tunnel_outbox = center
-        .handle_peek_box(tunnel, BoxKind::TunnelOutbox, None, None, None, ctx())
+    // Exactly one delivery record exists for the duplicate submission.
+    let taken = center
+        .handle_get_next_delivery(transport_did.clone(), Some(true), None, ctx())
         .await
         .unwrap();
-    assert_eq!(tunnel_outbox.len(), 1);
+    assert!(taken.is_some());
+    let empty = center
+        .handle_get_next_delivery(transport_did, Some(true), None, ctx())
+        .await
+        .unwrap();
+    assert!(empty.is_none());
 }

@@ -5,7 +5,7 @@
 //! ```text
 //!   kevent_client.create_event_reader(["/msg_center/{owner}/box_in_{owner}/**", ...])
 //!       └── pull_event(1s) ──┐
-//!                            ├─ Ok(Some(e))  → derive BoxKind from eventid → drain
+//!                            ├─ Ok(Some(e))  → derive MailboxKind from eventid → drain
 //!                            ├─ Ok(None)     → sweep all inbox boxes (timeout fallback)
 //!                            └─ Err(closed)  → drop reader, retry create
 //!   msg_center.get_next(owner, box_kind, [Unread], lock_on_take=true)
@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use buckyos_api::{
-    BoxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient, MsgRecordWithObject,
-    MsgState,
+    MailboxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient, MailboxRecordWithObject,
+    RecipientState,
 };
 use llm_context::{parse_msg_object_text_attachments, MsgParseOutput};
 use ndn_lib::MsgObjKind;
@@ -114,7 +114,7 @@ pub async fn run(cfg: PumpConfig) {
         // Decide which boxes to drain this tick. The kevent reader (when
         // present) acts as a hint — on miss/timeout we always sweep all
         // inbox-style boxes, per the "kevent is acceleration only" rule.
-        let mut boxes_to_pull = Vec::<BoxKind>::new();
+        let mut boxes_to_pull = Vec::<MailboxKind>::new();
 
         if let Some(r) = reader.as_ref().cloned() {
             tokio::select! {
@@ -175,9 +175,9 @@ pub async fn run(cfg: PumpConfig) {
     }
 }
 
-async fn drain_box(cfg: &PumpConfig, box_kind: BoxKind) {
+async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
     let state_filter = match box_kind {
-        BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => Some(vec![MsgState::Unread]),
+        MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => Some(vec![RecipientState::Unread]),
         // Outbox kinds aren't drained by the agent.
         _ => return,
     };
@@ -195,7 +195,7 @@ async fn drain_box(cfg: &PumpConfig, box_kind: BoxKind) {
             .await
         {
             Ok(Some(record)) => {
-                if !matches!(record.record.state, MsgState::Unread | MsgState::Reading) {
+                if !matches!(record.record.state, RecipientState::Unread | RecipientState::Reading) {
                     warn!(
                         "opendan.msg_pump[{}]: unexpected msg state record_id={} state={:?} — skipping box",
                         cfg.agent_name, record.record.record_id, record.record.state
@@ -237,7 +237,7 @@ async fn drain_box(cfg: &PumpConfig, box_kind: BoxKind) {
 /// dispatcher does that after the session has durably parked the input,
 /// so a crash here leaves the record in `Reading` and msg-center's lease
 /// recovery will replay it on next boot.
-async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
+async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bool {
     let record_id = record.record.record_id.clone();
     let Some(msg) = record.msg.as_ref() else {
         debug!(
@@ -259,13 +259,13 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
     let from_did = Some(from_did_str.clone()).filter(|s| !s.is_empty());
     let tunnel_did = record
         .record
-        .route
+        .ingress
         .as_ref()
-        .and_then(|r| r.tunnel_did.as_ref().map(|d| d.to_string()))
+        .and_then(|ingress| ingress.transport_did.as_ref().map(|d| d.to_string()))
         .filter(|s| !s.is_empty());
     let session_id = record
         .record
-        .ui_session_id
+        .session_id
         .clone()
         .filter(|s| !s.trim().is_empty());
     let group_id = if record.record.msg_kind == MsgObjKind::GroupMsg {
@@ -332,20 +332,20 @@ async fn deliver_record(cfg: &PumpConfig, record: MsgRecordWithObject) -> bool {
     true
 }
 
-fn append_all_inbox_boxes(target: &mut Vec<BoxKind>) {
-    for kind in [BoxKind::Inbox, BoxKind::GroupInbox, BoxKind::RequestBox] {
+fn append_all_inbox_boxes(target: &mut Vec<MailboxKind>) {
+    for kind in [MailboxKind::Inbox, MailboxKind::GroupInbox, MailboxKind::RequestBox] {
         if !target.contains(&kind) {
             target.push(kind);
         }
     }
 }
 
-fn msg_center_box_id_segment(owner_token: &str, box_kind: &BoxKind) -> String {
+fn msg_center_box_id_segment(owner_token: &str, box_kind: &MailboxKind) -> String {
     let prefix = match box_kind {
-        BoxKind::Inbox => "box_in",
-        BoxKind::GroupInbox => "box_group_in",
-        BoxKind::RequestBox => "box_request",
-        BoxKind::Outbox | BoxKind::TunnelOutbox => return String::new(),
+        MailboxKind::Inbox => "box_in",
+        MailboxKind::GroupInbox => "box_group_in",
+        MailboxKind::RequestBox => "box_request",
+        MailboxKind::Sent => return String::new(),
     };
     format!("{prefix}_{owner_token}")
 }
@@ -362,7 +362,7 @@ pub fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
 
     let mut out = Vec::new();
     for owner_token in owner_tokens {
-        for box_kind in [BoxKind::Inbox, BoxKind::GroupInbox, BoxKind::RequestBox] {
+        for box_kind in [MailboxKind::Inbox, MailboxKind::GroupInbox, MailboxKind::RequestBox] {
             let box_id_segment = msg_center_box_id_segment(&owner_token, &box_kind);
             let pattern = format!("/msg_center/{owner_token}/{box_id_segment}/**");
             if !out.contains(&pattern) {
@@ -373,7 +373,7 @@ pub fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
     out
 }
 
-fn collect_event_pull_targets(event: &Event, msg_pull_boxes: &mut Vec<BoxKind>) {
+fn collect_event_pull_targets(event: &Event, msg_pull_boxes: &mut Vec<MailboxKind>) {
     if let Some(box_kind) = msg_center_event_box_kind(event) {
         if !msg_pull_boxes.contains(&box_kind) {
             msg_pull_boxes.push(box_kind);
@@ -393,7 +393,7 @@ fn collect_event_pull_targets(event: &Event, msg_pull_boxes: &mut Vec<BoxKind>) 
     // §9.6's session_sub_kevent flow lands later.
 }
 
-fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
+fn msg_center_event_box_kind(event: &Event) -> Option<MailboxKind> {
     let parts: Vec<&str> = event.eventid.split('/').filter(|p| !p.is_empty()).collect();
     if parts.len() < 3 || parts[0] != "msg_center" {
         return None;
@@ -401,14 +401,14 @@ fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
     parts.get(2).and_then(|name| event_box_id_to_box_kind(name))
 }
 
-fn event_box_id_to_box_kind(raw: &str) -> Option<BoxKind> {
+fn event_box_id_to_box_kind(raw: &str) -> Option<MailboxKind> {
     let n = raw.trim().to_ascii_lowercase().replace('-', "_");
     if has_box_id_prefix(&n, "box_group_in_") {
-        Some(BoxKind::GroupInbox)
+        Some(MailboxKind::GroupInbox)
     } else if has_box_id_prefix(&n, "box_request_") {
-        Some(BoxKind::RequestBox)
+        Some(MailboxKind::RequestBox)
     } else if has_box_id_prefix(&n, "box_in_") {
-        Some(BoxKind::Inbox)
+        Some(MailboxKind::Inbox)
     } else {
         None
     }
@@ -448,13 +448,13 @@ mod tests {
     #[test]
     fn classifies_box_kind_from_canonical_path() {
         let e = ev("/msg_center/alice/box_in_alice/changed");
-        assert_eq!(msg_center_event_box_kind(&e), Some(BoxKind::Inbox));
+        assert_eq!(msg_center_event_box_kind(&e), Some(MailboxKind::Inbox));
     }
 
     #[test]
     fn classifies_request_box_kind_from_canonical_path() {
         let e = ev("/msg_center/alice/box_request_alice/changed");
-        assert_eq!(msg_center_event_box_kind(&e), Some(BoxKind::RequestBox));
+        assert_eq!(msg_center_event_box_kind(&e), Some(MailboxKind::RequestBox));
     }
 
     #[test]
@@ -487,9 +487,9 @@ mod tests {
     fn timeout_fallback_appends_all_inbox_kinds() {
         let mut buf = Vec::new();
         append_all_inbox_boxes(&mut buf);
-        assert!(buf.contains(&BoxKind::Inbox));
-        assert!(buf.contains(&BoxKind::GroupInbox));
-        assert!(buf.contains(&BoxKind::RequestBox));
+        assert!(buf.contains(&MailboxKind::Inbox));
+        assert!(buf.contains(&MailboxKind::GroupInbox));
+        assert!(buf.contains(&MailboxKind::RequestBox));
         assert_eq!(buf.len(), 3);
     }
 

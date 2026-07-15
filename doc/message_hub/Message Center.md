@@ -448,16 +448,16 @@ get_next(owner, box_or_queue, state_filter, lock_on_take)
 
 ## 8. 现状对照（冻结名 → 当前代码）
 
-冻结文档使用目标命名。当前代码（beta2.2）尚未完成重命名，对照如下，迁移项见 TODO P3：
+P3 实现迁移已于 2026-07-14 完成：代码与本文档使用同一套命名，无旧名兼容层
+（beta2.2 breaking change）。落点对照：
 
-| 冻结概念 | 当前代码 |
+| 冻结概念 | 代码落点 |
 |---|---|
-| `MailboxRecord` + `DeliveryRecord` | 单一 `MsgRecord`（`buckyos_api::msg_center_client`） |
-| `MailboxKind::SENT` | `BoxKind::Outbox` |
-| `DELIVERY_QUEUE` | `BoxKind::TunnelOutbox` |
-| `RecipientState` / `DeliveryState` 两个状态机 | 混合的 `MsgState` 枚举 |
-| `RecipientState::READ` | `MsgState::Readed` |
-| `DeliveryEnvelope` / `DeliverySnapshot` | `RouteInfo` |
-| `transport_did` | `RouteInfo.tunnel_did`（存在与 `tunnel_id` 混用的 bug） |
-| `list_session/list_sessions` | 尚未实现（UI 现走 box 读取或 mock） |
-| （已删除）`thread.tunnel_id` | `ndn_lib::TopicThread.tunnel_id` 仍存在 |
+| `MailboxRecord` / `MailboxKind`（INBOX/SENT/GROUP_INBOX/REQUEST_BOX） | `buckyos_api::msg_center_client`，存储表 `mailbox_records` |
+| `DeliveryRecord` / `DeliveryEnvelope` / `DeliverySnapshot` | 同上，存储表 `delivery_records`（`DELIVERY_QUEUE`） |
+| `RecipientState` / `DeliveryState` 两个状态机 | 两个独立枚举（`MsgState` 已删除；`READED` → `READ`） |
+| `transport_did` vs `tunnel_instance_id` | `DeliveryEnvelope.transport_did`；registry key 为 `tunnel_instance_id` |
+| `DeliveryExecutor` 接口 | `frame/msg_center/src/msg_tunnel.rs`；MessageHub 与 TgTunnel 共同实现 |
+| MessageHub（原生投递） | `frame/msg_center/src/message_hub.rs`（本 Zone 目标本地 dispatch；跨 Zone hop 待实现，失败明确 DEAD） |
+| `list_session/list_sessions` | `msg.list_session` / `msg.list_sessions` RPC + Session 索引；Desktop MessageHub 已接入 |
+| （已删除）`thread.tunnel_id` | 已从 `ndn_lib::TopicThread` 移除（cyfs-ndn beta2.2） |

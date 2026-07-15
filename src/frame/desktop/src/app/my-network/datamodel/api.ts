@@ -92,7 +92,7 @@ function socialAccountsFromChatBindings(value: unknown) {
       platform,
       account_id: accountId,
       display_id: stringValue(record.display_id ?? record.displayId) ?? accountId,
-      tunnel_id: stringValue(record.tunnel_id ?? record.tunnelId),
+      tunnel_instance_id: stringValue(record.tunnel_instance_id ?? record.tunnelId),
       status: 'active',
       last_sync_at: numberValue(record.last_active_at ?? record.lastActiveAt),
       meta: asRecord(record.meta) as Record<string, string>,

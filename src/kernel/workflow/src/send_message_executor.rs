@@ -112,12 +112,7 @@ impl SendMessageTaskExecutor {
                 schedule.owner.user_id, schedule.owner.app_id
             )
         })?;
-        let recipient = resolve_delivery_recipient_did(
-            self.msg_center.as_ref(),
-            &task_data.request.to,
-            &schedule.owner.user_id,
-        )
-        .await?;
+        let recipient = resolve_recipient_did(&task_data.request.to, &schedule.owner.user_id)?;
         let text = task_data.request.text.trim();
         if text.is_empty() {
             return Err("send_message text is empty".to_string());
@@ -174,6 +169,10 @@ fn parse_send_message_data(data: Value) -> Result<SendMessageTaskData, String> {
     }
 }
 
+/// Normalize the configured recipient into a determined DID. `post_send` only
+/// accepts confirmed targets (shareable DID → MessageHub, shadow endpoint DID
+/// → its tunnel instance); there is no contact→channel resolution on the send
+/// path — the schedule author picks the exact DID when authoring the task.
 fn resolve_recipient_did(raw: &str, owner_user_id: &str) -> Result<String, String> {
     let target = raw.trim();
     if target.eq_ignore_ascii_case("owner") || target.eq_ignore_ascii_case("self") {
@@ -183,40 +182,6 @@ fn resolve_recipient_did(raw: &str, owner_user_id: &str) -> Result<String, Strin
         return Ok(target.to_string());
     }
     Err(format!("unsupported send_message recipient `{target}`"))
-}
-
-async fn resolve_delivery_recipient_did(
-    msg_center: &MsgCenterClient,
-    raw: &str,
-    owner_user_id: &str,
-) -> Result<String, String> {
-    let recipient = resolve_recipient_did(raw, owner_user_id)?;
-    if recipient.starts_with("did:msgtunnel:") {
-        return Ok(recipient);
-    }
-
-    let contact_did = build_did_probe_message(&recipient)?.from;
-    let owner_did = build_did_probe_message(&format!("did:bns:{owner_user_id}"))?.from;
-    let mut errors = Vec::new();
-    for selector in ["telegram", "tg-main"] {
-        match msg_center
-            .resolve_target(
-                contact_did.clone(),
-                selector.to_string(),
-                Some(owner_did.clone()),
-            )
-            .await
-        {
-            Ok(endpoint) => return Ok(endpoint.to_string()),
-            Err(err) => errors.push(format!("{selector}: {err:?}")),
-        }
-    }
-
-    Err(format!(
-        "resolve recipient endpoint failed for {}: {}",
-        recipient,
-        errors.join("; ")
-    ))
 }
 
 fn resolve_sender_did(root: &Path, user_id: &str, app_id: &str) -> Option<String> {
@@ -304,21 +269,6 @@ fn build_text_message(
     serde_json::from_value(value).map_err(|err| format!("build MsgObject failed: {err}"))
 }
 
-fn build_did_probe_message(raw: &str) -> Result<ndn_lib::MsgObject, String> {
-    let value = json!({
-        "from": raw,
-        "to": [raw],
-        "kind": "chat",
-        "created_at_ms": now_ms(),
-        "content": {
-            "format": "text/plain",
-            "content": "",
-        },
-    });
-    serde_json::from_value::<ndn_lib::MsgObject>(value)
-        .map_err(|err| format!("invalid DID `{raw}`: {err}"))
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -360,9 +310,17 @@ mod tests {
     }
 
     #[test]
-    fn did_probe_message_parses_did_strings() {
-        let msg = build_did_probe_message("did:bns:devtest").unwrap();
-        assert_eq!(msg.from.to_string(), "did:bns:devtest");
-        assert_eq!(msg.to[0].to_string(), "did:bns:devtest");
+    fn recipient_keeps_determined_dids_as_is() {
+        // Shareable DIDs and shadow endpoint DIDs both pass through untouched:
+        // post_send resolves them deterministically, no selector lookup here.
+        assert_eq!(
+            resolve_recipient_did("did:bns:bob", "devtest").unwrap(),
+            "did:bns:bob"
+        );
+        assert_eq!(
+            resolve_recipient_did("did:msgtunnel:1.user.tg-main-tunnel", "devtest").unwrap(),
+            "did:msgtunnel:1.user.tg-main-tunnel"
+        );
+        assert!(resolve_recipient_did("telegram", "devtest").is_err());
     }
 }

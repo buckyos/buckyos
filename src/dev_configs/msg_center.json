@@ -1,7 +1,8 @@
 {
   "telegram_tunnel": {
     "enabled": true,
-    "tunnel_did": "did:web:tg-tunnel.test.buckyos.io",
+    "transport_did": "did:web:tg-tunnel.test.buckyos.io",
+    "tunnel_instance_id": "tg-main-tunnel",
     "supports_ingress": true,
     "supports_egress": true,
     "gateway": {
@@ -15,7 +16,6 @@
         "owner_did": "did:bns:alice",
         "bot_token": "123456:AA....",
         "bot_account_id": "alice-bot",
-        "default_chat_id": "@alice",
         "extra": {}
       }
     ]

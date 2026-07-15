@@ -645,13 +645,18 @@ fn resolve_jarvis_agent_did(config: &StartConfigSummary) -> Result<DID> {
     ))
 }
 
-fn resolve_telegram_tunnel_did(config: &StartConfigSummary) -> String {
+/// The Telegram tunnel instance's transport DID (DELIVERY_QUEUE owner).
+fn resolve_telegram_transport_did(config: &StartConfigSummary) -> String {
     config
         .zone_name
         .strip_prefix("did:web:")
         .map(|zone_host| format!("did:web:tg-tunnel.{}", zone_host))
         .unwrap_or_else(|| "did:bns:msg-center-default-tunnel".to_string())
 }
+
+/// The stable tunnel instance id embedded in shadow endpoint DIDs. This is a
+/// short logical id, never the transport DID.
+const TELEGRAM_TUNNEL_INSTANCE_ID: &str = "tg-main-tunnel";
 
 fn normalize_telegram_contact_account_id(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -670,16 +675,6 @@ fn normalize_telegram_contact_account_id(raw: &str) -> String {
     }
 }
 
-fn normalize_telegram_default_chat_id(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if let Some((kind, value)) = trimmed.split_once(':') {
-        if matches!(kind, "user" | "group" | "channel") {
-            return value.trim().to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
 fn build_zone_user_contact_settings(
     config: &StartConfigSummary,
 ) -> Result<Option<UserContactSettings>> {
@@ -689,7 +684,6 @@ fn build_zone_user_contact_settings(
         return Ok(None);
     };
 
-    let tunnel_id = resolve_telegram_tunnel_did(config);
     let normalized_account_id = normalize_telegram_contact_account_id(&account_id);
     if normalized_account_id.is_empty() {
         return Ok(None);
@@ -704,7 +698,7 @@ fn build_zone_user_contact_settings(
             platform: "telegram".to_string(),
             account_id: normalized_account_id,
             display_id: Some(account_id),
-            tunnel_id: Some(tunnel_id),
+            tunnel_instance_id: Some(TELEGRAM_TUNNEL_INSTANCE_ID.to_string()),
             status: None,
             last_sync_at: None,
             meta: HashMap::new(),
@@ -1057,37 +1051,34 @@ fn extract_model_ids_from_response(payload: &Value) -> Vec<String> {
 }
 
 fn build_msg_center_settings(config: &StartConfigSummary) -> Result<Value> {
-    let tunnel_did = resolve_telegram_tunnel_did(config);
+    let transport_did = resolve_telegram_transport_did(config);
     let bot_token = trim_to_option(
         config
             .jarvis_msg_tunnel_config
             .telegram_bot_api_token
             .as_str(),
     );
-    let telegram_account_id =
-        trim_to_option(config.jarvis_msg_tunnel_config.telegram_account_id.as_str());
 
-    let (gateway_mode, bindings) =
-        if let (Some(bot_token), Some(account_id)) = (bot_token, telegram_account_id) {
-            let jarvis_did = resolve_jarvis_agent_did(config)?;
-            let default_chat_id = normalize_telegram_default_chat_id(&account_id);
-            (
-                "bot_api",
-                vec![json!({
-                    "owner_did": jarvis_did.to_string(),
-                    "bot_token": bot_token,
-                    "default_chat_id": default_chat_id
-                })],
-            )
-        } else {
-            ("dry_run", Vec::new())
-        };
+    // No default_chat_id: the delivery address always comes from the target
+    // shadow endpoint DID resolved at post_send time (no routing fallback).
+    let (gateway_mode, bindings) = if let Some(bot_token) = bot_token {
+        let jarvis_did = resolve_jarvis_agent_did(config)?;
+        (
+            "bot_api",
+            vec![json!({
+                "owner_did": jarvis_did.to_string(),
+                "bot_token": bot_token
+            })],
+        )
+    } else {
+        ("dry_run", Vec::new())
+    };
 
     Ok(json!({
         "telegram_tunnel": {
             "enabled": true,
-            "tunnel_did": tunnel_did,
-            "tunnel_id": "tg-main",
+            "transport_did": transport_did,
+            "tunnel_instance_id": TELEGRAM_TUNNEL_INSTANCE_ID,
             "supports_ingress": true,
             "supports_egress": true,
             "gateway": {
@@ -1263,6 +1254,7 @@ mod tests {
         build_aicc_settings, build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
         build_kernel_service_spec, build_msg_center_settings, build_zone_user_contact_settings,
         extract_model_ids_from_response, StartConfigSummary, SystemConfigBuilder,
+        TELEGRAM_TUNNEL_INSTANCE_ID,
     };
     use buckyos_api::{
         generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,
@@ -1546,17 +1538,22 @@ mod tests {
 
         assert_eq!(settings["telegram_tunnel"]["gateway"]["mode"], "bot_api");
         assert_eq!(
-            settings["telegram_tunnel"]["tunnel_did"],
+            settings["telegram_tunnel"]["transport_did"],
             "did:web:tg-tunnel.alice.example.com"
+        );
+        assert_eq!(
+            settings["telegram_tunnel"]["tunnel_instance_id"],
+            TELEGRAM_TUNNEL_INSTANCE_ID
         );
         assert_eq!(
             settings["telegram_tunnel"]["bindings"][0]["owner_did"],
             "did:web:jarvis.alice.example.com"
         );
-        assert_eq!(
-            settings["telegram_tunnel"]["bindings"][0]["default_chat_id"],
-            "5397330802"
-        );
+        // No default_chat_id in the frozen design: the delivery address comes
+        // from the resolved envelope only.
+        assert!(settings["telegram_tunnel"]["bindings"][0]
+            .get("default_chat_id")
+            .is_none());
     }
 
     #[test]
@@ -1581,9 +1578,11 @@ mod tests {
         assert_eq!(contact.bindings.len(), 1);
         assert_eq!(contact.bindings[0].platform, "telegram");
         assert_eq!(contact.bindings[0].account_id, "user:5397330802");
+        // The binding carries the stable tunnel instance id, never the
+        // transport DID (the historical tunnel_id/tunnel_did mix-up).
         assert_eq!(
-            contact.bindings[0].tunnel_id.as_deref(),
-            Some("did:web:tg-tunnel.alice.example.com")
+            contact.bindings[0].tunnel_instance_id.as_deref(),
+            Some(TELEGRAM_TUNNEL_INSTANCE_ID)
         );
     }
 
