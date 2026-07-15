@@ -195,7 +195,7 @@ bindings:
   - phone_hash:...
 ```
 
-Binding 不等于好友关系。它只是身份聚合与路由基础。
+Binding 不等于好友关系。它只是身份聚合、展示与反查（endpoint → 联系人）的基础；按冻结后的消息域设计，binding 不参与出站选路，发送目标始终是调用方显式给出的确定 DID。
 
 ### 4.2 Source Relation
 

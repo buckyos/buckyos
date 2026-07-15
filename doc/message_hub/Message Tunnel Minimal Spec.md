@@ -1,211 +1,163 @@
 # Message Tunnel Minimal Spec
 
-本文档给代码生成 Agent 使用，只保留实现 Message Tunnel 所需的最小协议约束。详细设计、边界和兼容性说明见 `doc/message_hub/Message Tunnel Design.md`。
+本文档给代码生成 Agent 使用，是两份主设计文档的**裁剪版**，不独立定义任何术语；术语与主文档冲突时以主文档为准：
+
+- [Message Center.md](<./Message Center.md>)：消息域内核（五层模型、mailbox、delivery、session）。
+- [Message Tunnel Design.md](<./Message Tunnel Design.md>)：transport 层完整设计与边界。
+
+> MessageCenter is not an IM server. It is a DID-native, store-and-forward personal messaging system—email upgraded for Personal Servers and Agents.
 
 ## 1. 定义
 
-Message Tunnel 是外部 IM 会话和 BuckyOS MessageCenter 之间的适配器。它代表某个外部平台账号或系统入口收发消息：
+Message Tunnel 是外部平台与 MessageCenter 之间的 **external transport adapter**：
 
-1. 入站：从外部 IM 获取消息、会话事件和平台状态，转换为 `MsgObject`，携带 `IngressContext` 调用 `MsgCenter.dispatch()`。
-2. 出站：从 MessageCenter 的 `TUNNEL_OUTBOX` 拉取 `MsgRecordWithObject`，转换为外部 IM API 调用，发送完成后调用 `MsgCenter.report_delivery()`。
-3. Tunnel 不负责 Agent 推理，也不负责响应消息生成。Agent、控制组件或其他系统服务处理消息后，通过 `MsgCenter.post_send()` 生成出站投递任务。
+```text
+MessageTunnel = ingress producer + delivery executor
+```
 
-Message Tunnel 必须尽量保留外部平台原始语义，但不能把平台私有对象强行提升为 BuckyOS DID。外部 user id、chat id、message id 可以只是 `String`，通过 `RouteInfo`、`IngressContext.extra`、`MsgObject.meta` 或 `MsgContent.machine` 保留。
+1. 入站：把外部平台事件转换为 `MsgObject`，携带入站元数据与幂等键调用 `MessageCenter.dispatch()`。
+2. 出站：从自己的 `DELIVERY_QUEUE`（owner = 本实例 `transport_did`）消费 `DeliveryRecord`，调用平台 API，结果回报 `report_delivery()`。
+3. Tunnel 不做：Contact 选择、Agent session 管理、自动选信道、身份合并、UI 会话历史、根据缺失字段猜 chat/address。
 
-## 2. 复用现有类型
+MessageHub 不是 tunnel：它是原生跨 Zone transport，承载 shareable DID 投递；tunnel 承载 shadow DID 投递。二者复用 `DeliveryExecutor` 接口。
 
-不要重新定义以下基础类型，只引用当前实现：
+## 2. DID 规则（必须遵守）
 
-- `ndn_lib::MsgObject`：不可变消息对象，使用 canonical JSON 生成 `ObjId`。
-- `ndn_lib::MsgContent`：消息内容，含 `format/content/machine/refs`。
-- `ndn_lib::MsgObjKind`：当前包括 `chat/group_msg/deliver/notify/event/operation`。
-- `buckyos_api::IngressContext`：入站来源上下文。
-- `SendContext` 已删除：`post_send(msg, idempotency_key)` 只接受已确定的 `MsgObject.to`，target/binding/tunnel 选择在构造 `MsgObject` 前完成。
-- `buckyos_api::RouteInfo`：record 级投递路径和外部 id。
-- `buckyos_api::MsgRecord` / `MsgRecordWithObject`：某个 owner box 中对 `MsgObject` 的可变视图。
-- `buckyos_api::BoxKind`：`INBOX/OUTBOX/GROUP_INBOX/TUNNEL_OUTBOX/REQUEST_BOX`。
-- `buckyos_api::MsgState`：`UNREAD/READING/READED/WAIT/SENDING/SENT/FAILED/DEAD/DELETED/ARCHIVED`。
-- `buckyos_api::DeliveryReportResult`：Tunnel 出站投递结果。
+```text
+Shareable DID                did:bns:alice / did:bns:telegram.alice → MessageHub 投递
+Local shadow endpoint DID    did:msgtunnel:<encoded_account_id>.<account_type>.<tunnel_instance_id>
+                             → 对应 tunnel 实例投递
+其它 / 解析失败               → post_send 直接报错；无 default tunnel、无 fallback
+```
 
-当前通用 tunnel trait 已存在：
+- `account_type` ∈ `user / group / channel / addr`；`encoded_account_id` 可逆编码。
+- `tunnel_instance_id`：本地唯一、稳定、不可复用、推荐 `-tunnel` 结尾（如 `tg-main-tunnel`）；registry 重复注册必须启动失败。
+- shadow DID 只在本 Zone 解析；可作 `from/to`、可直接回复；不得发布到 Profile/DID Document，不得作为跨 Zone 目标。
+- 入站 `from` 保持 shadow endpoint DID，ContactMgr 关联不改写消息来源。
+- 群消息：`from = actor shadow DID`，`to = group DID`；回复群写 `to`，不回 `from`。
+
+## 3. 复用现有类型
+
+不要重新定义以下基础类型（括号内为冻结名，代码重命名进行中，见主文档"现状对照"）：
+
+- `ndn_lib::MsgObject` / `MsgContent` / `MsgObjKind`：不可变消息本体。
+- `buckyos_api::MsgRecord`（→ 拆分为 `MailboxRecord` + `DeliveryRecord`）。
+- `buckyos_api::BoxKind`：`INBOX / OUTBOX(→SENT) / GROUP_INBOX / TUNNEL_OUTBOX(→DELIVERY_QUEUE) / REQUEST_BOX`。
+- `buckyos_api::MsgState`（→ 拆分为 `RecipientState` 与 `DeliveryState` 两个状态机）。
+- `buckyos_api::RouteInfo`（→ `DeliveryEnvelope`：post_send 解析结果快照，不是路由输入）。
+- `buckyos_api::IngressContext`：入站元数据。
+- `buckyos_api::DeliveryReportResult`：投递结果回报。
+
+当前通用 tunnel trait：
 
 ```rust
 #[async_trait]
 pub trait MsgTunnel: Send + Sync {
-    /// Tunnel 自身 DID，用作 TUNNEL_OUTBOX owner 和 RouteInfo.tunnel_did。
+    /// 本实例 transport DID：DELIVERY_QUEUE owner / DeliveryRecord executor。
     fn tunnel_did(&self) -> DID;
-
-    /// 人类可读名称，用于日志、配置和管理界面。
+    /// 人类可读名称（日志/配置/管理界面）。
     fn name(&self) -> &str;
-
-    /// 平台标识，例如 "telegram"、"lark"、"email"、"messagehub"。
+    /// 平台标识："telegram" / "lark" / "email" / ...
     fn platform(&self) -> &str;
-
-    /// 是否接收入站消息。Email outbound-only tunnel 可返回 false。
+    /// 能力声明。supports_egress()=false 的实例不注册为 delivery executor。
     fn supports_ingress(&self) -> bool { true }
-
-    /// 是否支持出站投递。Webhook ingress-only tunnel 可返回 false。
     fn supports_egress(&self) -> bool { true }
-
-    /// 启动外部连接、轮询、webhook server 或 stream consumer。
+    /// 启动/停止外部连接、轮询、webhook 或 stream。
     async fn start(&self) -> AnyResult<()>;
-
-    /// 停止外部连接并释放后台任务。
     async fn stop(&self) -> AnyResult<()>;
-
-    /// 发送一个 TUNNEL_OUTBOX record，并返回外部平台投递结果。
+    /// 执行一条投递任务，返回平台投递结果。
     async fn send_record(&self, record: MsgRecordWithObject) -> AnyResult<DeliveryReportResult>;
 }
 ```
 
-## 3. 推荐新增的通用概念
+## 4. 入站规则
 
-这些是设计概念，不要求立刻改协议对象；能用现有字段表达时优先组合现有字段。
+入站转换必须产生五件事：
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageTunnelAccountKind {
-    /// 平台机器人账号。通常受平台 Bot API 能力限制。
-    Bot,
-    /// 平台自然人账号或用户授权账号。可能能执行更多真实用户行为。
-    User,
-    /// BuckyOS 内部 MessageHub 或系统入口。
-    System,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageTunnelBinding {
-    /// MessageCenter / ContactMgr 中的 owner 或 agent DID。
-    pub owner_did: DID,
-    /// 使用此绑定的 tunnel DID。
-    pub tunnel_did: DID,
-    /// 外部平台名。
-    pub platform: String,
-    /// 外部账号 id。保持平台原始字符串语义。
-    pub account_id: String,
-    /// 平台展示 id 或可路由地址，例如 email address、open_id、chat_id。
-    pub display_id: String,
-    /// bot/user/system。
-    pub account_kind: MessageTunnelAccountKind,
-    /// 平台扩展信息，只能追加字段，旧实现忽略未知 key。
-    pub extra: serde_json::Value,
-}
-```
-
-## 4. 入站转换规则
-
-### 4.1 外部消息到 MsgObject
-
-```rust
-pub struct IngressEnvelope {
-    /// 外部平台名。
-    pub platform: String,
-    /// 当前 tunnel DID。
-    pub tunnel_did: DID,
-    /// 外部发送者账号 id，保留原始字符串。
-    pub source_account_id: String,
-    /// 外部会话 id，保留原始字符串。
-    pub chat_id: String,
-    /// 外部消息 id 或事件 id，用于幂等。
-    pub external_event_id: String,
-    /// 标准化后的 BuckyOS 消息。
-    pub msg: MsgObject,
-    /// 入站上下文。
-    pub ingress_ctx: IngressContext,
-    /// 幂等 key，必须稳定。
-    pub idempotency_key: String,
-}
+```text
+MsgObject + exact source shadow DID (from) + exact recipient/group DID (to)
++ ingress delivery metadata + external idempotency key
 ```
 
 映射要求：
 
-- 1v1 普通消息：`kind=Chat`，`from=sender_did`，`to=[target_agent_or_user_did]`。
-- 群聊消息：`kind=GroupMsg`，`from=sender_did`，`to=[group_did]`。当前 MessageCenter 以 `to.first()` 作为 group DID，旧数据 fallback 到 `from`。
-- 会话状态、成员变更、typing、已读等：优先 `kind=Event` 或 `kind=Notify`，结构化部分放 `content.machine`。
-- 可操作消息、红包、投票、小程序等：优先 `kind=Operation`，`content.machine.intent` 表达操作类型，无法理解的原始 payload 放 `meta` 或 `machine.data.raw`。
-- 附件和媒体：小文本可放 `content.content`；大对象必须写入对象存储后用 `content.refs` 引用。
-- 平台原始 id：放 `IngressContext`、`RouteInfo.ext_ids`、`MsgObject.meta`，不要污染 `from/to`。
-
-### 4.2 入站流程
+- 1v1：`kind=Chat`，`from = sender shadow DID`，`to = [本地 owner/agent DID]`。
+- 群聊：`kind=GroupMsg`，`from = actor shadow DID`，`to = [group DID]`。
+- 会话状态、成员变更：`kind=Event`/`Notify`，结构化部分放 `content.machine`。
+- typing/已读：SessionState 通道或 receipt，**不产生 MailboxRecord**。
+- 可操作消息（红包/投票/卡片）：`kind=Operation`，`machine.intent` 表达操作类型，raw payload 放 `meta`/`machine.data.raw`。
+- 附件：大对象写对象存储后用 `content.refs` 引用。
+- 平台原始 id：放 ingress 元数据 / `ext_ids` / `meta`，不污染 `from/to`。
+- 解析失败的消息进 dead-letter/`REQUEST_BOX`，不得 panic、不得静默丢弃、单条失败不退出主循环。
 
 ```mermaid
 flowchart TD
-    IM[External IM Session] --> T[Message Tunnel]
-    T --> C{Normalize}
-    C --> M[MsgObject + IngressContext + idempotency_key]
-    M --> D[MsgCenter.dispatch]
+    IM[External Platform] --> T[Message Tunnel]
+    T --> M[MsgObject + ingress metadata + idempotency_key]
+    M --> D[MessageCenter.dispatch]
     D --> B[INBOX / GROUP_INBOX / REQUEST_BOX]
-    B --> A[Agent / User Control Component / Other Consumer]
+    B --> A[Agent / UI via Session API]
 ```
 
-## 5. 出站转换规则
+## 5. 出站规则
 
-MessageCenter 已经通过 `post_send()` 生成 `TUNNEL_OUTBOX` record。Tunnel 只消费自己的 outbox。
+出站只消费**完整的** `DeliveryRecord`；envelope 在 `post_send` 时已解析完毕：
 
-```rust
-pub struct EgressEnvelope {
-    /// 待发送 record，用于状态回报。
-    pub record_id: String,
-    /// 标准消息对象。
-    pub msg: MsgObject,
-    /// 出站路由，来自 MsgRecord.route。
-    pub route: RouteInfo,
-    /// 外部目标地址，通常来自 route.address/chat_id/account_id。
-    pub external_target: String,
-}
-```
-
-出站要求：
-
-- `route.tunnel_did` 必须等于当前 tunnel DID。
-- `route.platform/account_id/address/chat_id/ext_ids` 是投递主要依据。
-- `send_record()` 成功必须返回 `DeliveryReportResult { ok: true, external_msg_id, delivered_at_ms, ... }`。
-- 可重试失败返回 `ok=false, retryable=true, retry_after_ms`。
-- 不可重试失败返回 `ok=false, retryable=false, error_code/error_message`。
-- Tunnel 不直接更新 record state，统一由 egress worker 调用 `MsgCenter.report_delivery()`。
-
-### 5.1 出站流程
+- `envelope.transport_did` 必须等于本实例，否则拒绝执行。
+- 投递地址只来自 envelope 一级字段；**缺少目标 address/chat 时必须失败**（不可重试）。
+- 禁止猜测链：`chat_id → extra → account_id → default_chat_id`。
+- `extra/meta` 只保存平台扩展信息，不能成为路由依据。
+- 成功：`DeliveryReportResult { ok: true, external_msg_id, delivered_at_ms }`。
+- 可重试失败：`ok=false, retryable=true, retry_after_ms`（如 429）。
+- 不可重试失败：`ok=false, retryable=false, error_code/error_message`（如 400/403）。
+- 发送超时状态未知：按 retryable 回报并标注 duplicate risk。
+- Tunnel 不直接改 record 状态，统一走 `report_delivery()`。
 
 ```mermaid
 flowchart TD
-    A[Agent / User / Service] --> P[MsgCenter.post_send]
-    P --> O[Owner OUTBOX]
-    P --> TQ[TUNNEL_OUTBOX owner=tunnel_did]
-    TQ --> W[MsgCenter egress worker]
-    W --> T[Message Tunnel.send_record]
-    T --> IM[External IM Session]
+    A[Agent / User / Service] --> P[MessageCenter.post_send]
+    P --> S[SENT MailboxRecord]
+    P --> Q[DELIVERY_QUEUE: DeliveryRecord × N targets]
+    Q --> W[delivery worker: get_next WAIT lock=true]
+    W --> T[MsgTunnel.send_record]
+    T --> IM[External Platform]
     T --> R[DeliveryReportResult]
-    R --> D[MsgCenter.report_delivery]
+    R --> D[MessageCenter.report_delivery]
+    D --> V[SessionProjection 聚合状态更新]
 ```
 
-## 6. 顺序、幂等、遗漏
+## 6. 状态机、幂等、恢复
 
-- 入站幂等 key：`{platform}:{tunnel_account}:{chat_id}:{external_message_id}`。没有 message id 时用平台事件时间、nonce 和 payload hash 组合。
-- 出站幂等：`MsgObjectId + tunnel_did + target + route.mode` 应映射为同一 `TUNNEL_OUTBOX` record。
-- 顺序：同一外部会话内应尽量按平台消息序号或时间递增提交；跨会话不保证全局顺序。
-- 重复：MessageCenter 以 `MsgObjectId`、record id 和显式 idempotency key 去重；Tunnel 仍要避免重复提交。
-- 漏消息：Tunnel 重启后必须从平台 offset/cursor 或 MessageCenter outbox 恢复；实时通知只能作为提示，不能作为唯一真相。
+投递状态机（属 `DeliveryRecord`，不碰 `MsgObject`）：
+
+```text
+WAIT → SENDING → SENT
+             ↘ FAILED → WAIT（退避重试）
+                      ↘ DEAD（可诊断、可人工重投）
+```
+
+- 出站幂等键：`msg_id + target_did + executor_did`；重复提交/重放收敛到同一 `DeliveryRecord`。
+- 入站幂等键：`{platform}:{tunnel_account_id}:{chat_id}:{external_message_id}`；无稳定 id 时用 `{event_timestamp}:{payload_hash}` 组合；必须持久化（带 TTL），不能只放内存。
+- 投递语义四级：submission accepted → transport accepted（`SENT`）→ remote delivered → remote read；`SENT` 只承诺 transport accepted。
+- 恢复：入站靠平台 offset/cursor 持久化补拉；出站靠 `DELIVERY_QUEUE` 扫描（`WAIT` 到期 + `SENDING` 租约超时 sweep）；webhook/stream/kevent 只是加速信号。
+- 顺序：同一外部会话内尽量按平台顺序提交；严格因果用 `thread.reply_to`/`correlation_id`/`ext_ids`。
 
 ## 7. 流式 AI 消息
 
-对接聊天 AI 时，流式 token 不应直接破坏 `MsgObject` 不可变语义。推荐：
+- 中间态（typing/partial/status）走 SessionState 易失通道，带 `turn_nonce`/`correlation_id`；不产生 `MailboxRecord`/`DeliveryRecord`。
+- 最终回复才是 `kind=Chat/GroupMsg` 的 `MsgObject`，走正常 `post_send`。
+- 支持编辑的平台可把中间态渲染为消息编辑；不支持的降级为 typing 或只发最终消息。
 
-- 中间态：发送 `kind=Notify` 或 `kind=Event`，用相同 `thread.topic/ui_session_id` 和 `content.machine.data.turn_nonce` 标识同一轮。
-- 最终态：发送一个完整 `kind=Chat` 或 `kind=GroupMsg` 回复。
-- 支持消息编辑的平台可由具体 Tunnel 把中间态合并成编辑操作；不支持编辑的平台可降级为状态消息或只发送最终消息。
+## 8. 典型裁剪
 
-## 8. 典型 Tunnel 裁剪
-
-- Telegram：Bot tunnel 已实现基础形态；支持 bot 账号入站/出站、typing/status line、附件引用。平台限制由 `TgTunnel` 内裁剪。
-- Lark：同 Telegram，需额外处理企业租户、open_id/user_id/chat_id 的原始语义。
-- Email：通常是 UserMsgTunnel 或 System tunnel；`chat_id` 可映射为 thread id/message-id；typing/已读通常不支持。
-- MessageHub：BuckyOS 原生 tunnel；应尽量无损保留 `MsgObject`，不需要把外部平台 id 映射成 DID。
+- Telegram：参考基线；429 retryable、400/403 dead；无 `default_chat_id` fallback；附件对象化。
+- Lark：企业租户语义入 `ext_ids`；卡片类 `kind=Operation`。
+- Email：`account_type=addr`；thread 语义入 `thread`/`ext_ids`；无 typing、回执不可靠。
+- MessageHub：不是 tunnel（原生 transport），无损传递 `MsgObject`。
 
 ## 9. 兼容性规则
 
-- 未知 `MsgObjKind`、`content.format`、`machine.intent`、`meta` key：必须保留或忽略，不能 panic。
-- 未知外部消息类型：降级为 `kind=Event` 或 `kind=Operation`，原始 payload 放 `extra/raw`。
-- 旧系统收到新字段：依赖 serde default/skip 规则忽略未知字段。
-- 新系统读取旧 record：按当前实现保留 group DID fallback。
-- 不允许因单条消息解析失败导致 tunnel 主循环退出；应记录日志并跳过或投递到 `REQUEST_BOX`。
+- 未知 `MsgObjKind`/`format`/`intent`/`meta` key：保留或忽略，不 panic。
+- 未知外部消息类型：降级为 `Event`/`Operation` + raw payload。
+- `meta/extra/ext_ids` 只追加；不改变 `MsgObject` 已有字段语义。
+- 单条消息解析失败不得导致 tunnel 主循环退出。

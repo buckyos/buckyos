@@ -93,7 +93,7 @@ BuckyOS / MessageHub 的应用协议只承认一种主体：**DID 实体**。CYF
 
 1. **成员关系（双向可证）**：集合声明某个 DID 是成员，成员侧也能产生证明自己属于该集合的可验证签名。这是集合“非伪造”的根本保障。单体实体的“成员”恒为空，不存在这一语义。
 2. **递归组合**：集合的成员可以是单体实体，也可以是另一个集合。BuckyOS / MessageHub 层**有且仅有这一种集合定义**；不再为团队、组织、频道、项目等语义发明独立集合实体类型，所有这类语义都通过“集合 + policy”组合表达。
-3. **读取权派生于成员关系**：集合实体拥有自己的 `GROUP_INBOX`。任意一方向集合发消息时，逻辑主线只写入集合 inbox；物理投递层可以为本地 reader 创建 `INBOX` 记录、read receipt 或 tunnel delivery record，但不能把同一个 `MsgObject` 复制成多份群消息。成员通过自己作为成员的事实，获得对该集合 inbox 或其投影记录的读取权。
+3. **读取权派生于成员关系**：集合实体拥有自己的 `GROUP_INBOX`——**它是 group 的权威 mailbox，群消息的唯一逻辑主线**。任意一方向集合发消息时，逻辑主线只写入集合 inbox；物理投递层可以为本地 reader 创建投影记录、read receipt 或面向远端成员的 `DeliveryRecord`，但不能把同一个 `MsgObject` 复制成多份群消息。成员通过自己作为成员的事实，获得对该集合 inbox 或其投影记录的读取权；**群会话（Session）是 group mailbox 的投影**，可随时从 `GROUP_INBOX` 重建。
 4. **成员变更可观察**：集合的成员是动态的，因此必须配套事件流和版本快照，使历史动作（一条消息当时投给了谁、一份签名当时由谁产生、一次收益归属当时引用了哪个集合版本）不会被后续成员变更回溯篡改。
 5. **集合内部策略的部分公开**：单体实体的内部状态对外通常是黑箱；集合则必须按 policy 暴露一部分内部结构，例如成员可见性、JoinPolicy、PostPolicy、管理员可见性、nested group 策略和 attribution 策略，因为这些策略直接决定外部如何与该集合交互。
 
@@ -197,25 +197,23 @@ DID Document 是公开的，但群成员列表、管理员身份和递归成员�
 
 ### 2.7 群消息语义
 
-与 MessageCenter 现有设计保持一致：
+与冻结后的 MessageCenter 设计保持一致（见 [Message Center.md](<./Message Center.md>) §3.4）：
 
 * 群消息的会话主体是 `group_did`。
-* 群消息作者是 `source`。
 * 群消息对象本身应是 canonical JSON `NamedObject`，其 `ObjectId` 是幂等写入、目录列表和后续 Pull 的共同锚点。
 * 群消息里的附件、大文件、长文本、引用内容只能放在引用字段中，例如 `ObjectId`、`FileObject`、`ChunkList` 或语义 URL，不能作为跨 Zone `dispatch` body 直接推入 host Zone。
-* 规范化后的群消息建议使用：
+* 群消息固定使用：
 
 ```rust
 MsgObject {
-    from: group_did,
-    source: author_did,
-    to: member_dids,
+    from: author_did,      // actor：外部平台成员是 shadow endpoint DID，原生成员是真实 DID
+    to: vec![group_did],   // 群实体（shadow/real group DID）
     kind: "group_msg",
     ...
 }
 ```
 
-也就是说，UI 或 agent 可以提交 `from=author, to=[group]` 的发送意图，但进入群时间线前，MessageCenter/Group 管理组件应把它规范化为 `from=group, source=author` 的群消息对象。
+`from/to` 在消息创建时即为最终形态，**任何环节不得改写**（`MsgObject` 不可变，改写会改变 `ObjectId`，破坏幂等锚点）。回复群聊使用 group `to`，不能回复 actor `from`——回复 `from` 是绕开群私聊该成员，必须是显式用户动作。
 
 跨 Zone 发送时，规范化后的消息通过 CYFS `dispatch` 投递到 group host 控制的语义路径：
 
@@ -352,7 +350,7 @@ MessageCenter 是群消息进入 host Zone 后的唯一消息域真相源。对 
 2. 支持 group message dispatch：校验 group 存在、作者权限、消息规范化、canonical JSON `ObjectId`、幂等写入。
 3. 对每个本地 reader 创建 `INBOX` 记录或 read receipt 初始化，但不能复制 `MsgObject`；reader 视图只引用同一个 `MsgObjectId`。
 4. 支持 per-reader `MsgReceiptObj`，群消息已读状态跟 reader 走，不跟 group 消息本体走。
-5. 支持 host-side delivery plan：self-host group 收到群消息后，由 host 负责向远端成员投递同一个小型 `MsgObject` 或其引用；附件、Chunk、FileObject content 不随投递自动复制。
+5. 支持 host-side delivery：self-host group 收到群消息后，由 host 负责向远端成员投递同一个小型 `MsgObject` 或其引用。**群投递使用 DeliveryRecord**：每个远端成员目标（成员登记的确定 DID）生成一条独立 `DeliveryRecord`，独立重试、独立结果，一个成员投递失败不污染其他成员；附件、Chunk、FileObject content 不随投递自动复制。
 6. 当成员包含 nested group 且 policy 允许展开时，MessageCenter 应使用 GroupMgr/ContactMgr 返回的展开快照生成投递计划；不能自行递归解析成员。
 7. 支持成员变更的系统消息或 event message，使群历史能解释成员加入、退出、改名、权限变化。
 8. 支持把需要管理员确认的 group operation 发送到管理员个人 `INBOX`，而不只写入 group 事件流。
@@ -362,22 +360,25 @@ MessageCenter 是群消息进入 host Zone 后的唯一消息域真相源。对 
 关键约束：
 
 * `MsgObject` 仍然不可变。
-* 投递重试、外部 message id、tunnel 路由、失败状态仍写在 `MsgRecord.route` / `MsgRecord.delivery`。
+* 投递重试、外部 message id、投递地址快照、失败状态全部写在 `DeliveryRecord`（内含 `DeliveryEnvelope`），不回写 `GROUP_INBOX` 记录，更不改 `MsgObject`。
+* **群 Session 是 group mailbox 的投影**：UI/Agent 经 Session API 读取群会话，其数据来自 `GROUP_INBOX` 记录 + per-reader 阅读状态 + 出站 `DeliveryRecord` 聚合；UI 不直接读取投递队列。
 * 群成员变更不能回改历史消息的 `to` 列表；历史消息只代表写入时的成员快照或投递计划。
 * 对外 inbox 目录如果使用 `list=loose`，列表只表示 host 当前可见视图，不是可密码学证明的完整历史；需要封版审计时另行生成强一致归档对象。
 
 ### 3.4 Tunnel / Native Transport
 
-Self-host group 需要两类投递路径：
+Self-host group 需要两类投递路径，与 `post_send` 的两条确定分支一一对应：
 
-1. **BuckyOS 原生 DID 路径**：成员也是 BuckyOS DID 时，优先通过 DID/Zone 路由投递到对方 MessageCenter。
-2. **外部平台 tunnel 路径**：成员只有 Telegram/Email 等绑定时，通过 ContactMgr 选出的 tunnel 投递。
+1. **BuckyOS 原生 DID 路径**：成员记录中的 DID 是 shareable DID 时，走 MessageHub（DID → Zone 解析 → dispatch）。
+2. **外部平台 tunnel 路径**：成员记录中的 DID 是 local shadow endpoint DID（`did:msgtunnel:*`）时，由 DID 内嵌的 `tunnel_instance_id` 确定 tunnel 实例。
+
+投递目标来自**成员记录/展开快照中登记的确定 DID**，逐目标生成 `DeliveryRecord`；不存在"ContactMgr 选 tunnel"环节。
 
 Tunnel 侧需求：
 
-1. 能消费 `TUNNEL_OUTBOX` 中属于 group delivery 的记录。
+1. 能消费 `DELIVERY_QUEUE` 中属于 group delivery 的 `DeliveryRecord`。
 2. 发送成功后通过 `report_delivery(record_id, result)` 回写外部消息 id 和状态。
-3. 外部平台回流的群消息必须能映射到 `group_did` 和 `source`，不能只保留平台 chat id。
+3. 外部平台回流的群消息必须能映射到 `from = actor shadow endpoint DID`、`to = group DID`，不能只保留平台 chat id。
 4. 同一外部平台群如果只是同步进来的 joined group，不应默认变成 self-host group。
 5. BuckyOS 原生跨 Zone 投递优先使用 CYFS `dispatch` 语义；外部平台 tunnel 只能作为 transport adapter，不能改变 `MsgObject` 是不可变 `NamedObject`、附件按引用 Pull 的规则。
 
@@ -855,28 +856,26 @@ rr/{group_did}/{reader_did}/{msg_id} -> MsgReceiptObjId
 
 ### 6.4 发送群消息
 
-1. author 在 MessageHub/Agent 中向 `group_did` 发送消息。
-2. UI/Agent 可以先提交发送意图；进入 host 写入点前，MessageCenter 规范化 `MsgObject`：`from=group_did`，`source=author_did`，`kind=group_msg`。
-3. `MsgObject` 必须是 canonical JSON `NamedObject`，附件和大对象只放引用，不放跨 Zone body。
-4. 如果 author 与 group host 不在同一 Zone，发送方通过 `PUT cyfs://$group_ood/<group_did>/inbox` 执行 CYFS `dispatch`，并在 `cyfs-original-user` / `cyfs-proofs` 中携带作者和成员证明上下文。
-5. host MessageCenter 调用 GroupMgr 校验 `group.post_message`，校验内容包括 DID Document、成员状态、成员签名、`PostPolicy` 和 `dispatch` 请求上下文。
-6. MessageCenter 按 `MsgObjectId` 幂等保存 `MsgObject`。
-7. MessageCenter 写入 group 的 `GROUP_INBOX` 记录，使 `GET .../<group_did>/inbox?list=loose` 能返回该 `MsgObjectId`。
-8. GroupMgr/ContactMgr 根据 `GroupCollectionPolicy` 计算本地 subscribers 和远端 delivery plan；若成员包含 nested group，必须使用有界递归展开并保存展开快照。
-9. MessageCenter 根据本地 subscribers 创建 reader `INBOX` 记录或 read receipt。
-10. ContactMgr 生成远端成员 delivery plan。
-11. MessageCenter 写入一个或多个 `TUNNEL_OUTBOX` / native dispatch 记录，投递同一个小型 `MsgObject` 或其引用。
-12. tunnel/native transport 投递后通过 `report_delivery()` 回写状态。
+1. author 在 MessageHub/Agent 中向 `group_did` 发送消息：构造 `MsgObject { from=author_did, to=[group_did], kind=group_msg }`。`from/to` 即最终形态，任何环节不得改写。
+2. `MsgObject` 必须是 canonical JSON `NamedObject`，附件和大对象只放引用，不放跨 Zone body。
+3. 如果 author 与 group host 不在同一 Zone，发送方通过 `PUT cyfs://$group_ood/<group_did>/inbox` 执行 CYFS `dispatch`，并在 `cyfs-original-user` / `cyfs-proofs` 中携带作者和成员证明上下文。
+4. host MessageCenter 调用 GroupMgr 校验 `group.post_message`，校验内容包括 DID Document、成员状态、成员签名、`PostPolicy` 和 `dispatch` 请求上下文。
+5. MessageCenter 按 `MsgObjectId` 幂等保存 `MsgObject`。
+6. MessageCenter 写入 group 的 `GROUP_INBOX` 记录（权威 mailbox），使 `GET .../<group_did>/inbox?list=loose` 能返回该 `MsgObjectId`。
+7. GroupMgr 根据 `GroupCollectionPolicy` 计算本地 subscribers 与远端成员目标集；若成员包含 nested group，必须使用有界递归展开并保存展开快照。目标集里的每个成员是**成员记录中登记的确定 DID**（shareable 或 shadow endpoint DID）。
+8. MessageCenter 根据本地 subscribers 创建 reader 投影记录或 read receipt。
+9. MessageCenter 为每个远端成员目标创建一条独立 `DeliveryRecord`（shareable DID → MessageHub；shadow endpoint DID → 对应 tunnel 实例），投递同一个小型 `MsgObject` 或其引用。
+10. MessageHub/tunnel 投递后通过 `report_delivery()` 回写状态；失败按目标独立重试，不影响其他成员。
 
 如果 `PostPolicy=AdminOnly`，普通 member 不能写入 group。这类 group 是通知群，管理员发送的消息仍按普通 group message 进入 `GROUP_INBOX` 和成员 inbox。
 
 ### 6.5 接收远端成员发来的群消息
 
 1. tunnel 或 native transport 收到远端消息。
-2. ContactMgr 解析外部身份到 `source_did`。
+2. 外部平台来源解析为确定的 shadow endpoint DID（`resolve_endpoint_did`），作为消息 `from`；原生来源 `from` 即真实 DID。ContactMgr 的联系人关联只影响展示，不改写 `from`。
 3. 如果是 BuckyOS 原生路径，native transport 应把请求视为 `dispatch` 到 `/<group_did>/inbox` 的 canonical `MsgObject`，并校验 body 可得到稳定 `MsgObjectId`。
-4. GroupMgr 根据 `group_did`、`source_did`、成员 proof、`cyfs-proofs` 和 `PostPolicy` 校验成员状态。
-5. MessageCenter 规范化并写入 `GROUP_INBOX`。
+4. GroupMgr 根据 `group_did`、作者 DID、成员 proof、`cyfs-proofs` 和 `PostPolicy` 校验成员状态。
+5. MessageCenter 校验通过后将 `MsgObject` **原样**写入 `GROUP_INBOX`（不规范化改写，改写会改变 `ObjectId`）。
 6. 后续流程与本地发送群消息一致。
 
 远端消息不能绕过 host 直接写本地成员的 inbox。Self-host group 的写入点必须收敛到 host Zone 的 MessageCenter。附件不会在这一步被上传到 host 或成员 Zone；只传播引用，是否 Pull 由接收方策略决定。
@@ -920,10 +919,11 @@ rr/{group_did}/{reader_did}/{msg_id} -> MsgReceiptObjId
 2. reader 先读取 `GET cyfs://$group_ood/<group_did>/inbox?list=loose&after=<cursor>&limit=<n>`，得到当前可见的 `MsgObjectId` 数组。
 3. reader 比对本地已持有对象，只对缺失的 `MsgObjectId` 发起标准 `get_object_by_url`，并按 CYFS canonical JSON 规则校验对象。
 4. reader 展示消息时，如果发现附件、`FileObject`、`ChunkList` 或语义 URL 引用，再根据 UI、网络和权限策略按需 Pull。
-5. MessageCenter 对该 reader 写入或更新独立阅读状态，可落在 reader 的 `MsgRecord.state`，也可以在 `MsgReceiptObj` 中扩展独立 `read_state` 字段。
+5. MessageCenter 对该 reader 写入或更新独立阅读状态（`RecipientState`），可落在 reader 的投影记录上，也可以在 `MsgReceiptObj` 中扩展独立 `read_state` 字段。
 6. read receipt 索引使用 `rr/{group}/{reader}/{msg_id}`。
 7. 群消息本体和 group inbox record 不表达某个 reader 是否已读。
-8. 现有 `ReceiptStatus::Accepted/Rejected/Quarantined` 表达接收结果，不应直接复用为 `READING/READED`。
+8. 现有 `ReceiptStatus::Accepted/Rejected/Quarantined` 表达接收结果，不应直接复用为 `READING/READ`。
+9. reader 的群会话视图是投影：由 `GROUP_INBOX` 记录 + 本 reader 阅读状态 + 出站 `DeliveryRecord` 聚合派生，经 Session API 读取。
 
 
 ### 6.10 递归集合展开
@@ -1031,7 +1031,7 @@ class MessageCenter:
     def set_group_read_state(self, group_did, msg_id, reader_did, state): pass
 ```
 
-这些 API 可以复用已有 `dispatch()` / `post_send()`，但建议在接口层保留 group 语义，避免调用方手工拼错 `from/source/to/kind`。
+这些 API 可以复用已有 `dispatch()` / `post_send()`，但建议在接口层保留 group 语义，避免调用方手工拼错 `from/to/kind`（群消息固定 `from=author, to=[group_did]`）。
 
 ### 7.4 CYFS 语义路径参考
 
@@ -1109,7 +1109,7 @@ GET cyfs://$group_ood/<group_did>/sub/<subgroup_id>/inbox?list=loose&after=<curs
 16. 支持 CYFS `dispatch` 入口：`/<group_did>/inbox`、`/<group_did>/join`、`/<group_did>/member_proofs`，并正确处理 `cyfs-original-user`、`cyfs-proofs` 和 canonical JSON `ObjectId`。
 17. 支持 `GET .../<group_did>/inbox?list=loose` 返回 `MsgObjectId` 数组，reader 再按需拉取缺失 `MsgObject` 和附件引用。
 18. UI 能展示 hosted/joined、member count、DID、owner、messageable、entity kind 和 collection policy 摘要。
-19. tunnel 投递结果能回写到 `TUNNEL_OUTBOX` record。
+19. tunnel 投递结果能回写到 `DeliveryRecord`。
 
 ### 9.2 可以后置
 
