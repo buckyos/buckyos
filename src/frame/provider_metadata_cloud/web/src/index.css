@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --cp-bg: oklch(0.97 0.011 230);
+  --cp-bg-strong: oklch(0.92 0.02 224);
+  --cp-surface: color-mix(in srgb, oklch(0.99 0.004 220) 92%, white);
+  --cp-surface-2: color-mix(in srgb, oklch(0.955 0.017 217) 92%, white);
+  --cp-surface-3: color-mix(in srgb, var(--cp-accent-soft) 10%, var(--cp-surface));
+  --cp-text: oklch(0.25 0.027 238);
+  --cp-muted: oklch(0.51 0.026 235);
+  --cp-border: color-mix(in srgb, oklch(0.73 0.026 230) 52%, transparent);
+  --cp-border-opaque: oklch(0.73 0.026 230);
+  --cp-accent: oklch(0.58 0.118 205);
+  --cp-accent-soft: oklch(0.78 0.078 178);
+  --cp-ink-accent: oklch(0.58 0.08 150);
+  --cp-success: oklch(0.68 0.13 150);
+  --cp-warning: oklch(0.73 0.13 78);
+  --cp-danger: oklch(0.62 0.16 28);
+  --cp-shadow: oklch(0.28 0.028 238);
+  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 44%, transparent);
+  --cp-panel-shadow: 0 22px 60px color-mix(in srgb, var(--cp-shadow) 10%, transparent);
+  --cp-window-shadow: 0 28px 90px color-mix(in srgb, var(--cp-shadow) 18%, transparent);
+  --cp-ease-emphasis: cubic-bezier(0.19, 1, 0.22, 1);
+  --cp-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --cp-bg: oklch(0.19 0.018 238);
+  --cp-bg-strong: oklch(0.15 0.018 238);
+  --cp-surface: color-mix(in srgb, oklch(0.25 0.022 238) 90%, transparent);
+  --cp-surface-2: color-mix(in srgb, oklch(0.29 0.025 236) 88%, transparent);
+  --cp-surface-3: color-mix(in srgb, var(--cp-accent-soft) 14%, var(--cp-surface));
+  --cp-text: oklch(0.94 0.012 230);
+  --cp-muted: oklch(0.73 0.02 230);
+  --cp-border: color-mix(in srgb, oklch(0.56 0.024 232) 36%, transparent);
+  --cp-border-opaque: oklch(0.56 0.024 232);
+  --cp-accent: oklch(0.72 0.1 205);
+  --cp-accent-soft: oklch(0.7 0.08 170);
+  --cp-ink-accent: oklch(0.75 0.07 150);
+  --cp-success: oklch(0.76 0.12 150);
+  --cp-warning: oklch(0.82 0.12 78);
+  --cp-danger: oklch(0.72 0.14 28);
+  --cp-shadow: oklch(0.02 0.01 238);
+  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 56%, transparent);
+  --cp-panel-shadow: 0 28px 70px color-mix(in srgb, var(--cp-shadow) 32%, transparent);
+  --cp-window-shadow: 0 36px 110px color-mix(in srgb, var(--cp-shadow) 42%, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100dvh;
+}
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-kerning: normal;
+  color: var(--cp-text);
+  background: var(--cp-bg);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+:where(button, [role='button'], a, input, select, textarea):focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--cp-surface) 90%, transparent),
+    0 0 0 4px var(--cp-focus-ring);
+}
+
+.shell-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.shell-scrollbar::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--cp-text) 18%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.shell-card {
+  border: 1px solid var(--cp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cp-surface) 92%, transparent);
+  box-shadow: var(--cp-panel-shadow);
+}
+
+@media (max-width: 767px) {
+  .mobile-readonly-hide {
+    display: none !important;
+  }
+}

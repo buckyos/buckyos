@@ -47,6 +47,12 @@ impl DriverModelResolveRequest {
 pub struct DriverMetadataDocument {
     pub schema_version: u32,
     pub provider_driver: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub protocol_family: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
     pub revision: String,
     #[serde(default)]
     pub models: Vec<DriverModelRule>,
@@ -80,6 +86,10 @@ pub struct DriverModelRule {
     pub logical_mounts: Option<Vec<String>>,
     #[serde(default)]
     pub capabilities: DriverCapabilitiesPatch,
+    #[serde(default)]
+    pub context_limits: DriverContextLimits,
+    #[serde(default)]
+    pub pricing: Option<DriverPricing>,
     #[serde(default)]
     pub estimated_cost_usd: Option<f64>,
     #[serde(default)]
@@ -118,6 +128,24 @@ pub struct DriverVersionRule {
     pub exclude_snapshot_date_suffix: bool,
     #[serde(default)]
     pub capabilities: DriverCapabilitiesPatch,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DriverContextLimits {
+    #[serde(default)]
+    pub max_context_tokens: Option<u64>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DriverPricing {
+    #[serde(default)]
+    pub price: Option<f64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub unit: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -275,11 +303,26 @@ fn resolve_driver_model(
                 .collect();
         }
         apply_capabilities_patch(&mut capabilities, &rule.capabilities);
+        if rule.context_limits.max_context_tokens.is_some() {
+            capabilities.max_context_tokens = rule.context_limits.max_context_tokens;
+        }
+        if rule.context_limits.max_output_tokens.is_some() {
+            capabilities.max_output_tokens = rule.context_limits.max_output_tokens;
+        }
         if rule.parameter_scale.is_some() {
             parameter_scale = rule.parameter_scale.clone();
         }
         if rule.estimated_cost_usd.is_some() {
             estimated_cost_usd = rule.estimated_cost_usd;
+        } else if let Some(pricing) = rule.pricing.as_ref() {
+            if pricing
+                .currency
+                .as_deref()
+                .map(|currency| currency.eq_ignore_ascii_case("USD"))
+                .unwrap_or(false)
+            {
+                estimated_cost_usd = pricing.price;
+            }
         }
         if rule.estimated_latency_ms.is_some() {
             estimated_latency_ms = rule.estimated_latency_ms;

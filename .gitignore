@@ -92,3 +92,6 @@ test/**/target/
 src/rootfs/bin/workflow/workflow
 *.codex
 src/deno.lock
+src/frame/provider_metadata_cloud/web/node_modules/
+src/frame/provider_metadata_cloud/web/dist/
+src/frame/provider_metadata_cloud/web/test-results/

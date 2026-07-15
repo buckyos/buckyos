@@ -18,7 +18,29 @@
 
 说明：A 服务 / B 服务只是本文档为了描述架构职责而使用的简称，不是产品 UI 文案。WebUI 不得直接展示“A 服务”“B 服务”“A/B”等字样，应使用“技术参数”“运营参数”“技术源”“同步源”“发布源 revision”“运营 revision”等名称。
 
-本设计定义 provider-driver metadata 的云端维护、发布、客户端拉取和本地增量应用机制。A 服务负责相对稳定的技术事实与 key 字段，B 服务负责相对高频的运营参数，并可从 A 服务拉取技术参数后合并成客户端可直接消费的完整配置。客户端最终接收的发布格式保持为 `revision + providers[]` 的 JSON 快照，其中 provider 内继续下发 `models`、`patterns`、`defaults` 等字段，供 AICC metadata resolver 生成 `ProviderInventory`、`ModelMetadata`、`logical_mounts`、`capabilities`、`pricing` 等运行时结构。
+本设计定义 provider-driver metadata 的云端维护、发布、客户端拉取和本地增量应用机制。A 服务负责相对稳定的技术事实与 key 字段，B 服务负责相对高频的运营参数，并可从 A 服务拉取技术参数后合并成客户端可直接消费的完整配置。客户端最终接收的发布格式是按 `provider_driver` 组织的 driver metadata document，字段保持为 `schema_version`、`provider_driver`、`name`、`base_url`、`revision`、`models`、`patterns`、`defaults`、`variants`、`version_rules`、`signature`，供 AICC metadata resolver 生成 `ProviderInventory`、`ModelMetadata`、`logical_mounts`、`capabilities`、`pricing` 等运行时结构。
+
+### 1.1 Client Publish View
+
+本文中“发布”指客户端最终拉取并消费的内容，不指云端 RDB、对象存储、编辑草稿或审计日志的存储形态。云端可以使用 provider、model_param_rules、metadata_variants、metadata_version_rules、model_nicks、ops_overlays 等表格化数据维护草稿和审计事实；发布预览、发布缓存和客户端下发内容必须由这些数据物化为 `doc/aicc/driver_metadata_schema.md` 定义的 driver metadata document。
+
+客户端下发单元按 `provider_driver` 组织，等价于 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json` 可接收的内容。每个 document 只包含：
+
+- `schema_version`
+- `provider_driver`
+- `name`
+- `base_url`
+- `revision`
+- `models`
+- `patterns`
+- `defaults`
+- `variants`
+- `version_rules`
+- `signature`
+
+`name` 和 `base_url` 是 driver metadata 下发字段。`base_url` 用于区分兼容 provider 和 endpoint 匹配，缺省时客户端按 `provider_driver` 取默认 endpoint；`name` 用于 provider 推荐和类型展示，不是用户创建的 provider instance 展示名。
+
+`provider_key`、`provider_kind`、`protocol_family`、源对象引用、`model_nicks`、`logical_directories`、`dictionaries`、`ops_overlays`、`recommendation_level`、`display_priority`、`routing_weight`、`ops_note` 等都是管理、编辑、校验或运营合并输入，不是 driver metadata 下发字段。它们可以影响是否下发、下发到哪个 selector、以及合法 driver metadata 字段的取值，但不能原样出现在客户端 driver metadata document 中。
 
 ## 2. Data Classification
 
@@ -27,13 +49,13 @@
 | Provider 技术主数据 | A | Durable | `provider_driver`、`name`、`base_url`、provider key、协议族、默认 endpoint 等。 |
 | Model 参数匹配规则 | A | Durable | 通过 `exact` / `pattern` / `default` 匹配原始 `model.id`，并赋予 `api_types`、`capabilities`、上下文长度、默认 logical mounts、技术 tags 等参数。 |
 | Variants/version_rules | A | Durable | driver metadata resolver 的附加规则输入。 |
-| Provider 模型选择规则 | A | Durable | 白名单、黑名单、按原厂/协议族/model id pattern 的选择规则、`model_nicks`。 |
+| Provider 源对象引用 | A | Durable | provider 白名单引用的 models、patterns、defaults、variants、version rules 及其 source key；排除模型最终表达为 exact/pattern `model_param_rules.exclude=true`。 |
 | 运营 overlay | B | Durable | provider/model 禁用、推荐权重、运营价格覆盖、展示优先级、灰度策略。 |
 | 发布 revision | A/B | Durable | 每次有效发布递增，客户端据此判断是否更新。 |
 | 编辑会话快照 | A/B | Durable | 进入编辑模式时保存，提交时用于 diff、影响范围分析和审计。 |
 | 变更日志 | A/B | Durable | 记录操作者、导入文档、diff、审批结果、发布 revision。 |
 | 导入更新计划 | A/B | Durable | 人或 AI 生成的可读文本，导入后成为待提交变更。 |
-| 聚合发布缓存 | A/B | Disposable | 从 RDB 物化出的 `revision + providers[]` JSON，可随时重建。 |
+| 聚合发布缓存 | A/B | Disposable | 从 RDB 物化出的 driver metadata document，可随时重建。 |
 | A 服务远端查询缓存 | B | Disposable | B 服务拉取 A 服务结果后的短期缓存，可在服务启动或发布后重建。 |
 | API HTTP cache metadata | A/B | Disposable | ETag、Last-Modified、压缩缓存。 |
 | WebUI 检索索引 | A/B | Disposable | 搜索加速索引，可由 durable data 重建。 |
@@ -63,12 +85,12 @@
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| provider_key | TEXT PK | NO | | A 服务生成的稳定 provider key。 |
+| provider_key | TEXT PK | NO | | 服务端自动编号生成的稳定 provider key；创建后不可修改。 |
 | provider_driver | TEXT | NO | | AICC driver id，如 `openai`、`claude`、`google-gemini`、`fal`。 |
 | name | TEXT | YES | | 主流展示名，如 `OpenRouter`；不是用户创建的 provider instance 展示名。 |
 | base_url | TEXT | YES | | provider endpoint 匹配 key；为空时客户端按 `provider_driver` 取默认 endpoint。 |
-| provider_kind | TEXT | NO | `origin` | `origin` / `aggregator` / `compatible_proxy`。 |
-| protocol_family | TEXT | YES | | 协议族，如 `openai-compatible`。 |
+| provider_kind | TEXT | NO | `origin` | `origin`（原厂）/ `aggregator`（聚合多个上游 inventory）。协议兼容性不属于 kind。 |
+| protocol_family | TEXT | YES | | 客户端调用该 endpoint 时使用的 wire protocol，如 `openai-compatible`、`anthropic`、`google`；多个 provider 可复用同一协议族。 |
 | enabled | INTEGER | NO | `1` | A 服务技术层是否发布。 |
 | owner_service | TEXT | NO | `A` | 字段主责服务，固定为 A。 |
 | extra | TEXT | YES | | JSON 扩展字段。 |
@@ -99,7 +121,7 @@ Indexes:
 | attributes | TEXT | YES | | JSON object，对应 `ModelAttributes`。 |
 | context_limits | TEXT | YES | | JSON object，如 `max_context_tokens`、`max_output_tokens`。 |
 | pricing | TEXT | YES | | JSON object，参考价格；动态 provider 价格优先。 |
-| exclude | INTEGER | NO | `0` | 技术层排除标记；黑名单模型仍发布但置 `exclude=true`。 |
+| exclude | INTEGER | NO | `0` | 技术层发布排除标记，仅适用于 `exact` / `pattern`。为 true 时该规则发布为排除规则，其它参数字段当前不参与发布语义但保留以便恢复。 |
 | extra | TEXT | YES | | JSON 扩展字段。 |
 | enabled | INTEGER | NO | `1` | 是否启用。 |
 | created_at | INTEGER | NO | | Unix timestamp ms。 |
@@ -118,34 +140,18 @@ Indexes:
 - `exact` 必须设置 `original_provider + model_id_selector`，并且 `model_id_selector` 是原始 `model.id`。
 - `pattern` 必须设置 `model_id_selector`，并按 `priority` 稳定排序；发布前必须按目标 provider 的 `model_nicks` 把 selector 改写为客户端可见的 published model id pattern。
 - `default` 的 `model_id_selector` 和 `priority` 必须为空；每个 provider scope 最多一条启用的 default，作为 exact 和 pattern 全部失败后的 fallback。
+- `exclude=true` 只允许用于 exact/pattern。default 不表达排除语义。
 - 统一存储只影响后端 RDB 结构，不改变发布 JSON 结构。发布 JSON 必须把 `match_type=exact` 物化到 `models[]`，把 `match_type=pattern` 按 `priority` 稳定排序后物化到 `patterns[]`，把 `match_type=default` 物化到 `defaults`。
 - WebUI 可支持从任意 `match_type` 的规则复制创建另一种 `match_type` 的新规则，以复用参数字段；这不是原地修改 `match_type`。新规则必须重新满足目标 `match_type` 的 selector、priority 和唯一性约束。
 - 复制创建时如果来源 `match_type` 和目标 `match_type` 不一致，WebUI 必须提示用户确认类型变更，展示来源类型、目标类型以及会按目标类型新增、改写或清空的字段；最终 `match_type` 以用户选择的目标类型为准。
 - provider 专属规则可以引用全局/原厂规则后通过字段覆盖变成专属配置，也可以完全自定义。
-- provider 专属规则只影响参数匹配，不自动成为白名单。
-
-### Table: provider_model_rules
-
-| Column | Type | Nullable | Default | Description |
-|---|---|---|---|---|
-| rule_key | TEXT PK | NO | | 稳定 rule id。 |
-| provider_key | TEXT | NO | | 目标 provider。 |
-| rule_type | TEXT | NO | | `allow` / `deny` / `include_origin` / `exclude_origin` / `include_pattern` / `exclude_pattern`。 |
-| selector | TEXT | NO | | 原厂、协议族、model id 或 pattern。 |
-| priority | INTEGER | NO | | 同类规则顺序。 |
-| enabled | INTEGER | NO | `1` | 是否启用。 |
-| created_at | INTEGER | NO | | Unix timestamp ms。 |
-| updated_at | INTEGER | NO | | Unix timestamp ms。 |
-
-Indexes:
-
-- `idx_provider_model_rules_provider` ON `provider_model_rules(provider_key, priority)`。
+- provider 专属规则只影响参数匹配，不自动限定 provider 的源模型候选集合。
 
 ### Table: model_nicks
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| nick_key | TEXT PK | NO | | 稳定 nick id。 |
+| nick_key | TEXT PK | NO | | 服务端自动编号生成的稳定 nick id；创建后不可修改。 |
 | provider_key | TEXT | NO | | 目标 provider。 |
 | original_provider | TEXT | YES | | 原厂限制。 |
 | model_id | TEXT | NO | | 原始模型 id 或 pattern。 |
@@ -162,18 +168,20 @@ Indexes:
 Constraints:
 
 - `nick` 属于 key 性字段，由 A 服务管理。
-- 发布时 `models[].id` 使用 nick 后的 id；原 id 保存在 `source_model_id`。
+- 发布时 `models[].id` 使用 nick 后的 id；原始 id 只保存在 diff、trace、审计和编辑态记录中，不作为客户端 driver metadata 字段下发。
+- Nick 是复用源对象时的发布期中间映射，不是生成一份已改名的模型/variant/version rule 备份。规则可有多条，支持 `origin-prefix`（如 `* -> openai/{model}`）和 exact/pattern mapping（如 `gpt-image-1 -> gpt-image`、`gpt-* -> xpt-*`）。
+- Nick 重写必须作用于客户端会看到的模型选择字段：`models[].id`、`patterns[].pattern`、variants 的 `model_id_selector`，以及 version rules 的 `content.model_pattern`。default 规则没有下发 selector，只作为参数兜底规则参与预览。variant 未显式声明模型 selector 时，其默认 selector 为 `*`，该 `*` 同样可以被重写。
 
 ### Table: metadata_variants
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| variant_key | TEXT PK | NO | | 稳定 variant id。 |
+| variant_key | TEXT PK | NO | | 服务端自动编号生成的稳定 variant id；创建后不可修改。 |
 | provider_key | TEXT | YES | | 为空表示全局 variant；非空表示 provider 专属 variant。 |
 | source_variant_key | TEXT | YES | | 引用的全局/原厂 variant；为空表示完全自定义。 |
 | selector_type | TEXT | NO | `exact` | `exact` / `pattern`。 |
 | original_provider | TEXT | YES | | 限定原厂。 |
-| model_id_selector | TEXT | NO | | 原始 `model.id` 或 wildcard pattern；发布时按 model nick 规则重写。 |
+| model_id_selector | TEXT | YES | `*` | 原始 `model.id` 或 wildcard pattern；为空时按 `*` 处理；发布时按 model nick 规则重写。 |
 | priority | INTEGER | NO | `0` | 同一 provider 下的匹配顺序。 |
 | nick | TEXT | YES | | 下发给客户端的 variant id；为空时使用 `variant_key`。 |
 | content | TEXT | NO | | variant JSON content 或对 `source_variant_key` 的 patch。 |
@@ -189,12 +197,12 @@ Indexes:
 
 | Column | Type | Nullable | Default | Description |
 |---|---|---|---|---|
-| version_rule_key | TEXT PK | NO | | 稳定 version rule id。 |
+| version_rule_key | TEXT PK | NO | | 服务端自动编号生成的稳定 version rule id；创建后不可修改。 |
 | provider_key | TEXT | YES | | 为空表示全局 version rule；非空表示 provider 专属 version rule。 |
 | source_version_rule_key | TEXT | YES | | 引用的全局/原厂 version rule；为空表示完全自定义。 |
 | selector_type | TEXT | NO | `pattern` | `exact` / `pattern`。 |
 | original_provider | TEXT | YES | | 限定原厂。 |
-| model_id_selector | TEXT | NO | | 原始 `model.id` 或 wildcard pattern；发布时按 model nick 规则重写。 |
+| model_id_selector | TEXT | NO | | 便于列表筛选和命中预览的原始 `model.id` 或 wildcard pattern；保存时与 `content.model_pattern` 保持一致。发布重写以 `content.model_pattern` 为准。 |
 | priority | INTEGER | NO | `0` | 同一 provider 下的匹配顺序。 |
 | nick | TEXT | YES | | 下发给客户端的 rule id；为空时使用 `version_rule_key`。 |
 | content | TEXT | NO | | version rule JSON content 或对 `source_version_rule_key` 的 patch。 |
@@ -211,7 +219,7 @@ Indexes:
 - `variants/version_rules` 与 `model_param_rules` 一样是 A 服务管理的一等对象；每个 provider 可为每一种类型配置多条记录。
 - `variants` 使用 `metadata_variants` 表管理；`version_rules` 使用 `metadata_version_rules` 表管理。
 - 这些对象通常引用全局/原厂配置；provider 专属记录默认通过 source key + content patch 继承原厂配置，只有修改字段后才成为专属配置。
-- `model_id_selector` 永远匹配原始 `model.id`。发布给客户端前，凡是 variants/version_rules 内容中引用或匹配 `model.id` 的字段，都必须按该 provider 的 `model_nicks` 规则改写为 nick 后的 id；无法重写或重写后冲突时阻止发布。
+- `metadata_variants.model_id_selector` 匹配原始 `model.id`；为空时按 `*` 处理。`metadata_version_rules.content.model_pattern` 是 version rule 的模型通配字段，`model_id_selector` 只是列表筛选和命中预览用的镜像字段。发布给客户端前，variants 的 `model_id_selector` 和 version rules 的 `content.model_pattern` 都必须按该 provider 的 `model_nicks` 规则改写为 nick 后的 selector；无法重写或重写后冲突时阻止发布。
 - `variants` 必须显式支持 `selector_type/original_provider/model_id_selector`，不能只靠 variant `name` 隐式匹配 base model。
 
 ### Table: ops_overlays
@@ -304,7 +312,6 @@ value = 1
 | `metadata_meta` | Additive-only | 新 key 可增加，已有 key 语义冻结。 |
 | `providers` | Migration | key 字段语义冻结，新增字段走 migration。 |
 | `model_param_rules` | Migration | `exact` / `pattern` / `default` 匹配语义、参数字段 schema 或优先级规则改动需要迁移。 |
-| `provider_model_rules` | Additive-only | 新 rule type 可增加，旧 rule type 语义冻结。 |
 | `model_nicks` | Migration | nick 会影响客户端 key，修改语义必须显式迁移。 |
 | `metadata_variants` | Migration | variants schema 改动需要迁移。 |
 | `metadata_version_rules` | Migration | version_rules schema 改动需要迁移。 |
@@ -328,14 +335,14 @@ Migration 在服务启动时执行。失败时服务进入只读模式，继续�
 
 - 原则上，拥有 `metadata.update` 授权的管理员可以编辑对应云服务负责的所有属性字段；字段所有权仍按第 10 章执行，B 服务不得通过 overlay 修改 A-only 字段。
 - key 性质字段通常只在构建或首次导入后确定，发布后不建议变更，包括 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick`，以及对应稳定 key 字段。
-- WebUI 对 key 性质字段必须设置防御性障碍：即使页面已经进入编辑模式，这些字段默认仍保持预览/只读状态；管理员必须对具体字段再次切换“编辑 key 字段”后才能修改。
+- WebUI 对 key 性质字段必须设置防御性障碍：即使页面已经进入编辑模式，这些字段仍保持预览/只读状态。`provider_key`、`nick_key`、`variant_key`、`version_rule_key` 由服务端自动编号，不提供字段级修改。
 - 提交包含 key 性质字段变更的更新时，必须在 diff 和发布确认中单独列出影响范围，并展示警告性提示，包括客户端三方合并、provider endpoint 匹配、model id/nick 重写、逻辑目录引用和历史审计 trace 的影响。
 
 可扩展字段：
 
 - `extra`、`attributes`、`capabilities`、`pricing`、`ops_patch` 可增加子字段。
 - `model_param_rules` 的参数字段以及 `metadata_variants.content`、`metadata_version_rules.content` 可按各自类型增加字段，但必须更新对应 schema 文档、WebUI 表单和发布合成校验。
-- `provider_model_rules.rule_type` 可新增枚举值，但旧值语义不可改变。
+- provider 源对象引用的类型集合固定为 models、patterns、defaults、variants、version rules；新增可引用对象类型时必须同时更新反向引用诊断、发布合成和 WebUI 选择器。
 
 清理规则：
 
@@ -351,7 +358,7 @@ Migration 在服务启动时执行。失败时服务进入只读模式，继续�
 | 按 base_url/name 匹配 provider | 高 | `idx_providers_base_url`、`idx_providers_name`。 |
 | 按 provider 列模型参数规则 | 高 | `idx_model_param_rules_exact`、`idx_model_param_rules_pattern`。 |
 | 按原厂列全局模型参数规则 | 高 | `idx_model_param_rules_original_provider`。 |
-| 合成某 provider 的最终 models | 中 | `idx_provider_model_rules_provider`、`idx_model_param_rules_exact`、`idx_model_param_rules_pattern`、`idx_model_nicks_provider`。 |
+| 合成某 provider 的最终 models | 中 | provider 源对象引用索引、`idx_model_param_rules_exact`、`idx_model_param_rules_pattern`、`idx_model_nicks_provider`。 |
 | 按 pattern 顺序匹配 model | 中 | `idx_model_param_rules_pattern`。 |
 | B 合并 A 发布快照 | 中 | `idx_ops_overlays_target`。 |
 | WebUI 搜索 provider/model | 高 | RDB 索引 + 可丢弃搜索索引。 |
@@ -369,7 +376,7 @@ A 服务是技术事实源，负责：
 - 管理 provider key、`provider_driver`、`base_url`、`name` 等 key 字段。
 - 管理全局/原厂和 provider 专属 `model_param_rules`，包括 exact、pattern、default 三类模型参数匹配规则。
 - 管理 variants、version_rules。
-- 管理白名单、黑名单、原厂/协议族/model pattern 选择规则。
+- 管理 provider 源模型候选集合 include 规则，并提供批量 exclude 操作生成 exact/pattern `model_param_rules.exclude=true`。
 - 管理 model nick 规则。
 - 生成 A 服务自身的发布 JSON。
 
@@ -408,7 +415,7 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 | `provider.name` | 写 | 读 | 匹配与展示 |
 | `provider.base_url` | 写 | 读 | 以 endpoint 匹配 |
 | `model.id` | 写 | 读 | 读 |
-| `model.source_model_id` | 写 | 读 | 读 |
+| `model.source_model_id` | 写 | 读 | 读；仅用于编辑态、diff、trace 和审计，不作为 driver metadata 下发字段 |
 | `original_provider` | 写 | 读 | 读 |
 | `nick` | 写 | 读 | 读 |
 | `api_types` | 写 | 读，可禁用 | 读 |
@@ -435,7 +442,6 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 
 ```json
 {
-  "schema_version": 1,
   "revision": "20260708.000001",
   "generated_at": 1783500000000,
   "source": {
@@ -443,9 +449,11 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
     "tech_revision": "20260708.000001",
     "ops_revision": "20260708.000004"
   },
-  "providers": []
+  "documents": []
 }
 ```
+
+`documents[]` 中的每一项都是 `11.2` 定义的 driver metadata document。API envelope 只表达传输状态、分页和 revision，不是客户端 driver metadata 的存储或消费结构。
 
 `revision` 必须单调递增，推荐格式：
 
@@ -455,33 +463,23 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 
 同一毫秒内多次发布时递增 sequence。服务端每次成功发布必须同步更新 revision 和 ETag。
 
-### 11.2 Provider 格式
+### 11.2 Client Driver Metadata 格式
+
+本节描述客户端最终接收的 driver metadata document。`name` 和 `base_url` 是 provider meta 下发字段；`provider_key`、`provider_kind`、`protocol_family`、源对象引用、Nick Rules、Logical Directory、Dictionaries 和运营 overlay 字段可以参与物化计算，但不作为 driver metadata 字段下发。
 
 ```json
 {
-  "provider_key": "openrouter",
-  "provider_driver": "openai-compatible",
+  "schema_version": 1,
+  "provider_driver": "openai",
   "name": "OpenRouter",
   "base_url": "https://openrouter.ai/api/v1",
-  "provider_kind": "aggregator",
-  "protocol_family": "openai-compatible",
-  "model_select_rules": [
-    {
-      "rule_type": "include_origin",
-      "selector": "openai"
-    }
-  ],
-  "model_nicks": [
-    {
-      "id": "gpt-5.2",
-      "nick": "openai/gpt-5.2"
-    }
-  ],
-  "defaults": {},
+  "revision": "20260708.000004",
+  "models": [],
   "patterns": [],
+  "defaults": {},
   "variants": [],
   "version_rules": [],
-  "models": []
+  "signature": null
 }
 ```
 
@@ -505,8 +503,6 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 ```json
 {
   "id": "openai/gpt-5.2",
-  "source_model_id": "gpt-5.2",
-  "original_provider": "openai",
   "provider": "openrouter",
   "model_driver": "openai",
   "api_types": ["llm.chat"],
@@ -520,16 +516,13 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
     "max_output_tokens": 16384
   },
   "pricing": {
-    "input": { "price": 1.25, "currency": "USD", "unit": "1M_tokens" },
-    "output": { "price": 10.0, "currency": "USD", "unit": "1M_tokens" },
-    "source": "metadata_reference"
+    "price": 1.25,
+    "currency": "USD",
+    "unit": "1M_tokens"
   },
-  "routing": {
-    "weight": 1.0,
-    "cost_class": "mid",
-    "latency_class": "mid",
-    "quality_score": 0.9
-  },
+  "quality_score": 0.9,
+  "cost_class": "medium",
+  "latency_class": "normal",
   "exclude": false
 }
 ```
@@ -537,10 +530,10 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 规则：
 
 - `id` 是客户端看到的 provider model id；存在 nick 时使用 nick。
-- `source_model_id` 是原始模型 id。
+- 原始模型 id 保存在编辑态、diff、trace 和审计记录中，不写入客户端 driver metadata rule。
 - `original_provider` 必填。
 - `provider` 为空时表示来自全局/原厂 `model_param_rule`；在最终 provider 发布列表里应填当前 provider key。
-- 黑名单模型仍出现在 `models` 中，但 `exclude=true`。
+- exact/pattern `model_param_rule.exclude=true` 的模型仍出现在发布规则中，但以 `exclude=true` 表达排除。
 - 价格是参考价或运营价；如果 provider 运行时可动态返回价格，以 provider 返回价格为准。
 - 汇率不在云服务处理，由客户端统一处理。
 
@@ -551,20 +544,19 @@ B 服务可以浏览 A 管理的 key 字段，但不得修改。B 服务 overlay
 对每个 provider：
 
 1. 读取 provider 技术主数据。
-2. 以所有全局默认原厂模型为全集。
-3. 应用白名单和黑名单规则。
-4. 合并全局/原厂和 provider 专属 `model_param_rules`；provider 专属规则按相同 `match_type` 和 selector 覆盖全局/原厂规则。
+2. 读取该 provider 白名单引用的 models、patterns、defaults、variants、version rules；没有引用的对象不参与该 provider 的发布。
+3. 合并源对象与 provider 专属 `model_param_rules`；provider 专属规则按相同 `match_type` 和 selector 覆盖源对象。`exclude=true` 的 exact/pattern 在此阶段参与合并。
 5. 将 `model_param_rules` 物化为发布 JSON 三字段：`exact` -> `models[]`，`pattern` -> `patterns[]`，`default` -> `defaults`。
 6. `patterns[]` 必须按 `priority` 稳定排序，排前面的优先级高，排后面的优先级低；`defaults` 优先级最低且每个 scope 最多一条。
 7. 发布预览和校验对每个候选模型执行同一匹配顺序：先按原始 `model.id` 匹配 `models[]`，再按数组顺序匹配 `patterns[]`，最后使用 `defaults`。一个模型只允许得到一条最终参数规则。
-8. 应用 model nick，重写 `models[].id`，保留 `source_model_id`；同时重写 `patterns[]` 中的 model selector。
-9. 对 variants/version_rules 执行 provider 专属覆盖和 nick 重写：先按原始 `model.id` 和 `original_provider` 命中规则，再把规则内所有 `model.id` selector、variant base model、version rule model pattern 改写为发布 id。
+8. 应用 model nick，重写 `models[].id`；原始模型 id 进入 diff/trace/审计记录，不进入客户端 driver metadata。同时重写 `patterns[]` 中的 model selector；default 规则没有下发 selector。
+9. 对 variants/version_rules 执行 provider 专属覆盖和 nick 重写：先按原始 `model.id` 或 wildcard selector 以及 `original_provider` 命中规则，再把 variant `model_id_selector` 和 version rule `content.model_pattern` 改写为发布 selector。variant 无 selector 时使用默认 selector `*`，该 `*` 也参与 nick rewrite。
 10. 对没有任何 `models[]`、`patterns[]` 或 `defaults` 命中的模型阻止发布或记录 Error；正常情况下 default 规则应提供兜底。
-11. 黑名单命中的模型保留在 `models[]` 里并设置 `exclude=true`。
-12. 删除与全局/原厂规则等价的 provider 专属 `model_param_rules`。
+11. exact/pattern `model_param_rule.exclude=true` 的模型保留在发布规则中并设置 `exclude=true`。
+12. 对源对象的参数实际发生变更时才物化 provider 专属对象；未变更时保持 source key 引用。
 
-未配置黑白名单的 provider 视为支持所有全局默认模型。provider 专属 `model_param_rules` 不作为白名单。
-default 未配置 provider 专属规则时，默认引用全局/原厂 default 规则；配置 provider 专属 default 时覆盖为该 provider 的 fallback 参数规则。variants、version_rules 未配置 provider 专属记录时，默认引用全局/原厂记录；配置 provider 专属记录时，既可以引用原厂记录并 patch，也可以创建完全专属记录。合成器必须允许每个 provider 下发多条 variants、version_rules。
+Provider 不存在“默认引用全部原厂对象”的隐式规则；白名单是唯一的对象来源。default 规则也可被引用，但同一目标 provider 最终只能有一个启用 default；多个来源 default 必须先拆成可区分的 pattern 后再新建目标 default。
+default、variants、version rules 只有被目标 provider 的白名单显式引用时才参与其发布。配置 provider 专属对象时，可以引用原厂记录并 patch，也可以创建完全专属记录。合成器必须允许每个 provider 下发多条 variants、version_rules。
 
 ### 12.2 B 服务合并 A 发布
 
@@ -609,10 +601,10 @@ If-None-Match: "<etag>"
   "revision": "20260708.000002",
   "batch": {
     "cursor": null,
-    "next_cursor": "provider:openai:200",
+    "next_cursor": "driver:openai:1",
     "done": false
   },
-  "providers": []
+  "documents": []
 }
 ```
 
@@ -623,11 +615,11 @@ If-None-Match: "<etag>"
   "status": "ok",
   "revision": "20260708.000002",
   "batch": {
-    "cursor": "provider:openai:200",
+    "cursor": "driver:openai:1",
     "next_cursor": null,
     "done": true
   },
-  "providers": []
+  "documents": []
 }
 ```
 
@@ -672,7 +664,7 @@ POST /v1/admin/tech-source/refresh
 
 WebUI 文案不得直接暴露 A/B 服务简称。技术事实维护界面展示为“技术参数”，运营 overlay 维护界面展示为“运营参数”；运营侧拉取技术发布结果的配置入口展示为“技术源”或“同步源”。
 
-进入编辑模式后，普通属性字段可以按字段所有权直接编辑；key 性质字段仍默认以预览/只读形式展示。管理员需要在字段级再次解锁后才能修改 `provider.name`、`provider.base_url`、`model.id`、`original_provider`、`nick` 等字段。修改 key 性质字段不需要独立审批流，但发布确认页必须把 key 性质字段变更放入独立风险区，并要求管理员确认影响范围。
+进入编辑模式后，普通属性字段可以按字段所有权直接编辑；key 性质字段仍以预览/只读形式展示。`provider_key`、`nick_key`、`variant_key`、`version_rule_key` 由服务端自动编号，不提供字段级修改。修改其它 key 性质属性时，发布确认页必须把 key 性质字段变更放入独立风险区，并要求管理员确认影响范围。
 
 PC 端编辑模式主要服务高密度维护场景，Provider、Model、规则、Nick、Pattern、Variant、Version Rule 等数量较多的对象应优先使用分页表格，并提供搜索、筛选、排序和批量选择。浏览模式可以使用卡片或卡片+列表布局，以兼顾移动端阅读；但 PC 编辑主路径不能只依赖卡片或长 JSON。
 
@@ -714,14 +706,30 @@ PC 端编辑模式主要服务高密度维护场景，Provider、Model、规则�
 - 支持跨类型复制创建新规则：从 pattern 创建 exact 时继承参数字段并把 selector 改成一个或多个精确原始 `model.id`；从 default 创建 exact/pattern 时继承 fallback 参数并补充目标 selector，pattern 还必须补充 priority。该操作创建新 `model_param_rules` 记录，不修改原记录的 `match_type`。
 - 跨类型复制创建必须弹出确认提示，说明来源类型和目标类型不同，最终下发和存储以用户选择的目标 `match_type` 为准，并列出 selector、priority 等会被改写或清空的字段。
 - 批量 nick：加前缀、加后缀、替换片段、pattern rewrite。
+- Nick rewrite 必须支持多条规则，按 provider、original provider、exact/pattern selector 和 priority 预览最终 published selector。聚合 provider 可用不同规则分别处理不同原厂前缀；version rule 预览和发布都以 `content.model_pattern` 为通配字段。
 - 批量选择：按厂商、协议族、api_type、capability、model.id 模糊匹配。
-- `model_param_rules` 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除 exact、pattern、default 三类规则。exact 精确匹配 `model.id`；pattern 按 selector 和 priority 顺序匹配；default 每个 scope 最多一条启用记录。三类规则必须统一保存在 `model_param_rules` 中，不能拆表；PC 编辑模式优先使用分页表格，详情使用结构化表单；JSON 视图仅作为辅助检查器。exact/pattern/default 使用独立列配置、筛选项、详情面板、创建表单、编辑表单和 Zod/schema 校验。
+- `model_param_rules` 管理面板在 Models 页面：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除 exact、pattern、default 三类规则。exact 精确匹配 `model.id`；pattern 按 selector 和 priority 顺序匹配；default 每个 scope 最多一条启用记录。三类规则必须统一保存在 `model_param_rules` 中，不能拆表；PC 编辑模式优先使用分页表格，详情使用结构化表单；JSON 视图仅作为辅助检查器。exact/pattern/default 使用独立列配置、筛选项、详情面板、创建表单、编辑表单和 Zod/schema 校验。
+- `exclude` 是 exact/pattern model_param_rule 的属性。`exclude=true` 时该规则的其它参数字段不参与当前发布语义，但保留在记录中，取消 exclude 后可恢复；default 不设置 exclude。
 - Provider 全量 JSON 视图和导出必须按发布格式展示 `models`、`patterns`、`defaults` 三个字段，不得只展示统一存储后的 `model_param_rules`。
-- variants/version_rules 管理面板：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录。
+- Resolver Rules 页面只管理 variants/version_rules：按全局和 provider 专属 scope 浏览、创建、复制、编辑、禁用、删除，支持每个 provider 多条记录。
 - 逻辑目录管理：目录树和面包屑浏览；支持调整目录树结构，新增、删除、重命名和修改子目录属性；支持批量添加/移除模型到目录，并支持一个模型挂到多个目录。内容区最上方必须提供筛选检索，可筛选目录和目录下包含的模型；筛选检索模式与按目录路径浏览模式互斥；右侧详情区展示选中目录或模型的详情。删除/移动目录前必须展示受影响模型数和路径样例，目录 key/path 重复、空目录和断链引用必须 warning 或阻止提交。
 - api_type 管理面板：维护 api_type 字典并支持新增；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 api_type，也支持给单个模型添加多个 api_type。应用 api_type 时必须通过下拉框、combobox、单选/多选或等价控件选择已有字典项，不能通过自由文本提交不存在的 key。
 - capabilities 管理面板：维护 capability 字典、类型和默认展示信息；删除和重命名属于低频高风险操作，需要显示引用模型数量和影响样例；支持按筛选结果给一批模型标识支持某个 capability，也支持给单个模型添加多个 capability。应用 capability 时必须通过下拉框、combobox、单选/多选或等价控件选择已有字典项；大多数属性按 bool 语义表达为支持/不支持，少数值属性必须使用结构化输入并带单位、范围和 schema 校验。
 - 删除/新增全局/原厂 model_param_rule 前显示受影响 provider 列表。
+
+Authoring workflow requirements:
+
+- 创建 provider 时服务端分配 `provider_key`；模板只能是一个具体 provider 或“从零创建”。`provider_kind` 仅为 `origin` 或 `aggregator`。编辑现有 provider 复用创建向导，回填该 provider 的完整 scoped set，且不允许修改 `provider_key`。
+- `provider_driver` 是 driver metadata document 内的 `provider_driver` 值，不是文件名；`protocol_family` 是客户端调用 endpoint 的 wire protocol。表单选项从加载的 metadata 派生，因此 fal、minimax 等 driver 不会因固定选项遗漏。
+- Models 是 source-rule 白名单选择，不创建规则。左侧按来源 provider 展示已选/总数，中部按 Models/Patterns/Defaults Tab 选择现有对象，右侧按相同分类展示待引用对象。default 也是可选来源对象。
+- Model params 的上半区使用同一三栏目标选择器，下半区编辑目标参数。多选时相同字段显示共同值，不同字段为空；只有明确赋值的字段被批量覆盖，未赋值字段保留每个对象的原值。`original_provider` 全部为当前 provider 时只读显示，否则只能通过按钮设为当前 provider；`model_id_selector` 必须逐条赋值；Model params 不编辑 priority。Apply 提交当前批次并清空目标，Discard 恢复当前批次开始时的值。只有内容实际不同于来源时才物化 provider 专属对象。`max_context_tokens` 仅在对应 capability 已选中时显示输入。
+- Models、Patterns、Defaults 的匹配身份在每个 provider 内唯一，且最多一个启用 default。多个来源 default 必须先各自转为可区分 pattern，再创建目标 default。Pattern order 是独立步骤，列表顺序是唯一的 authoring 优先级表达，发布时转换为稳定 `priority`。
+- Variants / Version rules 与 Models 使用相同的三栏白名单选择，但只选择已有对象。Variant/version params 分为两个类型 Tab，各自使用字段面板；每个 Tab 的待编辑对象选择方式与 Model params 一致，支持多选、Pending edit list、Discard 和 Apply。类型不可原地修改，本步骤不编辑 priority，也不批量编辑 logical mounts/auto_mounts。Variant 面板编辑 `provider_options`；Version rule 面板编辑完整谓词和参数，`tier_tokens`、`exclude_tier_tokens`、`stability.unstable_tokens` 使用自由文本 token 输入，`current_mount` 和 `version_mount` 通过物化目录树单选。Version rule 的列表、Inspector 和预览必须展示完整匹配谓词，不只显示 `model_pattern`。
+- Logical mounts 是 Add Provider 向导中唯一批量配置 `logical_mounts`/`auto_mounts` 的步骤。目标选择器覆盖非空的 Models、Patterns、Defaults、Version rules Tab，且允许跨 provider/Tab 选中；Variants 在该步骤暂不配置。目录树对全部目标为已选、部分目标为不确定、未选三态；右侧 Selected paths 只展示全部目标实选路径。Apply 时实选路径添加到全部目标，未选路径从全部目标移除，部分选中路径保持各目标原状；Discard 丢弃尚未 Apply 的路径选择变更并恢复目录树状态。Version rule 的 `current_mount`/`version_mount` 只在参数面板中作为单值挂载字段选择。
+- Nick rewrite 是 source-to-published 的发布期映射，支持 origin-prefix 与 exact/pattern mapping，可有多条规则，作用于 models、patterns、variants、version rules。exact models 重写 `models[].id`，patterns 重写 `patterns[].pattern`，default 无下发 selector；没有 selector 的 variant 以 `*` 参与匹配，version rules 重写 `content.model_pattern`。Nick Rules 是同一编辑器的跨 provider 页面，按 provider 检索；创建时指定 provider，编辑时 provider 不可变，`nick_key` 自动编号。
+- 来源对象的任何属性变更或删除都必须根据 `source_rule_key`、`source_variant_key`、`source_version_rule_key` 找到依赖 provider，并产生同步审查告警。
+- Providers、Models、Nick Rules、Resolver Rules、Dictionaries 的浏览模式 Inspector 仅展示属性。编辑模式在行内提供编辑和删除。Resolver Rules 分 Variants、Version rules 两个 Tab，支持按 provider 检索；创建时指定 provider/original provider，后续不可变更；variant/version rule key 自动编号。
+- Logical Directory 的面包屑每一级可点击，根路径拼接不得产生 `//`；目录浏览列表必须展示当前目录的全部直属子目录和模型。Inspector 明确展示选中对象的身份、来源、挂载路径与引用关系。该页面不提供按目录批量添加模型。
 
 ### 14.3 运营参数 WebUI
 
@@ -777,10 +785,9 @@ actions:
     model_id_selector: gpt-5.2
     params:
       pricing:
-        input:
-          price: 1.4
-          currency: USD
-          unit: 1M_tokens
+        price: 1.4
+        currency: USD
+        unit: 1M_tokens
 
   - action: set_logical_mounts
     selector:
@@ -829,7 +836,7 @@ actions:
 - 所有 selector 必须可预览命中结果。
 - `upsert_model_param_rule` 必须支持 `match_type`、`source_rule_key`、`original_provider`、`model_id_selector`、`priority` 和 params 字段；`exact` 必须设置原始 `model.id`，`pattern` 必须设置 selector 和 priority，`default` 不得设置 selector 和 priority。导入预览必须展示 exact -> pattern(priority) -> default 的命中链路和样例。
 - `upsert_variant` 必须支持 `source_variant_key`、`selector_type`、`original_provider`、`model_id_selector`、`priority` 和 `nick` 字段；其中 `model_id_selector` 使用原始 `model.id`，导入预览必须展示 nick 重写后的发布 selector。
-- `upsert_version_rule` 必须支持 `source_version_rule_key`、`selector_type`、`original_provider`、`model_id_selector`、`priority` 和 `nick` 字段；其中 `model_id_selector` 使用原始 `model.id`，导入预览必须展示 nick 重写后的发布 selector。
+- `upsert_version_rule` 必须支持 `source_version_rule_key`、`selector_type`、`original_provider`、`model_pattern`、`priority` 和 `nick` 字段；其中 `model_pattern` 使用原始 `model.id` 或 wildcard pattern，导入预览必须展示 nick 重写后的发布 selector。兼容展示用的 `model_id_selector` 只作为 `content.model_pattern` 的镜像，不作为 version rule 的主通配字段。
 - 任何批量 action 在提交前必须显示命中数量和样例。
 - 修改 key 性质字段、删除/重命名 api_type 或 capability、删除/移动逻辑目录时，提交前必须显示引用关系、受影响对象数量和风险提示。
 
@@ -873,7 +880,7 @@ actions:
 
 | 数组 | identity |
 |---|---|
-| `providers[]` | `provider_key`，缺失时用 `provider_driver + base_url/name`。 |
+| driver metadata document | `provider_driver`。 |
 | `models[]` | `id`。 |
 | `patterns[]` | `pattern_key` 或 `pattern`。 |
 | `variants[]` | `name`。 |
@@ -910,7 +917,7 @@ actions:
    - 提示风险。
    - 提供高级配置向导。
    - 可导入文本计划。
-   - 可调用 provider `/models` 获取模型列表，并把返回列表作为白名单候选。
+   - 可调用 provider `/models` 获取模型列表，并把返回列表作为候选源模型。
    - 提供 nick 编辑器，把返回模型 id 匹配到原厂模型 meta。
 
 OpenRouter 示例：
@@ -987,9 +994,9 @@ remote publish JSON
 - A 服务 provider/model/rule 合成。
 - provider 专属 model_param_rule 覆盖全局/原厂规则。
 - 专属 meta 等价时自动删除。
-- nick 后 `models[].id` 重写和 `source_model_id` 保留。
-- patterns/variants/version_rules 中的 `model.id` selector 能按 provider nick 重写，并在冲突或无法重写时阻止发布。
-- 黑名单模型发布为 `exclude=true`。
+- nick 后 `models[].id` 重写；原始 id 仅在 diff/trace/审计中保留。
+- `patterns[].pattern`、variant `model_id_selector`、version rule `content.model_pattern` 能按 provider nick 重写，并在冲突或无法重写时阻止发布。
+- exact/pattern `model_param_rule.exclude=true` 的模型发布为 `exclude=true`。
 - patterns 顺序匹配。
 - B 服务污染字段丢弃。
 - B 服务禁用 provider/model 后不下发。
@@ -1042,9 +1049,9 @@ remote publish JSON
 主要风险：
 
 - provider/model key 设计不稳定会导致客户端三方合并误判。
-- nick 会改变客户端看到的 model id，必须在 diff 和 trace 中始终保留 `source_model_id`。
-- model_param_rules 的 pattern selector、variants/version_rules 中的 model selector 若未同步 nick 重写，会出现模型存在但规则失效的隐蔽问题，必须在发布预览中列出重写前后样例。default 规则不参与数组式 selector 重写，但必须展示最终发布值。
-- 聚合商 provider 的白名单可能来自 `/models` 动态返回，必须和原厂 meta 匹配失败场景一起设计 UI。
+- nick 会改变客户端看到的 model id，必须在 diff 和 trace 中始终保留原始 model id，但该 trace 字段不进入客户端 driver metadata JSON。
+- model_param_rules 的 pattern selector、variant selector、version rule `content.model_pattern` 若未同步 nick 重写，会出现模型存在但规则失效的隐蔽问题，必须在发布预览中列出重写前后样例。default 规则不参与数组式 selector 重写，但必须展示最终发布值。
+- 聚合商 provider 的候选源模型集合可能来自 `/models` 动态返回，必须和原厂 meta 匹配失败场景一起设计 UI。
 - exact、pattern、default 如果拆成多表，会增加匹配优先级和最终命中一致性风险；必须统一存储在 `model_param_rules` 中。variants、version_rules 仍需按独立表和独立 schema 做强校验。
 - api_type/capability 如果允许自由文本应用，会产生拼写错误和能力标记漂移；WebUI 和服务端都必须做字典引用校验。
 - 客户端合并算法复杂，尤其是数组顺序和元素删除，需要独立测试覆盖。
