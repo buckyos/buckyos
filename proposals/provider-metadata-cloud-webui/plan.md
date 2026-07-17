@@ -622,3 +622,17 @@ mock WebUI 按独立 package 方式开发，本文档、PRD、DataModel 和 mock
 10. Logical Directory 必须从 logical_mounts、variants/version_rules 自动挂载项和显式目录共同物化树。
 11. 长文本查看和输入必须补齐复制、下载、上传导入能力。
 12. 所有可能增长的列表必须补齐分页、搜索和筛选。
+
+## 9. Origin Identity 更新（beta 2.2）
+
+本次 provider-driver-metadata 下发必须解决“同一个物理模型在不同服务渠道下挂载到相同逻辑目录”的问题。最终 driver metadata 使用 `schema_version: 2`，`{driver}` 和 `{model}` 在 logical mounts 中不再表示当前服务渠道的 driver/model id，而是表示解析后的模型原厂 provider 和原厂模型名。
+
+OpenRouter 这类聚合平台的模型 id 仍然作为 provider-native selector 使用，例如 `openai/gpt-5.5` 用于命中 OpenRouter 的接口模型；同时发布 JSON 必须额外物化 `origin_mappings`，把 provider-native model id 映射到原厂身份，例如 `driver=openai`、`model=gpt-5.5`。这样 OpenRouter 提供的 `openai/gpt-5.5` 和 OpenAI 官方提供的 `gpt-5.5` 可以挂载到同一个逻辑路径。
+
+Nick Rules 在 WebUI 中继续表示旧的 Nick rewrite，用于构造 provider-native selector，例如 `openai/{model}`。beta 2.2 额外新增 Origin mappings authoring 规则，用于生成最终下发的 `origin_mappings`。Origin mappings 支持 template 和 regex 两种模式；regex 模式使用标准 regex 语法，命名捕获组固定为 `(?<driver>...)` 和 `(?<model>...)`；template 模式中只使用 `<driver>` 和 `<model>` 占位，不复用 JSON 里已有的 `{driver}` / `{model}`，避免把 regex 转义和 JSON 模板语义混在一起。
+
+WebUI 页面按 Tab 拆分为 `Nick Rules`、`Origin mappings`、`Origin provider aliases`。`Origin mappings` 需要编辑 match 模式、origin template 或 regex、priority，以及 driver/model transforms；`Origin provider aliases` 需要编辑 alias 到 driver 的归一化表。Add Provider 向导也必须提供同样的 origin mappings、transforms 和 provider aliases 编辑入口。
+
+`Mapping preview` 是三个 Tab 共享的底部预览，不属于任一 Tab；预览卡片必须展示原厂 provider、原厂/source model id 和发布后的 provider-native id。`Origin mappings` 编辑区右侧展示最终下发的 `origin_mappings` JSON，Add Provider 向导使用相同布局。
+
+最终下发 JSON 新增 `origin_provider_aliases` 和 `origin_mappings`。`origin_provider_aliases` 用于把 OpenRouter 返回的 provider 前缀归一化到系统认可的 driver id；`origin_mappings` 由 WebUI 的 Origin mappings authoring 规则计算得到，不再从 Nick rewrite 规则隐式推导。暂不支持 dynamic alias，聚合商提供的软链接模型由 `patterns[].exclude=true` 排除，不新增 `exclude_patterns` 字段。

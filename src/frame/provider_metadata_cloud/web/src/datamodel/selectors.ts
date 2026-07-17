@@ -518,7 +518,7 @@ export function previewNickRewrite(seed: ProviderCloudSeed, providerKey: string)
       return {
         source_model_id: sourceModelId,
         original_provider: rule.original_provider,
-        published_id: nickRule ? nickRule.nick.replace('{model}', sourceModelId) : sourceModelId,
+        published_id: nickRule ? applyModelTemplate(nickRule.nick, sourceModelId) : sourceModelId,
         nick_key: nickRule?.nick_key ?? null,
       }
     })
@@ -821,7 +821,7 @@ function findNickRule(seed: ProviderCloudSeed, provider: ProviderRecord, selecto
 
 function rewritePublishSelector(seed: ProviderCloudSeed, provider: ProviderRecord, selector: string, originalProvider: string | null) {
   const nick = findNickRule(seed, provider, selector, originalProvider)
-  return nick ? nick.nick.replace('{model}', selector) : selector
+  return nick ? applyModelTemplate(nick.nick, selector) : selector
 }
 
 function rewriteModelSelector(seed: ProviderCloudSeed, provider: ProviderRecord, rule: ModelParamRuleRecord) {
@@ -925,6 +925,75 @@ function materializeVersionRule(seed: ProviderCloudSeed, provider: ProviderRecor
   return compactObject(content)
 }
 
+function buildOriginProviderAliases(seed: ProviderCloudSeed, provider: ProviderRecord) {
+  const aliases = Object.fromEntries(
+    seed.origin_provider_aliases
+      .filter((item) => item.provider_key === provider.provider_key)
+      .sort((a, b) => a.alias.localeCompare(b.alias))
+      .map((item) => [item.alias, item.driver]),
+  )
+  return Object.keys(aliases).length ? aliases : undefined
+}
+
+function buildOriginMappings(seed: ProviderCloudSeed, provider: ProviderRecord) {
+  return seed.origin_mapping_rules
+    .filter((item) => item.provider_key === provider.provider_key)
+    .sort((a, b) => a.priority - b.priority)
+    .map((item) => {
+      const regex = item.mapping_mode === 'regex'
+        ? item.regex
+        : originTemplateToRegex(item.origin_template || item.match_pattern, provider.provider_driver)
+      return {
+        mapping_key: item.mapping_key,
+        priority: item.priority,
+        match: {
+          source: 'provider_model_id' as const,
+          regex,
+        },
+        transforms: buildOriginMappingTransforms(item.driver_transforms, item.model_transforms),
+      }
+    })
+}
+
+function buildOriginMappingTransforms(driverOps: Array<'trim' | 'lowercase' | 'alias'>, modelOps: Array<'trim' | 'lowercase'>) {
+  return {
+    driver: driverOps.map((op) => op === 'alias'
+      ? { op, table: 'origin_provider_aliases', on_missing: 'keep' as const }
+      : { op }),
+    model: modelOps.map((op) => ({ op })),
+  }
+}
+
+function originTemplateToRegex(template: string, fallbackDriver: string) {
+  const escapedDriver = escapeRegex(fallbackDriver)
+  let regex = escapeRegex(template)
+    .replace(/<driver>/g, '(?<driver>[^/]+)')
+    .replace(/<model>/g, '(?<model>.+)')
+    .replace(/\\\{driver\\\}/g, '(?<driver>[^/]+)')
+    .replace(/\\\{model\\\}/g, '(?<model>.+)')
+  if (!regex.includes('(?<driver>')) {
+    const modelIndex = regex.indexOf('(?<model>')
+    const slashIndex = regex.indexOf('/')
+    if (slashIndex > 0 && (modelIndex === -1 || slashIndex < modelIndex)) {
+      const prefix = regex.slice(0, slashIndex)
+      regex = `(?<driver>${prefix})/${regex.slice(slashIndex + 1)}`
+    } else if (regex.startsWith(`${escapedDriver}/`)) {
+      regex = `(?<driver>${escapedDriver})/${regex.slice(`${escapedDriver}/`.length)}`
+    } else {
+      regex = `(?<driver>${escapedDriver})/${regex}`
+    }
+  }
+  return `^${regex}$`
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function applyModelTemplate(template: string, modelId: string) {
+  return template.replace(/<model>|\{model\}/g, modelId)
+}
+
 export function buildPublishedProviderJson(seed: ProviderCloudSeed, provider: ProviderRecord): DriverMetadataDocument {
   const scopedRules = seed.model_param_rules.filter((rule) => {
     return isModelRulePublishedForProvider(provider, rule)
@@ -949,13 +1018,17 @@ export function buildPublishedProviderJson(seed: ProviderCloudSeed, provider: Pr
     .sort((a, b) => a.priority - b.priority)
     .map((rule) => materializeVersionRule(seed, provider, rule))
 
+  const originProviderAliases = buildOriginProviderAliases(seed, provider)
+  const originMappings = buildOriginMappings(seed, provider)
   return {
-    schema_version: 1,
+    schema_version: 2,
     provider_driver: provider.provider_driver,
     name: provider.name || null,
     protocol_family: provider.protocol_family ?? '',
     base_url: provider.base_url,
     revision: provider.revision === 'draft' ? seed.published_revision : provider.revision,
+    origin_provider_aliases: originProviderAliases,
+    origin_mappings: originMappings.length ? originMappings : undefined,
     models: rulesByType(scopedRules, 'exact')
       .filter((rule) => buildOpsModelPreview(seed, rule).visible)
       .map((rule) => materializeDriverRule(seed, provider, rule)),

@@ -17,6 +17,8 @@ import {
   deleteMetadataVariant,
   deleteMetadataVersionRule,
   deleteNickRule,
+  deleteOriginMappingRule,
+  deleteOriginProviderAlias,
   deleteProvider,
   discardImportPlanDraft,
   loadProviderCloudWorkspace,
@@ -32,6 +34,8 @@ import {
   saveModelOpsOverlay,
   saveModelRule,
   saveNickRule,
+  saveOriginMappingRule,
+  saveOriginProviderAlias,
   saveProviderOpsOverlay,
   saveProvider,
   saveProviderWizard,
@@ -59,6 +63,8 @@ import type {
   OpsBulkOperationInput,
   ModelRuleInput,
   NickRuleInput,
+  OriginMappingRuleInput,
+  OriginProviderAliasInput,
   ProviderOpsInput,
   ProviderInput,
   ProviderWizardInput,
@@ -88,6 +94,10 @@ interface ProviderMetadataStoreValue {
   upsertSelectionRule: (input: SelectionRuleInput) => Promise<void>
   upsertNickRule: (input: NickRuleInput) => Promise<void>
   removeNickRule: (nickKey: string) => Promise<void>
+  upsertOriginProviderAlias: (input: OriginProviderAliasInput) => Promise<void>
+  removeOriginProviderAlias: (aliasKey: string) => Promise<void>
+  upsertOriginMappingRule: (input: OriginMappingRuleInput) => Promise<void>
+  removeOriginMappingRule: (mappingKey: string) => Promise<void>
   upsertResolverRule: (input: ResolverRuleInput) => Promise<void>
   upsertMetadataVariant: (input: MetadataVariantInput) => Promise<void>
   removeMetadataVariant: (variantKey: string) => Promise<void>
@@ -193,6 +203,22 @@ export function ProviderMetadataStoreProvider({ children }: PropsWithChildren) {
 
   const removeNickRule = useCallback(async (nickKey: string) => {
     applyWorkspaceUpdate(await deleteNickRule(nickKey))
+  }, [applyWorkspaceUpdate])
+
+  const upsertOriginProviderAlias = useCallback(async (input: OriginProviderAliasInput) => {
+    applyWorkspaceUpdate(await saveOriginProviderAlias(input))
+  }, [applyWorkspaceUpdate])
+
+  const removeOriginProviderAlias = useCallback(async (aliasKey: string) => {
+    applyWorkspaceUpdate(await deleteOriginProviderAlias(aliasKey))
+  }, [applyWorkspaceUpdate])
+
+  const upsertOriginMappingRule = useCallback(async (input: OriginMappingRuleInput) => {
+    applyWorkspaceUpdate(await saveOriginMappingRule(input))
+  }, [applyWorkspaceUpdate])
+
+  const removeOriginMappingRule = useCallback(async (mappingKey: string) => {
+    applyWorkspaceUpdate(await deleteOriginMappingRule(mappingKey))
   }, [applyWorkspaceUpdate])
 
   const upsertResolverRule = useCallback(async (input: ResolverRuleInput) => {
@@ -316,6 +342,10 @@ export function ProviderMetadataStoreProvider({ children }: PropsWithChildren) {
       upsertSelectionRule,
       upsertNickRule,
       removeNickRule,
+      upsertOriginProviderAlias,
+      removeOriginProviderAlias,
+      upsertOriginMappingRule,
+      removeOriginMappingRule,
       upsertResolverRule,
       upsertMetadataVariant,
       removeMetadataVariant,
@@ -358,6 +388,10 @@ export function ProviderMetadataStoreProvider({ children }: PropsWithChildren) {
     upsertSelectionRule,
     upsertNickRule,
     removeNickRule,
+    upsertOriginProviderAlias,
+    removeOriginProviderAlias,
+    upsertOriginMappingRule,
+    removeOriginMappingRule,
     upsertResolverRule,
     upsertMetadataVariant,
     removeMetadataVariant,

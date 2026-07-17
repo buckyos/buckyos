@@ -26,6 +26,7 @@ type ModelParamTab = 'exact' | 'pattern' | 'default'
 type ResolverRuleTab = 'variant' | 'version_rule'
 type MountTargetTab = ModelParamTab | 'version_rule'
 type NickRewritePreviewTarget = 'model' | 'pattern' | 'default' | 'variant' | 'version_rule'
+type NickConfigTab = 'nick' | 'origin_mappings' | 'origin_provider_aliases'
 
 const readStringArray = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 
@@ -205,6 +206,7 @@ export function ProviderWizardPage() {
   const [mountTargetKeys, setMountTargetKeys] = useState<string[]>([])
   const [bulkMountPathOverrides, setBulkMountPathOverrides] = useState<Record<string, 'full' | 'none'>>({})
   const [nickPreviewTarget, setNickPreviewTarget] = useState<NickRewritePreviewTarget>('model')
+  const [nickConfigTab, setNickConfigTab] = useState<NickConfigTab>('nick')
   const [submitState, setSubmitState] = useState<'idle' | 'saving' | 'invalid' | 'error'>('idle')
   const [submitMessage, setSubmitMessage] = useState('')
   const originalProviders = useMemo(() => getOriginalProviders(data), [data])
@@ -235,6 +237,8 @@ export function ProviderWizardPage() {
     ]
   }, [data, editingProvider])
   const existingNickDrafts = useMemo(() => !editingProvider ? [] : data.model_nicks.filter((rule) => rule.provider_key === editingProvider.provider_key).map((rule) => ({ draft_key: rule.nick_key, original_provider: rule.original_provider ?? editingProvider.provider_key, selector_type: rule.selector_type, model_id: rule.model_id, nick: rule.nick, priority: rule.priority })), [data.model_nicks, editingProvider])
+  const existingOriginMappingDrafts = useMemo(() => !editingProvider ? [] : data.origin_mapping_rules.filter((rule) => rule.provider_key === editingProvider.provider_key).map((rule) => ({ draft_key: rule.mapping_key, mapping_mode: rule.mapping_mode, match_pattern: rule.match_pattern, origin_template: rule.origin_template, regex: rule.regex, driver_transforms: rule.driver_transforms, model_transforms: rule.model_transforms, priority: rule.priority })), [data.origin_mapping_rules, editingProvider])
+  const existingOriginAliasDrafts = useMemo(() => !editingProvider ? [] : data.origin_provider_aliases.filter((alias) => alias.provider_key === editingProvider.provider_key).map((alias) => ({ draft_key: alias.alias_key, alias: alias.alias, driver: alias.driver })), [data.origin_provider_aliases, editingProvider])
   const initialSelectedOrigins = useMemo(() => {
     const currentOrigins = uniqueStrings(existingModelDrafts.map((draft) => draft.original_provider))
     return editingProvider
@@ -262,6 +266,12 @@ export function ProviderWizardPage() {
     nick_rules: editingProvider
       ? existingNickDrafts
       : [{ draft_key: 'nick-openai-prefix', original_provider: 'openai', selector_type: 'pattern', model_id: '*', nick: 'openai/{model}', priority: 1 }],
+    origin_mapping_rules: editingProvider
+      ? existingOriginMappingDrafts
+      : [{ draft_key: 'origin-path-capture', mapping_mode: 'regex', match_pattern: '*/*', origin_template: '<driver>/<model>', regex: '^(?<driver>[^/]+)/(?<model>.+)$', driver_transforms: ['alias'], model_transforms: ['trim'], priority: 1 }],
+    origin_provider_aliases: editingProvider
+      ? existingOriginAliasDrafts
+      : [{ draft_key: 'alias-openai', alias: 'openai', driver: 'openai' }],
     selected_api_types: editingProvider ? editingApiTypes : apiTypes.includes('llm') ? ['llm'] : apiTypes.slice(0, 1),
     selected_capabilities: editingProvider ? editingCapabilities : defaultCapabilities.length ? defaultCapabilities : capabilities.slice(0, 1),
     selected_logical_mounts: editingProvider ? editingLogicalMounts : logicalMounts.includes('/llm') ? ['/llm'] : logicalMounts.slice(0, 1),
@@ -281,6 +291,8 @@ export function ProviderWizardPage() {
     editingLogicalMounts,
     editingProvider,
     existingNickDrafts,
+    existingOriginMappingDrafts,
+    existingOriginAliasDrafts,
     existingResolverDrafts,
     initialSelectedOrigins,
     logicalMounts,
@@ -417,6 +429,9 @@ export function ProviderWizardPage() {
     })
   }, [values])
   const clientDriverMetadataPreview = useMemo(() => buildWizardClientDriverMetadata(data.model_param_rules, values), [data.model_param_rules, values])
+  const originMappingsJsonPreview = useMemo(() => ({
+    origin_mappings: clientDriverMetadataPreview.origin_mappings ?? [],
+  }), [clientDriverMetadataPreview.origin_mappings])
   const resolverPublishedPreview = useMemo(() => {
     return values.resolver_rule_drafts.map((draft) => {
       const sourceSelector = getResolverRewriteSelector(draft)
@@ -909,7 +924,51 @@ export function ProviderWizardPage() {
 
   const removeNickRule = (index: number) => {
     const rules = form.getValues('nick_rules')
-    if (rules.length > 1) form.setValue('nick_rules', rules.filter((_, ruleIndex) => ruleIndex !== index), { shouldDirty: true, shouldValidate: true })
+    form.setValue('nick_rules', rules.filter((_, ruleIndex) => ruleIndex !== index), { shouldDirty: true, shouldValidate: true })
+  }
+
+  const updateOriginMappingRule = (index: number, patch: Partial<ProviderWizardInput['origin_mapping_rules'][number]>) => {
+    form.setValue('origin_mapping_rules', form.getValues('origin_mapping_rules').map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...patch } : rule), { shouldDirty: true, shouldValidate: true })
+  }
+
+  const addOriginMappingRule = () => {
+    const rules = form.getValues('origin_mapping_rules')
+    form.setValue('origin_mapping_rules', [...rules, { draft_key: `origin-${rules.length + 1}`, mapping_mode: 'template', match_pattern: '*/*', origin_template: '<driver>/<model>', regex: '^(?<driver>[^/]+)/(?<model>.+)$', driver_transforms: ['alias'], model_transforms: ['trim'], priority: rules.length + 1 }], { shouldDirty: true, shouldValidate: true })
+  }
+
+  const removeOriginMappingRule = (index: number) => {
+    const rules = form.getValues('origin_mapping_rules')
+    form.setValue('origin_mapping_rules', rules.filter((_, ruleIndex) => ruleIndex !== index), { shouldDirty: true, shouldValidate: true })
+  }
+
+  const toggleOriginMappingDriverTransform = (index: number, op: 'trim' | 'lowercase' | 'alias') => {
+    const rule = form.getValues('origin_mapping_rules')[index]
+    const next = rule.driver_transforms.includes(op)
+      ? rule.driver_transforms.filter((item) => item !== op)
+      : [...rule.driver_transforms, op]
+    updateOriginMappingRule(index, { driver_transforms: next })
+  }
+
+  const toggleOriginMappingModelTransform = (index: number, op: 'trim' | 'lowercase') => {
+    const rule = form.getValues('origin_mapping_rules')[index]
+    const next = rule.model_transforms.includes(op)
+      ? rule.model_transforms.filter((item) => item !== op)
+      : [...rule.model_transforms, op]
+    updateOriginMappingRule(index, { model_transforms: next })
+  }
+
+  const updateOriginAlias = (index: number, patch: Partial<ProviderWizardInput['origin_provider_aliases'][number]>) => {
+    form.setValue('origin_provider_aliases', form.getValues('origin_provider_aliases').map((alias, aliasIndex) => aliasIndex === index ? { ...alias, ...patch } : alias), { shouldDirty: true, shouldValidate: true })
+  }
+
+  const addOriginAlias = () => {
+    const aliases = form.getValues('origin_provider_aliases')
+    form.setValue('origin_provider_aliases', [...aliases, { draft_key: `alias-${aliases.length + 1}`, alias: 'provider-alias', driver: 'provider-driver' }], { shouldDirty: true, shouldValidate: true })
+  }
+
+  const removeOriginAlias = (index: number) => {
+    const aliases = form.getValues('origin_provider_aliases')
+    form.setValue('origin_provider_aliases', aliases.filter((_, aliasIndex) => aliasIndex !== index), { shouldDirty: true, shouldValidate: true })
   }
 
   const validateModelParamDrafts = (drafts: ProviderWizardModelRuleDraft[]) => {
@@ -1621,25 +1680,92 @@ export function ProviderWizardPage() {
           )}
 
           {currentStep === 'nick' && (
-            <StepGrid>
-              <ChoicePanel title={t('wizard.nickConcept', 'Nick rewrite role')} wide>
-                <p className="text-xs text-[color:var(--cp-muted)]">{t('wizard.nickConceptHint', 'Nick rewrite is a publish-time intermediate mapping. It reuses selected original models, patterns, defaults, variants, and version rules while publishing the provider inventory without copied renamed rules.')}</p>
+            <div className="space-y-3">
+              <section className="rounded-md border border-[color:var(--cp-border)] p-3">
+                <h2 className="text-sm font-bold">{t('wizard.nickConcept', 'Nick rewrite role')}</h2>
+                <p className="mt-2 text-xs text-[color:var(--cp-muted)]">{t('wizard.nickConceptHint', 'Nick rewrite is a publish-time intermediate mapping. It reuses selected original models, patterns, defaults, variants, and version rules while publishing the provider inventory without copied renamed rules.')}</p>
                 <p className="mt-2 text-xs text-[color:var(--cp-muted)]">{t('wizard.nickScopeHint', 'Rules are ordered by priority and also rewrite variants and version rules. Variants use * when no model selector exists; version rules rewrite content.model_pattern.')}</p>
-              </ChoicePanel>
-              <ChoicePanel title={t('nick.title', 'Nick Rules')} wide>
-                {values.nick_rules.map((rule, index) => (
-                  <div className="mb-2 grid gap-2 rounded-md border border-[color:var(--cp-border)] p-3 md:grid-cols-6" key={rule.draft_key}>
-                    <select className={inputClass} value={rule.original_provider} onChange={(event) => updateNickRule(index, { original_provider: event.target.value })}>{originalProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select>
-                    <select className={inputClass} value={rule.selector_type} onChange={(event) => updateNickRule(index, { selector_type: event.target.value as 'exact' | 'pattern' })}><option value="pattern">{t('nick.originPrefixRules', 'Origin prefix rules')}</option><option value="exact">{t('nick.exact', 'Exact nick')}</option></select>
-                    <input aria-label={t('table.modelId', 'Model selector')} className={`${inputClass} font-mono`} value={rule.model_id} onChange={(event) => updateNickRule(index, { model_id: event.target.value })} />
-                    <input aria-label={t('nick.publishedId', 'Published id')} className={`${inputClass} font-mono`} value={rule.nick} onChange={(event) => updateNickRule(index, { nick: event.target.value })} />
-                    <input aria-label={t('rules.priority', 'Priority')} className={inputClass} type="number" value={rule.priority} onChange={(event) => updateNickRule(index, { priority: Number(event.target.value) || 1 })} />
-                    <button aria-label={t('action.remove', 'Remove')} className="h-10 rounded-md border border-[color:var(--cp-border)]" disabled={values.nick_rules.length === 1} onClick={() => removeNickRule(index)} type="button"><Trash2 size={16} /></button>
-                  </div>
-                ))}
-                <button className="mt-2 inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--cp-border)] px-3 text-xs font-semibold" onClick={addNickRule} type="button"><Plus size={14} />{t('action.add', 'Add')}</button>
-              </ChoicePanel>
-              <ChoicePanel title={t('nick.preview', 'Rewrite preview')} wide>
+              </section>
+              <section className="rounded-md border border-[color:var(--cp-border)] p-2">
+                <div className="flex flex-wrap gap-2" role="tablist" aria-label={t('nick.configTabs', 'Nick and origin config tabs')}>
+                  {([
+                    ['nick', t('nick.title', 'Nick Rules')],
+                    ['origin_mappings', t('originMapping.title', 'Origin mappings')],
+                    ['origin_provider_aliases', t('originAlias.title', 'Origin provider aliases')],
+                  ] as Array<[NickConfigTab, string]>).map(([tab, label]) => (
+                    <button className={`h-9 rounded-md border px-3 text-xs font-semibold ${nickConfigTab === tab ? 'border-[color:var(--cp-accent)] bg-[color:var(--cp-accent-soft)] text-[color:var(--cp-accent)]' : 'border-[color:var(--cp-border)]'}`} key={tab} onClick={() => setNickConfigTab(tab)} role="tab" type="button">
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </section>
+              {nickConfigTab === 'nick' && (
+                <ChoicePanel title={t('nick.title', 'Nick Rules')} wide>
+                  {values.nick_rules.map((rule, index) => (
+                    <div className="mb-2 grid gap-2 rounded-md border border-[color:var(--cp-border)] p-3 md:grid-cols-6" key={rule.draft_key}>
+                      <select className={inputClass} value={rule.original_provider} onChange={(event) => updateNickRule(index, { original_provider: event.target.value })}>{originalProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select>
+                      <select className={inputClass} value={rule.selector_type} onChange={(event) => updateNickRule(index, { selector_type: event.target.value as 'exact' | 'pattern' })}><option value="pattern">{t('nick.originPrefixRules', 'Origin prefix rules')}</option><option value="exact">{t('nick.exact', 'Exact nick')}</option></select>
+                      <input aria-label={t('table.modelId', 'Model selector')} className={`${inputClass} font-mono`} value={rule.model_id} onChange={(event) => updateNickRule(index, { model_id: event.target.value })} />
+                      <input aria-label={t('nick.publishedId', 'Published id')} className={`${inputClass} font-mono`} value={rule.nick} onChange={(event) => updateNickRule(index, { nick: event.target.value })} />
+                      <input aria-label={t('rules.priority', 'Priority')} className={inputClass} type="number" value={rule.priority} onChange={(event) => updateNickRule(index, { priority: Number(event.target.value) || 1 })} />
+                      <button aria-label={t('action.remove', 'Remove')} className="h-10 rounded-md border border-[color:var(--cp-border)]" onClick={() => removeNickRule(index)} type="button"><Trash2 size={16} /></button>
+                    </div>
+                  ))}
+                  <button className="mt-2 inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--cp-border)] px-3 text-xs font-semibold" onClick={addNickRule} type="button"><Plus size={14} />{t('action.add', 'Add')}</button>
+                </ChoicePanel>
+              )}
+              {nickConfigTab === 'origin_mappings' && (
+                <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_420px]">
+                  <ChoicePanel title={t('originMapping.title', 'Origin mappings')} wide>
+                    {values.origin_mapping_rules.map((rule, index) => (
+                      <div className="mb-2 grid gap-2 rounded-md border border-[color:var(--cp-border)] p-3 md:grid-cols-5" key={rule.draft_key}>
+                        <select className={inputClass} value={rule.mapping_mode} onChange={(event) => updateOriginMappingRule(index, { mapping_mode: event.target.value as 'template' | 'regex' })}><option value="template">{t('originMapping.templateMode', 'Template')}</option><option value="regex">{t('originMapping.regexMode', 'Regex')}</option></select>
+                        <input aria-label={t('originMapping.matchPattern', 'Match pattern')} className={`${inputClass} font-mono`} value={rule.match_pattern} onChange={(event) => updateOriginMappingRule(index, { match_pattern: event.target.value })} />
+                        {rule.mapping_mode === 'template' ? (
+                          <input aria-label={t('originMapping.originTemplate', 'Origin template')} className={`${inputClass} font-mono`} value={rule.origin_template} onChange={(event) => updateOriginMappingRule(index, { origin_template: event.target.value })} />
+                        ) : (
+                          <input aria-label={t('originMapping.regex', 'Regex')} className={`${inputClass} font-mono`} value={rule.regex} onChange={(event) => updateOriginMappingRule(index, { regex: event.target.value })} />
+                        )}
+                        <input aria-label={t('rules.priority', 'Priority')} className={inputClass} type="number" value={rule.priority} onChange={(event) => updateOriginMappingRule(index, { priority: Number(event.target.value) || 1 })} />
+                        <button aria-label={t('action.remove', 'Remove')} className="h-10 rounded-md border border-[color:var(--cp-border)]" onClick={() => removeOriginMappingRule(index)} type="button"><Trash2 size={16} /></button>
+                        <div className="grid gap-2 md:col-span-5 md:grid-cols-2">
+                          <TransformToggles
+                            label={t('originMapping.driverTransforms', 'Driver transforms')}
+                            options={['trim', 'lowercase', 'alias']}
+                            values={rule.driver_transforms}
+                            onToggle={(op) => toggleOriginMappingDriverTransform(index, op as 'trim' | 'lowercase' | 'alias')}
+                          />
+                          <TransformToggles
+                            label={t('originMapping.modelTransforms', 'Model transforms')}
+                            options={['trim', 'lowercase']}
+                            values={rule.model_transforms}
+                            onToggle={(op) => toggleOriginMappingModelTransform(index, op as 'trim' | 'lowercase')}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <button className="mt-2 inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--cp-border)] px-3 text-xs font-semibold" onClick={addOriginMappingRule} type="button"><Plus size={14} />{t('action.add', 'Add')}</button>
+                  </ChoicePanel>
+                  <section className="rounded-md border border-[color:var(--cp-border)] p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-[color:var(--cp-muted)]">{t('originMapping.publishedJson', 'Published origin_mappings JSON')}</h3>
+                    <JsonViewer value={originMappingsJsonPreview} filename={`${values.provider_key || 'provider'}-origin-mappings.json`} />
+                  </section>
+                </div>
+              )}
+              {nickConfigTab === 'origin_provider_aliases' && (
+                <ChoicePanel title={t('originAlias.title', 'Origin provider aliases')} wide>
+                  {values.origin_provider_aliases.map((alias, index) => (
+                    <div className="mb-2 grid gap-2 rounded-md border border-[color:var(--cp-border)] p-3 md:grid-cols-[1fr_1fr_auto]" key={alias.draft_key}>
+                      <input aria-label={t('originAlias.alias', 'Provider alias')} className={`${inputClass} font-mono`} value={alias.alias} onChange={(event) => updateOriginAlias(index, { alias: event.target.value })} />
+                      <input aria-label={t('originAlias.driver', 'Origin driver')} className={`${inputClass} font-mono`} value={alias.driver} onChange={(event) => updateOriginAlias(index, { driver: event.target.value })} />
+                      <button aria-label={t('action.remove', 'Remove')} className="h-10 rounded-md border border-[color:var(--cp-border)]" onClick={() => removeOriginAlias(index)} type="button"><Trash2 size={16} /></button>
+                    </div>
+                  ))}
+                  <button className="mt-2 inline-flex h-9 items-center gap-2 rounded-md border border-[color:var(--cp-border)] px-3 text-xs font-semibold" onClick={addOriginAlias} type="button"><Plus size={14} />{t('action.add', 'Add')}</button>
+                </ChoicePanel>
+              )}
+              <section className="rounded-md border border-[color:var(--cp-border)] p-3">
+                <h2 className="mb-3 text-sm font-bold">{t('nick.preview', 'Rewrite preview')}</h2>
                 <div className="space-y-3">
                   <div className="shell-scrollbar flex gap-2 overflow-auto pb-1">
                     {nickRewritePreviewSections.map((section) => {
@@ -1653,19 +1779,22 @@ export function ProviderWizardPage() {
                     })}
                   </div>
                   {activeNickRewritePreviewSection && (
-                    <div className="shell-scrollbar grid max-h-72 gap-2 overflow-auto md:grid-cols-2">
+                    <div className="shell-scrollbar grid max-h-72 gap-2 overflow-auto md:grid-cols-2 xl:grid-cols-3">
                       {activeNickRewritePreviewSection.items.map((item, index) => (
                         <div className="rounded-md border border-[color:var(--cp-border)] p-2 text-xs" key={`${activeNickRewritePreviewSection.target}-${item.source_model_id}-${item.published_id}-${index}`}>
                           <StatusBadge tone={nickRewritePreviewTone(item.target)}>{item.target}</StatusBadge>
-                          <div className="mt-1 font-mono">{item.source_model_id}</div>
-                          <div className="mt-1 break-all text-[color:var(--cp-muted)]">-&gt; {item.published_id}</div>
+                          <div className="mt-2 grid gap-1">
+                            <PreviewLine label={t('models.originalProvider', 'Original provider')} value={item.original_provider ?? '-'} />
+                            <PreviewLine label={t('table.modelId', 'Model selector')} value={item.source_model_id} />
+                            <PreviewLine label={t('nick.publishedId', 'Published id')} value={item.published_id} />
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
-              </ChoicePanel>
-            </StepGrid>
+              </section>
+            </div>
           )}
 
           {currentStep === 'preview' && (
@@ -1738,7 +1867,7 @@ function buildPublishedId(input: ProviderWizardInput, sourceModelId: string, ori
     .filter((item) => item.original_provider === originalProvider)
     .sort((a, b) => a.priority - b.priority)
     .find((item) => item.selector_type === 'exact' ? item.model_id === sourceModelId : wildcardMatch(item.model_id, sourceModelId))
-  return rule ? rule.nick.replace('{model}', sourceModelId) : sourceModelId
+  return rule ? applyModelTemplate(rule.nick, sourceModelId) : sourceModelId
 }
 
 function getResolverRewriteSelector(draft: ProviderWizardResolverRuleDraft) {
@@ -1962,6 +2091,63 @@ function materializeWizardVersionRule(input: ProviderWizardInput, draft: Provide
   })
 }
 
+function buildWizardOriginMappings(input: ProviderWizardInput) {
+  return input.origin_mapping_rules
+    .sort((a, b) => a.priority - b.priority)
+    .map((rule) => {
+      return {
+        mapping_key: `${input.provider_key}-origin-${safeKeyPart(rule.draft_key)}`,
+        priority: rule.priority,
+        match: {
+          source: 'provider_model_id' as const,
+          regex: rule.mapping_mode === 'regex'
+            ? rule.regex
+            : originTemplateToRegex(rule.origin_template || rule.match_pattern, input.provider_driver),
+        },
+        transforms: {
+          driver: rule.driver_transforms.map((op) => op === 'alias'
+            ? { op, table: 'origin_provider_aliases', on_missing: 'keep' as const }
+            : { op }),
+          model: rule.model_transforms.map((op) => ({ op })),
+        },
+      }
+    })
+}
+
+function originTemplateToRegex(template: string, fallbackDriver: string) {
+  const escapedDriver = escapeRegex(fallbackDriver)
+  let regex = escapeRegex(template)
+    .replace(/<driver>/g, '(?<driver>[^/]+)')
+    .replace(/<model>/g, '(?<model>.+)')
+    .replace(/\\\{driver\\\}/g, '(?<driver>[^/]+)')
+    .replace(/\\\{model\\\}/g, '(?<model>.+)')
+  if (!regex.includes('(?<driver>')) {
+    const modelIndex = regex.indexOf('(?<model>')
+    const slashIndex = regex.indexOf('/')
+    if (slashIndex > 0 && (modelIndex === -1 || slashIndex < modelIndex)) {
+      const prefix = regex.slice(0, slashIndex)
+      regex = `(?<driver>${prefix})/${regex.slice(slashIndex + 1)}`
+    } else if (regex.startsWith(`${escapedDriver}/`)) {
+      regex = `(?<driver>${escapedDriver})/${regex.slice(`${escapedDriver}/`.length)}`
+    } else {
+      regex = `(?<driver>${escapedDriver})/${regex}`
+    }
+  }
+  return `^${regex}$`
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function applyModelTemplate(template: string, modelId: string) {
+  return template.replace(/<model>|\{model\}/g, modelId)
+}
+
+function safeKeyPart(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'rule'
+}
+
 function buildWizardClientDriverMetadata(seedRules: ModelParamRuleRecord[], input: ProviderWizardInput): DriverMetadataDocument {
   const rules = input.model_rule_drafts.map((draft) => ({
     draft,
@@ -1969,12 +2155,14 @@ function buildWizardClientDriverMetadata(seedRules: ModelParamRuleRecord[], inpu
   }))
   const defaultRule = rules.find(({ draft }) => draft.match_type === 'default')
   return {
-    schema_version: 1,
+    schema_version: 2,
     provider_driver: input.provider_driver,
     name: input.name || null,
     protocol_family: input.protocol_family,
     base_url: input.base_url || null,
     revision: 'draft',
+    origin_provider_aliases: buildWizardOriginProviderAliases(input),
+    origin_mappings: buildWizardOriginMappings(input),
     models: rules.filter(({ draft }) => draft.match_type === 'exact').map(({ rule }) => rule),
     patterns: rules
       .filter(({ draft }) => draft.match_type === 'pattern')
@@ -1985,6 +2173,11 @@ function buildWizardClientDriverMetadata(seedRules: ModelParamRuleRecord[], inpu
     version_rules: input.resolver_rule_drafts.filter((draft) => draft.rule_kind === 'version_rule').map((draft) => materializeWizardVersionRule(input, draft)),
     signature: null,
   }
+}
+
+function buildWizardOriginProviderAliases(input: ProviderWizardInput) {
+  const aliases = Object.fromEntries(input.origin_provider_aliases.map((alias) => [alias.alias, alias.driver]))
+  return Object.keys(aliases).length ? aliases : undefined
 }
 
 function buildWizardRuleDrafts(_seedRules: ModelParamRuleRecord[], input: ProviderWizardInput, selectedSourceModels: ModelParamRuleRecord[], capabilityDictionaries: DictionaryItem[]) {
@@ -2075,8 +2268,8 @@ function buildWizardDiagnostics(seedRules: ModelParamRuleRecord[], input: Provid
     {
       key: 'published-id',
       tone: duplicatePublishedIds.length ? 'warning' : 'success',
-      label: 'published id',
-      detail: duplicatePublishedIds.length ? `Duplicate published id: ${duplicatePublishedIds.join(', ')}` : 'No duplicate published id in wizard preview',
+      label: 'provider selector',
+      detail: duplicatePublishedIds.length ? `Duplicate provider selector: ${duplicatePublishedIds.join(', ')}` : 'No duplicate provider selector in wizard preview',
     },
     {
       key: 'key-risk',
@@ -2107,6 +2300,30 @@ function ChoicePanel({ title, wide, children }: { title: string; wide?: boolean;
       <h2 className="mb-3 text-sm font-bold">{title}</h2>
       <div className="space-y-2">{children}</div>
     </section>
+  )
+}
+
+function TransformToggles({ label, options, values, onToggle }: { label: string; options: string[]; values: string[]; onToggle: (op: string) => void }) {
+  return (
+    <div className="rounded-md border border-[color:var(--cp-border)] p-2">
+      <div className="mb-2 text-xs font-semibold text-[color:var(--cp-muted)]">{label}</div>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button className={`rounded-md border px-2 py-1 text-xs font-semibold ${values.includes(option) ? 'border-[color:var(--cp-accent)] bg-[color:var(--cp-accent-soft)] text-[color:var(--cp-accent)]' : 'border-[color:var(--cp-border)]'}`} key={option} onClick={() => onToggle(option)} type="button">
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PreviewLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase text-[color:var(--cp-muted)]">{label}</div>
+      <div className="break-all font-mono">{value}</div>
+    </div>
   )
 }
 

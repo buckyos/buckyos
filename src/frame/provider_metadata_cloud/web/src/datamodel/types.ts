@@ -98,6 +98,29 @@ export interface ModelNickRecord {
   updated_at: number
 }
 
+export interface OriginProviderAliasRecord {
+  alias_key: string
+  provider_key: string
+  alias: string
+  driver: string
+  created_at: number
+  updated_at: number
+}
+
+export interface OriginMappingRuleRecord {
+  mapping_key: string
+  provider_key: string
+  mapping_mode: 'template' | 'regex'
+  match_pattern: string
+  origin_template: string
+  regex: string
+  driver_transforms: Array<'trim' | 'lowercase' | 'alias'>
+  model_transforms: Array<'trim' | 'lowercase'>
+  priority: number
+  created_at: number
+  updated_at: number
+}
+
 export interface LogicalDirectoryRecord {
   directory_key: string
   path: string
@@ -256,6 +279,8 @@ export interface ProviderCloudSeed {
   metadata_version_rules: MetadataVersionRuleRecord[]
   provider_model_rules: ProviderModelRuleRecord[]
   model_nicks: ModelNickRecord[]
+  origin_provider_aliases: OriginProviderAliasRecord[]
+  origin_mapping_rules: OriginMappingRuleRecord[]
   logical_directories: LogicalDirectoryRecord[]
   dictionaries: DictionaryItem[]
   ops_overlays: OpsOverlayRecord[]
@@ -291,14 +316,35 @@ export interface DriverMetadataRule {
   cost_class?: string
 }
 
+export interface DriverMetadataTransform {
+  op: 'trim' | 'lowercase' | 'alias'
+  table?: string
+  on_missing?: 'keep' | 'empty' | 'error'
+}
+
+export interface DriverOriginMapping {
+  mapping_key: string
+  priority: number
+  match: {
+    source: 'provider_model_id'
+    regex: string
+  }
+  transforms?: {
+    driver?: DriverMetadataTransform[]
+    model?: DriverMetadataTransform[]
+  }
+}
+
 export interface DriverMetadataDocument {
   [key: string]: unknown
-  schema_version: 1
+  schema_version: 2
   provider_driver: string
   name?: string | null
   protocol_family: string
   base_url?: string | null
   revision: string
+  origin_provider_aliases?: Record<string, string>
+  origin_mappings?: DriverOriginMapping[]
   models: DriverMetadataRule[]
   patterns: DriverMetadataRule[]
   defaults: DriverMetadataRule

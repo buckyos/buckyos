@@ -495,7 +495,7 @@ Mock 数据与状态层：
 - 批量加后缀。
 - 替换片段。
 - pattern rewrite。
-- 聚合 provider 可以用多条规则表达不同上游前缀，例如 OpenRouter 可将 OpenAI 源模型发布为 `openai/{model}`，Claude 源模型发布为 `anthropic/{model}`，Gemini 源模型发布为 `google/{model}`。
+- 聚合 provider 可以用多条 Nick rewrite 规则表达不同上游前缀，例如 OpenRouter 可将 OpenAI 源模型发布为 `openai/{model}`，Claude 源模型发布为 `anthropic/{model}`，Gemini 源模型发布为 `google/{model}`。
 
 预览要求：
 
@@ -1034,3 +1034,20 @@ Warning 类型：
 - api_type/capability 如果允许自由文本录入，容易产生拼写错误和不可诊断的能力标记漂移；必须通过受控选择和引用检查减少输入错误。
 - 运营参数管理员不具备编程知识，若主路径暴露过多 JSON/schema 细节，会显著增加误操作概率。
 - 多语言切换若翻译 provider/model key，会破坏技术对象识别；所有机器 key 必须保持原文。
+
+## 17. Origin Identity 产品要求（beta 2.2）
+
+Provider Metadata Cloud WebUI 必须保证同一个物理模型无论由官方 provider 还是聚合平台 provider 提供服务，都能落到同一个逻辑目录身份下。逻辑挂载模板中的 `{driver}` 和 `{model}` 表示模型原厂 provider 和原厂模型名，不表示当前服务渠道的 provider driver 或聚合平台 model id。
+
+OpenRouter 这类聚合平台仍然需要保留其 provider-native model id 用于真实调用和规则命中；例如 OpenRouter 的 `openai/gpt-5.5` 应作为该渠道的 selector 下发，但它的 origin identity 应解析为 `driver=openai`、`model=gpt-5.5`。OpenAI 官方渠道的 `gpt-5.5` 也应解析到相同 origin identity，因此两者最终挂载路径一致。
+
+WebUI 中的 Nick Rules 页面继续保留 Nick rewrite 能力，用于把复用的源模型 selector 构造成 provider-native selector。beta 2.2 在同页按 Tab 拆分为 `Nick Rules`、`Origin mappings`、`Origin provider aliases` 三个编辑区；Origin mappings 必须支持 template/regex 两种模式，并允许编辑 driver/model transforms；Origin provider aliases 必须允许新增、编辑和删除 alias 到 driver 的归一化规则。Mapping preview 是三个 Tab 共享的底部预览，不隶属于任一 Tab，并必须展示每个命中对象的 original provider、model id 和 published id。Origin mappings Tab 右侧必须展示最终将发布的 `origin_mappings` JSON。Add Provider 向导使用相同的 Tab、底部预览和右侧 JSON 预览结构。发布预览必须展示 `schema_version: 2`、`origin_provider_aliases`、`origin_mappings` 以及 models/patterns/version rules 中被物化后的 provider-native selector。
+
+产品暂不支持 dynamic alias。聚合平台返回的软链接类模型由我们自己的逻辑目录系统承担，WebUI 只需通过 exact/pattern 规则的 `exclude=true` 在发布前过滤，不新增单独的 `exclude_patterns` 配置。
+
+验收标准：
+
+1. 同一个物理模型在官方 provider 和 OpenRouter provider 中能够解析出相同的 `{driver}` / `{model}`。
+2. 发布预览中可以看到 provider-native selector 和 origin mapping 的对应关系。
+3. 下发 JSON 不包含 WebUI 内部 authoring 字段，只包含客户端可消费的 schema v2 字段。
+4. dynamic alias 不进入最终 metadata，排除语义通过 `patterns[].exclude=true` 表达。

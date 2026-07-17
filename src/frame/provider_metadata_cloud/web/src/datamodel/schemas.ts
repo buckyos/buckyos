@@ -88,6 +88,35 @@ export const nickRuleInputSchema = z.object({
 
 export type NickRuleInput = z.infer<typeof nickRuleInputSchema>
 
+export const originProviderAliasInputSchema = z.object({
+  alias_key: z.string().trim().min(2).max(96).regex(/^[a-z0-9][a-z0-9-]*$/),
+  provider_key: z.string().trim().min(1).max(96),
+  alias: z.string().trim().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  driver: z.string().trim().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
+})
+
+export type OriginProviderAliasInput = z.infer<typeof originProviderAliasInputSchema>
+
+export const originMappingRuleInputSchema = z.object({
+  mapping_key: z.string().trim().min(2).max(96).regex(/^[a-z0-9][a-z0-9-]*$/),
+  provider_key: z.string().trim().min(1).max(96),
+  mapping_mode: z.enum(['template', 'regex']),
+  match_pattern: z.string().trim().min(1).max(180),
+  origin_template: z.string().trim().min(1).max(180),
+  regex: z.string().trim().min(1).max(400),
+  driver_transforms: z.array(z.enum(['trim', 'lowercase', 'alias'])),
+  model_transforms: z.array(z.enum(['trim', 'lowercase'])),
+  priority: z.number().int().min(1).max(999),
+}).refine((value) => {
+  return value.mapping_mode === 'template'
+    || (value.regex.includes('(?<driver>') && value.regex.includes('(?<model>'))
+}, {
+  path: ['regex'],
+  message: 'Regex mode requires (?<driver>...) and (?<model>...) captures',
+})
+
+export type OriginMappingRuleInput = z.infer<typeof originMappingRuleInputSchema>
+
 const resolverRuleBaseSchema = z.object({
   rule_key: z.string().trim().min(2).max(96).regex(/^[a-z0-9][a-z0-9-]*$/),
   scope: z.enum(['global', 'provider']),
@@ -284,6 +313,21 @@ export const providerWizardInputSchema = z.object({
     model_id: z.string().trim().min(1).max(128),
     nick: z.string().trim().min(1).max(128),
     priority: z.number().int().min(1).max(999),
+  })),
+  origin_mapping_rules: z.array(z.object({
+    draft_key: z.string().trim().min(2).max(96),
+    mapping_mode: z.enum(['template', 'regex']),
+    match_pattern: z.string().trim().min(1).max(180),
+    origin_template: z.string().trim().min(1).max(180),
+    regex: z.string().trim().min(1).max(400),
+    driver_transforms: z.array(z.enum(['trim', 'lowercase', 'alias'])),
+    model_transforms: z.array(z.enum(['trim', 'lowercase'])),
+    priority: z.number().int().min(1).max(999),
+  })),
+  origin_provider_aliases: z.array(z.object({
+    draft_key: z.string().trim().min(2).max(96),
+    alias: z.string().trim().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
+    driver: z.string().trim().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
   })),
   selected_api_types: z.array(z.string().trim().min(1).max(96)),
   selected_capabilities: z.array(z.string().trim().min(1).max(96)),

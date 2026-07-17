@@ -27,12 +27,14 @@ priority override.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "provider_driver": "openai",
   "name": "OpenAI",
   "protocol_family": "openai-compatible",
   "base_url": null,
   "revision": "builtin-2026-05-30",
+  "origin_provider_aliases": {},
+  "origin_mappings": [],
   "models": [],
   "patterns": [],
   "defaults": {},
@@ -44,7 +46,7 @@ priority override.
 
 Fields:
 
-- `schema_version`: currently `1`.
+- `schema_version`: currently `2`.
 - `provider_driver`: unique driver metadata id. For cloud-authored providers it
   is generated from the lowercase provider `name`, is used as the delivery JSON
   filename, and is written unchanged to this field.
@@ -58,6 +60,11 @@ Fields:
 - `base_url`: optional endpoint key used to distinguish compatible providers.
   When omitted, clients use the default endpoint for `provider_driver`.
 - `revision`: monotonically changing metadata revision string.
+- `origin_provider_aliases`: optional map from provider-specific origin slugs to
+  BuckyOS canonical origin driver names. This is normally used by aggregator
+  providers such as OpenRouter.
+- `origin_mappings`: optional ordered rules that derive the origin `driver` and
+  origin `model` from the provider-native `provider_model_id`.
 - `models`: exact rules keyed by `id`.
 - `patterns`: wildcard rules keyed by `pattern`; `*` is the only wildcard.
 - `defaults`: default rule when no exact or pattern rule matches.
@@ -88,7 +95,10 @@ Rules support these fields:
   document for later restoration. `defaults` does not use `exclude`.
 - `parameter_scale`: optional display/classification string.
 - `api_types`: AICC API types, for example `llm.chat`, `image.txt2img`, `audio.asr`.
-- `logical_mounts`: logical mounts. Templates `{driver}`, `{model}`, and `{provider_model_id}` are expanded by the resolver.
+- `logical_mounts`: logical mounts. Templates `{driver}`, `{model}`,
+  `{provider_driver}`, and `{provider_model_id}` are expanded by the resolver.
+  In schema v2, `{driver}` and `{model}` mean the resolved physical origin
+  driver and origin model, not the current delivery channel.
 - `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `max_context_tokens`, `max_output_tokens`.
 - `context_limits`: explicit model limit object, currently
   `max_context_tokens` and `max_output_tokens`. If omitted, clients and the
@@ -102,6 +112,92 @@ Rules support these fields:
 
 Unknown fallback is intentionally conservative: it does not declare
 `tool_call`, `web_search`, `vision`, or `json_schema`.
+
+## Origin Identity Mappings
+
+Provider model ids are channel-local names. For origin providers such as OpenAI,
+`provider_driver = openai` and `provider_model_id = gpt-5.5` already identify the
+physical model well enough. For aggregator providers such as OpenRouter, a
+provider model id such as `openai/gpt-5.5` must be mapped back to the physical
+origin identity before logical mounts are expanded.
+
+Schema v2 defines these mount template variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `{driver}` | resolved physical origin provider, for example `openai` |
+| `{model}` | resolved physical origin model name, for example `gpt-5.5` |
+| `{provider_driver}` | current channel driver, for example `openrouter` |
+| `{provider_model_id}` | current channel model id, for example `openai/gpt-5.5` |
+
+`origin_mappings` are evaluated by ascending `priority`. The first successful
+match wins. If no rule matches, the resolver falls back to:
+
+```text
+driver = provider_driver
+model = provider_model_id
+```
+
+Mapping regexes are standard regular expressions. They must use named capture
+groups `(?<driver>...)` and `(?<model>...)`; do not introduce custom regex
+template syntax. Regex source is currently `provider_model_id`.
+
+```json
+{
+  "origin_provider_aliases": {
+    "google-gemini": "google",
+    "x-ai": "xai"
+  },
+  "origin_mappings": [
+    {
+      "mapping_key": "openrouter-path-id",
+      "priority": 100,
+      "match": {
+        "source": "provider_model_id",
+        "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
+      },
+      "transforms": {
+        "driver": [
+          { "op": "alias", "table": "origin_provider_aliases", "on_missing": "keep" }
+        ],
+        "model": [
+          { "op": "trim" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Supported transforms are intentionally limited and deterministic:
+
+- `trim`: trim leading and trailing whitespace.
+- `lowercase`: convert to lowercase.
+- `alias`: look up the current value in the named alias table. `on_missing`
+  defaults to `keep`; other resolver implementations may support `empty` or
+  `error`.
+
+For `provider_model_id = "openai/gpt-5.5"`, the example mapping resolves:
+
+```text
+driver = openai
+model = gpt-5.5
+```
+
+Then `llm.{driver}.{model}` expands to `llm.openai.gpt-5-5`. An OpenAI origin
+provider with `provider_model_id = "gpt-5.5"` also expands to the same logical
+path through the fallback identity.
+
+Dynamic provider aliases such as `~x-ai/grok-latest` or `openrouter/auto` are
+not modeled in schema v2. They are provider-side soft links and should be
+excluded with ordinary exact or pattern rules:
+
+```json
+{ "pattern": "~*", "exclude": true }
+{ "pattern": "openrouter/auto", "exclude": true }
+```
+
+BuckyOS owns its own soft-link system through `logical_mounts`.
 
 ## Variants
 
@@ -156,10 +252,11 @@ model family and tier.
 
 ## Cloud Authoring And Materialization
 
-The cloud authoring model contains source references, provider keys, and nick
-rules. They are administrative metadata and are not fields of this final driver
-metadata document. `name`, `provider_driver`, and `protocol_family` are final
-client-facing fields and must be emitted together.
+The cloud authoring model contains source references, provider keys, and origin
+identity authoring rules. They are administrative metadata and are not emitted
+as storage records in this final driver metadata document. `name`,
+`provider_driver`, `protocol_family`, `origin_provider_aliases`, and
+`origin_mappings` are final client-facing fields and must be emitted together.
 
 - `provider_driver` identifies the driver metadata document and is the value of
   its `provider_driver` field. Cloud delivery filenames use this id.
@@ -171,10 +268,13 @@ client-facing fields and must be emitted together.
   in `patterns`, and at most one default in `defaults`. Pattern authoring uses
   explicit list order; materialization writes the corresponding stable
   priority values.
-- A nick rewrite changes published model selectors at materialization time;
-  it does not duplicate source metadata. It applies to `models`, `patterns`,
-  variants, and version rules. A variant without an explicit selector is
-  treated as selector `*` for nick matching.
+- Cloud nick/origin identity rules can construct provider-native selectors from
+  source metadata, for example turning an OpenAI source pattern `gpt-*` into an
+  OpenRouter provider pattern `openai/gpt-*`. This selector construction is
+  separate from `origin_mappings`: final `models[].id`, `patterns[].pattern`,
+  variant selectors, and version-rule `model_pattern` must be provider-native
+  ids, while `origin_mappings` defines how those provider-native ids resolve
+  back to `{driver}` and `{model}` for logical mount expansion.
 - Version-rule authoring must preserve the complete predicate, including
   family, tier, `model_pattern`, excluded tokens, stability and version-rank
   conditions. `model_pattern` alone is not a complete description of its

@@ -10,6 +10,8 @@ import type {
   ModelParamRuleRecord,
   MetadataVariantRecord,
   MetadataVersionRuleRecord,
+  OriginMappingRuleRecord,
+  OriginProviderAliasRecord,
   PendingChangeRecord,
   ProviderCloudSeed,
   ProviderModelRuleRecord,
@@ -28,6 +30,8 @@ import type {
   MetadataVersionRuleInput,
   ModelRuleInput,
   NickRuleInput,
+  OriginMappingRuleInput,
+  OriginProviderAliasInput,
   ProviderInput,
   ProviderWizardInput,
   ResolverRuleInput,
@@ -472,6 +476,8 @@ export async function loadProviderCloudWorkspace() {
     data.metadata_version_rules = []
     data.provider_model_rules = []
     data.model_nicks = []
+    data.origin_provider_aliases = []
+    data.origin_mapping_rules = []
     data.logical_directories = []
     data.pending_changes = []
     data.change_logs = []
@@ -1456,6 +1462,93 @@ export async function deleteNickRule(nickKey: string) {
   return withMockLatency(structuredClone(seed))
 }
 
+export async function saveOriginProviderAlias(input: OriginProviderAliasInput) {
+  const now = mockNow()
+  const alias: OriginProviderAliasRecord = {
+    alias_key: input.alias_key,
+    provider_key: input.provider_key,
+    alias: input.alias,
+    driver: input.driver,
+    created_at: now,
+    updated_at: now,
+  }
+  const exists = seed.origin_provider_aliases.some((item) => item.alias_key === alias.alias_key)
+  seed = {
+    ...seed,
+    origin_provider_aliases: exists
+      ? seed.origin_provider_aliases.map((item) => (item.alias_key === alias.alias_key ? alias : item))
+      : [alias, ...seed.origin_provider_aliases],
+  }
+  appendPendingChange({
+    change_key: `pending-origin-alias-${alias.alias_key}`,
+    target_type: 'origin_provider_alias',
+    target_key: alias.alias_key,
+    action: exists ? 'update' : 'create',
+    summary: `${exists ? 'Update' : 'Create'} origin provider alias ${alias.alias} -> ${alias.driver}`,
+    risk: 'warning',
+  })
+  return withMockLatency(structuredClone(seed))
+}
+
+export async function deleteOriginProviderAlias(aliasKey: string) {
+  seed = { ...seed, origin_provider_aliases: seed.origin_provider_aliases.filter((rule) => rule.alias_key !== aliasKey) }
+  appendPendingChange({
+    change_key: `pending-delete-origin-alias-${aliasKey}`,
+    target_type: 'origin_provider_alias',
+    target_key: aliasKey,
+    action: 'delete',
+    summary: `Delete origin provider alias ${aliasKey}`,
+    risk: 'warning',
+  })
+  return withMockLatency(structuredClone(seed))
+}
+
+export async function saveOriginMappingRule(input: OriginMappingRuleInput) {
+  const now = mockNow()
+  const rule: OriginMappingRuleRecord = {
+    mapping_key: input.mapping_key,
+    provider_key: input.provider_key,
+    mapping_mode: input.mapping_mode,
+    match_pattern: input.match_pattern,
+    origin_template: input.origin_template,
+    regex: input.regex,
+    driver_transforms: input.driver_transforms,
+    model_transforms: input.model_transforms,
+    priority: input.priority,
+    created_at: now,
+    updated_at: now,
+  }
+  const exists = seed.origin_mapping_rules.some((item) => item.mapping_key === rule.mapping_key)
+  seed = {
+    ...seed,
+    origin_mapping_rules: exists
+      ? seed.origin_mapping_rules.map((item) => (item.mapping_key === rule.mapping_key ? rule : item))
+      : [rule, ...seed.origin_mapping_rules],
+  }
+  appendPendingChange({
+    change_key: `pending-origin-mapping-${rule.mapping_key}`,
+    target_type: 'origin_mapping_rule',
+    target_key: rule.mapping_key,
+    action: exists ? 'update' : 'create',
+    summary: `${exists ? 'Update' : 'Create'} origin mapping ${rule.mapping_key}`,
+    risk: 'warning',
+  })
+  return withMockLatency(structuredClone(seed))
+}
+
+export async function deleteOriginMappingRule(mappingKey: string) {
+  seed = { ...seed, origin_mapping_rules: seed.origin_mapping_rules.filter((rule) => rule.mapping_key !== mappingKey) }
+  appendPendingChange({
+    change_key: `pending-delete-origin-mapping-${mappingKey}`,
+    target_type: 'origin_mapping_rule',
+    target_key: mappingKey,
+    action: 'delete',
+    summary: `Delete origin mapping ${mappingKey}`,
+    risk: 'warning',
+  })
+  return withMockLatency(structuredClone(seed))
+}
+
 export async function deleteModelRule(input: DeleteModelRuleInput) {
   const deleted = seed.model_param_rules.find((item) => item.rule_key === input.rule_key)
   const exists = Boolean(deleted)
@@ -1485,6 +1578,8 @@ export async function deleteProvider(providerKey: string) {
     metadata_variants: seed.metadata_variants.filter((rule) => rule.provider_key !== providerKey),
     metadata_version_rules: seed.metadata_version_rules.filter((rule) => rule.provider_key !== providerKey),
     model_nicks: seed.model_nicks.filter((rule) => rule.provider_key !== providerKey),
+    origin_provider_aliases: seed.origin_provider_aliases.filter((rule) => rule.provider_key !== providerKey),
+    origin_mapping_rules: seed.origin_mapping_rules.filter((rule) => rule.provider_key !== providerKey),
     provider_model_rules: seed.provider_model_rules.filter((rule) => rule.provider_key !== providerKey),
   }
   appendPendingChange({ change_key: `pending-delete-provider-${providerKey}`, target_type: 'provider', target_key: providerKey, action: 'delete', summary: `Delete provider ${providerKey}`, risk: 'blocked' })
@@ -1874,6 +1969,29 @@ export async function saveProviderWizard(input: ProviderWizardInput) {
     updated_at: now,
   }))
 
+  const originMappingRules: OriginMappingRuleRecord[] = input.origin_mapping_rules.map((rule, index) => ({
+    mapping_key: `${input.provider_key}-origin-${safeKeyPart(rule.draft_key)}`,
+    provider_key: input.provider_key,
+    mapping_mode: rule.mapping_mode,
+    match_pattern: rule.match_pattern,
+    origin_template: rule.origin_template,
+    regex: rule.regex,
+    driver_transforms: rule.driver_transforms,
+    model_transforms: rule.model_transforms,
+    priority: rule.priority || index + 1,
+    created_at: now,
+    updated_at: now,
+  }))
+
+  const originProviderAliases: OriginProviderAliasRecord[] = input.origin_provider_aliases.map((alias) => ({
+    alias_key: `${input.provider_key}-origin-alias-${safeKeyPart(alias.draft_key)}`,
+    provider_key: input.provider_key,
+    alias: alias.alias,
+    driver: alias.driver,
+    created_at: now,
+    updated_at: now,
+  }))
+
   const variantRecords = input.resolver_rule_drafts
     .filter((draft) => draft.rule_kind === 'variant')
     .map((draft, index): MetadataVariantRecord => {
@@ -1948,6 +2066,8 @@ export async function saveProviderWizard(input: ProviderWizardInput) {
     model_param_rules: [...selectedModelRules, ...seed.model_param_rules.filter((rule) => rule.provider_key !== input.provider_key)],
     provider_model_rules: seed.provider_model_rules.filter((rule) => rule.provider_key !== input.provider_key),
     model_nicks: [...nickRules, ...seed.model_nicks.filter((rule) => rule.provider_key !== input.provider_key)],
+    origin_provider_aliases: [...originProviderAliases, ...seed.origin_provider_aliases.filter((rule) => rule.provider_key !== input.provider_key)],
+    origin_mapping_rules: [...originMappingRules, ...seed.origin_mapping_rules.filter((rule) => rule.provider_key !== input.provider_key)],
     metadata_variants: [...variantRecords, ...seed.metadata_variants.filter((rule) => rule.provider_key !== input.provider_key)],
     metadata_version_rules: [...versionRuleRecords, ...seed.metadata_version_rules.filter((rule) => rule.provider_key !== input.provider_key)],
   }
@@ -1965,7 +2085,15 @@ export async function saveProviderWizard(input: ProviderWizardInput) {
     target_type: 'nick_rule',
     target_key: input.provider_key,
     action: 'create',
-    summary: `Configure published id rewrite for ${input.provider_key}`,
+    summary: `Configure nick rewrite rules for ${input.provider_key}`,
+    risk: 'warning',
+  })
+  appendPendingChange({
+    change_key: `pending-provider-wizard-origin-${input.provider_key}`,
+    target_type: 'origin_mapping_rule',
+    target_key: input.provider_key,
+    action: 'create',
+    summary: `Configure origin identity mappings for ${input.provider_key}`,
     risk: 'warning',
   })
   if (variantRecords.length || versionRuleRecords.length) {

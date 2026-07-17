@@ -1056,3 +1056,25 @@ remote publish JSON
 - api_type/capability 如果允许自由文本应用，会产生拼写错误和能力标记漂移；WebUI 和服务端都必须做字典引用校验。
 - 客户端合并算法复杂，尤其是数组顺序和元素删除，需要独立测试覆盖。
 - A/B 字段所有权如果没有机器校验，长期会产生污染字段。
+
+## 24. Origin Identity 和 schema v2 更新（beta 2.2）
+
+客户端最终消费的 provider-driver metadata 从 beta 2.2 开始使用 `schema_version: 2`。下发 JSON 保留当前服务渠道字段，例如 `provider_driver`、`protocol_family`、`base_url`、`models`、`patterns`、`defaults`、`variants`、`version_rules`；同时新增 `origin_provider_aliases` 和 `origin_mappings`，用于把 provider-native model id 解析成模型原厂身份。
+
+`{driver}` 和 `{model}` 在 logical mounts 中表示 origin identity：`{driver}` 是模型原厂 provider，`{model}` 是模型原厂命名。当前服务渠道如果需要在内部引用，应使用 provider 记录自身的 `provider_driver` 和规则中的 provider-native selector，不再把聚合商 model id 直接当作逻辑路径身份。
+
+`origin_mappings` 是发布阶段物化结果。Cloud WebUI 使用独立的 `origin_mapping_rules` authoring 集合维护它，不再复用历史 `model_nicks`。`model_nicks` 继续表示 Nick rewrite，只负责把 source model id 重写为 provider-native selector。最终下发不包含 `model_nicks`、`nick_key`、`origin_mapping_rules` 等 WebUI 内部字段。
+
+`origin_mappings` 规则使用标准 regex 语法，命名捕获组固定为 `(?<driver>...)` 和 `(?<model>...)`。规则模板中的占位符只使用 `<driver>` 和 `<model>`，不复用 driver metadata 其它字段里常见的 `{driver}` / `{model}`，以避免和 JSON 模板、regex 转义规则混淆。实现必须校验 regex 合法性，并在发布预览中展示规则命中样例。
+
+`origin_provider_aliases` 是 provider scoped 的归一化表，用于把聚合平台返回的 provider 前缀映射到系统认可的 origin driver id。建议服务端持久化结构包含 `provider_key`、`alias`、`driver`、`created_at`、`updated_at`；发布 JSON 中物化为 `{ [alias]: driver }`。例如 OpenRouter 可将 `google-gemini` 归一化为 `google`，将 `x-ai` 归一化为 `xai`。
+
+dynamic alias 暂不进入本协议。聚合商提供的软链接模型视为 provider 侧 alias，当前阶段由 BuckyOS 自身逻辑目录系统表达软链接关系；provider metadata 下发只保留物理模型身份。需要排除的 alias 或非物理模型通过 `models[].exclude=true` 或 `patterns[].exclude=true` 表达，不新增 `exclude_patterns` 字段。
+
+需要补充的服务端/客户端验证：
+
+1. 发布 JSON schema v2 必须包含并校验 `origin_provider_aliases` 和 `origin_mappings`。
+2. OpenRouter `openai/<model>` 与 OpenAI 官方 `{model}` 应解析到相同 origin identity。
+3. regex 必须是合法标准语法，且只能通过命名捕获组产出 `driver` 和 `model`。
+4. logical mounts 使用 origin identity 后，当前服务渠道 model id 不应改变最终逻辑路径。
+5. dynamic alias 排除规则必须通过 exact/pattern `exclude=true` 覆盖。

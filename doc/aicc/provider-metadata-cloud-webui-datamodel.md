@@ -21,7 +21,9 @@ The current UI DataModel intentionally uses table-like records that match the mo
 - `metadata_variants`
 - `metadata_version_rules`
 - provider source object references for models/patterns/defaults/variants/version rules
-- `model_nicks`
+- `model_nicks` as Nick rewrite authoring records
+- `origin_provider_aliases`
+- `origin_mapping_rules`
 - `logical_directories`
 - `dictionaries`
 - `ops_overlays`
@@ -29,7 +31,7 @@ The current UI DataModel intentionally uses table-like records that match the mo
 
 This document describes the UI-facing data shape, not a backend DTO or KRPC protocol. Future backend integration should preserve the page -> store -> API adapter boundary and may map these records to real service objects behind the store.
 
-`published_json` in `PublishPreview` is the client delivery view, not the WebUI storage shape. It must be materialized as AICC driver metadata documents compatible with `doc/aicc/driver_metadata_schema.md`. Provider `name`, `provider_driver`, `protocol_family`, and `base_url` are client-facing metadata and are part of the materialized document. Authoring records such as `provider_key`, source-object references, nick rules, logical directory records, dictionaries, and operations overlay fields are consumed by the materializer and must not appear as top-level fields in the client driver metadata JSON.
+`published_json` in `PublishPreview` is the client delivery view, not the WebUI storage shape. It must be materialized as AICC driver metadata documents compatible with `doc/aicc/driver_metadata_schema.md`. Provider `name`, `provider_driver`, `protocol_family`, `base_url`, `origin_provider_aliases`, and `origin_mappings` are client-facing metadata and are part of the materialized document. Authoring records such as `provider_key`, source-object references, model_nicks storage rows, logical directory records, dictionaries, and operations overlay fields are consumed by the materializer and must not appear as top-level storage fields in the client driver metadata JSON.
 
 ## 2. Supported Pages and Views
 
@@ -40,7 +42,7 @@ This document describes the UI-facing data shape, not a backend DTO or KRPC prot
 | Providers | `/providers` | tech, ops | `ProviderRecord[]`, provider ops overlays |
 | Provider Wizard | `/providers/wizard` | tech | `ProviderWizardInput`, provider/source model/source resolver/nick changes |
 | Models | `/models` | tech, ops | `ModelParamRuleRecord[]` exact/pattern/default rules, model ops overlays |
-| Nick Rules | `/nick-rules` | tech | `ModelNickRecord[]`; standalone rule list/editor with the same rewrite semantics as Provider Wizard Nick rewrite |
+| Nick Rules | `/nick-rules` | tech | `ModelNickRecord[]` for Nick rewrite, plus `OriginProviderAliasRecord[]` and `OriginMappingRuleRecord[]` for final origin identity materialization |
 | Resolver Rules | `/resolver-rules` | tech, ops | variants, version rules, resolver ops overlays; original provider is always explicit in authoring forms |
 | Logical Directory | `/logical-directory` | tech | `LogicalDirectoryRecord[]` |
 | Dictionaries | `/dictionaries` | tech | `DictionaryItem[]` and bulk dictionary tagging |
@@ -245,10 +247,20 @@ export interface ModelNickRecord {
   created_at: number
   updated_at: number
 }
+
+export interface OriginProviderAliasRecord {
+  alias_key: string
+  provider_key: string
+  alias: string
+  driver: string
+  created_at: number
+  updated_at: number
+}
 ```
 
 Variants and version rules stay as independent record collections. They are not stored as page-only aggregated JSON.
-Variant rewrite uses `model_id_selector`; an empty source selector is normalized to `*`. Version-rule rewrite uses `content.model_pattern`; `model_id_selector` is kept as a list/filter and hit-preview mirror of `content.model_pattern`, not as the authoritative publish wildcard field.
+`ModelNickRecord` is the Nick rewrite authoring record. It constructs provider-native selectors from source metadata when a provider reuses another provider's source rules. It does not generate final driver metadata `origin_mappings`.
+`OriginProviderAliasRecord` materializes to the final JSON `origin_provider_aliases` table for the same provider. `OriginMappingRuleRecord` materializes to final JSON `origin_mappings`.
 
 ### Directory, Dictionary, Ops, and Source Records
 
@@ -424,6 +436,7 @@ export interface ProviderCloudSeed {
   metadata_variants: MetadataVariantRecord[]
   metadata_version_rules: MetadataVersionRuleRecord[]
   model_nicks: ModelNickRecord[]
+  origin_provider_aliases: OriginProviderAliasRecord[]
   logical_directories: LogicalDirectoryRecord[]
   dictionaries: DictionaryItem[]
   ops_overlays: OpsOverlayRecord[]
@@ -459,12 +472,25 @@ export interface DriverMetadataRule {
 }
 
 export interface DriverMetadataDocument {
-  schema_version: 1
+  schema_version: 2
   provider_driver: string
   name?: string | null
   protocol_family: string
   base_url?: string | null
   revision: string
+  origin_provider_aliases?: Record<string, string>
+  origin_mappings?: Array<{
+    mapping_key: string
+    priority: number
+    match: {
+      source: 'provider_model_id'
+      regex: string
+    }
+    transforms?: {
+      driver?: Array<{ op: 'trim' | 'lowercase' | 'alias'; table?: string; on_missing?: 'keep' | 'empty' | 'error' }>
+      model?: Array<{ op: 'trim' | 'lowercase' | 'alias'; table?: string; on_missing?: 'keep' | 'empty' | 'error' }>
+    }
+  }>
   models: DriverMetadataRule[]
   patterns: DriverMetadataRule[]
   defaults: DriverMetadataRule
@@ -508,7 +534,7 @@ The canonical schema source is `src/frame/provider_metadata_cloud/web/src/datamo
 | `providerInputSchema` | direct technical provider upsert | current schema includes `provider_key`; Provider Wizard presents the key as auto-assigned/read-only |
 | `modelRuleInputSchema` | exact/pattern/default model rule create/edit | lowercase `rule_key`, `match_type`, controlled provider/api/capability fields, selector required for exact/pattern, `exclude` only meaningful for exact/pattern |
 | `deleteModelRuleInputSchema` | model rule delete | non-empty `rule_key` |
-| `nickRuleInputSchema` | published id rewrite | exact/pattern selector, priority 1..999 |
+| `nickRuleInputSchema` | origin identity mapping authoring | exact/pattern selector, priority 1..999, origin template or regex |
 | `resolverRuleInputSchema` | compatibility schema for model_param_rule writes | model rule UI uses `modelRuleInputSchema`; variants/version_rules use their own schemas |
 | `metadataVariantInputSchema` | variant record edit | exact/pattern selector, priority 1..999, mount suffix, logical mounts, capabilities, JSON content patch |
 | `metadataVersionRuleInputSchema` | version rule edit | `content.model_pattern` exact/pattern selector, priority 1..999, family/tier, current/version mounts, auto mounts, capabilities, JSON content patch |
@@ -689,12 +715,13 @@ Selectors live in `src/frame/provider_metadata_cloud/web/src/datamodel/selectors
 | Directory items | `materializeDirectoryItems()` | child directories plus mounted model rules |
 | Directory diagnostics | `getLogicalDirectoryWarnings()` | duplicate path/key, empty directory, broken model refs |
 | Dictionary references | `getDictionaryReferenceCount()` | api type/capability usage in model rules |
-| Nick preview | `previewNickRewrite()` | provider nick rules sorted by priority |
-| Provider wizard nick drafts | `saveProviderWizard()` | `nick_rules[]` materializes to multiple `ModelNickRecord` rows. Each row is an origin-prefix, exact, or pattern mapping and is applied only during publish materialization. |
+| Nick preview | `previewNickRewrite()` | provider origin identity rules sorted by priority |
+| Provider wizard nick drafts | `saveProviderWizard()` | `nick_rules[]` materializes to multiple `ModelNickRecord` rows and rewrites provider-native selectors only. |
+| Provider wizard origin mapping drafts | `saveProviderWizard()` | `origin_mapping_rules[]` materializes to multiple `OriginMappingRuleRecord` rows and generates final `origin_mappings`. |
 | Provider wizard variant/version drafts | `saveProviderWizard()` | source selections materialize to provider-scoped `metadata_variants` and `metadata_version_rules` rows; Variant/version params uses distinct type-specific panels with the same multi-select edit session as Model params, does not edit priority, edits variant `provider_options`, edits version-rule predicates and single-value `current_mount`/`version_mount`, and leaves version-rule `auto_mounts` to the dedicated Logical mounts step |
 | Tech diagnostics | `buildTechDiagnostics()` | provider duplicates, empty selections, missing dictionary refs, nick conflicts |
 | Ops diagnostics | `buildOpsDiagnostics()` | stale/sync failure, missing overlay target, polluted technical fields, invalid pricing/routing |
-| Client driver metadata | `buildPublishedProviderJson()` | materializes `schema_version`, `provider_driver`, `name`, `protocol_family`, `base_url`, `revision`, `models`, sorted `patterns`, `defaults`, `variants`, `version_rules`, and `signature` |
+| Client driver metadata | `buildPublishedProviderJson()` | materializes `schema_version`, `provider_driver`, `name`, `protocol_family`, `base_url`, `revision`, `origin_provider_aliases`, `origin_mappings`, `models`, sorted `patterns`, `defaults`, `variants`, `version_rules`, and `signature` |
 | Publish preview | `buildPublishPreview()` | pending changes, diagnostics, ops impact, JSON sample |
 
 ## 10. Technical vs Operations Ownership
@@ -705,7 +732,7 @@ Technical service owns:
 
 - `ProviderRecord` identity and technical source fields: `provider_key`, `provider_driver`, `name`, `base_url`, `provider_kind`, `protocol_family`, `enabled`, `revision`.
 - `ModelParamRuleRecord` technical fields: provider scope, `match_type`, selectors, original provider, driver, api types, logical mounts, capabilities, attributes, context limits, pricing, exclude/enabled.
-- Source-object references, nick rules, metadata variants, metadata version rules.
+- Source-object references, origin identity authoring rules, origin provider aliases, metadata variants, metadata version rules.
 - Logical directory and dictionary records.
 - Technical import plan actions and generated technical pending changes.
 
@@ -737,6 +764,7 @@ Rules:
 | `DataState<T>` shape | Frozen | Shared loading/error contract |
 | `ImportPlanActionName` supported action names | Frozen for current mock plan | Parser and UI action table depend on explicit names |
 | `DriverMetadataDocument.models/patterns/defaults/variants/version_rules` | Frozen | Client delivery shape must stay compatible with driver metadata schema |
+| `DriverMetadataDocument.origin_mappings` | Frozen | Runtime resolver uses this to derive `{driver}` and `{model}` for mount expansion |
 | Warning severity values | Extensible | New severities need i18n and visual handling |
 | Recommendation/cost/latency/rollout enum values | Extensible | Additive values require filters and labels |
 | `ops_patch` subfields | Extensible | New ops knobs can be added behind schema and diagnostics |
@@ -767,7 +795,7 @@ Mock data requirements:
 - Provider Wizard does not create a separate wizard-only storage shape. Its Models step selects existing models, patterns, and defaults; Model params creates or edits provider-scoped `model_param_rules`; Variants / Version rules and Variant/version params create provider-scoped `metadata_variants` and `metadata_version_rules`; Logical mounts reuses the same selector/mount vocabulary for models, patterns, defaults, and version rules; Nick rewrite writes multiple `model_nicks` records. Existing providers enter this same wizard with immutable `provider_key`.
 - Existing-provider edit is a full scoped-set replacement: initial drafts are reconstructed from that provider's `model_param_rules`, `metadata_variants`, `metadata_version_rules`, and `model_nicks`; saving removes stale records scoped to that provider before inserting the edited set.
 - Provider Wizard `Kind` values are `origin` and `aggregator`. `Name` is entered by the user, restricted to English letters, digits, underscores, and hyphens, and must be unique ignoring case. `provider_driver` is derived from `Name.toLowerCase()` and is used as the delivery filename stem and final JSON `provider_driver`. `protocol_family` describes the client-facing wire protocol it speaks, is selected from the currently supported protocol list, and may be reused by multiple providers.
-- Nick rules are publish-time mappings, not copies of source metadata. They support origin-prefix (`origin`, `*`, `prefix/{model}`) and exact/pattern mappings. The same mapping preview applies to models, patterns, variants, and version rules: exact models rewrite `models[].id`, patterns rewrite `patterns[].pattern`, variants rewrite `model_id_selector`, and version rules rewrite `content.model_pattern`. A default rule has no emitted selector. A variant without a selector defaults to `*`, and `*` can also be rewritten. A change or deletion of an object referenced by another provider produces a synchronization-review warning for that dependent provider.
+- Nick rules remain Nick rewrite authoring mappings, not copies of source metadata. They support origin-prefix templates such as `openai/{model}` and exact/pattern mapping. When a provider reuses source rules from another provider, Nick rules may construct provider-native `models[].id`, `patterns[].pattern`, variant selectors, and version-rule `content.model_pattern`. Separate Origin mapping rules then tell the runtime how to map those provider-native ids back to physical `{driver}` and `{model}`. A change or deletion of an object referenced by another provider produces a synchronization-review warning for that dependent provider.
 - Resolver Rules authoring forms require an explicit `original_provider`; they must not use an `All` option as a persisted value.
 - Keep variants and version rules as independent records.
 - Include dictionaries for controlled api type/capability choices.
