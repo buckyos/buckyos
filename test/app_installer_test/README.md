@@ -1,3 +1,19 @@
+> **本机 DV 运行结论（2026-07-16, macOS ood1）**：
+> - static web 用例全链路通过（publish→pikg→种证据→install_package→confirm→
+>   Acquire/Verify/Prepare/Deploy/Activate→install_record(state=installed)）。
+> - agent 用例在 Linux DV 才能过：macOS 上 Docker Desktop 默认文件共享不含
+>   `/opt/buckyos`，容器 bind mount 报
+>   `error while creating mount source path '/host_mnt/opt/buckyos/...'`。
+>   需在 Docker Desktop Settings → Resources → File sharing 手工加入
+>   `/opt/buckyos` 后重跑（属本机 Docker 配置，测试不代改）。
+> - `BUCKYOS_TEST_SKIP_DOCKER=1` 可跳过 docker 用例（本机镜像拉取被网络阻断时用）。
+> - 登录凭证：优先 `/opt/buckyos/etc/.buckycli/user_private_key.pem`（zone owner），
+>   回退 `/opt/buckyos/etc/node_private_key.pem`（设备 key，node_active 布局），
+>   kid 用 `BUCKYOS_TEST_NODE_KID`（默认 ood1）。
+> - fixture 的 pkg 名必须带 `.`（如 `e2e.{app}-agent`）或自带 env 前缀：
+>   PackageEnv 对无点名字会加 `nightly-{os}-{arch}.` 前缀查找，而 pkg meta 是
+>   内容寻址对象不可改名（node_daemon 旧的静默改名路径已改为显式报错）。
+
 > **v0.5 更新（2026-07-16）**：安装链路已切换到 App 安装协议 v0.5：
 > `app.publish` 产出 `.pikg`（返回 `pikg_handle`/`app_did`/`app_doc`），测试
 > 先向 zone resolver 数据面（`resolver/cache/{did}/app/{state|doc}`，root 权限）

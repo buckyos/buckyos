@@ -655,6 +655,10 @@ async fn check_expose_conflicts(
                 let Ok(spec) = serde_json::from_str::<AppServiceSpec>(&value.value) else {
                     continue;
                 };
+                // 已删除的 spec 在 GC 前仍会保留，不再占用端口。
+                if spec.state == ServiceState::Deleted {
+                    continue;
+                }
                 for expose in spec.install_config.expose_config.values() {
                     if let Some(port) = expose.expose_port {
                         if requested.contains(&port) {

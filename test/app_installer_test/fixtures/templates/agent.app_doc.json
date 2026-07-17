@@ -30,6 +30,6 @@
     }
   },
   "deps": {
-    "__APP_ID__-agent": "__VERSION__"
+    "e2e.__APP_ID__-agent": "__VERSION__"
   }
 }

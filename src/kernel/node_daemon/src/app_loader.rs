@@ -2014,11 +2014,21 @@ impl AppLoader {
             )
         })?;
         let meta_obj_id_string = meta_obj_id.to_string();
-        let mut pkg_meta =
-            parse_package_meta_from_store(meta_obj_id_string.as_str(), &pkg_meta_str)?;
+        let pkg_meta = parse_package_meta_from_store(meta_obj_id_string.as_str(), &pkg_meta_str)?;
         let expected_pkg_name = expected_env_pkg_name(env, &package_id);
         if pkg_meta.name != expected_pkg_name {
-            pkg_meta.name = expected_pkg_name;
+            // meta 是内容寻址对象：改名会使重算 ObjId 与引用不符，env 的
+            // 完整性校验必然拒绝（旧的静默改名路径不可能成功）。发布侧必须
+            // 使用带 env 前缀或含 `.` 的 pkg 名。
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!(
+                    "pkg meta name `{}` does not match env expectation `{}`; \
+                     content-addressed metas can not be renamed — publish sub \
+                     packages with env-prefixed or dotted pkg names",
+                    pkg_meta.name, expected_pkg_name
+                ),
+            ));
         }
         env.set_pkg_meta_to_index_db(meta_obj_id_string.as_str(), &pkg_meta)
             .await
