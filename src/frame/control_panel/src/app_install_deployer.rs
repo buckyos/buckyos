@@ -300,6 +300,13 @@ impl ProductionInstallDriver {
         write_install_record(&client, &data.request.user_id, &record, is_agent).await?;
 
         let proof_id = write_installed_proof(view, data, &prepared).await?;
+        if proof_id.is_some() {
+            let mut record_with_proof = record.clone();
+            record_with_proof.proof_id = proof_id.clone();
+            record_with_proof.updated_at = buckyos_get_unix_timestamp();
+            write_install_record(&client, &data.request.user_id, &record_with_proof, is_agent)
+                .await?;
+        }
 
         Ok(InstallTaskResult {
             install_record_key: Some(install_record_key(

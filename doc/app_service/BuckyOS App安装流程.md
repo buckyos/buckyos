@@ -1,3 +1,12 @@
+> **状态（2026-07-16）**：App 安装协议已升级到 v0.5，真相源为
+> [doc/App 安装协议.md](../App%20安装协议.md)（§14.0 为已冻结实现基线），
+> Control Panel 侧实现说明见
+> [Control_Panel_Service.md §5](../control_panel/Control_Panel_Service.md)。
+> 本文的 §3.2/§4 中 `apps.install(app_id, version)`、`resolve_repo_app_release`
+> 与"下载后立即写 spec + proof"的旧流程描述已被 v0.5 的
+> `apps.install(identifier)` / `apps.install_package(staging_handle)` /
+> confirm / 分阶段流水线取代；RepoService 原语（§2/§3.1）与内容寻址模型仍然有效。
+
 # BuckyOS 应用安装流程
 
 > 本文档的首要目的是列出系统必须支持的内核接口，并围绕这些接口梳理应用的完整生命周期。  

@@ -67,17 +67,35 @@ struct PublishScanPlan {
 
 struct PreparedPayload {
     file_object: Option<FileObject>,
+    tarball_path: Option<PathBuf>,
 }
 
 struct PreparedSubPkg {
     key: String,
     desc: SubPkgDesc,
     meta: PackageMeta,
+    tarball_path: PathBuf,
 }
 
 struct PreparedPublishPlan {
     app_bundle: Option<PreparedPayload>,
     sub_pkgs: Vec<PreparedSubPkg>,
+    /// 发布临时目录：payload tar.gz 在 pikg 打包完成前保留。
+    temp_root: PathBuf,
+}
+
+/// app.publish 的完整产物（§11）。
+pub struct PublishOutput {
+    pub app_did: name_lib::DID,
+    pub app_doc_object_id: ObjId,
+    /// 最终 App Document body（canonical 前的 JSON 值，供工具链/测试消费）。
+    pub app_doc_value: Value,
+    pub pikg_digest: String,
+    pub pikg_handle: String,
+    pub staged_pikg_path: PathBuf,
+    /// 发布状态：发布到 Repo/NamedStore 与发布 App DID 是两个动作；
+    /// 这里只完成前者，App Document 仍是未经权威发布的 candidate。
+    pub publish_status: &'static str,
 }
 
 fn task_data_value<T: Serialize>(data: T) -> Result<Value, RPCErrors> {
@@ -914,27 +932,33 @@ impl AppInstaller {
                     scanned.key
                 ))
             })?;
+            let tarball_path = payload.tarball_path.clone().ok_or_else(|| {
+                RPCErrors::ReasonError(format!(
+                    "Packaged sub package `{}` unexpectedly has no tarball",
+                    scanned.key
+                ))
+            })?;
             let meta = self.build_sub_pkg_meta(app_doc_template, &scanned.desc, file_object)?;
             prepared_sub_pkgs.push(PreparedSubPkg {
                 key: scanned.key,
                 desc: scanned.desc,
                 meta,
+                tarball_path,
             });
         }
-
-        let _ = fs::remove_dir_all(&temp_root).await;
 
         Ok(PreparedPublishPlan {
             app_bundle,
             sub_pkgs: prepared_sub_pkgs,
+            temp_root,
         })
     }
 
     async fn store_publish_pkg_metas(
         &self,
         app_doc_template: &AppDoc,
-        prepared: PreparedPublishPlan,
-    ) -> Result<ObjId, RPCErrors> {
+        prepared: &PreparedPublishPlan,
+    ) -> Result<(ObjId, AppDoc, Vec<Value>), RPCErrors> {
         let runtime = get_buckyos_api_runtime()?;
         let named_store = runtime.get_named_store().await.map_err(|error| {
             RPCErrors::ReasonError(format!("Open named store for publish failed: {error}"))
@@ -945,8 +969,9 @@ impl AppInstaller {
         );
         let repo = self.repo_client().await?;
         let mut resolved_sub_pkgs = Vec::new();
+        let mut meta_values = Vec::new();
 
-        for prepared_sub_pkg in prepared.sub_pkgs {
+        for prepared_sub_pkg in prepared.sub_pkgs.iter() {
             let (meta_obj_id, meta_obj_str) = prepared_sub_pkg.meta.gen_obj_id();
             named_store
                 .put_object(&meta_obj_id, meta_obj_str.as_str())
@@ -964,7 +989,16 @@ impl AppInstaller {
             )
             .await?;
 
-            resolved_sub_pkgs.push((prepared_sub_pkg.key, prepared_sub_pkg.desc, meta_obj_id));
+            meta_values.push(
+                serde_json::to_value(&prepared_sub_pkg.meta).map_err(|error| {
+                    RPCErrors::ReasonError(format!("Serialize sub package meta failed: {error}"))
+                })?,
+            );
+            resolved_sub_pkgs.push((
+                prepared_sub_pkg.key.clone(),
+                prepared_sub_pkg.desc.clone(),
+                meta_obj_id,
+            ));
         }
 
         let final_doc = Self::build_final_app_doc_for_publish(
@@ -979,7 +1013,9 @@ impl AppInstaller {
         let final_value = serde_json::to_value(&final_doc).map_err(|error| {
             RPCErrors::ReasonError(format!("Serialize final AppDoc failed: {error}"))
         })?;
-        let (final_obj_id, final_obj_str) = build_named_object_by_json("pkg", &final_value);
+        // v0.5 D2：App Document 的 obj type 固定为 `appdoc`（不再复用 pkg）。
+        let (final_obj_id, final_obj_str) =
+            build_named_object_by_json(buckyos_api::OBJ_TYPE_APP_DOC, &final_value);
         named_store
             .put_object(&final_obj_id, final_obj_str.as_str())
             .await
@@ -991,7 +1027,7 @@ impl AppInstaller {
         self.store_meta_object_via_repo(&repo, &final_obj_id, "appdoc")
             .await?;
 
-        Ok(final_obj_id)
+        Ok((final_obj_id, final_doc, meta_values))
     }
 
     pub async fn publish_app_to_repo(
@@ -999,7 +1035,7 @@ impl AppInstaller {
         app_type: AppType,
         local_dir: &Path,
         app_doc_template: &AppDoc,
-    ) -> Result<ObjId, RPCErrors> {
+    ) -> Result<PublishOutput, RPCErrors> {
         info!(
             "begin publish app `{}` type `{}` from `{}`",
             app_doc_template.name,
@@ -1008,14 +1044,87 @@ impl AppInstaller {
         );
         let plan = self.scan_publish_sources(app_type, local_dir, app_doc_template)?;
         let prepared = self.package_publish_sources(app_doc_template, plan).await?;
-        let final_obj_id = self
-            .store_publish_pkg_metas(app_doc_template, prepared)
-            .await?;
+        let store_result = self
+            .store_publish_pkg_metas(app_doc_template, &prepared)
+            .await;
+        let (final_obj_id, final_doc, meta_values) = match store_result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&prepared.temp_root).await;
+                return Err(error);
+            }
+        };
+
+        // 生成本地 .pikg 并用同一个 PikgReader 自校验（packer/verifier 单实现）。
+        let pikg_result = self
+            .build_publish_pikg(&prepared, &final_doc, &meta_values)
+            .await;
+        let _ = fs::remove_dir_all(&prepared.temp_root).await;
+        let (pikg_digest, staged_pikg_path) = pikg_result?;
+
         info!(
-            "publish completed for app `{}` version `{}` obj `{}`",
-            app_doc_template.name, app_doc_template.version, final_obj_id
+            "publish completed for app `{}` version `{}` obj `{}` pikg sha256:{}",
+            app_doc_template.name, app_doc_template.version, final_obj_id, pikg_digest
         );
-        Ok(final_obj_id)
+        let app_doc_value = serde_json::to_value(&final_doc).map_err(|error| {
+            RPCErrors::ReasonError(format!("Serialize final AppDoc failed: {error}"))
+        })?;
+        Ok(PublishOutput {
+            app_did: final_doc.id.clone(),
+            app_doc_object_id: final_obj_id,
+            app_doc_value,
+            pikg_handle: format!("{}{}", buckyos_api::PIKG_STAGING_HANDLE_PREFIX, pikg_digest),
+            pikg_digest,
+            staged_pikg_path,
+            publish_status: "repo_stored_candidate",
+        })
+    }
+
+    /// 打包 pikg -> staging root -> 自校验（结构 + 全部内容 hash）。
+    async fn build_publish_pikg(
+        &self,
+        prepared: &PreparedPublishPlan,
+        final_doc: &AppDoc,
+        meta_values: &[Value],
+    ) -> Result<(String, PathBuf), RPCErrors> {
+        let mut builder = crate::pikg::PikgBuilder::new()
+            .app_doc(final_doc)
+            .map_err(|error| RPCErrors::ReasonError(format!("pikg builder: {error}")))?;
+        for meta_value in meta_values {
+            let (next, _meta_id) = builder
+                .add_package_meta_value(meta_value.clone())
+                .map_err(|error| RPCErrors::ReasonError(format!("pikg builder: {error}")))?;
+            builder = next;
+        }
+        for sub_pkg in prepared.sub_pkgs.iter() {
+            builder = builder
+                .add_payload_file(sub_pkg.key.as_str(), sub_pkg.tarball_path.clone())
+                .map_err(|error| RPCErrors::ReasonError(format!("pikg builder: {error}")))?;
+        }
+        let tmp_pikg = prepared.temp_root.join(format!("{}.pikg", final_doc.name));
+        builder
+            .write_to(&tmp_pikg)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(format!("write pikg failed: {error}")))?;
+
+        let staging_root = crate::app_install_driver::pikg_staging_root();
+        let (digest, staged_path) =
+            crate::pikg::PikgReader::stage_pikg_file(&tmp_pikg, &staging_root)
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("stage published pikg failed: {error}"))
+                })?;
+
+        // 自校验：packer 与 verifier 不允许两套规则漂移。
+        let reader = crate::pikg::PikgReader::open(&staged_path, Some(&digest))
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("published pikg failed self-check: {error}"))
+            })?;
+        reader.verify_all_contents().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("published pikg failed content self-check: {error}"))
+        })?;
+        Ok((digest, staged_path))
     }
 
     fn canonical_packaged_name(key: &str, desc: &SubPkgDesc, app_id: &str) -> Option<String> {
@@ -1180,6 +1289,7 @@ impl AppInstaller {
 
         Ok(PreparedPayload {
             file_object: Some(file_object),
+            tarball_path: Some(tarball_path),
         })
     }
 
@@ -1543,7 +1653,7 @@ impl ControlPanelServer {
             "rpc app.publish app=`{}` version=`{}` type=`{}` local_dir=`{}`",
             app_doc.name, app_doc.version, app_type, local_dir
         );
-        let obj_id = self
+        let output = self
             .app_installer
             .publish_app_to_repo(app_type, std::path::Path::new(local_dir.as_str()), &app_doc)
             .await
@@ -1558,7 +1668,16 @@ impl ControlPanelServer {
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({
                 "ok": true,
-                "obj_id": obj_id.to_string(),
+                // 兼容字段：即 app_doc_id。
+                "obj_id": output.app_doc_object_id.to_string(),
+                "app_did": output.app_did.to_string(),
+                "app_doc_id": output.app_doc_object_id.to_string(),
+                "pikg_handle": output.pikg_handle,
+                "pikg_digest": output.pikg_digest,
+                "pikg_path": output.staged_pikg_path.to_string_lossy(),
+                "app_doc": output.app_doc_value,
+                // 发布到 Repo/NamedStore ≠ 发布 App DID：仍是未权威发布的 candidate。
+                "publish_status": output.publish_status,
             })),
             req.seq,
         ))

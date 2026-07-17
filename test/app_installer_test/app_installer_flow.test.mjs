@@ -460,36 +460,103 @@ async function publishApp({ appType, localDir, appDoc }) {
 
   assert.equal(result.ok, true)
   assert.ok(result.obj_id, 'publish should return obj_id')
+  // v0.5: publish returns full identity + pikg handle + explicit status.
+  assert.ok(result.app_did, 'publish should return app_did')
+  assert.ok(result.app_doc_id, 'publish should return app_doc_id')
+  assert.ok(
+    `${result.pikg_handle}`.startsWith('pikg:sha256:'),
+    `publish should return a pikg staging handle, got ${result.pikg_handle}`,
+  )
+  assert.ok(result.pikg_digest, 'publish should return pikg_digest')
+  assert.equal(result.publish_status, 'repo_stored_candidate')
+  assert.ok(result.app_doc, 'publish should return the final app_doc body')
   return result
 }
 
-async function installApp({ appId, version }) {
-  const result = await callControlPanel('apps.install', {
-    app_id: appId,
-    version,
-  })
-
-  assert.ok(result.task_id, 'install should return task_id')
-  return waitForTask(result.task_id)
+function escapeResolverSegment(raw) {
+  return `${raw}`.replaceAll('%', '%25').replaceAll('/', '%2F')
 }
 
-async function installAppAllowFailure({ appId, version }) {
-  const result = await callControlPanel('apps.install', {
-    app_id: appId,
-    version,
-  })
-
-  assert.ok(result.task_id, 'install should return task_id')
-  return waitForTaskResult(result.task_id)
+async function writeConfig(key, value) {
+  const ctx = await getSdkContext()
+  await ctx.systemConfigRpc.call('sys_config_set', { key, value })
 }
 
-function assertInstallCompletedOrTimedOutWaitingReady(installTask, appType) {
-  assert.ok(
-    installTask.status === 'Completed' ||
-      (installTask.status === 'Failed' &&
-        `${installTask.task.message ?? ''}`.includes('Timed out waiting for app')),
-    `${appType} install should either complete or only fail on control-plane readiness timeout, got status=${installTask.status}, message=${installTask.task.message ?? '<none>'}`,
+// v0.5 D4: 测试环境通过 zone resolver 数据面（RBAC 管控的 KV）显式种入
+// `(App DID, "app")` 解析证据；Installer 只消费 resolver 结果。
+async function seedResolverCache(appDid, appDocJson, documentVersion = 1) {
+  const base = `resolver/cache/${escapeResolverSegment(appDid)}/app`
+  await writeConfig(`${base}/doc`, JSON.stringify(appDocJson))
+  await writeConfig(
+    `${base}/state`,
+    JSON.stringify({
+      document_status: 'active',
+      document_version: documentVersion,
+      updated_by: 'app_installer_test',
+    }),
   )
+}
+
+async function waitForTaskStatus(taskId, statuses, { timeoutMs = 120000, intervalMs = 1000 } = {}) {
+  const ctx = await getSdkContext()
+  const numericTaskId = Number(taskId)
+  const deadline = Date.now() + timeoutMs
+  let task = null
+  while (Date.now() <= deadline) {
+    task = await ctx.taskManager.getTask(numericTaskId)
+    if (statuses.includes(task.status)) {
+      return task
+    }
+    if (['Failed', 'Canceled'].includes(task.status)) {
+      return task
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(
+    `task ${numericTaskId} did not reach ${statuses.join('/')} in time, last=${task?.status}, message=${task?.message ?? '<none>'}`,
+  )
+}
+
+// v0.5 安装闭环：apps.install_package -> WaitingForApproval ->
+// apps.install.confirm -> Completed（不再接受 ready 超时算通过）。
+async function installPikgToCompletion({ stagingHandle, expectOfflineReady = true }) {
+  const startResult = await callControlPanel('apps.install_package', {
+    staging_handle: stagingHandle,
+  })
+  assert.ok(startResult.task_id, 'install_package should return task_id')
+  const taskId = startResult.task_id
+
+  const waiting = await waitForTaskStatus(taskId, ['WaitingForApproval'])
+  assert.equal(
+    waiting.status,
+    'WaitingForApproval',
+    `install should stop for approval, got ${waiting.status}: ${waiting.message ?? '<none>'}`,
+  )
+  const plan = waiting.data?.plan
+  assert.ok(plan, 'waiting task must carry a persisted plan in Task.data')
+  if (expectOfflineReady) {
+    assert.equal(
+      plan.readiness?.install,
+      'OFFLINE_READY',
+      `pikg install should be offline ready, got ${JSON.stringify(plan.readiness)}`,
+    )
+  }
+
+  const requiredPermissions = (plan.permissions ?? [])
+    .filter((permission) => permission.required)
+    .map((permission) => permission.scope)
+  const confirmResult = await callControlPanel('apps.install.confirm', {
+    task_id: `${taskId}`,
+    accepted_permissions: requiredPermissions,
+  })
+  assert.ok(confirmResult.task_id, 'confirm should return task_id')
+
+  const task = await waitForTask(taskId)
+  assert.ok(
+    task.data?.result?.completed_at,
+    'completed install task must carry a structured result',
+  )
+  return task
 }
 
 async function uninstallApp({ appId, removeData = false }) {
@@ -689,32 +756,49 @@ test('app_installer local publish lifecycle', async (t) => {
     const fixture = await stageStaticWebFixture()
 
     try {
-      await publishApp({
+      const published = await publishApp({
         appType: 'web',
         localDir: fixture.localDir,
         appDoc: fixture.appDoc,
       })
+      assert.equal(published.app_did, deriveAppDid(fixture.appId))
 
-      const installTask = await installAppAllowFailure({
-        appId: fixture.appId,
-        version: fixture.version,
+      // v0.5: 显式种 resolver 证据 -> 本地 pikg 安装 -> 确认 -> 严格等完成。
+      await seedResolverCache(published.app_did, published.app_doc)
+      const installTask = await installPikgToCompletion({
+        stagingHandle: published.pikg_handle,
       })
-
-      await sleep(POST_INSTALL_SETTLE_MS)
 
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
       assert.equal(spec.app_doc.version, fixture.version)
+      assert.equal(spec.app_doc.id, published.app_did)
       assert.equal(spec.app_doc.selector_type, 'static')
       assert.ok(
         isInstalledSpecState(spec.state),
         `static web spec should be in an installed state, got ${spec.state}`,
       )
-      assertInstallCompletedOrTimedOutWaitingReady(installTask, 'static web')
       assert.deepEqual(
         spec.install_config.expose_config.www?.sub_hostname ?? [],
         [fixture.appId],
       )
+
+      // install_record（D3）与 proof 顺序：完成后 record=installed 且
+      // task result 带 record key；proof id（Repo 可用时）回填进 record。
+      const installRecord = await readConfigJson(
+        `users/${userId}/apps/${fixture.appId}/install_record`,
+      )
+      assert.equal(installRecord.state, 'installed')
+      assert.equal(installRecord.task_id, Number(installTask.id))
+      assert.equal(installRecord.app_did, published.app_did)
+      assert.equal(
+        installTask.data?.result?.install_record_key,
+        `users/${userId}/apps/${fixture.appId}/install_record`,
+      )
+      if (installTask.data?.result?.proof_id) {
+        assert.equal(installRecord.proof_id, installTask.data.result.proof_id)
+      }
+
       assert.equal(
         await waitForCondition(() => fileExists(fixture.binPath()), {
           timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
@@ -740,25 +824,20 @@ test('app_installer local publish lifecycle', async (t) => {
     }
   })
 
-  await t.test(
-    'agent app publish + install',
-    { skip: 'temporarily disabled due to runtime-dependent install design' },
-    async () => {
+  await t.test('agent app publish + install', async () => {
     const fixture = await stageAgentFixture()
 
     try {
-      await publishApp({
+      const published = await publishApp({
         appType: 'agent',
         localDir: fixture.localDir,
         appDoc: fixture.appDoc,
       })
 
-      const installTask = await installAppAllowFailure({
-        appId: fixture.appId,
-        version: fixture.version,
+      await seedResolverCache(published.app_did, published.app_doc)
+      await installPikgToCompletion({
+        stagingHandle: published.pikg_handle,
       })
-
-      await sleep(POST_INSTALL_SETTLE_MS)
 
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
@@ -771,7 +850,6 @@ test('app_installer local publish lifecycle', async (t) => {
 
       const instances = await listServiceInstances(fixture.specId(userId))
       assert.ok(instances.length >= 1, 'agent install should create a started instance')
-      assertInstallCompletedOrTimedOutWaitingReady(installTask, 'agent')
       assert.equal(
         await waitForCondition(() => fileExists(fixture.pidFile(userId)), {
           timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
@@ -795,8 +873,7 @@ test('app_installer local publish lifecycle', async (t) => {
     } finally {
       await cleanupTempDir(fixture.localDir)
     }
-    },
-  )
+  })
 
   await t.test(
     'docker app publish + install',
@@ -805,18 +882,16 @@ test('app_installer local publish lifecycle', async (t) => {
       const fixture = await stageDockerFixture()
 
       try {
-        await publishApp({
+        const published = await publishApp({
           appType: 'dapp',
           localDir: fixture.localDir,
           appDoc: fixture.appDoc,
         })
 
-        const installTask = await installAppAllowFailure({
-          appId: fixture.appId,
-          version: fixture.version,
+        await seedResolverCache(published.app_did, published.app_doc)
+        await installPikgToCompletion({
+          stagingHandle: published.pikg_handle,
         })
-
-        await sleep(POST_INSTALL_SETTLE_MS)
 
         const spec = await readConfigJson(fixture.specPath(userId))
         assert.equal(spec.app_doc.name, fixture.appId)
@@ -827,7 +902,6 @@ test('app_installer local publish lifecycle', async (t) => {
         )
         assert.equal(spec.app_doc.categories[0], 'dapp')
         assert.equal(await isContainerRunning(fixture.containerName(userId)), true)
-        assertInstallCompletedOrTimedOutWaitingReady(installTask, 'docker')
 
         if (UNINSTALL_AFTER_INSTALL) {
           await uninstallApp({ appId: fixture.appId, removeData: false })

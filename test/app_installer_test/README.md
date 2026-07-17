@@ -1,3 +1,16 @@
+> **v0.5 更新（2026-07-16）**：安装链路已切换到 App 安装协议 v0.5：
+> `app.publish` 产出 `.pikg`（返回 `pikg_handle`/`app_did`/`app_doc`），测试
+> 先向 zone resolver 数据面（`resolver/cache/{did}/app/{state|doc}`，root 权限）
+> 种入解析证据，再走 `apps.install_package(staging_handle)` →
+> 等待 `WaitingForApproval` → 读取 Task.data 中的持久 plan（断言
+> `OFFLINE_READY`）→ `apps.install.confirm` → 严格等待 `Completed`（不再接受
+> "等待 ready 超时也算通过"）。完成后断言 `users/{uid}/apps/{app}/install_record`
+> （state=installed、task_id、proof 回填）与运行证据。Agent 用例已恢复启用；
+> Docker 用例仍在无 docker 环境下跳过。
+>
+> 已知缺口：Control Panel 中途重启恢复用例需要能重启服务进程的 DV 编排，
+> 暂未在本 node 测试内实现（恢复语义已由 control_panel 引擎单测覆盖）。
+
 # app_installer_test
 
 独立工程示例，直接通过 `package.json` 里的 GitHub 依赖安装 `buckyos`：

@@ -165,14 +165,18 @@ Agent 在系统中有**两副面孔**，需要区分：
 |---|---|---|
 | `apps.list` | `{user_id, total, apps[]}` | 列出当前用户可见应用（不含 Agent，含系统内置） |
 | `apps.details` / `app.details` | `{app_id, is_system, spec, ...}` | 应用详情 |
-| `apps.install` | `{task_id}` | 异步安装，见 §5 |
-| `apps.update` | `{task_id}` | 升级到指定 version |
+| `apps.install` | `{task_id}` | v0.5：入参 `{identifier, referrer?, options?}`，identifier 为 App DID / 名称 / Object ID / 内嵌 ObjId 的 URL；旧 `app_id+version` 语义已删除，见 §5 |
+| `apps.install_package` | `{task_id}` | v0.5：本地 `.pikg` 安装，入参 `{staging_handle, options?}`；只接受 staging handle（`pikg:sha256:<hex>` 或 NDN chunk id），不接受服务端路径（D5） |
+| `apps.install.confirm` | `{task_id}` | 确认 `WaitingForApproval` 的安装：`{task_id, target?, install_params?, accepted_permissions?}`；target/params 变化会重算 plan 并重新绑定 fingerprint |
+| `apps.install.retry` | `{task_id}` | 从失败/暂停 Stage 重试（不可重试错误会拒绝） |
+| `apps.install.cancel` | `{task_id}` | 取消：Prepare 前直接取消；spec 已写后先回滚再取消 |
+| `apps.update` | `{task_id}` | v0.5：`{app_id, options?}`，走与安装同一条 Stage 流水线（见 §5.3） |
 | `apps.uninstall` | `{task_id}` | 卸载（可选 `remove_data`） |
 | `apps.start` / `apps.stop` | `{task_id}` / `{ok}` | 启停 |
-| `app.publish` | `{ok, obj_id}` | 开发者发布：校验本地目录与 app 类型后推到仓库 |
+| `app.publish` | `{ok, obj_id, app_did, app_doc_id, pikg_handle, pikg_digest, pikg_path, app_doc, publish_status}` | 开发者发布：产出带 `id/doc_type` 的 App Document、`.pikg`（同一 PikgReader 自校验）并推到仓库；`publish_status=repo_stored_candidate` 表示尚未权威发布 App DID |
 
-* **权限**：所有 handler 要求已认证主体；目标用户默认取 `principal.username`（为自己安装），可显式传 `user_id`。
-* **安全约束**：卸载删数据仅允许命中 `/opt/buckyos/data/*/{app_id}/*` 的路径；已 `Deleted` 的 app 不可 start；同一用户同一 app 不可重复安装。
+* **权限**：所有 handler 要求已认证主体；目标用户默认取 `principal.username`（为自己安装），给他人安装需 admin；`SYSTEM_INTERNAL` 策略（可 auto-confirm）仅限 admin。confirm/retry/cancel 只能操作本人任务（admin 例外）。
+* **安全约束**：卸载删数据仅允许命中 `/opt/buckyos/data/*/{app_id}/*` 的路径；已 `Deleted` 的 app 不可 start；同一 user + App DID 只允许一个进行中的安装/升级事务。
 
 ### 4.5 UI Session 管理 (登入/登出/当前用户)
 
@@ -206,43 +210,51 @@ Agent 在系统中有**两副面孔**，需要区分：
 
 ## 5. App 安装协议 (App Installer Protocol)
 
-新增 App 是系统核心写操作，被固化为一套**异步、任务化、可审计**的协议（[app_installer.rs](../../src/frame/control_panel/src/app_installer.rs)）。所有 install/update/uninstall/start 操作**立即返回 `task_id`**，真实工作在后台任务中推进，前端轮询 Task 进度。
+真相源：[doc/App 安装协议.md](../App%20安装协议.md)（Draft v0.5，§14.0 为已冻结实现基线）。实现分布：
+[app_install_engine.rs](../../src/frame/control_panel/src/app_install_engine.rs)（可恢复状态机）、
+[app_install_resolver.rs](../../src/frame/control_panel/src/app_install_resolver.rs)（`(App DID, "app")` 解析适配）、
+[app_install_planner.rs](../../src/frame/control_panel/src/app_install_planner.rs)（InstallPlan/readiness）、
+[pikg.rs](../../src/frame/control_panel/src/pikg.rs)（`.pikg` 读写与校验）、
+[app_install_driver.rs](../../src/frame/control_panel/src/app_install_driver.rs) +
+[app_install_deployer.rs](../../src/frame/control_panel/src/app_install_deployer.rs)（各 Stage 生产实现）、
+[app_install_runner.rs](../../src/frame/control_panel/src/app_install_runner.rs)（dispatch 与恢复）。
 
-### 5.1 安装来源
-
-App 来自仓库/市场服务（RepoService，经 `RepoClient`）。`repo.list(filter)` 按 `app_id`（可选 `version`）返回 `RepoRecord`（`content_id` / `content_name` / `status`：`pinned`/`collected` / `meta`(序列化的 `AppDoc`)）。候选按 semver、status（pinned > collected）、时间排序择优。
-
-### 5.2 安装流程（`run_install_task`）
+### 5.1 Stage 流水线与持久化
 
 ```
-用户请求 apps.install
-  └─> 1. resolve_repo_app_release(app_id, version)   // 从仓库解析 AppDoc + RepoRecord
-       2. build_install_spec_for_user(app_doc, uid)  // 构造 AppServiceSpec(state=New, enable=true...)
-       3. install_app(&spec) -> 立即返回 task_id，spawn 后台任务
-后台任务：
-       4. 校验：同一用户未重复安装该 app                      (~5%)
-       5. ensure_content_pinned: 下载并 pin 内容            (20%~60%)
-            - status=pinned → 直接构造下载凭证
-            - status=collected → 建下载任务、等完成、校验 named_store、repo.pin(content, proof)
-       6. get_next_app_index()  // 扫描所有 spec，自动分配显示序号
-       7. 写 spec → users/{uid}/apps|agents/{app_id}/spec  (state=New)  (60%)
-            // 这是触发调度器开始分配实例的信号
-       8. repo.add_proof(install_proof)  // 记录安装审计凭证（含 app_id/uid/version/spec_id/content_id）
-       9. wait_for_instance_ready(&spec)  // 轮询 services/{spec_id}/instances/{node}，超时 45s
-      10. 标记 Task 完成 (100%)
+identifier / staging handle
+   └─> Resolve   resolve_did(App DID, "app")，candidate 绑定（id/expected_owner 硬约束）
+   └─> Inspect   按目标 Node（devices/{node}/info，非编译期 cfg）选 package，
+                 产出 InstallPlan + 六维 readiness + plan fingerprint
+   └─> [WaitingForApproval]  确认权限/参数；SYSTEM_INTERNAL 可显式 auto-confirm
+   └─> Acquire   只下载 plan.missing（TaskManager 子任务，kevent 加速等待）；
+                 offline 模式不建下载任务
+   └─> Verify    重读全部 Package Meta ObjId、重哈希 pikg 内容、selector/mount 复核，
+                 输出逐项 VerificationReport；Trust+Content+Config 全 ready 才继续
+   └─> Prepare   构造 spec、materialize pikg 内容进 NamedStore、端口冲突检查、
+                 app_index CAS 分配，先写 install_record(state=prepared)
+   └─> Deploy    写 users/{uid}/apps|agents/{app}/spec —— 部署事务开始点
+   └─> Activate  等 Started 实例证据 / static web 可观察证据 + 健康检查；
+                 成功后才 install_record(state=installed) -> installed proof -> Task 完成
 ```
 
-参与方：RepoService（解析/下载/记凭证）、TaskManager（进度）、NamedStore（内容校验）、SystemConfig（写 spec）、Scheduler（监听 spec 变化分配节点）、Node Daemon（部署实例）。
+* 每个 Stage 完成先把完整事务状态写回 TaskManager `Task.data`（全量镜像 patch），再进入下一 Stage；Control Panel 重启后从持久数据恢复。
+* 解析状态硬规则：`Revoked/Tombstoned` 不可重试且禁止任何 fallback；`Missing`（权威回答"从未发布"）与 `unknown`（没有回答）错误码不同；unknown 且无可接受 cache 进入 `WAITING_FOR_TRUST_RESOLUTION`（任务 Paused，可 retry）。
+* 错误全部结构化（`InstallError{stage, code, retryable, action}`），进 Task.data 与 install_record。
+
+### 5.2 Runner 与恢复
+
+任务创建时 `runner = app.control_panel`。三条 dispatch 路径收敛到同一幂等入口：MsgQueue 持久投递（fetch 后处理完成才 ack）、`/task_mgr/runner/app.control_panel/task_ready` KEvent（仅低延迟加速）、启动扫描 + 60s sweep 兜底；每条路径都以 TaskManager 为真相源重新读取任务。
 
 ### 5.3 升级 / 卸载
 
-* **升级**（`upgrade_app`）：解析新版本 → 保留旧 spec 的 `app_index`/`enable`/`expected_instance_count`/`install_config` → 内部 stop → 下载新内容 → 写新 spec(state=New) → 记升级凭证 → 等新实例就绪。
+* **升级**（`apps.update`）：同一 Stage 流水线；以权威 Resolve 的 App Document Object ID / `document_version` 判定新版本（不再取 Repo 中 semver 最新）。Prepare 完成前旧版本持续运行；写新 spec 触发调度器切换；新版本 Activate 失败自动恢复旧 spec（本机部署回滚，不改变 resolver 状态），并作废 Deploy 输出供 retry 重写。权限/target/参数变化必须重新确认。
 * **卸载**（`run_uninstall_task`）：内部 stop → 置 `spec.state=Deleted` 并写回 → 等实例移除 →（可选）删数据目录（受路径安全约束）→ 标记完成。
 
-### 5.4 原子性与回滚说明
+### 5.4 记录与凭证
 
-* 单次 `spec` 写是一次原子 `set`；写失败则不触发调度器，无残留状态。
-* 各步骤之间**无显式跨步回滚**：若 spec 已写但实例分配卡住，app 会停留在 `state=New` 等待调度器，需人工介入。审计凭证（install/upgrade proof）以**追加**方式落在 Repo，形成不可变操作轨迹。
+* in-flight 真相源：TaskManager `Task.data`；长期记录：`users/{uid}/apps|agents/{app}/install_record`（含 DID 解析快照、package meta ids、pikg digest、target、状态、task id、proof id）。
+* installed proof 只在 Activate + 健康检查成功后写入 Repo（`ACTION_TYPE_INSTALLED`，details 固化 `did_resolution` 快照；本地 override 不得伪装 Anchored）；RepoService 不可用时安装仍成功、proof 跳过并留日志。
 
 ---
 

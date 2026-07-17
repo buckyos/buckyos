@@ -40,6 +40,8 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/key` | 用户私钥材料。 | control-panel 创建用户 | 用户身份管理。敏感数据。 |
 | `users/<user_id>/apps/<app_id>/spec` | `AppServiceSpec`，用户应用期望状态，包括 app 文档、app_index、enable、expected_instance_count、state、install_config。 | scheduler 初始化预装 app；control-panel app installer | scheduler 调度用户 app；rdb_mgr 读取 app 的 RDB 需求；Control Panel 展示和管理 app。 |
 | `users/<user_id>/agents/<agent_id>/spec` | `AppServiceSpec`，Agent app 的期望状态。 | scheduler 初始化 Jarvis；control-panel agent/app installer | scheduler 调度 Agent；Control Panel 展示和管理 Agent。 |
+| `users/<user_id>/apps/<app_id>/install_record` | `InstallRecord`（app 安装协议 v0.5 D3）：DID 解析快照、app_doc_object_id、package meta ids、pikg digest、target、状态（prepared/deploying/installed/deployed_but_activation_failed/rolled_back/failed）、task id、proof id。长期安装真相；in-flight 事务在 TaskManager `Task.data`。 | control-panel app installer（Prepare 先写 prepared，Activate 成功后改 installed） | Control Panel 升级检查/审计；未来 WebUI 安装状态页。 |
+| `users/<user_id>/agents/<agent_id>/install_record` | 同上，Agent 分树。 | control-panel app installer | 同上。 |
 | `users/<user_id>/apps/<app_id>/settings` | app 自有 settings JSON。schema 由 app 约定。 | app runtime 通过 `update_my_settings`；也可由管理界面写入 | app runtime 通过 `get_my_settings` 读取。 |
 | `users/<user_id>/agents/<agent_id>/settings` | Agent app 自有 settings JSON。schema 由 Agent app 约定。 | Agent runtime 或管理流程 | Agent runtime 读取自己的配置。 |
 | `users/<user_id>/apps/<app_id>/info` | app 自有 info 路径，RBAC 中允许 app 写。当前未发现系统组件固定 schema。 | app 自己 | app 自有运行信息。 |
@@ -48,7 +50,7 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/desktop/<session_id>/_meta` | 桌面 UI session 元数据，包含名称和创建/更新时间。 | control-panel UI session manager | 桌面状态同步与管理。 |
 | `users/<user_id>/desktop/<session_id>/<state_key>` | 桌面 UI session 的单项状态 JSON。已知 state key 包括 `appearance`、`window_layout`、`app_items_layout`、`widgets_layout`。 | control-panel UI session manager | 桌面状态恢复。 |
 
-`users/<user_id>/apps/<app_id>/spec` 与 `users/<user_id>/agents/<agent_id>/spec` 是当前 scheduler 的主路径。旧工具里仍有 `users/<user_id>/apps/<app_id>/config`，见“旧路径与保留路径”。
+`users/<user_id>/apps/<app_id>/spec` 与 `users/<user_id>/agents/<agent_id>/spec` 是当前 scheduler 的主路径。安装器写 spec 前先写同级 `install_record`（v0.5 D3 顺序纪律）。旧工具里仍有 `users/<user_id>/apps/<app_id>/config`，见“旧路径与保留路径”。
 
 ## agents/
 
@@ -230,3 +232,10 @@ gateway 和服务发现逻辑应优先使用 scheduler 派生的 `services/<serv
 - 改 `spec`、`settings`、`info`、`config` 的字段时，需要同步检查 scheduler、node-daemon、Control Panel、gateway、文档和共享类型。
 - 用户可调项优先放在 `settings`；运行时上报放在 `info` 或 `instances`；scheduler 派生目标放在 `nodes/<node>/config`、`services/<service>/info`、`nodes/<node>/gateway_info`。
 - 敏感数据当前包括私钥、provider secret、用户/Agent key、verify-hub key。新增敏感 key 时必须同步检查 RBAC policy。
+
+
+### App Installer 专用 key
+
+| Key | 说明 |
+|---|---|
+| `system/app_installer/app_index_seq` | app_index 分配序列（control-panel 用 exec_tx CAS 递增，修复扫描 max+1 并发竞态；首次使用时以现有 spec 扫描结果为基线）。 |
