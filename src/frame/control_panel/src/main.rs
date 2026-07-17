@@ -1,4 +1,6 @@
 mod aicc_settings;
+mod app_install_planner;
+mod app_install_resolver;
 mod app_installer;
 mod app_servcie_mgr;
 mod dashboard;
