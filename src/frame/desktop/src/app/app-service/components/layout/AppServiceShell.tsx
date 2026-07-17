@@ -20,9 +20,13 @@ export function AppServiceShell({ children }: AppServiceShellProps) {
   )
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ background: 'var(--cp-bg)' }}>
+    <div
+      className="relative flex h-full w-full min-w-0 flex-col"
+      data-testid="app-service-root"
+      style={{ background: 'var(--cp-bg)' }}
+    >
       <main className="flex-1 overflow-y-auto desktop-scrollbar">
-        <div className={isMobile ? 'px-4 pb-5 pt-2' : 'px-6 py-5 mx-auto max-w-5xl'}>
+        <div className={isMobile ? 'px-4 pb-8 pt-3' : 'mx-auto max-w-6xl px-7 py-7'}>
           {children(currentNav, setCurrentNav)}
         </div>
       </main>

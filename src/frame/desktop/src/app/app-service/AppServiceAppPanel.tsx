@@ -1,7 +1,6 @@
 /* ── AppService – app panel entry point ── */
 
 import { useState } from 'react'
-import type { AppContentLoaderProps } from '../types'
 import { AppServiceStoreContext } from './hooks/use-app-service-store'
 import { AppServiceMockStore } from './mock/store'
 import { AppServiceShell } from './components/layout/AppServiceShell'
@@ -25,14 +24,14 @@ function PageRouter({
         <HomePage onNavigate={onNavigate} />
       )
     case 'install':
-      return <InstallWizard onNavigate={onNavigate} />
+      return <InstallWizard taskId={nav.taskId} onNavigate={onNavigate} />
     case 'home':
     default:
       return <HomePage onNavigate={onNavigate} />
   }
 }
 
-export function AppServiceAppPanel(_props: AppContentLoaderProps) {
+export function AppServiceAppPanel() {
   const [store] = useState(() => new AppServiceMockStore())
 
   return (

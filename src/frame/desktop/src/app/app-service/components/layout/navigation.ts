@@ -5,5 +5,5 @@ export type AppServicePage = 'home' | 'detail' | 'install'
 export interface AppServiceNav {
   page: AppServicePage
   serviceId?: string
-  installStep?: number
+  taskId?: string
 }

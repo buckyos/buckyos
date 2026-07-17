@@ -552,6 +552,9 @@ Stage 1 只存在于需要用户手工提供来源的入口。用户选择：
 
 在提交前，Stage 1 至少应展示识别出的来源类型；对于未签名 App Meta JSON，还应先展示“真实性尚未验证”的安全提示。其他入口也可以直接提交标准安装请求或使用已有 `task_id` 拉起公共对话框。
 
+因此，本阶段的UI由1个万能Text Input (可以支持拖拽直接上传) + 2个按钮（上传pipkg ,选择pikg) + 1个下一步按钮组成
+下一步按钮只有在确认解析到了“可以下一步”的合法input内容时，才会可用。
+
 > 本章的 Step 是面向用户的 UI 阶段，不等同于安装协议中的 Resolve、Inspect、Acquire、Verify、Prepare、Deploy、Activate Stage。
 
 ### 14.2 Stage 2 / Step 1：Verify 与展示 App 信息

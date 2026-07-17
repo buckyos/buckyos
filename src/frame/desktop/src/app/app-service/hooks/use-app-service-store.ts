@@ -1,12 +1,11 @@
-/* ── App Service store context ── */
-
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useSyncExternalStore } from 'react'
 import type { AppServiceMockStore } from '../mock/store'
 
 export const AppServiceStoreContext = createContext<AppServiceMockStore | null>(null)
 
-export function useAppServiceStore(): AppServiceMockStore {
-  const ctx = useContext(AppServiceStoreContext)
-  if (!ctx) throw new Error('useAppServiceStore must be used within AppServiceStoreContext.Provider')
-  return ctx
+export function useAppServiceStore() {
+  const store = useContext(AppServiceStoreContext)
+  if (!store) throw new Error('useAppServiceStore must be used within AppServiceStoreContext.Provider')
+  useSyncExternalStore(store.subscribe, store.getRevision, store.getRevision)
+  return store
 }

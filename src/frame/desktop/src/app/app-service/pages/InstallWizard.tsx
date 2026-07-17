@@ -1,479 +1,333 @@
-/* ── App Service Install Wizard ── */
-
-import { useState, useEffect } from 'react'
-import { useMediaQuery } from '@mui/material'
+import { useEffect, useState } from 'react'
+import { useForm, useWatch } from 'react-hook-form'
 import {
+  AlertTriangle,
   ArrowLeft,
-  Globe,
-  Hash,
-  Upload,
-  Shield,
-  FolderOpen,
-  Wifi,
-  Database,
   CheckCircle2,
+  FileArchive,
+  FileJson2,
+  FileUp,
+  Link2,
   Loader2,
+  Server,
+  ShieldAlert,
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
-import { useAppServiceStore } from '../hooks/use-app-service-store'
-import { AppIcon } from '../../../components/DesktopVisuals'
-import type { InstallSource, InstallAppInfo } from '../mock/types'
 import type { AppServiceNav } from '../components/layout/navigation'
+import { AppInstallerDialog } from '../components/installer/AppInstallerDialog'
+import { FilePickerDialog } from '../components/installer/FilePickerDialog'
+import { useAppServiceStore } from '../hooks/use-app-service-store'
+import {
+  manualInstallSourceSchema,
+  type ManualInstallSourceInput,
+} from '../schemas'
+import type {
+  InstallSourceKind,
+  PickedPikgFile,
+  SourceParseErrorCode,
+  SourceParseResult,
+} from '../mock/types'
 
-/* ── Back button – hidden on mobile where title bar provides back ── */
-
-function BackButton({ onClick, label }: { onClick: () => void; label: string }) {
-  const isMobile = useMediaQuery('(max-width: 767px)')
-  if (isMobile) return null
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex items-center gap-1.5 text-sm font-medium"
-      style={{ color: 'var(--cp-muted)' }}
-    >
-      <ArrowLeft size={16} />
-      {label}
-    </button>
-  )
+function sourceKindLabel(kind: InstallSourceKind, t: ReturnType<typeof useI18n>['t']) {
+  return t(`appService.source.kind.${kind}`, kind)
 }
 
-/* ── Step 1: Choose source ── */
+function SourceKindIcon({ kind }: { kind: InstallSourceKind }) {
+  switch (kind) {
+    case 'url-app-meta':
+    case 'url-pikg':
+      return <Link2 size={16} aria-hidden="true" />
+    case 'app-did':
+      return <ShieldAlert size={16} aria-hidden="true" />
+    case 'signed-jwt':
+    case 'unsigned-json':
+      return <FileJson2 size={16} aria-hidden="true" />
+    case 'local-pikg':
+    case 'personal-server-pikg':
+      return <FileArchive size={16} aria-hidden="true" />
+  }
+}
 
-function StepSource({
-  onNext,
-  onBack,
-}: {
-  onNext: (source: InstallSource, value: string) => void
-  onBack: () => void
-}) {
+function parseErrorMessage(code: SourceParseErrorCode, t: ReturnType<typeof useI18n>['t']) {
+  return t(`appService.source.error.${code}`, 'This input is not a supported installation source.')
+}
+
+function AnalysisResult({ result }: { result: SourceParseResult }) {
   const { t } = useI18n()
-  const [source, setSource] = useState<InstallSource>('url')
-  const [value, setValue] = useState('')
-
-  const sources: { key: InstallSource; label: string; icon: typeof Globe; placeholder: string }[] = [
-    { key: 'url', label: 'URL', icon: Globe, placeholder: 'https://example.com/app/meta.json' },
-    { key: 'object-id', label: t('appService.install.objectId', 'Object ID'), icon: Hash, placeholder: 'obj://abc123...' },
-    { key: 'file', label: t('appService.install.uploadFile', 'Upload File'), icon: Upload, placeholder: '' },
-  ]
-
-  return (
-    <div className="space-y-5">
-      <BackButton onClick={onBack} label={t('appService.install.back', 'Back')} />
-
-      <div>
-        <h1 className="font-display text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>
-          {t('appService.install.title', 'Install App')}
-        </h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.chooseSource', 'Choose an installation source')}
-        </p>
-      </div>
-
-      {/* Source selector */}
-      <div className="space-y-2">
-        {sources.map((s) => (
-          <button
-            key={s.key}
-            type="button"
-            onClick={() => setSource(s.key)}
-            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-colors"
-            style={{
-              background: source === s.key
-                ? 'color-mix(in srgb, var(--cp-accent) 8%, var(--cp-surface))'
-                : 'var(--cp-surface)',
-              border: source === s.key
-                ? '1px solid color-mix(in srgb, var(--cp-accent) 30%, var(--cp-border))'
-                : '1px solid var(--cp-border)',
-            }}
-          >
-            <div
-              className="flex h-9 w-9 items-center justify-center rounded-lg"
-              style={{
-                background: source === s.key
-                  ? 'color-mix(in srgb, var(--cp-accent) 16%, transparent)'
-                  : 'var(--cp-surface-2)',
-                color: source === s.key ? 'var(--cp-accent)' : 'var(--cp-muted)',
-              }}
-            >
-              <s.icon size={16} />
-            </div>
-            <span
-              className="text-sm font-medium"
-              style={{ color: source === s.key ? 'var(--cp-text)' : 'var(--cp-muted)' }}
-            >
-              {s.label}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {/* Input area */}
-      {source === 'file' ? (
-        <div
-          className="rounded-2xl border-2 border-dashed p-8 text-center"
-          style={{
-            borderColor: 'var(--cp-border)',
-            color: 'var(--cp-muted)',
-          }}
-        >
-          <Upload size={24} className="mx-auto mb-2" />
-          <p className="text-sm">{t('appService.install.dropFile', 'Drop .pkg or meta.json here')}</p>
-          <button
-            type="button"
-            onClick={() => setValue('mock-file.pkg')}
-            className="mt-3 rounded-lg px-4 py-2 text-xs font-medium"
-            style={{
-              background: 'var(--cp-surface-2)',
-              color: 'var(--cp-text)',
-              border: '1px solid var(--cp-border)',
-            }}
-          >
-            {t('appService.install.browse', 'Browse Files')}
-          </button>
-        </div>
-      ) : (
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder={sources.find((s) => s.key === source)?.placeholder}
-          className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-          style={{
-            background: 'var(--cp-surface)',
-            color: 'var(--cp-text)',
-            border: '1px solid var(--cp-border)',
-          }}
-        />
-      )}
-
-      <button
-        type="button"
-        disabled={!value && source !== 'file'}
-        onClick={() => onNext(source, value || 'mock-file.pkg')}
-        className="w-full rounded-xl px-4 py-3 text-sm font-medium transition-colors disabled:opacity-40"
-        style={{ background: 'var(--cp-accent)', color: 'white' }}
+  if (!result.ok) {
+    return (
+      <div
+        className="flex items-start gap-3 rounded-[16px] p-4"
+        role="alert"
+        data-testid="app-service-source-error"
+        style={{ background: 'color-mix(in srgb, var(--cp-danger) 7%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-danger) 24%, var(--cp-border))' }}
       >
-        {t('appService.install.next', 'Next')}
-      </button>
+        <AlertTriangle size={17} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-danger)' }} />
+        <div>
+          <div className="text-xs font-semibold" style={{ color: 'var(--cp-danger)' }}>
+            {t('appService.source.notRecognized', 'Source not recognized')}
+          </div>
+          <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>{parseErrorMessage(result.code, t)}</p>
+        </div>
+      </div>
+    )
+  }
+
+  const warning = result.source.warningCode === 'UNSIGNED_CANDIDATE'
+  const color = warning ? 'var(--cp-warning)' : 'var(--cp-success)'
+  return (
+    <div
+      className="flex items-start gap-3 rounded-[16px] p-4"
+      data-testid="app-service-source-result"
+      style={{ background: `color-mix(in srgb, ${color} 7%, var(--cp-surface))`, border: `1px solid color-mix(in srgb, ${color} 24%, var(--cp-border))` }}
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-full" style={{ background: `color-mix(in srgb, ${color} 13%, transparent)`, color }}>
+        <SourceKindIcon kind={result.source.kind} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold" style={{ color }}>{sourceKindLabel(result.source.kind, t)}</span>
+          <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface-2)' }}>
+            {result.source.normalizedType}
+          </span>
+        </div>
+        <p className="mt-1 truncate text-xs" style={{ color: 'var(--cp-muted)' }}>{result.source.displaySource}</p>
+        {warning && (
+          <p className="mt-2 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
+            {t('appService.source.unsignedCandidate', 'This JSON is a candidate document, not trusted proof. Authority and owner evidence will be checked in the Installer.')}
+          </p>
+        )}
+      </div>
     </div>
   )
 }
 
-/* ── Step 2: App Info & Permissions ── */
-
-function StepPermissions({
-  appInfo,
-  onNext,
-  onBack,
-}: {
-  appInfo: InstallAppInfo
-  onNext: () => void
-  onBack: () => void
-}) {
+function SourceEntry({ onBack, onResolved }: { onBack: () => void; onResolved: (taskId: string) => void }) {
+  const store = useAppServiceStore()
   const { t } = useI18n()
+  const form = useForm<ManualInstallSourceInput>({
+    defaultValues: { sourceText: '' },
+    mode: 'onBlur',
+  })
+  const [pickedFile, setPickedFile] = useState<PickedPikgFile | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analysis, setAnalysis] = useState<SourceParseResult | null>(null)
+  const sourceText = useWatch({ control: form.control, name: 'sourceText', defaultValue: '' })
+  const sourceRegistration = form.register('sourceText')
+  const hasCandidate = Boolean(pickedFile || sourceText.trim())
 
-  const permIcons: Record<string, typeof Shield> = {
-    'File Access': FolderOpen,
-    'Network Access': Wifi,
-    Database: Database,
+  useEffect(() => {
+    const candidate = pickedFile ?? sourceText.trim()
+    if (!candidate) return
+
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return
+      setAnalyzing(true)
+      setAnalysis(null)
+      const result = typeof candidate === 'string'
+        ? manualInstallSourceSchema.safeParse({ sourceText: candidate })
+        : null
+      if (result && !result.success) {
+        if (!cancelled) {
+          setAnalysis({ ok: false, code: 'UNRECOGNIZED_INPUT' })
+          setAnalyzing(false)
+        }
+        return
+      }
+
+      const parsed = await store.analyzeInstallSource(candidate)
+      if (!cancelled) {
+        setAnalysis(parsed)
+        setAnalyzing(false)
+      }
+    }, pickedFile ? 0 : 320)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [pickedFile, sourceText, store])
+
+  const selectFile = (file: PickedPikgFile) => {
+    setPickedFile(file)
+    setAnalysis(null)
+    setAnalyzing(false)
+    form.setValue('sourceText', '')
+    form.clearErrors()
+  }
+
+  const chooseLocalFile = (file: File | undefined) => {
+    if (!file) return
+    selectFile({ location: 'device', name: file.name, sizeBytes: file.size })
+  }
+
+  const continueInstall = () => {
+    if (!analysis?.ok) return
+    onResolved(store.createInstallTask(analysis.source))
   }
 
   return (
-    <div className="space-y-5">
-      <BackButton onClick={onBack} label={t('appService.install.back', 'Back')} />
-
-      <div>
-        <h1 className="font-display text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>
-          {t('appService.install.title', 'Install App')}
-        </h1>
-      </div>
-
-      {/* App info card */}
-      <div
-        className="rounded-2xl p-5"
-        style={{
-          background: 'var(--cp-surface)',
-          border: '1px solid var(--cp-border)',
-        }}
-      >
-        <div className="flex items-center gap-3">
-          <div
-            className="flex h-12 w-12 items-center justify-center rounded-xl"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-accent) 10%, var(--cp-surface-2))',
-              color: 'var(--cp-text)',
-            }}
-          >
-            <AppIcon iconKey={appInfo.iconKey} className="!size-6" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {appInfo.name}
-            </h2>
-            <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-              v{appInfo.version}
-            </p>
-          </div>
-        </div>
-        <p className="text-sm mt-3" style={{ color: 'var(--cp-muted)' }}>
-          {appInfo.description}
-        </p>
-      </div>
-
-      {/* Permissions */}
-      <section>
-        <h2
-          className="text-xs font-semibold uppercase tracking-wide mb-2"
-          style={{ color: 'var(--cp-muted)' }}
-        >
-          {t('appService.install.permissions', 'Permissions')}
-        </h2>
-        <div
-          className="rounded-2xl divide-y"
-          style={{
-            background: 'var(--cp-surface)',
-            border: '1px solid var(--cp-border)',
-          }}
-        >
-          {appInfo.permissions.map((perm, index) => {
-            const Icon = permIcons[perm.label] ?? Shield
-            return (
-              <div
-                key={perm.label}
-                className="flex items-center gap-3 px-4 py-3"
-                style={{ borderTop: index === 0 ? 'none' : '1px solid var(--cp-border)' }}
-              >
-                <div
-                  className="flex h-8 w-8 items-center justify-center rounded-lg"
-                  style={{
-                    background: 'color-mix(in srgb, var(--cp-warning) 12%, transparent)',
-                    color: 'var(--cp-warning)',
-                  }}
-                >
-                  <Icon size={14} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-                    {perm.label}
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-                    {perm.description}
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </section>
-
+    <div className="mx-auto max-w-3xl space-y-6">
       <button
         type="button"
-        onClick={onNext}
-        className="w-full rounded-xl px-4 py-3 text-sm font-medium"
-        style={{ background: 'var(--cp-accent)', color: 'white' }}
+        onClick={onBack}
+        className="hidden min-h-11 items-center gap-2 rounded-lg pr-3 text-sm font-semibold md:inline-flex"
+        style={{ color: 'var(--cp-muted)' }}
       >
-        {t('appService.install.next', 'Next')}
+        <ArrowLeft size={16} aria-hidden="true" />
+        {t('appService.detail.back', 'Back to applications')}
       </button>
-    </div>
-  )
-}
 
-/* ── Step 3: Admin Password ── */
-
-function StepAdminConfirm({
-  onInstall,
-  onBack,
-}: {
-  onInstall: () => void
-  onBack: () => void
-}) {
-  const { t } = useI18n()
-  const [password, setPassword] = useState('')
-
-  return (
-    <div className="space-y-5">
-      <BackButton onClick={onBack} label={t('appService.install.back', 'Back')} />
-
-      <div>
-        <h1 className="font-display text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>
-          {t('appService.install.title', 'Install App')}
+      <header>
+        <div className="text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ color: 'var(--cp-muted)' }}>
+          {t('appService.source.stageOne', 'Stage 1 · Source')}
+        </div>
+        <h1 className="mt-2 font-display text-2xl font-semibold" style={{ color: 'var(--cp-text)' }}>
+          {t('appService.source.title', 'Add an application')}
         </h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.adminConfirm', 'Enter admin password to proceed with installation')}
+        <p className="mt-2 max-w-2xl text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
+          {t('appService.source.body', 'Paste an App Meta URL, .pikg URL, App DID, signed JWT, or complete JSON. You can also drop or choose a .pikg package.')}
         </p>
-      </div>
+      </header>
 
-      <div
-        className="rounded-2xl p-5"
-        style={{
-          background: 'var(--cp-surface)',
-          border: '1px solid var(--cp-border)',
+      <section
+        className="rounded-[22px] p-4 sm:p-5"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault()
+          chooseLocalFile(event.dataTransfer.files[0])
         }}
+        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-panel-shadow)' }}
       >
-        <div className="flex items-center gap-3 mb-4">
-          <div
-            className="flex h-10 w-10 items-center justify-center rounded-xl"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-accent) 12%, transparent)',
-              color: 'var(--cp-accent)',
+        <label htmlFor="app-service-source" className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+          {t('appService.source.inputLabel', 'Installation source')}
+        </label>
+        <div className="relative mt-2">
+          <textarea
+            {...sourceRegistration}
+            id="app-service-source"
+            rows={7}
+            onChange={(event) => {
+              setPickedFile(null)
+              setAnalysis(null)
+              setAnalyzing(false)
+              sourceRegistration.onChange(event)
             }}
-          >
-            <Shield size={18} />
-          </div>
-          <div>
-            <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.adminPassword', 'Admin Password')}
-            </div>
-            <div className="text-xs" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.adminPasswordHint', 'Required to install new applications')}
-            </div>
+            placeholder={t('appService.source.placeholder', 'https://apps.example/app-meta.jwt\n\ndid:cyfs:app-example\n\neyJhbGciOiJFZERTQSJ9...')}
+            className="w-full resize-y rounded-[16px] px-4 py-3 text-sm leading-6 outline-none"
+            style={{ color: 'var(--cp-text)', background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', minHeight: '168px' }}
+          />
+          <div className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px]" style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface-2)' }}>
+            <FileUp size={12} aria-hidden="true" />
+            {t('appService.source.dropHint', 'Drop .pikg')}
           </div>
         </div>
-        <input
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Enter admin password"
-          className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-          style={{
-            background: 'var(--cp-bg)',
-            color: 'var(--cp-text)',
-            border: '1px solid var(--cp-border)',
-          }}
-        />
-      </div>
 
-      <div className="flex gap-3">
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex-1 rounded-xl px-4 py-3 text-sm font-medium"
-          style={{
-            background: 'var(--cp-surface-2)',
-            color: 'var(--cp-text)',
-            border: '1px solid var(--cp-border)',
-          }}
-        >
-          {t('appService.install.cancel', 'Cancel')}
-        </button>
-        <button
-          type="button"
-          disabled={!password}
-          onClick={onInstall}
-          className="flex-1 rounded-xl px-4 py-3 text-sm font-medium transition-colors disabled:opacity-40"
-          style={{ background: 'var(--cp-accent)', color: 'white' }}
-        >
-          {t('appService.install.startInstall', 'Start Install')}
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/* ── Step 4: Installing ── */
-
-function StepInstalling({
-  onDone,
-}: {
-  onDone: () => void
-}) {
-  const { t } = useI18n()
-  const [done, setDone] = useState(false)
-
-  // Simulate install completion
-  useEffect(() => {
-    const timer = setTimeout(() => setDone(true), 3000)
-    return () => clearTimeout(timer)
-  }, [])
-
-  return (
-    <div className="space-y-5 text-center py-8">
-      {done ? (
-        <>
-          <CheckCircle2 size={48} className="mx-auto" style={{ color: 'var(--cp-success)' }} />
-          <div>
-            <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.complete', 'Installation Complete')}
-            </h2>
-            <p className="text-sm mt-1" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.completeDesc', 'The application has been installed and is starting up.')}
-            </p>
-          </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <label
+            htmlFor="app-service-pikg-upload"
+            className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
+            style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+          >
+            <FileUp size={16} aria-hidden="true" />
+            {t('appService.source.uploadPikg', 'Upload .pikg from device')}
+          </label>
+          <input
+            id="app-service-pikg-upload"
+            data-testid="app-service-pikg-upload"
+            type="file"
+            accept=".pikg,application/octet-stream"
+            className="sr-only"
+            onChange={(event) => chooseLocalFile(event.target.files?.[0])}
+          />
           <button
             type="button"
-            onClick={onDone}
-            className="rounded-xl px-6 py-3 text-sm font-medium"
-            style={{ background: 'var(--cp-accent)', color: 'white' }}
+            onClick={() => setPickerOpen(true)}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
+            style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
           >
-            {t('appService.install.done', 'Done')}
+            <Server size={16} aria-hidden="true" />
+            {t('appService.source.choosePikg', 'Choose .pikg from Personal Server')}
           </button>
-        </>
-      ) : (
-        <>
-          <Loader2
-            size={48}
-            className="mx-auto animate-spin"
-            style={{ color: 'var(--cp-accent)' }}
-          />
-          <div>
-            <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.installing', 'Installing...')}
-            </h2>
-            <p className="text-sm mt-1" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.installingDesc', 'Downloading and configuring the application. This may take a moment.')}
-            </p>
+        </div>
+
+        {pickedFile && (
+          <div className="mt-3 flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)' }}>
+            <FileArchive size={15} aria-hidden="true" style={{ color: 'var(--cp-accent)' }} />
+            <span className="min-w-0 flex-1 truncate">{pickedFile.name}</span>
+            <span className="shrink-0 tabular-nums" style={{ color: 'var(--cp-muted)' }}>{Math.max(1, Math.ceil(pickedFile.sizeBytes / 1_048_576))} MB</span>
           </div>
-        </>
+        )}
+      </section>
+
+      {hasCandidate && analyzing && (
+        <div className="flex min-h-16 items-center gap-3 rounded-[16px] px-4" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+          <Loader2 size={17} className="animate-spin" aria-hidden="true" style={{ color: 'var(--cp-accent)' }} />
+          <span className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+            {t('appService.source.analyzing', 'Identifying source and preparing a controlled Installer input…')}
+          </span>
+        </div>
+      )}
+      {hasCandidate && !analyzing && analysis && <AnalysisResult result={analysis} />}
+
+      <div className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
+        <div className="flex items-start gap-3">
+          <CheckCircle2 size={16} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-accent)' }} />
+          <p className="text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+            {t('appService.source.boundaryHint', 'App Service only identifies and normalizes the source. Trust, compatibility, permissions, download, and installation are handled by the reusable System App Installer.')}
+          </p>
+        </div>
+      </div>
+
+      <footer className="flex justify-end border-t pt-5" style={{ borderColor: 'var(--cp-border)' }}>
+        <button
+          type="button"
+          disabled={!hasCandidate || !analysis?.ok || analyzing}
+          onClick={continueInstall}
+          className="min-h-11 rounded-xl px-5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+          data-testid="app-service-source-next"
+          style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
+        >
+          {t('appService.source.continue', 'Open System App Installer')}
+        </button>
+      </footer>
+
+      {pickerOpen && (
+        <FilePickerDialog
+          onCancel={() => setPickerOpen(false)}
+          onSelect={(file) => { selectFile(file); setPickerOpen(false) }}
+        />
       )}
     </div>
   )
 }
 
-/* ── Install Wizard ── */
-
 interface InstallWizardProps {
+  taskId?: string
   onNavigate: (nav: AppServiceNav) => void
 }
 
-export function InstallWizard({ onNavigate }: InstallWizardProps) {
+export function InstallWizard({ taskId, onNavigate }: InstallWizardProps) {
   const store = useAppServiceStore()
-  const [step, setStep] = useState(1)
-  const [appInfo, setAppInfo] = useState<InstallAppInfo | null>(null)
 
-  const handleBack = () => onNavigate({ page: 'home' })
-
-  const handleSourceNext = (_source: InstallSource, value: string) => {
-    const info = store.parseInstallSource(value)
-    if (info) {
-      setAppInfo(info)
-      setStep(2)
-    }
+  if (taskId) {
+    return (
+      <AppInstallerDialog
+        taskId={taskId}
+        onBackground={() => onNavigate({ page: 'home' })}
+        onChangeSource={() => { store.clearActiveTask(); onNavigate({ page: 'install' }) }}
+        onClose={() => { store.clearActiveTask(); onNavigate({ page: 'home' }) }}
+        onViewApp={(serviceId) => { store.clearActiveTask(); onNavigate({ page: 'detail', serviceId }) }}
+      />
+    )
   }
 
-  const handlePermissionsNext = () => setStep(3)
-
-  const handleInstall = () => {
-    if (appInfo) {
-      store.installApp(appInfo)
-      setStep(4)
-    }
-  }
-
-  const handleDone = () => onNavigate({ page: 'home' })
-
-  switch (step) {
-    case 1:
-      return <StepSource onNext={handleSourceNext} onBack={handleBack} />
-    case 2:
-      return appInfo ? (
-        <StepPermissions appInfo={appInfo} onNext={handlePermissionsNext} onBack={() => setStep(1)} />
-      ) : null
-    case 3:
-      return <StepAdminConfirm onInstall={handleInstall} onBack={() => setStep(2)} />
-    case 4:
-      return <StepInstalling onDone={handleDone} />
-    default:
-      return null
-  }
+  return (
+    <SourceEntry
+      onBack={() => onNavigate({ page: 'home' })}
+      onResolved={(resolvedTaskId) => onNavigate({ page: 'install', taskId: resolvedTaskId })}
+    />
+  )
 }

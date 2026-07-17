@@ -239,7 +239,7 @@ test('mobile App Service opens without redundant back button on detail page', as
   await giteaCard.click()
 
   // Detail page should show Gitea info
-  await expect(page.getByText('Self-hosted Git service')).toBeVisible()
+  await expect(page.getByText('Private Git hosting for development inside this Zone.')).toBeVisible()
 
   // The in-page "← Back" text button should NOT be present on mobile
   // (the title bar already provides back navigation via its own back arrow)
