@@ -327,6 +327,7 @@ mod tests {
     use buckyos_api::{AppType, DocumentStatus, InstallReadiness, PackageSelector, SubPkgDesc};
     use name_lib::DID;
     use ndn_lib::build_named_object_by_json;
+    use package_lib::PackageMeta;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
 

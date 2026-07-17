@@ -1,4 +1,5 @@
 mod aicc_settings;
+mod app_install_deployer;
 mod app_install_driver;
 mod app_install_engine;
 mod app_install_planner;

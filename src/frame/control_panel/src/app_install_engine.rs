@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone)]
 pub struct InstallTaskView {
     pub id: i64,
+    pub root_id: String,
     pub task_type: String,
     pub status: TaskStatus,
     pub user_id: String,
@@ -214,6 +215,32 @@ impl InstallEngine {
             .create_install_task(
                 task_name.as_str(),
                 TASK_DATA_TYPE_APP_INSTALL,
+                serde_json::to_value(&data)
+                    .map_err(|err| internal_error(InstallStage::Resolve, err.to_string()))?,
+                user_id.as_str(),
+                app_hint,
+            )
+            .await?;
+        Ok(task_id)
+    }
+
+    /// 创建升级事务任务（同一 Stage 流水线，task_type = app.update）。
+    pub async fn create_update_task(
+        &self,
+        request: buckyos_api::AppUpdateTaskRequest,
+        app_hint: &str,
+    ) -> Result<i64, InstallError> {
+        let user_id = request.user_id.clone();
+        let data = buckyos_api::AppUpdateTaskData {
+            request,
+            state: InstallTransactionState::default(),
+        };
+        let task_name = format!("Update app ({app_hint})");
+        let task_id = self
+            .store
+            .create_install_task(
+                task_name.as_str(),
+                TASK_DATA_TYPE_APP_UPDATE,
                 serde_json::to_value(&data)
                     .map_err(|err| internal_error(InstallStage::Resolve, err.to_string()))?,
                 user_id.as_str(),
@@ -439,7 +466,37 @@ impl InstallEngine {
                     self.persist(task_id, &data).await?;
                 }
                 InstallStage::Activate => {
-                    let result = self.driver.activate(&view, &data).await?;
+                    let activate_result = self.driver.activate(&view, &data).await;
+                    let result = match activate_result {
+                        Ok(result) => result,
+                        Err(error) => {
+                            // 升级：新版本 Activate 失败恢复旧 spec/运行状态
+                            //（本机部署回滚，不改变 resolver 状态，P4.4）。
+                            let has_previous = data
+                                .state
+                                .prepared
+                                .as_ref()
+                                .map(|prepared| prepared.previous_spec.is_some())
+                                .unwrap_or(false);
+                            if view.task_type == TASK_DATA_TYPE_APP_UPDATE && has_previous {
+                                data.state.last_error = Some(error.clone());
+                                self.persist(task_id, &data).await?;
+                                if let Err(rollback_err) =
+                                    self.driver.rollback_deploy(&view, &data).await
+                                {
+                                    warn!(
+                                        "rollback after failed activation also failed: {rollback_err}"
+                                    );
+                                } else {
+                                    // 旧 spec 已恢复：Deploy 输出失效，retry 时
+                                    // 必须重写新 spec 再 Activate。
+                                    data.state.invalidate_from(InstallStage::Deploy);
+                                    self.persist(task_id, &data).await?;
+                                }
+                            }
+                            return Err(error);
+                        }
+                    };
                     data.state.result = Some(result);
                     data.state.mark_stage_completed(InstallStage::Activate);
                     self.persist(task_id, &data).await?;
@@ -592,13 +649,16 @@ impl InstallEngine {
                 ));
             }
         }
-        let retry_stage = data
-            .state
-            .last_error
-            .as_ref()
-            .map(|error| error.stage)
-            .or(data.state.stage)
-            .unwrap_or(InstallStage::Resolve);
+        // 失败 Stage 与当前指针取更早者：失败后的自动回滚可能已把指针
+        // 回退（如升级回滚后指回 Deploy），retry 不得跳过被作废的 Stage。
+        let error_stage = data.state.last_error.as_ref().map(|error| error.stage);
+        let pointer_stage = data.state.stage;
+        let retry_stage = match (error_stage, pointer_stage) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => InstallStage::Resolve,
+        };
         data.state.invalidate_from(retry_stage);
         data.state.last_error = None;
         self.persist(task_id, &data).await?;
@@ -865,6 +925,7 @@ impl TaskMgrInstallStore {
     fn view_from_task(task: buckyos_api::Task) -> InstallTaskView {
         InstallTaskView {
             id: task.id,
+            root_id: task.root_id,
             task_type: task.task_type,
             status: task.status,
             user_id: task.user_id,
@@ -976,8 +1037,8 @@ mod tests {
     use crate::app_install_resolver::AppDidResolver;
     use buckyos_api::{
         AppDoc, AppInstallTaskRequest, AppServiceSpec, AppType, ContentLocation, DocumentStatus,
-        InstallSource, PlanReadiness, ReadinessState, ServiceState, SubPkgDesc, VerificationCheck,
-        VerificationReport,
+        InstallPolicy, InstallSource, PlanReadiness, ReadinessState, ServiceState, SubPkgDesc,
+        VerificationCheck, VerificationReport,
     };
     use name_lib::DID;
     use serde_json::json;
@@ -1053,6 +1114,7 @@ mod tests {
                 id,
                 InstallTaskView {
                     id,
+                    root_id: id.to_string(),
                     task_type: task_type.to_string(),
                     status: TaskStatus::Pending,
                     user_id: user_id.to_string(),
@@ -1118,6 +1180,7 @@ mod tests {
         resolver: resolver_fake::FakeAppResolver,
         counts: StdMutex<HashMap<&'static str, u32>>,
         fail_acquire_once: AtomicBool,
+        fail_activate_once: AtomicBool,
         rollback_called: AtomicU32,
     }
 
@@ -1127,6 +1190,7 @@ mod tests {
                 resolver: resolver_fake::FakeAppResolver::new(),
                 counts: StdMutex::new(HashMap::new()),
                 fail_acquire_once: AtomicBool::new(false),
+                fail_activate_once: AtomicBool::new(false),
                 rollback_called: AtomicU32::new(0),
             }
         }
@@ -1313,6 +1377,13 @@ mod tests {
                 state: ServiceState::New,
                 install_config: Default::default(),
             };
+            let previous_spec = if _view.task_type == TASK_DATA_TYPE_APP_UPDATE {
+                let mut old = spec.clone();
+                old.app_index = 6;
+                Some(old)
+            } else {
+                None
+            };
             Ok(PreparedDeployment {
                 spec_path: format!(
                     "users/{}/apps/{}/spec",
@@ -1320,7 +1391,7 @@ mod tests {
                 ),
                 service_spec_id: format!("{}@{}", spec.app_doc.name, data.request.user_id),
                 app_index: 7,
-                previous_spec: None,
+                previous_spec,
                 new_spec: spec,
                 materialized_objects: vec![],
                 prepared_at: 1,
@@ -1342,6 +1413,14 @@ mod tests {
             _data: &AppInstallTaskData,
         ) -> Result<ActivateOutcome, InstallError> {
             self.bump("activate");
+            if self.fail_activate_once.swap(false, Ordering::SeqCst) {
+                return Err(InstallError::new(
+                    InstallStage::Activate,
+                    InstallErrorCode::ActivationFailed,
+                    true,
+                    "simulated activation failure",
+                ));
+            }
             Ok(InstallTaskResult {
                 install_record_key: Some("users/alice/apps/demo/install_record".to_string()),
                 proof_id: Some("proof-1".to_string()),
@@ -1647,6 +1726,43 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, InstallErrorCode::Conflict);
+    }
+
+    #[tokio::test]
+    async fn update_activation_failure_rolls_back_and_retry_redeploys() {
+        let (store, driver, engine, app_did) = setup(InstallPolicy::SystemInternal, true);
+        let request = buckyos_api::AppUpdateTaskRequest {
+            source: InstallSource::identifier(app_did.to_string(), None),
+            user_id: "alice".to_string(),
+            app_id: "demo_web".to_string(),
+            policy: InstallPolicy::SystemInternal,
+            options: Some(json!({"auto_confirm": true})),
+        };
+        let task_id = engine
+            .create_update_task(request, "demo_web")
+            .await
+            .unwrap();
+        driver.fail_activate_once.store(true, Ordering::SeqCst);
+
+        let err = engine.run_task(task_id).await.unwrap_err();
+        assert_eq!(err.code, InstallErrorCode::ActivationFailed);
+        // 升级失败自动回滚（旧 spec 恢复）。
+        assert_eq!(driver.rollback_called.load(Ordering::SeqCst), 1);
+        assert_eq!(store.status_of(task_id), TaskStatus::Failed);
+        // 回滚后 Deploy 输出失效。
+        let data: AppInstallTaskData = serde_json::from_value(store.data_of(task_id)).unwrap();
+        assert!(!data.state.is_stage_completed(InstallStage::Deploy));
+        // 失败前没有 result/proof。
+        assert!(data.state.result.is_none());
+
+        // retry：重写 spec（deploy 第二次）后 Activate 成功。
+        engine.retry(task_id, "alice", false).await.unwrap();
+        let outcome = engine.run_task(task_id).await.unwrap();
+        assert_eq!(outcome, RunOutcome::Completed);
+        assert_eq!(driver.count("deploy"), 2);
+        assert_eq!(driver.count("activate"), 2);
+        // Prepare 未重跑（回滚材料仍有效）。
+        assert_eq!(driver.count("prepare"), 1);
     }
 
     #[tokio::test]

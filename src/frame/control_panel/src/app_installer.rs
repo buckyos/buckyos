@@ -1,10 +1,8 @@
 use buckyos_api::{
     get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppStartTaskData, AppStartTaskRequest,
-    AppType, AppUninstallTaskData, AppUninstallTaskRequest, AppUpdateTaskData,
-    AppUpdateTaskRequest, CreateTaskOptions, InstallPolicy, InstallSource, InstallTransactionState,
-    RepoClient, RepoProof, RepoProofFilter, ServiceInstanceReportInfo, ServiceInstanceState,
-    ServiceState, SubPkgDesc, SystemConfigClient, SystemConfigError, TaskManagerClient, TaskStatus,
-    REPO_PROOF_TYPE_DOWNLOAD, REPO_PROOF_TYPE_REFERRAL, REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
+    AppType, AppUninstallTaskData, AppUninstallTaskRequest, InstallPolicy, RepoClient,
+    ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SubPkgDesc, SystemConfigClient,
+    SystemConfigError, TaskManagerClient, TaskStatus,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use flate2::write::GzEncoder;
@@ -12,10 +10,7 @@ use flate2::Compression;
 use kRPC::RPCErrors;
 use log::{info, warn};
 use named_store::NamedDataMgr;
-use ndn_lib::{
-    build_named_object_by_json, build_obj_id, ActionObject, FileObject, NamedObject, ObjId,
-    StoreMode, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
-};
+use ndn_lib::{build_named_object_by_json, FileObject, NamedObject, ObjId, StoreMode};
 use ndn_toolkit::{cacl_file_object, CheckMode};
 use package_lib::{PackageId, PackageMeta};
 use serde::{de::DeserializeOwned, Serialize};
@@ -122,23 +117,6 @@ impl AppInstaller {
         })
     }
 
-    fn parse_obj_id(raw: &str) -> Result<ObjId, RPCErrors> {
-        ObjId::new(raw)
-            .map_err(|err| RPCErrors::ReasonError(format!("Invalid obj id `{raw}`: {err}")))
-    }
-
-    fn actor_identity(user_id: &str) -> String {
-        if user_id.starts_with("did:") {
-            user_id.to_string()
-        } else {
-            format!("did:bns:{user_id}")
-        }
-    }
-
-    fn build_actor_obj_id(user_id: &str) -> ObjId {
-        build_obj_id("actor", &Self::actor_identity(user_id))
-    }
-
     fn should_wait_for_instance(spec: &AppServiceSpec) -> bool {
         spec.app_doc.get_app_type() != AppType::Web
             && spec.enable
@@ -179,35 +157,6 @@ impl AppInstaller {
             Self::service_state_label(&state),
             detail
         );
-    }
-
-    fn resolve_content_id(spec: &AppServiceSpec) -> Result<String, RPCErrors> {
-        if !spec.app_doc.content.trim().is_empty() {
-            return Ok(spec.app_doc.content.trim().to_string());
-        }
-
-        for (_, sub_pkg) in spec.app_doc.pkg_list.iter() {
-            if let Some(pkg_objid) = sub_pkg.pkg_objid.as_ref() {
-                return Ok(pkg_objid.to_string());
-            }
-        }
-
-        Err(RPCErrors::ReasonError(format!(
-            "App `{}` does not include a resolvable content id",
-            spec.app_id()
-        )))
-    }
-
-    fn resolve_download_url(spec: &AppServiceSpec, content_id: &str) -> String {
-        for (_, sub_pkg) in spec.app_doc.pkg_list.iter() {
-            if let Some(source_url) = sub_pkg.source_url.as_ref() {
-                if !source_url.trim().is_empty() {
-                    return source_url.trim().to_string();
-                }
-            }
-        }
-
-        format!("cyfs://{content_id}")
     }
 
     fn to_rpc_error(error: SystemConfigError) -> RPCErrors {
@@ -299,305 +248,6 @@ impl AppInstaller {
             )));
         }
         Ok(matches.into_iter().next().unwrap())
-    }
-
-    async fn load_repo_record_status(&self, content_id: &str) -> Result<Option<String>, RPCErrors> {
-        info!("query repo record status for content `{}`", content_id);
-        let repo = self.repo_client().await?;
-        let records = repo.list(None).await.map_err(|error| {
-            warn!(
-                "repo.list failed while querying status for content `{}`: {}",
-                content_id, error
-            );
-            error
-        })?;
-        let status = records
-            .into_iter()
-            .find(|record| record.content_id == content_id)
-            .map(|record| record.status);
-        info!(
-            "repo record status for content `{}` -> {:?}",
-            content_id, status
-        );
-        Ok(status)
-    }
-
-    async fn latest_action_proof_id(
-        &self,
-        content_id: &str,
-        proof_type: &str,
-    ) -> Result<Option<ObjId>, RPCErrors> {
-        info!(
-            "query latest repo proof `{}` for content `{}`",
-            proof_type, content_id
-        );
-        let repo = self.repo_client().await?;
-        let proofs = repo
-            .get_proofs(
-                content_id,
-                Some(RepoProofFilter::new(
-                    Some(proof_type.to_string()),
-                    None,
-                    None,
-                    None,
-                    None,
-                )),
-            )
-            .await
-            .map_err(|error| {
-                warn!(
-                    "repo.get_proofs failed for content `{}` proof_type `{}`: {}",
-                    content_id, proof_type, error
-                );
-                error
-            })?;
-
-        let proof = proofs.into_iter().rev().find_map(|proof| match proof {
-            RepoProof::Action(action) => Some(action.gen_obj_id().0),
-            RepoProof::Collection(_) => None,
-        });
-        info!(
-            "latest repo proof `{}` for content `{}` -> {:?}",
-            proof_type, content_id, proof
-        );
-        Ok(proof)
-    }
-
-    fn build_download_proof(
-        &self,
-        user_id: &str,
-        content_id: &str,
-        base_on: Option<ObjId>,
-        task_id: i64,
-    ) -> Result<ActionObject, RPCErrors> {
-        let target = Self::parse_obj_id(content_id)?;
-        let now = buckyos_get_unix_timestamp();
-        Ok(ActionObject {
-            subject: Self::build_actor_obj_id(user_id),
-            action: ACTION_TYPE_DOWNLOAD.to_string(),
-            target,
-            base_on,
-            details: Some(json!({
-                "subject_did": Self::actor_identity(user_id),
-                "task_id": task_id,
-                "source": "control_panel.app_installer",
-            })),
-            iat: now,
-            exp: now + PROOF_EXPIRE_SECS,
-        })
-    }
-
-    fn build_install_proof(
-        &self,
-        spec: &AppServiceSpec,
-        content_id: &str,
-        base_on: Option<ObjId>,
-    ) -> Result<ActionObject, RPCErrors> {
-        let target = Self::parse_obj_id(content_id)?;
-        let now = buckyos_get_unix_timestamp();
-        Ok(ActionObject {
-            subject: Self::build_actor_obj_id(spec.user_id.as_str()),
-            action: ACTION_TYPE_INSTALLED.to_string(),
-            target,
-            base_on,
-            details: Some(json!({
-                "subject_did": Self::actor_identity(spec.user_id.as_str()),
-                "app_id": spec.app_id(),
-                "user_id": spec.user_id,
-                "version": spec.app_doc.version,
-                "spec_id": Self::service_spec_id(spec),
-            })),
-            iat: now,
-            exp: now + PROOF_EXPIRE_SECS,
-        })
-    }
-
-    async fn wait_for_download_task(
-        &self,
-        task_mgr: &TaskManagerClient,
-        task_id: i64,
-    ) -> Result<(), RPCErrors> {
-        let status = task_mgr.wait_for_task_end(task_id).await?;
-        if status == TaskStatus::Completed {
-            return Ok(());
-        }
-
-        let task = task_mgr.get_task(task_id).await?;
-        let message = task
-            .message
-            .unwrap_or_else(|| format!("Download task {task_id} ended with status {status}"));
-        Err(RPCErrors::ReasonError(message))
-    }
-
-    async fn verify_named_store_ready(&self, content_id: &str) -> Result<(), RPCErrors> {
-        let obj_id = Self::parse_obj_id(content_id)?;
-        let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await.map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "Open named store for download verification failed: {error}"
-            ))
-        })?;
-        let _ = named_store
-            .open_reader(&obj_id, None)
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!(
-                    "Downloaded object `{content_id}` is not ready in named-store: {error}"
-                ))
-            })?;
-        Ok(())
-    }
-
-    async fn ensure_content_pinned(
-        &self,
-        spec: &AppServiceSpec,
-        parent_task_id: i64,
-        root_id: &str,
-    ) -> Result<ActionObject, RPCErrors> {
-        let content_id = Self::resolve_content_id(spec)?;
-        let repo_status = self.load_repo_record_status(&content_id).await?;
-        let status = repo_status.ok_or_else(|| {
-            let error = RPCErrors::ReasonError(format!(
-                "Content `{content_id}` is not collected in RepoService"
-            ));
-            warn!(
-                "pin content for app `{}` user `{}` failed: {}",
-                spec.app_id(),
-                spec.user_id,
-                error
-            );
-            error
-        })?;
-
-        if status == REPO_STATUS_PINNED {
-            info!(
-                "content `{}` for app `{}` user `{}` already pinned in repo",
-                content_id,
-                spec.app_id(),
-                spec.user_id
-            );
-            let base_on = self
-                .latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
-                .await?;
-            return self.build_download_proof(
-                spec.user_id.as_str(),
-                &content_id,
-                base_on,
-                parent_task_id,
-            );
-        }
-
-        if status != REPO_STATUS_COLLECTED {
-            let error = RPCErrors::ReasonError(format!(
-                "Unsupported repo status for `{content_id}`: {status}"
-            ));
-            warn!(
-                "pin content for app `{}` user `{}` failed: {}",
-                spec.app_id(),
-                spec.user_id,
-                error
-            );
-            return Err(error);
-        }
-
-        let task_mgr = self.task_mgr_client().await?;
-        let download_task_id = task_mgr
-            .create_download_task(
-                Self::resolve_download_url(spec, &content_id).as_str(),
-                None,
-                None,
-                spec.user_id.as_str(),
-                spec.app_id(),
-                Some(CreateTaskOptions {
-                    parent_id: if parent_task_id > 0 {
-                        Some(parent_task_id)
-                    } else {
-                        None
-                    },
-                    root_id: if root_id.is_empty() {
-                        None
-                    } else {
-                        Some(root_id.to_string())
-                    },
-                    ..Default::default()
-                }),
-            )
-            .await?;
-        info!(
-            "created download task {} for app `{}` user `{}` content `{}`",
-            download_task_id,
-            spec.app_id(),
-            spec.user_id,
-            content_id
-        );
-
-        if parent_task_id > 0 {
-            let _ = task_mgr
-                .update_task(
-                    parent_task_id,
-                    None,
-                    Some(20.0),
-                    Some("Downloading app package".to_string()),
-                    Some(json!({
-                        "download_task_id": download_task_id,
-                        "content_id": content_id,
-                    })),
-                )
-                .await;
-        }
-
-        self.wait_for_download_task(&task_mgr, download_task_id)
-            .await?;
-        self.verify_named_store_ready(&content_id).await?;
-        info!(
-            "download task {} completed for app `{}` user `{}` content `{}`",
-            download_task_id,
-            spec.app_id(),
-            spec.user_id,
-            content_id
-        );
-
-        let referral_base = self
-            .latest_action_proof_id(&content_id, REPO_PROOF_TYPE_REFERRAL)
-            .await?;
-        let download_proof = self.build_download_proof(
-            spec.user_id.as_str(),
-            &content_id,
-            referral_base,
-            download_task_id,
-        )?;
-        let repo = self.repo_client().await?;
-        info!(
-            "calling repo.pin for content `{}` app `{}` user `{}`",
-            content_id,
-            spec.app_id(),
-            spec.user_id
-        );
-        if let Err(error) = repo.pin(&content_id, download_proof.clone()).await {
-            let error_text = error.to_string();
-            if error_text.contains("is not available locally") {
-                warn!(
-                    "repo.pin skipped for `{}` because repo-service does not yet read named-store directly: {}",
-                    content_id, error_text
-                );
-            } else {
-                warn!(
-                    "repo.pin failed for content `{}` app `{}` user `{}`: {}",
-                    content_id,
-                    spec.app_id(),
-                    spec.user_id,
-                    error
-                );
-                return Err(error);
-            }
-        }
-        info!(
-            "repo content `{}` pinned for app `{}` user `{}`",
-            content_id,
-            spec.app_id(),
-            spec.user_id
-        );
-        Ok(download_proof)
     }
 
     async fn wait_for_instance_ready(
@@ -861,156 +511,6 @@ impl AppInstaller {
         Ok(())
     }
 
-    async fn run_upgrade_task(
-        &self,
-        spec: AppServiceSpec,
-        task_id: i64,
-        root_id: String,
-    ) -> Result<(), RPCErrors> {
-        let task_mgr = self.task_mgr_client().await?;
-        let client = self.system_config_client().await?;
-        let (spec_key, current_spec) = self
-            .get_single_matching_spec(spec.app_id(), Some(spec.user_id.as_str()))
-            .await?;
-
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Running),
-                Some(10.0),
-                Some("Stopping current app version".to_string()),
-                None,
-            )
-            .await;
-
-        self.stop_app(spec.app_id(), Some(spec.user_id.as_str()))
-            .await?;
-
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                None,
-                Some(35.0),
-                Some("Validating repo content".to_string()),
-                None,
-            )
-            .await;
-
-        let mut next_spec = spec.clone();
-        next_spec.app_index = current_spec.app_index;
-        next_spec.state = ServiceState::New;
-
-        let content_id = Self::resolve_content_id(&next_spec)?;
-        let repo_status = self.load_repo_record_status(&content_id).await?;
-        let status = repo_status.ok_or_else(|| {
-            let error = RPCErrors::ReasonError(format!(
-                "Content `{content_id}` is not collected in RepoService"
-            ));
-            warn!(
-                "upgrade app `{}` for user `{}` failed: {}",
-                spec.app_id(),
-                spec.user_id,
-                error
-            );
-            error
-        })?;
-        let download_base = if status == REPO_STATUS_PINNED {
-            self.latest_action_proof_id(&content_id, REPO_PROOF_TYPE_DOWNLOAD)
-                .await?
-        } else {
-            let proof = self
-                .ensure_content_pinned(&next_spec, task_id, root_id.as_str())
-                .await?;
-            Some(proof.gen_obj_id().0)
-        };
-
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                None,
-                Some(65.0),
-                Some("Writing upgraded app spec".to_string()),
-                Some(json!({
-                    "content_id": content_id,
-                })),
-            )
-            .await;
-
-        Self::set_spec_at(&client, &spec_key, &next_spec).await?;
-        Self::log_spec_state_change(
-            &next_spec,
-            ServiceState::New,
-            format!("upgrade task {} wrote spec `{}`", task_id, spec_key).as_str(),
-        );
-
-        let repo = self.repo_client().await?;
-        let install_proof = self.build_install_proof(&next_spec, &content_id, download_base)?;
-        info!(
-            "calling repo.add_proof upgrade for app `{}` user `{}` content `{}`",
-            next_spec.app_id(),
-            next_spec.user_id,
-            content_id
-        );
-        repo.add_proof(RepoProof::action(install_proof))
-            .await
-            .map_err(|error| {
-                warn!(
-                    "repo.add_proof failed for upgrade app `{}` user `{}` content `{}`: {}",
-                    next_spec.app_id(),
-                    next_spec.user_id,
-                    content_id,
-                    error
-                );
-                error
-            })?;
-        info!(
-            "recorded upgrade install proof for app `{}` user `{}` version `{}`",
-            next_spec.app_id(),
-            next_spec.user_id,
-            next_spec.app_doc.version
-        );
-
-        let mut data = json!({
-            "spec_path": spec_key,
-            "app_index": next_spec.app_index,
-            "spec_id": Self::service_spec_id(&next_spec),
-        });
-
-        if Self::should_wait_for_instance(&next_spec) {
-            let _ = task_mgr
-                .update_task(
-                    task_id,
-                    None,
-                    Some(85.0),
-                    Some("Waiting for upgraded app instance".to_string()),
-                    None,
-                )
-                .await;
-            let instance = self.wait_for_instance_ready(&next_spec).await?;
-            data["instance"] = serde_json::to_value(instance).map_err(|error| {
-                RPCErrors::ReasonError(format!("Serialize instance report failed: {error}"))
-            })?;
-        }
-
-        task_mgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Completed),
-                Some(100.0),
-                Some("App upgraded".to_string()),
-                Some(data),
-            )
-            .await?;
-        info!(
-            "upgrade task {} completed for app `{}` user `{}` version `{}`",
-            task_id,
-            next_spec.app_id(),
-            next_spec.user_id,
-            next_spec.app_doc.version
-        );
-        Ok(())
-    }
-
     fn removable_data_path(path: &Path, app_id: &str) -> bool {
         let raw = path.to_string_lossy();
         raw.starts_with("/opt/buckyos/data/")
@@ -1060,33 +560,6 @@ impl AppInstaller {
             }
         }
         Ok(())
-    }
-
-    /// 获取下一个可用的 app_index（用于新安装应用的自动分配）。
-    /// 流程：遍历 users/{uid}/apps|agents/*/spec，取最大 app_index + 1。
-    async fn get_next_app_index(&self) -> Result<u16, RPCErrors> {
-        let client = self.system_config_client().await?;
-        let users = Self::list_children(&client, "users").await?;
-        let mut max_app_index = 0u16;
-
-        for user_id in users {
-            for base in ["apps", "agents"] {
-                let base_key = format!("users/{user_id}/{base}");
-                let app_ids = Self::list_children(&client, &base_key).await?;
-                for app_id in app_ids {
-                    let spec_key = format!("{base_key}/{app_id}/spec");
-                    if let Some(spec) =
-                        Self::get_optional_json::<AppServiceSpec>(&client, &spec_key).await?
-                    {
-                        max_app_index = max_app_index.max(spec.app_index);
-                    }
-                }
-            }
-        }
-
-        max_app_index
-            .checked_add(1)
-            .ok_or_else(|| RPCErrors::ReasonError("app_index overflow".to_string()))
     }
 
     /// 卸载应用。必须先 stop_app 才能返回成功。
@@ -1221,63 +694,6 @@ impl AppInstaller {
         tokio::spawn(async move {
             if let Err(error) = installer.run_start_task(app_id, user_id, task_id).await {
                 warn!("start app task {} failed: {}", task_id, error);
-                let _ = task_mgr
-                    .mark_task_as_failed(task_id, &error.to_string())
-                    .await;
-            }
-        });
-
-        Ok(task_id as u64)
-    }
-
-    /// 升级应用。调用前 app 需已 stop（无可用 instance）。
-    ///
-    /// 流程： 基本和install_app类似，也需要创建一个task来跟踪升级流程。注意要pkg下载完成后才开始停止旧版本实例并启动新版本
-    /// 1. stop_app(app_id) — 确保无运行实例
-    /// 2. 覆盖 users/{uid}/apps|agents/{app}/spec 为新的 AppServiceSpec
-    /// 3. spec.state=New，触发调度器重新选点并分配新版本 app_service_instance_config
-    /// 4. repo.add_proof(install_action) 新版本安装证明
-    pub async fn upgrade_app(&self, spec: &AppServiceSpec) -> Result<u64, RPCErrors> {
-        let current_spec = self
-            .get_app_service_spec(spec.app_id(), Some(spec.user_id.as_str()))
-            .await?;
-        let content_id = Self::resolve_content_id(spec)?;
-        let (task_mgr, task_id, root_id) = self
-            .create_task(
-                format!("Update app {}", spec.app_id()),
-                UPDATE_TASK_TYPE,
-                task_data_value(AppUpdateTaskData {
-                    request: AppUpdateTaskRequest {
-                        source: InstallSource::identifier(spec.app_id(), None),
-                        user_id: spec.user_id.clone(),
-                        app_id: spec.app_id().to_string(),
-                        policy: InstallPolicy::Normal,
-                        options: Some(json!({
-                            "from_version": current_spec.app_doc.version.clone(),
-                            "to_version": spec.app_doc.version.clone(),
-                            "content_id": content_id,
-                        })),
-                    },
-                    state: InstallTransactionState::default(),
-                })?,
-                spec.user_id.as_str(),
-                spec.app_id(),
-            )
-            .await?;
-        info!(
-            "queued upgrade task {} for app `{}` user `{}` from version `{}` to `{}`",
-            task_id,
-            spec.app_id(),
-            spec.user_id,
-            current_spec.app_doc.version,
-            spec.app_doc.version
-        );
-
-        let installer = self.clone();
-        let spec = spec.clone();
-        tokio::spawn(async move {
-            if let Err(error) = installer.run_upgrade_task(spec, task_id, root_id).await {
-                warn!("upgrade app task {} failed: {}", task_id, error);
                 let _ = task_mgr
                     .mark_task_as_failed(task_id, &error.to_string())
                     .await;
@@ -2390,6 +1806,10 @@ impl ControlPanelServer {
         ))
     }
 
+    /// apps.update { app_id, options? } -> { task_id }
+    /// v0.5：升级走与安装同一条 Stage 流水线（Resolve -> ... -> Prepare 完成
+    /// 后才切换旧版本；Activate 失败自动恢复旧 spec）。升级判定以权威
+    /// Resolve 的 App Document 为准，不再从 Repo 选 semver 最新。
     pub(crate) async fn handle_apps_update(
         &self,
         req: RPCRequest,
@@ -2397,26 +1817,31 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let app_id = Self::require_param_str(&req, "app_id")?;
-        let version = Self::require_param_str(&req, "version")?;
+        let options = req.params.get("options").cloned();
         let user_id = Self::resolve_target_user_id(&req, principal);
+        Self::require_install_scope(principal, user_id.as_str())?;
+        let policy = Self::parse_install_policy(principal, options.as_ref())?;
+
+        // 已安装 spec 是升级入口的真相源：App DID 从中取得。
         let current_spec = self
             .app_installer
             .get_app_service_spec(app_id.as_str(), Some(user_id.as_str()))
             .await?;
-        let release = self
-            .resolve_repo_app_release(app_id.as_str(), Some(version.as_str()))
-            .await?;
+        let app_did = current_spec.app_doc.id.clone();
 
-        let next_spec = AppServiceSpec {
-            app_doc: release.app_doc,
-            app_index: current_spec.app_index,
-            user_id: current_spec.user_id.clone(),
-            enable: current_spec.enable,
-            expected_instance_count: current_spec.expected_instance_count,
-            state: current_spec.state,
-            install_config: current_spec.install_config.clone(),
+        let request = buckyos_api::AppUpdateTaskRequest {
+            source: buckyos_api::InstallSource::identifier(app_did.to_string(), None),
+            user_id,
+            app_id: app_id.clone(),
+            policy,
+            options,
         };
-        let task_id = self.app_installer.upgrade_app(&next_spec).await?;
+        let task_id = self
+            .install_engine
+            .create_update_task(request, app_id.as_str())
+            .await
+            .map_err(Self::install_error_to_rpc)?;
+        self.install_runner.dispatch(task_id).await;
 
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({
