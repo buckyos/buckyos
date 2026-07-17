@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use buckyos_api::{
-    MailboxKind, Event, EventReader, KEventClient, KEventError, MsgCenterClient, MailboxRecordWithObject,
-    RecipientState,
+    Event, EventReader, KEventClient, KEventError, MailboxKind, MailboxRecordWithObject,
+    MsgCenterClient, RecipientState,
 };
 use llm_context::{parse_msg_object_text_attachments, MsgParseOutput};
 use ndn_lib::MsgObjKind;
@@ -177,7 +177,9 @@ pub async fn run(cfg: PumpConfig) {
 
 async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
     let state_filter = match box_kind {
-        MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => Some(vec![RecipientState::Unread]),
+        MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => {
+            Some(vec![RecipientState::Unread])
+        }
         // Outbox kinds aren't drained by the agent.
         _ => return,
     };
@@ -195,7 +197,10 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
             .await
         {
             Ok(Some(record)) => {
-                if !matches!(record.record.state, RecipientState::Unread | RecipientState::Reading) {
+                if !matches!(
+                    record.record.state,
+                    RecipientState::Unread | RecipientState::Reading
+                ) {
                     warn!(
                         "opendan.msg_pump[{}]: unexpected msg state record_id={} state={:?} — skipping box",
                         cfg.agent_name, record.record.record_id, record.record.state
@@ -333,7 +338,11 @@ async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bo
 }
 
 fn append_all_inbox_boxes(target: &mut Vec<MailboxKind>) {
-    for kind in [MailboxKind::Inbox, MailboxKind::GroupInbox, MailboxKind::RequestBox] {
+    for kind in [
+        MailboxKind::Inbox,
+        MailboxKind::GroupInbox,
+        MailboxKind::RequestBox,
+    ] {
         if !target.contains(&kind) {
             target.push(kind);
         }
@@ -362,7 +371,11 @@ pub fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
 
     let mut out = Vec::new();
     for owner_token in owner_tokens {
-        for box_kind in [MailboxKind::Inbox, MailboxKind::GroupInbox, MailboxKind::RequestBox] {
+        for box_kind in [
+            MailboxKind::Inbox,
+            MailboxKind::GroupInbox,
+            MailboxKind::RequestBox,
+        ] {
             let box_id_segment = msg_center_box_id_segment(&owner_token, &box_kind);
             let pattern = format!("/msg_center/{owner_token}/{box_id_segment}/**");
             if !out.contains(&pattern) {

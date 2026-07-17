@@ -474,8 +474,11 @@ LIMIT ?
                 record.delivery_id, error
             ))
         })?;
-        let last_error_json =
-            encode_optional_json(record.last_error.as_ref(), &record.delivery_id, "last_error")?;
+        let last_error_json = encode_optional_json(
+            record.last_error.as_ref(),
+            &record.delivery_id,
+            "last_error",
+        )?;
 
         let sql = self.render_sql(&format!(
             r#"
@@ -1378,7 +1381,10 @@ mod tests {
             mgr.upsert_record(r).await.unwrap();
         }
 
-        let index = mgr.list_session_index(&owner, 10, None, None).await.unwrap();
+        let index = mgr
+            .list_session_index(&owner, 10, None, None)
+            .await
+            .unwrap();
         assert_eq!(index.len(), 2);
         assert_eq!(index[0].session_id, "s-b");
         assert_eq!(index[1].session_id, "s-a");

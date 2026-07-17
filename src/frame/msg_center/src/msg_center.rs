@@ -500,7 +500,10 @@ impl MessageCenter {
             return msg.to.first().map(|group| group.to_string());
         }
         match box_kind {
-            MailboxKind::Sent => msg.to.first().map(|peer| format!("dm:{}", peer.to_string())),
+            MailboxKind::Sent => msg
+                .to
+                .first()
+                .map(|peer| format!("dm:{}", peer.to_string())),
             _ => Some(format!("dm:{}", msg.from.to_string())),
         }
     }
@@ -748,18 +751,17 @@ impl MessageCenter {
         }
 
         match box_kind {
-            MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => {
-                match current {
-                    RecipientState::Unread => {
-                        matches!(next, RecipientState::Reading | RecipientState::Read)
-                    }
-                    RecipientState::Reading => {
-                        matches!(next, RecipientState::Unread | RecipientState::Read)
-                    }
-                    RecipientState::Read => matches!(next, RecipientState::Reading),
-                    _ => false,
+            MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => match current
+            {
+                RecipientState::Unread => {
+                    matches!(next, RecipientState::Reading | RecipientState::Read)
                 }
-            }
+                RecipientState::Reading => {
+                    matches!(next, RecipientState::Unread | RecipientState::Read)
+                }
+                RecipientState::Read => matches!(next, RecipientState::Reading),
+                _ => false,
+            },
             // SENT records have no reading semantics: only archive / delete.
             MailboxKind::Sent => false,
         }
@@ -819,13 +821,15 @@ impl MessageCenter {
         if let Some((account_id, account_type, tunnel_instance_id)) =
             ContactMgr::parse_msgtunnel_did(&target_did)
         {
-            let route = self.lookup_tunnel_route(&tunnel_instance_id).ok_or_else(|| {
-                format!(
+            let route = self
+                .lookup_tunnel_route(&tunnel_instance_id)
+                .ok_or_else(|| {
+                    format!(
                     "unknown tunnel_instance_id '{}' for endpoint target {}; no tunnel registered",
                     tunnel_instance_id,
                     target_did.to_string()
                 )
-            })?;
+                })?;
 
             // The DID-embedded account is the delivery address. `chat_id` for
             // conversational platforms, `address` for mailbox-style platforms;
@@ -1208,17 +1212,18 @@ impl MessageCenter {
             ),
         };
 
-        let cache_result = |result: PostSendResult| -> std::result::Result<PostSendResult, RPCErrors> {
-            if let Some(key) = idempotency_key.as_ref() {
-                self.with_state_write(|state| {
-                    state
-                        .post_send_idempotency
-                        .insert(key.clone(), result.clone());
-                    Ok(())
-                })?;
-            }
-            Ok(result)
-        };
+        let cache_result =
+            |result: PostSendResult| -> std::result::Result<PostSendResult, RPCErrors> {
+                if let Some(key) = idempotency_key.as_ref() {
+                    self.with_state_write(|state| {
+                        state
+                            .post_send_idempotency
+                            .insert(key.clone(), result.clone());
+                        Ok(())
+                    })?;
+                }
+                Ok(result)
+            };
 
         if self
             .is_contact_blocked(&author, contact_mgr_owner.clone())
@@ -1617,9 +1622,9 @@ impl MessageCenter {
                 .into_iter()
                 .next();
             let last_record = match last_record {
-                Some(record) => Some(
-                    Self::build_record_view(record, Some(with_object.unwrap_or(false))).await?,
-                ),
+                Some(record) => {
+                    Some(Self::build_record_view(record, Some(with_object.unwrap_or(false))).await?)
+                }
                 None => None,
             };
             items.push(SessionSummary {

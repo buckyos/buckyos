@@ -313,7 +313,8 @@ impl ContactMgr {
         let endpoint =
             Self::message_tunnel_endpoint_did(account_id, Some(&hint))?.ok_or_else(|| {
                 RPCErrors::ParseRequestError(
-                    "account_type and tunnel_instance_id are required to build endpoint did".to_string(),
+                    "account_type and tunnel_instance_id are required to build endpoint did"
+                        .to_string(),
                 )
             })?;
         Ok(endpoint.did)
@@ -1661,7 +1662,8 @@ impl ContactMgr {
         let Some(account_type) = Self::extract_hint_string(profile_hint, &["account_type"]) else {
             return Ok(None);
         };
-        let Some(tunnel_instance_id) = Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
+        let Some(tunnel_instance_id) =
+            Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
         else {
             return Ok(None);
         };
@@ -1703,8 +1705,9 @@ impl ContactMgr {
     ) -> AccountBinding {
         let display_id = Self::extract_hint_string(profile_hint, &["display_id", "username"])
             .unwrap_or_else(|| account_id.clone());
-        let tunnel_instance_id = Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
-            .unwrap_or_else(|| endpoint.tunnel_instance_id.clone());
+        let tunnel_instance_id =
+            Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
+                .unwrap_or_else(|| endpoint.tunnel_instance_id.clone());
         let mut binding = AccountBinding {
             platform,
             account_id,
@@ -1740,9 +1743,10 @@ impl ContactMgr {
             "message_tunnel_encoded_account_id".to_string(),
             endpoint.encoded_account_id.clone(),
         );
-        binding
-            .meta
-            .insert("message_tunnel_id".to_string(), endpoint.tunnel_instance_id.clone());
+        binding.meta.insert(
+            "message_tunnel_id".to_string(),
+            endpoint.tunnel_instance_id.clone(),
+        );
     }
 
     fn normalize_account_type(raw: &str) -> String {
@@ -1849,8 +1853,9 @@ impl ContactMgr {
         let note = Self::extract_hint_string(profile_hint, &["note", "bio", "desc"]);
         let display_id = Self::extract_hint_string(profile_hint, &["display_id", "username"])
             .unwrap_or_else(|| account_id.clone());
-        let tunnel_instance_id = Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
-            .unwrap_or_else(|| format!("{}-default", platform.to_ascii_lowercase()));
+        let tunnel_instance_id =
+            Self::extract_hint_string(profile_hint, &["tunnel_instance_id", "tunnel"])
+                .unwrap_or_else(|| format!("{}-default", platform.to_ascii_lowercase()));
         let account_type = Self::extract_hint_string(profile_hint, &["account_type"])
             .map(|raw| Self::normalize_account_type(&raw))
             .unwrap_or_default();
@@ -1931,7 +1936,8 @@ impl ContactMgr {
                 binding.display_id = binding.account_id.clone();
             }
             if binding.tunnel_instance_id.trim().is_empty() {
-                binding.tunnel_instance_id = format!("{}-default", binding.platform.to_ascii_lowercase());
+                binding.tunnel_instance_id =
+                    format!("{}-default", binding.platform.to_ascii_lowercase());
             }
             if binding.last_active_at == 0 {
                 binding.last_active_at = now_ms;
@@ -2260,7 +2266,10 @@ impl ContactMgr {
             binding.platform.to_ascii_lowercase().contains(keyword)
                 || binding.account_id.to_ascii_lowercase().contains(keyword)
                 || binding.display_id.to_ascii_lowercase().contains(keyword)
-                || binding.tunnel_instance_id.to_ascii_lowercase().contains(keyword)
+                || binding
+                    .tunnel_instance_id
+                    .to_ascii_lowercase()
+                    .contains(keyword)
                 || binding.meta.iter().any(|(key, value)| {
                     key.to_ascii_lowercase().contains(keyword)
                         || value.to_ascii_lowercase().contains(keyword)

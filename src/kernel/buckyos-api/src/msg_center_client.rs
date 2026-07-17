@@ -2114,7 +2114,8 @@ impl MsgCenterClient {
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterGetNextDeliveryReq::new(transport_did, lock_on_take, with_object);
+                let req =
+                    MsgCenterGetNextDeliveryReq::new(transport_did, lock_on_take, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterGetNextDeliveryReq")?;
                 let result = client.call(METHOD_MSG_GET_NEXT_DELIVERY, req_json).await?;
                 parse_optional_rpc_response(result, "DeliveryRecordWithObject")

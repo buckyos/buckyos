@@ -1,8 +1,8 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, MailboxKind,
-    Capability, ModelSpec, MsgCenterClient, Requirements, SystemConfigClient,
+    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, Capability,
+    MailboxKind, ModelSpec, MsgCenterClient, Requirements, SystemConfigClient,
 };
 use log::info;
 use name_lib::DID;

@@ -339,10 +339,7 @@ async fn pump_delivery_queue_once(
         let delivery_id = record.record.delivery_id.clone();
         worked = true;
 
-        let report = match executor_mgr
-            .execute_via(&transport_did, record)
-            .await
-        {
+        let report = match executor_mgr.execute_via(&transport_did, record).await {
             Ok(report) => report,
             Err(err) => {
                 // Executor-level failure (not running, transport error). Feed
@@ -365,7 +362,10 @@ async fn pump_delivery_queue_once(
         };
 
         let report_ok = report.ok;
-        if let Err(err) = msg_center.report_delivery(delivery_id.clone(), report).await {
+        if let Err(err) = msg_center
+            .report_delivery(delivery_id.clone(), report)
+            .await
+        {
             // The SENDING lease sweep will reclaim this row if the report is
             // lost for good.
             warn!(
@@ -804,7 +804,11 @@ async fn apply_tg_tunnel_settings(
     }
 
     let transport_did = resolve_tg_transport_did(&settings.telegram_tunnel)?;
-    let tunnel_instance_id = settings.telegram_tunnel.tunnel_instance_id.trim().to_string();
+    let tunnel_instance_id = settings
+        .telegram_tunnel
+        .tunnel_instance_id
+        .trim()
+        .to_string();
     let tunnel_instance_id = if tunnel_instance_id.is_empty() {
         default_tg_tunnel_instance_id()
     } else {

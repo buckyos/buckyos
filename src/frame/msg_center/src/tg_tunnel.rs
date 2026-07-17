@@ -3441,7 +3441,10 @@ impl TgTunnel {
     pub fn with_bot_api_gateway(cfg: TgTunnelConfig) -> Self {
         let transport_did = Some(cfg.transport_did.clone());
         let tunnel_instance_id = Some(cfg.tunnel_instance_id.clone());
-        Self::with_gateway(cfg, Arc::new(BotApiTgGateway::new(transport_did, tunnel_instance_id)))
+        Self::with_gateway(
+            cfg,
+            Arc::new(BotApiTgGateway::new(transport_did, tunnel_instance_id)),
+        )
     }
 
     pub fn with_gateway(cfg: TgTunnelConfig, gateway: Arc<dyn TgGateway>) -> Self {
