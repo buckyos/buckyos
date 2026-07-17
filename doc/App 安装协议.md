@@ -1,4 +1,4 @@
-# BuckyOS App 安装协议规范（Draft v0.4）
+# BuckyOS App 安装协议规范（Draft v0.5）
 
 > 本版本在原有安装引导、多源下载、信任校验和经济模型基础上，引入 **App Document 统一入口**、**`resolve_did(App DID, "app")` 可信解析**、**分阶段安装流水线** 与 **Personal AI Package（`.pikg`）** 文件格式。
 >
@@ -21,6 +21,7 @@
 7. **DID 解析按 `(did, doc_type)` 执行。** App 的解析单元固定为 `(App DID, "app")`；包、URL、应用商店和分享渠道只提供候选 body 或内容下载位置，不能自行取得 DID method 的发布权威地位。
 8. **分离签字权与发布权。** App Document 签名证明 owner 授权构造了该内容，权威发布状态证明该内容已经公开生效；已签名但未发布的候选不能覆盖已发布结果或撤销状态。
 9. **交付格式统一命名为 `pikg`。** 文件扩展名固定为 `.pikg`，避免被误读为 Python `pip` 包或重量单位组合。
+10. **统一 subpackage 归档命名。** `pikg` 内携带的 subpackage 优先命名为 `$sub_pkg_name.tar.gz`，归档文件 hash 必须与对应 Package Meta 的内容配置一致。
 
 ---
 
@@ -337,7 +338,7 @@ pikg
 
 ### 4.2 逻辑目录结构
 
-本版本先定义逻辑条目，具体归档、压缩、随机访问和流式编码方式在后续版本中固定。
+本版本先定义逻辑条目和内置 subpackage 的首选归档规则；`pikg` 外层容器自身的归档、压缩、随机访问和流式编码方式在后续版本中固定。
 
 推荐逻辑结构：
 
@@ -346,15 +347,27 @@ example.pikg
 ├── APPDOC.wt                 # 已签名 App Document，可选
 ├── APPDOC.json               # 未签名 App Document，可选
 ├── PACKAGE_META.json         # 包内 Package Meta 与内容索引
-├── objects/                  # 其他可选结构化对象
+├── amd64_docker_image.tar.gz # 推荐：$sub_pkg_name.tar.gz
+├── web.tar.gz                # 另一个名为 web 的 subpackage
+├── objects/                  # 其他可选结构化对象（可选)
 │   └── <object-id>.json
-├── chunks/                   # 内容寻址 Chunk 或二进制 Blob
+├── chunks/                   # 内容寻址 Chunk 或二进制 Blob (可选)
 │   └── <chunk-id>
 └── assets/                   # 可选的人类可读辅助资源
     └── ...
 ```
 
 一个合法 `.pikg` 必须至少包含 `APPDOC.wt` 或 `APPDOC.json` 之一。
+
+内置 subpackage 的文件命名与 hash 绑定规则如下：
+
+- `sub_pkg_name` 是 App Document 中引用该 subpackage 的逻辑名称或 key，例如 `amd64_docker_image`；
+- 单文件归档的首选名称为 `$sub_pkg_name.tar.gz`，例如 `amd64_docker_image.tar.gz`；
+- `sub_pkg_name` 必须是安全的单段文件名，只能包含字母、数字、点、下划线和连字符，不得包含 `/`、`\\`、`..` 或绝对路径；
+- Package Meta 必须声明该归档的格式、字节长度和 hash；默认使用 `sha256:<hex>`；
+- hash 的计算对象是 `.tar.gz` 文件本身的最终压缩字节，不是解压后的目录、tar 中间流或某个 Source 的传输封装；
+- Installer 必须重新计算归档文件 hash，并同时核对 Package Meta 和 `PACKAGE_META.json.content_index`。任一处的 hash、size 或路径不一致都必须判定为 `INVALID_PACKAGE`；
+- 若某类 subpackage 不能使用 `tar.gz`，Package Meta 必须显式声明实际 `format` 和 `path`。这属于例外，不改变 `$sub_pkg_name.tar.gz` 的首选规则。
 
 ### 4.3 APPDOC.wt 与 APPDOC.json
 
@@ -382,17 +395,19 @@ App Document 仍然使用 Object ID 引用 Package Meta；`PACKAGE_META.json` �
   // key 是 App Document 中引用的 Package Meta Object ID；
   // value 必须按该对象的规范化规则重新计算并验证 Object ID。
   "package_objects": {
-    "obj:pkgmeta:win-x64:sha256:...": {
-      "name": "main-service",
+    "obj:pkgmeta:linux-amd64:sha256:...": {
+      "name": "amd64_docker_image",
       "selector": {
-        "os": "windows",
+        "os": "linux",
         "arch": "x86_64"
       },
       "content": [
         {
-          "kind": "chunk",
-          "id": "chunk:sha256:...",
-          "size": 104857600
+          "kind": "archive",
+          "format": "tar.gz",
+          "path": "amd64_docker_image.tar.gz",
+          "size": 104857600,
+          "digest": "sha256:..."
         }
       ]
     }
@@ -400,8 +415,10 @@ App Document 仍然使用 Object ID 引用 Package Meta；`PACKAGE_META.json` �
 
   // 描述实际存在于当前 pikg 中的实体内容。
   "content_index": {
-    "chunk:sha256:...": {
-      "path": "chunks/chunk_sha256_...",
+    "sha256:...": {
+      "sub_pkg_name": "amd64_docker_image",
+      "path": "amd64_docker_image.tar.gz",
+      "format": "tar.gz",
       "size": 104857600,
       "digest": "sha256:..."
     }
@@ -414,6 +431,8 @@ App Document 仍然使用 Object ID 引用 Package Meta；`PACKAGE_META.json` �
 - `package_objects` 可以只包含 App Document 所引用 Package Meta 的子集；
 - key 必须与 value 的规范化内容哈希匹配；
 - `content_index` 只能声明包内实际存在的内容；
+- `content_index` 中的 `sub_pkg_name / path / format / size / digest` 必须与对应 Package Meta 的内容项一致；
+- 使用首选命名时，`path` 必须等于 `$sub_pkg_name.tar.gz`；示例中的 `amd64_docker_image` 对应 `amd64_docker_image.tar.gz`；
 - 路径必须是包内相对路径，不得包含目录穿越或外部绝对路径；
 - 未被当前安装目标使用的包内内容可以不加载；
 - Installer 不得仅因为对象位于 `.pikg` 内就跳过内容校验。
@@ -479,7 +498,7 @@ CONFIG_BLOCKED            安装参数、权限或运行条件尚未满足
 
 1. 本地已安装内容；
 2. 本地 Object Store / Chunk Cache；
-3. 当前 `.pikg` 的 `PACKAGE_META.json`、`objects/` 和 `chunks/`；
+3. 当前 `.pikg` 的 `PACKAGE_META.json`、根目录 `$sub_pkg_name.tar.gz`、`objects/` 和 `chunks/`；
 4. 标准 Named Object / Content Network；
 5. 配置的 Source、Registry、作者 OOD、分享者 OOD 或其他远程源。
 
@@ -920,7 +939,7 @@ Package Acquisition 应支持：
 - 无论从哪个 Source 下载，校验通过前不得进入 Deploy；
 - 如果对象 ID 与内容不一致，必须视为内容损坏或恶意替换；
 - `.pikg` 中的每一个索引条目必须与实际包内内容一致；
-- 对压缩内容，应明确 Digest 是针对压缩前还是压缩后字节计算，且不得混用；
+- 对 `$sub_pkg_name.tar.gz`，Digest 必须针对最终 `.tar.gz` 文件的压缩后字节计算，并与对应 Package Meta 及 `content_index` 同时匹配；其它压缩格式也必须在 Package Meta 中明确 hash 的计算对象，且不得混用；
 - 对流式安装，应在内容单元校验完成后才允许消费该单元。
 
 ---
@@ -1043,7 +1062,7 @@ Installer 必须防范：
     "cache_status": "ZoneHit"
   },
   "package_meta_ids": [
-    "obj:pkgmeta:win-x64:sha256:..."
+    "obj:pkgmeta:linux-amd64:sha256:..."
   ],
   "pikg_digest": "sha256:...",
   "userid": "did:bucky:user_id",
@@ -1165,16 +1184,16 @@ pub struct InclusionProof {
 
   "packages": [
     {
-      "name": "main-service",
-      "package_meta": "obj:pkgmeta:win-x64:sha256:...",
+      "name": "amd64_docker_image",
+      "package_meta": "obj:pkgmeta:linux-amd64:sha256:...",
       "selector": {
-        "os": "windows",
+        "os": "linux",
         "arch": "x86_64"
       },
       "required": true
     },
     {
-      "name": "main-service",
+      "name": "aarch64_docker_image",
       "package_meta": "obj:pkgmeta:linux-arm64:sha256:...",
       "selector": {
         "os": "linux",
@@ -1262,16 +1281,18 @@ pub struct InclusionProof {
 ```jsonc
 {
   "@schema": "buckyos.package.meta.v1",
-  "name": "main-service",
+  "name": "amd64_docker_image",
   "selector": {
-    "os": "windows",
+    "os": "linux",
     "arch": "x86_64"
   },
   "content": [
     {
-      "kind": "chunk",
-      "id": "chunk:sha256:...",
-      "size": 104857600
+      "kind": "archive",
+      "format": "tar.gz",
+      "path": "amd64_docker_image.tar.gz",
+      "size": 104857600,
+      "digest": "sha256:..."
     }
   ],
   "runtime": {
@@ -1280,6 +1301,8 @@ pub struct InclusionProof {
   }
 }
 ```
+
+`name = "amd64_docker_image"` 时，`pikg` 内首选文件名为 `amd64_docker_image.tar.gz`。Installer 必须对该文件最终压缩字节计算 SHA-256，并要求结果与 Package Meta 的 `content[].digest` 完全一致。
 
 ### 11.4 InstallPlan
 
@@ -1301,18 +1324,18 @@ pub struct InclusionProof {
   },
   "target": {
     "node": "did:dev:target",
-    "os": "windows",
+    "os": "linux",
     "arch": "x86_64"
   },
   "selected_package_meta_ids": [
-    "obj:pkgmeta:win-x64:sha256:..."
+    "obj:pkgmeta:linux-amd64:sha256:..."
   ],
   "required_content_ids": [
-    "chunk:sha256:..."
+    "sha256:..."
   ],
   "content_state": {
-    "local": ["chunk:sha256:..."],
-    "pikg": [],
+    "local": [],
+    "pikg": ["sha256:..."],
     "missing": []
   },
   "readiness": {
@@ -1459,7 +1482,8 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - ZIP64、Tar、CAR 或自定义随机访问格式的选择；
 - Header、版本号和 MIME Type；
 - 流式读取和断点续传支持；
-- 压缩算法与 Digest 计算对象；
+- `pikg` 外层容器的压缩算法与 Digest 计算对象；
+- 不能采用 `$sub_pkg_name.tar.gz` 的特殊 subpackage 格式及其 hash 规则；
 - 大模型和超大 Chunk 的外置引用规则；
 - 包级 Manifest 与 Packager Signature；
 - 加密包和私有授权内容。
