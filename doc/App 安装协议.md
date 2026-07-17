@@ -1,368 +1,1555 @@
+# BuckyOS App 安装协议规范（Draft v0.4）
 
-
-# BuckyOS App 安装协议规范 (Draft)
-
-## 1. 协议概述
-
-本协议旨在提供一套统一、去中心化的标准，允许（第三方）网页引导用户在 BuckyOS 上安装 App。协议涵盖了安装引导、多源下载、信任校验以及基于区块链的经济激励模型。
-
-**术语定义：**
-
-* **OOD (Owner Online Device):** 个人 AI 服务器 (Personal AI Server)，用户的核心计算节点。
-* **Curator:** 应用收录源/收录人。
-* **Referrer:** 推荐人/分享者。
+> 本版本在原有安装引导、多源下载、信任校验和经济模型基础上，引入 **App Document 统一入口**、**`resolve_did(App DID, "app")` 可信解析**、**分阶段安装流水线** 与 **Personal AI Package（`.pikg`）** 文件格式。
+>
+> 本协议中的 **MUST / 必须**、**SHOULD / 应当**、**MAY / 可以** 分别表示强制要求、推荐要求和可选能力。
 
 ---
 
-## 2. App 安装交互流程
+## 0. 本次修订摘要
 
-### 2.1 点击安装 (Web to Native)
+本次修订解决的核心问题是：原有流程把对象解析、网络下载、内容校验、配置确认和本地部署混合在一次“安装”操作中。对于成熟生态和稳定网络，这一流程可以工作；但对于早期生态、弱网络、开发者本地调试、高级用户以及 Agent 自主构建并安装应用的场景，外部依赖过多，失败边界不清晰，安装成功率和开发循环效率均不理想。
 
-此流程支持在任意第三方网页触发安装。
+本版本做出以下核心调整：
 
-* **入口**：网页放置 `安装 $APP_NAME` 按钮。
-* **交互逻辑**：
-1. 按钮指向统一的 HTTPS 中间页（Gateway Page）。
-2. **环境检测**：中间页尝试检测用户环境。
-* *<TODO: 补充具体的 JS 检测方案，例如通过尝试唤起 `cyfs://` 协议并监听 `blur` 事件或超时机制，以应对现代浏览器的隐私限制。>*
+1. **App Document 是安装流程的统一起点。** 名称、DID、Object ID、URL、分享对象和应用商店条目都只是取得 App Document 的不同入口。
+2. **引入 `.pikg` 文件格式。** `.pikg` 将 App Document、其引用的部分或全部 Package Meta，以及部分或全部实体内容组织为一个可携带、可校验、可离线安装的包。
+3. **将“下载”和“安装”明确分离。** 推荐流程由“点击安装后再逐步下载”调整为“先取得本地 `.pikg`，确认内容就绪，再进入实际部署”。
+4. **安装流程拆分为多个可恢复 Stage。** 每个 Stage 具有明确输入、输出、中间状态、失败原因和重试边界。
+5. **允许面向当前安装目标的部分包。** App Document 可以声明多个平台，但一个 `.pikg` 只需携带当前构建或分享场景所需的平台内容。
+6. **支持开发与 Agent 自构建短路路径。** 对本地、自有、明确授权的开发包，可以跳过公开发行场景中的部分外部信任和网络解析步骤，但不能跳过基础安全与内容一致性检查。
+7. **DID 解析按 `(did, doc_type)` 执行。** App 的解析单元固定为 `(App DID, "app")`；包、URL、应用商店和分享渠道只提供候选 body 或内容下载位置，不能自行取得 DID method 的发布权威地位。
+8. **分离签字权与发布权。** App Document 签名证明 owner 授权构造了该内容，权威发布状态证明该内容已经公开生效；已签名但未发布的候选不能覆盖已发布结果或撤销状态。
+9. **交付格式统一命名为 `pikg`。** 文件扩展名固定为 `.pikg`，避免被误读为 Python `pip` 包或重量单位组合。
 
+---
 
-3. **分支处理**：
-* **未安装 BuckyOS**：跳转至官方引导页 (`https://www.buckyos.ai/desktop/install.html`)。
-* **已安装 BuckyOS**：通过 URL Scheme 唤起本地 Desktop：
+## 1. 协议目标与设计原则
+
+### 1.1 协议目标
+
+本协议旨在提供一套统一、去中心化、对工程实践友好的 App 安装标准，使第三方网页、应用商店、好友分享、本地文件、开发工具和 Agent 均可引导用户在 BuckyOS 上安装 App。
+
+协议覆盖：
+
+- App 身份与 App Document 解析；
+- `.pikg` 文件交付；
+- 多源下载与本地缓存复用；
+- 内容完整性、签名与信任校验；
+- 安装参数收集、权限确认、部署与启动；
+- 分享、收录、推荐和应用商店聚合；
+- 支付、安装成功证明与生态激励；
+- 升级、回滚和生命周期管理。
+
+### 1.2 核心设计原则
+
+#### 1.2.1 App Document First
+
+安装流程从 App Document 开始。任何入口最终都必须归一化为 `(App DID, "app")` 的解析结果和一份与该结果一致的 App Document body。
+
+#### 1.2.2 Content Addressed
+
+Package Meta、Chunk 和其他对象继续使用 Object ID、Chunk ID 或 Digest 进行内容寻址。对象从哪个 Source 获得，不影响其身份与完整性判断。
+
+#### 1.2.3 Download Before Install
+
+网络获取、对象补齐和完整性校验应尽可能发生在实际部署事务之前。系统只有在当前安装目标所需内容和 DID 信任均已就绪后，才进入 Prepare、Deploy 和 Activate 阶段。
+
+#### 1.2.4 Offline First, Network Optional
+
+Installer 必须分别判断当前目标是否“内容离线就绪”和“DID 信任离线就绪”。若所需内容与可接受的解析证据已经存在于 Zone Resolver、本机 DID cache、Object Store、已安装内容或 `.pikg` 中，安装过程不应强制访问网络。
+
+#### 1.2.5 Stage Isolation
+
+解析、规划、获取、验证、准备、部署和启动应彼此隔离，允许持久化、恢复、重试和短路。
+
+#### 1.2.6 DID Resolution Is Method-scoped
+
+DID resolver-provider 由内核按 DID method 配置，每个 method 至多一个权威发布渠道，并按显式顺序查询少数补充源。App、`.pikg`、Source 或 Curator 不得动态注册 DID resolver-provider，也不得让其它 method 的结果覆盖目标 App DID。
+
+#### 1.2.7 Trust Is Contextual
+
+公开分发、本地开发、好友分享和自有应用不应强制使用完全相同的信任策略。系统应保留基础安全检查，同时根据来源和使用场景调整外部信任要求。
+
+### 1.3 术语定义
+
+- **OOD（Owner Online Device）**：个人 AI 服务器（Personal AI Server），用户的核心计算节点。
+- **App DID**：应用的逻辑名字；以 `doc_type = "app"` 解析其当前可信 App Document。`did:key`、`did:dev` 等 key 类 DID 不能作为 `resolve_did` 入参。
+- **App Document / APPDOC**：应用安装与运行的核心结构化描述文档。
+- **App Document Object ID**：某一不可变 App Document 内容或签名对象的内容寻址标识。
+- **doc_type**：同一个 DID 名字下独立发布的内容类型。App 安装协议使用固定值 `app`。
+- **Document Result（DR）**：DID resolver 已经给出回答；回答可以是文档，也可以是 `Missing`、`Revoked`、`Tombstoned` 等发布状态。
+- **unknown**：DID resolver 因断网、超时等原因没有得到回答；与权威源明确返回的 `Missing` 不同。
+- **expected_owner**：验证 App Document 时使用的 owner，只能来自 DID method 权威源的 owner 绑定或名字结构的确定性默认值，不能由候选文档自证。
+- **Package Meta**：描述某个 subpackage 的平台选择条件、实体内容、Chunk、依赖和启动信息的结构化对象。
+- **subpackage**：App 的一个可独立选择、下载或部署的内容单元，例如特定平台的服务包、Web 资源、模型或 Agent 资产。
+- **pikg**：Personal AI Package 的规范短名称，扩展名为 `.pikg` 的 App 交付文件。
+- **Curator**：应用收录源或收录人，为 App 提供收录证明、分类、评分或审查信息。
+- **Source**：提供 App Document、Package Meta、Chunk 或 `.pikg` 下载的内容源。
+- **Referrer**：推荐人或分享者。
+- **Builder**：构建特定平台 subpackage 的主体。
+- **Packager**：将 App Document 和相关内容组装为 `.pikg` 的主体。
+- **Installer**：负责检查安装包、生成安装计划、补齐内容并执行本地部署的系统组件。
+- **Object Store**：本地或网络中的内容寻址对象存储。
+
+---
+
+## 2. App Document：统一安装起点
+
+### 2.1 App Document 的地位
+
+现有入口可以只携带 App Object ID。该 Object ID 本质上只固定某个 App Document JSON 内容或签名对象，不能单独证明该内容是 App DID 当前已发布的结果。
+
+从协议语义看，真正驱动安装流程的不是某一种 URL、名称或分发渠道，而是 **App Document**：
+
 ```text
-cyfs://sys.current_zone/app/installer?method=install_app&url=$APP_META_JSON_URL&ref=$REFERRER_ID
-
+App Identifier
+    ↓ Normalize
+(App DID, doc_type = "app") + candidate body / package location
+    ↓ resolve_did + Fetch
+Resolved App Document
+    ↓ Inspect / Plan
+Required Packages and Permissions
+    ↓ Acquire / Verify
+Installable Content Set
+    ↓ Deploy / Activate
+Installed App
 ```
 
+### 2.2 App Document 与 DID
 
+App Document 作为需要验证的 Document，解析单元固定为：
 
+```text
+resolve_did(app_did, doc_type = "app")
+```
 
-4. **本地 UI**：Desktop 拉起 Native UI，解析 `$APP_META_JSON_URL` 展示 App 信息（图标、权限、评分），进入安装确认页。
+- App DID 表示逻辑应用身份；
+- `doc_type = "app"` 表示在该名字下解析 App Document，而不是默认的 `zone` 文档；
+- App Document Object ID 表示某一不可变 body；App Document 的 `version` 表示应用版本；resolver metadata 中的 `document_version` / W3C `versionId` 表示权威发布序号，三者不得混用；
+- 同一 App DID 可以随生命周期发布多个 App Document，但普通解析返回当前生效结果。安装历史版本应使用被明确固定且仍可验证为已发布集合成员的 Object ID 或版本解析能力，不能把版本标签拼进 App DID 后假定其天然可信；
+- 安装器必须记录 App DID、`doc_type`、实际安装的 App Document Object ID、发布版本和解析证据，不能只记录可变化的名称或应用版本字符串。
 
+App Document 的 body 可以来自权威渠道、`.pikg`、Object Store、URL、好友或应用商店，但 body 的来源不决定其可信度。DID resolver 按取回信道标注 `evidence`，并执行分层校验：
 
+```text
+所有 body：document.id == app_did
+Anchored body：权威源给出 doc_hash 时，body hash 与之相等
+NeedProof body：document.owner == expected_owner
+                ∧ hash 匹配（若有锚点）
+                ∧ 由 iat 时刻有效的 owner key 验签
+                ∧ 满足 owner document 的 revoke_before_iat 等策略
+```
 
-### 2.2 分享安装 (Social Distribution)
+验证 `NeedProof` body 的 owner 时递归调用 `resolve_did(expected_owner, "owner")`。Owner Document 是递归基，只接受 DID method 权威渠道或其明确锚定的结果。Installer 不得自行从 App Document 的 `owner` 字段建立信任链。
 
-利用社交网络进行裂变式传播。
+### 2.3 DID 解析结果与安装语义
 
-1. **链接分享 (HTTPS)**:
-* 格式：`https://sys.$USER_ZONE_HOST/share/share_app.html?id=$APP_OBJ_ID`
-* 机制：指向用户 OOD 的托管页面，集成上述“点击安装”逻辑。
-* *依赖：用户 OOD 在线且可公网访问。*
+`resolve_did_ex` 的对外结果应保留 W3C 风格的三段信息：`resolution_metadata`、`document` 和 `document_metadata`。Installer 使用的归一化结果至少包含：
 
+```text
+ResolvedAppDocument {
+    app_did,
+    doc_type: "app",
+    app_doc_object_id,
+    document,
+    resolution_metadata {
+        resolver_id, evidence, cache_status, verification_status, warnings, error
+    },
+    document_metadata {
+        version_id,
+        buckyos { doc_type, document_status, document_version, authority_seq }
+    },
+    expected_owner,         // 来自权威 owner 绑定或名字结构，不来自候选 body
+    acquisition_context
+}
+```
 
-2. **二维码分享**:
-* 内容：上述链接的 QR Code 编码。
+Installer 必须区分以下结果：
 
+| 解析结果 | 安装语义 |
+|---|---|
+| `Active` / 已锚定 | 权威信道 body 校验 `id` 和 `doc_hash` 后可以进入 Inspect；来自补充信道或包内的 `NeedProof` body 还必须完成 expected-owner 与签名验证。 |
+| `Missing` | 权威源明确表示该 `(did, "app")` 从未发布；只有策略明确允许时，已验证的自签名候选才可进入本地开发或降级流程。 |
+| `Expired` | 权威源明确表示发布结果已过期；与 `Missing` 一样，只有策略明确允许且重新完成 owner 验证的候选才可降级使用，不得当作网络 `unknown`。 |
+| `Revoked` / `Tombstoned` | 终止安装或升级，清除正缓存；不得回退到旧包、旧 cache 或好友提供的候选。 |
+| `Migrated` | 仅按 resolver 返回的 `migration_target` 继续解析，并向用户展示身份迁移；不得把跨 method 弱别名当作同一身份。 |
+| `unknown` | 表示本次没有得到权威回答；优先使用未作废的已验证 cache。宽松策略下的观察候选必须以 `evidence = NeedProof`、`cache_status = ObservedFallback` 和未通过的 `verification_status` 明确标记，公开安装默认拒绝。 |
+| `LocalAuthorityOverride` | 仅限带 scope 的 Zone / 本机开发测试旁路；UI、日志和安装记录必须显示警告，不得导出为普通发布结果。 |
 
-3. **纯文本/短码分享**:
-* 内容：包含 `APP_META_JSON` 关键信息的压缩文本或 JSON 字符串。
-* 操作：用户打开 BuckyOS Desktop -> “添加 App” -> 粘贴文本 -> 解析并安装。
-* *优势：不依赖分享者的 OOD 在线状态，依赖官方 Source 或 P2P 网络。*
+`Missing` 是回答，`unknown` 是没有回答，二者不得共享同一个“未找到”错误码或相同 fallback。
 
+### 2.4 App Document body 的获取方式
 
-4. **对象投递 (Inbox Push)**:
-* 机制：基于 CYFS Content Network 的 `ActionObject` 投递。不依赖微信/Telegram 等传统信道。
-* **对象定义 (Recommend Action)**:
-```json
+系统可以通过多种方式取得 App Document，包括但不限于：
+
+- App DID；
+- App 名称或 BNS 名称；
+- App Document Object ID；
+- App Document URL；
+- `.pikg` 内置的 `APPDOC.wt` 或 `APPDOC.json`；
+- 应用商店或订阅 Source；
+- Inclusion Proof 中引用的内容对象；
+- 好友分享、二维码、短码或 Inbox ActionObject；
+- 本地开发目录、构建工具或 Agent 生成结果；
+- 本地 Object Store 或历史安装记录。
+
+除 App DID / BNS 名称外，其余入口取得的 App Document 都先视为候选 body。若权威解析只返回 `Active + doc_hash`，任意 Source 提供的匹配 body 均可补齐内容；若权威结果已是 `Revoked` / `Tombstoned`，任何 Source 都不能恢复该 body 的安装资格。
+
+### 2.5 Installer 的两类标准输入
+
+Installer 至少应支持两类逻辑入口。
+
+#### 2.5.1 标识符入口
+
+```text
+install_app(identifier, referrer?, options?)
+```
+
+`identifier` 可以是 App DID、名称、Object ID、URL 或分享对象。系统必须归一化出 App DID 和候选 body / 包位置，再对 `(App DID, "app")` 执行标准解析。若 URL、Object ID 或分享对象本身不携带 App DID，可以先执行不产生安装副作用的最小 Acquisition，读取 Manifest / App Document 以提取 App DID；在可信 Resolve 完成前不得进入 Inspect 或 Deploy。
+
+#### 2.5.2 本地包入口
+
+```text
+install_package(local_pikg_path, options?)
+```
+
+Installer 直接检查本地 `.pikg`。该入口的内容校验始终可以离线执行；只有当 Zone Resolver / 本机 DID cache 已持有可接受的解析结果，或用户显式启用带警告的本地开发覆盖时，才可以在不访问网络的情况下同时完成 DID 信任校验并进入 Deploy。
+
+---
+
+## 3. 分阶段安装流水线
+
+### 3.1 原有流程的问题
+
+一个完整 App 可能包含多个 subpackage，并引用大量结构化对象与非结构化内容。传统流程通常需要：
+
+1. 解析 App Document；
+2. 展开 subpackage 和依赖；
+3. 从不同位置获取 Package Meta；
+4. 下载容器镜像、静态资源、模型、Prompt、配置或 Chunk；
+5. 校验所有对象；
+6. 等待内容全部 ready；
+7. 准备运行环境；
+8. 执行安装与启动。
+
+当这些步骤被绑定在一个单体“安装”事务内时，任意网络源、DID 解析、Registry、作者 OOD 或分享者 OOD 暂时不可用，都可能表现为“安装失败”。这对开发循环、Agent 自构建、早期生态和弱网络场景尤其不利。
+
+### 3.2 标准 Stage
+
+安装实现应至少拆分为以下 Stage：
+
+| Stage | 名称 | 主要输入 | 主要输出 |
+|---|---|---|---|
+| 1 | Resolve | 名称、DID、Object ID、URL 或 `.pikg` | `(App DID, "app")` 的 `ResolvedAppDocument`，含状态、证据和 warning |
+| 2 | Inspect | App Document、目标设备和用户选项 | `InstallPlan`、权限摘要、缺失内容清单 |
+| 3 | Acquire | 缺失对象清单、Source 列表、本地包 | `AcquiredContentSet` |
+| 4 | Verify | `ResolvedAppDocument`、Package Meta、Chunk、包级签名 | `VerificationReport` |
+| 5 | Prepare | 已验证内容、安装参数、目标 Node | `PreparedDeployment` |
+| 6 | Deploy | PreparedDeployment | 已部署文件、容器、配置和服务注册 |
+| 7 | Activate | 已部署应用 | 运行状态、健康检查和安装成功证明 |
+
+### 3.3 Stage 隔离要求
+
+每个 Stage 应当具备：
+
+- 明确的输入和输出；
+- 可持久化的中间状态；
+- 可重复执行或幂等处理能力；
+- 独立错误码和用户可理解的失败原因；
+- 对已满足依赖的识别能力；
+- 从上次成功 Stage 恢复的能力；
+- 对本地缓存、`.pikg` 和网络 Source 的可替换解析策略；
+- 取消操作和资源清理策略。
+
+Resolve Stage 负责 DID 身份、发布状态和 owner 信任链；Verify Stage 负责 App Document Object ID、Package Meta、Chunk、包结构以及可选 Packager Signature。Verify 不得用“文件签名有效”重新解释或覆盖 Resolve 已得到的发布状态。
+
+实际部署事务的开始点应位于内容获取和验证完成之后：
+
+```text
+Resolve → Inspect → Acquire → Verify
+                         ↓ all ready
+                   Prepare → Deploy → Activate
+```
+
+### 3.4 短路路径
+
+#### 3.4.1 完整离线包
+
+```text
+Local pikg
+    ↓ Resolve + Inspect
+Content Ready + Trust Ready
+    ↓ Verify
+Prepare → Deploy → Activate
+```
+
+仅在本地已有可接受的 DID 解析证据时跳过网络 Acquire。包内内容完整但信任链不可用时，应报告 `TRUST_RESOLUTION_REQUIRED`，不能把“无需下载内容”展示成“可安全离线安装”。
+
+#### 3.4.2 已安装内容或本地缓存复用
+
+如果 App Document 引用的 Package Meta、Chunk 或等价内容已经存在且校验通过，Installer 必须直接复用，不得重复下载。
+
+#### 3.4.3 本地开发与 Agent 自构建
+
+```text
+Build App
+    ↓ Generate APPDOC and Package Meta
+Pack Local pikg
+    ↓ Zone cache / LocalAuthorityOverride（显式 scope + warning）
+Local Inspect / Required Verification
+    ↓
+Deploy → Activate → Test
+```
+
+该路径可以不依赖公共 Source、应用商店、外部 Curator、作者 OOD 或链上证明，但不能把开发候选伪装成公开已发布结果。优先使用 Zone Resolver 的 cluster 级开发覆盖；单机测试才使用本机 `LocalAuthorityOverride`。覆盖必须带 scope、不可合并、不可导出，并在测试完成后由真正的权威发布替代。
+
+#### 3.4.4 好友分享
+
+分享方可以发送包含 App Document、当前目标 Package Meta 和实体内容的 `.pikg`。接收方只补齐本地和包内均不存在的内容，从而提高离线或半离线安装成功率。
+
+---
+
+## 4. Personal AI Package（pikg）文件格式
+
+### 4.1 定位
+
+`pikg` 是 Personal AI Package 的规范短名称，文件扩展名为：
+
+```text
+.pikg
+```
+
+它是 BuckyOS App 的标准交付与本地安装载体，其逻辑内容为：
+
+```text
+pikg
+= App Document
++ bundled Package Meta entries
++ bundled structured objects
++ bundled unstructured content / chunks
++ optional transport and install auxiliary metadata
+```
+
+`pikg` 不替代 DID、Named Object 或 Chunk 体系，而是把一次交付所需的对象组织到同一个可携带文件中。包内内容仍然通过 Object ID、Chunk ID 或 Digest 独立验证。
+
+名称 `pikg` 应作为一个完整单词读取，不拆分解释为 Python `pip` 包或其它计量单位组合。协议字段、Object ID 前缀、Schema、URL 参数和文件关联都必须使用同一名称。
+
+### 4.2 逻辑目录结构
+
+本版本先定义逻辑条目，具体归档、压缩、随机访问和流式编码方式在后续版本中固定。
+
+推荐逻辑结构：
+
+```text
+example.pikg
+├── APPDOC.wt                 # 已签名 App Document，可选
+├── APPDOC.json               # 未签名 App Document，可选
+├── PACKAGE_META.json         # 包内 Package Meta 与内容索引
+├── objects/                  # 其他可选结构化对象
+│   └── <object-id>.json
+├── chunks/                   # 内容寻址 Chunk 或二进制 Blob
+│   └── <chunk-id>
+└── assets/                   # 可选的人类可读辅助资源
+    └── ...
+```
+
+一个合法 `.pikg` 必须至少包含 `APPDOC.wt` 或 `APPDOC.json` 之一。
+
+### 4.3 APPDOC.wt 与 APPDOC.json
+
+- `APPDOC.wt`：签名封装版本，签名与编码规则遵循 BuckyOS DID Document Resolve 约定；
+- `APPDOC.json`：未签名或开发态 JSON 版本；
+- 若两者同时存在，Installer 必须验证二者表达的规范化 App Document 一致；默认优先采用验证通过的签名版本；
+- `.pikg` 中的 App Document 只是一份候选 body，不因位于包内、带有签名或由可信 Source 下载就自动成为已发布结果；
+- `APPDOC.wt` 的签名只证明 owner 授权构造了该 body。公开安装还必须通过 `(App DID, "app")` 的发布状态、`expected_owner`、`doc_hash` 和 owner policy 校验；
+- 权威源返回 `Active + doc_hash` 时，匹配该 hash 的包内 body 可以补齐权威结果；权威源返回 `Revoked` / `Tombstoned` 时必须拒绝包内 body；
+- 未签名 App Document 不等于格式非法，但只能在 `LOCAL_DEVELOPER` / `SYSTEM_INTERNAL` 等明确策略和本地认证上下文中安装，并必须标记为未发布或本地覆盖。
+
+### 4.4 PACKAGE_META.json
+
+`PACKAGE_META.json` 用于集中携带当前 `.pikg` 所包含的 Package Meta 对象和实体内容索引。
+
+App Document 仍然使用 Object ID 引用 Package Meta；`PACKAGE_META.json` 只是在传输层将其中部分或全部对象内置到包中。
+
+示例：
+
+```jsonc
 {
-    "objid": "app_pkg_id",
-    "userid": "did:bucky:sender_id",
-    "device_id": "did:dev:xxx",
-    "action": "recommend", // 修正了拼写 recommand
-    "iat": 1769990599,
-    "exp": 1801094599,
-    "score": 5, // 推荐指数
-    "details": {
-        "comment": "这个App很好用，推荐给你"
+  "@schema": "buckyos.pikg.package-meta.v1",
+  "app_doc_id": "obj:appdoc:sha256:...",
+
+  // key 是 App Document 中引用的 Package Meta Object ID；
+  // value 必须按该对象的规范化规则重新计算并验证 Object ID。
+  "package_objects": {
+    "obj:pkgmeta:win-x64:sha256:...": {
+      "name": "main-service",
+      "selector": {
+        "os": "windows",
+        "arch": "x86_64"
+      },
+      "content": [
+        {
+          "kind": "chunk",
+          "id": "chunk:sha256:...",
+          "size": 104857600
+        }
+      ]
     }
-}
+  },
 
-```
-
-
-* 体验：目标用户在“消息/分享给我的”列表中看到卡片，一键安装。
-
-
-
-### 2.3 内置应用商店安装
-
-* **访问方式**：BuckyOS Desktop 内置或浏览器访问（需登录）。
-* **数据聚合**：内容 = `用户自管理 APP_META_JSON` + `订阅的应用源 (Source List)`。
-* **去重策略**：应用商店前端负责对多源的同一 App 进行聚合去重展示。
-* **记录同步**：凡是触发过“安装”行为的 App（无论成功与否），都会记录在用户的自管理 Meta 列表中，方便后续找回或重试。
-
----
-
-## 3. 分发与下载机制 (Distribution)
-
-### 3.1 App Meta 解析与下载
-
-* **第一步**：获取并解析 `APP_META_JSON`。
-* **第二步**：实体下载。为减轻单点压力，采用 **多源回退 (Fallback)** 策略：
-1. **公共 Docker 源** (如 docker.io)。
-2. **可验证下载源** (Meta 中配置的 URL，如 GitHub Releases)。
-3. **App 源服务器** (Source OOD)。
-4. **分享源** (P2P，从分享者的 OOD 下载)。
-5. **App 作者 OOD**。
-
-
-
-### 3.2 完整性校验
-
-* **版本锁定**：`APP_META_JSON` 必须包含特定版本的哈希校验值 (Digest/Checksum)。
-* **校验流程**：无论从哪个源下载，系统在通过校验前不会执行安装。
-* *<TODO: 明确 Meta JSON 中存储 Hash 的字段标准，例如 `digest: "sha256:xxxx"`。>*
-
-
-
----
-
-## 4. 信任与安全机制 (Trust)
-
-### 4.1 信任分级体系
-
-1. **作者信任 (Author Trust)**:
-* 基于 DID 的可信发行者认证。
-* **社交信任**：通过“联系人组”机制，如果作者是用户的好友（或好友的好友），信任度提升。
-* **第三方信用机构**：BuckyOS 支持接入多个信用查询 Oracle。
-
-
-2. **收录源信任 (Curator Trust)**:
-* 若 App 被高信誉的 Source (如 GitPot) 收录，继承该 Source 的背书。
-* `AppMetaJson` 本身如果是被签名的收录证明，包含 `rank (0-100)` 评分。
-
-
-3. **来源信任 (Referrer Trust)**:
-* 区分 **Referrer** (谁推荐给我的) 和 **Curator** (谁收录了这个 App)。好友推荐的 App 会有更高的 UI 提示优先级。
-
-
-
-### 4.2 用户干预
-
-* 用户可在系统面板手动调整对特定 **Author**、**Source** 或 **Referrer** 的信任等级（白名单/黑名单）。
-
----
-
-## 5. 经济模型 (Economics)
-
-### 5.1 利益原点：安装成功证明
-
-`用户安装 App 成功` 是生态产生价值的核心事件。系统自动生成证明并分发给利益相关方。
-
-**安装证明 (JWT)**:
-
-```json
-{
-    "action": "installed",
-    "objid": "app_pkg_id_ver_1.0",
-    "userid": "did:bucky:user_id",
-    "device_id": "did:dev:device_id",
-    "iat": 1769990599, // 安装时间
-    "exp": 1801094599, 
-    "details": {
-        "referrer": "did:bucky:referrer_id", // 谁分享的
-        "curator": "did:web:gitpot.ai"       // 哪个源收录的
+  // 描述实际存在于当前 pikg 中的实体内容。
+  "content_index": {
+    "chunk:sha256:...": {
+      "path": "chunks/chunk_sha256_...",
+      "size": 104857600,
+      "digest": "sha256:..."
     }
+  }
 }
-
 ```
 
-### 5.2 购买与支付
+要求：
 
-1. **购买对象**：通常购买 App 的特定版本或系列 (Version Range)。
-2. **购买证明 (Receipt)**:
-```json
-{
-    "action": "purchased", // 修正了拼写 puared
-    "objid": "app_pkg_id",
-    "buyer": "did:bucky:user_id",
-    "tx_hash": "0x......"
-}
+- `package_objects` 可以只包含 App Document 所引用 Package Meta 的子集；
+- key 必须与 value 的规范化内容哈希匹配；
+- `content_index` 只能声明包内实际存在的内容；
+- 路径必须是包内相对路径，不得包含目录穿越或外部绝对路径；
+- 未被当前安装目标使用的包内内容可以不加载；
+- Installer 不得仅因为对象位于 `.pikg` 内就跳过内容校验。
 
+### 4.5 部分包与目标完备性
+
+一个 App Document 可以声明多个平台和多个 subpackage，但一个 `.pikg` 不要求包含全部平台资源。
+
+例如：
+
+```text
+App Document 声明：
+- windows-x86_64
+- linux-x86_64
+- linux-aarch64
+
+当前 pikg 携带：
+- windows-x86_64
 ```
 
+该包在 Windows x86_64 上可以是完整离线包，在 Linux ARM64 上则可能需要联网补齐，或者直接判定当前平台不可用。
 
+因此协议区分：
 
-#### 支付模式
+- **Document Syntax Validity**：App Document 的 schema、编码、`id` 和 Object ID 是否一致；
+- **DID Trust Readiness**：本地是否已有可接受的发布状态、owner 绑定/结构约束、owner document 和验证证据；
+- **Package Integrity**：`.pikg` 中声明存在的对象是否完整且校验通过；
+- **Content Readiness**：针对当前设备、安装选项和目标 Node，全部必需内容是否已存在；
+- **Install Readiness**：DID Trust Readiness、Package Integrity、Content Readiness 和配置条件是否同时满足；
+- **Full Ecosystem Completeness**：是否包含 App Document 声明的所有平台和可选组件。该属性不是普通安装的必要条件。
 
-* **传统付费**：通过应用源的网关支付（法币/信用卡）。源负责结算给作者。
-* **USDB 付费 (Web3 Native)**：
-* 前提：作者拥有标准 OOD。
-* 流程：调用 BDT 标准支付合约。
-* 分账：合约自动按比例 (`revenue_split`) 实时分账给 `Author`、`Source`、`Referrer`。
+### 4.6 Offline Ready 判定
 
+Installer 在不访问网络的情况下，基于以下信息生成当前目标的就绪结论：
 
-* **HTTP 402**：支持作者自定义付费网关。
-* *<TODO: 补充 BuckyOS 对 HTTP 402 响应的标准处理流程 UI。>*
+- 当前操作系统与 CPU 架构；
+- 目标 BuckyOS Node 和 Kernel 版本；
+- 用户选择的功能、安装参数和可选组件；
+- 本地已安装内容；
+- Zone Resolver / 本机 DID cache 中 `(App DID, "app")` 与 owner document 的可用证据；
+- 本地 Object Store 和 Chunk Cache；
+- `.pikg` 中的 Package Meta 和实体内容。
 
+至少应输出以下状态之一：
 
+```text
+OFFLINE_READY             内容与 DID 信任均已离线就绪，可直接进入安装
+CONTENT_DOWNLOAD_REQUIRED 当前目标缺少内容，需要联网获取
+TRUST_RESOLUTION_REQUIRED 内容齐全，但缺少可接受的 DID/owner 解析证据
+IDENTITY_REVOKED           App Document 已 Revoked/Tombstoned，禁止 fallback
+UNSUPPORTED_TARGET        当前目标没有匹配的 package
+INVALID_PACKAGE           包结构、对象或内容校验失败
+CONFIG_BLOCKED            安装参数、权限或运行条件尚未满足
+```
 
-### 5.3 BDT (BuckyOS DAO Token) 激励
+“完整离线包”是相对于当前安装目标的动态结论，而不是 `.pikg` 的永久全局属性。`Content Readiness = true` 也不等于 `DID Trust Readiness = true`。
 
-**机制**：将“安装证明”提交给 BDT DAO 合约以“挖矿”。
-**释放曲线**：
+### 4.7 统一 Object Provider
 
-* **时间衰减**：早期安装奖励高，后期降低。
-* **长尾效应**：早期大应用奖励多，后期长尾应用保持固定基础奖励。
+通过 `.pikg` 安装时，Installer 仍然按 Object ID 请求对象，不建立第二套对象身份体系。
 
-### 5.4 风险管理与确权
+统一 Object Provider 的可用来源包括：
 
-* **兼容作者 (Ported Apps)**：
-* 早期由 Source 托管（作为兼容作者）。
-* **权益转移**：Source 必须公开“认领协议”。当真实作者出现并验证 DID 后，通过 BNS 转移机制移交控制权和收益。
-* **无主应用**：收益流入 BDT DAO 公共池。
+1. 本地已安装内容；
+2. 本地 Object Store / Chunk Cache；
+3. 当前 `.pikg` 的 `PACKAGE_META.json`、`objects/` 和 `chunks/`；
+4. 标准 Named Object / Content Network；
+5. 配置的 Source、Registry、作者 OOD、分享者 OOD 或其他远程源。
 
+逻辑要求是：
 
-* **负面行为防范**：
-* **防刷量**：*<TODO: 需要引入抗女巫攻击机制 (Anti-Sybil)，例如要求安装证明必须来自“活跃度”达标的 OOD，或结合 PoW/Staking 门槛。>*
-* **支付原子性**：解决“支付成功但下载失败”的问题（建议：资金托管模式，下载验证后释放资金，或通过其他 Source 补救下载）。
+```text
+resolve_object(object_id, policy, pikg_context?) -> verified object or missing
+```
 
+实现可以将 `.pikg` 注册为标准 Object Provider。为兼容现有实现，也可以在标准系统查询未命中后再尝试包内对象。处于明确离线模式时，Object Resolver MUST NOT 访问网络。
 
+这里的 Object Provider 只解决 `object_id → bytes`，与 `resolve_did(did, doc_type)` 的 DID resolver-provider 是两套不同机制。`.pikg`、App、Source 和 Curator 不得借此注册或替换 DID method 的权威渠道。
+
+### 4.8 Load 与 Import 分离
+
+从 `.pikg` 加载对象不等于必须导入本地公共 Object Store。
+
+Installer 应区分：
+
+```text
+load_from_pikg(object_id)     # 仅供当前安装事务使用
+import_to_object_store(object) # 写入本地可复用存储
+```
+
+导入策略可以由内容大小、隐私属性、缓存策略、用户设置和磁盘空间决定，但不得成为安装成功的强制前置条件。
+
+### 4.9 包级签名与角色
+
+App 作者、App Document Owner、Builder、Packager、Source 和 Referrer 可能是不同主体：
+
+- App Document 签名证明 `expected_owner` 的有效 key 授权构造了该 Document；它不单独证明该 Document 已公开发布；
+- DID method 的权威发布状态证明哪个 App Document 当前生效；签字权与发布权必须分别验证；
+- Package Meta / Chunk 的 Object ID 或签名证明具体内容身份；
+- 可选的整包签名证明谁组装了 `.pikg`，以及包文件在传输后是否被修改；
+- Source 的传输签名或 HTTPS 身份只证明下载来源，不替代内容寻址校验。
+
+后续版本可以增加独立的包级 Manifest 和 Packager Signature，但不能把包级签名错误地等同为原始作者签名。
 
 ---
 
-## 6. 核心数据结构定义
+## 5. Package Acquisition 与 Package Installation
 
-### 6.1 收录证明 (Inclusion Proof)
+### 5.1 两段式流程
 
-由 Curator 签名，证明该 App 已被收录。
+新的推荐流程将应用交付收束为两个边界清晰的阶段：
+
+```text
+阶段 A：Package Acquisition
+identifier / URL / share / store / local build
+                    ↓
+             local .pikg
+
+阶段 B：Package Installation
+local .pikg
+    ↓ inspect / configure / acquire missing / verify
+    ↓ prepare / deploy / activate
+installed app
+```
+
+### 5.2 阶段 A：Package Acquisition
+
+目标是把一个可打开的 `.pikg` 放到 Installer 可以访问的本地路径或本地受控 Staging Area。
+
+输入可以是：
+
+- App DID、名称或 Object ID；
+- App Document URL；
+- `.pikg` URL 或 `.pikg` Object ID；
+- 应用商店条目；
+- 好友分享、P2P 对象、二维码或短码；
+- 本地文件；
+- 开发构建输出。
+
+该阶段负责：
+
+- 归一化 App 名称 / DID，并显式以 `doc_type = "app"` 执行 DID 解析；
+- 对不直接携带 App DID 的包或 URL，先只获取足以提取 App DID 和候选 body 的最小内容，再进入可信解析；
+- 保留 `document_status`、`evidence`、`verification_status`、`cache_status`、`expected_owner` 与 warning，区分 `Missing`、负状态和 `unknown`；
+- Source 选择和回退；
+- 文件下载、P2P 获取、断点续传和重试；
+- 传输层完整性检查；
+- 基础包结构检查；
+- 将最终文件原子化放入本地 Staging Area；
+- 输出稳定的本地包句柄或路径。
+
+下载失败应报告为 Acquisition 失败，而不应混淆为 Deploy 或 Activate 失败。
+
+### 5.3 阶段 B：Package Installation
+
+该阶段从本地 `.pikg` 开始，负责：
+
+1. 读取 App Document；
+2. 将包内 body 与 Resolve Stage 的 App DID、发布状态、`doc_hash`、`expected_owner` 和 owner policy 对齐，并验证内容身份；
+3. 根据目标设备生成 InstallPlan；
+4. 展示应用、权限、来源和离线就绪状态；
+5. 收集安装参数；
+6. 获取并验证当前目标仍缺失的内容；
+7. 准备目录、配置、容器、网络和服务；
+8. 部署；
+9. 启动和健康检查；
+10. 记录安装状态并生成安装成功证明。
+
+只有当必需内容已全部就绪，且 DID 发布/owner 证据与所有内容验证均通过后，系统才应进入实际 Deploy 阶段。
+
+### 5.4 先下载再安装
+
+旧流程常表现为：
+
+```text
+点击安装 → 进入安装 → 逐步下载 → 下载失败 → 安装失败
+```
+
+新流程应表现为：
+
+```text
+取得本地 pikg → 检查并补齐内容/信任证据 → Content + Trust Ready → 执行安装
+```
+
+即使 UI 仍提供一个“一键安装”按钮，内部状态也必须清楚区分：
+
+```text
+ACQUIRING / VERIFYING ≠ INSTALLING / DEPLOYING
+```
+
+### 5.5 安装事务状态示例
+
+```text
+NEW
+  ↓
+RESOLVED
+  ↓
+TRUST_READY
+  ↓
+INSPECTED
+  ↓
+WAITING_FOR_CONFIG
+  ↓
+ACQUIRING_CONTENT          # 可选
+  ↓
+VERIFIED
+  ↓
+PREPARED
+  ↓
+DEPLOYING
+  ↓
+ACTIVATING
+  ↓
+INSTALLED
+```
+
+若 Resolve 得到 `unknown` 且本地没有策略允许的已验证缓存，事务应进入 `WAITING_FOR_TRUST_RESOLUTION`；若得到 `Revoked` / `Tombstoned`，事务应进入不可重试的 `IDENTITY_REVOKED`，除非 DID method 权威源之后发布了新的状态。
+
+任何失败状态应保存：
+
+- 失败 Stage；
+- 错误码；
+- 可重试性；
+- 已完成的内容；
+- 用户可执行的修复动作。
+
+---
+
+## 6. 安装交互流程
+
+### 6.1 打开本地 pikg
+
+操作系统或 BuckyOS Desktop 应将 `.pikg` 文件关联到 Installer。
+
+打开后，Installer 首先完成包结构检查和目标就绪分析，不应立即写入系统目录或启动容器。
+
+### 6.2 标准三步 UI
+
+#### 第一步：应用信息与就绪状态
+
+展示：
+
+- App 名称、图标、版本和描述；
+- App DID、`doc_type = "app"`、App Document Object ID 和发布版本；
+- Author、Owner、Builder、Packager、Source 和 Referrer；
+- DID 发布状态、body 证据等级、签名验证结果、cache 状态、resolver warning、Curator 背书和信任提示；
+- 权限摘要；
+- 当前目标平台支持情况；
+- 是否完全离线就绪；
+- 缺失对象、预计下载量和可用 Source；
+- 可能的费用与授权要求。
+
+典型提示：
+
+```text
+该包已包含当前设备所需的全部内容，本地 DID cache 也包含可接受的发布与 owner 证据，无需网络即可安装。
+```
+
+或：
+
+```text
+该包已包含全部应用内容，但缺少可接受的 App DID/owner 解析证据。联网完成信任解析后才可安装。
+```
+
+#### 第二步：安装参数与权限确认
+
+App Document 应提供足够的参数定义，使用户在大体积下载或部署前确定：
+
+- 目标 Node；
+- 安装组件；
+- 数据目录和持久化策略；
+- 服务端口、域名和公开访问方式；
+- 开机启动；
+- 模型或 Runtime 选择；
+- 文件、网络、系统和设备权限；
+- 可选功能与资源配额。
+
+参数确认后，Installer 生成稳定的 `InstallPlan`。如果参数变化会改变 package selector，必须重新计算 Content Readiness 和 Install Readiness。
+
+#### 第三步：内容获取与安装
+
+- `OFFLINE_READY`：内容和 DID 信任均已就绪，跳过网络 Acquire，直接验证并进入 Prepare；
+- `CONTENT_DOWNLOAD_REQUIRED`：先下载和校验缺失内容；全部成功后再进入 Prepare；
+- `TRUST_RESOLUTION_REQUIRED`：内容已齐全，但必须先取得可接受的 DID 发布状态和 owner 证据；
+- `IDENTITY_REVOKED`：禁止安装，不得提供“仍使用包内版本”或旧 cache 的绕过入口；
+- 安装完成后执行健康检查，并明确区分“已部署但启动失败”和“安装成功”。
+
+### 6.3 点击安装（Web to Native）
+
+第三方网页可以放置“安装 App”按钮。
+
+推荐入口：
+
+```text
+cyfs://sys.current_zone/app/installer
+    ?method=install_app
+    &identifier=$ENCODED_APP_IDENTIFIER
+    &ref=$REFERRER_ID
+```
+
+`identifier` 可以是 App DID、App Document Object ID、App Document URL 或 `.pikg` URL。
+
+流程：
+
+1. HTTPS Gateway Page 尝试唤起 BuckyOS Desktop；
+2. 未安装 BuckyOS 时，跳转官方安装引导页；
+3. 已安装时，Desktop 接收 `identifier`；
+4. 系统归一化 App DID；必要时先获取最小 Manifest / App Document，再执行 `(App DID, "app")` 解析和剩余 Package Acquisition，将 `.pikg` 放入本地 Staging Area；
+5. Acquisition 成功后打开标准安装 UI；
+6. 用户在 UI 中看到包是否离线就绪、是否仍需补充内容以及实际安装风险。
+
+旧参数 `url=$APP_META_JSON_URL` 可以作为兼容入口，但内部必须转换为统一 `identifier` 和 App Document 解析流程。
+
+> TODO：补充现代浏览器环境下 URL Scheme 唤起检测方案，包括用户手势、超时、页面可见性和隐私限制处理。
+
+### 6.4 开发者与 Agent 自构建流程
+
+推荐开发工具链：
+
+```text
+source / prompt / config
+        ↓ build
+subpackage content
+        ↓ generate
+Package Meta objects
+        ↓ generate
+APPDOC.json or APPDOC.wt
+        ↓ pack
+local app.pikg
+        ↓ install_package
+run / test / iterate
+```
+
+构建产物一旦位于本地，Installer 可以在显式开发上下文中直接进入 Inspect，不依赖公共网络和公开发布流程。此时必须使用 Zone Resolver 开发覆盖或本机 `LocalAuthorityOverride`，或把结果明确标记为未发布候选；不能伪装成公开 `Active`。
+
+开发安装模式可以：
+
+- 接受未签名 `APPDOC.json`；
+- 跳过 App Store 收录、Curator 证明和外部信用查询；
+- 不要求先发布到公共 DID 或 Source；
+- 复用本地构建目录和 Chunk Cache；
+- 支持重复安装、覆盖部署或快速更新。
+
+Zone 级开发应优先使用 Zone Resolver cache 注入 `(App DID, "app")` 的完整解析结果；单机、CI 或无 Zone Resolver 环境才使用本机覆盖。本机覆盖必须带 `machine / test-env / CI` scope、`LocalAuthorityOverride` warning，且不得合并进普通 cache 或向外同步。
+
+但以下检查不得被跳过：
+
+- JSON、对象和路径结构合法性；
+- App Document 的 `id == App DID`，以及开发上下文声明的 owner 约束；
+- Package Meta 与 Object ID 一致性；
+- Chunk / 文件 Digest；
+- 目标平台与 Runtime 兼容性；
+- 权限声明与危险系统操作提示；
+- 目录穿越、符号链接逃逸和非授权宿主路径访问；
+- 安装事务的失败回滚边界。
+
+“开发者就是当前用户”必须由本地认证会话、可信构建上下文、有效签名或用户明确开启的开发模式确认，不能只相信未签名 JSON 中自称的 `owner` 字段。
+
+---
+
+## 7. 分享与应用商店
+
+### 7.1 HTTPS 链接分享
+
+兼容格式：
+
+```text
+https://sys.$USER_ZONE_HOST/share/share_app.html?id=$APP_OBJ_ID
+```
+
+推荐扩展为可表达不同目标类型：
+
+```text
+https://sys.$USER_ZONE_HOST/share/share_app.html
+    ?type=app_doc|pikg
+    &id=$OBJECT_ID
+    &ref=$REFERRER_ID
+```
+
+分享页负责调用 Gateway / URL Scheme，并尽量先完成 `.pikg` Acquisition。
+
+### 7.2 文件分享
+
+好友可以直接通过局域网、移动存储、聊天工具或 P2P 发送 `.pikg` 文件。只要当前目标需要的内容已经包含在包内或本地缓存中，接收方不依赖分享者 OOD 在线即可安装。
+
+这是提高“离线成功率”的首选方式。
+
+### 7.3 二维码分享
+
+二维码可以编码：
+
+- HTTPS 分享链接；
+- App DID 或 App Document Object ID；
+- `.pikg` Object ID / 下载描述；
+- 有长度限制的短码。
+
+二维码本身通常不携带完整 `.pikg` 实体内容，除非应用非常小并采用专门的多码传输方案。
+
+### 7.4 纯文本或短码分享
+
+文本内容可以表示：
+
+```text
+bucky-app:<app-did-or-object-id>
+```
+
+或包含最小 Acquisition Descriptor。Desktop 的“添加 App”入口解析后，先取得 `.pikg`，再进入安装。
+
+### 7.5 对象投递（Inbox Push）
+
+基于 CYFS Content Network 投递推荐 ActionObject，不依赖传统社交信道。
+
+建议结构：
+
+```jsonc
+{
+  "action": "recommend",
+  "userid": "did:bucky:sender_id",
+  "device_id": "did:dev:xxx",
+  "iat": 1769990599,
+  "exp": 1801094599,
+  "target": {
+    "type": "app_doc",
+    "id": "obj:appdoc:sha256:..."
+  },
+  "score": 5,
+  "details": {
+    "comment": "这个 App 很好用，推荐给你",
+    "pikg": {
+      "id": "obj:pikg:sha256:...",
+      "url": "https://example.com/app.pikg"
+    }
+  }
+}
+```
+
+接收方在“消息 / 分享给我的”列表中看到卡片，先查看来源、包就绪状态和权限，再决定获取或安装。
+
+### 7.6 内置应用商店
+
+- 内容聚合：用户自管理 App Document + 订阅 Source List + Curator Inclusion Proof；
+- 去重：按 App DID 聚合同一逻辑应用，按 App Document Object ID 区分具体版本；
+- 可信解析：商店条目和 Inclusion Proof 只提供候选 App DID、body 和获取位置；安装前仍必须对 `(App DID, "app")` 执行标准解析；
+- 变体：同一 App Document 可以对应多个平台或内容覆盖范围不同的 `.pikg`；
+- 获取：应用商店应优先完成 `.pikg` Acquisition，再交给 Installer；
+- 历史：凡触发过获取或安装的 App，都可以记录到用户自管理列表，标明取得、检查、下载、安装和启动的分别状态；
+- 重试：下载失败只重试 Acquisition；部署失败只重试对应安装 Stage。
+
+---
+
+## 8. 分发、多源下载与完整性
+
+### 8.1 分发对象层次
+
+BuckyOS App 分发至少包含三层：
+
+```text
+App DID / Name
+    ↓ resolve_did(doc_type = "app")
+Trusted App Document + resolution metadata
+    ↓ references
+Package Meta Objects
+    ↓ references
+Chunks / Images / Static Assets / Models / Prompts
+```
+
+`.pikg` 是以上对象的一种本地聚合交付形式，不改变各对象的逻辑身份。
+
+### 8.2 多源回退
+
+远程获取可以使用以下 Source：
+
+1. 本地 Object Store 和已安装内容；
+2. 当前 `.pikg`；
+3. 公共容器或制品源；
+4. App Document 中声明的可验证 URL，例如 GitHub Releases；
+5. Curator / App Source 服务器；
+6. 分享者 OOD 或 P2P Source；
+7. App 作者或 Owner OOD；
+8. 用户配置的镜像源。
+
+具体优先级可以由网络策略、隐私、价格、速度和 Source 信誉决定。所有来源最终必须通过相同内容身份校验。
+
+本节的“多源”只指 App Document body、Package Meta、Chunk 和 `.pikg` 的内容传输。DID 主动查询不按下载 Source 竞价或并发选优：它由内核为目标 DID method 选择至多一个权威发布渠道和显式有序的少数补充源，严格 first-win。真正的多来源合并发生在 DID cache，且必须先比较证据等级，再在同级内比较 `document_version / iat`。
+
+### 8.3 下载可靠性
+
+Package Acquisition 应支持：
+
+- 断点续传；
+- 临时文件与完成文件原子切换；
+- 分块并行下载；
+- Source 失败回退；
+- 已下载 Chunk 复用；
+- 可选的带宽和费用上限；
+- 下载完成前不向 Installer 暴露“可安装”状态；
+- 对缺失内容给出精确清单，而非笼统“网络错误”。
+
+### 8.4 完整性校验
+
+- App Document、Package Meta 和其他结构化对象必须按规范化编码计算 Object ID；
+- App Document 的 Object ID 校验只能证明“内容是什么”，不能证明“该内容已由 App DID 当前发布”；DID 发布状态与 owner 验证必须独立通过；
+- Chunk 和二进制内容必须包含 Digest，例如 `sha256:...`；
+- 无论从哪个 Source 下载，校验通过前不得进入 Deploy；
+- 如果对象 ID 与内容不一致，必须视为内容损坏或恶意替换；
+- `.pikg` 中的每一个索引条目必须与实际包内内容一致；
+- 对压缩内容，应明确 Digest 是针对压缩前还是压缩后字节计算，且不得混用；
+- 对流式安装，应在内容单元校验完成后才允许消费该单元。
+
+---
+
+## 9. 信任与安全机制
+
+### 9.1 身份角色分离
+
+系统应区分：
+
+- **Author**：原始软件作者；
+- **Owner**：控制 App DID 或 App Document 的主体；
+- **Builder**：构建某个 subpackage 的主体；
+- **Packager**：生成 `.pikg` 的主体；
+- **Curator**：收录和评价主体；
+- **Source**：提供下载的主体；
+- **Referrer**：推荐或分享主体。
+
+UI 不应把“由好友分享”“由可信 Source 下载”错误展示为“由原作者签名”。
+
+### 9.2 作者与 Owner 信任
+
+- `NeedProof` App Document 的签名证明签字权，DID method 的权威状态证明发布权，二者不能互相替代；从权威信道直接取得的 `Anchored` body 不重复要求外部签名，但仍必须通过 `id` 与权威 `doc_hash` 等一致性检查；
+- `expected_owner` 只能来自权威源 owner 绑定或 DID 名字结构的确定性默认值。候选 App Document 自声明的 `owner` 只能用于一致性检查，不得作为寻找验签 key 的起点；
+- 所有 body 的 `document.id` 必须等于输入 App DID；`NeedProof` body 的 `document.owner` 还必须等于 `expected_owner`。任一不一致都应拒绝并记录高风险 warning；
+- 需要证明的 App Document 必须递归解析 `resolve_did(expected_owner, "owner")`，按文档 `iat` 时刻有效的 owner key 验签，并应用 `revoke_before_iat` 等当前 owner policy；
+- `need_proof` 由取回信道和 `doc_type` 契约决定，不能因 body 缺少签名字段而降级为“无需验证”。`doc_type = "app"` 是需要验证的 Document，不得走 Info 免验证路径；
+- Owner 变更或委托只有经 DID method 权威源发布才生效；App Document 自己修改 `owner` 字段不能改变所有权；
+- 联系人关系、第三方信用 Oracle 和未签名状态只影响附加信任提示或安装策略，不能放宽 `id / expected_owner / doc_hash / terminal status` 等硬约束。
+
+### 9.3 发布状态、证据与 Cache
+
+Installer 必须遵守 resolver 返回的证据与 cache 语义：
+
+1. `Revoked` / `Tombstoned` 是权威回答和终止状态。必须删除或屏蔽 positive cache，禁止回退到旧 App Document、过期 cache、自签名候选或好友分享包；只有权威源的新状态可以翻篇。
+2. `Missing` 表示权威源确认从未发布该 `doc_type`；`unknown` 表示权威源没有回答。网络错误不得伪装成 `Missing`，两者的 UI、错误码和重试策略必须不同。
+3. DID cache 的证据等级为 `Published > Verified > Unverified`；解析结果的 body 信道证据则是 `Anchored / NeedProof`，二者不得混成一个字段。Cache 合并必须先比较证据等级，同级才比较 `document_version / iat`；更新的自签名候选不能覆盖旧一些的已发布结果。
+4. Zone Resolver 是 Zone 内权威 L1 cache；其明确回答可以直接使用，`unknown` 才进入本机 L2 cache 和 provider 链。本机覆盖短路所有正常查询，必须带 `LocalAuthorityOverride` warning 和 scope。
+5. 权威源不可达时，正常离线路径是使用未作废且策略允许的已验证 cache。只有本地没有发布/负状态记忆且策略明确允许时，未验证观察候选才可以 `ObservedFallback` 状态露面；`STRICT_PUBLIC` 和 `NORMAL` 默认不得据此 Deploy。
+
+Installer 应把 `document_status`、`evidence`、`verification_status`、`cache_status`、`expected_owner`、发布版本和 warnings 固化到安装记录，便于升级、审计和风险提示。
+
+### 9.4 Curator 信任
+
+- 高信誉 Source 或 Curator 的 Inclusion Proof 可以为 App 提供背书；
+- Inclusion Proof 可以包含 `rank`、collection、review URL 和有效期；
+- Curator 背书不能替代 App Document 的 DID 发布/owner 验证与实体内容完整性校验。
+
+### 9.5 Referrer 信任
+
+- Referrer 表示“谁推荐给我”，不等于“谁收录”“谁构建”或“谁发布”；
+- 好友推荐可以提高 UI 展示优先级，但不能自动授予高危权限；
+- 推荐链必须防止循环归因和伪造。
+
+### 9.6 安装策略等级
+
+建议至少支持：
+
+```text
+STRICT_PUBLIC      公开分发严格验证
+NORMAL             默认用户模式
+TRUSTED_SHARE      已信任联系人分享
+LOCAL_DEVELOPER    本地开发模式
+SYSTEM_INTERNAL    系统内置应用模式
+```
+
+每个等级可以调整自签名候选、`ObservedFallback` 结果、Curator、Source 和网络查询要求，但不能绕过以下硬规则：`id / expected_owner` 一致性、权威 `doc_hash`、`Revoked / Tombstoned` 终止状态、内容 Object ID / Digest 和基础沙箱安全。公开模式必须拒绝未验证结果；开发模式的放宽必须通过带 scope 和 warning 的本地覆盖表达。
+
+### 9.7 用户干预
+
+用户可在系统面板调整对以下实体的信任策略：
+
+- Author / Owner；
+- Builder / Packager；
+- Curator / Source；
+- Referrer；
+- 特定 App DID、App Document Object ID 或包 Digest。
+
+支持白名单、黑名单、仅提示和每次询问等策略。用户白名单不能把 `Revoked / Tombstoned`、owner 冒充或 `doc_hash` 不匹配降级为普通提示。
+
+### 9.8 安装安全边界
+
+Installer 必须防范：
+
+- 包内目录穿越；
+- 符号链接逃逸；
+- 未声明的宿主文件访问；
+- 端口和域名冲突；
+- 权限升级；
+- 恶意安装脚本；
+- Chunk ID 碰撞或规范化差异；
+- TOCTOU（校验后文件被替换）；
+- 部分部署残留；
+- App Document 与实际启动内容不一致；
+- 使用候选文档自声明的 owner 完成“自选 owner、自签名、自验证”；
+- 权威源不可达时用更新的自签名候选覆盖已发布或负状态记忆；
+- 将 Object Provider、应用商店、`.pikg` 或 App 动态注册成 DID resolver-provider。
+
+---
+
+## 10. 经济模型
+
+### 10.1 安装成功证明
+
+生态价值事件应定义为应用完成 Activate 并通过规定的健康检查，而不是仅点击安装或下载完成。
+
+示例：
+
+```jsonc
+{
+  "action": "installed",
+  "app_did": "did:bns:filebrowser.buckyos",
+  "doc_type": "app",
+  "app_doc_id": "obj:appdoc:sha256:...",
+  "did_resolution": {
+    "document_status": "Active",
+    "document_version": 27,
+    "evidence": "Anchored",
+    "verification_status": "Passed",
+    "cache_status": "ZoneHit"
+  },
+  "package_meta_ids": [
+    "obj:pkgmeta:win-x64:sha256:..."
+  ],
+  "pikg_digest": "sha256:...",
+  "userid": "did:bucky:user_id",
+  "device_id": "did:dev:device_id",
+  "iat": 1769990599,
+  "exp": 1801094599,
+  "details": {
+    "referrer": "did:bucky:referrer_id",
+    "curator": "did:web:gitpot.ai",
+    "source": "did:web:source.example"
+  }
+}
+```
+
+安装证明应避免泄露不必要的设备和用户隐私，并允许使用场景化或匿名化身份。`did_resolution` 用于证明安装器基于哪一类解析证据完成安装，但不得把本地覆盖或 `ObservedFallback` 伪装为公开 `Active / Anchored`。
+
+### 10.2 购买对象与购买证明
+
+购买对象通常是 App 的特定版本、版本范围或授权系列。
+
+```jsonc
+{
+  "action": "purchased",
+  "app_did": "did:bns:filebrowser.buckyos",
+  "version_range": "^2.0.0",
+  "buyer": "did:bucky:user_id",
+  "tx_hash": "0x..."
+}
+```
+
+### 10.3 支付模式
+
+- **传统付费**：通过 Source 网关使用法币或信用卡支付，由 Source 与作者结算；
+- **USDB 付费**：调用标准支付合约，根据 `revenue_split` 向 Author、Source 和 Referrer 自动分账；
+- **HTTP 402**：允许作者或 Source 提供自定义付费网关；
+- **离线授权**：可以把可验证 Receipt 或授权 Token 放入 Acquisition Context 或 `.pikg` 的独立授权区，但授权对象不应改变内容 Object ID。
+
+### 10.4 支付与下载原子性
+
+为避免“支付成功但内容无法取得”，推荐：
+
+1. 先生成明确的内容和价格计划；
+2. 通过托管、可退款授权或分阶段付款锁定资金；
+3. Package Acquisition 成功并完成验证后释放付款；
+4. 若主 Source 失败，允许从其他能提供相同内容 ID 的 Source 补救；
+5. 只有内容已取得但本地部署失败时，按授权条款决定是否退款，而不是把下载和本地配置错误混为一类。
+
+### 10.5 BDT 激励与风险
+
+- 安装成功证明可以提交给 BDT DAO 合约参与激励；
+- 奖励可采用时间衰减和长尾基础奖励；
+- 需要抗女巫攻击，例如活跃 OOD、设备信誉、Staking、成本证明或隐私保护的唯一性机制；
+- 兼容移植应用应支持真实作者认领和权益转移；
+- 无主收益可以进入 DAO 公共池。
+
+---
+
+## 11. 核心数据结构
+
+### 11.1 Inclusion Proof
 
 ```rust
-// Rust Definition
 pub const OBJ_TYPE_INCLUSION_PROOF: &str = "cyinc";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InclusionProof {
-    pub content_id: String,      // 内容 ObjId
-    pub content_obj: serde_json::Value, // 内容摘要
-    pub curator: DID,            // 收录者 DID
-    pub editor: Vec<String>,     // 具体编辑/操作员
-    pub meta: Option<serde_json::Value>, 
-    pub rank: i64,               // 评分 1-100
+    pub content_id: String,
+    pub content_obj: serde_json::Value,
+    pub curator: DID,
+    pub editor: Vec<String>,
+    pub meta: Option<serde_json::Value>,
+    pub rank: i64,
     #[serde(default)]
-    pub collection: Vec<String>, // 收录集合/目录分类
+    pub collection: Vec<String>,
     pub review_url: Option<String>,
     pub iat: u64,
     pub exp: u64,
 }
-
 ```
 
-### 6.2 APP_META_JSON (v1)
+### 11.2 App Document（APPDOC v1）
 
-这是 App 分发的核心元数据。
+下例为说明性结构；正式字段、规范化编码和 Object ID 计算规则需要独立 Schema 固化。
 
-```json
+```jsonc
 {
-    "@schema": "buckyos.app.meta.v1",
-    "did": "did:bns:filebrowser.buckyos",
-    "name": "buckyos_filebrowser",
-    "version": "2.27.0",
-    "meta": {    
-        "show_name": "File Browser",
-        "icon_url": "https://example.com/icon.png",
-        "homepage_url": "https://example.com",
-        "support_url": "https://example.com/support",
-        "description": {
-            "en": "A web-based file manager.", 
-            "zh": "一个基于 Web 的文件管理器。"
-        },
-        "license": "Apache-2.0" 
-    },
-    "pub_time": 1760000000,
-    "exp": 0,
-    "deps": {
-        "buckyos_kernel": ">1.0.0"
-    },
-    "tags": ["file", "web", "nas"],
-    "category": "app",
+  "@schema": "buckyos.app.document.v1",
+  "id": "did:bns:filebrowser.buckyos",
+  "doc_type": "app",
+  "name": "buckyos_filebrowser",
+  "version": "2.27.0",
 
-    "author": "Filebrowser Team",
-    "owner": "did:bucky:authorxxxx",
-    "curators": ["did:bns:curator1", "did:web:gitpot.ai"], // 修正了语法错误
-
-    // 经济模型定义
-    "economics": {
-        "version": "*", // 购买授权范围
-        "revenue_split": { 
-            "author": 0.8, 
-            "source": 0.15, 
-            "referrer": 0.05 
-        },
-        "payment": { 
-            "usdb": {
-                "prices": "1.99",
-                "contract": "default_payment_contract_address" 
-            } 
-        }
+  "meta": {
+    "show_name": "File Browser",
+    "icon_url": "https://example.com/icon.png",
+    "homepage_url": "https://example.com",
+    "support_url": "https://example.com/support",
+    "description": {
+      "en": "A web-based file manager.",
+      "zh": "一个基于 Web 的文件管理器。"
     },
+    "license": "Apache-2.0"
+  },
 
-    // 资源申请与安装配置
-    "install": {
-        "selector_type": "single",
-        "services": [
-            {
-                "name": "www",
-                "protocol": "tcp",
-                "container_port": 80,
-                "expose": {
-                    "mode": "gateway_http",
-                    "default_subdomain": "file"
-                }
-            }
-        ],
-        "mounts": [
-            { "kind": "data", "container_path": "/data", "persistence": "keep_on_uninstall" },
-            { "kind": "config", "container_path": "/config", "persistence": "delete_on_uninstall" }
-        ],
-        "network": { "bind_default": "127.0.0.1", "allow_bind_public": true }
+  "pub_time": 1760000000,
+  "exp": 0,
+  "deps": {
+    "buckyos_kernel": ">1.0.0"
+  },
+  "tags": ["file", "web", "nas"],
+  "category": "app",
+
+  "author": "Filebrowser Team",
+  "owner": "did:bns:buckyos",
+  "curators": [
+    "did:bns:curator1",
+    "did:web:gitpot.ai"
+  ],
+
+  "packages": [
+    {
+      "name": "main-service",
+      "package_meta": "obj:pkgmeta:win-x64:sha256:...",
+      "selector": {
+        "os": "windows",
+        "arch": "x86_64"
+      },
+      "required": true
     },
-    
-    // 权限声明
-    "permissions": {
-        "fs": {
-            "sandbox": true,
-            "home": {
-                "private": { "read": false, "write": false },
-                "public": { "read": true, "write": true }
-            }
-        },
-        "system": { "need_privileged": false }
+    {
+      "name": "main-service",
+      "package_meta": "obj:pkgmeta:linux-arm64:sha256:...",
+      "selector": {
+        "os": "linux",
+        "arch": "aarch64"
+      },
+      "required": true
     }
-}
+  ],
 
+  "economics": {
+    "version": "*",
+    "revenue_split": {
+      "author": 0.8,
+      "source": 0.15,
+      "referrer": 0.05
+    },
+    "payment": {
+      "usdb": {
+        "price": "1.99",
+        "contract": "default_payment_contract_address"
+      }
+    }
+  },
+
+  "install": {
+    "selector_type": "single",
+    "parameters": [
+      {
+        "name": "data_path",
+        "type": "path",
+        "required": true,
+        "affects_package_selection": false
+      }
+    ],
+    "services": [
+      {
+        "name": "www",
+        "protocol": "tcp",
+        "container_port": 80,
+        "expose": {
+          "mode": "gateway_http",
+          "default_subdomain": "file"
+        }
+      }
+    ],
+    "mounts": [
+      {
+        "kind": "data",
+        "container_path": "/data",
+        "persistence": "keep_on_uninstall"
+      },
+      {
+        "kind": "config",
+        "container_path": "/config",
+        "persistence": "delete_on_uninstall"
+      }
+    ],
+    "network": {
+      "bind_default": "127.0.0.1",
+      "allow_bind_public": true
+    }
+  },
+
+  "permissions": {
+    "fs": {
+      "sandbox": true,
+      "home": {
+        "private": { "read": false, "write": false },
+        "public": { "read": true, "write": true }
+      }
+    },
+    "system": {
+      "need_privileged": false
+    }
+  }
+}
 ```
 
-### 6.3 App 类型变体
+示例中的 `owner` 与 `did:bns:filebrowser.buckyos` 的结构 owner `did:bns:buckyos` 一致。实际验证时仍以权威源返回的 owner 绑定优先；若权威绑定存在，文档声明必须与其一致。`id`、`owner`、签名 `iat` 和发布 `doc_hash` 属于 DID 验证约束，不得只按 App schema 做格式检查。
 
-* **Static Web App**: `pkg_list` 仅包含 web 资源，无后端容器。
-* **Agent**: 核心资产是 Prompt 和模型配置，`pkg_list` 可能为空或指向模型权重。
+兼容说明：旧名称 `APP_META_JSON` 在过渡期可以作为 App Document 的兼容别名，但新协议与新 API 应统一使用 `App Document / APPDOC`。
+
+### 11.3 Package Meta Object
+
+```jsonc
+{
+  "@schema": "buckyos.package.meta.v1",
+  "name": "main-service",
+  "selector": {
+    "os": "windows",
+    "arch": "x86_64"
+  },
+  "content": [
+    {
+      "kind": "chunk",
+      "id": "chunk:sha256:...",
+      "size": 104857600
+    }
+  ],
+  "runtime": {
+    "type": "container",
+    "entry": "filebrowser"
+  }
+}
+```
+
+### 11.4 InstallPlan
+
+`InstallPlan` 是 Inspect Stage 的输出，建议至少包含：
+
+```jsonc
+{
+  "app_did": "did:bns:filebrowser.buckyos",
+  "doc_type": "app",
+  "app_doc_id": "obj:appdoc:sha256:...",
+  "did_resolution": {
+    "document_status": "Active",
+    "document_version": 27,
+    "expected_owner": "did:bns:buckyos",
+    "evidence": "Anchored",
+    "verification_status": "Passed",
+    "cache_status": "ZoneHit",
+    "warnings": []
+  },
+  "target": {
+    "node": "did:dev:target",
+    "os": "windows",
+    "arch": "x86_64"
+  },
+  "selected_package_meta_ids": [
+    "obj:pkgmeta:win-x64:sha256:..."
+  ],
+  "required_content_ids": [
+    "chunk:sha256:..."
+  ],
+  "content_state": {
+    "local": ["chunk:sha256:..."],
+    "pikg": [],
+    "missing": []
+  },
+  "readiness": {
+    "content": "READY",
+    "trust": "READY",
+    "install": "OFFLINE_READY"
+  },
+  "permissions": {},
+  "install_params": {}
+}
+```
+
+InstallPlan 必须在 App Document、DID 发布状态/owner 绑定、目标平台或影响 package selector 的参数发生变化后失效并重新生成。若 resolver 后续返回 `Revoked` / `Tombstoned`，任何尚未 Deploy 的计划必须立即作废。
+
+### 11.5 App 类型变体
+
+- **Static Web App**：package 主要包含 Web 资源，无后端容器；
+- **Service App**：包含一个或多个长期运行服务；
+- **Agent**：核心资产可以是 Prompt、Tool 配置、知识库索引或模型配置；package 可能为空，也可能引用模型权重；
+- **Hybrid App**：同时包含前端、服务、Agent 和模型等多个 subpackage；
+- **System App**：由 BuckyOS 发行并采用更严格的系统签名和升级策略。
 
 ---
 
-## 7. 命名与升级 (Naming & Lifecycle)
+## 12. 命名、版本与生命周期
 
-### 7.1 DID 与 唯一性
+### 12.1 唯一性
 
-* **逻辑 DID**: `did:bns:$app_name.$zoneid#$version_tag`
-* **App ObjId**: 全网唯一，基于内容寻址或 Owner 签名。
-* **命名冲突**: BuckyOS 不强制全局唯一名称，但 Source 内部要求唯一。建议命名规范 `$author_$appname`。
+- **App DID**：逻辑应用身份；
+- **App Document Object ID**：某一不可变版本文档；
+- **Package Meta Object ID**：某一平台或组件描述；
+- **Chunk ID / Digest**：具体实体内容；
+- **pikg Digest**：某次交付文件的字节级身份。
 
-### 7.2 升级流程
+同一个 App Document 可以被组装为多个不同 `.pikg`：
 
-1. 客户端定期查询 `did:bns` 解析最新的 `AppDoc`。
-2. 对比版本号。
-3. **UI 触发**:
-* 若涉及新的权限或配置参数 (`install params`) 变更 -> **强制弹窗确认**。
-* 若仅代码更新 -> 可静默或弱提示升级。
+- 不同平台子集；
+- 不同可选组件；
+- 不同压缩方式；
+- 不同 Packager；
+- 完整包或精简包。
 
+因此 `.pikg` Digest 不能替代 App DID 或 App Document Object ID。
 
+建议逻辑命名：
+
+```text
+did:bns:$app_name.$owner_name
+```
+
+版本不属于 App DID 本身：应用语义版本保存在 App Document `version`，权威发布版本保存在 resolution metadata 的 `document_version / versionId`，精确内容由 App Document Object ID 固定。不得用 `#$version_tag` 绕过 `(did, "app")` 的独立版本与撤销语义。
+
+BuckyOS 不强制显示名称全局唯一，但 Source 内部应唯一；推荐命名格式：
+
+```text
+$author_$appname
+```
+
+### 12.2 升级流程
+
+1. 客户端调用 `resolve_did(App DID, "app")` 获取当前可信 App Document 及 resolution metadata；
+2. 若结果为 `Revoked` / `Tombstoned`，停止升级且不得回退到旧包；若为 `unknown`，按策略使用未作废的已验证 cache 或等待恢复；
+3. 对比当前安装记录中的 App Document Object ID、发布版本与新解析结果；
+4. 生成升级 InstallPlan；
+5. 复用已安装内容和本地 Chunk；
+6. 获取新的 `.pikg` 或仅补齐差异对象；
+7. 若权限或安装参数发生变化，强制用户确认；
+8. 若仅代码更新且策略允许，可以弱提示或自动升级；
+9. 在新版本 Activate 和健康检查成功前保留部署回滚状态。
+
+安装部署回滚与 DID 解析 fallback 是两个概念：Activate 失败时可以恢复本机上一套已安装文件，但 resolver 不得因此把一个已 `Revoked / Tombstoned` 的旧 App Document 重新视为当前可信结果。
+
+### 12.3 卸载与数据保留
+
+卸载应遵循 App Document 中声明的 persistence 策略，并明确区分：
+
+- 应用二进制与缓存；
+- 用户数据；
+- 配置；
+- 模型或共享 Chunk；
+- 授权与购买凭证；
+- 安装历史和信任决策。
+
+共享内容仍被其他 App 使用时不得直接删除。
 
 ---
 
-## 8. 未来规划 (Roadmap)
+## 13. 兼容性与迁移
 
-* **评论系统 (Review)**: 去中心化评论上链，结合 AI 进行垃圾信息过滤和情感汇总。
-* **版权保护 (DRM)**: 增强官方 Runtime 的校验逻辑，防止单纯的去校验版本分发。
+### 13.1 旧 APP_META_JSON
+
+旧 `APP_META_JSON` URL 入口继续兼容，但内部按以下方式处理：
+
+```text
+APP_META_JSON URL
+    ↓ parse as candidate App Document and extract App DID
+resolve_did(App DID, "app")
+    ↓ bind candidate body to status / doc_hash / expected_owner
+resolve referenced Package Meta
+    ↓ build acquisition context
+produce or stage pikg-equivalent local package
+    ↓ standard Installer flow
+```
+
+### 13.2 旧 URL Scheme
+
+旧形式：
+
+```text
+cyfs://sys.current_zone/app/installer?method=install_app&url=$APP_META_JSON_URL
+```
+
+可以继续接受，但应转换为：
+
+```text
+method=install_app&identifier=$APP_META_JSON_URL
+```
+
+### 13.3 旧直接下载源
+
+App Document 中既有的 Docker、GitHub Releases、Source OOD 和作者 OOD 地址仍可作为 Object Provider。迁移不要求所有发行者立即生成 `.pikg`，但推荐 Source 在服务端或客户端 Acquisition 阶段生成可下载的 `.pikg`。这些地址只提供内容，不得注册成 DID resolver-provider 或改变 App DID 的发布状态。
+
+### 13.4 pikg 与网络对象共存
+
+`.pikg` 可以是：
+
+- 完整离线包；
+- 只含 App Document 与少量 Package Meta 的引导包；
+- 只针对一个平台的包；
+- 开发态本地包；
+- 带有缓存内容的分享包。
+
+Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` 都完整，也不能因为包不含其他平台内容就判定其损坏。
+
+---
+
+## 14. 待确定事项与 Roadmap
+
+### 14.1 pikg 文件编码
+
+需要进一步确定：
+
+- 归档容器格式；
+- ZIP64、Tar、CAR 或自定义随机访问格式的选择；
+- Header、版本号和 MIME Type；
+- 流式读取和断点续传支持；
+- 压缩算法与 Digest 计算对象；
+- 大模型和超大 Chunk 的外置引用规则；
+- 包级 Manifest 与 Packager Signature；
+- 加密包和私有授权内容。
+
+### 14.2 Canonical JSON 与 Object ID
+
+需要固定：
+
+- JSON 规范化算法；
+- 数字、Unicode、字段顺序和空值处理；
+- `APPDOC.wt` 与 `APPDOC.json` 的一致性判断；
+- Package Meta Object ID 计算规则；
+- Hash 字段标准，例如 `digest: "sha256:..."`。
+
+### 14.3 App DID 解析契约
+
+需要进一步固化：
+
+- `doc_type = "app"` 的正式 schema、JWT/编码和 `requires_verification = true` 契约；
+- `ResolvedAppDocument` 对 `resolution_metadata / document / document_metadata` 的字段映射；
+- `Active / Missing / Revoked / Tombstoned / Migrated / unknown` 到 Installer 错误码和 UI 的映射；
+- 离线安装所需的最小 DID cache 证据及其过期、owner replay guard 和负状态规则；
+- App Document Object ID 与权威 `document_ref(doc_hash)` 的规范化匹配方式。
+
+### 14.4 安装事务与回滚
+
+需要明确：
+
+- Prepare、Deploy、Activate 的原子性边界；
+- 容器、文件、数据库迁移和服务注册的回滚机制；
+- 部分失败后的恢复规则；
+- 多 Node 安装的一致性模型。
+
+### 14.5 Web 唤起体验
+
+需要补充：
+
+- JS 检测和 URL Scheme 唤起策略；
+- 现代浏览器隐私限制；
+- 手机与桌面端差异；
+- 未安装 BuckyOS 时的安全回退；
+- 防止恶意网页静默触发安装。
+
+### 14.6 支付与 HTTP 402
+
+需要定义 BuckyOS 对 HTTP 402 的标准 UI、Receipt 格式、授权缓存、退款和跨 Source 补救下载流程。
+
+### 14.7 Anti-Sybil
+
+安装证明激励需要引入抗女巫机制，并在隐私、去中心化和可验证性之间取得平衡。
+
+### 14.8 评论与版权保护
+
+- 去中心化评论、垃圾信息过滤和 AI 摘要；
+- Runtime 授权校验与 DRM；
+- 兼容作者认领、版权转移和收益确权。
+
+---
+
+## 15. 总结
+
+本协议将 BuckyOS App 安装体系统一为以下模型：
+
+```text
+App DID / Name / Object ID / URL / Share / Local Build
+                         ↓ normalize
+                 (App DID, "app") + candidate body
+                         ↓ resolve_did
+       Trusted App Document + status / evidence / warnings
+                         ↓
+              Package Acquisition
+                         ↓
+                    Local pikg
+                         ↓
+          Inspect + Configure + Readiness
+              ┌──────────┴──────────┐
+              │                     │
+        OFFLINE_READY     CONTENT/TRUST REQUIRED
+              │                     │
+              └──────────┬──────────┘
+                         ↓
+                       Verify
+                         ↓
+              Prepare → Deploy → Activate
+                         ↓
+                  Installation Proof
+```
+
+其核心升级是：
+
+> App Document 负责描述“安装什么”，`resolve_did(App DID, "app")` 负责证明“哪份描述当前可信”，Object ID 与 Chunk 负责证明“内容是什么”，`.pikg` 负责把安装所需内容可靠地带到本地，Installer 则在内容和信任均就绪后负责“如何安全地部署和启动”。
+
+通过这一拆分，正式生态仍可保留多源分发、DID 信任、Curator 背书和经济模型；与此同时，本地开发、Agent 自构建、好友离线分享和弱网络安装可以获得更少的外部依赖、更明确的失败边界和更高的成功率。
