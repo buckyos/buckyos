@@ -549,3 +549,45 @@ uv run test/run.py -p <app-installer-dv-case>
 - 无法在不暴露任意本地 path 的情况下完成 `install_package` 上传闭环。
 - 为实现离线安装必须让 `pikg` 动态注册 DID resolver-provider。
 - 为了“先跑通”准备把 Unknown 当 Missing、把 owner 自声明当 expected_owner、或在健康检查前写 installed proof。
+
+---
+
+## 完成记录（2026-07-17，CodeAgent）
+
+按 §13 提交顺序落地为 beta2.2 上的 7 个提交（`c07e76a9..76c7c9af`，另有一个前置纯 fmt 提交 `083de86a`）。
+
+### 冻结决策（已同步 `doc/App 安装协议.md` §14.0）
+
+- **D1**：ZIP/ZIP64 + `@schema=buckyos.pikg.package-meta.v1` 承载格式版本；4096 entries / APPDOC 1MiB / metadata 单 8MiB 总 64MiB；digest 对 entry 解压后字节；`pikg_digest=sha256(整文件)`。
+- **D2**：canonical = JCS（`build_named_object_by_json`）；**App Document obj type = `appdoc`**；AppDoc 必填 `id`+`doc_type`；SubPkgDesc 增 `selector{os,arch,min_kernel_version}`/`required`（省略=true），已知 key 派生表；App DID 派生规则 `did:bns:{name}.{owner_id}`（builder 默认，`.app_did()` 覆盖）。
+- **D3**：`users/{uid}/apps|agents/{app}/install_record`；prepared → spec → installed → proof 顺序纪律。
+- **D4**：本轮无 resolver 注入 API；LOCAL_DEVELOPER 无证据 → `TRUST_RESOLUTION_REQUIRED`；测试用 root 权限 KV 种 `resolver/cache/{did}/app/{state|doc}`。
+- **D5**：staging handle = `pikg:sha256:<hex>`（staging root 下 immutable 文件）或 NDN chunk id；决不收服务端路径。
+
+### 落地面（均已实现并测试）
+
+- 共享类型：`buckyos-api/src/app_install.rs`（全部 P0.2 类型 + 错误码 + `to_full_patch` 显式 null 镜像）；taskdata 可恢复事务（**已删 legacy parser**）。
+- control_panel 新模块：`pikg.rs`（含自有中央目录扫描——zip crate 会静默去重同名 entry）、`app_install_resolver/planner/engine/driver/deployer/runner`。
+- RPC：`apps.install{identifier}`（旧 app_id/version 语义已删）、`apps.install_package{staging_handle}`、`apps.install.confirm/retry/cancel`、`apps.update` 走同一流水线；`app.publish` 产 `.pikg` 并同 Reader 自校验，返回 app_did/app_doc_id/pikg_handle/digest/app_doc/publish_status。
+- app_index：`system/app_installer/app_index_seq` + `exec_tx` CAS（修扫描竞态）。
+- runner：MsgQueue 持久 dispatch（处理后 ack）+ task-ready KEvent 仅加速 + 启动扫描 + 60s sweep。
+- 升级：Prepare 完成才写新 spec；Activate 失败自动回滚旧 spec 并作废 Deploy 供 retry 重写。
+
+### 验证结果
+
+- `cargo fmt --check` 干净；全 workspace `cargo test` **1872 通过 / 0 失败**（引擎 fake 全流程、恢复、幂等、取消边界、冲突、升级回滚等 46 个新单测）。
+- `uv run buckyos-build.py --skip-web` 成功并部署。
+- 集成测试（本机 macOS dev zone）：**static web 用例全链路通过**（publish→pikg→种证据→install_package→WaitingForApproval→confirm→…→Activate→install_record=installed+proof 回填）；agent 用例已解除 skip，管线一路通到容器启动，本机被 Docker Desktop 文件共享（`/opt/buckyos` 不在共享列表）挡住——属机器配置，README 已记录；docker 用例本机镜像拉取被网络阻断（`BUCKYOS_TEST_SKIP_DOCKER=1` 跳过）。
+
+### 顺带修复 / 迁移
+
+- **node_daemon 既有 bug**：`ensure_pkg_meta_indexed` 静默改名内容寻址 meta → 完整性校验必败（此前被 agent 用例长期 skip 掩盖）；已改为显式报错，fixture pkg 名改带点（`e2e.{app}-agent`）符合 PackageEnv 前缀契约。
+- **存量数据迁移**：旧 zone 的持久 AppDoc（node config/specs/kernel service specs/install_settings）需一次性补 `id`/`doc_type`（纯增量）；本机 dev zone 已迁移（26 处）。scheduler 单测暴露的 `get_buckyos_root_dir()` 进程级缓存问题已顺带修复（`create_init_list_by_template` 显式传 root）。
+
+### 遗留（不阻塞本 TODO）
+
+- 纯 HTTPS Manifest URL 入口只支持内嵌 ObjId 的 URL（§13.1 兼容层与 Web-to-Native 同批后做）。
+- NDN chunk 形态的 staging handle 物化已实现；websdk 上传→install_package 的端到端用例待 websdk 侧支持后补。
+- Control Panel 中途重启恢复的集成用例需 DV 编排能力（恢复语义已由引擎单测覆盖）。
+- Static Web Activate 证据 = services info key 或本机 web 目录（scheduler/node-daemon 统一 instance 语义仍是协议已知风险）。
+- WebUI 只读 RPC（status/list/update-check）按计划等 `AppInstallStatusSnapshot`/`AppUpdateAvailability` 冻结后随 WebUI PRD 另做（类型已定义）。
