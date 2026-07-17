@@ -46,6 +46,7 @@ rand = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 named_store = { workspace = true }

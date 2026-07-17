@@ -2,6 +2,7 @@ mod aicc_settings;
 mod app_installer;
 mod app_servcie_mgr;
 mod dashboard;
+mod pikg;
 mod sys_auth_backend;
 mod sys_log_mgr;
 mod ui_session_mgr;
