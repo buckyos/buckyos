@@ -1,6 +1,9 @@
 mod aicc_settings;
+mod app_install_driver;
+mod app_install_engine;
 mod app_install_planner;
 mod app_install_resolver;
+mod app_install_runner;
 mod app_installer;
 mod app_servcie_mgr;
 mod dashboard;
@@ -211,6 +214,8 @@ struct ControlPanelServer {
     docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
     docker_overview_refresh_lock: Arc<Mutex<()>>,
     app_installer: app_installer::AppInstaller,
+    install_engine: Arc<app_install_engine::InstallEngine>,
+    install_runner: Arc<app_install_runner::InstallRunner>,
     ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
     ndm_read_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
 }
@@ -219,6 +224,11 @@ impl ControlPanelServer {
     pub fn new() -> Self {
         let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
         Self::start_metrics_sampler(metrics_snapshot.clone());
+        let install_engine = Arc::new(app_install_engine::InstallEngine::new(
+            Arc::new(app_install_engine::TaskMgrInstallStore),
+            Arc::new(app_install_driver::ProductionInstallDriver::new()),
+        ));
+        let install_runner = app_install_runner::InstallRunner::new(install_engine.clone());
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
             metrics_snapshot,
@@ -226,6 +236,8 @@ impl ControlPanelServer {
             docker_overview_cache: Arc::new(Mutex::new(None)),
             docker_overview_refresh_lock: Arc::new(Mutex::new(())),
             app_installer: app_installer::AppInstaller::new(),
+            install_engine,
+            install_runner,
             ndm_gateway: None,
             ndm_read_gateway: None,
         }
@@ -917,6 +929,22 @@ impl RPCHandler for ControlPanelServer {
             //"apps.version.list" => self.handle_apps_version_list(req).await,
             //AppInstaller
             "apps.install" => self.handle_apps_install(req, principal.as_ref()).await,
+            "apps.install_package" => {
+                self.handle_apps_install_package(req, principal.as_ref())
+                    .await
+            }
+            "apps.install.confirm" => {
+                self.handle_apps_install_confirm(req, principal.as_ref())
+                    .await
+            }
+            "apps.install.retry" => {
+                self.handle_apps_install_retry(req, principal.as_ref())
+                    .await
+            }
+            "apps.install.cancel" => {
+                self.handle_apps_install_cancel(req, principal.as_ref())
+                    .await
+            }
             "apps.update" => self.handle_apps_update(req, principal.as_ref()).await,
             "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
             "apps.start" => self.handle_apps_start(req, principal.as_ref()).await,
@@ -1019,6 +1047,9 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
     let mut control_panel_server = ControlPanelServer::new();
+    // 启动安装任务 runner（MsgQueue 持久 dispatch + task-ready KEvent 加速 +
+    // 启动扫描/低频 sweep 兜底），恢复重启前的非终态安装事务。
+    control_panel_server.install_runner.start();
 
     // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）
     let runtime = get_buckyos_api_runtime()

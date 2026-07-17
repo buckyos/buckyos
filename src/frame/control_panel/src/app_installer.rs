@@ -1,11 +1,10 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, AppDoc, AppInstallTaskData, AppInstallTaskRequest, AppServiceSpec,
-    AppStartTaskData, AppStartTaskRequest, AppType, AppUninstallTaskData, AppUninstallTaskRequest,
-    AppUpdateTaskData, AppUpdateTaskRequest, CreateTaskOptions, InstallPolicy, InstallSource,
-    InstallTransactionState, RepoClient, RepoProof, RepoProofFilter, ServiceInstanceReportInfo,
-    ServiceInstanceState, ServiceState, SubPkgDesc, SystemConfigClient, SystemConfigError,
-    TaskManagerClient, TaskStatus, REPO_PROOF_TYPE_DOWNLOAD, REPO_PROOF_TYPE_REFERRAL,
-    REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
+    get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppStartTaskData, AppStartTaskRequest,
+    AppType, AppUninstallTaskData, AppUninstallTaskRequest, AppUpdateTaskData,
+    AppUpdateTaskRequest, CreateTaskOptions, InstallPolicy, InstallSource, InstallTransactionState,
+    RepoClient, RepoProof, RepoProofFilter, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceState, SubPkgDesc, SystemConfigClient, SystemConfigError, TaskManagerClient, TaskStatus,
+    REPO_PROOF_TYPE_DOWNLOAD, REPO_PROOF_TYPE_REFERRAL, REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use flate2::write::GzEncoder;
@@ -712,131 +711,6 @@ impl AppInstaller {
         Ok((task_mgr, task.id, task.root_id))
     }
 
-    async fn run_install_task(
-        &self,
-        spec: AppServiceSpec,
-        task_id: i64,
-        root_id: String,
-    ) -> Result<(), RPCErrors> {
-        let task_mgr = self.task_mgr_client().await?;
-        let client = self.system_config_client().await?;
-
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Running),
-                Some(5.0),
-                Some("Validating repo content".to_string()),
-                None,
-            )
-            .await;
-
-        if !self
-            .find_matching_specs(spec.app_id(), Some(spec.user_id.as_str()))
-            .await?
-            .is_empty()
-        {
-            let error = RPCErrors::ReasonError(format!(
-                "App `{}` is already installed for user `{}`",
-                spec.app_id(),
-                spec.user_id
-            ));
-            warn!(
-                "install app `{}` for user `{}` rejected: {}",
-                spec.app_id(),
-                spec.user_id,
-                error
-            );
-            return Err(error);
-        }
-
-        let download_proof = self
-            .ensure_content_pinned(&spec, task_id, root_id.as_str())
-            .await?;
-        let content_id = Self::resolve_content_id(&spec)?;
-
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                None,
-                Some(60.0),
-                Some("Writing app spec".to_string()),
-                Some(json!({
-                    "content_id": content_id,
-                })),
-            )
-            .await;
-
-        let mut next_spec = spec.clone();
-        next_spec.app_index = self.get_next_app_index().await?;
-        next_spec.state = ServiceState::New;
-        let spec_path = Self::spec_storage_path(&next_spec);
-        Self::set_spec_at(&client, &spec_path, &next_spec).await?;
-        Self::log_spec_state_change(
-            &next_spec,
-            ServiceState::New,
-            format!("install task {} wrote spec at `{}`", task_id, spec_path).as_str(),
-        );
-
-        let repo = self.repo_client().await?;
-        let install_proof =
-            self.build_install_proof(&next_spec, &content_id, Some(download_proof.gen_obj_id().0))?;
-        info!(
-            "calling repo.add_proof install for app `{}` user `{}` content `{}`",
-            next_spec.app_id(),
-            next_spec.user_id,
-            content_id
-        );
-        repo.add_proof(RepoProof::action(install_proof))
-            .await
-            .map_err(|error| {
-                warn!(
-                    "repo.add_proof failed for install app `{}` user `{}` content `{}`: {}",
-                    next_spec.app_id(),
-                    next_spec.user_id,
-                    content_id,
-                    error
-                );
-                error
-            })?;
-        info!(
-            "recorded install proof for app `{}` user `{}` version `{}`",
-            next_spec.app_id(),
-            next_spec.user_id,
-            next_spec.app_doc.version
-        );
-
-        let mut data = json!({
-            "spec_path": spec_path,
-            "app_index": next_spec.app_index,
-            "spec_id": Self::service_spec_id(&next_spec),
-        });
-
-        if Self::should_wait_for_instance(&next_spec) {
-            let instance = self.wait_for_instance_ready(&next_spec).await?;
-            data["instance"] = serde_json::to_value(instance).map_err(|error| {
-                RPCErrors::ReasonError(format!("Serialize instance report failed: {error}"))
-            })?;
-        }
-
-        task_mgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Completed),
-                Some(100.0),
-                Some("App installed".to_string()),
-                Some(data),
-            )
-            .await?;
-        info!(
-            "install task {} completed for app `{}` user `{}`",
-            task_id,
-            next_spec.app_id(),
-            next_spec.user_id
-        );
-        Ok(())
-    }
-
     async fn run_start_task(
         &self,
         app_id: String,
@@ -1213,67 +1087,6 @@ impl AppInstaller {
         max_app_index
             .checked_add(1)
             .ok_or_else(|| RPCErrors::ReasonError("app_index overflow".to_string()))
-    }
-
-    /// 安装应用。成功返回 task_id 供进度追踪；失败返回错误。
-    /// spec 中的 app_index 将被忽略，由 get_next_app_index 自动分配。
-    ///
-    /// 流程：
-    /// 1. 校验 content_id 已在 RepoService 中 collected
-    /// 2. 通过task_mgr创建一个可以跟踪的App Install Task
-    /// 3. 返回install task_id
-    ///
-    /// 下面流程在工作线程中执行，并会根据task_id更新状态：
-    /// 4. 通过task_mgr::create_download_task下载app_pkg_meta(会自动下载所有的sub pkg)
-    /// 5. 等待下载完成，再次检查 app_pkg_meta 已经在named_store中ready
-    /// 6. 调用repo::pin(app_pkg_meta, download_action)将app_pkg_meta pin到RepoService中
-    /// 7. get_next_app_index() 分配 app_index，写入 spec
-    /// 8. 确定存储路径：users/{uid}/apps/{app}/spec 或 users/{uid}/agents/{app}/spec
-    /// 9. 写 spec（state=New）到 system_config
-    /// 10. repo.add_proof(install_action)
-    pub async fn install_app(&self, spec: &AppServiceSpec) -> Result<u64, RPCErrors> {
-        let content_id = Self::resolve_content_id(spec)?;
-        let (task_mgr, task_id, root_id) = self
-            .create_task(
-                format!("Install app {}", spec.app_id()),
-                INSTALL_TASK_TYPE,
-                task_data_value(AppInstallTaskData {
-                    request: AppInstallTaskRequest {
-                        source: InstallSource::identifier(spec.app_id(), None),
-                        user_id: spec.user_id.clone(),
-                        policy: InstallPolicy::Normal,
-                        options: Some(json!({
-                            "version": spec.app_doc.version.clone(),
-                            "content_id": content_id.clone(),
-                        })),
-                    },
-                    state: InstallTransactionState::default(),
-                })?,
-                spec.user_id.as_str(),
-                spec.app_id(),
-            )
-            .await?;
-        info!(
-            "queued install task {} for app `{}` user `{}` version `{}` content `{}`",
-            task_id,
-            spec.app_id(),
-            spec.user_id,
-            spec.app_doc.version,
-            content_id
-        );
-
-        let installer = self.clone();
-        let spec = spec.clone();
-        tokio::spawn(async move {
-            if let Err(error) = installer.run_install_task(spec, task_id, root_id).await {
-                warn!("install app task {} failed: {}", task_id, error);
-                let _ = task_mgr
-                    .mark_task_as_failed(task_id, &error.to_string())
-                    .await;
-            }
-        });
-
-        Ok(task_id as u64)
     }
 
     /// 卸载应用。必须先 stop_app 才能返回成功。
@@ -2282,19 +2095,6 @@ impl ControlPanelServer {
         install_config
     }
 
-    fn build_install_spec_for_user(app_doc: AppDoc, user_id: String) -> AppServiceSpec {
-        let app_id = app_doc.name.clone();
-        AppServiceSpec {
-            install_config: Self::build_default_install_config(app_id.as_str(), &app_doc),
-            app_doc,
-            app_index: 0,
-            user_id,
-            enable: true,
-            expected_instance_count: 1,
-            state: ServiceState::New,
-        }
-    }
-
     fn parse_app_type(raw: &str) -> Result<AppType, RPCErrors> {
         AppType::try_from(raw.trim()).map_err(|error| {
             RPCErrors::ParseRequestError(format!("Invalid app_type `{}`: {}", raw, error))
@@ -2348,25 +2148,244 @@ impl ControlPanelServer {
         ))
     }
 
+    fn parse_install_policy(
+        principal: &RpcAuthPrincipal,
+        options: Option<&Value>,
+    ) -> Result<InstallPolicy, RPCErrors> {
+        let raw = options
+            .and_then(|value| value.get("policy"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("NORMAL");
+        let policy = match raw {
+            "STRICT_PUBLIC" => InstallPolicy::StrictPublic,
+            "NORMAL" => InstallPolicy::Normal,
+            "TRUSTED_SHARE" => InstallPolicy::TrustedShare,
+            "LOCAL_DEVELOPER" => InstallPolicy::LocalDeveloper,
+            "SYSTEM_INTERNAL" => InstallPolicy::SystemInternal,
+            other => {
+                return Err(RPCErrors::ParseRequestError(format!(
+                    "unknown install policy `{other}`"
+                )))
+            }
+        };
+        // SYSTEM_INTERNAL（可 auto-confirm）只允许 admin/root 使用。
+        if matches!(policy, InstallPolicy::SystemInternal) && !Self::principal_is_admin(principal) {
+            return Err(RPCErrors::ReasonError(
+                "SYSTEM_INTERNAL install policy requires admin privileges".to_string(),
+            ));
+        }
+        Ok(policy)
+    }
+
+    fn principal_is_admin(principal: &RpcAuthPrincipal) -> bool {
+        matches!(
+            principal.user_type,
+            crate::UserType::Admin | crate::UserType::Root
+        )
+    }
+
+    fn require_install_scope(
+        principal: &RpcAuthPrincipal,
+        target_user: &str,
+    ) -> Result<(), RPCErrors> {
+        if principal.username == target_user || Self::principal_is_admin(principal) {
+            Ok(())
+        } else {
+            Err(RPCErrors::ReasonError(
+                "only admin can install for another user".to_string(),
+            ))
+        }
+    }
+
+    fn install_error_to_rpc(error: buckyos_api::InstallError) -> RPCErrors {
+        RPCErrors::ReasonError(serde_json::to_string(&error).unwrap_or_else(|_| error.to_string()))
+    }
+
+    async fn start_install_transaction(
+        &self,
+        source: buckyos_api::InstallSource,
+        app_hint: &str,
+        user_id: String,
+        policy: InstallPolicy,
+        options: Option<Value>,
+        seq: u64,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let request = buckyos_api::AppInstallTaskRequest {
+            source,
+            user_id,
+            policy,
+            options,
+        };
+        let task_id = self
+            .install_engine
+            .create_install_task(request, app_hint)
+            .await
+            .map_err(Self::install_error_to_rpc)?;
+        self.install_runner.dispatch(task_id).await;
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::json!({
+                "task_id": task_id.to_string(),
+            })),
+            seq,
+        ))
+    }
+
+    /// apps.install { identifier, referrer?, options? } -> { task_id }
+    /// v0.5 协议：identifier 是 DID/名称/ObjectID/URL；
+    /// 旧 app_id/version 语义已删除，不保留分支兼容。
     pub(crate) async fn handle_apps_install(
         &self,
         req: RPCRequest,
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_id = Self::require_param_str(&req, "app_id")?;
+        let identifier = Self::require_param_str(&req, "identifier")?;
+        let referrer = Self::param_str(&req, "referrer");
+        let options = req.params.get("options").cloned();
         let user_id = Self::resolve_target_user_id(&req, principal);
-        let version = Self::param_str(&req, "version");
-        let release = self
-            .resolve_repo_app_release(app_id.as_str(), version.as_deref())
-            .await?;
-        let spec = Self::build_install_spec_for_user(release.app_doc, user_id);
-        let task_id = self.app_installer.install_app(&spec).await?;
+        Self::require_install_scope(principal, user_id.as_str())?;
+        let policy = Self::parse_install_policy(principal, options.as_ref())?;
 
+        info!(
+            "rpc apps.install identifier=`{}` user=`{}` policy={:?}",
+            identifier, user_id, policy
+        );
+        self.start_install_transaction(
+            buckyos_api::InstallSource::identifier(identifier.clone(), referrer),
+            identifier.as_str(),
+            user_id,
+            policy,
+            options,
+            req.seq,
+        )
+        .await
+    }
+
+    /// apps.install_package { staging_handle, options? } -> { task_id }
+    /// 只接受 staging handle（D5），不接受服务端路径。
+    pub(crate) async fn handle_apps_install_package(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let staging_handle = Self::require_param_str(&req, "staging_handle")?;
+        let options = req.params.get("options").cloned();
+        let user_id = Self::resolve_target_user_id(&req, principal);
+        Self::require_install_scope(principal, user_id.as_str())?;
+        let policy = Self::parse_install_policy(principal, options.as_ref())?;
+
+        info!(
+            "rpc apps.install_package handle=`{}` user=`{}` policy={:?}",
+            staging_handle, user_id, policy
+        );
+        self.start_install_transaction(
+            buckyos_api::InstallSource::local_pikg(staging_handle.clone()),
+            staging_handle.as_str(),
+            user_id,
+            policy,
+            options,
+            req.seq,
+        )
+        .await
+    }
+
+    fn parse_task_id(req: &RPCRequest) -> Result<i64, RPCErrors> {
+        let raw = Self::require_param_str(req, "task_id")?;
+        raw.trim()
+            .parse::<i64>()
+            .map_err(|_| RPCErrors::ParseRequestError(format!("invalid task_id `{raw}`")))
+    }
+
+    /// apps.install.confirm { task_id, target?, install_params?, accepted_permissions? }
+    pub(crate) async fn handle_apps_install_confirm(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let task_id = Self::parse_task_id(&req)?;
+        let target = match req.params.get("target") {
+            Some(value) if !value.is_null() => Some(
+                serde_json::from_value::<buckyos_api::InstallTarget>(value.clone()).map_err(
+                    |err| RPCErrors::ParseRequestError(format!("invalid target: {err}")),
+                )?,
+            ),
+            _ => None,
+        };
+        let install_params = req
+            .params
+            .get("install_params")
+            .cloned()
+            .filter(|value| !value.is_null());
+        let accepted_permissions: Vec<String> = match req.params.get("accepted_permissions") {
+            Some(value) if !value.is_null() => {
+                serde_json::from_value(value.clone()).map_err(|err| {
+                    RPCErrors::ParseRequestError(format!("invalid accepted_permissions: {err}"))
+                })?
+            }
+            _ => Vec::new(),
+        };
+
+        self.install_engine
+            .confirm(
+                task_id,
+                principal.username.as_str(),
+                Self::principal_is_admin(principal),
+                target,
+                install_params,
+                accepted_permissions,
+            )
+            .await
+            .map_err(Self::install_error_to_rpc)?;
+        self.install_runner.spawn_run(task_id);
         Ok(RPCResponse::new(
-            RPCResult::Success(serde_json::json!({
-                "task_id": task_id.to_string(),
-            })),
+            RPCResult::Success(serde_json::json!({ "task_id": task_id.to_string() })),
+            req.seq,
+        ))
+    }
+
+    /// apps.install.retry { task_id }
+    pub(crate) async fn handle_apps_install_retry(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let task_id = Self::parse_task_id(&req)?;
+        self.install_engine
+            .retry(
+                task_id,
+                principal.username.as_str(),
+                Self::principal_is_admin(principal),
+            )
+            .await
+            .map_err(Self::install_error_to_rpc)?;
+        self.install_runner.spawn_run(task_id);
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::json!({ "task_id": task_id.to_string() })),
+            req.seq,
+        ))
+    }
+
+    /// apps.install.cancel { task_id }
+    pub(crate) async fn handle_apps_install_cancel(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let task_id = Self::parse_task_id(&req)?;
+        self.install_engine
+            .cancel(
+                task_id,
+                principal.username.as_str(),
+                Self::principal_is_admin(principal),
+            )
+            .await
+            .map_err(Self::install_error_to_rpc)?;
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::json!({ "task_id": task_id.to_string() })),
             req.seq,
         ))
     }

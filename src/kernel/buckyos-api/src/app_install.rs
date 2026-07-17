@@ -358,6 +358,10 @@ impl PlanReadiness {
             || matches!(package_integrity, ReadinessState::NotReady)
         {
             InstallReadiness::InvalidPackage
+        } else if matches!(document_syntax, ReadinessState::Unknown) && !trust.is_ready() {
+            // 文档本身不可得（Unknown/Missing 无 body）时，内容清单无从谈起，
+            // 信任解析先于内容下载。
+            InstallReadiness::TrustResolutionRequired
         } else if !content.is_ready() {
             InstallReadiness::ContentDownloadRequired
         } else if !trust.is_ready() {
@@ -783,6 +787,10 @@ pub struct InstallTransactionState {
     pub candidate: Option<CandidateHandle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<DidResolutionSnapshot>,
+    /// Resolve/绑定后用于 Inspect 的 App Document body（canonical JSON value）。
+    /// 恢复只相信持久数据，因此 body 必须随事务落盘。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_app_doc: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<InstallPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -795,6 +803,13 @@ pub struct InstallTransactionState {
     pub last_error: Option<InstallError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<InstallTaskResult>,
+    /// 用户期望的安装目标（初始 options / confirm 修改写入）。
+    /// 不随 invalidate_from 清除：它是重算 plan 的输入而不是输出。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_target: Option<InstallTarget>,
+    /// 用户期望的安装参数（同上）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_params: Option<Value>,
     /// stage 状态修订号：每次持久化 +1，runner 幂等去重使用。
     #[serde(default)]
     pub stage_revision: u64,
@@ -822,6 +837,7 @@ impl InstallTransactionState {
         }
         if stage <= InstallStage::Resolve {
             self.resolution = None;
+            self.resolved_app_doc = None;
         }
         if stage <= InstallStage::Verify {
             self.verification = None;
@@ -831,6 +847,39 @@ impl InstallTransactionState {
         }
         self.stage = Some(stage);
         self.stage_revision += 1;
+    }
+
+    /// 顶层可选状态 key（与字段一一对应）。
+    /// 生成全量 patch 时缺席字段写 null：TaskManager 的 deep merge 用
+    /// null 删除 key，否则被清空的字段（如 retry 前的 last_error、失效的
+    /// plan/approval）会在 Task.data 里残留。
+    pub const STATE_KEYS: [&'static str; 14] = [
+        "stage",
+        "completed_stages",
+        "candidate",
+        "resolution",
+        "resolved_app_doc",
+        "plan",
+        "approval",
+        "verification",
+        "prepared",
+        "last_error",
+        "result",
+        "requested_target",
+        "requested_params",
+        "stage_revision",
+    ];
+
+    /// 序列化为"全量镜像 patch"：所有状态 key 都出现，缺席的写 null。
+    /// deep merge 之后 Task.data 与本结构严格一致。
+    pub fn to_full_patch(&self) -> Value {
+        let mut value = serde_json::to_value(self).unwrap_or_else(|_| json!({}));
+        if let Some(map) = value.as_object_mut() {
+            for key in Self::STATE_KEYS {
+                map.entry(key.to_string()).or_insert(Value::Null);
+            }
+        }
+        value
     }
 }
 

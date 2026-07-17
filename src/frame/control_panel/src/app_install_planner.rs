@@ -17,7 +17,6 @@ use buckyos_api::{
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use ndn_lib::ObjId;
-use package_lib::PackageMeta;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -752,5 +751,19 @@ mod tests {
             .map(|p| p.sub_pkg_name.as_str())
             .collect();
         assert!(names.contains(&"big_model"));
+    }
+}
+
+/// 占位默认目标：仅用于 body 缺失（Unknown/Missing）时构造只读占位 plan。
+/// 真实安装目标必须由 driver 从目标 Node 信息（devices/{node}/info）填充，
+/// 不得用本函数（更不得用编译期 cfg!）替代真实选择。
+pub fn kernel_default_target() -> InstallTarget {
+    InstallTarget {
+        node_did: None,
+        node_id: None,
+        os: "linux".to_string(),
+        arch: "x86_64".to_string(),
+        kernel_version: None,
+        runtime_version: None,
     }
 }

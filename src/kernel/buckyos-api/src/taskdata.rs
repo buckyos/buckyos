@@ -1139,6 +1139,21 @@ pub struct AppInstallTaskRequest {
     pub options: Option<Value>,
 }
 
+impl AppInstallTaskData {
+    /// 全量镜像 patch：deep merge 后 Task.data 与本结构严格一致
+    /// （被清空的可选字段以 null 写入触发删除）。
+    pub fn to_full_patch(&self) -> Value {
+        let mut patch = self.state.to_full_patch();
+        if let Some(map) = patch.as_object_mut() {
+            map.insert(
+                "request".to_string(),
+                serde_json::to_value(&self.request).unwrap_or(Value::Null),
+            );
+        }
+        patch
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppUninstallTaskData {
     pub request: AppUninstallTaskRequest,
@@ -1187,6 +1202,20 @@ pub struct AppUpdateTaskRequest {
     pub policy: crate::app_install::InstallPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Value>,
+}
+
+impl AppUpdateTaskData {
+    /// 同 `AppInstallTaskData::to_full_patch`。
+    pub fn to_full_patch(&self) -> Value {
+        let mut patch = self.state.to_full_patch();
+        if let Some(map) = patch.as_object_mut() {
+            map.insert(
+                "request".to_string(),
+                serde_json::to_value(&self.request).unwrap_or(Value::Null),
+            );
+        }
+        patch
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
