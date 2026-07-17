@@ -96,6 +96,13 @@ function buildMetaFields() {
   }
 }
 
+
+// v0.5: AppDoc requires `id` (App DID); derive via the frozen rule did:bns:{app_name}.{owner_id}.
+function deriveAppDid(appId) {
+  const ownerIdPart = OWNER_DID.split(':').pop()
+  return `did:bns:${appId}.${ownerIdPart}`
+}
+
 function replacePlaceholders(value, tokens) {
   if (typeof value === 'string') {
     return Object.entries(tokens).reduce(
@@ -503,6 +510,7 @@ async function stageStaticWebFixture() {
 
   const appDoc = await loadTemplate('static-web.app_doc.json', {
     APP_ID: appId,
+    APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
     WEB_PKG_ID: `${appId}-web#${version}`,
@@ -540,6 +548,7 @@ async function stageAgentFixture() {
 
   const appDoc = await loadTemplate('agent.app_doc.json', {
     APP_ID: appId,
+    APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
     AGENT_PKG_ID: `${appId}-agent#${version}`,
@@ -585,6 +594,7 @@ async function stageDockerFixture() {
 
   const appDoc = await loadTemplate('docker.app_doc.json', {
     APP_ID: appId,
+    APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
   })

@@ -1,4 +1,6 @@
 {
+  "id": "__APP_DID__",
+  "doc_type": "app",
   "name": "__APP_ID__",
   "version": "__VERSION__",
   "show_name": "App Installer Docker Fixture",

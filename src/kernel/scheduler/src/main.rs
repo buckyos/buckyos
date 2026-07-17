@@ -16,6 +16,7 @@ use log::*;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::exit;
 //use upon::Engine;
 
@@ -44,12 +45,16 @@ fn boot_ood_names(zone_document: &ZoneDocument) -> Vec<String> {
         .collect()
 }
 
+// buckyos_root 显式传入：get_buckyos_root_dir() 的进程级缓存会被并行/先行调用者
+// 固定住，测试无法用 env 覆盖，导致读到宿主机安装目录下的旧模板。
 async fn create_init_list_by_template(
     zone_document: &ZoneDocument,
     zone_document_str: &str,
+    buckyos_root_dir: &Path,
 ) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
-    let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
+    let etc_dir = buckyos_root_dir.join("etc");
+    let start_params_file_path = etc_dir.join("start_config.json");
     info!(
         "load start_params from :{}",
         start_params_file_path.to_string_lossy()
@@ -57,7 +62,7 @@ async fn create_init_list_by_template(
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
     let mut start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
     // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
-    let buckyos_root = get_buckyos_root_dir()
+    let buckyos_root = buckyos_root_dir
         .to_string_lossy()
         .to_string()
         .replace('\\', "/");
@@ -70,9 +75,7 @@ async fn create_init_list_by_template(
         .map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
     //load boot.template
-    let template_file_path = get_buckyos_system_etc_dir()
-        .join("scheduler")
-        .join("boot.template.toml");
+    let template_file_path = etc_dir.join("scheduler").join("boot.template.toml");
     let template_str = match tokio::fs::read_to_string(&template_file_path).await {
         Ok(content) => content,
         Err(err) => {
@@ -176,12 +179,16 @@ async fn do_boot_scheduler() -> Result<()> {
         ));
     }
 
-    let mut init_list = create_init_list_by_template(&zone_document, &zone_document_str)
-        .await
-        .map_err(|e| {
-            error!("create_init_list_by_template failed: {:?}", e);
-            e
-        })?;
+    let mut init_list = create_init_list_by_template(
+        &zone_document,
+        &zone_document_str,
+        get_buckyos_root_dir().as_path(),
+    )
+    .await
+    .map_err(|e| {
+        error!("create_init_list_by_template failed: {:?}", e);
+        e
+    })?;
 
     let boot_config_str = init_list.get("boot/config");
     if boot_config_str.is_none() {
@@ -372,9 +379,10 @@ mod test {
 
         let zone_document = prepare_scheduler_test_configs(temp_root.path()).await;
         let zone_document_str = serde_json::to_string(&zone_document).unwrap();
-        let mut init_map = create_init_list_by_template(&zone_document, &zone_document_str)
-            .await
-            .expect("init list generation should succeed");
+        let mut init_map =
+            create_init_list_by_template(&zone_document, &zone_document_str, temp_root.path())
+                .await
+                .expect("init list generation should succeed");
         let start_config_value: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(temp_root.path().join("etc").join("start_config.json"))
                 .expect("failed to read start_config"),
@@ -451,10 +459,13 @@ mod test {
             OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OODOnly, None, None),
         ];
         let multi_ood_zone_document_str = serde_json::to_string(&multi_ood_zone_document).unwrap();
-        let multi_ood_init_map =
-            create_init_list_by_template(&multi_ood_zone_document, &multi_ood_zone_document_str)
-                .await
-                .expect("multi OOD init list generation should succeed");
+        let multi_ood_init_map = create_init_list_by_template(
+            &multi_ood_zone_document,
+            &multi_ood_zone_document_str,
+            temp_root.path(),
+        )
+        .await
+        .expect("multi OOD init list generation should succeed");
         assert!(multi_ood_init_map.contains_key("nodes/ood1/config"));
         assert!(multi_ood_init_map.contains_key("nodes/ood2/config"));
         assert!(!multi_ood_init_map.contains_key("nodes/zone-gateway/config"));
@@ -476,6 +487,7 @@ mod test {
         let gateway_only_init_result = create_init_list_by_template(
             &gateway_only_zone_document,
             &gateway_only_zone_document_str,
+            temp_root.path(),
         )
         .await
         .err()
@@ -499,6 +511,8 @@ mod test {
     "pre_install_apps": {
         "buckyos_filebrowser": {
             "app_doc": {
+                "id": "did:bns:buckyos_filebrowser.buckyos.ai",
+                "doc_type": "app",
                 "name": "buckyos_filebrowser",
                 "version": "0.5.1",
                 "meta": {
@@ -554,6 +568,8 @@ mod test {
         },
         "buckyos_systest": {
             "app_doc": {
+                "id": "did:bns:buckyos_systest.buckyos.ai",
+                "doc_type": "app",
                 "name": "buckyos_systest",
                 "version": "0.5.1",
                 "meta": {

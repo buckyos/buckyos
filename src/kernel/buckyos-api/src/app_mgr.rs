@@ -13,7 +13,7 @@ pub const KNOWN_SERVICE_WWW: (&str, u16) = ("www", 80);
 pub const KNOWN_SERVICE_HTTP: (&str, u16) = ("http", 80);
 pub const KNOWN_SERVICE_HTTPS: (&str, u16) = ("https", 443);
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceState {
     #[serde(alias = "New")]
@@ -80,7 +80,7 @@ pub struct ServiceInfo {
     pub node_list: HashMap<String, ServiceNode>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ServiceExposeConfig {
     #[serde(default)]
     pub sub_hostname: Vec<String>, //for app's www service
@@ -138,7 +138,7 @@ pub struct InstanceVolumeConfig {
     pub ephemeral_contents: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ServiceInstallConfig {
     //mount pint
     // folder in docker -> real folder in host
@@ -203,7 +203,7 @@ impl ServiceInstallConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppServiceSpec {
     pub app_doc: AppDoc,
     pub app_index: u16, //app index in user's app list

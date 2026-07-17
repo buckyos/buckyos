@@ -1,10 +1,11 @@
 use buckyos_api::{
     get_buckyos_api_runtime, AppDoc, AppInstallTaskData, AppInstallTaskRequest, AppServiceSpec,
     AppStartTaskData, AppStartTaskRequest, AppType, AppUninstallTaskData, AppUninstallTaskRequest,
-    AppUpdateTaskData, AppUpdateTaskRequest, CreateTaskOptions, RepoClient, RepoProof,
-    RepoProofFilter, ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SubPkgDesc,
-    SystemConfigClient, SystemConfigError, TaskManagerClient, TaskStatus, REPO_PROOF_TYPE_DOWNLOAD,
-    REPO_PROOF_TYPE_REFERRAL, REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
+    AppUpdateTaskData, AppUpdateTaskRequest, CreateTaskOptions, InstallPolicy, InstallSource,
+    InstallTransactionState, RepoClient, RepoProof, RepoProofFilter, ServiceInstanceReportInfo,
+    ServiceInstanceState, ServiceState, SubPkgDesc, SystemConfigClient, SystemConfigError,
+    TaskManagerClient, TaskStatus, REPO_PROOF_TYPE_DOWNLOAD, REPO_PROOF_TYPE_REFERRAL,
+    REPO_STATUS_COLLECTED, REPO_STATUS_PINNED,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use flate2::write::GzEncoder;
@@ -1238,12 +1239,15 @@ impl AppInstaller {
                 INSTALL_TASK_TYPE,
                 task_data_value(AppInstallTaskData {
                     request: AppInstallTaskRequest {
-                        app_id: spec.app_id().to_string(),
+                        source: InstallSource::identifier(spec.app_id(), None),
                         user_id: spec.user_id.clone(),
-                        version: spec.app_doc.version.clone(),
-                        content_id: content_id.clone(),
+                        policy: InstallPolicy::Normal,
+                        options: Some(json!({
+                            "version": spec.app_doc.version.clone(),
+                            "content_id": content_id.clone(),
+                        })),
                     },
-                    result: None,
+                    state: InstallTransactionState::default(),
                 })?,
                 spec.user_id.as_str(),
                 spec.app_id(),
@@ -1431,13 +1435,17 @@ impl AppInstaller {
                 UPDATE_TASK_TYPE,
                 task_data_value(AppUpdateTaskData {
                     request: AppUpdateTaskRequest {
-                        app_id: spec.app_id().to_string(),
+                        source: InstallSource::identifier(spec.app_id(), None),
                         user_id: spec.user_id.clone(),
-                        from_version: current_spec.app_doc.version.clone(),
-                        to_version: spec.app_doc.version.clone(),
-                        content_id,
+                        app_id: spec.app_id().to_string(),
+                        policy: InstallPolicy::Normal,
+                        options: Some(json!({
+                            "from_version": current_spec.app_doc.version.clone(),
+                            "to_version": spec.app_doc.version.clone(),
+                            "content_id": content_id,
+                        })),
                     },
-                    result: None,
+                    state: InstallTransactionState::default(),
                 })?,
                 spec.user_id.as_str(),
                 spec.app_id(),

@@ -1474,7 +1474,50 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 ## 14. 待确定事项与 Roadmap
 
+### 14.0 已冻结事项（2026-07-16，v0.5 实现基线）
+
+以下 D1-D5 决策已冻结并进入实现。本节与 §14 其余小节及正文冲突时，以本节为准；§14.1-§14.4 中未被本节覆盖的条目仍是 Roadmap。
+
+#### D1. `pikg` 外层编码（冻结 §14.1 的容器部分）
+
+- 首版容器固定为 ZIP（按需 ZIP64），MIME 为 `application/vnd.buckyos.pikg+zip`。`.pikg` 扩展名仅用于 UX；格式判断以容器 magic（`PK\x03\x04` local file header）与包内结构为准。
+- 格式版本由 `PACKAGE_META.json` 的 `@schema = buckyos.pikg.package-meta.v1` 表达；缺失或不识别的 `@schema` 判定 `INVALID_PACKAGE`。
+- entry 名必须是合法 UTF-8 的包内相对路径；拒绝绝对路径、`..` 路径段、反斜杠分隔符、NUL、重复 entry（含目录/文件类型冲突）与 symlink entry。
+- 首版限额：entry 总数 ≤ 4096；`APPDOC.wt` / `APPDOC.json` 单个 ≤ 1 MiB；`PACKAGE_META.json` 与 `objects/*.json` 单个 ≤ 8 MiB；结构化 metadata（上述文件）解压总量 ≤ 64 MiB。payload entry 流式读取校验，不整体载入内存；ZIP 声明 size 与实际解压字节数不一致判定 `INVALID_PACKAGE`。
+- payload entry 允许 stored 或 deflate 压缩方式；digest 的计算对象始终是 entry 解压后的字节（即 `$sub_pkg_name.tar.gz` 文件本身的最终压缩字节）。推荐 Packager 对已压缩的 `.tar.gz` payload 使用 stored。
+- `pikg_digest = sha256(整个 .pikg 文件字节)`，用于 staging 固定（防 TOCTOU）、安装记录与安装证明。
+
+#### D2. App Document schema 与 Object ID（冻结 §14.2 与 §14.3 的 schema 部分）
+
+- 复用现有 `AppDoc`（PackageMeta flatten）并新增必填 `id`（App DID）与必填 `doc_type`（固定 `"app"`）；反序列化时缺失或取值不为 `app` 一律拒绝。不另造第二套 App Document 类型。
+- canonical JSON 固定为 JCS（RFC 8785），实现即 `ndn-lib::build_named_object_by_json` 的 `serde_jcs` 路径；禁止对 `serde_json::to_string()` 结果直接做 hash。
+- App Document Object ID 的 obj type 固定为 `appdoc`：`ObjId = appdoc:hex(sha256(JCS(body)))`。Package Meta 沿用 `pkg` obj type 与同一 JCS 规则。
+- `APPDOC.wt`（JWT 封装）的 Object ID 对 JWT claims（payload JSON）按同一规则计算；`APPDOC.wt` 与 `APPDOC.json` 的一致性判断 = 两者 canonical JSON 相等（等价于 App Document Object ID 相等）。
+- `version` 仅表示应用语义版本；`document_version / versionId` 仅存在于 resolver metadata 与 `DidResolutionSnapshot`，两者不得复用同一字段。
+- `pkg_list` 各 entry（SubPkgDesc）新增 `selector { os?, arch?, min_kernel_version? }` 与 `required`（省略视为 `true`）；已知 key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 selector 时按固定命名表派生，未知 key 无显式 selector 时不参与自动选择。`pkg_objid`（Package Meta Object ID）与 `source_url`（内容获取位置）保持独立字段。
+- App DID 的建议命名沿用 §12.1：`did:bns:$app_name.$owner_name`；builder 必须显式接收 App DID 或按该规则显式构造，禁止把 candidate 自声明 owner 拼出的 DID 当权威身份。
+
+#### D3. 安装记录真相源
+
+- in-flight 安装事务的唯一真相源是 TaskManager 的 `Task.data`（`AppInstallTaskData`，可恢复 transaction）。
+- 长期安装记录独立保存在 system-config：`users/{uid}/apps/{app_name}/install_record` 与 `users/{uid}/agents/{app_name}/install_record`（`InstallRecord` JSON）。
+- 写入顺序：Prepare 完成先写 `install_record(state=prepared)` → 写 spec（Deploy 的开始点）→ Activate 与健康检查成功后更新 `install_record(state=installed)` → 写 installed proof → Task Completed。失败与回滚更新同一记录。
+- `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec，不复制解析证据与任务历史。
+
+#### D4. LOCAL_DEVELOPER authority override
+
+- 本轮不新增 Zone Resolver cache-injection 管理 API。Zone Resolver 数据面 `resolver/cache/{did}/{doc_type}/{state|doc}` 仍只接受 RBAC 管控的 system-config KV 写入（kernel/system 角色或 root/su_admin），仅供开发/测试环境显式种入解析证据。
+- 在受控注入 API 落地前，`LOCAL_DEVELOPER` 策略下若 resolver（含 Zone Resolver 与本机 DID cache）没有可接受的解析证据，Installer 必须返回 `TRUST_RESOLUTION_REQUIRED`；不得把"本地文件存在"当隐式信任。Installer 自身不得写任何 `resolver/cache/*` key。
+- `LocalAuthorityOverride` 的 scope 与 warning 在 `DidResolutionSnapshot` 中保留字段位置（warnings、cache_status），上游注入 API 就绪后 Installer 侧直接透传，无需再改协议状态。
+
+#### D5. 本地包交付边界
+
+- `apps.install_package` 只接受经 Control Panel 上传通道换取的不可猜测 staging handle；服务端将 handle 解析到受控 staging root 下的 immutable 文件，canonical path 必须位于 staging root 内，否则拒绝。
+- 外部 RPC 一律不接受服务端文件路径；只有进程内调用（测试、系统内部）允许直接提供本地 Path。
+
 ### 14.1 pikg 文件编码
+
+> 容器格式、版本表达、限额与 digest 计算对象已由 §14.0 D1 冻结；本节其余条目仍为 Roadmap。
 
 需要进一步确定：
 

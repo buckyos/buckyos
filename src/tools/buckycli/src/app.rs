@@ -420,11 +420,17 @@ fn build_app_service_config_with_index(
         .unwrap_or("")
         .to_string();
 
+    // v0.5：AppDoc 必填 id/doc_type，按冻结规则 did:bns:{{app_name}}.{{owner_id}} 派生。
+    let owner_id_part = owner.rsplit(':').next().unwrap_or(owner);
+    let app_did = format!("did:bns:{}.{}", app_id, owner_id_part);
+
     let full_app_config = format!(
         r#"
         {{
             "app_id": "{}",
             "app_doc": {{
+                "id": "{}",
+                "doc_type": "app",
                 "name": "{}",
                 "pkg_name": "{}",
                 "version": "{}",
@@ -498,6 +504,7 @@ fn build_app_service_config_with_index(
             "container_param": "{}"
         }}"#,
         app_id,
+        app_did,
         app_id,
         app_id,
         version,

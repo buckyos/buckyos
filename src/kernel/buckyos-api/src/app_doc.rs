@@ -1,10 +1,16 @@
 use crate::{PermissionRequest, RdbInstanceConfig};
 use ::kRPC::*;
 use name_lib::DID;
-use ndn_lib::ObjId;
+use ndn_lib::{NamedObject, ObjId};
 use package_lib::{PackageId, PackageMeta};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt, ops::Deref};
+
+/// App Document 的 DID doc_type（v0.5 协议固定值）。
+pub const APP_DOC_TYPE: &str = "app";
+/// App Document Object ID 的 obj type（v0.5 D2 冻结）。
+/// ObjId = `appdoc:hex(sha256(JCS(body)))`，与 Package Meta 的 `pkg` 类型区分。
+pub const OBJ_TYPE_APP_DOC: &str = "appdoc";
 
 //buckyos 支持的应用类型,to_string后填写在app_doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +99,60 @@ pub struct ServiceInstallConfigTips {
     pub rdb_instances: HashMap<String, RdbInstanceConfig>,
 }
 
+/// 平台选择条件（v0.5 D2）。字段全部可选，省略的维度表示不限制。
+/// os/arch 匹配前会做别名归一（amd64=x86_64、arm64=aarch64、darwin=macos 等）。
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Default)]
+pub struct PackageSelector {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_kernel_version: Option<String>,
+}
+
+pub fn normalize_arch(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "amd64" | "x86_64" | "x64" => "x86_64".to_string(),
+        "arm64" | "aarch64" => "aarch64".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub fn normalize_os(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "darwin" | "apple" | "macos" | "osx" => "macos".to_string(),
+        "win" | "win32" | "windows" => "windows".to_string(),
+        other => other.to_string(),
+    }
+}
+
+impl PackageSelector {
+    pub fn for_platform(os: impl Into<String>, arch: impl Into<String>) -> Self {
+        Self {
+            os: Some(normalize_os(os.into().as_str())),
+            arch: Some(normalize_arch(arch.into().as_str())),
+            min_kernel_version: None,
+        }
+    }
+
+    /// 是否匹配目标平台。os/arch 只按归一化后的值比较，min_kernel_version 由
+    /// planner 结合目标 Node 信息单独校验。
+    pub fn matches_platform(&self, os: &str, arch: &str) -> bool {
+        let os_ok = self
+            .os
+            .as_deref()
+            .map(|value| normalize_os(value) == normalize_os(os))
+            .unwrap_or(true);
+        let arch_ok = self
+            .arch
+            .as_deref()
+            .map(|value| normalize_arch(value) == normalize_arch(arch))
+            .unwrap_or(true);
+        os_ok && arch_ok
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct SubPkgDesc {
     pub pkg_id: String,
@@ -104,11 +164,40 @@ pub struct SubPkgDesc {
     pub docker_image_digest: Option<String>, //docker digest
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    /// 显式平台选择条件；省略时已知 key 按 `derived_selector_for_key` 派生，
+    /// 未知 key 无显式 selector 时不参与自动选择（v0.5 D2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<PackageSelector>,
+    /// 该 package 对匹配目标是否必需；省略视为 true（v0.5 D2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }
 
 impl SubPkgDesc {
     pub fn get_pkg_id_with_objid(&self) -> Option<String> {
         PackageId::get_pkgid_with_objid(self.pkg_id.as_str(), self.pkg_objid.clone()).ok()
+    }
+
+    pub fn is_required(&self) -> bool {
+        self.required.unwrap_or(true)
+    }
+}
+
+/// 已知 pkg_list key 的派生 selector 表（v0.5 D2 冻结的固定命名表）。
+/// 返回 None 表示该 key 没有派生规则，必须显式声明 selector 才能被自动选择。
+pub fn derived_selector_for_key(key: &str) -> Option<PackageSelector> {
+    match key {
+        "amd64_docker_image" => Some(PackageSelector::for_platform("linux", "x86_64")),
+        "aarch64_docker_image" => Some(PackageSelector::for_platform("linux", "aarch64")),
+        "amd64_linux_app" => Some(PackageSelector::for_platform("linux", "x86_64")),
+        "aarch64_linux_app" => Some(PackageSelector::for_platform("linux", "aarch64")),
+        "amd64_win_app" => Some(PackageSelector::for_platform("windows", "x86_64")),
+        "aarch64_win_app" => Some(PackageSelector::for_platform("windows", "aarch64")),
+        "amd64_apple_app" => Some(PackageSelector::for_platform("macos", "x86_64")),
+        "aarch64_apple_app" => Some(PackageSelector::for_platform("macos", "aarch64")),
+        // 平台无关内容：空 selector 匹配所有目标。
+        "web" | "agent" | "agent_skills" | "script" => Some(PackageSelector::default()),
+        _ => None,
     }
 }
 
@@ -264,6 +353,14 @@ impl SubPkgList {
         }
         list
     }
+
+    /// 得到某个 entry 的有效 selector：显式声明优先，否则按固定命名表派生。
+    /// 返回 None 表示该 entry 不参与自动平台选择。
+    pub fn effective_selector(key: &str, desc: &SubPkgDesc) -> Option<PackageSelector> {
+        desc.selector
+            .clone()
+            .or_else(|| derived_selector_for_key(key))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
@@ -303,9 +400,48 @@ impl TryFrom<String> for SelectorType {
     }
 }
 
+/// AppDoc 的 `doc_type` 标记类型：序列化固定为 `"app"`，反序列化拒绝其它取值。
+/// 用类型而不是 String，让"doc_type 必填且只能是 app"成为编译期/解析期硬约束。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct AppDocType;
+
+impl Serialize for AppDocType {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(APP_DOC_TYPE)
+    }
+}
+
+impl<'de> Deserialize<'de> for AppDocType {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        if raw == APP_DOC_TYPE {
+            Ok(AppDocType)
+        } else {
+            Err(serde::de::Error::custom(format!(
+                "AppDoc doc_type must be `{APP_DOC_TYPE}`, got `{raw}`"
+            )))
+        }
+    }
+}
+
+impl fmt::Display for AppDocType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(APP_DOC_TYPE)
+    }
+}
+
 //App doc is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct AppDoc {
+    /// App DID（必填，v0.5）。`document.id == app_did` 是 resolve/verify 的硬约束。
+    pub id: DID,
+    /// DID doc_type，固定 `"app"`（必填，v0.5）。
+    pub doc_type: AppDocType,
     #[serde(flatten)]
     pub _base: PackageMeta,
     pub show_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
@@ -329,7 +465,34 @@ pub struct AppDoc {
     pub pkg_list: SubPkgList,
 }
 
+impl NamedObject for AppDoc {
+    fn get_obj_type() -> &'static str {
+        OBJ_TYPE_APP_DOC
+    }
+}
+
 impl AppDoc {
+    /// 按 v0.5 冻结的确定性命名规则构造 App DID：`did:bns:{app_name}.{owner_id}`。
+    /// 这是"名字结构的确定性结果"，与 candidate 自声明 owner 建立信任是两回事；
+    /// 不适用该规则的应用必须显式提供 App DID。
+    pub fn derive_bns_app_did(app_name: &str, owner: &DID) -> Result<DID> {
+        let app_name = app_name.trim();
+        if app_name.is_empty() {
+            return Err(RPCErrors::ReasonError(
+                "derive app did failed: app name is empty".to_string(),
+            ));
+        }
+        if owner.id.trim().is_empty() || owner.id == "undefined" {
+            return Err(RPCErrors::ReasonError(
+                "derive app did failed: owner did is invalid".to_string(),
+            ));
+        }
+        Ok(DID::new(
+            "bns",
+            format!("{}.{}", app_name, owner.id).as_str(),
+        ))
+    }
+
     pub fn get_app_type(&self) -> AppType {
         if !self.categories.is_empty() {
             let mut result = AppType::Service;
@@ -383,7 +546,19 @@ impl SubPkgDesc {
             docker_image_name: None,
             docker_image_digest: None,
             source_url: None,
+            selector: None,
+            required: None,
         }
+    }
+
+    pub fn selector(mut self, selector: PackageSelector) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    pub fn required(mut self, required: bool) -> Self {
+        self.required = Some(required);
+        self
     }
 
     pub fn docker_image_name(mut self, docker_image_name: impl Into<String>) -> Self {
@@ -404,6 +579,8 @@ impl SubPkgDesc {
 
 pub struct AppDocBuilder {
     app_type: AppType,
+    app_did: Option<DID>,
+    owner: DID,
     meta: PackageMeta,
     show_name: Option<String>,
     app_icon_url: Option<String>,
@@ -454,6 +631,8 @@ impl AppDocBuilder {
 
         Self {
             app_type,
+            app_did: None,
+            owner: owner.clone(),
             meta,
             show_name: None,
             app_icon_url: None,
@@ -465,6 +644,13 @@ impl AppDocBuilder {
             pkg_list: SubPkgList::default(),
             apply_default_permissions: true,
         }
+    }
+
+    /// 显式指定 App DID；不调用时 build() 按冻结规则
+    /// `did:bns:{app_name}.{owner_id}` 构造（见 `AppDoc::derive_bns_app_did`）。
+    pub fn app_did(mut self, app_did: DID) -> Self {
+        self.app_did = Some(app_did);
+        self
     }
 
     pub fn show_name(mut self, show_name: impl Into<String>) -> Self {
@@ -801,6 +987,11 @@ impl AppDocBuilder {
             return Err(RPCErrors::ReasonError(errors.join("; ")));
         }
 
+        let app_did = match self.app_did.clone() {
+            Some(did) => did,
+            None => AppDoc::derive_bns_app_did(self.meta.name.as_str(), &self.owner)?,
+        };
+
         // Provide sane defaults for human-readable fields.
         let show_name = self
             .show_name
@@ -817,6 +1008,8 @@ impl AppDocBuilder {
         }
 
         Ok(AppDoc {
+            id: app_did,
+            doc_type: AppDocType,
             _base: self.meta,
             show_name,
             app_icon_url: self.app_icon_url,
@@ -849,6 +1042,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_parse_app_doc() {
         let app_doc = json!({
+            "id": "did:bns:buckyos_filebrowser.buckyos.ai",
+            "doc_type": "app",
             "name": "buckyos_filebrowser",
             "version": "0.4.1",
             "tag": "latest",
@@ -948,8 +1143,10 @@ mod tests {
 
         let sys_testdoc = r#"
 {
-  "name": "buckyos_systest",
-    "version": "0.5.1", 
+  "id": "did:bns:buckyos_systest.buckyos.ai",
+    "doc_type": "app",
+    "name": "buckyos_systest",
+    "version": "0.5.1",
     "meta": {
       "detail": "BuckyOS System Test App"
     },
@@ -1167,6 +1364,123 @@ mod tests {
         assert!(keys.iter().any(|key| key == "agent"));
         assert!(keys.iter().any(|key| key == "agent_skills"));
         assert!(keys.iter().any(|key| key == "custom"));
+    }
+
+    #[test]
+    fn test_app_doc_identity_is_required_and_validated() {
+        // 缺 id 必须拒绝。
+        let missing_id = json!({
+            "doc_type": "app",
+            "name": "demo",
+            "version": "0.1.0",
+            "owner": "did:bns:tester",
+            "create_time": 1743008063u64,
+            "last_update_time": 1743008063u64,
+            "show_name": "Demo",
+            "selector_type": "single",
+            "pkg_list": {}
+        });
+        assert!(serde_json::from_value::<AppDoc>(missing_id).is_err());
+
+        // 缺 doc_type 必须拒绝。
+        let missing_doc_type = json!({
+            "id": "did:bns:demo.tester",
+            "name": "demo",
+            "version": "0.1.0",
+            "owner": "did:bns:tester",
+            "create_time": 1743008063u64,
+            "last_update_time": 1743008063u64,
+            "show_name": "Demo",
+            "selector_type": "single",
+            "pkg_list": {}
+        });
+        assert!(serde_json::from_value::<AppDoc>(missing_doc_type).is_err());
+
+        // doc_type 不是 app 必须拒绝。
+        let wrong_doc_type = json!({
+            "id": "did:bns:demo.tester",
+            "doc_type": "zone",
+            "name": "demo",
+            "version": "0.1.0",
+            "owner": "did:bns:tester",
+            "create_time": 1743008063u64,
+            "last_update_time": 1743008063u64,
+            "show_name": "Demo",
+            "selector_type": "single",
+            "pkg_list": {}
+        });
+        assert!(serde_json::from_value::<AppDoc>(wrong_doc_type).is_err());
+    }
+
+    #[test]
+    fn test_app_doc_builder_derives_frozen_bns_app_did() {
+        let owner = DID::from_str("did:bns:tester").unwrap();
+        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
+            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+            .build()
+            .unwrap();
+        assert_eq!(doc.id, DID::new("bns", "demo_web.tester"));
+        assert_eq!(doc.doc_type.to_string(), "app");
+
+        // 显式 app_did 覆盖派生规则。
+        let explicit = DID::from_str("did:bns:custom_app_name").unwrap();
+        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
+            .app_did(explicit.clone())
+            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+            .build()
+            .unwrap();
+        assert_eq!(doc.id, explicit);
+    }
+
+    #[test]
+    fn test_app_doc_obj_id_uses_appdoc_type_and_version_fields_stay_separate() {
+        let owner = DID::from_str("did:bns:tester").unwrap();
+        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
+            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+            .build()
+            .unwrap();
+
+        let (obj_id, canonical) = doc.gen_obj_id();
+        assert_eq!(obj_id.obj_type, OBJ_TYPE_APP_DOC);
+        // canonical body 内只有语义版本字段 version；document_version 是 resolver
+        // metadata 的字段，绝不能出现在 App Document body 里。
+        let value: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+        assert_eq!(value.get("version").and_then(|v| v.as_str()), Some("0.1.0"));
+        assert!(value.get("document_version").is_none());
+        assert_eq!(value.get("doc_type").and_then(|v| v.as_str()), Some("app"));
+        assert_eq!(
+            value.get("id").and_then(|v| v.as_str()),
+            Some("did:bns:demo_web.tester")
+        );
+    }
+
+    #[test]
+    fn test_effective_selector_derivation_and_explicit_override() {
+        // 已知 key 派生。
+        let desc = SubPkgDesc::new("demo-img#0.1.0");
+        let selector =
+            SubPkgList::effective_selector("aarch64_docker_image", &desc).expect("derived");
+        assert!(selector.matches_platform("linux", "arm64"));
+        assert!(!selector.matches_platform("linux", "amd64"));
+
+        // 平台无关 key 匹配一切。
+        let web_selector = SubPkgList::effective_selector("web", &desc).expect("web derived");
+        assert!(web_selector.matches_platform("windows", "x86_64"));
+
+        // 未知 key 无显式 selector 不参与选择。
+        assert!(SubPkgList::effective_selector("my_model", &desc).is_none());
+
+        // 显式 selector 覆盖派生表。
+        let mut desc = SubPkgDesc::new("demo-img#0.1.0");
+        desc.selector = Some(PackageSelector::for_platform("windows", "amd64"));
+        let selector = SubPkgList::effective_selector("aarch64_docker_image", &desc).unwrap();
+        assert!(selector.matches_platform("windows", "x86_64"));
+        assert!(!selector.matches_platform("linux", "aarch64"));
+
+        // required 缺省为 true。
+        assert!(desc.is_required());
+        desc.required = Some(false);
+        assert!(!desc.is_required());
     }
 
     #[test]

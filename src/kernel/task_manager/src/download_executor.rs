@@ -1440,6 +1440,8 @@ mod tests {
     #[test]
     fn resolve_app_doc_sub_pkg_specs_prefers_source_url_and_falls_back_to_objid() {
         let app_doc: AppDoc = serde_json::from_value(json!({
+            "id": "did:bns:demo.demo.example",
+            "doc_type": "app",
             "name": "demo",
             "version": "1.0.0",
             "show_name": "demo",

@@ -1297,6 +1297,8 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
     let mut app_list = HashMap::new();
 
     let cyfs_gateway_doc_json = json!({
+        "id": "did:bns:cyfs-gateway.buckyos.ai",
+        "doc_type": "app",
         "name": "cyfs-gateway",
         "show_name": "CYFS Gateway",
         "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png",

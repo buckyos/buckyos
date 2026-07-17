@@ -471,18 +471,15 @@ impl TypedTaskData {
             TaskDataType::AiccCompute => parse_data(task_data_type, data.clone())
                 .map(Self::AiccCompute)
                 .or_else(|_| parse_aicc_compute_legacy(data).map(Self::AiccCompute)),
-            TaskDataType::AppInstall => parse_data(task_data_type, data.clone())
-                .map(Self::AppInstall)
-                .or_else(|_| parse_app_install_legacy(data).map(Self::AppInstall)),
+            // v0.5 breaking change：app.install/app.update 不做旧 schema legacy parser。
+            TaskDataType::AppInstall => parse_data(task_data_type, data).map(Self::AppInstall),
             TaskDataType::AppUninstall => parse_data(task_data_type, data.clone())
                 .map(Self::AppUninstall)
                 .or_else(|_| parse_app_uninstall_legacy(data).map(Self::AppUninstall)),
             TaskDataType::AppStart => parse_data(task_data_type, data.clone())
                 .map(Self::AppStart)
                 .or_else(|_| parse_app_start_legacy(data).map(Self::AppStart)),
-            TaskDataType::AppUpdate => parse_data(task_data_type, data.clone())
-                .map(Self::AppUpdate)
-                .or_else(|_| parse_app_update_legacy(data).map(Self::AppUpdate)),
+            TaskDataType::AppUpdate => parse_data(task_data_type, data).map(Self::AppUpdate),
             TaskDataType::ServiceRpc => parse_data(task_data_type, data.clone())
                 .map(Self::ServiceRpc)
                 .or_else(|_| parse_service_rpc_legacy(data).map(Self::ServiceRpc)),
@@ -1122,19 +1119,24 @@ pub struct AiccComputeTaskResult {
     pub provider_output: Option<Value>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// App 安装任务的可恢复 transaction 数据（v0.5，P0.3）。
+/// request 保存原始 source/options/policy；中间态全部在 `state` 中，
+/// 每个 Stage 成功后先完整写入 Task.data 再进入下一 Stage。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallTaskData {
     pub request: AppInstallTaskRequest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
+    #[serde(flatten)]
+    pub state: crate::app_install::InstallTransactionState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallTaskRequest {
-    pub app_id: String,
+    pub source: crate::app_install::InstallSource,
     pub user_id: String,
-    pub version: String,
-    pub content_id: String,
+    #[serde(default)]
+    pub policy: crate::app_install::InstallPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1165,20 +1167,26 @@ pub struct AppStartTaskRequest {
     pub user_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// App 升级任务的可恢复 transaction 数据（v0.5，P0.3）。
+/// 与安装共用同一 Stage 流水线与中间态；旧 spec 回滚材料保存在
+/// `state.prepared.previous_spec`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateTaskData {
     pub request: AppUpdateTaskRequest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<String>,
+    #[serde(flatten)]
+    pub state: crate::app_install::InstallTransactionState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateTaskRequest {
-    pub app_id: String,
+    pub source: crate::app_install::InstallSource,
     pub user_id: String,
-    pub from_version: String,
-    pub to_version: String,
-    pub content_id: String,
+    /// 已安装应用的 app_id（app_doc.name）。
+    pub app_id: String,
+    #[serde(default)]
+    pub policy: crate::app_install::InstallPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1259,7 +1267,7 @@ struct LegacyDownloadTaskData {
     download_options: Option<DownloadTaskOptions>,
     #[serde(default)]
     download: Option<LegacyDownloadState>,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
 
@@ -1338,7 +1346,7 @@ struct LegacyThunkTaskData {
     executor_result: Option<ThunkExecutionResult>,
     #[serde(default)]
     workflow: Option<LegacyWorkflowThunk>,
-    #[serde(default, flatten)]
+    #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
 
@@ -1783,13 +1791,6 @@ fn parse_aicc_compute_legacy(data: Value) -> Result<AiccComputeTaskData, TaskDat
     })
 }
 
-fn parse_app_install_legacy(data: Value) -> Result<AppInstallTaskData, TaskDataParseError> {
-    Ok(AppInstallTaskData {
-        request: parse_data(TaskDataType::AppInstall, data)?,
-        result: None,
-    })
-}
-
 fn parse_app_uninstall_legacy(data: Value) -> Result<AppUninstallTaskData, TaskDataParseError> {
     Ok(AppUninstallTaskData {
         request: parse_data(TaskDataType::AppUninstall, data)?,
@@ -1800,13 +1801,6 @@ fn parse_app_uninstall_legacy(data: Value) -> Result<AppUninstallTaskData, TaskD
 fn parse_app_start_legacy(data: Value) -> Result<AppStartTaskData, TaskDataParseError> {
     Ok(AppStartTaskData {
         request: parse_data(TaskDataType::AppStart, data)?,
-        result: None,
-    })
-}
-
-fn parse_app_update_legacy(data: Value) -> Result<AppUpdateTaskData, TaskDataParseError> {
-    Ok(AppUpdateTaskData {
-        request: parse_data(TaskDataType::AppUpdate, data)?,
         result: None,
     })
 }
@@ -1975,14 +1969,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_app_install_legacy_schema_as_request_region() {
+    fn app_install_task_data_v05_roundtrip_and_no_legacy_parser() {
+        // v0.5 schema：request 保存原始 source/policy，事务中间态 flatten 在同级。
         let typed = parse_typed_task_data(
             TASK_DATA_TYPE_APP_INSTALL,
             json!({
-                "app_id": "demo",
-                "user_id": "user",
-                "version": "1.0.0",
-                "content_id": "obj"
+                "request": {
+                    "source": { "kind": "identifier", "identifier": "did:bns:demo.tester" },
+                    "user_id": "user",
+                    "policy": "NORMAL"
+                },
+                "stage": "resolve",
+                "stage_revision": 1
             }),
         )
         .unwrap();
@@ -1991,9 +1989,28 @@ mod tests {
             panic!("expected app install task data");
         };
 
-        assert_eq!(data.request.app_id, "demo");
-        assert_eq!(data.request.version, "1.0.0");
-        assert_eq!(data.result, None);
+        assert_eq!(data.request.user_id, "user");
+        assert!(matches!(
+            data.request.source,
+            crate::app_install::InstallSource::Identifier { .. }
+        ));
+        assert_eq!(
+            data.state.stage,
+            Some(crate::app_install::InstallStage::Resolve)
+        );
+        assert_eq!(data.state.stage_revision, 1);
+
+        // 旧 app_id/version schema 必须直接拒绝（beta2.2 breaking change，无 legacy parser）。
+        let legacy = parse_typed_task_data(
+            TASK_DATA_TYPE_APP_INSTALL,
+            json!({
+                "app_id": "demo",
+                "user_id": "user",
+                "version": "1.0.0",
+                "content_id": "obj"
+            }),
+        );
+        assert!(legacy.is_err());
     }
 
     #[test]

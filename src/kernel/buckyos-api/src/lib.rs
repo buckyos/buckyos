@@ -24,6 +24,7 @@ mod zone_gateway;
 mod aicc_client;
 mod aicc_usage_log;
 mod app_doc;
+pub mod app_install;
 mod app_mgr;
 mod gateway_control;
 mod kevent_client;
@@ -41,6 +42,7 @@ pub mod test_config;
 pub use aicc_client::*;
 pub use aicc_usage_log::*;
 pub use app_doc::*;
+pub use app_install::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
 pub use cyfs_gateway_api::{
