@@ -1285,7 +1285,6 @@ mod tests {
             "capabilityInvocation": ["#main_key"],
             "exp": 4102444800u64,
             "iat": 1700000000u64,
-            "version_seq": 0,
             "name": "alice",
             "display_name": "Alice",
             "wallets": {

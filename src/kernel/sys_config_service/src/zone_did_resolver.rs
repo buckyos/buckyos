@@ -276,12 +276,13 @@ impl ZoneDidResolver {
     }
 
     fn doc_version(encoded: &EncodedDocument) -> Option<u64> {
-        encoded
-            .clone()
-            .to_json_value()
-            .ok()?
-            .get("version_seq")?
-            .as_u64()
+        let value = encoded.clone().to_json_value().ok()?;
+        value.get("iat").and_then(Value::as_u64).or_else(|| {
+            value
+                .get("exp")
+                .and_then(Value::as_u64)
+                .map(|exp| exp.saturating_sub(DEFAULT_EXPIRE_TIME))
+        })
     }
 
     async fn load_device_doc(&self, key: &str) -> Result<Option<EncodedDocument>, String> {
@@ -399,7 +400,8 @@ impl ZoneDidResolver {
     // 把一条 cache 登记（state + 可选 doc）翻译成回答。纯函数便于单测。
     // state JSON 字段（需求 §5.4）：
     //   document_status: active|missing|revoked|tombstoned|migrated|expired（必填）
-    //   document_version / effective_owner / authority_seq / doc_hash / migration_target（可选）
+    //   document_version（当前发布文档的 iat）/ effective_owner / authority_seq /
+    //   doc_hash / migration_target（可选）
     //   updated_at / updated_by：审计字段，resolver 不消费
     fn cache_answer(
         state_str: &str,
@@ -443,10 +445,23 @@ impl ZoneDidResolver {
             return Err("migrated entry requires migration_target".to_string());
         }
 
-        let version = state
-            .get("document_version")
-            .and_then(|v| v.as_u64())
-            .or_else(|| document.as_ref().and_then(Self::doc_version));
+        let declared_version = state.get("document_version").and_then(|v| v.as_u64());
+        let document_version = document.as_ref().and_then(Self::doc_version);
+        if status == PublishedStatus::Active && *doc_type != DidDocType::Info {
+            let document_version = document_version.ok_or_else(|| {
+                "active document must carry iat or exp so document_version can be derived"
+                    .to_string()
+            })?;
+            if let Some(declared_version) = declared_version {
+                if declared_version != document_version {
+                    return Err(format!(
+                        "document_version {} does not match document iat {}",
+                        declared_version, document_version
+                    ));
+                }
+            }
+        }
+        let version = document_version.or(declared_version);
         let authority_seq = state.get("authority_seq").and_then(|v| v.as_u64());
         let doc_hash = state
             .get("doc_hash")
@@ -1680,15 +1695,23 @@ mod tests {
         let state = json!({"document_status": "active"}).to_string();
         assert!(ZoneDidResolver::cache_answer(state.as_str(), None, &DidDocType::Owner).is_err());
 
-        let doc = json!({"marker": "cached", "version_seq": 3}).to_string();
+        let doc = json!({"marker": "cached", "iat": 3}).to_string();
         let answer =
             ZoneDidResolver::cache_answer(state.as_str(), Some(doc), &DidDocType::Owner).unwrap();
         let ZoneAnswer::Published(published) = answer else {
             panic!("expected published answer");
         };
         assert_eq!(published.status, PublishedStatus::Active);
-        // state 未给 document_version 时回落到文档自带 version_seq
+        // state 未给 document_version 时回落到文档 revision iat
         assert_eq!(published.version, Some(3));
+    }
+
+    #[test]
+    fn document_version_falls_back_to_exp_derived_iat() {
+        let document = EncodedDocument::JsonLd(json!({
+            "exp": DEFAULT_EXPIRE_TIME + 7,
+        }));
+        assert_eq!(ZoneDidResolver::doc_version(&document), Some(7));
     }
 
     #[test]
@@ -1703,7 +1726,7 @@ mod tests {
             "updated_by": "admin",
         })
         .to_string();
-        let doc = json!({"marker": "cached"}).to_string();
+        let doc = json!({"marker": "cached", "iat": 5}).to_string();
         let answer =
             ZoneDidResolver::cache_answer(state.as_str(), Some(doc), &DidDocType::Owner).unwrap();
         let (status, content_type, body) = ZoneDidResolver::answer_to_response("x", answer);
@@ -1715,6 +1738,20 @@ mod tests {
         assert_eq!(buckyos["effectiveOwner"], "did:bns:alice");
         assert_eq!(buckyos["authoritySeq"], 2);
         assert_eq!(buckyos["docHash"], "sha256:pinned");
+    }
+
+    #[test]
+    fn cache_rejects_document_version_that_differs_from_iat() {
+        let state = json!({
+            "document_status": "active",
+            "document_version": 6,
+        })
+        .to_string();
+        let doc = json!({"marker": "cached", "iat": 5}).to_string();
+        let error = ZoneDidResolver::cache_answer(state.as_str(), Some(doc), &DidDocType::Owner)
+            .err()
+            .unwrap();
+        assert!(error.contains("does not match document iat"));
     }
 
     #[test]

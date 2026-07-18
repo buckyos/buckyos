@@ -18,7 +18,7 @@ use http_body_util::{BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
-use name_client::{update_did_cache, UpdateSource};
+use name_client::GLOBAL_NAME_CLIENT;
 use name_lib::*;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -341,8 +341,6 @@ impl ActiveServer {
         };
         device_document.iat = now;
         device_document.exp = exp;
-        device_document.version_seq = Some(0);
-
         let device_mini_document = DeviceMiniDocument::new_by_device_document(&device_document);
         let mut device_info = DeviceInfo::from_device_doc(&device_document);
         device_info
@@ -543,16 +541,19 @@ impl ActiveServer {
         let zone_info = sn_client.get_zone_info().await?;
         validate_sn_zone_info(&req, &zone_info)?;
 
-        update_did_cache(
-            req.prepared.names.zone_did.clone(),
-            Some(DidDocType::Zone),
-            EncodedDocument::Jwt(req.signed_documents.zone_document_jwt.clone()),
-            Some(UpdateSource::Authority),
-        )
-        .await
-        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-
         persist_activation(&req, &effective_owner, &zone_info)?;
+
+        if let Some(name_client) = GLOBAL_NAME_CLIENT.get() {
+            if let Err(error) = name_client.add_verified_cache(
+                req.prepared.names.zone_did.clone(),
+                Some(DidDocType::Zone),
+                EncodedDocument::Jwt(req.signed_documents.zone_document_jwt.clone()),
+            ) {
+                warn!("project activated zone document into DID cache failed: {error}");
+            }
+        } else {
+            warn!("Name client not initialized; skip activated zone document cache projection");
+        }
 
         tokio::task::spawn(async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1015,7 +1016,6 @@ fn assemble_zone_document_internal(
         prepared.device_document.name.clone(),
         device_mini_document_jwt.to_string(),
     );
-    zone_document.version_seq = Some(0);
     Ok(zone_document)
 }
 
@@ -1092,11 +1092,6 @@ fn validate_document_times(prepared: &PreparedActiveDocuments) -> Result<(), RPC
             "DeviceDocument issued too far in the future: iat {}, now {}",
             prepared.device_document.iat, now
         )));
-    }
-    if prepared.device_document.version_seq.is_none() {
-        return Err(RPCErrors::ReasonError(
-            "DeviceDocument version_seq is missing".to_string(),
-        ));
     }
     Ok(())
 }

@@ -403,7 +403,7 @@ type DomainBindingState =
 - [x] DeviceDocument 的 `id` 使用 zone scoped DID，`owner`、`zone_did`、device key、net_id、rtcp、ddns_sn_url、support_container 与 topology 一致。
 - [x] DeviceMiniDocument 从同一 DeviceDocument 生成。
 - [x] `assemble_zone_document` 只接受已通过 owner key 验签的三个子 JWT；组装时复用原 prepare payload和 JWT，不重新生成时间字段。
-- [x] ZoneDocument 使用 owner key、zone DID、owner DID、`boot_jwt`、`devices`、`mini_device_jwts` 和 `oods/sn` 构造，`version_seq` 必须存在。
+- [x] ZoneDocument 使用 owner key、zone DID、owner DID、`boot_jwt`、`devices`、`mini_device_jwts` 和 `oods/sn` 构造，并以 `iat` 作为 revision；不再构造 `version_seq`。
 
 ### 8.2 钱包签名
 
@@ -431,7 +431,7 @@ type DomainBindingState =
 - [x] Boot/Zone 的 zone DID、owner DID、oods、sn；Device 的 id/name/zone/owner/key/net_id/rtcp；Mini 的 name/key/rtcp 全部互相一致。
 - [x] device private key 派生的公钥与 DeviceDocument default key 一致。
 - [x] 当前请求的 gateway/domain mapping 与签名内容一致，防止签完后篡改 UI 参数。
-- [x] 四份文档均未过期，`iat/exp/version_seq` 满足 name-lib 规则。
+- [x] 四份文档均未过期，且可由 `iat`（或 `exp - DEFAULT_EXPIRE_TIME`）得出 revision；`version_seq` 不参与校验。
 - [x] ZoneDocument JWT UTF-8 长度 `< bns_client::MAX_INLINE_DOCUMENT`。典型单 OOD 当前约 3KB，但必须用测试守住 4KB 上限。
 
 ## 9. P5：publish document、投影确认与本地收尾

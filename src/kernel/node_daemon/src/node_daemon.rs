@@ -2161,13 +2161,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     fn test_owner_document() -> EncodedDocument {
-        let mut owner = OwnerDocument::new(
+        let owner = OwnerDocument::new(
             DID::new("bns", "alice"),
             "alice".to_string(),
             "alice@test".to_string(),
             test_cache_owner_key(),
         );
-        owner.version_seq = Some(0);
         owner
             .encode(Some(
                 &EncodingKey::from_ed_pem(TEST_OWNER_PRIVATE_KEY.as_bytes()).unwrap(),

@@ -2,7 +2,7 @@
 //! 适配与 candidate 绑定校验（doc/App 安装协议.md §2、§9）。
 //!
 //! 生产实现只是 name-client `resolve_did_ex` 的 adapter：验证算法（expected
-//! owner、doc_hash、iat 时刻 key、revoke_before_iat）全部由 name-client 完成，
+//! owner、doc_hash、iat 时刻 key、valid_iat）全部由 name-client 完成，
 //! 这里不复制第二套验签，只做协议状态映射与硬约束复查。
 
 use async_trait::async_trait;

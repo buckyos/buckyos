@@ -243,7 +243,8 @@ DID Object Card MUST 是合法 DID Document，并至少包含：
 | `controller` | SHOULD | 对象 controller DID。 |
 | `verificationMethod` | SHOULD | 对象或 controller 的验证方法。 |
 | `service` | MUST | 至少包含一个 `DIDObjectService`。 |
-| `exp` / `iat` / `version_seq` | MAY | 当前结构已保留时效和版本字段。 |
+| `exp` / `iat` | MAY | 当前结构已保留时效字段；文档 revision 使用 `iat`，缺失时可由 `exp - DEFAULT_EXPIRE_TIME` 推导。 |
+| `version_seq` | MAY | 仅作为用户自定义扩展保留，不参与 revision 或 anti-rollback。 |
 | `keyScope` | MAY | 当前结构已保留 key scope 映射，并兼容别名 `buckyos:scopes`。 |
 
 `DIDObjectService` 字段：

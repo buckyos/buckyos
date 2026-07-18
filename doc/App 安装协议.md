@@ -127,7 +127,7 @@ resolve_did(app_did, doc_type = "app")
 
 - App DID 表示逻辑应用身份；
 - `doc_type = "app"` 表示在该名字下解析 App Document，而不是默认的 `zone` 文档；
-- App Document Object ID 表示某一不可变 body；App Document 的 `version` 表示应用版本；resolver metadata 中的 `document_version` / W3C `versionId` 表示权威发布序号，三者不得混用；
+- App Document Object ID 表示某一不可变 body；App Document 的 `version` 表示应用版本；resolver metadata 中的 `document_version` / W3C `versionId` 表示当前发布文档的 revision `iat`，三者不得混用；
 - 同一 App DID 可以随生命周期发布多个 App Document，但普通解析返回当前生效结果。安装历史版本应使用被明确固定且仍可验证为已发布集合成员的 Object ID 或版本解析能力，不能把版本标签拼进 App DID 后假定其天然可信；
 - 安装器必须记录 App DID、`doc_type`、实际安装的 App Document Object ID、发布版本和解析证据，不能只记录可变化的名称或应用版本字符串。
 
@@ -139,7 +139,7 @@ Anchored body：权威源给出 doc_hash 时，body hash 与之相等
 NeedProof body：document.owner == expected_owner
                 ∧ hash 匹配（若有锚点）
                 ∧ 由 iat 时刻有效的 owner key 验签
-                ∧ 满足 owner document 的 revoke_before_iat 等策略
+                ∧ 满足 owner document 的 valid_iat 等策略
 ```
 
 验证 `NeedProof` body 的 owner 时递归调用 `resolve_did(expected_owner, "owner")`。Owner Document 是递归基，只接受 DID method 权威渠道或其明确锚定的结果。Installer 不得自行从 App Document 的 `owner` 字段建立信任链。
@@ -916,7 +916,7 @@ Chunks / Images / Static Assets / Models / Prompts
 
 具体优先级可以由网络策略、隐私、价格、速度和 Source 信誉决定。所有来源最终必须通过相同内容身份校验。
 
-本节的“多源”只指 App Document body、Package Meta、Chunk 和 `.pikg` 的内容传输。DID 主动查询不按下载 Source 竞价或并发选优：它由内核为目标 DID method 选择至多一个权威发布渠道和显式有序的少数补充源，严格 first-win。真正的多来源合并发生在 DID cache，且必须先比较证据等级，再在同级内比较 `document_version / iat`。
+本节的“多源”只指 App Document body、Package Meta、Chunk 和 `.pikg` 的内容传输。DID 主动查询不按下载 Source 竞价或并发选优：它由内核为目标 DID method 选择至多一个权威发布渠道和显式有序的少数补充源，严格 first-win。真正的多来源合并发生在 DID cache，且必须先比较证据等级，再在同级内只按文档 `iat` 排序，并用 content hash 判断同一性与同 revision 冲突。
 
 ### 8.3 下载可靠性
 
@@ -965,7 +965,7 @@ UI 不应把“由好友分享”“由可信 Source 下载”错误展示为“
 - `NeedProof` App Document 的签名证明签字权，DID method 的权威状态证明发布权，二者不能互相替代；从权威信道直接取得的 `Anchored` body 不重复要求外部签名，但仍必须通过 `id` 与权威 `doc_hash` 等一致性检查；
 - `expected_owner` 只能来自权威源 owner 绑定或 DID 名字结构的确定性默认值。候选 App Document 自声明的 `owner` 只能用于一致性检查，不得作为寻找验签 key 的起点；
 - 所有 body 的 `document.id` 必须等于输入 App DID；`NeedProof` body 的 `document.owner` 还必须等于 `expected_owner`。任一不一致都应拒绝并记录高风险 warning；
-- 需要证明的 App Document 必须递归解析 `resolve_did(expected_owner, "owner")`，按文档 `iat` 时刻有效的 owner key 验签，并应用 `revoke_before_iat` 等当前 owner policy；
+- 需要证明的 App Document 必须递归解析 `resolve_did(expected_owner, "owner")`，按文档 `iat` 时刻有效的 owner key 验签，并应用 `valid_iat` 等当前 owner policy；
 - `need_proof` 由取回信道和 `doc_type` 契约决定，不能因 body 缺少签名字段而降级为“无需验证”。`doc_type = "app"` 是需要验证的 Document，不得走 Info 免验证路径；
 - Owner 变更或委托只有经 DID method 权威源发布才生效；App Document 自己修改 `owner` 字段不能改变所有权；
 - 联系人关系、第三方信用 Oracle 和未签名状态只影响附加信任提示或安装策略，不能放宽 `id / expected_owner / doc_hash / terminal status` 等硬约束。
@@ -976,7 +976,7 @@ Installer 必须遵守 resolver 返回的证据与 cache 语义：
 
 1. `Revoked` / `Tombstoned` 是权威回答和终止状态。必须删除或屏蔽 positive cache，禁止回退到旧 App Document、过期 cache、自签名候选或好友分享包；只有权威源的新状态可以翻篇。
 2. `Missing` 表示权威源确认从未发布该 `doc_type`；`unknown` 表示权威源没有回答。网络错误不得伪装成 `Missing`，两者的 UI、错误码和重试策略必须不同。
-3. DID cache 的证据等级为 `Published > Verified > Unverified`；解析结果的 body 信道证据则是 `Anchored / NeedProof`，二者不得混成一个字段。Cache 合并必须先比较证据等级，同级才比较 `document_version / iat`；更新的自签名候选不能覆盖旧一些的已发布结果。
+3. DID cache 的证据等级为 `Published > Verified > Unverified`；解析结果的 body 信道证据则是 `Anchored / NeedProof`，二者不得混成一个字段。Cache 合并必须先比较证据等级，同级只比较文档 revision `iat`，同一 `iat` 的不同 content hash 必须作为冲突拒绝；`version_seq` 不参与比较。更新的自签名候选不能覆盖旧一些的已发布结果。
 4. Zone Resolver 是 Zone 内权威 L1 cache；其明确回答可以直接使用，`unknown` 才进入本机 L2 cache 和 provider 链。本机覆盖短路所有正常查询，必须带 `LocalAuthorityOverride` warning 和 scope。
 5. 权威源不可达时，正常离线路径是使用未作废且策略允许的已验证 cache。只有本地没有发布/负状态记忆且策略明确允许时，未验证观察候选才可以 `ObservedFallback` 状态露面；`STRICT_PUBLIC` 和 `NORMAL` 默认不得据此 Deploy。
 
@@ -1056,7 +1056,7 @@ Installer 必须防范：
   "app_doc_id": "obj:appdoc:sha256:...",
   "did_resolution": {
     "document_status": "Active",
-    "document_version": 27,
+    "document_version": 1769990000,
     "evidence": "Anchored",
     "verification_status": "Passed",
     "cache_status": "ZoneHit"
@@ -1315,7 +1315,7 @@ pub struct InclusionProof {
   "app_doc_id": "obj:appdoc:sha256:...",
   "did_resolution": {
     "document_status": "Active",
-    "document_version": 27,
+    "document_version": 1769990000,
     "expected_owner": "did:bns:buckyos",
     "evidence": "Anchored",
     "verification_status": "Passed",
@@ -1386,7 +1386,7 @@ InstallPlan 必须在 App Document、DID 发布状态/owner 绑定、目标平�
 did:bns:$app_name.$owner_name
 ```
 
-版本不属于 App DID 本身：应用语义版本保存在 App Document `version`，权威发布版本保存在 resolution metadata 的 `document_version / versionId`，精确内容由 App Document Object ID 固定。不得用 `#$version_tag` 绕过 `(did, "app")` 的独立版本与撤销语义。
+版本不属于 App DID 本身：应用语义版本保存在 App Document `version`，权威发布 revision 保存在 resolution metadata 的 `document_version / versionId`，其值等于当前发布文档的 `iat`，精确内容由 App Document Object ID 固定。不得用 `#$version_tag` 绕过 `(did, "app")` 的独立版本与撤销语义。
 
 BuckyOS 不强制显示名称全局唯一，但 Source 内部应唯一；推荐命名格式：
 
@@ -1493,7 +1493,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - canonical JSON 固定为 JCS（RFC 8785），实现即 `ndn-lib::build_named_object_by_json` 的 `serde_jcs` 路径；禁止对 `serde_json::to_string()` 结果直接做 hash。
 - App Document Object ID 的 obj type 固定为 `appdoc`：`ObjId = appdoc:hex(sha256(JCS(body)))`。Package Meta 沿用 `pkg` obj type 与同一 JCS 规则。
 - `APPDOC.wt`（JWT 封装）的 Object ID 对 JWT claims（payload JSON）按同一规则计算；`APPDOC.wt` 与 `APPDOC.json` 的一致性判断 = 两者 canonical JSON 相等（等价于 App Document Object ID 相等）。
-- `version` 仅表示应用语义版本；`document_version / versionId` 仅存在于 resolver metadata 与 `DidResolutionSnapshot`，两者不得复用同一字段。
+- `version` 仅表示应用语义版本；`document_version / versionId` 仅存在于 resolver metadata 与 `DidResolutionSnapshot`，值等于发布文档的 revision `iat`，两者不得复用同一字段。
 - `pkg_list` 各 entry（SubPkgDesc）新增 `selector { os?, arch?, min_kernel_version? }` 与 `required`（省略视为 `true`）；已知 key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 selector 时按固定命名表派生，未知 key 无显式 selector 时不参与自动选择。`pkg_objid`（Package Meta Object ID）与 `source_url`（内容获取位置）保持独立字段。
 - App DID 的建议命名沿用 §12.1：`did:bns:$app_name.$owner_name`；builder 必须显式接收 App DID 或按该规则显式构造，禁止把 candidate 自声明 owner 拼出的 DID 当权威身份。
 

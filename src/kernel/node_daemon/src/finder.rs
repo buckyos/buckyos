@@ -812,7 +812,7 @@ pub(crate) fn add_discovered_device_cache(discovered: &HashMap<String, Discovere
         if !node.device_doc_jwt.is_empty() {
             match EncodedDocument::from_str(node.device_doc_jwt.clone()) {
                 Ok(device_doc) => {
-                    if let Err(err) = name_client.update_did_cache(
+                    if let Err(err) = name_client.add_observed_cache(
                         device_did.clone(),
                         Some(DidDocType::Device),
                         device_doc,
@@ -1091,13 +1091,12 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
     }
 
     fn test_owner_document() -> EncodedDocument {
-        let mut owner = OwnerDocument::new(
+        let owner = OwnerDocument::new(
             DID::new("bns", "alice"),
             "alice".to_string(),
             "alice@test".to_string(),
             jwk(OWNER_PUBLIC_X),
         );
-        owner.version_seq = Some(0);
         owner
             .encode(Some(&encoding_key(OWNER_PRIVATE_KEY)))
             .unwrap()

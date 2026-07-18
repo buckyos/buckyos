@@ -137,7 +137,7 @@ boot/config
 | `documentStatus=missing` | 已支持 | Zone 对 Zone 内名字有权威且确认不存在时返回 |
 | `documentStatus=revoked/tombstoned` | 未产生 | 当前没有 Zone 内吊销登记；引入 `resolver/cache` 后补 `410` 信封 |
 | `documentStatus=migrated/expired` | 未产生 | 当前无迁移和过期状态控制面 |
-| `documentVersion` / `versionId` | 部分支持 | 从文档 `version_seq` 提取；没有 version 时缺省 |
+| `documentVersion` / `versionId` | 部分支持 | 等于当前发布文档的 `iat`；缺 `iat` 时由 `exp - DEFAULT_EXPIRE_TIME` 推导 |
 | `effectiveOwner` | 部分支持 | Zone 自身和 Owner doc 可带；DeviceInfo / DeviceDocument 等不一定带 |
 | `docHash` | 部分支持 | 对有“已发布 body”语义的 active 文档计算编码后 body 的 sha256；Info 类不带 |
 | anchor-only `docHash` | 未支持 | 当前 active 命中都内联返回文档，不只返回锚点 |
@@ -338,7 +338,8 @@ Booting 设计文档要求：
 | `authentication` / `assertionMethod` / `capabilityInvocation` 中引用默认 key 的部分 | 本地 Root Trust |
 | key material 相关扩展、`keyScope` | 默认保留本地 Root Trust 对应信息；如需扩展 key scope，必须经维护流程或受控系统配置 |
 | `name` / `display_name` / `avatar` / `meta` / `wallets` / `binded_zone_list` / service profile | 可来自权威源 |
-| `version_seq` / `mini_version_seq` / `valid_iat` | 可来自权威源，但不能导致本地 key 被替换 |
+| `valid_iat` | 可来自权威源，作为 iat 轴上的 anti-rollback 事实，但不能导致本地 key 被替换 |
+| `version_seq` / `mini_version_seq` | 仅作为兼容读取的用户扩展保留，不参与 revision、guard 或 key 决策 |
 
 如果权威源 OwnerDocument 丢失、损坏或公钥变化，resolver 的行为应是：
 

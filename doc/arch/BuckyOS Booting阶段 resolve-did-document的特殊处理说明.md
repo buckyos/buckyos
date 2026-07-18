@@ -131,7 +131,7 @@ Booting 阶段可以继续复用标准 DID Resolve 的部分能力，例如：
 - Document 格式检查；
 - 签名验证；
 - DID 绑定关系验证；
-- Version / Sequence 判断。
+- revision（`iat`）判断。
 
 但 Booting 阶段真正特殊的地方不在于 “resolve” 本身，而在于：
 
@@ -366,7 +366,7 @@ BuckyOS 不能假设用户总有物理访问能力，因此 Booting 阶段必须
 | Resolve 失败 | Warm Restart 下忽略；First Boot 下失败 |
 | 签名验证失败 | Warm Restart 下忽略；First Boot 下失败 |
 | DID 绑定关系不正确 | Warm Restart 下忽略；First Boot 下失败 |
-| Version / Sequence 不符合预期 | 按状态机判断，不能安全演进则忽略 |
+| `iat` 早于 LKGS，或同一 `iat` 对应不同内容 | 作为回滚或 revision 冲突忽略 |
 | OOD membership 变化不可平滑处理 | 忽略 |
 | 共识模型发生质变 | 忽略 |
 | 可能导致系统失去管理入口 | 忽略 |
@@ -755,4 +755,3 @@ BuckyOS Booting 阶段 resolve-did-document 的特殊处理，本质上是为了
 更高层的系统设计原则是：
 
 > Activation 建立信任，Boot 恢复信任，Runtime 演进状态。
-

@@ -31,9 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
-use name_client::{
-    resolve_did, update_did_cache, DnsProvider, NsProvider, UpdateSource, GLOBAL_NAME_CLIENT,
-};
+use name_client::{resolve_did, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT};
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
     DID,
@@ -66,8 +64,10 @@ impl BootMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmoothUpgradeResult {
     Compatible,
-    // candidate 比当前状态旧（回滚保护，§11 "Version / Sequence 不符合预期"）
+    // candidate 的 iat 比当前状态旧（回滚保护）
     IncompatibleVersionRollback,
+    // 相同 iat 对应不同文档内容，revision 冲突
+    IncompatibleRevisionConflict,
     // 单 OOD <-> 多 OOD 共识集群是运行模型质变，不能通过 Boot 自动完成（§7）
     IncompatibleConsensusModelChanged,
     // candidate 里 zone 不再有任何 OOD，系统无法运行
@@ -82,6 +82,7 @@ impl SmoothUpgradeResult {
         match self {
             SmoothUpgradeResult::Compatible => "compatible",
             SmoothUpgradeResult::IncompatibleVersionRollback => "version_rollback",
+            SmoothUpgradeResult::IncompatibleRevisionConflict => "revision_conflict",
             SmoothUpgradeResult::IncompatibleConsensusModelChanged => "consensus_model_changed",
             SmoothUpgradeResult::IncompatibleMembershipChange => "membership_change",
             SmoothUpgradeResult::IncompatibleRoleChange => "self_role_changed",
@@ -309,14 +310,12 @@ pub fn check_zone_smooth_upgrade(
     candidate: &ZoneDocument,
     device_name: &str,
 ) -> SmoothUpgradeResult {
-    // 回滚保护：candidate 比当前接受的状态旧则忽略。
+    // revision 只以 iat 排序；同 iat 的不同内容是冲突。
     if candidate.iat < current.iat {
         return SmoothUpgradeResult::IncompatibleVersionRollback;
     }
-    if let (Some(current_seq), Some(candidate_seq)) = (current.version_seq, candidate.version_seq) {
-        if candidate_seq < current_seq {
-            return SmoothUpgradeResult::IncompatibleVersionRollback;
-        }
+    if candidate.iat == current.iat && candidate != current {
+        return SmoothUpgradeResult::IncompatibleRevisionConflict;
     }
 
     let current_ood_count = current.oods.iter().filter(|o| o.node_type.is_ood()).count();
@@ -494,7 +493,7 @@ pub async fn boot_resolve_zone_document(
     if let Some(zone_document) =
         load_debug_zone_document_override(node_identity, &owner_public_key)?
     {
-        update_zone_document_cache(&zone_document).await;
+        update_zone_document_cache(&zone_document);
         return Ok(zone_document);
     }
 
@@ -516,9 +515,8 @@ pub async fn boot_resolve_zone_document(
         (None, Ok(candidate)) => {
             // First Boot：Success + Acceptable => Persist As Known Good State（§16.1）
             info!(
-                "first boot: accept zone document (iat={}, version_seq={:?}, oods={})",
+                "first boot: accept zone document (iat={}, oods={})",
                 candidate.iat,
-                candidate.version_seq,
                 candidate.oods.len()
             );
             if let Err(err) = persist_last_known_zone_state(&candidate) {
@@ -548,11 +546,9 @@ pub async fn boot_resolve_zone_document(
                 ) {
                     SmoothUpgradeResult::Compatible => {
                         info!(
-                            "warm restart: accept new zone document (current iat={} seq={:?} -> candidate iat={} seq={:?})",
+                            "warm restart: accept new zone document (current iat={} -> candidate iat={})",
                             state.zone_document.iat,
-                            state.zone_document.version_seq,
-                            candidate.iat,
-                            candidate.version_seq
+                            candidate.iat
                         );
                         if let Err(err) = persist_last_known_zone_state(&candidate) {
                             warn!("persist last known zone state failed: {}", err);
@@ -563,11 +559,9 @@ pub async fn boot_resolve_zone_document(
                         // §17.3：忽略时保留明确日志（当前版本 / candidate 版本 /
                         // 忽略原因 / boot 模式 / 继续使用 LKGS）。
                         warn!(
-                            "warm restart: resolved zone document (iat={}, seq={:?}) is NOT smoothly evolvable from last known good state (iat={}, seq={:?}), reason={}. Ignore it and continue booting with last known good state.",
+                            "warm restart: resolved zone document (iat={}) is NOT smoothly evolvable from last known good state (iat={}), reason={}. Ignore it and continue booting with last known good state.",
                             candidate.iat,
-                            candidate.version_seq,
                             state.zone_document.iat,
-                            state.zone_document.version_seq,
                             incompatible.as_str()
                         );
                         state.zone_document
@@ -578,11 +572,10 @@ pub async fn boot_resolve_zone_document(
         (Some(state), Err(err)) => {
             // Warm Restart：resolve 失败不应导致系统不可用（§8.2 / §10）。
             warn!(
-                "warm restart: resolve zone document failed ({}). Continue booting with last known good state (accepted_at={}, iat={}, seq={:?}).",
+                "warm restart: resolve zone document failed ({}). Continue booting with last known good state (accepted_at={}, iat={}).",
                 err,
                 state.accepted_at,
-                state.zone_document.iat,
-                state.zone_document.version_seq
+                state.zone_document.iat
             );
             state.zone_document
         }
@@ -590,11 +583,11 @@ pub async fn boot_resolve_zone_document(
 
     // Accept 之后写入 did cache：让本进程（及 runtime 各组件）后续 resolve
     // 当前 zone 的 did 时有确定回答。cache 只是投影，Accept 决策不依赖它。
-    update_zone_document_cache(&accepted).await;
+    update_zone_document_cache(&accepted);
     Ok(accepted)
 }
 
-async fn update_zone_document_cache(zone_document: &ZoneDocument) {
+fn update_zone_document_cache(zone_document: &ZoneDocument) {
     let doc_value = match serde_json::to_value(zone_document) {
         Ok(value) => value,
         Err(err) => {
@@ -605,14 +598,15 @@ async fn update_zone_document_cache(zone_document: &ZoneDocument) {
             return;
         }
     };
-    if let Err(err) = update_did_cache(
+    let Some(name_client) = GLOBAL_NAME_CLIENT.get() else {
+        warn!("Name client not initialized; skip accepted zone document cache projection");
+        return;
+    };
+    if let Err(err) = name_client.add_verified_cache(
         zone_document.id.clone(),
         Some(DidDocType::Zone),
         EncodedDocument::JsonLd(doc_value),
-        Some(UpdateSource::Authority),
-    )
-    .await
-    {
+    ) {
         warn!(
             "update accepted zone document into did cache failed: {}",
             err
@@ -684,14 +678,13 @@ mod tests {
         serde_json::from_str(TEST_JWK).unwrap()
     }
 
-    fn make_zone_document(iat: u64, seq: Option<u64>, oods: &[&str]) -> ZoneDocument {
+    fn make_zone_document(iat: u64, oods: &[&str]) -> ZoneDocument {
         let mut doc = ZoneDocument::new(
             DID::new("web", "test.buckyos.io"),
             DID::new("bns", "testowner"),
             test_jwk(),
         );
         doc.iat = iat;
-        doc.version_seq = seq;
         doc.oods = oods
             .iter()
             .map(|s| s.parse::<OODDescriptionString>().unwrap())
@@ -701,8 +694,8 @@ mod tests {
 
     #[test]
     fn smooth_upgrade_accepts_raft_membership_growth() {
-        let current = make_zone_document(100, Some(1), &["ood1", "ood2", "ood3"]);
-        let candidate = make_zone_document(200, Some(2), &["ood1", "ood2", "ood3", "ood4", "ood5"]);
+        let current = make_zone_document(100, &["ood1", "ood2", "ood3"]);
+        let candidate = make_zone_document(200, &["ood1", "ood2", "ood3", "ood4", "ood5"]);
         assert_eq!(
             check_zone_smooth_upgrade(&current, &candidate, "node7"),
             SmoothUpgradeResult::Compatible
@@ -711,15 +704,15 @@ mod tests {
 
     #[test]
     fn smooth_upgrade_rejects_single_to_cluster() {
-        let current = make_zone_document(100, Some(1), &["ood1"]);
-        let candidate = make_zone_document(200, Some(2), &["ood1", "ood2", "ood3"]);
+        let current = make_zone_document(100, &["ood1"]);
+        let candidate = make_zone_document(200, &["ood1", "ood2", "ood3"]);
         assert_eq!(
             check_zone_smooth_upgrade(&current, &candidate, "node7"),
             SmoothUpgradeResult::IncompatibleConsensusModelChanged
         );
         // 反向（集群缩回单机，且 candidate 更新）同样是质变
-        let cluster = make_zone_document(100, Some(1), &["ood1", "ood2", "ood3"]);
-        let shrink_to_single = make_zone_document(300, Some(3), &["ood1"]);
+        let cluster = make_zone_document(100, &["ood1", "ood2", "ood3"]);
+        let shrink_to_single = make_zone_document(300, &["ood1"]);
         assert_eq!(
             check_zone_smooth_upgrade(&cluster, &shrink_to_single, "node7"),
             SmoothUpgradeResult::IncompatibleConsensusModelChanged
@@ -728,29 +721,29 @@ mod tests {
 
     #[test]
     fn smooth_upgrade_rejects_version_rollback() {
-        let current = make_zone_document(200, Some(5), &["ood1"]);
-        let older_iat = make_zone_document(100, Some(6), &["ood1"]);
+        let current = make_zone_document(200, &["ood1"]);
+        let older_iat = make_zone_document(100, &["ood1"]);
         assert_eq!(
             check_zone_smooth_upgrade(&current, &older_iat, "node7"),
             SmoothUpgradeResult::IncompatibleVersionRollback
         );
-        let older_seq = make_zone_document(300, Some(4), &["ood1"]);
+        let conflicting_revision = make_zone_document(200, &["ood1", "ood2", "ood3"]);
         assert_eq!(
-            check_zone_smooth_upgrade(&current, &older_seq, "node7"),
-            SmoothUpgradeResult::IncompatibleVersionRollback
+            check_zone_smooth_upgrade(&current, &conflicting_revision, "node7"),
+            SmoothUpgradeResult::IncompatibleRevisionConflict
         );
     }
 
     #[test]
     fn smooth_upgrade_rejects_empty_oods_and_self_role_change() {
-        let current = make_zone_document(100, Some(1), &["ood1", "ood2", "ood3"]);
-        let no_oods = make_zone_document(200, Some(2), &[]);
+        let current = make_zone_document(100, &["ood1", "ood2", "ood3"]);
+        let no_oods = make_zone_document(200, &[]);
         assert_eq!(
             check_zone_smooth_upgrade(&current, &no_oods, "ood1"),
             SmoothUpgradeResult::IncompatibleMembershipChange
         );
         // 本节点 ood1 在 candidate 里被移出 OOD 列表 => 角色变化，拒绝
-        let self_removed = make_zone_document(200, Some(2), &["ood2", "ood3", "ood4"]);
+        let self_removed = make_zone_document(200, &["ood2", "ood3", "ood4"]);
         assert_eq!(
             check_zone_smooth_upgrade(&current, &self_removed, "ood1"),
             SmoothUpgradeResult::IncompatibleRoleChange
@@ -779,7 +772,7 @@ mod tests {
         let tmp_dir = tempfile::tempdir().unwrap();
         let etc_dir = tmp_dir.path();
 
-        let doc = make_zone_document(100, Some(1), &["ood1"]);
+        let doc = make_zone_document(100, &["ood1"]);
         persist_last_known_zone_state_in(etc_dir, &doc).unwrap();
 
         let node_identity = LocalNodeIdentityConfig::new(

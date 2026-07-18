@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use name_client::DIDObjectClient;
-use name_lib::{ActionResponse, EventSubscribeRequest};
+use name_lib::{ActionResponse, EventSubscribeRequest, DEFAULT_EXPIRE_TIME};
 use serde_json::{json, Value};
 
 use super::{
@@ -135,7 +135,13 @@ impl AgentObjectAdapter for DidObjectProtocolAdapter {
             }],
             errors,
             cache_key: Some(resolved.object_url.clone()),
-            version: card.version_seq.map(|value| value.to_string()),
+            version: card
+                .iat
+                .or_else(|| {
+                    card.exp
+                        .map(|exp| exp.saturating_sub(DEFAULT_EXPIRE_TIME))
+                })
+                .map(|value| value.to_string()),
             route: req.route_trace,
             adapt_meta: json!({
                 "object_url": resolved.object_url,
