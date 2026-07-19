@@ -18,8 +18,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import GridLayoutBase, {
+  getCompactor,
   type LayoutItem as GridLayoutItem,
-  noCompactor,
 } from 'react-grid-layout'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Pagination } from 'swiper/modules'
@@ -195,6 +195,12 @@ function nextSupportedLocale(locale: SupportedLocale) {
 
 // Dead-zone insets only apply on mobile; desktop windows and grid use the full viewport.
 const zeroDeadZone = { top: 0, bottom: 0, left: 0, right: 0 }
+
+// Overlap-tolerant compactor: react-grid-layout must NOT displace other
+// items while dragging (its null-compactType collision pass shoves items
+// downward, even past maxRows). The store resolves all displacement on
+// drop via applyDragCollision; during the drag only the placeholder moves.
+const dragOverlayCompactor = getCompactor(null, true)
 
 // ---------------------------------------------------------------------------
 // DesktopRoute — now a thin view that delegates to the unified store
@@ -800,7 +806,7 @@ export function DesktopRoute() {
                               cancel: '.widget-interactive',
                               threshold: isMobile ? 5 : 4,
                             }}
-                            compactor={noCompactor}
+                            compactor={dragOverlayCompactor}
                             onDragStart={(_, oldItem, newItem) =>
                               handleGridDragStart(page.id, oldItem, newItem)
                             }

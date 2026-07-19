@@ -44,13 +44,11 @@ import type {
   AppIconItem,
   AppItemLayoutSettings,
   DeadZone,
-  DesktopPageState,
   DesktopPayload,
   DesktopSyncData,
   FormFactor,
   LayoutState,
   MockScenario,
-  PlacementType,
   RuntimeContainer,
   SupportedLocale,
   SystemPreferencesInput,
@@ -65,18 +63,15 @@ import type {
   WindowRecord,
 } from './ui'
 import {
+  applyDragCollision,
   clamp,
-  coordToSlot,
-  findNearestEmptySlot,
   invalidatePositions,
-  isPageFull,
   layoutStorageKey,
   migrateDeadZone,
   migrateToSlotModel,
   readJson,
   readWindowAppearancePreferences,
   reconcileLayoutWithDefaultApps,
-  reorderWithinPage,
   resolveLayout,
   runtimeStorageKey,
   sameWindowGeometry,
@@ -762,13 +757,14 @@ export class DesktopUIStore {
   // ========================================================================
 
   /**
-   * Handle drag-stop with proposal-compliant collision rules:
+   * Handle drag-stop with proposal-compliant collision rules
+   * (see `applyDragCollision` in layout.ts):
    *
-   * 1. **Empty target slot** → place directly, 100% success
-   * 2. **Occupied target, page NOT full** → local collision: bump
-   *    the displaced item to the nearest empty slot (Manhattan distance)
-   * 3. **Occupied target, page IS full** → same-page reorder:
-   *    shift items between source and target to make room
+   * 1. **Empty target footprint** → place directly, 100% success
+   * 2. **Occupied** → bump every displaced item to the nearest position
+   *    where its full footprint fits (same page only)
+   * 3. **Nothing fits** → same-page reorder for all-1×1 pages,
+   *    otherwise the drop reverts
    *
    * Drag logic is intentionally separate from resize reflow.
    */
@@ -798,105 +794,12 @@ export class DesktopUIStore {
         ...layoutState,
         pages: layoutState.pages.map((page) => {
           if (page.id !== pageId) return page
-          return this.applyDragCollision(page, oldItem, newItem, cols, rows, order)
+          return applyDragCollision(page, oldItem, newItem, cols, rows, order)
         }),
       },
     })
 
     this.persistLayout()
-  }
-
-  /**
-   * Apply drag collision rules to a single page.
-   */
-  private applyDragCollision(
-    page: DesktopPageState,
-    oldItem: { i: string; x: number; y: number; w: number; h: number } | null,
-    newItem: { i: string; x: number; y: number; w: number; h: number },
-    cols: number,
-    rows: number,
-    order: ScanOrder,
-  ): DesktopPageState {
-    const targetSlot = coordToSlot(newItem.x, newItem.y, cols, rows, order)
-    const sourceSlot = oldItem
-      ? coordToSlot(oldItem.x, oldItem.y, cols, rows, order)
-      : undefined
-
-    // Check if target slot is occupied by another item
-    const occupant = page.items.find((item) => {
-      if (item.id === newItem.i) return false
-      if (item.x === undefined || item.y === undefined) return false
-      return !(
-        newItem.x + newItem.w <= item.x ||
-        item.x + item.w <= newItem.x ||
-        newItem.y + newItem.h <= item.y ||
-        item.y + item.h <= newItem.y
-      )
-    })
-
-    // Rule 1: empty slot → place directly
-    if (!occupant) {
-      return {
-        ...page,
-        items: page.items.map((item) =>
-          item.id === newItem.i
-            ? {
-                ...item,
-                x: newItem.x,
-                y: newItem.y,
-                slotIndex: targetSlot,
-                placementType: 'manual' as PlacementType,
-              }
-            : item,
-        ),
-      }
-    }
-
-    // Rule 3: page is full → same-page reorder (shift items)
-    if (sourceSlot !== undefined && isPageFull(page, cols, rows, order)) {
-      return reorderWithinPage(page, sourceSlot, targetSlot, cols, rows, order)
-    }
-
-    // Rule 2: page not full → local collision (bump displaced to nearest empty)
-    const emptySlot = findNearestEmptySlot(
-      page,
-      occupant.x!,
-      occupant.y!,
-      cols,
-      rows,
-      order,
-      newItem.i, // exclude dragged item from occupancy check
-    )
-
-    return {
-      ...page,
-      items: page.items.map((item) => {
-        if (item.id === newItem.i) {
-          return {
-            ...item,
-            x: newItem.x,
-            y: newItem.y,
-            slotIndex: targetSlot,
-            placementType: 'manual' as PlacementType,
-          }
-        }
-        if (item.id === occupant.id && emptySlot) {
-          const bumpSlot = coordToSlot(emptySlot.x, emptySlot.y, cols, rows, order)
-          return {
-            ...item,
-            x: emptySlot.x,
-            y: emptySlot.y,
-            slotIndex: bumpSlot,
-            placementType: 'manual' as PlacementType,
-          }
-        }
-        // If no empty slot found, mark occupant as unpositioned (fallback)
-        if (item.id === occupant.id && !emptySlot) {
-          return { ...item, x: undefined, y: undefined, slotIndex: undefined }
-        }
-        return item
-      }),
-    }
   }
 
   moveItemBetweenPages(itemId: string, direction: -1 | 1) {

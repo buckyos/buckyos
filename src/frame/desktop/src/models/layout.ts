@@ -327,29 +327,21 @@ export function getMaxUsedSlot(
   return maxSlot
 }
 
-/**
- * Build a set of occupied slot indices for a page.
- */
-function getOccupiedSlots(
-  page: DesktopPageState,
-  cols: number,
-  rows: number,
-  order: ScanOrder,
-  excludeId?: string,
-): Set<number> {
-  const occupied = new Set<number>()
-  const cap = pageCapacity(cols, rows)
-  for (const item of page.items) {
-    if (item.id === excludeId) continue
-    if (item.x === undefined || item.y === undefined) continue
-    for (let dx = 0; dx < item.w; dx++) {
-      for (let dy = 0; dy < item.h; dy++) {
-        const slot = coordToSlot(item.x + dx, item.y + dy, cols, rows, order)
-        if (slot < cap) occupied.add(slot)
-      }
-    }
-  }
-  return occupied
+/** Axis-aligned cell rectangle on the grid. */
+export interface GridRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export function rectsOverlap(a: GridRect, b: GridRect): boolean {
+  return !(
+    a.x + a.w <= b.x ||
+    b.x + b.w <= a.x ||
+    a.y + a.h <= b.y ||
+    b.y + b.h <= a.y
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -580,30 +572,30 @@ export function resolveLayout(
 // ---------------------------------------------------------------------------
 
 /**
- * Find the nearest empty slot to `targetSlot` on the same page.
- * Search by Manhattan distance, with tie-break favoring the scan-order direction
- * (column-major: prefer below; row-major: prefer right).
+ * Find the nearest position where a `size`-shaped rect fully fits on the
+ * grid without overlapping any rect in `blocked`.
  *
- * Returns the (x, y) of the nearest empty slot, or null if page is full.
+ * Nearest by Manhattan distance from `from` (the displaced item's current
+ * top-left), tie-break by scan-order slot index.
  */
-export function findNearestEmptySlot(
-  page: DesktopPageState,
-  targetX: number,
-  targetY: number,
+export function findNearestFittingRect(
+  from: { x: number; y: number },
+  size: { w: number; h: number },
+  blocked: GridRect[],
   cols: number,
   rows: number,
   order: ScanOrder,
-  excludeId?: string,
 ): { x: number; y: number } | null {
-  const occupied = getOccupiedSlots(page, cols, rows, order, excludeId)
   const cap = pageCapacity(cols, rows)
 
   let best: { x: number; y: number; dist: number; slot: number } | null = null
 
   for (let slot = 0; slot < cap; slot++) {
-    if (occupied.has(slot)) continue
     const coord = slotToCoord(slot, cols, rows, order)
-    const dist = Math.abs(coord.x - targetX) + Math.abs(coord.y - targetY)
+    if (coord.x + size.w > cols || coord.y + size.h > rows) continue
+    const rect: GridRect = { x: coord.x, y: coord.y, w: size.w, h: size.h }
+    if (blocked.some((b) => rectsOverlap(rect, b))) continue
+    const dist = Math.abs(coord.x - from.x) + Math.abs(coord.y - from.y)
     if (!best || dist < best.dist || (dist === best.dist && slot < best.slot)) {
       best = { x: coord.x, y: coord.y, dist, slot }
     }
@@ -687,16 +679,130 @@ export function reorderWithinPage(
 }
 
 /**
- * Check if a page is full (all slots occupied).
+ * Apply drag collision rules to a single page after a drop.
+ *
+ * 1. **Empty target footprint** → place the dragged item directly.
+ * 2. **Occupied** → bump EVERY overlapped item to the nearest position
+ *    where its full w×h footprint fits: never inside the dragged item's
+ *    new footprint, never overlapping stationary or already-bumped items,
+ *    never out of bounds. Displacement stays on the same page.
+ * 3. **Nothing fits** → same-page reorder when dragged item and all
+ *    positioned items are 1×1 (classic full icon page), otherwise revert
+ *    the drop (page returned unchanged).
  */
-export function isPageFull(
+export function applyDragCollision(
   page: DesktopPageState,
+  oldItem: { i: string; x: number; y: number; w: number; h: number } | null,
+  newItem: { i: string; x: number; y: number; w: number; h: number },
   cols: number,
   rows: number,
   order: ScanOrder,
-): boolean {
-  const occupied = getOccupiedSlots(page, cols, rows, order)
-  return occupied.size >= pageCapacity(cols, rows)
+): DesktopPageState {
+  const targetSlot = coordToSlot(newItem.x, newItem.y, cols, rows, order)
+  const newRect: GridRect = {
+    x: newItem.x,
+    y: newItem.y,
+    w: newItem.w,
+    h: newItem.h,
+  }
+
+  const placeDragged = (item: LayoutItem): LayoutItem => ({
+    ...item,
+    x: newItem.x,
+    y: newItem.y,
+    slotIndex: targetSlot,
+    placementType: 'manual' as PlacementType,
+  })
+
+  const occupants = page.items.filter(
+    (item) =>
+      item.id !== newItem.i &&
+      item.x !== undefined &&
+      item.y !== undefined &&
+      rectsOverlap(newRect, { x: item.x, y: item.y, w: item.w, h: item.h }),
+  )
+
+  // Rule 1: empty footprint → place directly
+  if (occupants.length === 0) {
+    return {
+      ...page,
+      items: page.items.map((item) =>
+        item.id === newItem.i ? placeDragged(item) : item,
+      ),
+    }
+  }
+
+  // Rule 2: bump every occupant to the nearest fitting spot.
+  // Blocked cells = dragged item's new footprint + stationary items +
+  // occupants already bumped this pass. Occupants' own old cells are NOT
+  // blocked — they are all guaranteed to move (or the whole drop reverts).
+  const occupantIds = new Set(occupants.map((occ) => occ.id))
+  const blocked: GridRect[] = [newRect]
+  for (const item of page.items) {
+    if (item.id === newItem.i || occupantIds.has(item.id)) continue
+    if (item.x === undefined || item.y === undefined) continue
+    blocked.push({ x: item.x, y: item.y, w: item.w, h: item.h })
+  }
+
+  const bumpTargets = new Map<string, { x: number; y: number }>()
+  const sortedOccupants = [...occupants].sort(
+    (a, b) =>
+      coordToSlot(a.x!, a.y!, cols, rows, order) -
+      coordToSlot(b.x!, b.y!, cols, rows, order),
+  )
+  let allPlaced = true
+  for (const occ of sortedOccupants) {
+    const spot = findNearestFittingRect(
+      { x: occ.x!, y: occ.y! },
+      { w: occ.w, h: occ.h },
+      blocked,
+      cols,
+      rows,
+      order,
+    )
+    if (!spot) {
+      allPlaced = false
+      break
+    }
+    bumpTargets.set(occ.id, spot)
+    blocked.push({ x: spot.x, y: spot.y, w: occ.w, h: occ.h })
+  }
+
+  if (allPlaced) {
+    return {
+      ...page,
+      items: page.items.map((item) => {
+        if (item.id === newItem.i) return placeDragged(item)
+        const spot = bumpTargets.get(item.id)
+        if (!spot) return item
+        return {
+          ...item,
+          x: spot.x,
+          y: spot.y,
+          slotIndex: coordToSlot(spot.x, spot.y, cols, rows, order),
+          placementType: 'manual' as PlacementType,
+        }
+      }),
+    }
+  }
+
+  // Rule 3: reorder only in the all-1×1 world; otherwise revert the drop.
+  const sourceSlot = oldItem
+    ? coordToSlot(oldItem.x, oldItem.y, cols, rows, order)
+    : undefined
+  const all1x1 =
+    newItem.w === 1 &&
+    newItem.h === 1 &&
+    page.items.every(
+      (item) =>
+        (item.w === 1 && item.h === 1) ||
+        item.x === undefined ||
+        item.y === undefined,
+    )
+  if (sourceSlot !== undefined && all1x1) {
+    return reorderWithinPage(page, sourceSlot, targetSlot, cols, rows, order)
+  }
+  return page
 }
 
 // ---------------------------------------------------------------------------
