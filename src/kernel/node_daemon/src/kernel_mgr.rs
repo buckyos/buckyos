@@ -280,8 +280,8 @@ impl RunItemControl for KernelServiceRunItem {
 mod tests {
     use super::KernelServiceRunItem;
     use buckyos_api::{
-        AppDoc, AppType, KernelServiceInstanceConfig, KernelServiceSpec, ServiceInstallConfig,
-        ServiceInstanceState, ServiceState, SubPkgDesc,
+        AppDoc, AppType, KernelServiceInstanceConfig, KernelServiceSpec, ServiceInstanceState,
+        ServiceSpecConfig, ServiceState, SubPkgDesc,
     };
     use name_lib::DID;
     use ndn_lib::ObjId;
@@ -337,7 +337,7 @@ mod tests {
                     app_index: 0,
                     expected_instance_count: 1,
                     state: ServiceState::default(),
-                    install_config: ServiceInstallConfig::default(),
+                    install_config: ServiceSpecConfig::default(),
                 },
             },
         );

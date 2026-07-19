@@ -358,62 +358,6 @@ fn build_app_service_config_with_index(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown_docker_image")
         .to_string();
-    let data_mount_point = app_config
-        .get("data_mount_point")
-        .and_then(|v| v.as_object())
-        .map(|v| {
-            v.iter()
-                .map(|(k, v)| format!("\"{}\": \"{}\"", k, v.as_str().unwrap()))
-                .collect::<Vec<String>>()
-                .join(", ")
-        })
-        .unwrap_or_else(|| "".to_string());
-    let data_mount_point_config = app_config
-        .get("data_mount_point")
-        .and_then(|v| v.as_object())
-        .map(|v| {
-            v.iter()
-                .map(|(k, _v)| format!("\"{}\"", k))
-                .collect::<Vec<String>>()
-                .join(", ")
-        })
-        .unwrap_or("".to_string());
-    let tcp_ports = app_config
-        .get("tcp_ports")
-        .and_then(|v| v.as_object())
-        .map(|v| {
-            v.iter()
-                .map(|(k, v)| format!("\"{}\": {}", k, v.as_i64().unwrap_or(0)))
-                .collect::<Vec<String>>()
-                .join(", ")
-        })
-        .unwrap_or("".to_string());
-    let expose_config = app_config
-        .get("tcp_ports")
-        .and_then(|v| v.as_object())
-        .map(|v| {
-            v.iter()
-                .map(|(k, v)| {
-                    format!(
-                        "\"{}\": {{\"expose_port\": {}}}",
-                        k,
-                        v.as_i64().unwrap_or(0)
-                    )
-                })
-                .collect::<Vec<String>>()
-                .join(", ")
-        })
-        .unwrap_or("".to_string());
-    let udp_ports = app_config
-        .get("udp_ports")
-        .and_then(|v| v.as_object())
-        .map(|v| {
-            v.iter()
-                .map(|(k, v)| format!("\"{}\": {}", k, v.as_i64().unwrap_or(0)))
-                .collect::<Vec<String>>()
-                .join(", ")
-        })
-        .unwrap_or("".to_string());
     let container_param = app_config
         .get("container_param")
         .and_then(|v| v.as_str())
@@ -424,116 +368,127 @@ fn build_app_service_config_with_index(
     let owner_id_part = owner.rsplit(':').next().unwrap_or(owner);
     let app_did = format!("did:bns:{}.{}", app_id, owner_id_part);
 
-    let full_app_config = format!(
-        r#"
-        {{
-            "app_id": "{}",
-            "app_doc": {{
-                "id": "{}",
-                "doc_type": "app",
-                "name": "{}",
-                "pkg_name": "{}",
-                "version": "{}",
-                "tag": "latest",
-                "size": 0,
-                "app_name": "{}",
-                "show_name": "{}",
-                "description": {{
-                    "detail": "{}"
-                }},
-                "author": "{}",
-                "owner": "{}",
-                "create_time": {},
-                "last_update_time": {},
-                "pub_time": 0,
-                "exp": 0,
-                "categories": ["dapp"],
-                "pkg_list": {{
-                    "amd64_docker_image": {{
-                        "docker_image_name": "{}",
-                        "pkg_id": "{}"
-                    }},
-                    "aarch64_docker_image": {{
-                        "docker_image_name": "{}",
-                        "pkg_id": "{}"
-                    }}
-                }},
-                "deps": {{}},
-                "selector_type": "single",
-                "install_config": {{
-                    "data_mount_point": [{}],
-                    "cache_mount_point": [],
-                    "local_cache_mount_point": [],
-                    "tcp_ports": {{
-                        {}
-                    }},
-                    "udp_ports": {{
-                        {}
-                    }}
-                }},
-                "container_param": "{}"
-            }},
-            "app_index": {},
-            "user_id": "{}",
-            "enable": true,
-            "expected_instance_count": 1,
-            "state": "new",
-            "install_config": {{
-                "data_mount_point": {{{}}},
-                "cache_mount_point": [],
-                "local_cache_mount_point": [],
-                "expose_config": {{
-                    {}
-                }},
-                "container_param": "{}",
-                "res_pool_id": "default"
-            }},
-            "instance": 1,
-            "data_mount_point": {{{}}},
-            "cache_mount_point": [],
-            "local_cache_mount_point" : [],
-            "max_cpu_num": 2,
-            "max_cpu_percent": 20,
-            "memory_quota": 1073741824,
-            "tcp_ports": {{
-                {}
-            }},
-            "udp_ports": {{
-                {}
-            }},
-            "container_param": "{}"
-        }}"#,
-        app_id,
-        app_did,
-        app_id,
-        app_id,
-        version,
-        app_name,
-        app_name,
-        description,
-        author,
-        owner,
-        now,
-        now,
-        docker_image,
-        app_id,
-        docker_image,
-        app_id,
-        data_mount_point_config,
-        tcp_ports,
-        udp_ports,
-        container_param,
-        app_index,
-        owner,
-        data_mount_point,
-        expose_config,
-        container_param,
-        data_mount_point,
-        tcp_ports,
-        udp_ports,
-        container_param
-    );
-    return Ok(full_app_config);
+    let mut data_mount_points = serde_json::Map::new();
+    let mut data_mount_config = serde_json::Map::new();
+    if let Some(mounts) = app_config
+        .get("data_mount_point")
+        .and_then(|value| value.as_object())
+    {
+        for (container_path, target_path) in mounts {
+            data_mount_points.insert(container_path.clone(), Value::Null);
+            data_mount_config.insert(
+                container_path.clone(),
+                json!({
+                    "target_path": target_path,
+                    "access": "read_write"
+                }),
+            );
+        }
+    }
+
+    let mut service_endpoints = serde_json::Map::new();
+    let mut service_config = serde_json::Map::new();
+    let mut expose_config = serde_json::Map::new();
+    for (source, protocol) in [("tcp_ports", "tcp"), ("udp_ports", "udp")] {
+        let Some(ports) = app_config.get(source).and_then(|value| value.as_object()) else {
+            continue;
+        };
+        for (service_name, port) in ports {
+            let Some(port) = port.as_u64() else {
+                continue;
+            };
+            let is_web = service_name == "www" && protocol == "tcp";
+            let endpoint_protocol = if is_web { "http" } else { protocol };
+            let tips_route = if is_web {
+                json!({"type": "web"})
+            } else {
+                json!({"type": "port", "preferred_port": port})
+            };
+            let config_route = if is_web {
+                json!({"type": "web", "sub_hostname": [app_id]})
+            } else {
+                json!({"type": "port", "expose_port": port})
+            };
+            service_endpoints.insert(
+                service_name.clone(),
+                json!({
+                    "protocol": endpoint_protocol,
+                    "inner_port": port,
+                    "required": true,
+                    "expose": {
+                        "route": tips_route,
+                        "scope": "",
+                        "allow_guest": false
+                    }
+                }),
+            );
+            service_config.insert(
+                service_name.clone(),
+                json!({"protocol": endpoint_protocol, "inner_port": port}),
+            );
+            expose_config.insert(
+                service_name.clone(),
+                json!({
+                    "route": config_route,
+                    "scope": "",
+                    "allow_guest": false
+                }),
+            );
+        }
+    }
+
+    let full_app_config = json!({
+        "app_doc": {
+            "id": app_did,
+            "doc_type": "app",
+            "name": app_id,
+            "version": version,
+            "tag": "latest",
+            "size": 0,
+            "show_name": app_name,
+            "description": {
+                "detail": description
+            },
+            "author": author,
+            "owner": owner,
+            "create_time": now,
+            "last_update_time": now,
+            "exp": 0,
+            "categories": ["dapp"],
+            "pkg_list": {
+                "amd64_docker_image": {
+                    "docker_image_name": docker_image,
+                    "pkg_id": app_id
+                },
+                "aarch64_docker_image": {
+                    "docker_image_name": docker_image,
+                    "pkg_id": app_id
+                }
+            },
+            "deps": {},
+            "selector_type": "single",
+            "service_config_tips": {
+                "service_endpoints": service_endpoints,
+                "data_mount_points": data_mount_points,
+                "container_param": container_param
+            }
+        },
+        "app_index": app_index,
+        "user_id": owner,
+        "enable": true,
+        "expected_instance_count": 1,
+        "state": "new",
+        "install_config": {
+            "service_config": service_config,
+            "expose_config": expose_config,
+            "data_mount_point": data_mount_config,
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "container_param": container_param,
+            "res_pool_id": "default"
+        }
+    });
+    serde_json::to_string_pretty(&full_app_config).map_err(|err| err.to_string())
 }
 
 async fn get_app_count() -> Result<u64, String> {

@@ -816,7 +816,13 @@ fn build_app_host_entry(
     }?;
 
     let port = select_gateway_port(&pick_instance.service_ports, service_name)?;
-    let access_mode = if app_spec.install_config.allow_public_access {
+    let access_mode = if app_spec
+        .install_config
+        .expose_config
+        .get(service_name)
+        .map(|config| config.allow_guest)
+        .unwrap_or(false)
+    {
         NodeGatewayAccessMode::Public
     } else {
         NodeGatewayAccessMode::Private
@@ -856,7 +862,13 @@ fn build_app_host_entry_from_persisted_service_info(
         .min_by(|left, right| left.0.cmp(right.0))?;
 
     let port = select_gateway_port(&node_info.service_port, service_name)?;
-    let access_mode = if app_spec.install_config.allow_public_access {
+    let access_mode = if app_spec
+        .install_config
+        .expose_config
+        .get(service_name)
+        .map(|config| config.allow_guest)
+        .unwrap_or(false)
+    {
         NodeGatewayAccessMode::Public
     } else {
         NodeGatewayAccessMode::Private
@@ -1044,7 +1056,7 @@ pub(crate) async fn update_node_gateway_info(
                                     .app_info
                                     .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
                             }
-                            for host in expose_config.sub_hostname.iter() {
+                            for host in expose_config.sub_hostname() {
                                 node_gateway_info.app_info.insert(
                                     host.clone(),
                                     NodeGatewayAppEntry::App(app_entry.clone()),
@@ -1085,7 +1097,7 @@ pub(crate) async fn update_node_gateway_info(
                 .app_info
                 .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
         }
-        for host in expose_config.sub_hostname.iter() {
+        for host in expose_config.sub_hostname() {
             node_gateway_info
                 .app_info
                 .insert(host.clone(), NodeGatewayAppEntry::App(app_entry.clone()));
@@ -1605,8 +1617,8 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstallConfig,
-        ServiceInstanceState, ServiceState, SubPkgDesc,
+        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstanceState,
+        ServiceSpecConfig, ServiceState, SubPkgDesc,
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
@@ -1695,13 +1707,10 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut install_config = ServiceInstallConfig::default();
+        let mut install_config = ServiceSpecConfig::default();
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec!["files".to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec!["files".to_string()], String::new(), false),
         );
 
         AppServiceSpec {
@@ -1736,13 +1745,10 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut install_config = ServiceInstallConfig::default();
+        let mut install_config = ServiceSpecConfig::default();
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec!["jarvis".to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec!["jarvis".to_string()], String::new(), false),
         );
 
         AppServiceSpec {
@@ -1769,13 +1775,10 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut install_config = ServiceInstallConfig::default();
+        let mut install_config = ServiceSpecConfig::default();
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec!["portal".to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec!["portal".to_string()], String::new(), false),
         );
 
         AppServiceSpec {

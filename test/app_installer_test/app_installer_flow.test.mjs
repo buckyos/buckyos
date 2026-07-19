@@ -822,7 +822,7 @@ test('app_installer local publish lifecycle', async (t) => {
         `static web spec should be in an installed state, got ${spec.state}`,
       )
       assert.deepEqual(
-        spec.install_config.expose_config.www?.sub_hostname ?? [],
+        spec.install_config.expose_config.www?.route?.sub_hostname ?? [],
         [fixture.appId],
       )
 

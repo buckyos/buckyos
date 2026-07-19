@@ -526,11 +526,22 @@ mod test {
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS File Browser",
                 "selector_type": "single",
-                "install_config_tips": {
-                    "data_mount_point": ["/srv/", "/database/", "/config/"],
-                    "local_cache_mount_point": [],
-                    "service_ports": {
-                        "www": 80
+                "service_config_tips": {
+                    "data_mount_points": {
+                        "/srv/": null,
+                        "/database/": null,
+                        "/config/": null
+                    },
+                    "local_cache_mount_points": {},
+                    "service_endpoints": {
+                        "www": {
+                            "protocol": "http",
+                            "inner_port": 80,
+                            "required": true,
+                            "expose": {
+                                "route": {"type": "web"}
+                            }
+                        }
                     }
                 },
                 "pkg_list": {
@@ -553,16 +564,30 @@ mod test {
                     }
                 }
             },
-            "data_mount_point": {
-                "root": "/root"
+            "service_config": {
+                "www": {
+                    "protocol": "http",
+                    "inner_port": 80
+                }
             },
-            "cache_mount_point": [
-            ],
-            "local_cache_mount_point": [
-            ],
-            "bind_address": "0.0.0.0",
-            "service_ports": {
-                "http": 80
+            "data_mount_point": {
+                "/root": {
+                    "target_path": "/root",
+                    "access": "read_write"
+                }
+            },
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "expose_config": {
+                "www": {
+                    "route": {
+                        "type": "web",
+                        "sub_hostname": ["filebrowser"]
+                    },
+                    "scope": "",
+                    "allow_guest": false,
+                    "bind_address": "0.0.0.0"
+                }
             },
             "res_pool_id": "default"
         },
@@ -583,7 +608,7 @@ mod test {
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS System Test",
                 "selector_type": "static",
-                "install_config_tips": {},
+                "service_config_tips": {},
                 "pkg_list": {
                     "web": {
                         "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
@@ -591,8 +616,19 @@ mod test {
                 }
             },
             "data_mount_point": {},
-            "cache_mount_point": [],
-            "local_cache_mount_point": [],
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "service_config": {},
+            "expose_config": {
+                "www": {
+                    "route": {
+                        "type": "web",
+                        "sub_hostname": ["buckyos_systest"]
+                    },
+                    "scope": "",
+                    "allow_guest": true
+                }
+            },
             "res_pool_id": "default"
         }
     }
@@ -728,15 +764,22 @@ mod test {
     "owner": "did:web:buckyos.ai",
     "show_name": "BuckyOS File Browser",
     "selector_type": "single",
-    "install_config_tips": {
-      "data_mount_point": [
-        "/srv/",
-        "/database/",
-        "/config/"
-      ],
-      "local_cache_mount_point": [],
-      "service_ports": {
-        "www": 80
+    "service_config_tips": {
+      "data_mount_points": {
+        "/srv/": null,
+        "/database/": null,
+        "/config/": null
+      },
+      "local_cache_mount_points": {},
+      "service_endpoints": {
+        "www": {
+          "protocol": "http",
+          "inner_port": 80,
+          "required": true,
+          "expose": {
+            "route": {"type": "web"}
+          }
+        }
       }
     },
     "pkg_list": {

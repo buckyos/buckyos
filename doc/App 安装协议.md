@@ -217,6 +217,32 @@ install_package(local_pikg_path, options?)
 
 Installer 直接检查本地 `.pikg`。该入口的内容校验始终可以离线执行；只有当 Zone Resolver / 本机 DID cache 已持有可接受的解析结果，或用户显式启用带警告的本地开发覆盖时，才可以在不访问网络的情况下同时完成 DID 信任校验并进入 Deploy。
 
+### 2.6 服务运行与暴露配置
+
+服务配置分为三个不同所有者的数据面：
+
+- `AppDoc.service_config_tips` 由 App 开发者发布，只声明运行端点、挂载点、RDB、运行参数以及期望的暴露方式；这些内容是安装 UI 的输入，不是 App 进程可读取的运行配置。
+- `ServiceSettings` 记录用户选择。服务是否暴露以及采用何种暴露方式完全由用户决定；开发者声明的暴露信息只能作为建议值。
+- `ServiceSpecConfig` 是 Installer / scheduler 根据 AppDoc 与用户选择构造的系统配置。scheduler 和 node-daemon 消费该结构，用户和 App 进程都不应直接修改或读取它。
+
+`ServiceEndpointInfo` 描述 App 自身监听的一个运行端点：
+
+```rust
+pub struct ServiceEndpointInfo {
+    pub protocol: ServiceProtocol, // http | https | tcp | udp
+    pub inner_port: u16,
+    pub required: bool,
+    pub description: HashMap<String, String>,
+    pub expose: Option<ServiceExposeTips>,
+}
+```
+
+`required = true` 只表示该运行端点不能被关闭，不表示该端点必须暴露。用户可以启用服务但不配置任何 `expose`。运行与暴露必须保持独立：Zone 内多个 Node 可以同时运行 SMB 端点，但 ZoneGateway 对 Zone 外最多暴露一个 SMB 入口。
+
+ZoneGateway 暴露路由使用强类型枚举：`Web` 通过子域名或 URI 路由，`Port` 通过独立端口路由。实例实际使用的端口不属于共享的 `ServiceSpecConfig` 暴露定义，仍由 scheduler 写入每个 `AppServiceInstanceConfig.service_ports_config`。
+
+`ServiceConfigTips.rdb_instances` 与 `ServiceSpecConfig.rdb_instances` 都使用完整的 `RdbInstanceConfig`。开发者可声明 backend、schema 和连接需求；最终 connection string 由 scheduler 在构造运行配置时分配。该分配流程以及权限审批不属于本次数据定义。
+
 ---
 
 ## 3. 分阶段安装流水线

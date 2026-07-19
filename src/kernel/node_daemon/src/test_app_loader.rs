@@ -9,7 +9,7 @@ use crate::app_loader::{
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
     AppDoc, AppServiceInstanceConfig, AppServiceSpec, AppType, LocalAppInstanceConfig,
-    ServiceInstallConfig, ServiceInstanceState, ServiceState, SubPkgDesc,
+    ServiceEndpointConfig, ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc,
 };
 use name_lib::DID;
 use ndn_lib::ObjId;
@@ -55,12 +55,10 @@ fn build_agent_doc_without_category() -> AppDoc {
     )
     .agent_pkg(SubPkgDesc::new("jarvis-agent#0.1.0"))
     .agent_skills_pkg(SubPkgDesc::new("jarvis-skills#0.1.0"))
+    .service_port("main", 4060)
     .build()
     .unwrap();
     doc._base.categories.clear();
-    doc.install_config_tips
-        .service_ports
-        .insert("main".to_string(), 4060);
     doc
 }
 
@@ -109,6 +107,7 @@ fn build_service_loader(
     platform: PlatformTarget,
     support_container: bool,
 ) -> AppLoader {
+    let install_config = build_spec_config(&app_doc);
     let config = AppServiceInstanceConfig {
         target_state: ServiceInstanceState::Started,
         node_id: "ood1".to_string(),
@@ -119,7 +118,7 @@ fn build_service_loader(
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config: ServiceInstallConfig::default(),
+            install_config,
         },
         service_ports_config,
     };
@@ -128,18 +127,34 @@ fn build_service_loader(
         .with_container_support_override(support_container)
 }
 
+fn build_spec_config(app_doc: &AppDoc) -> ServiceSpecConfig {
+    let mut install_config = ServiceSpecConfig::default();
+    for (service_name, endpoint) in &app_doc.service_config_tips.service_endpoints {
+        install_config.service_config.insert(
+            service_name.clone(),
+            ServiceEndpointConfig {
+                protocol: endpoint.protocol,
+                inner_port: endpoint.inner_port,
+            },
+        );
+    }
+    install_config
+}
+
 fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
+    let app_doc = build_agent_doc_without_category();
+    let install_config = build_spec_config(&app_doc);
     let config = AppServiceInstanceConfig {
         target_state: ServiceInstanceState::Started,
         node_id: "ood1".to_string(),
         app_spec: AppServiceSpec {
-            app_doc: build_agent_doc_without_category(),
+            app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config: ServiceInstallConfig::default(),
+            install_config,
         },
         service_ports_config: HashMap::from([
             ("www".to_string(), 10080),
@@ -629,7 +644,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
         enable: true,
         app_doc: build_local_service_doc(),
         user_id: "alice".to_string(),
-        install_config: ServiceInstallConfig::default(),
+        install_config: ServiceSpecConfig::default(),
     };
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
@@ -688,7 +703,7 @@ fn host_script_stop_preview_uses_docker_rm() {
         enable: true,
         app_doc: build_local_service_doc(),
         user_id: "alice".to_string(),
-        install_config: ServiceInstallConfig::default(),
+        install_config: ServiceSpecConfig::default(),
     };
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
@@ -711,7 +726,7 @@ fn host_script_deploy_preview_includes_pkg_install_and_image_pull() {
         enable: true,
         app_doc: build_local_service_doc(),
         user_id: "alice".to_string(),
-        install_config: ServiceInstallConfig::default(),
+        install_config: ServiceSpecConfig::default(),
     };
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64))
@@ -742,7 +757,7 @@ fn host_script_aarch64_uses_correct_image_tag() {
         enable: true,
         app_doc: build_local_service_doc(),
         user_id: "alice".to_string(),
-        install_config: ServiceInstallConfig::default(),
+        install_config: ServiceSpecConfig::default(),
     };
     let loader = AppLoader::new_for_local("desktop-tool", config)
         .with_platform(PlatformTarget::new(

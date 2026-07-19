@@ -19,9 +19,20 @@
     }
   },
   "selector_type": "single",
-  "install_config_tips": {
-    "service_ports": {
-      "www": 80
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 80,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": false
+        }
+      }
     }
   },
   "pkg_list": {},

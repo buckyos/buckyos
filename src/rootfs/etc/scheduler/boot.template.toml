@@ -25,11 +25,24 @@
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS File Browser",
                 "selector_type": "single",
-                "install_config_tips": {
-                    "data_mount_point": ["/srv/", "/database/", "/config/"],
-                    "local_cache_mount_point": [],
-                    "service_ports": {
-                        "www": 80
+                "service_config_tips": {
+                    "data_mount_points": {
+                        "/srv/": null,
+                        "/database/": null,
+                        "/config/": null
+                    },
+                    "local_cache_mount_points": {},
+                    "service_endpoints": {
+                        "www": {
+                            "protocol": "http",
+                            "inner_port": 80,
+                            "required": true,
+                            "expose": {
+                                "route": {"type": "web"},
+                                "scope": "",
+                                "allow_guest": false
+                            }
+                        }
                     }
                 },
                 "pkg_list": {
@@ -52,23 +65,40 @@
                     }
                 }
             },
-            "data_mount_point": {
-                "/srv/": "/data/home/{{user_name}}/:rw",
-                "/database/": "/data/home/{{user_name}}/.local/share/buckyos_filebrowser/database/",
-                "/config/": "/data/home/{{user_name}}/.local/share/buckyos_filebrowser/config/"
-            },
-            "cache_mount_point": [
-            ],
-            "local_cache_mount_point": [
-            ],
-            "expose_config": {
+            "service_config": {
                 "www": {
-                    "sub_hostname": ["filebrowser"]
+                    "protocol": "http",
+                    "inner_port": 80
                 }
             },
-            "bind_address": "0.0.0.0",
-            "res_pool_id": "default",
-            "allow_public_access": false
+            "data_mount_point": {
+                "/srv/": {
+                    "target_path": "/data/home/{{user_name}}/",
+                    "access": "read_write"
+                },
+                "/database/": {
+                    "target_path": "/data/home/{{user_name}}/.local/share/buckyos_filebrowser/database/",
+                    "access": "read_write"
+                },
+                "/config/": {
+                    "target_path": "/data/home/{{user_name}}/.local/share/buckyos_filebrowser/config/",
+                    "access": "read_write"
+                }
+            },
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "expose_config": {
+                "www": {
+                    "route": {
+                        "type": "web",
+                        "sub_hostname": ["filebrowser"]
+                    },
+                    "scope": "",
+                    "allow_guest": false,
+                    "bind_address": "0.0.0.0"
+                }
+            },
+            "res_pool_id": "default"
         },
         "buckyos_systest": {
             "app_doc": {
@@ -87,9 +117,18 @@
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS System Test",
                 "selector_type": "single",
-                "install_config_tips": {
-                    "service_ports": {
-                        "www": 3000
+                "service_config_tips": {
+                    "service_endpoints": {
+                        "www": {
+                            "protocol": "http",
+                            "inner_port": 3000,
+                            "required": true,
+                            "expose": {
+                                "route": {"type": "web"},
+                                "scope": "",
+                                "allow_guest": true
+                            }
+                        }
                     }
                 },
                 "pkg_list": {
@@ -98,20 +137,26 @@
                     }
                 }
             },
-            "data_mount_point": {
-
-            },
-            "cache_mount_point": [
-            ],
-            "local_cache_mount_point": [
-            ],
-            "expose_config": {
+            "service_config": {
                 "www": {
-                    "sub_hostname": ["systest"]
+                    "protocol": "http",
+                    "inner_port": 3000
                 }
             },
-            "res_pool_id": "",
-            "allow_public_access": true
+            "data_mount_point": {},
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "expose_config": {
+                "www": {
+                    "route": {
+                        "type": "web",
+                        "sub_hostname": ["systest"]
+                    },
+                    "scope": "",
+                    "allow_guest": true
+                }
+            },
+            "res_pool_id": "default"
         }
     }
 }

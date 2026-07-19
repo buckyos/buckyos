@@ -449,7 +449,7 @@ function selectAgentServicePort(
       : {}
 
   const preferredNames = new Set<string>()
-  const configTips = getNestedObject(appDoc, ['install_config_tips', 'service_ports']) || {}
+  const configTips = getNestedObject(appDoc, ['service_config_tips', 'service_endpoints']) || {}
   for (const key of Object.keys(configTips)) {
     preferredNames.add(key)
   }
@@ -733,7 +733,7 @@ async function buildLaunchContext(options: StartupOptions) {
     const servicePort = selectAgentServicePort(
       appDoc,
       appInstanceConfig,
-      options.port ?? getNestedNumber(appDoc, ['install_config_tips', 'service_ports', 'www']) ?? DEFAULT_HOST_SCRIPT_SERVICE_PORT,
+      options.port ?? getNestedNumber(appDoc, ['service_config_tips', 'service_endpoints', 'www', 'inner_port']) ?? DEFAULT_HOST_SCRIPT_SERVICE_PORT,
     )
 
     return {

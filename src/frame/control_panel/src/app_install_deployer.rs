@@ -16,9 +16,9 @@ use crate::app_install_engine::InstallTaskView;
 use buckyos_api::{
     get_buckyos_api_runtime, install_record_key, AppDoc, AppInstallTaskData, AppServiceSpec,
     AppType, ContentLocation, InstallError, InstallErrorCode, InstallRecord, InstallRecordState,
-    InstallStage, InstallTaskResult, PreparedDeployment, ServiceExposeConfig, ServiceInstallConfig,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SystemConfigClient,
-    SystemConfigError,
+    InstallStage, InstallTaskResult, MountPointConfig, PreparedDeployment, ServiceEndpointConfig,
+    ServiceExposeConfig, ServiceExposeRouteTips, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
@@ -544,40 +544,65 @@ impl ProductionInstallDriver {
 // 辅助
 // ---------------------------------------------------------------------------
 
-/// 从 install_config_tips + 确认参数构造 ServiceInstallConfig。
-/// 端口/域名由 tips 提供缺省，确认参数可覆盖（不再全部静默替用户决定）。
 pub(crate) fn build_install_config(
     app_id: &str,
     app_doc: &AppDoc,
     install_params: &Value,
-) -> ServiceInstallConfig {
-    let tips = &app_doc.install_config_tips;
-    let mut install_config = ServiceInstallConfig {
-        local_cache_mount_point: tips.local_cache_mount_point.clone(),
+) -> ServiceSpecConfig {
+    let tips = &app_doc.service_config_tips;
+    let mut install_config = ServiceSpecConfig {
+        data_mount_point: Default::default(),
+        local_cache_mount_point: tips
+            .local_cache_mount_points
+            .iter()
+            .map(|(path, info)| {
+                (
+                    path.clone(),
+                    mount_config_from_tip(path, info.as_ref(), "read_write"),
+                )
+            })
+            .collect(),
+        external_mount_point: Default::default(),
+        rdb_instances: tips.rdb_instances.clone(),
+        instance_volume: tips.instance_volume.clone(),
+        runtime_caps: tips.runtime_caps.clone(),
         container_param: tips.container_param.clone(),
         start_param: tips.start_param.clone(),
         ..Default::default()
     };
 
-    for (service_name, service_port) in tips.service_ports.iter() {
-        let mut expose = ServiceExposeConfig::default();
-        if service_name == "www" {
-            expose.sub_hostname.push(app_id.to_string());
-        } else {
-            expose.expose_port = Some(*service_port);
+    for (service_name, endpoint) in &tips.service_endpoints {
+        install_config.service_config.insert(
+            service_name.clone(),
+            ServiceEndpointConfig {
+                protocol: endpoint.protocol,
+                inner_port: endpoint.inner_port,
+            },
+        );
+        if let Some(expose) = &endpoint.expose {
+            let expose_config = match &expose.route {
+                ServiceExposeRouteTips::Web => ServiceExposeConfig::web(
+                    vec![app_id.to_string()],
+                    expose.scope.clone(),
+                    expose.allow_guest,
+                ),
+                ServiceExposeRouteTips::Port {
+                    preferred_port: Some(port),
+                } => ServiceExposeConfig::port(*port, expose.scope.clone(), expose.allow_guest),
+                ServiceExposeRouteTips::Port {
+                    preferred_port: None,
+                } => continue,
+            };
+            install_config
+                .expose_config
+                .insert(service_name.clone(), expose_config);
         }
-        install_config
-            .expose_config
-            .insert(service_name.clone(), expose);
     }
 
     if app_doc.get_app_type() == AppType::Web && !install_config.expose_config.contains_key("www") {
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec![app_id.to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec![app_id.to_string()], String::new(), true),
         );
     }
 
@@ -588,9 +613,13 @@ pub(crate) fn build_install_config(
     {
         for (mount_key, host_path) in mounts {
             if let Some(host_path) = host_path.as_str() {
-                install_config
-                    .data_mount_point
-                    .insert(mount_key.clone(), host_path.to_string());
+                install_config.data_mount_point.insert(
+                    mount_key.into(),
+                    MountPointConfig {
+                        target_path: host_path.into(),
+                        access: "read_write".to_string(),
+                    },
+                );
             }
         }
     }
@@ -599,7 +628,7 @@ pub(crate) fn build_install_config(
         .and_then(|value| value.as_str())
     {
         if let Some(expose) = install_config.expose_config.get_mut("www") {
-            expose.sub_hostname = vec![hostname.to_string()];
+            expose.set_sub_hostname(vec![hostname.to_string()]);
         }
     }
     if let Some(ports) = install_params
@@ -608,11 +637,15 @@ pub(crate) fn build_install_config(
     {
         for (service_name, port) in ports {
             if let Some(port) = port.as_u64() {
-                install_config
+                let (scope, allow_guest) = install_config
                     .expose_config
-                    .entry(service_name.clone())
-                    .or_default()
-                    .expose_port = Some(port as u16);
+                    .get(service_name)
+                    .map(|config| (config.scope.clone(), config.allow_guest))
+                    .unwrap_or_default();
+                install_config.expose_config.insert(
+                    service_name.clone(),
+                    ServiceExposeConfig::port(port as u16, scope, allow_guest),
+                );
             }
         }
     }
@@ -620,16 +653,37 @@ pub(crate) fn build_install_config(
     install_config
 }
 
+fn mount_config_from_tip(
+    path: &std::path::Path,
+    info: Option<&buckyos_api::MountPointInfo>,
+    default_access: &str,
+) -> MountPointConfig {
+    let target_path = info
+        .map(|info| info.mount_point_name.as_str())
+        .filter(|name| !name.is_empty())
+        .map(Into::into)
+        .unwrap_or_else(|| path.to_path_buf());
+    let access = info
+        .map(|info| info.access.as_str())
+        .filter(|access| !access.is_empty())
+        .unwrap_or(default_access)
+        .to_string();
+    MountPointConfig {
+        target_path,
+        access,
+    }
+}
+
 /// expose_port 冲突检查：与其它已安装 spec 的显式端口重复即 CONFIG_BLOCKED。
 async fn check_expose_conflicts(
     client: &SystemConfigClient,
-    install_config: &ServiceInstallConfig,
+    install_config: &ServiceSpecConfig,
     own_spec_path: &str,
 ) -> Result<(), InstallError> {
     let requested: Vec<u16> = install_config
         .expose_config
         .values()
-        .filter_map(|expose| expose.expose_port)
+        .filter_map(ServiceExposeConfig::expose_port)
         .collect();
     if requested.is_empty() {
         return Ok(());
@@ -660,7 +714,7 @@ async fn check_expose_conflicts(
                     continue;
                 }
                 for expose in spec.install_config.expose_config.values() {
-                    if let Some(port) = expose.expose_port {
+                    if let Some(port) = expose.expose_port() {
                         if requested.contains(&port) {
                             return Err(stage_err(
                                 InstallStage::Prepare,

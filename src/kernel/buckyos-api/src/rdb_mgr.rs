@@ -7,7 +7,7 @@
  *
  * Each instance is identified by `(appid, owner_user_id, instance_id)`. The
  * backend + connection string + schema have already been picked when the app
- * was installed and are serialized into the app's `ServiceInstallConfig` at
+ * was installed and are serialized into the app's `ServiceSpecConfig` at
  *   `users/{user}/apps/{appid}/spec`   (AppService)
  *   `users/{user}/agents/{appid}/spec` (Agent)
  *   `services/{appid}/spec`            (Kernel/Frame service)
@@ -49,7 +49,7 @@ pub struct RdbInstance {
     pub schema: Option<String>,
 }
 
-/// Per-instance config carried inside `ServiceInstallConfig.rdb_instances`.
+/// Per-instance config carried inside `ServiceSpecConfig.rdb_instances`.
 ///
 /// The installer fills this in: it picks a `backend`, writes the final
 /// `connection` string (may still contain `$appdata` / `$instance`
@@ -307,12 +307,12 @@ mod tests {
     fn parse_spec_view_extracts_rdb_instances() {
         let raw = r#"{
             "install_config": {
-                "data_mount_point": {},
-                "cache_mount_point": [],
-                "local_cache_mount_point": [],
+                "service_config": {},
                 "expose_config": {},
+                "data_mount_point": {},
+                "local_cache_mount_point": {},
+                "external_mount_point": {},
                 "res_pool_id": "default",
-                "allow_public_access": false,
                 "rdb_instances": {
                     "main": {
                         "backend": "sqlite",

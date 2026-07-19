@@ -1451,7 +1451,7 @@ mod tests {
             "last_update_time": 1,
             "exp": 999999,
             "selector_type": "single",
-            "install_config_tips": {},
+            "service_config_tips": {},
             "pkg_list": {
                 "web": {
                     "pkg_id": "demo-web#1.0.0",

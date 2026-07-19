@@ -536,8 +536,8 @@ impl AppInstaller {
     }
 
     async fn remove_app_data(&self, spec: &AppServiceSpec) -> Result<(), RPCErrors> {
-        for host_path in spec.install_config.data_mount_point.values() {
-            let path = PathBuf::from(host_path);
+        for mount_config in spec.install_config.data_mount_point.values() {
+            let path = mount_config.target_path.clone();
             if !Self::removable_data_path(&path, spec.app_id()) {
                 warn!(
                     "Skip unsafe app data cleanup for `{}`: {}",
@@ -819,6 +819,11 @@ impl AppInstaller {
                 if app_doc_template.pkg_list.agent_skills.is_some() {
                     return Err(RPCErrors::ReasonError(
                         "Agent publish does not support `pkg_list.agent_skills` yet".to_string(),
+                    ));
+                }
+                if app_doc_template.pkg_list.agent_tools.is_some() {
+                    return Err(RPCErrors::ReasonError(
+                        "Agent publish does not support `pkg_list.agent_tools` yet".to_string(),
                     ));
                 }
                 let sub_pkgs = vec![ScannedSubPkg {
@@ -1409,6 +1414,7 @@ impl AppInstaller {
             "web" => app_doc.pkg_list.web = Some(desc),
             "agent" => app_doc.pkg_list.agent = Some(desc),
             "agent_skills" => app_doc.pkg_list.agent_skills = Some(desc),
+            "agent_tools" => app_doc.pkg_list.agent_tools = Some(desc),
             other => {
                 app_doc.pkg_list.others.insert(other.to_string(), desc);
             }
@@ -1586,39 +1592,8 @@ impl ControlPanelServer {
     fn build_default_install_config(
         app_id: &str,
         app_doc: &AppDoc,
-    ) -> buckyos_api::ServiceInstallConfig {
-        let mut install_config = buckyos_api::ServiceInstallConfig {
-            local_cache_mount_point: app_doc.install_config_tips.local_cache_mount_point.clone(),
-            container_param: app_doc.install_config_tips.container_param.clone(),
-            start_param: app_doc.install_config_tips.start_param.clone(),
-            ..Default::default()
-        };
-
-        for (service_name, service_port) in app_doc.install_config_tips.service_ports.iter() {
-            let mut expose = buckyos_api::ServiceExposeConfig::default();
-            if service_name == "www" {
-                expose.sub_hostname.push(app_id.to_string());
-            } else {
-                expose.expose_port = Some(*service_port);
-            }
-            install_config
-                .expose_config
-                .insert(service_name.clone(), expose);
-        }
-
-        if app_doc.get_app_type() == AppType::Web
-            && !install_config.expose_config.contains_key("www")
-        {
-            install_config.expose_config.insert(
-                "www".to_string(),
-                buckyos_api::ServiceExposeConfig {
-                    sub_hostname: vec![app_id.to_string()],
-                    ..Default::default()
-                },
-            );
-        }
-
-        install_config
+    ) -> buckyos_api::ServiceSpecConfig {
+        crate::app_install_deployer::build_install_config(app_id, app_doc, &json!({}))
     }
 
     fn parse_app_type(raw: &str) -> Result<AppType, RPCErrors> {

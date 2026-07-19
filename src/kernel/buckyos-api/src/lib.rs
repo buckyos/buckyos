@@ -293,7 +293,7 @@ mod tests {
     use super::{
         get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
         parse_app_identity_from_instance_config, AppDoc, AppServiceInstanceConfig, AppServiceSpec,
-        AppType, BuckyOSRuntimeType, ServiceInstallConfig, ServiceInstanceState, ServiceState,
+        AppType, BuckyOSRuntimeType, ServiceInstanceState, ServiceSpecConfig, ServiceState,
         SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
     };
 
@@ -340,7 +340,7 @@ mod tests {
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::Running,
-                install_config: ServiceInstallConfig::default(),
+                install_config: ServiceSpecConfig::default(),
             },
             service_ports_config: HashMap::from([("www".to_string(), 10016)]),
         };

@@ -1,7 +1,7 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppType, ServiceInstallConfig, ServiceState,
+    get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppType, ServiceSpecConfig, ServiceState,
     SystemConfigClient, SystemConfigError,
 };
 use log::warn;
@@ -105,7 +105,7 @@ impl ControlPanelServer {
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config: ServiceInstallConfig::default(),
+            install_config: ServiceSpecConfig::default(),
         })
     }
 
@@ -282,7 +282,7 @@ impl ControlPanelServer {
             "show_name": spec.app_doc.show_name,
             "version": spec.app_doc.version,
             "app_type": app_type,
-            "app_icon_url": spec.app_doc.app_icon_url,
+            "app_icon_url": spec.app_doc.app_icon_url(),
             "icon_res_url": icon_res_url,
             "author": spec.app_doc.author,
             "tags": spec.app_doc.tags,

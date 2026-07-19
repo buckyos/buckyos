@@ -4,7 +4,7 @@ use name_lib::DID;
 use ndn_lib::{NamedObject, ObjId};
 use package_lib::{PackageId, PackageMeta};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, ops::Deref};
+use std::{collections::HashMap, fmt, ops::Deref, path::PathBuf};
 
 /// App Document 的 DID doc_type（v0.5 协议固定值）。
 pub const APP_DOC_TYPE: &str = "app";
@@ -59,44 +59,129 @@ pub struct DataMountRecommend {
     pub reason: HashMap<String, String>, //key: language_id, value: reason
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub struct CustomServiceDesc {
-    pub desc: HashMap<String, String>, //key: language_id, value: desc
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceProtocol {
+    Http,
+    Https,
+    Tcp,
+    Udp,
 }
-//InstallConfigTips用来说明，该App有哪些在安装时需要配置的项目
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ServiceExposeRouteTips {
+    Web,
+    Port {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preferred_port: Option<u16>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct ServiceExposeTips {
+    pub route: ServiceExposeRouteTips,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub allow_guest: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct ServiceEndpointInfo {
+    pub protocol: ServiceProtocol,
+    pub inner_port: u16,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub description: HashMap<String, String>, //key: language_id, value: description
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ServiceExposeTips>,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
-pub struct ServiceInstallConfigTips {
-    //系统允许多个不同的app实现同一个服务，但有不同的“路由方法”
-    //比如 如果系统里app1 有配置 {"smb":445},app2有配置 {"smb":445}，此时系统选择使用app2作为smb服务提供者，则最终按如下流程完成访问
-    //   client->zone_gateway:445 --rtcp-> node_gateway:rtcp_stack -> docker_port 127:0.0.1:2190(调度器随机分配给app2) -> app2:445
-    //                                                                docker_port 127.0.0.1:2189 -> app1:445
-    //   此时基于app1.service_info可以通过 node_gateway:2189访问到app1的smb服务
-
-    //service_name(like,web ,smb, dns, etc...) -> inner port
+pub struct MountPointInfo {
+    //说明挂载点的名称
+    pub mount_point_name: String,
+    pub access: String, //read_only, read_write, read_write_append
+    //详细说明该挂载点的用途
+    pub reason: HashMap<String, String>, //key: language_id, value: reason
+}
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct BashEnvInfo {
+    pub required: bool,
     #[serde(default)]
-    pub service_ports: HashMap<String, u16>,
+    pub description: HashMap<String, String>, //key: language_id, value: description
+}
+/// Governs whether a container App/Agent gets a private instance volume
+/// (§7.1 of the paios container spec).
+///
+/// * `Required` (default): the loader must create an instance volume and will
+///   refuse to start the app without one. Fits Script apps, Agents and any
+///   service that caches deps or self-evolving state.
+/// * `Optional`: an instance volume is created if available but the app can
+///   function without one. Reserved for mixed-use cases.
+/// * `Disabled`: the app explicitly opts out — used by pure binaries with no
+///   private mutable state.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum InstanceVolumeMode {
+    Required,
+    Optional,
+    Disabled,
+}
+
+impl Default for InstanceVolumeMode {
+    fn default() -> Self {
+        InstanceVolumeMode::Required
+    }
+}
+
+/// Developer declaration of instance-volume semantics (§11 of the spec).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct InstanceVolumeConfig {
+    #[serde(default)]
+    pub mode: InstanceVolumeMode,
+    /// Soft quota in MiB. Not enforced yet (§7.10 observability stub).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_mib: Option<u64>,
+    /// Relative paths inside the instance volume whose loss is expected when
+    /// the user runs "reset app". Used both for docs and later cleanup tools.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ephemeral_contents: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct ServiceConfigTips {
+    #[serde(default)]
+    pub service_endpoints: HashMap<String, ServiceEndpointInfo>,
+
+    #[serde(default)]
+    pub data_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
+    #[serde(default)]
+    //local_cache mount默认需要读写权限
+    pub local_cache_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
+    #[serde(default)]
+    pub external_mount_points: HashMap<PathBuf, Option<MountPointInfo>>,
+    #[serde(default)]
+    pub rdb_instances: HashMap<String, RdbInstanceConfig>,
+    #[serde(default)]
+    pub instance_volume: InstanceVolumeConfig,
+    //bash_envs: key:env_name, value: description<language_id, description>
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub bash_envs: HashMap<String, BashEnvInfo>,
 
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub custom_service_desc: HashMap<String, CustomServiceDesc>, //用于提示用户，该服务需要开放的端口最好是开放到哪个端口，并给出理由
-
-    #[serde(default)]
-    pub data_mount_point: Vec<String>,
-
-    #[serde(default)]
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub data_mount_recommend: HashMap<String, DataMountRecommend>, //用于提示用户，该服务需要挂载的数据目录最好是挂载到哪个目录，并给出理由
-    #[serde(default)]
-    pub local_cache_mount_point: Vec<String>,
-
+    pub runtime_caps: HashMap<String, String>, //capname -> "enabled" or "disabled"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_param: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_param: Option<String>,
+
     #[serde(flatten)]
     pub custom_config: HashMap<String, serde_json::Value>,
-    #[serde(default)]
-    pub rdb_instances: HashMap<String, RdbInstanceConfig>,
 }
 
 /// 平台选择条件（v0.5 D2）。字段全部可选，省略的维度表示不限制。
@@ -196,7 +281,9 @@ pub fn derived_selector_for_key(key: &str) -> Option<PackageSelector> {
         "amd64_apple_app" => Some(PackageSelector::for_platform("macos", "x86_64")),
         "aarch64_apple_app" => Some(PackageSelector::for_platform("macos", "aarch64")),
         // 平台无关内容：空 selector 匹配所有目标。
-        "web" | "agent" | "agent_skills" | "script" => Some(PackageSelector::default()),
+        "web" | "agent" | "agent_skills" | "agent_tools" | "script" => {
+            Some(PackageSelector::default())
+        }
         _ => None,
     }
 }
@@ -227,6 +314,8 @@ pub struct SubPkgList {
     pub agent: Option<SubPkgDesc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_skills: Option<SubPkgDesc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_tools: Option<SubPkgDesc>,
     #[serde(flatten)]
     pub others: HashMap<String, SubPkgDesc>,
 }
@@ -309,6 +398,7 @@ impl SubPkgList {
             "web" => self.web.as_ref(),
             "agent" => self.agent.as_ref(),
             "agent_skills" => self.agent_skills.as_ref(),
+            "agent_tools" => self.agent_tools.as_ref(),
             _ => self.others.get(key),
         }
     }
@@ -347,6 +437,9 @@ impl SubPkgList {
         }
         if let Some(pkg) = &self.agent_skills {
             list.push(("agent_skills".to_string(), pkg));
+        }
+        if let Some(pkg) = &self.agent_tools {
+            list.push(("agent_tools".to_string(), pkg));
         }
         for (k, v) in self.others.iter() {
             list.push((k.clone(), v));
@@ -435,6 +528,17 @@ impl fmt::Display for AppDocType {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+pub struct AppPresentation {
+    //language_id -> title, summary, description
+    pub title: HashMap<String, String>,
+    pub summary: HashMap<String, String>,
+    pub description: HashMap<String, String>,
+    pub icons: HashMap<String, ObjId>,
+    pub links: HashMap<String, String>,
+    pub license: String,
+}
+
 //App doc is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct AppDoc {
@@ -442,27 +546,30 @@ pub struct AppDoc {
     pub id: DID,
     /// DID doc_type，固定 `"app"`（必填，v0.5）。
     pub doc_type: AppDocType,
+
     #[serde(flatten)]
     pub _base: PackageMeta,
+    pub pkg_list: SubPkgList,
+
     pub show_name: String, // just for display, app_id is meta.pkg_name (like "buckyos-filebrowser")
+    #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_icon_url: Option<String>,
+    pub presentation: Option<AppPresentation>,
 
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sdk_version: Option<String>, //依赖的buckyos sdk版本，如果未设置则为兼容App,AppLoader要使用兼容模式启动
-
+    pub sdk_version: Option<String>, //使用哪个版本的 buckyos sdk版本开发，如果未设置则为兼容App,AppLoader要使用兼容模式启动
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub req_capbilities: HashMap<String, i64>, //key: capability_name, value: required capability_value
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<PermissionRequest>,
+
+    //UI 应该根据service_config_tips的提示，来构造UI，得到最终的ServiceConfig
     pub selector_type: SelectorType,
-    //UI 应该根据install_config_tips的提示，来构造UI，得到最终的InstallConfig
     #[serde(default)]
-    pub install_config_tips: ServiceInstallConfigTips,
-    pub pkg_list: SubPkgList,
+    pub service_config_tips: ServiceConfigTips,
 }
 
 impl NamedObject for AppDoc {
@@ -503,6 +610,13 @@ impl AppDoc {
         } else {
             AppType::Service
         }
+    }
+
+    pub fn app_icon_url(&self) -> Option<&str> {
+        self.presentation
+            .as_ref()
+            .and_then(|presentation| presentation.links.get("app_icon_url"))
+            .map(String::as_str)
     }
 
     pub fn from_pkg_meta(pkg_meta: &PackageMeta) -> Result<Self> {
@@ -583,12 +697,12 @@ pub struct AppDocBuilder {
     owner: DID,
     meta: PackageMeta,
     show_name: Option<String>,
-    app_icon_url: Option<String>,
+    presentation: Option<AppPresentation>,
     sdk_version: Option<String>,
     req_capbilities: HashMap<String, i64>,
     permissions: Vec<PermissionRequest>,
     selector_type: Option<SelectorType>,
-    install_config_tips: ServiceInstallConfigTips,
+    service_config_tips: ServiceConfigTips,
     pkg_list: SubPkgList,
     apply_default_permissions: bool,
 }
@@ -635,12 +749,12 @@ impl AppDocBuilder {
             owner: owner.clone(),
             meta,
             show_name: None,
-            app_icon_url: None,
+            presentation: None,
             sdk_version: None,
             req_capbilities: HashMap::new(),
             permissions: vec![],
             selector_type: None,
-            install_config_tips: ServiceInstallConfigTips::default(),
+            service_config_tips: ServiceConfigTips::default(),
             pkg_list: SubPkgList::default(),
             apply_default_permissions: true,
         }
@@ -659,7 +773,15 @@ impl AppDocBuilder {
     }
 
     pub fn app_icon_url(mut self, app_icon_url: impl Into<String>) -> Self {
-        self.app_icon_url = Some(app_icon_url.into());
+        self.presentation
+            .get_or_insert_with(AppPresentation::default)
+            .links
+            .insert("app_icon_url".to_string(), app_icon_url.into());
+        self
+    }
+
+    pub fn presentation(mut self, presentation: AppPresentation) -> Self {
+        self.presentation = Some(presentation);
         self
     }
 
@@ -762,38 +884,60 @@ impl AppDocBuilder {
 
     // -------- install tips helpers --------
     pub fn add_data_mount_point(mut self, mount_point: impl Into<String>) -> Self {
-        self.install_config_tips
-            .data_mount_point
-            .push(mount_point.into());
+        self.service_config_tips
+            .data_mount_points
+            .insert(PathBuf::from(mount_point.into()), None);
         self
     }
 
     pub fn add_local_cache_mount_point(mut self, mount_point: impl Into<String>) -> Self {
-        self.install_config_tips
-            .local_cache_mount_point
-            .push(mount_point.into());
+        self.service_config_tips
+            .local_cache_mount_points
+            .insert(PathBuf::from(mount_point.into()), None);
         self
     }
 
     pub fn service_port(mut self, service_name: impl Into<String>, port: u16) -> Self {
-        self.install_config_tips
-            .service_ports
-            .insert(service_name.into(), port);
+        let service_name = service_name.into();
+        let (protocol, route) = if service_name == "www" {
+            (ServiceProtocol::Http, ServiceExposeRouteTips::Web)
+        } else {
+            (
+                ServiceProtocol::Tcp,
+                ServiceExposeRouteTips::Port {
+                    preferred_port: Some(port),
+                },
+            )
+        };
+        self.service_config_tips.service_endpoints.insert(
+            service_name,
+            ServiceEndpointInfo {
+                protocol,
+                inner_port: port,
+                required: true,
+                description: HashMap::new(),
+                expose: Some(ServiceExposeTips {
+                    route,
+                    scope: String::new(),
+                    allow_guest: false,
+                }),
+            },
+        );
         self
     }
 
     pub fn container_param(mut self, param: impl Into<String>) -> Self {
-        self.install_config_tips.container_param = Some(param.into());
+        self.service_config_tips.container_param = Some(param.into());
         self
     }
 
     pub fn start_param(mut self, param: impl Into<String>) -> Self {
-        self.install_config_tips.start_param = Some(param.into());
+        self.service_config_tips.start_param = Some(param.into());
         self
     }
 
     pub fn install_custom(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
-        self.install_config_tips
+        self.service_config_tips
             .custom_config
             .insert(key.into(), value);
         self
@@ -837,6 +981,11 @@ impl AppDocBuilder {
 
     pub fn agent_skills_pkg(mut self, desc: SubPkgDesc) -> Self {
         self.pkg_list.agent_skills = Some(desc);
+        self
+    }
+
+    pub fn agent_tools_pkg(mut self, desc: SubPkgDesc) -> Self {
+        self.pkg_list.agent_tools = Some(desc);
         self
     }
 
@@ -889,6 +1038,7 @@ impl AppDocBuilder {
             || self.pkg_list.aarch64_apple_app.is_some();
         let has_agent = self.pkg_list.agent.is_some();
         let has_agent_skills = self.pkg_list.agent_skills.is_some();
+        let has_agent_tools = self.pkg_list.agent_tools.is_some();
 
         let mut errors: Vec<String> = vec![];
         match self.app_type {
@@ -902,9 +1052,9 @@ impl AppDocBuilder {
                 if has_docker {
                     errors.push("Service app must not include docker images (remove `amd64_docker_image`/`aarch64_docker_image` or change AppType)".to_string());
                 }
-                if has_agent || has_agent_skills {
+                if has_agent || has_agent_skills || has_agent_tools {
                     errors.push(
-                        "Service app must not include `pkg_list.agent`/`pkg_list.agent_skills` (remove them or change AppType)"
+                        "Service app must not include Agent packages (remove `pkg_list.agent`, `pkg_list.agent_skills`, and `pkg_list.agent_tools` or change AppType)"
                             .to_string(),
                     );
                 }
@@ -922,9 +1072,9 @@ impl AppDocBuilder {
                 if has_native_app {
                     errors.push("AppService app must not include `*_win_app`/`*_apple_app` packages (remove them or change AppType)".to_string());
                 }
-                if has_agent || has_agent_skills {
+                if has_agent || has_agent_skills || has_agent_tools {
                     errors.push(
-                        "AppService app must not include `pkg_list.agent`/`pkg_list.agent_skills` (remove them or change AppType)"
+                        "AppService app must not include Agent packages (remove `pkg_list.agent`, `pkg_list.agent_skills`, and `pkg_list.agent_tools` or change AppType)"
                             .to_string(),
                     );
                 }
@@ -946,9 +1096,9 @@ impl AppDocBuilder {
                             .to_string(),
                     );
                 }
-                if has_agent || has_agent_skills {
+                if has_agent || has_agent_skills || has_agent_tools {
                     errors.push(
-                        "Web app must not include `pkg_list.agent`/`pkg_list.agent_skills` (remove them or change AppType)"
+                        "Web app must not include Agent packages (remove `pkg_list.agent`, `pkg_list.agent_skills`, and `pkg_list.agent_tools` or change AppType)"
                             .to_string(),
                     );
                 }
@@ -956,7 +1106,7 @@ impl AppDocBuilder {
                 // Web is always static and should not request permissions.
                 self.selector_type = Some(SelectorType::Static);
                 self.permissions.clear();
-                self.install_config_tips = ServiceInstallConfigTips::default();
+                self.service_config_tips = ServiceConfigTips::default();
             }
             AppType::Agent => {
                 if !has_agent {
@@ -1012,12 +1162,12 @@ impl AppDocBuilder {
             doc_type: AppDocType,
             _base: self.meta,
             show_name,
-            app_icon_url: self.app_icon_url,
+            presentation: self.presentation,
             sdk_version: self.sdk_version,
             req_capbilities: self.req_capbilities,
             permissions: self.permissions,
             selector_type: self.selector_type.unwrap_or_default(),
-            install_config_tips: self.install_config_tips,
+            service_config_tips: self.service_config_tips,
             pkg_list: self.pkg_list,
         })
     }
@@ -1039,6 +1189,23 @@ impl AppDoc {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn required_endpoint_does_not_imply_exposure() {
+        let endpoint = ServiceEndpointInfo {
+            protocol: ServiceProtocol::Tcp,
+            inner_port: 445,
+            required: true,
+            description: HashMap::new(),
+            expose: None,
+        };
+
+        let value = serde_json::to_value(&endpoint).unwrap();
+        let decoded: ServiceEndpointInfo = serde_json::from_value(value).unwrap();
+        assert!(decoded.required);
+        assert!(decoded.expose.is_none());
+    }
+
     #[tokio::test]
     async fn test_get_parse_app_doc() {
         let app_doc = json!({
@@ -1058,11 +1225,22 @@ mod tests {
             "last_update_time": 1743008063u64,
             "exp": 1837616063u64,
             "selector_type": "single",
-            "install_config_tips": {
-                "data_mount_point": ["/srv/", "/database/", "/config/"],
-                "local_cache_mount_point": [],
-                "service_ports": {
-                    "www": 80
+            "service_config_tips": {
+                "data_mount_points": {
+                    "/srv/": null,
+                    "/database/": null,
+                    "/config/": null
+                },
+                "local_cache_mount_points": {},
+                "service_endpoints": {
+                    "www": {
+                        "protocol": "http",
+                        "inner_port": 80,
+                        "required": true,
+                        "expose": {
+                            "route": { "type": "web" }
+                        }
+                    }
                 }
             },
             "pkg_list": {
@@ -1158,7 +1336,7 @@ mod tests {
     "owner": "did:web:buckyos.ai",
     "show_name": "BuckyOS System Test",
     "selector_type": "static",
-    "install_config_tips": {
+    "service_config_tips": {
     },
     "pkg_list": {
       "web": {
@@ -1324,6 +1502,7 @@ mod tests {
             web: Some(SubPkgDesc::new("demo-web#0.1.0")),
             agent: Some(SubPkgDesc::new("demo-agent#0.1.0")),
             agent_skills: Some(SubPkgDesc::new("demo-agent-skills#0.1.0")),
+            agent_tools: Some(SubPkgDesc::new("demo-agent-tools#0.1.0")),
             ..Default::default()
         };
         pkg_list
@@ -1356,6 +1535,10 @@ mod tests {
             pkg_list.get("agent_skills").map(|pkg| pkg.pkg_id.as_str()),
             Some("demo-agent-skills#0.1.0")
         );
+        assert_eq!(
+            pkg_list.get("agent_tools").map(|pkg| pkg.pkg_id.as_str()),
+            Some("demo-agent-tools#0.1.0")
+        );
 
         let keys: Vec<String> = pkg_list.iter().into_iter().map(|(key, _)| key).collect();
         assert!(keys.iter().any(|key| key == "amd64_linux_app"));
@@ -1363,6 +1546,7 @@ mod tests {
         assert!(keys.iter().any(|key| key == "amd64_apple_app"));
         assert!(keys.iter().any(|key| key == "agent"));
         assert!(keys.iter().any(|key| key == "agent_skills"));
+        assert!(keys.iter().any(|key| key == "agent_tools"));
         assert!(keys.iter().any(|key| key == "custom"));
     }
 

@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{
     build_device_did, device_identity_paths_for_roots, new_device_config_by_jwk_with_did,
     save_local_device_identity_for_roots, AppDoc, LocalAppInstanceConfig, LocalNodeIdentityConfig,
-    ServiceInstallConfig, ServiceInstanceState, MSG_CENTER_SERVICE_UNIQUE_ID,
+    ServiceInstanceState, ServiceSpecConfig, MSG_CENTER_SERVICE_UNIQUE_ID,
     OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
     VERIFY_HUB_UNIQUE_ID, WORKFLOW_SERVICE_UNIQUE_ID,
 };
@@ -1301,7 +1301,16 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
         "doc_type": "app",
         "name": "cyfs-gateway",
         "show_name": "CYFS Gateway",
-        "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png",
+        "presentation": {
+            "title": {},
+            "summary": {},
+            "description": {},
+            "icons": {},
+            "links": {
+                "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png"
+            },
+            "license": ""
+        },
         "selector_type": "single",
         "version": "0.5.1",
         "author": "buckyos.ai",
@@ -1330,7 +1339,7 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
         enable: true,
         app_doc: cyfs_gateway_doc,
         user_id: "devtest".to_string(),
-        install_config: ServiceInstallConfig::default(),
+        install_config: ServiceSpecConfig::default(),
     };
     app_list.insert("cyfs-gateway".to_string(), cyfs_gateway_cfg);
 

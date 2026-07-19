@@ -61,7 +61,7 @@ Control Panel Service 是 Zone 内的**核心资源管理服务**，其本质是
 ### 2.3 App（应用）
 
 * 核心结构 `AppServiceSpec`（`app_doc` + `user_id` + `app_index` + `enable` + `expected_instance_count` + `state` + `install_config`）。
-* `AppDoc` 描述应用本体：`name`(app_id) / `version` / `author` / `owner` / `show_name` / `app_icon_url` / `pkg_list`（子包：web / agent / docker image）/ `install_config_tips` / `tags` / `categories` 等。
+* `AppDoc` 描述应用本体：`name`(app_id) / `version` / `author` / `owner` / `show_name` / `presentation` / `pkg_list`（子包：web / agent / agent_skills / agent_tools / docker image）/ `service_config_tips` / `tags` / `categories` 等。
 * 生命周期 `ServiceState`：`New → Running / Stopped / Stopping / Restarting / Updating / Deleted`。
 * `system_config` 路径：
 

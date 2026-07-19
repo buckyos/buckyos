@@ -266,12 +266,16 @@ pub struct ServiceNode {
 对应代码：`src/kernel/buckyos-api/src/app_mgr.rs`
 
 ```rust
-pub struct ServiceInstallConfig {
-    pub data_mount_point: HashMap<String, String>,
-    pub cache_mount_point: Vec<String>,
-    pub local_cache_mount_point: Vec<String>,
-    pub bind_address: Option<String>, // None => bind 127.0.0.1
+pub struct ServiceSpecConfig {
+    pub service_config: HashMap<String, ServiceEndpointConfig>,
     pub expose_config: HashMap<String, ServiceExposeConfig>,
+    pub data_mount_point: HashMap<PathBuf, MountPointConfig>,
+    pub local_cache_mount_point: HashMap<PathBuf, MountPointConfig>,
+    pub external_mount_point: HashMap<PathBuf, MountPointConfig>,
+    pub rdb_instances: HashMap<String, RdbInstanceConfig>,
+    pub instance_volume: InstanceVolumeConfig,
+    pub bash_envs: HashMap<String, String>,
+    pub runtime_caps: HashMap<String, String>,
     pub container_param: Option<String>,
     pub start_param: Option<String>,
     pub res_pool_id: String,
@@ -279,9 +283,12 @@ pub struct ServiceInstallConfig {
 ```
 
 含义：
-- 当前代码里的字段名仍沿用 `*_mount_point` 命名；但从路径设计上，应优先按固定沙箱目录理解：`/tmp/`、`/config/*`、`/home/$userid/`、`/home/$userid/.local/share/$appid/`，而不是按旧的可自由拼装 `data/cache/local_cache` 目录模型理解。
-- `bind_address: None` 强化“默认只允许本机访问，需要通过 rtcp/网关转发”的安全策略。
-- `expose_config` 决定哪些端口/子域名会被暴露给 Zone 内/公网。
+- `service_config` 描述 App 必须运行的内部端点；`expose_config` 是独立的系统推导结果，缺少对应项表示运行但不暴露。
+- `ServiceEndpointInfo.required` 只约束端点能否关闭，不要求暴露。暴露与否由用户的 `ServiceSettings` 决定。
+- `ServiceExposeRouteConfig` 区分 Web 路由与 Port 路由；前者使用子域名/URI，后者使用独立暴露端口。
+- 实例端口保存在 `AppServiceInstanceConfig.service_ports_config`，不写进共享暴露配置。
+- AppDoc 与 spec 的 RDB 声明都使用完整 `RdbInstanceConfig`；最终 connection string 由 scheduler 分配。
+- App 进程不读取 `ServiceSettings` 或 `ServiceSpecConfig`，只依赖自身约定的内部端口和运行环境。
 
 ## 关键流程伪代码（主链路）
 

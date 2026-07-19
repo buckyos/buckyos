@@ -2,8 +2,8 @@ use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
     get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
-    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstallConfig,
-    ServiceInstanceState, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstanceState,
+    ServiceSpecConfig, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -402,7 +402,7 @@ impl AppLoader {
         }
     }
 
-    fn install_config(&self) -> &ServiceInstallConfig {
+    fn install_config(&self) -> &ServiceSpecConfig {
         match &self.config {
             LoaderConfig::Service(config) => &config.app_spec.install_config,
             LoaderConfig::Local(config) => &config.install_config,
@@ -716,11 +716,10 @@ impl AppLoader {
 
         for (service_name, instance_port) in self.service_ports_config() {
             let container_port = self
-                .app_doc()
-                .install_config_tips
-                .service_ports
+                .install_config()
+                .service_config
                 .get(service_name.as_str())
-                .copied()
+                .map(|config| config.inner_port)
                 .ok_or_else(|| {
                     ControlRuntItemErrors::ParserConfigError(format!(
                         "service {} port mapping missing in app_doc for {}",
@@ -1035,11 +1034,10 @@ impl AppLoader {
         } else {
             for (service_name, instance_port) in self.service_ports_config() {
                 if let Some(container_port) = self
-                    .app_doc()
-                    .install_config_tips
-                    .service_ports
+                    .install_config()
+                    .service_config
                     .get(service_name.as_str())
-                    .copied()
+                    .map(|config| config.inner_port)
                 {
                     args.push("-p".to_string());
                     args.push(format!("{instance_port}:{container_port}"));
@@ -1393,35 +1391,46 @@ impl AppLoader {
         mounts.insert("/tmp".to_string(), (self.app_local_cache_dir(), "rw"));
         mounts.insert(app_data_container.clone(), (self.app_data_dir(), "rw"));
 
-        for (container_path, raw_value) in &self.install_config().data_mount_point {
-            let (host_relative, permission_override) = parse_mount_value(raw_value.as_str());
-            let host_path =
-                resolve_external_mount_host_path(container_path.as_str(), host_relative)?;
-            let permission = permission_override.unwrap_or_else(|| {
-                default_mount_permission(container_path.as_str(), &self.app_id, &self.owner_user_id)
-            });
-            mounts.insert(container_path.clone(), (host_path, permission));
+        for (container_path, config) in &self.install_config().data_mount_point {
+            let container_path = container_path.to_string_lossy().to_string();
+            let host_relative = config.target_path.to_string_lossy();
+            let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
+            let permission = mount_access_to_docker(
+                &config.access,
+                default_mount_permission(&container_path, &self.app_id, &self.owner_user_id),
+            );
+            mounts.insert(container_path, (host_path, permission));
         }
 
-        let base_cache_dir = self.app_cache_dir();
-        for mount_point in &self.install_config().cache_mount_point {
+        let base_local_cache_dir = self.app_local_cache_dir();
+        for (container_path, config) in &self.install_config().local_cache_mount_point {
+            let container_path = container_path.to_string_lossy().to_string();
+            let relative_path = if config.target_path.as_os_str().is_empty() {
+                container_path.trim_start_matches('/').to_string()
+            } else {
+                config
+                    .target_path
+                    .to_str()
+                    .unwrap_or_default()
+                    .trim_start_matches('/')
+                    .to_string()
+            };
             mounts.insert(
-                mount_point.clone(),
+                container_path,
                 (
-                    base_cache_dir.join(mount_point.trim_start_matches('/')),
-                    "rw",
+                    base_local_cache_dir.join(&relative_path),
+                    mount_access_to_docker(&config.access, "rw"),
                 ),
             );
         }
 
-        let base_local_cache_dir = self.app_local_cache_dir();
-        for mount_point in &self.install_config().local_cache_mount_point {
+        for (container_path, config) in &self.install_config().external_mount_point {
+            let container_path = container_path.to_string_lossy().to_string();
+            let host_relative = config.target_path.to_string_lossy();
+            let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
             mounts.insert(
-                mount_point.clone(),
-                (
-                    base_local_cache_dir.join(mount_point.trim_start_matches('/')),
-                    "rw",
-                ),
+                container_path,
+                (host_path, mount_access_to_docker(&config.access, "ro")),
             );
         }
 
@@ -1447,7 +1456,7 @@ impl AppLoader {
         }
 
         let mut seen_names = HashSet::new();
-        for service_name in self.app_doc().install_config_tips.service_ports.keys() {
+        for service_name in self.install_config().service_config.keys() {
             if !seen_names.insert(service_name.clone()) {
                 continue;
             }
@@ -1557,28 +1566,43 @@ impl AppLoader {
         // Developer-declared data mount points (e.g. zone shared data) map from
         // container paths into BUCKYOS_ROOT on the host. Host paths are bounded
         // to BUCKYOS_ROOT (R-27/R-28) and default to ro unless explicitly `:rw`.
-        for (container_path, raw_value) in &self.install_config().data_mount_point {
-            let (host_relative, permission_override) = parse_mount_value(raw_value.as_str());
-            let host_path =
-                resolve_external_mount_host_path(container_path.as_str(), host_relative)?;
-            let permission = permission_override.unwrap_or_else(|| {
-                default_mount_permission(container_path.as_str(), &self.app_id, &self.owner_user_id)
-            });
+        for (container_path, config) in &self.install_config().data_mount_point {
+            let container_path = container_path.to_string_lossy().to_string();
+            let host_relative = config.target_path.to_string_lossy();
+            let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
+            let permission = mount_access_to_docker(
+                &config.access,
+                default_mount_permission(&container_path, &self.app_id, &self.owner_user_id),
+            );
             ensure_directory(&host_path, permission == "rw")?;
-            mounts.insert(container_path.clone(), (host_path, permission));
+            mounts.insert(container_path, (host_path, permission));
         }
 
-        let base_cache_dir = self.app_cache_dir();
-        for mount_point in &self.install_config().cache_mount_point {
-            let host_path = base_cache_dir.join(mount_point.trim_start_matches('/'));
-            ensure_directory(&host_path, true)?;
-            mounts.insert(mount_point.clone(), (host_path, "rw"));
-        }
         let base_local_cache_dir = self.app_local_cache_dir();
-        for mount_point in &self.install_config().local_cache_mount_point {
-            let host_path = base_local_cache_dir.join(mount_point.trim_start_matches('/'));
-            ensure_directory(&host_path, true)?;
-            mounts.insert(mount_point.clone(), (host_path, "rw"));
+        for (container_path, config) in &self.install_config().local_cache_mount_point {
+            let container_path = container_path.to_string_lossy().to_string();
+            let relative_path = if config.target_path.as_os_str().is_empty() {
+                container_path.trim_start_matches('/').to_string()
+            } else {
+                config
+                    .target_path
+                    .to_str()
+                    .unwrap_or_default()
+                    .trim_start_matches('/')
+                    .to_string()
+            };
+            let host_path = base_local_cache_dir.join(&relative_path);
+            let permission = mount_access_to_docker(&config.access, "rw");
+            ensure_directory(&host_path, permission == "rw")?;
+            mounts.insert(container_path, (host_path, permission));
+        }
+        for (container_path, config) in &self.install_config().external_mount_point {
+            let container_path = container_path.to_string_lossy().to_string();
+            let host_relative = config.target_path.to_string_lossy();
+            let host_path = resolve_external_mount_host_path(&container_path, &host_relative)?;
+            let permission = mount_access_to_docker(&config.access, "ro");
+            ensure_directory(&host_path, permission == "rw")?;
+            mounts.insert(container_path, (host_path, permission));
         }
 
         let _ = role; // reserved for future per-role external mounts
@@ -2105,11 +2129,10 @@ impl AppLoader {
         service_ports.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
         for (service_name, instance_port) in service_ports {
             let container_port = self
-                .app_doc()
-                .install_config_tips
-                .service_ports
+                .install_config()
+                .service_config
                 .get(service_name.as_str())
-                .copied()
+                .map(|config| config.inner_port)
                 .ok_or_else(|| {
                     ControlRuntItemErrors::ParserConfigError(format!(
                         "service {} port mapping missing in app_doc for {}",
@@ -2541,14 +2564,12 @@ pub(crate) fn command_matches_exact_agent_process(
         .unwrap_or(false)
 }
 
-fn parse_mount_value(value: &str) -> (&str, Option<&'static str>) {
-    if let Some(path) = value.strip_suffix(":ro") {
-        return (path, Some("ro"));
+fn mount_access_to_docker(access: &str, default: &'static str) -> &'static str {
+    match access {
+        "read_only" | "ro" => "ro",
+        "read_write" | "read_write_append" | "rw" => "rw",
+        _ => default,
     }
-    if let Some(path) = value.strip_suffix(":rw") {
-        return (path, Some("rw"));
-    }
-    (value, None)
 }
 
 /// Default permission for a developer-declared mount when no explicit `:ro`/`:rw`

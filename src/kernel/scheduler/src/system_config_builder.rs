@@ -8,11 +8,12 @@ use buckyos_api::{
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     generate_workflow_service_doc, AppDoc, AppServiceSpec, AppType, GatewaySettings,
-    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceExposeConfig,
-    ServiceInfo, ServiceInstallConfig, ServiceInstanceReportInfo, ServiceInstanceState,
-    ServiceNode, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile, UserProfile,
-    UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig, OPENDAN_SERVICE_PORT,
-    OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceEndpointConfig,
+    ServiceExposeConfig, ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo,
+    ServiceInstanceState, ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState,
+    SubPkgDesc, UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
+    UserTunnelBinding, UserType, ZoneConfig, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{load_local_device_private_key, load_local_node_identity_config};
 use buckyos_api::{
@@ -96,7 +97,7 @@ pub struct PreInstallAppConfig {
     #[serde(alias = "app-doc")]
     pub app_doc: AppDoc,
     #[serde(flatten)]
-    pub install_config: ServiceInstallConfig,
+    pub install_config: ServiceSpecConfig,
 }
 
 pub struct SystemConfigBuilder {
@@ -612,10 +613,18 @@ fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppSer
     .build()
     .map_err(|err| anyhow!("build default jarvis app doc failed: {err}"))?;
 
-    let mut install_config = ServiceInstallConfig::default();
-    install_config
-        .expose_config
-        .insert("www".to_string(), ServiceExposeConfig::default());
+    let mut install_config = ServiceSpecConfig::default();
+    install_config.service_config.insert(
+        "www".to_string(),
+        ServiceEndpointConfig {
+            protocol: ServiceProtocol::Http,
+            inner_port: OPENDAN_SERVICE_PORT,
+        },
+    );
+    install_config.expose_config.insert(
+        "www".to_string(),
+        ServiceExposeConfig::web(vec![JARVIS_APP_ID.to_string()], String::new(), false),
+    );
 
     Ok(AppServiceSpec {
         app_doc,
@@ -1098,12 +1107,23 @@ async fn build_kernel_service_spec(
     let _service_did = PackageId::unique_name_to_did(pkg_name);
     attach_current_platform_service_pkg(&mut service_doc);
 
-    let mut install_config = ServiceInstallConfig::default();
+    let mut install_config = ServiceSpecConfig::default();
     let service_expose_config = ServiceExposeConfig {
-        sub_hostname: Vec::new(),
-        expose_uri: Some(format!("/kapi/{}", pkg_name)),
-        expose_port: Some(port),
+        route: ServiceExposeRouteConfig::Web {
+            sub_hostname: Vec::new(),
+            expose_uri: Some(format!("/kapi/{}", pkg_name)),
+        },
+        scope: String::new(),
+        allow_guest: false,
+        bind_address: None,
     };
+    install_config.service_config.insert(
+        "www".to_string(),
+        ServiceEndpointConfig {
+            protocol: ServiceProtocol::Http,
+            inner_port: port,
+        },
+    );
     install_config
         .expose_config
         .insert("www".to_string(), service_expose_config);
@@ -1601,8 +1621,12 @@ mod tests {
         assert_eq!(spec.app_doc.show_name, "Jarvis");
         assert_eq!(spec.app_doc.name, "buckyos_jarvis");
         assert_eq!(
-            spec.app_doc.install_config_tips.service_ports.get("www"),
-            Some(&OPENDAN_SERVICE_PORT)
+            spec.app_doc
+                .service_config_tips
+                .service_endpoints
+                .get("www")
+                .map(|endpoint| endpoint.inner_port),
+            Some(OPENDAN_SERVICE_PORT)
         );
         assert!(spec.install_config.expose_config.contains_key("www"));
         assert_eq!(
@@ -1640,8 +1664,12 @@ mod tests {
         assert_eq!(spec.user_id, "alice");
         assert_eq!(spec.app_doc.name, "buckyos_jarvis");
         assert_eq!(
-            spec.app_doc.install_config_tips.service_ports.get("www"),
-            Some(&OPENDAN_SERVICE_PORT)
+            spec.app_doc
+                .service_config_tips
+                .service_endpoints
+                .get("www")
+                .map(|endpoint| endpoint.inner_port),
+            Some(OPENDAN_SERVICE_PORT)
         );
         assert!(spec.install_config.expose_config.contains_key("www"));
         assert_eq!(
@@ -1754,8 +1782,10 @@ mod tests {
                     "demo_app": {
                         "app_doc": app_doc,
                         "data_mount_point": {},
-                        "cache_mount_point": [],
-                        "local_cache_mount_point": [],
+                        "local_cache_mount_point": {},
+                        "external_mount_point": {},
+                        "service_config": {},
+                        "expose_config": {},
                         "res_pool_id": "default"
                     }
                 }
@@ -1796,8 +1826,10 @@ mod tests {
                 "pre_install_apps": {
                     "demo_app": {
                         "data_mount_point": {},
-                        "cache_mount_point": [],
-                        "local_cache_mount_point": [],
+                        "local_cache_mount_point": {},
+                        "external_mount_point": {},
+                        "service_config": {},
+                        "expose_config": {},
                         "res_pool_id": "default"
                     }
                 }
