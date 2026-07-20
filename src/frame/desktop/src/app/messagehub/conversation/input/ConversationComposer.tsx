@@ -271,6 +271,37 @@ const ConversationComposerInner = forwardRef<
         onChange={handleFileInputChange}
       />
 
+      {/* Anchored to the composer root: the message input area is overflow-hidden
+          and would clip a menu popping upward from inside it. */}
+      {pickerOpen ? (
+        <div
+          className="absolute bottom-full left-4 z-40 mb-2 w-40 rounded-2xl p-1.5 shadow-lg"
+          style={{
+            background: 'color-mix(in srgb, var(--cp-surface) 96%, white)',
+            border: '1px solid var(--cp-border)',
+          }}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm"
+            style={{ color: 'var(--cp-text)' }}
+            onClick={() => fileInputRef.current?.click()}
+            type="button"
+          >
+            <File size={16} />
+            {t('messagehub.pickFile', 'Choose file')}
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm"
+            style={{ color: 'var(--cp-text)' }}
+            onClick={() => directoryInputRef.current?.click()}
+            type="button"
+          >
+            <FolderOpen size={16} />
+            {t('messagehub.pickFolder', 'Choose folder')}
+          </button>
+        </div>
+      ) : null}
+
       {/* Message input area – top, max 50% of composer */}
       <div
         ref={messageInputContainerRef}
@@ -278,45 +309,14 @@ const ConversationComposerInner = forwardRef<
         style={messageInputMaxHeight != null ? { maxHeight: messageInputMaxHeight } : undefined}
       >
         <div className="relative flex min-w-0 items-end gap-2 px-1 py-1">
-          <div className="relative flex-shrink-0">
-            <button
-              className="p-1 rounded-lg flex-shrink-0"
-              style={{ color: 'var(--cp-muted)' }}
-              onClick={() => setPickerOpen((previous) => !previous)}
-              type="button"
-            >
-              <Paperclip size={18} />
-            </button>
-
-            {pickerOpen ? (
-              <div
-                className="absolute bottom-full left-0 z-40 mb-2 w-40 rounded-2xl p-1.5 shadow-lg"
-                style={{
-                  background: 'color-mix(in srgb, var(--cp-surface) 96%, white)',
-                  border: '1px solid var(--cp-border)',
-                }}
-              >
-                <button
-                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm"
-                  style={{ color: 'var(--cp-text)' }}
-                  onClick={() => fileInputRef.current?.click()}
-                  type="button"
-                >
-                  <File size={16} />
-                  {t('messagehub.pickFile', 'Choose file')}
-                </button>
-                <button
-                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm"
-                  style={{ color: 'var(--cp-text)' }}
-                  onClick={() => directoryInputRef.current?.click()}
-                  type="button"
-                >
-                  <FolderOpen size={16} />
-                  {t('messagehub.pickFolder', 'Choose folder')}
-                </button>
-              </div>
-            ) : null}
-          </div>
+          <button
+            className="p-1 rounded-lg flex-shrink-0"
+            style={{ color: 'var(--cp-muted)' }}
+            onClick={() => setPickerOpen((previous) => !previous)}
+            type="button"
+          >
+            <Paperclip size={18} />
+          </button>
 
           <textarea
             ref={inputRef}
