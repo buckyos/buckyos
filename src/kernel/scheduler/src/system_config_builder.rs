@@ -243,13 +243,14 @@ impl SystemConfigBuilder {
             debug!("app_key: {}", app_key);
 
             let app_spec = AppServiceSpec {
+                permission: app_doc.permissions.clone(),
                 app_doc,
                 app_index: app_index,
                 user_id: config.user_name.clone(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::default(),
-                install_config: pre_install_app.install_config.clone(),
+                spec_config: pre_install_app.install_config.clone(),
             };
 
             self.insert_json(&app_key, &app_spec)?;
@@ -330,7 +331,7 @@ impl SystemConfigBuilder {
             service_doc,
         )
         .await?;
-        config.install_config.rdb_instances.insert(
+        config.spec_config.rdb_instances.insert(
             buckyos_api::TASK_MANAGER_RDB_INSTANCE_ID.to_string(),
             buckyos_api::task_manager_default_rdb_instance_config(),
         );
@@ -360,7 +361,7 @@ impl SystemConfigBuilder {
             service_doc,
         )
         .await?;
-        service_spec.install_config.rdb_instances.insert(
+        service_spec.spec_config.rdb_instances.insert(
             buckyos_api::AICC_USAGE_LOG_RDB_INSTANCE_ID.to_string(),
             buckyos_api::aicc_usage_log_default_rdb_instance_config(),
         );
@@ -384,7 +385,7 @@ impl SystemConfigBuilder {
             service_doc,
         )
         .await?;
-        service_spec.install_config.rdb_instances.insert(
+        service_spec.spec_config.rdb_instances.insert(
             buckyos_api::MSG_CENTER_RDB_INSTANCE_ID.to_string(),
             buckyos_api::msg_center_default_rdb_instance_config(),
         );
@@ -436,7 +437,7 @@ impl SystemConfigBuilder {
         let service_doc = generate_repo_service_doc();
         let mut config =
             build_kernel_service_spec(REPO_SERVICE_UNIQUE_ID, 4000, 1, service_doc).await?;
-        config.install_config.rdb_instances.insert(
+        config.spec_config.rdb_instances.insert(
             buckyos_api::REPO_SERVICE_RDB_INSTANCE_ID.to_string(),
             buckyos_api::repo_service_default_rdb_instance_config(),
         );
@@ -627,13 +628,14 @@ fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppSer
     );
 
     Ok(AppServiceSpec {
+        permission: app_doc.permissions.clone(),
         app_doc,
         app_index: 1,
         user_id: config.user_name.clone(),
         enable: true,
         expected_instance_count: 1,
         state: ServiceState::default(),
-        install_config,
+        spec_config: install_config,
     })
 }
 
@@ -1134,7 +1136,7 @@ async fn build_kernel_service_spec(
         enable: true,
         expected_instance_count,
         state: ServiceState::default(),
-        install_config,
+        spec_config: install_config,
     })
 }
 
@@ -1628,7 +1630,7 @@ mod tests {
                 .map(|endpoint| endpoint.inner_port),
             Some(OPENDAN_SERVICE_PORT)
         );
-        assert!(spec.install_config.expose_config.contains_key("www"));
+        assert!(spec.spec_config.expose_config.contains_key("www"));
         assert_eq!(
             spec.app_doc
                 .pkg_list
@@ -1671,7 +1673,7 @@ mod tests {
                 .map(|endpoint| endpoint.inner_port),
             Some(OPENDAN_SERVICE_PORT)
         );
-        assert!(spec.install_config.expose_config.contains_key("www"));
+        assert!(spec.spec_config.expose_config.contains_key("www"));
         assert_eq!(
             spec.app_doc
                 .pkg_list

@@ -404,7 +404,7 @@ impl AppLoader {
 
     fn install_config(&self) -> &ServiceSpecConfig {
         match &self.config {
-            LoaderConfig::Service(config) => &config.app_spec.install_config,
+            LoaderConfig::Service(config) => &config.app_spec.spec_config,
             LoaderConfig::Local(config) => &config.install_config,
         }
     }

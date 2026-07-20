@@ -60,7 +60,7 @@ Control Panel Service 是 Zone 内的**核心资源管理服务**，其本质是
 
 ### 2.3 App（应用）
 
-* 核心结构 `AppServiceSpec`（`app_doc` + `user_id` + `app_index` + `enable` + `expected_instance_count` + `state` + `install_config`）。
+* 核心结构 `AppServiceSpec`（`app_doc` + `user_id` + `app_index` + `permission` + `enable` + `expected_instance_count` + `state` + `spec_config`）。`permission` 保存安装时最终批准的权限项。
 * `AppDoc` 描述应用本体：`name`(app_id) / `version` / `author` / `owner` / `show_name` / `presentation` / `pkg_list`（子包：web / agent / agent_skills / agent_tools / docker image）/ `service_config_tips` / `tags` / `categories` 等。
 * 生命周期 `ServiceState`：`New → Running / Stopped / Stopping / Restarting / Updating / Deleted`。
 * `system_config` 路径：
@@ -173,7 +173,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 | `apps.update` | `{task_id}` | v0.5：`{app_id, options?}`，走与安装同一条 Stage 流水线（见 §5.3） |
 | `apps.uninstall` | `{task_id}` | 卸载（可选 `remove_data`） |
 | `apps.start` / `apps.stop` | `{task_id}` / `{ok}` | 启停 |
-| `app.publish` | `{ok, obj_id, app_did, app_doc_id, pikg_handle, pikg_digest, pikg_path, app_doc, publish_status}` | 开发者发布：产出带 `id/doc_type` 的 App Document、`.pikg`（同一 PikgReader 自校验）并推到仓库；`publish_status=repo_stored_candidate` 表示尚未权威发布 App DID |
+| `app.publish` | `{ok, obj_id, app_did, app_doc_id, pikg_handle, pikg_digest, pikg_path, app_doc, publish_status}` | 开发者发布：产出带 `did/doc_type` 的 App Document、`.pikg`（同一 PikgReader 自校验）并推到仓库；`publish_status=repo_stored_candidate` 表示尚未权威发布 App DID |
 
 * **权限**：所有 handler 要求已认证主体；目标用户默认取 `principal.username`（为自己安装），给他人安装需 admin；`SYSTEM_INTERNAL` 策略（可 auto-confirm）仅限 admin。confirm/retry/cancel 只能操作本人任务（admin 例外）。
 * **安全约束**：卸载删数据仅允许命中 `/opt/buckyos/data/*/{app_id}/*` 的路径；已 `Deleted` 的 app 不可 start；同一 user + App DID 只允许一个进行中的安装/升级事务。

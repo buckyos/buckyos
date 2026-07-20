@@ -85,7 +85,7 @@ fn create_service_spec_by_app_config(
         }
     }
 
-    let service_ports_config = app_config.install_config.to_service_ports_config();
+    let service_ports_config = app_config.spec_config.to_service_ports_config();
     ServiceSpec {
         id: full_app_id.to_string(),
         app_index: app_config.app_index,
@@ -114,7 +114,7 @@ fn create_service_spec_by_service_config(
     service_config: &KernelServiceSpec,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(service_config.state.clone());
-    let service_ports_config = service_config.install_config.to_service_ports_config();
+    let service_ports_config = service_config.spec_config.to_service_ports_config();
     ServiceSpec {
         id: service_name.to_string(),
         app_id: service_name.to_string(),
@@ -610,7 +610,7 @@ fn build_web_app_servers(
     let mut web_app_servers = HashMap::new();
 
     for web_app in get_web_app_list(input_system_config)? {
-        if !web_app.install_config.expose_config.contains_key("www") {
+        if !web_app.spec_config.expose_config.contains_key("www") {
             continue;
         }
 
@@ -817,7 +817,7 @@ fn build_app_host_entry(
 
     let port = select_gateway_port(&pick_instance.service_ports, service_name)?;
     let access_mode = if app_spec
-        .install_config
+        .spec_config
         .expose_config
         .get(service_name)
         .map(|config| config.allow_guest)
@@ -863,7 +863,7 @@ fn build_app_host_entry_from_persisted_service_info(
 
     let port = select_gateway_port(&node_info.service_port, service_name)?;
     let access_mode = if app_spec
-        .install_config
+        .spec_config
         .expose_config
         .get(service_name)
         .map(|config| config.allow_guest)
@@ -1032,7 +1032,7 @@ pub(crate) async fn update_node_gateway_info(
             if spec_id.contains('@') {
                 if let Ok(app_spec) = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)
                 {
-                    if let Some(expose_config) = app_spec.install_config.expose_config.get("www") {
+                    if let Some(expose_config) = app_spec.spec_config.expose_config.get("www") {
                         let app_entry =
                             build_app_host_entry(&app_spec, service_info, service_name.as_str())
                                 .or_else(|| {
@@ -1085,7 +1085,7 @@ pub(crate) async fn update_node_gateway_info(
 
     for web_app in get_web_app_list(input_system_config)? {
         let full_app_id = format!("{}@{}", web_app.app_id(), web_app.user_id);
-        let Some(expose_config) = web_app.install_config.expose_config.get("www") else {
+        let Some(expose_config) = web_app.spec_config.expose_config.get("www") else {
             continue;
         };
         let Some(app_entry) = build_static_web_app_host_entry(&web_app) else {
@@ -1714,13 +1714,14 @@ mod tests {
         );
 
         AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         }
     }
 
@@ -1752,13 +1753,14 @@ mod tests {
         );
 
         AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 2,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         }
     }
 
@@ -1782,13 +1784,14 @@ mod tests {
         );
 
         AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 3,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         }
     }
 

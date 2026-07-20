@@ -536,7 +536,7 @@ impl AppInstaller {
     }
 
     async fn remove_app_data(&self, spec: &AppServiceSpec) -> Result<(), RPCErrors> {
-        for mount_config in spec.install_config.data_mount_point.values() {
+        for mount_config in spec.spec_config.data_mount_point.values() {
             let path = mount_config.target_path.clone();
             if !Self::removable_data_path(&path, spec.app_id()) {
                 warn!(
@@ -1075,7 +1075,7 @@ impl AppInstaller {
             RPCErrors::ReasonError(format!("Serialize final AppDoc failed: {error}"))
         })?;
         Ok(PublishOutput {
-            app_did: final_doc.id.clone(),
+            app_did: final_doc.app_did().clone(),
             app_doc_object_id: final_obj_id,
             app_doc_value,
             pikg_handle: format!("{}{}", buckyos_api::PIKG_STAGING_HANDLE_PREFIX, pikg_digest),
@@ -1921,7 +1921,7 @@ impl ControlPanelServer {
             .app_installer
             .get_app_service_spec(app_id.as_str(), Some(user_id.as_str()))
             .await?;
-        let app_did = current_spec.app_doc.id.clone();
+        let app_did = current_spec.app_doc.app_did().clone();
 
         let request = buckyos_api::AppUpdateTaskRequest {
             source: buckyos_api::InstallSource::identifier(app_did.to_string(), None),

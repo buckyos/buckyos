@@ -511,7 +511,7 @@ mod test {
     "pre_install_apps": {
         "buckyos_filebrowser": {
             "app_doc": {
-                "id": "did:bns:buckyos_filebrowser.buckyos.ai",
+                "did": "did:bns:buckyos_filebrowser.buckyos.ai",
                 "doc_type": "app",
                 "name": "buckyos_filebrowser",
                 "version": "0.5.1",
@@ -593,7 +593,7 @@ mod test {
         },
         "buckyos_systest": {
             "app_doc": {
-                "id": "did:bns:buckyos_systest.buckyos.ai",
+                "did": "did:bns:buckyos_systest.buckyos.ai",
                 "doc_type": "app",
                 "name": "buckyos_systest",
                 "version": "0.5.1",

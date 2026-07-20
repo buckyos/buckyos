@@ -6,7 +6,7 @@
 //! 或 system-config `install_record`，字段演进属于协议变更。
 
 use crate::taskdata::TaskDataProgress;
-use crate::{AppServiceSpec, PermissionRequest, TaskStatus};
+use crate::{AppServiceSpec, PermissionItem, TaskStatus};
 use name_lib::DID;
 use ndn_lib::{build_named_object_by_json, ObjId};
 use serde::{Deserialize, Serialize};
@@ -441,7 +441,7 @@ pub struct InstallPlan {
     pub required_contents: Vec<PlannedContent>,
     pub readiness: PlanReadiness,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permissions: Vec<PermissionRequest>,
+    pub permissions: Vec<PermissionItem>,
     /// 影响部署与 selector 的安装参数（用户确认对象的一部分）。
     #[serde(default)]
     pub install_params: Value,
@@ -736,7 +736,7 @@ pub struct InstallApproval {
     pub target: InstallTarget,
     #[serde(default)]
     pub install_params: Value,
-    /// 已接受的权限 scope 列表。
+    /// 已接受的权限 scope_path 列表。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepted_permissions: Vec<String>,
     pub approved_by: String,
@@ -952,7 +952,7 @@ pub struct VerificationSummary {
 pub struct ApprovalRequest {
     pub plan_fingerprint: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permissions: Vec<PermissionRequest>,
+    pub permissions: Vec<PermissionItem>,
     pub target: InstallTarget,
     #[serde(default)]
     pub install_params: Value,
@@ -1037,7 +1037,7 @@ pub struct AppUpdateAvailability {
     pub did_resolution: Option<DidResolutionSnapshot>,
     /// 新版本相对已安装版本新增的权限请求。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permissions_added: Vec<PermissionRequest>,
+    pub permissions_added: Vec<PermissionItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_compatible: Option<bool>,
     pub checked_at: u64,

@@ -72,11 +72,11 @@ fn default_schema_version() -> u64 {
     1
 }
 
-/// Minimal view of the app/service spec that just exposes `install_config`.
+/// Minimal view of the app/service spec that just exposes `spec_config`.
 /// Works against `AppServiceSpec` and `KernelServiceSpec` alike.
 #[derive(Debug, Deserialize)]
 struct SpecInstallView {
-    install_config: InstallConfigView,
+    spec_config: InstallConfigView,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,11 +143,11 @@ async fn load_install_rdb_config(
         let view: SpecInstallView = serde_json::from_str(&raw).map_err(|err| {
             RPCErrors::ReasonError(format!("parse spec at {} failed: {}", key, err))
         })?;
-        if let Some(cfg) = view.install_config.rdb_instances.get(instance_id) {
+        if let Some(cfg) = view.spec_config.rdb_instances.get(instance_id) {
             return Ok(cfg.clone());
         }
         return Err(RPCErrors::ReasonError(format!(
-            "rdb instance {} not declared in install_config.rdb_instances at {}",
+            "rdb instance {} not declared in spec_config.rdb_instances at {}",
             instance_id, key
         )));
     }
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn parse_spec_view_extracts_rdb_instances() {
         let raw = r#"{
-            "install_config": {
+            "spec_config": {
                 "service_config": {},
                 "expose_config": {},
                 "data_mount_point": {},
@@ -324,12 +324,7 @@ mod tests {
             }
         }"#;
         let view: SpecInstallView = serde_json::from_str(raw).unwrap();
-        let cfg = view
-            .install_config
-            .rdb_instances
-            .get("main")
-            .cloned()
-            .unwrap();
+        let cfg = view.spec_config.rdb_instances.get("main").cloned().unwrap();
         assert_eq!(cfg.backend, RdbBackend::Sqlite);
         assert_eq!(cfg.version, 3);
         assert_eq!(cfg.connection, "sqlite://$appdata/main.db");

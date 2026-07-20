@@ -21,7 +21,7 @@ pub const TASK_MANAGER_SERVICE_NAME: &str = "task-manager";
 pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
 
 /// Logical name of the task-manager rdb instance. Used by both the scheduler
-/// (when it writes the service's `install_config`) and the task-manager itself
+/// (when it writes the service's `spec_config`) and the task-manager itself
 /// (when it calls `get_rdb_instance`).
 pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 /// Version of the task table schema. Bump whenever the DDL below changes in a
@@ -125,7 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_task_note_author_created ON task_note(author_user
 "#;
 
 /// Default rdb-instance config for the task-manager service. The scheduler
-/// drops this into `install_config.rdb_instances` when bootstrapping the
+/// drops this into `spec_config.rdb_instances` when bootstrapping the
 /// service so `get_rdb_instance` can find it later.
 pub fn task_manager_default_rdb_instance_config() -> RdbInstanceConfig {
     let mut schema = HashMap::new();

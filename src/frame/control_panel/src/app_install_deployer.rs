@@ -24,6 +24,7 @@ use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
 use ndn_lib::{build_obj_id, ActionObject, NamedObject, ObjId, ACTION_TYPE_INSTALLED};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -186,15 +187,27 @@ impl ProductionInstallDriver {
             Some(previous) => previous.app_index,
             None => allocate_app_index(&client).await?,
         };
+        let accepted_permissions: HashSet<&str> = approval
+            .accepted_permissions
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let permission = app_doc
+            .permissions
+            .iter()
+            .filter(|item| accepted_permissions.contains(item.scope_path.as_str()))
+            .cloned()
+            .collect();
 
         let new_spec = AppServiceSpec {
             app_doc,
             app_index,
             user_id: user_id.clone(),
+            permission,
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::New,
-            install_config,
+            spec_config: install_config,
         };
 
         let prepared = PreparedDeployment {
@@ -713,7 +726,7 @@ async fn check_expose_conflicts(
                 if spec.state == ServiceState::Deleted {
                     continue;
                 }
-                for expose in spec.install_config.expose_config.values() {
+                for expose in spec.spec_config.expose_config.values() {
                     if let Some(port) = expose.expose_port() {
                         if requested.contains(&port) {
                             return Err(stage_err(

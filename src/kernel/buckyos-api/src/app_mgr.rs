@@ -1,6 +1,6 @@
 //system control panel client
 
-use crate::{AppDoc, InstanceVolumeConfig, RdbInstanceConfig, ServiceProtocol};
+use crate::{AppDoc, InstanceVolumeConfig, PermissionItem, RdbInstanceConfig, ServiceProtocol};
 use ::kRPC::*;
 use name_lib::DID;
 use serde::{Deserialize, Serialize};
@@ -282,8 +282,9 @@ impl ServiceSpecConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppServiceSpec {
     pub app_doc: AppDoc,
-    pub app_index: u16, //app index in user's app list
-    pub user_id: String,
+    pub app_index: u16,  //app index in user's app list
+    pub user_id: String, //app's owner userid,注意不应该假设所有的请求都来自该用户
+    pub permission: Vec<PermissionItem>,
 
     //与调度器相关的关键参数
     pub enable: bool,
@@ -293,7 +294,7 @@ pub struct AppServiceSpec {
     //App的active统计数据，应该使用另一个数据保存
     // pub install_time: u64,//安装时间
     // pub last_start_time: u64,//最后一次启动时间
-    pub install_config: ServiceSpecConfig,
+    pub spec_config: ServiceSpecConfig,
 }
 
 impl AppServiceSpec {
@@ -310,7 +311,7 @@ pub struct AppServiceInstanceConfig {
     //service_name -> service instance port ,use instance port can access the service
     pub service_ports_config: HashMap<String, u16>,
     //#[serde(skip_serializing_if = "Option::is_none")]
-    //pub node_install_config: Option<ServiceSpecConfig>,//当存在的时候，覆盖app_spec.install_config,目前只是占位，并未使用
+    //pub node_install_config: Option<ServiceSpecConfig>,//当存在的时候，覆盖app_spec.spec_config,目前只是占位，并未使用
 }
 impl AppServiceInstanceConfig {
     pub fn new(node_id: &str, app_config: &AppServiceSpec) -> AppServiceInstanceConfig {
@@ -332,9 +333,11 @@ pub struct KernelServiceSpec {
     pub service_doc: AppDoc,
     pub enable: bool,
     pub app_index: u16,
+    //系统服务使用系统的内置的RBAC权限配置，不做个性化配置
+    //pub permission: Vec<PermissionItem>,
     pub expected_instance_count: u32,
     pub state: ServiceState,
-    pub install_config: ServiceSpecConfig,
+    pub spec_config: ServiceSpecConfig,
 }
 
 #[derive(Serialize, Deserialize)]

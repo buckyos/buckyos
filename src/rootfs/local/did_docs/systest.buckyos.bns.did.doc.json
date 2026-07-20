@@ -1,5 +1,5 @@
 {
-  "id": "did:bns:systest.buckyos",
+  "did": "did:bns:systest.buckyos",
   "doc_type": "app",
   "name": "buckyos_systest",
   "version": "0.5.1",

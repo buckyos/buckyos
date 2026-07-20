@@ -99,13 +99,14 @@ impl ControlPanelServer {
         })?;
 
         Ok(AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index,
             user_id: String::new(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config: ServiceSpecConfig::default(),
+            spec_config: ServiceSpecConfig::default(),
         })
     }
 

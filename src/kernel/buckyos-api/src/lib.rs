@@ -334,13 +334,14 @@ mod tests {
             target_state: ServiceInstanceState::Started,
             node_id: "ood1".to_string(),
             app_spec: AppServiceSpec {
+                permission: app_doc.permissions.clone(),
                 app_doc,
                 app_index: 1,
                 user_id: "devtest".to_string(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::Running,
-                install_config: ServiceSpecConfig::default(),
+                spec_config: ServiceSpecConfig::default(),
             },
             service_ports_config: HashMap::from([("www".to_string(), 10016)]),
         };

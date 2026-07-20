@@ -248,6 +248,7 @@ const ConversationComposerInner = forwardRef<
   return (
     <div
       ref={composerRef}
+      data-testid="message-composer"
       className="relative z-20 flex min-h-0 flex-shrink-0 flex-col"
       style={{
         borderTop: '1px solid var(--cp-border)',

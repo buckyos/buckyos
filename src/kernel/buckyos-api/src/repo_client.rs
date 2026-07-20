@@ -15,7 +15,7 @@ pub const REPO_SERVICE_SERVICE_NAME: &str = "repo-service";
 pub const REPO_SERVICE_SERVICE_PORT: u16 = 4000;
 
 /// Logical name of the repo-service rdb instance. Used by the scheduler when it
-/// writes the service's `install_config` and by the repo-service itself when it
+/// writes the service's `spec_config` and by the repo-service itself when it
 /// calls `get_rdb_instance`.
 pub const REPO_SERVICE_RDB_INSTANCE_ID: &str = "repo-service-main";
 /// Version of the repo-service schema. Bump whenever the DDL below changes in a
@@ -135,7 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_receipt_buyer ON receipts(buyer_did);
 "#;
 
 /// Default rdb-instance config for the repo-service. The scheduler drops this
-/// into `install_config.rdb_instances` when bootstrapping the service so
+/// into `spec_config.rdb_instances` when bootstrapping the service so
 /// `get_rdb_instance` can find it later.
 pub fn repo_service_default_rdb_instance_config() -> RdbInstanceConfig {
     let mut schema = HashMap::new();

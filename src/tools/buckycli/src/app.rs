@@ -364,7 +364,7 @@ fn build_app_service_config_with_index(
         .unwrap_or("")
         .to_string();
 
-    // v0.5：AppDoc 必填 id/doc_type，按冻结规则 did:bns:{{app_name}}.{{owner_id}} 派生。
+    // v0.5：AppDoc 必填 did/doc_type，按冻结规则 did:bns:{{app_name}}.{{owner_id}} 派生。
     let owner_id_part = owner.rsplit(':').next().unwrap_or(owner);
     let app_did = format!("did:bns:{}.{}", app_id, owner_id_part);
 
@@ -439,7 +439,7 @@ fn build_app_service_config_with_index(
 
     let full_app_config = json!({
         "app_doc": {
-            "id": app_did,
+            "did": app_did,
             "doc_type": "app",
             "name": app_id,
             "version": version,
@@ -475,10 +475,11 @@ fn build_app_service_config_with_index(
         },
         "app_index": app_index,
         "user_id": owner,
+        "permission": [],
         "enable": true,
         "expected_instance_count": 1,
         "state": "new",
-        "install_config": {
+        "spec_config": {
             "service_config": service_config,
             "expose_config": expose_config,
             "data_mount_point": data_mount_config,

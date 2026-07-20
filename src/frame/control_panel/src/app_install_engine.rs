@@ -579,14 +579,14 @@ impl InstallEngine {
         // 必需权限必须全部被接受。
         let accepted: HashSet<&str> = accepted_permissions.iter().map(|s| s.as_str()).collect();
         for permission in plan.permissions.iter().filter(|p| p.required) {
-            if !accepted.contains(permission.scope.as_str()) {
+            if !accepted.contains(permission.scope_path.as_str()) {
                 return Err(InstallError::new(
                     InstallStage::Inspect,
                     InstallErrorCode::ConfigBlocked,
                     false,
                     format!(
                         "required permission `{}` was not accepted",
-                        permission.scope
+                        permission.scope_path
                     ),
                 )
                 .with_action(InstallUserAction::Confirm));
@@ -870,7 +870,7 @@ impl InstallEngine {
                 accepted_permissions: plan
                     .permissions
                     .iter()
-                    .map(|permission| permission.scope.clone())
+                    .map(|permission| permission.scope_path.clone())
                     .collect(),
                 approved_by: "system".to_string(),
                 approved_at: buckyos_get_unix_timestamp(),
@@ -1369,13 +1369,14 @@ mod tests {
             let doc_value = data.state.resolved_app_doc.clone().unwrap();
             let app_doc: AppDoc = serde_json::from_value(doc_value).unwrap();
             let spec = AppServiceSpec {
+                permission: app_doc.permissions.clone(),
                 app_doc,
                 app_index: 7,
                 user_id: data.request.user_id.clone(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::New,
-                install_config: Default::default(),
+                spec_config: Default::default(),
             };
             let previous_spec = if _view.task_type == TASK_DATA_TYPE_APP_UPDATE {
                 let mut old = spec.clone();

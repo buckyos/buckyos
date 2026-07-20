@@ -134,7 +134,7 @@ resolve_did(app_did, doc_type = "app")
 App Document 的 body 可以来自权威渠道、`.pikg`、Object Store、URL、好友或应用商店，但 body 的来源不决定其可信度。DID resolver 按取回信道标注 `evidence`，并执行分层校验：
 
 ```text
-所有 body：document.id == app_did
+所有 body：document.did == app_did
 Anchored body：权威源给出 doc_hash 时，body hash 与之相等
 NeedProof body：document.owner == expected_owner
                 ∧ hash 匹配（若有锚点）
@@ -170,7 +170,7 @@ Installer 必须区分以下结果：
 
 | 解析结果 | 安装语义 |
 |---|---|
-| `Active` / 已锚定 | 权威信道 body 校验 `id` 和 `doc_hash` 后可以进入 Inspect；来自补充信道或包内的 `NeedProof` body 还必须完成 expected-owner 与签名验证。 |
+| `Active` / 已锚定 | 权威信道 body 校验 `did` 和 `doc_hash` 后可以进入 Inspect；来自补充信道或包内的 `NeedProof` body 还必须完成 expected-owner 与签名验证。 |
 | `Missing` | 权威源明确表示该 `(did, "app")` 从未发布；只有策略明确允许时，已验证的自签名候选才可进入本地开发或降级流程。 |
 | `Expired` | 权威源明确表示发布结果已过期；与 `Missing` 一样，只有策略明确允许且重新完成 owner 验证的候选才可降级使用，不得当作网络 `unknown`。 |
 | `Revoked` / `Tombstoned` | 终止安装或升级，清除正缓存；不得回退到旧包、旧 cache 或好友提供的候选。 |
@@ -483,7 +483,7 @@ App Document 声明：
 
 因此协议区分：
 
-- **Document Syntax Validity**：App Document 的 schema、编码、`id` 和 Object ID 是否一致；
+- **Document Syntax Validity**：App Document 的 schema、编码、`did` 和 Object ID 是否一致；
 - **DID Trust Readiness**：本地是否已有可接受的发布状态、owner 绑定/结构约束、owner document 和验证证据；
 - **Package Integrity**：`.pikg` 中声明存在的对象是否完整且校验通过；
 - **Content Readiness**：针对当前设备、安装选项和目标 Node，全部必需内容是否已存在；
@@ -988,13 +988,13 @@ UI 不应把“由好友分享”“由可信 Source 下载”错误展示为“
 
 ### 9.2 作者与 Owner 信任
 
-- `NeedProof` App Document 的签名证明签字权，DID method 的权威状态证明发布权，二者不能互相替代；从权威信道直接取得的 `Anchored` body 不重复要求外部签名，但仍必须通过 `id` 与权威 `doc_hash` 等一致性检查；
+- `NeedProof` App Document 的签名证明签字权，DID method 的权威状态证明发布权，二者不能互相替代；从权威信道直接取得的 `Anchored` body 不重复要求外部签名，但仍必须通过 `did` 与权威 `doc_hash` 等一致性检查；
 - `expected_owner` 只能来自权威源 owner 绑定或 DID 名字结构的确定性默认值。候选 App Document 自声明的 `owner` 只能用于一致性检查，不得作为寻找验签 key 的起点；
-- 所有 body 的 `document.id` 必须等于输入 App DID；`NeedProof` body 的 `document.owner` 还必须等于 `expected_owner`。任一不一致都应拒绝并记录高风险 warning；
+- 所有 body 的 `document.did` 必须等于输入 App DID；`NeedProof` body 的 `document.owner` 还必须等于 `expected_owner`。任一不一致都应拒绝并记录高风险 warning；
 - 需要证明的 App Document 必须递归解析 `resolve_did(expected_owner, "owner")`，按文档 `iat` 时刻有效的 owner key 验签，并应用 `valid_iat` 等当前 owner policy；
 - `need_proof` 由取回信道和 `doc_type` 契约决定，不能因 body 缺少签名字段而降级为“无需验证”。`doc_type = "app"` 是需要验证的 Document，不得走 Info 免验证路径；
 - Owner 变更或委托只有经 DID method 权威源发布才生效；App Document 自己修改 `owner` 字段不能改变所有权；
-- 联系人关系、第三方信用 Oracle 和未签名状态只影响附加信任提示或安装策略，不能放宽 `id / expected_owner / doc_hash / terminal status` 等硬约束。
+- 联系人关系、第三方信用 Oracle 和未签名状态只影响附加信任提示或安装策略，不能放宽 `did / expected_owner / doc_hash / terminal status` 等硬约束。
 
 ### 9.3 发布状态、证据与 Cache
 
@@ -1176,7 +1176,7 @@ pub struct InclusionProof {
 ```jsonc
 {
   "@schema": "buckyos.app.document.v1",
-  "id": "did:bns:filebrowser.buckyos",
+  "did": "did:bns:filebrowser.buckyos",
   "doc_type": "app",
   "name": "buckyos_filebrowser",
   "version": "2.27.0",
@@ -1283,22 +1283,24 @@ pub struct InclusionProof {
     }
   },
 
-  "permissions": {
-    "fs": {
-      "sandbox": true,
-      "home": {
-        "private": { "read": false, "write": false },
-        "public": { "read": true, "write": true }
-      }
+  "permissions": [
+    {
+      "scope_path": "user/home",
+      "required": true,
+      "actions": ["read", "write"],
+      "exp": null
     },
-    "system": {
-      "need_privileged": false
+    {
+      "scope_path": "wan",
+      "required": false,
+      "actions": [],
+      "exp": null
     }
-  }
+  ]
 }
 ```
 
-示例中的 `owner` 与 `did:bns:filebrowser.buckyos` 的结构 owner `did:bns:buckyos` 一致。实际验证时仍以权威源返回的 owner 绑定优先；若权威绑定存在，文档声明必须与其一致。`id`、`owner`、签名 `iat` 和发布 `doc_hash` 属于 DID 验证约束，不得只按 App schema 做格式检查。
+示例中的 `owner` 与 `did:bns:filebrowser.buckyos` 的结构 owner `did:bns:buckyos` 一致。实际验证时仍以权威源返回的 owner 绑定优先；若权威绑定存在，文档声明必须与其一致。`did`、`owner`、签名 `iat` 和发布 `doc_hash` 属于 DID 验证约束，不得只按 App schema 做格式检查。
 
 兼容说明：旧名称 `APP_META_JSON` 在过渡期可以作为 App Document 的兼容别名，但新协议与新 API 应统一使用 `App Document / APPDOC`。
 
@@ -1369,7 +1371,14 @@ pub struct InclusionProof {
     "trust": "READY",
     "install": "OFFLINE_READY"
   },
-  "permissions": {},
+  "permissions": [
+    {
+      "scope_path": "user/home",
+      "required": true,
+      "actions": ["read", "write"],
+      "exp": null
+    }
+  ],
   "install_params": {}
 }
 ```
@@ -1515,12 +1524,13 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 #### D2. App Document schema 与 Object ID（冻结 §14.2 与 §14.3 的 schema 部分）
 
-- 复用现有 `AppDoc`（PackageMeta flatten）并新增必填 `id`（App DID）与必填 `doc_type`（固定 `"app"`）；反序列化时缺失或取值不为 `app` 一律拒绝。不另造第二套 App Document 类型。
+- 复用现有 `AppDoc`（PackageMeta flatten）；App DID 使用父链 `BaseContentObject` 已有的必填 `did` 字段，删除重复的 `AppDoc.id`，并保留必填 `doc_type`（固定 `"app"`）。反序列化时缺失 `did` / `doc_type`，或 `doc_type` 不为 `app`，一律拒绝。不另造第二套 App Document 类型。
 - canonical JSON 固定为 JCS（RFC 8785），实现即 `ndn-lib::build_named_object_by_json` 的 `serde_jcs` 路径；禁止对 `serde_json::to_string()` 结果直接做 hash。
 - App Document Object ID 的 obj type 固定为 `appdoc`：`ObjId = appdoc:hex(sha256(JCS(body)))`。Package Meta 沿用 `pkg` obj type 与同一 JCS 规则。
 - `APPDOC.wt`（JWT 封装）的 Object ID 对 JWT claims（payload JSON）按同一规则计算；`APPDOC.wt` 与 `APPDOC.json` 的一致性判断 = 两者 canonical JSON 相等（等价于 App Document Object ID 相等）。
 - `version` 仅表示应用语义版本；`document_version / versionId` 仅存在于 resolver metadata 与 `DidResolutionSnapshot`，值等于发布文档的 revision `iat`，两者不得复用同一字段。
 - `pkg_list` 各 entry（SubPkgDesc）新增 `selector { os?, arch?, min_kernel_version? }` 与 `required`（省略视为 `true`）；已知 key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 selector 时按固定命名表派生，未知 key 无显式 selector 时不参与自动选择。`pkg_objid`（Package Meta Object ID）与 `source_url`（内容获取位置）保持独立字段。
+- `permissions` 是 `PermissionItem[]`，每项只包含 `scope_path`、`required`、`actions` 与可选有效期 `exp`；旧 `PermissionRequest.grant/items/constraints` 结构已删除。安装确认接口的 `accepted_permissions` 使用 `scope_path` 字符串列表，最终批准的完整条目写入 `AppServiceSpec.permission`。
 - App DID 的建议命名沿用 §12.1：`did:bns:$app_name.$owner_name`；builder 必须显式接收 App DID 或按该规则显式构造，禁止把 candidate 自声明 owner 拼出的 DID 当权威身份。
 
 #### D3. 安装记录真相源
@@ -1528,7 +1538,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - in-flight 安装事务的唯一真相源是 TaskManager 的 `Task.data`（`AppInstallTaskData`，可恢复 transaction）。
 - 长期安装记录独立保存在 system-config：`users/{uid}/apps/{app_name}/install_record` 与 `users/{uid}/agents/{app_name}/install_record`（`InstallRecord` JSON）。
 - 写入顺序：Prepare 完成先写 `install_record(state=prepared)` → 写 spec（Deploy 的开始点）→ Activate 与健康检查成功后更新 `install_record(state=installed)` → 写 installed proof → Task Completed。失败与回滚更新同一记录。
-- `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec，不复制解析证据与任务历史。
+- `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec 与最终批准的 `permission`，不复制解析证据与任务历史。
 
 #### D4. LOCAL_DEVELOPER authority override
 

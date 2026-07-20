@@ -86,7 +86,7 @@ scheduler 初始化当前会创建这些系统服务 spec：
 - `services/repo-service/spec`
 - `services/smb-service/spec`
 
-其中 `task-manager`、`repo-service`、`msg-center`、`aicc` 的 `spec.install_config.rdb_instances` 带有默认 RDB instance 配置。
+其中 `task-manager`、`repo-service`、`msg-center`、`aicc` 的 `spec.spec_config.rdb_instances` 带有默认 RDB instance 配置。
 
 ### gateway
 

@@ -383,7 +383,7 @@ CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
 "#;
 
 /// Default rdb-instance config for the msg-center service. The scheduler drops
-/// this into `install_config.rdb_instances` when bootstrapping the service.
+/// this into `spec_config.rdb_instances` when bootstrapping the service.
 pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
     let mut schema = HashMap::new();
     schema.insert(RdbBackend::Sqlite, MSG_CENTER_RDB_SCHEMA_SQLITE.to_string());

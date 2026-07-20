@@ -242,7 +242,7 @@ $BUCKYOS_ROOT/data/home/<owner_user_id>/.local/share/<app_id>/   # 宿主视角
 
 ### 6.3 RBAC（ENFORCED，App 无需自己判）
 
-App 访问 system-config / kRPC 资源时，服务端 `BuckyOSRuntime::enforce()` 透明执行权限判断（`src/kernel/buckyos-api/src/runtime.rs`），失败返回 `NoPermission`。`app` 角色按 `{app}` 模板隔离（只能动自己 `apps/{app}/*` 子树）。App **声明**所需权限用 `PermissionRequest`（scope 如 `fs.data/fs.cache/fs.library/fs.home`，见 `src/kernel/buckyos-api/src/permission.rs`、`doc/app安装协议.md`），超出默认沙箱的需安装时用户显式授权。
+App 访问 system-config / kRPC 资源时，服务端 `BuckyOSRuntime::enforce()` 透明执行权限判断（`src/kernel/buckyos-api/src/runtime.rs`），失败返回 `NoPermission`。`app` 角色按 `{app}` 模板隔离（只能动自己 `apps/{app}/*` 子树）。App **声明**所需权限用 `PermissionItem`，以 `scope_path` 标识 RBAC 资源路径（如 `kapi/aicc`、`user/home`、`zone/library`、`wan`，见 `src/kernel/buckyos-api/src/permission.rs`、`doc/App 安装协议.md`），超出默认沙箱的需安装时用户显式授权，批准结果写入 `AppServiceSpec.permission`。
 
 ---
 

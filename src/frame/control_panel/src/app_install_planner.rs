@@ -67,8 +67,8 @@ pub async fn build_install_plan(
     let app_doc = input.app_doc;
     let snapshot = input.snapshot;
 
-    // Document Syntax Validity：id/doc_type 由类型系统保证，这里复查 id 绑定。
-    let document_syntax = if app_doc.id == snapshot.app_did {
+    // Document Syntax Validity：did/doc_type 由类型系统保证，这里复查 did 绑定。
+    let document_syntax = if app_doc.app_did() == &snapshot.app_did {
         ReadinessState::Ready
     } else {
         return Err(InstallError::new(
@@ -76,8 +76,8 @@ pub async fn build_install_plan(
             InstallErrorCode::VerificationFailed,
             false,
             format!(
-                "app document id `{}` != resolved app did `{}`",
-                app_doc.id.to_string(),
+                "app document did `{}` != resolved app did `{}`",
+                app_doc.app_did().to_string(),
                 snapshot.app_did.to_string()
             ),
         ));
@@ -396,7 +396,7 @@ mod tests {
             .unwrap();
         let doc_value = serde_json::to_value(&app_doc).unwrap();
         TestApp {
-            app_did: app_doc.id.clone(),
+            app_did: app_doc.app_did().clone(),
             app_doc,
             doc_value,
             meta_value: amd_meta_value,
@@ -698,7 +698,7 @@ mod tests {
             .build()
             .unwrap();
         let doc_value = serde_json::to_value(&app_doc).unwrap();
-        let resolved = fake::active_answer(&app_doc.id, doc_value, 1);
+        let resolved = fake::active_answer(app_doc.app_did(), doc_value, 1);
 
         let plan = build_install_plan(
             PlannerInput {
@@ -731,7 +731,7 @@ mod tests {
             .build()
             .unwrap();
         let doc_value = serde_json::to_value(&app_doc).unwrap();
-        let resolved = fake::active_answer(&app_doc.id, doc_value, 1);
+        let resolved = fake::active_answer(app_doc.app_did(), doc_value, 1);
         let plan = build_install_plan(
             PlannerInput {
                 app_doc: &app_doc,

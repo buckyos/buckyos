@@ -3,7 +3,7 @@
 输入信息： docker-url / app_name / 基本配置
 ```json
 {
-    "id":"did:bns:username-appname.owner",
+    "did":"did:bns:username-appname.owner",
     "doc_type":"app",
     "name":"username-appname",
     "version":"0.1.0",

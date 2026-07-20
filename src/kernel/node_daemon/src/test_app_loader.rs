@@ -112,13 +112,14 @@ fn build_service_loader(
         target_state: ServiceInstanceState::Started,
         node_id: "ood1".to_string(),
         app_spec: AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         },
         service_ports_config,
     };
@@ -148,13 +149,14 @@ fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
         target_state: ServiceInstanceState::Started,
         node_id: "ood1".to_string(),
         app_spec: AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         },
         service_ports_config: HashMap::from([
             ("www".to_string(), 10080),

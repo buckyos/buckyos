@@ -145,13 +145,13 @@ impl ProductionInstallDriver {
                 )
             })?;
         let inspection = reader.inspection();
-        let app_did = inspection.app_doc.id.clone();
+        let app_did = inspection.app_doc.app_did().clone();
         let candidate_value = serde_json::to_value(&inspection.app_doc).map_err(|err| {
             Self::invalid_request(format!("serialize candidate app doc failed: {err}"))
         })?;
 
         let resolved = self.resolver.resolve_app(&app_did, policy).await?;
-        // candidate 绑定：id/owner 硬约束（owner 冒充在这里拒绝）。
+        // candidate 绑定：did/owner 硬约束（owner 冒充在这里拒绝）。
         let binding = bind_candidate_document(&app_did, &resolved.snapshot, &candidate_value)?;
 
         // 文档取舍：权威 body 优先；无权威 body 时 candidate 作为待信任候选
@@ -202,13 +202,13 @@ impl ProductionInstallDriver {
                     ));
                 };
                 let app_did_raw = candidate_value
-                    .get("id")
+                    .get("did")
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| {
-                        Self::invalid_request("candidate app document has no id".to_string())
+                        Self::invalid_request("candidate app document has no did".to_string())
                     })?;
                 let app_did = DID::from_str(app_did_raw).map_err(|err| {
-                    Self::invalid_request(format!("candidate app document id invalid: {err}"))
+                    Self::invalid_request(format!("candidate app document did invalid: {err}"))
                 })?;
                 let resolved = self.resolver.resolve_app(&app_did, policy).await?;
                 let binding =
@@ -251,13 +251,13 @@ impl ProductionInstallDriver {
                     )
                 })?;
                 let app_did_raw = candidate_value
-                    .get("id")
+                    .get("did")
                     .and_then(|value| value.as_str())
                     .ok_or_else(|| {
-                        Self::invalid_request("candidate app document has no id".to_string())
+                        Self::invalid_request("candidate app document has no did".to_string())
                     })?;
                 let app_did = DID::from_str(app_did_raw).map_err(|err| {
-                    Self::invalid_request(format!("candidate app document id invalid: {err}"))
+                    Self::invalid_request(format!("candidate app document did invalid: {err}"))
                 })?;
                 let resolved = self.resolver.resolve_app(&app_did, policy).await?;
                 let binding =
@@ -703,12 +703,12 @@ impl InstallStageDriver for ProductionInstallDriver {
                 )
             });
         }
-        let doc_id_ok =
-            doc_value.get("id").and_then(|v| v.as_str()) == Some(plan.app_did.to_string().as_str());
-        checks.push(if doc_id_ok {
+        let doc_did_ok = doc_value.get("did").and_then(|v| v.as_str())
+            == Some(plan.app_did.to_string().as_str());
+        checks.push(if doc_did_ok {
             VerificationCheck::pass("appdoc", "doc_identity")
         } else {
-            VerificationCheck::fail("appdoc", "doc_identity", "document.id != app did")
+            VerificationCheck::fail("appdoc", "doc_identity", "document.did != app did")
         });
 
         let pikg_reader = self.open_candidate_pikg(data).await?;

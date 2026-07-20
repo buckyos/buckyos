@@ -128,7 +128,7 @@ pub trait AppDidResolver: Send + Sync {
 // 快照硬约束复查与 candidate 绑定
 // ---------------------------------------------------------------------------
 
-/// resolver 结果的硬约束复查：`document.id == app_did`、doc_type、终止状态。
+/// resolver 结果的硬约束复查：`document.did == app_did`、doc_type、终止状态。
 /// 这些约束 name-client 也会执行；此处复查是纵深防御 + fake 实现的契约测试面。
 pub fn enforce_resolution_invariants(
     app_did: &DID,
@@ -160,14 +160,17 @@ pub fn enforce_resolution_invariants(
     }
 
     if let Some(value) = resolved.document_value.as_ref() {
-        let body_id = value.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if body_id != app_did.to_string() {
+        let body_did = value
+            .get("did")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if body_did != app_did.to_string() {
             return Err(InstallError::new(
                 InstallStage::Resolve,
                 InstallErrorCode::VerificationFailed,
                 false,
                 format!(
-                    "resolved document.id `{body_id}` != app did `{}`",
+                    "resolved document.did `{body_did}` != app did `{}`",
                     app_did.to_string()
                 ),
             ));
@@ -207,7 +210,7 @@ pub fn reject_terminal_status(
 
 /// candidate body（来自 pikg/URL/ObjectId）与权威解析结果的绑定检查。
 ///
-/// - `document.id == app_did` 永远强制；
+/// - `document.did == app_did` 永远强制；
 /// - candidate 自声明 owner 只用于一致性检查：expected_owner 已知且不一致
 ///   必须拒绝并记录高风险（实现规则 4）；
 /// - 权威给出 body 时，candidate 是否等于该 body 只影响"能否把 candidate
@@ -217,17 +220,17 @@ pub fn bind_candidate_document(
     snapshot: &DidResolutionSnapshot,
     candidate_value: &Value,
 ) -> Result<CandidateBinding, InstallError> {
-    let candidate_id = candidate_value
-        .get("id")
+    let candidate_did = candidate_value
+        .get("did")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    if candidate_id != app_did.to_string() {
+    if candidate_did != app_did.to_string() {
         return Err(InstallError::new(
             InstallStage::Resolve,
             InstallErrorCode::VerificationFailed,
             false,
             format!(
-                "candidate document.id `{candidate_id}` != app did `{}`",
+                "candidate document.did `{candidate_did}` != app did `{}`",
                 app_did.to_string()
             ),
         )
@@ -658,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_binding_enforces_id_and_owner() {
+    fn candidate_binding_enforces_did_and_owner() {
         let app_did = DID::from_str("did:bns:demo_web.tester").unwrap();
         let doc_value = demo_doc_value("did:bns:demo_web.tester", "did:bns:tester");
         let snapshot = fake::active_answer(&app_did, doc_value.clone(), 1).snapshot;
@@ -667,10 +670,10 @@ mod tests {
         let binding = bind_candidate_document(&app_did, &snapshot, &doc_value).unwrap();
         assert!(binding.matches_published);
 
-        // document.id 不一致必须拒绝。
-        let mut wrong_id = doc_value.clone();
-        wrong_id["id"] = Value::String("did:bns:other.tester".to_string());
-        let err = bind_candidate_document(&app_did, &snapshot, &wrong_id).unwrap_err();
+        // document.did 不一致必须拒绝。
+        let mut wrong_did = doc_value.clone();
+        wrong_did["did"] = Value::String("did:bns:other.tester".to_string());
+        let err = bind_candidate_document(&app_did, &snapshot, &wrong_did).unwrap_err();
         assert_eq!(err.code, InstallErrorCode::VerificationFailed);
 
         // candidate 自声明 owner 与 expected_owner 不同必须拒绝。
@@ -759,7 +762,7 @@ mod tests {
     async fn fake_resolver_rejects_mismatched_document() {
         let resolver = fake::FakeAppResolver::new();
         let app_did = DID::from_str("did:bns:demo_web.tester").unwrap();
-        // body 的 id 指向别的 DID：契约检查必须拒绝。
+        // body 的 did 指向别的 DID：契约检查必须拒绝。
         let bad_value = demo_doc_value("did:bns:other.tester", "did:bns:tester");
         let mut answer = fake::active_answer(&app_did, bad_value, 1);
         answer.snapshot.app_did = app_did.clone();

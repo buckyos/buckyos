@@ -7,7 +7,7 @@
  * carries:
  *
  * - the instance id + schema DDL that the scheduler drops into
- *   `services/aicc/spec.install_config.rdb_instances`
+ *   `services/aicc/spec.spec_config.rdb_instances`
  * - the row struct (`AiccUsageEvent`) shared between the writer and reader
  * - the query DSL (`QueryUsageRequest` / `QueryUsageResponse`) so callers do
  *   not have to hand-roll SQL to read the log.
@@ -139,7 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
 "#;
 
 /// Default rdb-instance config for the aicc usage-log. The scheduler drops
-/// this into `install_config.rdb_instances` when bootstrapping the service.
+/// this into `spec_config.rdb_instances` when bootstrapping the service.
 pub fn aicc_usage_log_default_rdb_instance_config() -> RdbInstanceConfig {
     let mut schema = HashMap::new();
     schema.insert(

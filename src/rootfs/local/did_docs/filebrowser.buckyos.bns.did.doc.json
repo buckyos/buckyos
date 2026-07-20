@@ -1,5 +1,5 @@
 {
-  "id": "did:bns:filebrowser.buckyos",
+  "did": "did:bns:filebrowser.buckyos",
   "doc_type": "app",
   "name": "buckyos_filebrowser",
   "version": "0.5.1",

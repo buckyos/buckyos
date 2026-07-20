@@ -1,4 +1,4 @@
-use crate::{PermissionRequest, RdbInstanceConfig};
+use crate::{PermissionItem, RdbInstanceConfig};
 use ::kRPC::*;
 use name_lib::DID;
 use ndn_lib::{NamedObject, ObjId};
@@ -6,11 +6,18 @@ use package_lib::{PackageId, PackageMeta};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt, ops::Deref, path::PathBuf};
 
-/// App Document 的 DID doc_type（v0.5 协议固定值）。
 pub const APP_DOC_TYPE: &str = "app";
 /// App Document Object ID 的 obj type（v0.5 D2 冻结）。
 /// ObjId = `appdoc:hex(sha256(JCS(body)))`，与 Package Meta 的 `pkg` 类型区分。
 pub const OBJ_TYPE_APP_DOC: &str = "appdoc";
+
+// App安装的时候，需要当前Zone拥有的Capability定义
+pub const APP_CAPABILITY_MINI_MEMORY: &str = "memory";
+pub const APP_CAPABILITY_MINI_GPU_MEMORY: &str = "gpu.memory";
+pub const APP_CAPABILITY_MINI_GPU_TFLOPS: &str = "gpp.tflops";
+//app需要部署在接入互联网的系统（不能部署在纯局域网环境)
+pub const APP_CAPABILITY_PUBLIC_INTERNET: &str = "internet";
+pub const APP_CAPABILITY_AI_LLM: &str = "ai.llm";
 
 //buckyos 支持的应用类型,to_string后填写在app_doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +249,7 @@ impl PackageSelector {
 pub struct SubPkgDesc {
     pub pkg_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pkg_objid: Option<ObjId>,
+    pub pkg_objid: Option<ObjId>, //PackageMeta的objid
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docker_image_name: Option<String>, //like buckyos/nightly-buckyos-filebrowser:0.4.1-amd64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -542,12 +549,10 @@ pub struct AppPresentation {
 //App doc is store at Index-db, publish to bucky store
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct AppDoc {
-    /// App DID（必填，v0.5）。`document.id == app_did` 是 resolve/verify 的硬约束。
-    pub id: DID,
     /// DID doc_type，固定 `"app"`（必填，v0.5）。
     pub doc_type: AppDocType,
 
-    #[serde(flatten)]
+    #[serde(flatten, deserialize_with = "deserialize_app_package_meta")]
     pub _base: PackageMeta,
     pub pkg_list: SubPkgList,
 
@@ -558,18 +563,31 @@ pub struct AppDoc {
 
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sdk_version: Option<String>, //使用哪个版本的 buckyos sdk版本开发，如果未设置则为兼容App,AppLoader要使用兼容模式启动
+    pub sdk_version: Option<String>, //使用哪个版本的 buckyos sdk版本开发，如果未设置则为兼容App,AppLoader要使用兼容模式启动Docker
     #[serde(default)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub req_capbilities: HashMap<String, i64>, //key: capability_name, value: required capability_value
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub permissions: Vec<PermissionRequest>,
+    pub permissions: Vec<PermissionItem>,
 
     //UI 应该根据service_config_tips的提示，来构造UI，得到最终的ServiceConfig
     pub selector_type: SelectorType,
     #[serde(default)]
     pub service_config_tips: ServiceConfigTips,
+}
+
+fn deserialize_app_package_meta<'de, D>(
+    deserializer: D,
+) -> std::result::Result<PackageMeta, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let meta = PackageMeta::deserialize(deserializer)?;
+    if meta.did.is_none() {
+        return Err(serde::de::Error::missing_field("did"));
+    }
+    Ok(meta)
 }
 
 impl NamedObject for AppDoc {
@@ -579,6 +597,10 @@ impl NamedObject for AppDoc {
 }
 
 impl AppDoc {
+    pub fn app_did(&self) -> &DID {
+        self.did.as_ref().expect("AppDoc.did must be present")
+    }
+
     /// 按 v0.5 冻结的确定性命名规则构造 App DID：`did:bns:{app_name}.{owner_id}`。
     /// 这是"名字结构的确定性结果"，与 candidate 自声明 owner 建立信任是两回事；
     /// 不适用该规则的应用必须显式提供 App DID。
@@ -700,7 +722,7 @@ pub struct AppDocBuilder {
     presentation: Option<AppPresentation>,
     sdk_version: Option<String>,
     req_capbilities: HashMap<String, i64>,
-    permissions: Vec<PermissionRequest>,
+    permissions: Vec<PermissionItem>,
     selector_type: Option<SelectorType>,
     service_config_tips: ServiceConfigTips,
     pkg_list: SubPkgList,
@@ -872,7 +894,7 @@ impl AppDocBuilder {
         self
     }
 
-    pub fn add_permission(mut self, permission: PermissionRequest) -> Self {
+    pub fn add_permission(mut self, permission: PermissionItem) -> Self {
         self.permissions.push(permission);
         self
     }
@@ -999,30 +1021,23 @@ impl AppDocBuilder {
             return;
         }
 
-        use crate::GrantMode;
-        self.permissions.push(PermissionRequest {
-            scope: "fs.data".to_string(),
-            grant: GrantMode::All,
+        self.permissions.push(PermissionItem {
+            scope_path: "fs.data".to_string(),
             required: true,
             actions: vec!["read".to_string(), "write".to_string()],
-            items: vec![],
-            constraints: None,
+            exp: None,
         });
-        self.permissions.push(PermissionRequest {
-            scope: "fs.cache".to_string(),
-            grant: GrantMode::All,
+        self.permissions.push(PermissionItem {
+            scope_path: "fs.cache".to_string(),
             required: true,
             actions: vec!["read".to_string(), "write".to_string()],
-            items: vec![],
-            constraints: None,
+            exp: None,
         });
-        self.permissions.push(PermissionRequest {
-            scope: "fs.library".to_string(),
-            grant: GrantMode::All,
+        self.permissions.push(PermissionItem {
+            scope_path: "fs.library".to_string(),
             required: false,
             actions: vec!["read".to_string()],
-            items: vec![],
-            constraints: None,
+            exp: None,
         });
     }
 
@@ -1157,8 +1172,9 @@ impl AppDocBuilder {
             );
         }
 
+        self.meta.did = Some(app_did);
+
         Ok(AppDoc {
-            id: app_did,
             doc_type: AppDocType,
             _base: self.meta,
             show_name,
@@ -1209,7 +1225,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_parse_app_doc() {
         let app_doc = json!({
-            "id": "did:bns:buckyos_filebrowser.buckyos.ai",
+            "did": "did:bns:buckyos_filebrowser.buckyos.ai",
             "doc_type": "app",
             "name": "buckyos_filebrowser",
             "version": "0.4.1",
@@ -1300,13 +1316,11 @@ mod tests {
         .description("en", "Demo Web Description")
         .description("zh", "演示网页应用描述")
         .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
-        .add_permission(PermissionRequest {
-            scope: "fs.data".to_string(),
-            grant: crate::GrantMode::All,
+        .add_permission(PermissionItem {
+            scope_path: "fs.data".to_string(),
             required: true,
             actions: vec!["read".to_string()],
-            items: vec![],
-            constraints: None,
+            exp: None,
         })
         .build()
         .unwrap();
@@ -1321,7 +1335,7 @@ mod tests {
 
         let sys_testdoc = r#"
 {
-  "id": "did:bns:buckyos_systest.buckyos.ai",
+  "did": "did:bns:buckyos_systest.buckyos.ai",
     "doc_type": "app",
     "name": "buckyos_systest",
     "version": "0.5.1",
@@ -1450,7 +1464,11 @@ mod tests {
         );
         assert_eq!(doc.get_app_type(), AppType::AppService);
 
-        let scopes: Vec<&str> = doc.permissions.iter().map(|p| p.scope.as_str()).collect();
+        let scopes: Vec<&str> = doc
+            .permissions
+            .iter()
+            .map(|p| p.scope_path.as_str())
+            .collect();
         assert!(
             scopes.contains(&"fs.data"),
             "permissions: {:?}",
@@ -1552,8 +1570,9 @@ mod tests {
 
     #[test]
     fn test_app_doc_identity_is_required_and_validated() {
-        // 缺 id 必须拒绝。
-        let missing_id = json!({
+        // 缺 did 必须拒绝；旧 id 字段不再兼容。
+        let missing_did = json!({
+            "id": "did:bns:demo.tester",
             "doc_type": "app",
             "name": "demo",
             "version": "0.1.0",
@@ -1564,11 +1583,11 @@ mod tests {
             "selector_type": "single",
             "pkg_list": {}
         });
-        assert!(serde_json::from_value::<AppDoc>(missing_id).is_err());
+        assert!(serde_json::from_value::<AppDoc>(missing_did).is_err());
 
         // 缺 doc_type 必须拒绝。
         let missing_doc_type = json!({
-            "id": "did:bns:demo.tester",
+            "did": "did:bns:demo.tester",
             "name": "demo",
             "version": "0.1.0",
             "owner": "did:bns:tester",
@@ -1582,7 +1601,7 @@ mod tests {
 
         // doc_type 不是 app 必须拒绝。
         let wrong_doc_type = json!({
-            "id": "did:bns:demo.tester",
+            "did": "did:bns:demo.tester",
             "doc_type": "zone",
             "name": "demo",
             "version": "0.1.0",
@@ -1603,7 +1622,7 @@ mod tests {
             .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
             .build()
             .unwrap();
-        assert_eq!(doc.id, DID::new("bns", "demo_web.tester"));
+        assert_eq!(doc.did, Some(DID::new("bns", "demo_web.tester")));
         assert_eq!(doc.doc_type.to_string(), "app");
 
         // 显式 app_did 覆盖派生规则。
@@ -1613,7 +1632,7 @@ mod tests {
             .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
             .build()
             .unwrap();
-        assert_eq!(doc.id, explicit);
+        assert_eq!(doc.did, Some(explicit));
     }
 
     #[test]
@@ -1633,9 +1652,10 @@ mod tests {
         assert!(value.get("document_version").is_none());
         assert_eq!(value.get("doc_type").and_then(|v| v.as_str()), Some("app"));
         assert_eq!(
-            value.get("id").and_then(|v| v.as_str()),
+            value.get("did").and_then(|v| v.as_str()),
             Some("did:bns:demo_web.tester")
         );
+        assert!(value.get("id").is_none());
     }
 
     #[test]

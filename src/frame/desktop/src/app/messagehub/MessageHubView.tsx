@@ -4,19 +4,20 @@ import { ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
 import { InMemoryConversationMessageReader } from './conversation/history/data-source'
-import { createSessionApiReader } from './conversation/history/sessionApiReader'
 import type { AppendableConversationMessageReader } from './conversation/history/types'
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
-import {
-  fetchOwnerDid,
-  listAllSessions,
-  postSendMessage,
-  type SessionSummary,
-} from './datamodel/sessionApi'
 import { EntityDetails } from './EntityDetails'
 import { EntityList } from './EntityList'
-import type { MessageObject } from './protocol/msgobj'
+import {
+  createOutgoingMockMessage,
+  MOCK_SELF_DID,
+  mockEntities,
+  mockEntityDetails,
+  mockMessageReaders,
+  mockSessions,
+} from './mock/data'
 import { SessionSidebar } from './SessionSidebar'
+import { createCodeAssistantMockReaders } from '../codeassistant/mockHistory'
 import {
   ENTITY_LIST_COLLAPSED_WIDTH,
   ENTITY_LIST_DEFAULT_WIDTH,
@@ -28,115 +29,40 @@ import {
   SESSION_SIDEBAR_MIN_WIDTH,
 } from './layout'
 import type {
-  Entity,
   EntityFilter,
-  EntityType,
-  MessagePreview,
   MobileView,
-  Session,
 } from './types'
 
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
-const SESSION_NAME_MAX_CHARS = 40
-const SESSION_PREVIEW_MAX_CHARS = 80
 
-/**
- * Human-readable tail of a msg-center session id: `dm:{did}` sessions show
- * the DID's method-specific part (e.g. `did:msgtunnel:tg:123` → `tg:123`),
- * plain topic session ids show as-is (truncated).
- */
-function deriveSessionDisplayName(sessionId: string): string {
-  const core = sessionId.startsWith('dm:') ? sessionId.slice(3) : sessionId
-
-  if (core.startsWith('did:')) {
-    const segments = core.split(':')
-    if (segments.length > 2) {
-      return segments.slice(2).join(':')
-    }
-  }
-
-  return core.length > SESSION_NAME_MAX_CHARS
-    ? `${core.slice(0, SESSION_NAME_MAX_CHARS)}…`
-    : core
-}
-
-/**
- * Session id heuristic: group sessions key on the group DID directly (or come
- * from the group inbox); `dm:{did}` and topic sessions are treated as 1:1.
- */
-function deriveEntityType(summary: SessionSummary): EntityType {
-  if (summary.last_record?.record.box_kind === 'GROUP_INBOX') {
-    return 'group'
-  }
-
-  if (!summary.session_id.startsWith('dm:') && summary.session_id.startsWith('did:')) {
-    return 'group'
-  }
-
-  return 'person'
-}
-
-/**
- * DID an outgoing message of this session should target: the `dm:{did}` /
- * group-DID encoded in the session id when present, otherwise the counterpart
- * of the latest record (group inbox replies target the group `to`).
- */
-function derivePeerDid(summary: SessionSummary): string | null {
-  if (summary.session_id.startsWith('dm:did:')) {
-    return summary.session_id.slice(3)
-  }
-
-  if (summary.session_id.startsWith('did:')) {
-    return summary.session_id
-  }
-
-  const record = summary.last_record?.record
-  if (!record) {
+function findEntityById(id: string | null) {
+  if (!id) {
     return null
   }
 
-  return record.box_kind === 'SENT' || record.box_kind === 'GROUP_INBOX'
-    ? record.to
-    : record.from
+  const queue = [...mockEntities]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+
+    if (!current) {
+      continue
+    }
+
+    if (current.id === id) {
+      return current
+    }
+
+    if (current.children?.length) {
+      queue.push(...current.children)
+    }
+  }
+
+  return null
 }
 
-function buildLastMessagePreview(summary: SessionSummary): MessagePreview | undefined {
-  const content = summary.last_record?.msg?.content.content
-  if (!content) {
-    return undefined
-  }
-
-  return {
-    senderName: summary.last_record?.record.from_name ?? undefined,
-    text: content.length > SESSION_PREVIEW_MAX_CHARS
-      ? `${content.slice(0, SESSION_PREVIEW_MAX_CHARS)}…`
-      : content,
-    timestamp: summary.updated_at_ms,
-  }
-}
-
-function summaryToEntity(summary: SessionSummary): Entity {
-  return {
-    id: summary.session_id,
-    type: deriveEntityType(summary),
-    name: deriveSessionDisplayName(summary.session_id),
-    unreadCount: summary.unread_count,
-    tags: [],
-    lastMessage: buildLastMessagePreview(summary),
-    lastActiveAt: summary.updated_at_ms,
-  }
-}
-
-function summaryToSession(summary: SessionSummary): Session {
-  return {
-    id: summary.session_id,
-    entityId: summary.session_id,
-    title: deriveSessionDisplayName(summary.session_id),
-    type: 'chat',
-    isActive: true,
-    lastActiveAt: summary.updated_at_ms,
-    unreadCount: summary.unread_count,
-  }
+function getDefaultSessionId(entityId: string | null) {
+  return entityId ? mockSessions[entityId]?.[0]?.id ?? null : null
 }
 
 export function MessageHubView({
@@ -146,14 +72,17 @@ export function MessageHubView({
 }) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
+  const resolvedInitialEntityId = findEntityById(initialEntityId)?.id ?? null
 
-  const [ownerDid, setOwnerDid] = useState<string | null>(null)
-  const [sessionSummaries, setSessionSummaries] = useState<SessionSummary[]>([])
-  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null)
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(resolvedInitialEntityId)
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    () => getDefaultSessionId(resolvedInitialEntityId),
+  )
   const [filter, setFilter] = useState<EntityFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const [mobileView, setMobileView] = useState<MobileView>('entity-list')
+  const [mobileView, setMobileView] = useState<MobileView>(
+    () => (!isDesktop && resolvedInitialEntityId ? 'conversation' : 'entity-list'),
+  )
   const [showSessionSidebar, setShowSessionSidebar] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
   const [entityListDrilldownPath, setEntityListDrilldownPath] = useState<string[]>([])
@@ -162,10 +91,9 @@ export function MessageHubView({
   const [isEntityListCollapsed, setIsEntityListCollapsed] = useState(false)
   const [isResizingEntityList, setIsResizingEntityList] = useState(false)
   const [isResizingSessionSidebar, setIsResizingSessionSidebar] = useState(false)
-  const [localReaders, setLocalReaders] = useState<Record<string, AppendableConversationMessageReader>>({})
-  const initialSelectionDoneRef = useRef(false)
-  const isDesktopRef = useRef(isDesktop)
-  const requestedReaderSessionsRef = useRef<Set<string>>(new Set())
+  const [localReaders, setLocalReaders] = useState<Record<string, AppendableConversationMessageReader>>(
+    () => ({ ...mockMessageReaders }),
+  )
   const desktopLayoutRef = useRef<HTMLDivElement>(null)
   const entityListWidthRef = useRef(ENTITY_LIST_DEFAULT_WIDTH)
   const sessionSidebarWidthRef = useRef(SESSION_SIDEBAR_DEFAULT_WIDTH)
@@ -188,59 +116,21 @@ export function MessageHubView({
   ), [])
 
   useEffect(() => {
-    isDesktopRef.current = isDesktop
-  }, [isDesktop])
-
-  useEffect(() => {
     let cancelled = false
 
-    void (async () => {
-      try {
-        const owner = await fetchOwnerDid()
-        if (cancelled) {
-          return
-        }
-
-        if (!owner) {
-          console.error('Cannot load message sessions: no signed-in account DID.')
-          return
-        }
-
-        setOwnerDid(owner)
-        const summaries = await listAllSessions(owner)
-        if (cancelled) {
-          return
-        }
-
-        setSessionSummaries(summaries)
-
-        if (initialSelectionDoneRef.current) {
-          return
-        }
-        initialSelectionDoneRef.current = true
-
-        const match = initialEntityId
-          ? summaries.find((summary) => summary.session_id === initialEntityId)
-          : undefined
-        if (!match) {
-          return
-        }
-
-        setSelectedEntityId(match.session_id)
-        setSelectedSessionId(match.session_id)
-
-        if (!isDesktopRef.current) {
-          setMobileView('conversation')
-        }
-      } catch (error) {
-        console.error('Failed to load sessions from msg-center.', error)
+    void createCodeAssistantMockReaders().then((readers) => {
+      if (!cancelled) {
+        setLocalReaders((prev) => ({
+          ...prev,
+          ...readers,
+        }))
       }
-    })()
+    })
 
     return () => {
       cancelled = true
     }
-  }, [initialEntityId])
+  }, [])
 
   useEffect(() => {
     entityListWidthRef.current = entityListWidth
@@ -269,43 +159,14 @@ export function MessageHubView({
     }
   }, [clampEntityListWidth, clampSessionSidebarWidth, isDesktop])
 
-  const entities = useMemo(
-    () => sessionSummaries.map(summaryToEntity),
-    [sessionSummaries],
-  )
-
-  const sessionsByEntity = useMemo(() => {
-    const map: Record<string, Session[]> = {}
-
-    sessionSummaries.forEach((summary) => {
-      const session = summaryToSession(summary)
-      map[session.entityId] = [...(map[session.entityId] ?? []), session]
-    })
-
-    return map
-  }, [sessionSummaries])
-
-  const peerDidBySession = useMemo(() => {
-    const map: Record<string, string> = {}
-
-    sessionSummaries.forEach((summary) => {
-      const peerDid = derivePeerDid(summary)
-      if (peerDid) {
-        map[summary.session_id] = peerDid
-      }
-    })
-
-    return map
-  }, [sessionSummaries])
-
   const selectedEntity = useMemo(
-    () => entities.find((entity) => entity.id === selectedEntityId) ?? null,
-    [entities, selectedEntityId],
+    () => findEntityById(selectedEntityId),
+    [selectedEntityId],
   )
 
   const sessions = useMemo(
-    () => (selectedEntityId ? sessionsByEntity[selectedEntityId] ?? [] : []),
-    [selectedEntityId, sessionsByEntity],
+    () => (selectedEntityId ? mockSessions[selectedEntityId] ?? [] : []),
+    [selectedEntityId],
   )
 
   const activeSession = useMemo(() => {
@@ -316,48 +177,20 @@ export function MessageHubView({
     return sessions[0] ?? null
   }, [selectedSessionId, sessions])
 
-  const activeSessionId = activeSession?.id ?? null
-
-  useEffect(() => {
-    if (!activeSessionId || !ownerDid) {
-      return
-    }
-
-    if (requestedReaderSessionsRef.current.has(activeSessionId)) {
-      return
-    }
-
-    requestedReaderSessionsRef.current.add(activeSessionId)
-
-    void createSessionApiReader(ownerDid, activeSessionId)
-      .then((reader) => {
-        setLocalReaders((prev) => ({
-          ...prev,
-          [activeSessionId]: reader,
-        }))
-      })
-      .catch((error) => {
-        requestedReaderSessionsRef.current.delete(activeSessionId)
-        console.error(
-          `Failed to load session ${activeSessionId} messages from msg-center.`,
-          error,
-        )
-      })
-  }, [activeSessionId, ownerDid])
-
   const messageReader = useMemo(() => {
     const sessionId = activeSession?.id
     return sessionId ? localReaders[sessionId] ?? EMPTY_READER : EMPTY_READER
   }, [activeSession, localReaders])
 
-  // The Session API has no entity profile projection yet; show the entity's
-  // own list data as a minimal detail card.
-  const entityDetail = selectedEntity
+  const entityDetail = useMemo(
+    () => (selectedEntityId ? mockEntityDetails[selectedEntityId] ?? null : null),
+    [selectedEntityId],
+  )
 
   const handleSelectEntity = useCallback(
     (id: string) => {
       setSelectedEntityId(id)
-      setSelectedSessionId(sessionsByEntity[id]?.[0]?.id ?? null)
+      setSelectedSessionId(getDefaultSessionId(id))
       setShowDetails(false)
       setShowSessionSidebar(false)
 
@@ -365,7 +198,7 @@ export function MessageHubView({
         setMobileView('conversation')
       }
     },
-    [isDesktop, sessionsByEntity],
+    [isDesktop],
   )
 
   const handleBack = useCallback(() => {
@@ -488,48 +321,23 @@ export function MessageHubView({
   }, [])
 
   const handleSendMessage = useCallback((payload: ConversationComposerSubmitPayload) => {
-    if (!activeSession || !selectedEntity || !ownerDid) {
+    if (!activeSession || !selectedEntityId) {
       return
     }
 
-    const sessionId = activeSession.id
-    const peerDid = peerDidBySession[sessionId]
+    const content = buildOutgoingDraftContent(payload)
+    const newMessage = createOutgoingMockMessage({
+      sessionId: activeSession.id,
+      entityId: selectedEntityId,
+      content,
+      createdAtMs: Date.now(),
+    })
 
-    if (!peerDid) {
-      console.error(`Cannot send message: no target DID resolved for session ${sessionId}.`)
-      return
-    }
-
-    const createdAtMs = Date.now()
-    const outgoing: MessageObject = {
-      from: ownerDid,
-      to: [peerDid],
-      kind: selectedEntity.type === 'group' ? 'group_msg' : 'chat',
-      // Keep the reply in the same msg-center session projection.
-      thread: { topic: sessionId },
-      created_at_ms: createdAtMs,
-      content: {
-        format: 'text/plain',
-        content: buildOutgoingDraftContent(payload),
-      },
-    }
-
-    void postSendMessage(outgoing)
-      .then(() => {
-        setLocalReaders((prev) => ({
-          ...prev,
-          [sessionId]: (prev[sessionId] ?? EMPTY_READER).append({
-            ...outgoing,
-            ui_message_id: `local:${sessionId}:${createdAtMs}`,
-            ui_session_id: sessionId,
-            ui_delivery_status: 'sending',
-          }),
-        }))
-      })
-      .catch((error) => {
-        console.error('Failed to send message via msg-center.', error)
-      })
-  }, [activeSession, ownerDid, peerDidBySession, selectedEntity])
+    setLocalReaders((prev) => ({
+      ...prev,
+      [activeSession.id]: (prev[activeSession.id] ?? EMPTY_READER).append(newMessage),
+    }))
+  }, [activeSession, selectedEntityId])
 
   const desktopSessionSidebarPane = showSessionSidebar && sessions.length > 1 ? (
     <>
@@ -595,7 +403,7 @@ export function MessageHubView({
       <div className="relative h-full w-full" style={{ background: 'var(--cp-bg)', zIndex: 1 }}>
         {mobileView === 'entity-list' ? (
           <EntityList
-            entities={entities}
+            entities={mockEntities}
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
@@ -616,7 +424,7 @@ export function MessageHubView({
               entity={selectedEntity}
               session={activeSession}
               messageReader={messageReader}
-              selfDid={ownerDid ?? ''}
+              selfDid={MOCK_SELF_DID}
               onBack={handleBack}
               onOpenSessionSidebar={() => setShowSessionSidebar(true)}
               onOpenDetails={handleOpenDetails}
@@ -712,7 +520,7 @@ export function MessageHubView({
           </div>
         ) : (
           <EntityList
-            entities={entities}
+            entities={mockEntities}
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
@@ -785,7 +593,7 @@ export function MessageHubView({
             entity={selectedEntity}
             session={activeSession}
             messageReader={messageReader}
-            selfDid={ownerDid ?? ''}
+            selfDid={MOCK_SELF_DID}
             onBack={handleBack}
             onOpenSessionSidebar={() => setShowSessionSidebar((prev) => !prev)}
             onOpenDetails={handleOpenDetails}
@@ -830,8 +638,8 @@ function buildOutgoingDraftContent({
   const visibleNames = names.slice(0, 3).join(', ')
   const remainingCount = names.length - 3
   const attachmentLine = remainingCount > 0
-    ? `[Attachments] ${attachments.length} items: ${visibleNames}, +${remainingCount} more`
-    : `[Attachments] ${attachments.length} items: ${visibleNames}`
+    ? `[Mock attachments] ${attachments.length} items: ${visibleNames}, +${remainingCount} more`
+    : `[Mock attachments] ${attachments.length} items: ${visibleNames}`
 
   if (!textContent) {
     return attachmentLine

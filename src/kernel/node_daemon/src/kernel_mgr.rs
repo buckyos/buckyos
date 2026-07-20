@@ -337,7 +337,7 @@ mod tests {
                     app_index: 0,
                     expected_instance_count: 1,
                     state: ServiceState::default(),
-                    install_config: ServiceSpecConfig::default(),
+                    spec_config: ServiceSpecConfig::default(),
                 },
             },
         );

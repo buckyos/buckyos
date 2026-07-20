@@ -21,7 +21,7 @@ fn ensure_any_drivers_installed() {
 /// `Arc<TaskDb>` with no outer Rust-level lock.
 ///
 /// The rdb backend + connection string + DDL come from the service spec
-/// (`install_config.rdb_instances[...]`); the compile-time constants are only
+/// (`spec_config.rdb_instances[...]`); the compile-time constants are only
 /// a fallback used by tests that don't have a full runtime.
 pub struct TaskDb {
     pool: AnyPool,
