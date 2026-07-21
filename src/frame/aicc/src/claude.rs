@@ -20,8 +20,9 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time;
 
 const DEFAULT_CLAUDE_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -57,6 +58,7 @@ pub struct ClaudeProvider {
     provider_driver: String,
     provider_instance_name: String,
     features: Vec<Feature>,
+    refresh_shutdown: Arc<Mutex<Option<watch::Sender<bool>>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +123,7 @@ impl ClaudeProvider {
             provider_driver,
             provider_instance_name,
             features: cfg.features,
+            refresh_shutdown: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -150,26 +153,73 @@ impl ClaudeProvider {
             return;
         }
 
-        tokio::spawn(async move {
-            if let Err(err) = self.refresh_inventory_once().await {
-                warn!(
-                    "aicc.claude.inventory.initial_refresh_failed provider_instance_name={} err={}",
-                    self.provider_instance_name, err
-                );
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        match self.refresh_shutdown.lock() {
+            Ok(mut current) => {
+                if let Some(existing) = current.take() {
+                    let _ = existing.send(true);
+                }
+                *current = Some(shutdown_tx);
             }
+            Err(_) => {
+                warn!(
+                    "aicc.claude.inventory.refresh_shutdown_lock_poisoned provider_instance_name={}",
+                    self.provider_instance_name
+                );
+                return;
+            }
+        }
+        let provider = self.clone();
+        tokio::spawn(async move {
+            provider.run_inventory_refresh(shutdown_rx).await;
+        });
+    }
 
-            let mut interval = time::interval(DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL);
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                if let Err(err) = self.refresh_inventory_once().await {
-                    warn!(
-                        "aicc.claude.inventory.refresh_failed provider_instance_name={} err={}",
-                        self.provider_instance_name, err
-                    );
+    async fn run_inventory_refresh(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) {
+        if let Err(err) = self.refresh_inventory_once().await {
+            warn!(
+                "aicc.claude.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                self.provider_instance_name, err
+            );
+        }
+        if *shutdown_rx.borrow() {
+            info!(
+                "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                self.provider_instance_name
+            );
+            return;
+        }
+
+        let mut interval = time::interval(DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        info!(
+                            "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                            self.provider_instance_name
+                        );
+                        return;
+                    }
+                }
+                _ = interval.tick() => {
+                    if let Err(err) = self.refresh_inventory_once().await {
+                        warn!(
+                            "aicc.claude.inventory.refresh_failed provider_instance_name={} err={}",
+                            self.provider_instance_name, err
+                        );
+                    }
+                    if *shutdown_rx.borrow() {
+                        info!(
+                            "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                            self.provider_instance_name
+                        );
+                        return;
+                    }
                 }
             }
-        });
+        }
     }
 
     async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
@@ -840,6 +890,24 @@ impl Provider for ClaudeProvider {
                     Some("inventory-lock-poisoned".to_string()),
                 )
             })
+    }
+
+    fn shutdown(&self) {
+        match self.refresh_shutdown.lock() {
+            Ok(mut current) => {
+                if let Some(sender) = current.take() {
+                    let _ = sender.send(true);
+                    info!(
+                        "aicc.claude.inventory.refresh_stop_requested provider_instance_name={}",
+                        self.provider_instance_name
+                    );
+                }
+            }
+            Err(_) => warn!(
+                "aicc.claude.inventory.refresh_shutdown_lock_poisoned provider_instance_name={}",
+                self.provider_instance_name
+            ),
+        }
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {

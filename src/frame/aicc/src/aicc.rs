@@ -1238,6 +1238,7 @@ pub trait Provider: Send + Sync {
     fn legacy_instance(&self) -> Option<&ProviderInstance> {
         None
     }
+    fn shutdown(&self) {}
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput;
     async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
         Ok(self.inventory())
@@ -1304,7 +1305,9 @@ impl Registry {
             .entries
             .write()
             .expect("registry lock should be available");
-        entries.remove(provider_instance_name);
+        if let Some(entry) = entries.remove(provider_instance_name) {
+            entry.provider.shutdown();
+        }
     }
 
     pub fn clear(&self) {
@@ -1312,6 +1315,9 @@ impl Registry {
             .entries
             .write()
             .expect("registry lock should be available");
+        for entry in entries.values() {
+            entry.provider.shutdown();
+        }
         entries.clear();
     }
 
