@@ -22,7 +22,9 @@
 1. **安装 Multipass**：确保系统已安装 Multipass 且有权限创建/启动虚拟机。
 2. **Python 环境**：需要 Python 3,最好安装venv
 3. **buckyos-devkit**: 使用 `pip install "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"` 安装
-3. **工作目录**：建议在项目src目录下执行命令。
+4. **工作目录**：建议在项目src目录下执行命令。
+
+`ubuntu_sn` 模板会从 Node.js 官方发布目录安装并校验当前 Node.js 24 LTS，同时提供 npm。BNS 的 Hardhat 部署要求 Node.js 22.13 或更高版本。已有 SN VM 不会自动重新执行 cloud-init；模板更新后需要重建 VM，或先为现有 VM 补齐相同版本的 Node.js。
 
 ## 3. 标准开发工作流
 
@@ -213,7 +215,9 @@ uv run buckyos-devtest sntest install
 
 ## 4. 命令参考手册
 
-通用语法：`buckyos-devtest  <group_name> <command> [args]`
+通用语法：`buckyos-devtest <group_name> <command> [args]`
+
+命令可以在 `src/` 目录运行，也可以在仓库根目录运行；devtest 会依次查找 `dev_configs/` 和 `src/dev_configs/`。应用命令返回非零状态时，devtest 会立即停止并返回失败，不再继续启动后续节点。
 
 ### 虚拟机管理
 - **`create_vms`**：创建所有虚拟机。

@@ -5,6 +5,7 @@ packages:
 - curl
 - wget
 - unzip
+- xz-utils
 - systemd-resolved
 
 # Disable cloud-init management of /etc/hosts
@@ -22,8 +23,41 @@ write_files:
     FallbackDNS=8.8.4.4 1.0.0.1
     DNSStubListener=no
   permissions: '0644'
+- path: /usr/local/sbin/buckyos-install-node
+  content: |
+    #!/bin/sh
+    set -eu
+    node_major=24
+    case "$(uname -m)" in
+      x86_64|amd64) node_arch=x64 ;;
+      aarch64|arm64) node_arch=arm64 ;;
+      armv7l) node_arch=armv7l ;;
+      *) echo "unsupported Node.js architecture: $(uname -m)" >&2; exit 1 ;;
+    esac
+    node_base_url="https://nodejs.org/dist/latest-v${node_major}.x"
+    node_checksum_file="$(mktemp)"
+    node_archive_file="$(mktemp --suffix=.tar.xz)"
+    trap 'rm -f "$node_checksum_file" "$node_archive_file"' EXIT
+    curl -fsSL "$node_base_url/SHASUMS256.txt" -o "$node_checksum_file"
+    node_archive_name="$(awk -v suffix="linux-${node_arch}\\.tar\\.xz" '$2 ~ suffix "$" { print $2; exit }' "$node_checksum_file")"
+    test -n "$node_archive_name"
+    curl -fsSL "$node_base_url/$node_archive_name" -o "$node_archive_file"
+    node_expected_sha256="$(awk -v archive="$node_archive_name" '$2 == archive { print $1; exit }' "$node_checksum_file")"
+    node_actual_sha256="$(sha256sum "$node_archive_file" | awk '{ print $1 }')"
+    test "$node_actual_sha256" = "$node_expected_sha256"
+    node_install_root=/usr/local/lib/nodejs
+    node_install_dir="$node_install_root/${node_archive_name%.tar.xz}"
+    mkdir -p "$node_install_root"
+    tar -xJf "$node_archive_file" -C "$node_install_root"
+    for node_binary in node npm npx corepack; do
+      ln -sfn "$node_install_dir/bin/$node_binary" "/usr/local/bin/$node_binary"
+    done
+    node --version
+    npm --version
+  permissions: '0755'
 
 runcmd:
+- /usr/local/sbin/buckyos-install-node
 - curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 - curl -fsSL https://deno.land/install.sh | env DENO_INSTALL=/usr/local sh
 - systemctl enable systemd-resolved
