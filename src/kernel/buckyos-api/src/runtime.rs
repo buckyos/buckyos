@@ -1747,6 +1747,15 @@ impl BuckyOSRuntime {
         ))
     }
 
+    async fn get_optional_session_token(&self) -> Option<String> {
+        let session_token = self.get_session_token().await;
+        if session_token.trim().is_empty() {
+            None
+        } else {
+            Some(session_token)
+        }
+    }
+
     pub fn get_data_folder(&self) -> Result<PathBuf> {
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => Err(self.unsupported_error("get_data_folder")),
@@ -2279,10 +2288,10 @@ impl BuckyOSRuntime {
         let url = self
             .get_zone_service_url(service_name, self.force_https)
             .await?;
-        let session_token = self.get_required_session_token().await?;
+        let session_token = self.get_optional_session_token().await;
         let timeout_secs = default_timeout_secs.unwrap_or(DEFAULT_KRPC_TIMEOUT_SECS);
 
-        let client = kRPC::new_with_timeout_secs(&url, Some(session_token), timeout_secs);
+        let client = kRPC::new_with_timeout_secs(&url, session_token, timeout_secs);
         Ok(client)
     }
 
@@ -2419,6 +2428,8 @@ mod tests {
     async fn required_session_token_reports_missing_and_expired_states() {
         let runtime = BuckyOSRuntime::new("session_test", None, BuckyOSRuntimeType::Kernel);
 
+        assert_eq!(runtime.get_optional_session_token().await, None);
+
         let missing_error = runtime
             .get_required_session_token()
             .await
@@ -2428,6 +2439,22 @@ mod tests {
             RPCErrors::InvalidToken(message)
                 if message == "session token is missing; authentication is required"
         ));
+
+        let valid_token = serde_json::json!({
+            "appid": "session_test",
+            "exp": buckyos_get_unix_timestamp().saturating_add(60),
+            "iss": "ood1",
+            "sub": "alice"
+        })
+        .to_string();
+        {
+            let mut session_token = runtime.session_token.write().await;
+            *session_token = valid_token.clone();
+        }
+        assert_eq!(
+            runtime.get_optional_session_token().await,
+            Some(valid_token)
+        );
 
         let expired_token = serde_json::json!({
             "appid": "session_test",
@@ -2440,6 +2467,8 @@ mod tests {
             let mut session_token = runtime.session_token.write().await;
             *session_token = expired_token;
         }
+
+        assert_eq!(runtime.get_optional_session_token().await, None);
 
         let expired_error = match runtime.get_system_config_client().await {
             Ok(_) => panic!("expired session token must fail before an RPC request"),
