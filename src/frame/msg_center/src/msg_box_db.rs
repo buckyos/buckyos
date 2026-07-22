@@ -27,6 +27,7 @@ use log::info;
 use name_lib::DID;
 use ndn_lib::{MsgObject, ObjId};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
 use sqlx::{AnyPool, Executor, Row};
@@ -691,6 +692,88 @@ LIMIT 1
                     "failed to persist message ref {}: {}",
                     msg_id.to_string(),
                     error
+                ))
+            })?;
+        Ok(())
+    }
+
+    pub async fn get_idempotency_result<T: DeserializeOwned>(
+        &self,
+        scope: &str,
+        idempotency_key: &str,
+        now_ms: u64,
+    ) -> std::result::Result<Option<T>, RPCErrors> {
+        let sql = self.render_sql(
+            "SELECT result_json FROM msg_idempotency
+             WHERE scope = ? AND idempotency_key = ?
+               AND (expires_at_ms IS NULL OR expires_at_ms > ?)",
+        );
+        let row = sqlx::query(&sql)
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .bind(to_sql_i64(now_ms))
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
+                ))
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let result_json: String = row
+            .try_get("result_json")
+            .map_err(|e| decode_err("result_json", &e))?;
+        serde_json::from_str(&result_json).map(Some).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to decode msg idempotency result {}:{}: {}",
+                scope, idempotency_key, error
+            ))
+        })
+    }
+
+    pub async fn upsert_idempotency_result<T: Serialize>(
+        &self,
+        scope: &str,
+        idempotency_key: &str,
+        msg_id: Option<&ObjId>,
+        result: &T,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let result_json = serde_json::to_string(result).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode msg idempotency result {}:{}: {}",
+                scope, idempotency_key, error
+            ))
+        })?;
+        let sql = self.render_sql(
+            "INSERT INTO msg_idempotency(
+                scope, idempotency_key, msg_id, result_json,
+                created_at_ms, updated_at_ms, expires_at_ms
+             ) VALUES(?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(scope, idempotency_key) DO UPDATE SET
+                msg_id = excluded.msg_id,
+                result_json = excluded.result_json,
+                updated_at_ms = excluded.updated_at_ms,
+                expires_at_ms = excluded.expires_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .bind(msg_id.map(|id| id.to_string()))
+            .bind(result_json)
+            .bind(to_sql_i64(now_ms))
+            .bind(to_sql_i64(now_ms))
+            .bind(expires_at_ms.map(to_sql_i64))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
                 ))
             })?;
         Ok(())

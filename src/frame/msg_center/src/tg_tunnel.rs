@@ -47,6 +47,7 @@ const TG_BINDING_EXTRA_BOT_TOKEN: &str = "bot_token";
 const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 const TG_UI_SESSION_IDLE_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const TG_UI_SESSION_REFRESH_INTERVAL_MS: u64 = 5 * 1000;
+const TG_BOT_API_OFFSET_STATE_KEY: &str = "bot_api_offset";
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "Create a new session"),
     ("clean", "Delete current session and create a new one"),
@@ -2955,16 +2956,120 @@ impl BotApiTgGateway {
         trimmed.to_string()
     }
 
+    fn bot_api_offset_session_id(
+        owner_did: &DID,
+        bot_account_id: &str,
+        tunnel_instance_id: &str,
+    ) -> String {
+        format!(
+            "tg:bot-api-offset:{}:{}:{}",
+            owner_did.to_string(),
+            bot_account_id,
+            tunnel_instance_id
+        )
+    }
+
+    async fn load_bot_api_offset(
+        dispatcher: &Arc<dyn MsgCenterHandler>,
+        owner_did: &DID,
+        bot_account_id: &str,
+        tunnel_instance_id: &str,
+    ) -> i64 {
+        let session_id =
+            Self::bot_api_offset_session_id(owner_did, bot_account_id, tunnel_instance_id);
+        match dispatcher
+            .handle_get_ui_session_state(
+                session_id,
+                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                RPCContext::default(),
+            )
+            .await
+        {
+            Ok(Some(entry)) => entry
+                .value
+                .as_i64()
+                .or_else(|| {
+                    entry
+                        .value
+                        .as_u64()
+                        .and_then(|value| i64::try_from(value).ok())
+                })
+                .unwrap_or(0)
+                .max(0),
+            Ok(None) => 0,
+            Err(error) => {
+                warn!(
+                    "telegram bot api offset load failed, owner={}, bot={}, error={}",
+                    owner_did.to_string(),
+                    bot_account_id,
+                    error
+                );
+                0
+            }
+        }
+    }
+
+    async fn persist_bot_api_offset(
+        dispatcher: &Arc<dyn MsgCenterHandler>,
+        owner_did: &DID,
+        bot_account_id: &str,
+        tunnel_instance_id: &str,
+        offset: i64,
+    ) -> AnyResult<()> {
+        let session_id =
+            Self::bot_api_offset_session_id(owner_did, bot_account_id, tunnel_instance_id);
+        dispatcher
+            .handle_update_ui_session_state(
+                session_id,
+                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                json!(offset.max(0)),
+                RPCContext::default(),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("persist telegram bot api offset failed: {}", error))
+    }
+
     fn spawn_ingress_task(&self, runtime: BotApiTgRuntime) -> JoinHandle<()> {
         let http = self.http.clone();
         let dispatcher = self.dispatcher.clone();
         let ui_session_tracker = self.ui_session_tracker.clone();
         let transport_did = self.transport_did.clone();
         let tunnel_instance_id = self.tunnel_instance_id.clone();
+        let offset_tunnel_instance_id = tunnel_instance_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("default")
+            .to_string();
         let poll_timeout_secs = self.poll_timeout_secs;
         tokio::spawn(async move {
             let mut offset = 0_i64;
+            let mut offset_loaded = false;
             loop {
+                let dispatcher = {
+                    let guard = dispatcher.lock().await;
+                    guard.clone()
+                };
+                let Some(dispatcher) = dispatcher else {
+                    warn!(
+                        "telegram ingress dispatcher missing, pause polling (gateway=bot_api): owner={}, bot={}",
+                        runtime.owner_did.to_string(),
+                        runtime.bot_account_id,
+                    );
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    continue;
+                };
+                if !offset_loaded {
+                    offset = Self::load_bot_api_offset(
+                        &dispatcher,
+                        &runtime.owner_did,
+                        &runtime.bot_account_id,
+                        &offset_tunnel_instance_id,
+                    )
+                    .await;
+                    offset_loaded = true;
+                }
+
                 let updates = Self::call_api_with_client::<Vec<TgBotApiUpdate>>(
                     &http,
                     &runtime.token,
@@ -2992,31 +3097,39 @@ impl BotApiTgGateway {
                 };
 
                 for update in updates {
-                    offset = offset.max(update.update_id.saturating_add(1));
+                    let next_offset = update.update_id.saturating_add(1);
                     let Some(message) = update.message else {
-                        continue;
-                    };
-                    let dispatcher = {
-                        let guard = dispatcher.lock().await;
-                        guard.clone()
-                    };
-                    let Some(dispatcher) = dispatcher else {
-                        warn!(
-                            "telegram ingress dispatcher missing, dropping message (gateway=bot_api): owner={}, bot={}, message_id={}",
-                            runtime.owner_did.to_string(),
-                            runtime.bot_account_id,
-                            message.message_id,
-                        );
+                        if let Err(error) = Self::persist_bot_api_offset(
+                            &dispatcher,
+                            &runtime.owner_did,
+                            &runtime.bot_account_id,
+                            &offset_tunnel_instance_id,
+                            next_offset,
+                        )
+                        .await
+                        {
+                            warn!(
+                                "telegram bot api offset persist failed after skipped update, owner={}, bot={}, update_id={}, error={}",
+                                runtime.owner_did.to_string(),
+                                runtime.bot_account_id,
+                                update.update_id,
+                                error
+                            );
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                            break;
+                        }
+                        offset = offset.max(next_offset);
                         continue;
                     };
                     let ui_session_tracker = {
                         let guard = ui_session_tracker.lock().await;
                         guard.clone()
                     };
+                    let message_id = message.message_id;
                     if let Err(error) = Self::dispatch_incoming_message(
                         &http,
                         runtime.token.as_str(),
-                        dispatcher,
+                        dispatcher.clone(),
                         ui_session_tracker,
                         runtime.owner_did.clone(),
                         runtime.bot_account_id.clone(),
@@ -3032,7 +3145,29 @@ impl BotApiTgGateway {
                             runtime.bot_account_id,
                             error
                         );
+                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        break;
                     }
+                    if let Err(error) = Self::persist_bot_api_offset(
+                        &dispatcher,
+                        &runtime.owner_did,
+                        &runtime.bot_account_id,
+                        &offset_tunnel_instance_id,
+                        next_offset,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "telegram bot api offset persist failed after dispatch, owner={}, bot={}, message_id={}, error={}",
+                            runtime.owner_did.to_string(),
+                            runtime.bot_account_id,
+                            message_id,
+                            error
+                        );
+                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        break;
+                    }
+                    offset = offset.max(next_offset);
                 }
             }
         })

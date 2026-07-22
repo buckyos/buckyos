@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 4;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 5;
 pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
 pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
@@ -128,6 +128,19 @@ CREATE TABLE IF NOT EXISTS msg_refs (
     created_at_ms INTEGER NOT NULL,
     PRIMARY KEY (owner, msg_id)
 );
+
+CREATE TABLE IF NOT EXISTS msg_idempotency (
+    scope           TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    msg_id          TEXT,
+    result_json     TEXT NOT NULL,
+    created_at_ms   INTEGER NOT NULL,
+    updated_at_ms   INTEGER NOT NULL,
+    expires_at_ms   INTEGER,
+    PRIMARY KEY (scope, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_idempotency_expire
+    ON msg_idempotency(expires_at_ms);
 
 CREATE TABLE IF NOT EXISTS contact_metadata (
     key   TEXT PRIMARY KEY,
@@ -289,6 +302,19 @@ CREATE TABLE IF NOT EXISTS msg_refs (
     created_at_ms BIGINT NOT NULL,
     PRIMARY KEY (owner, msg_id)
 );
+
+CREATE TABLE IF NOT EXISTS msg_idempotency (
+    scope           TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    msg_id          TEXT,
+    result_json     TEXT NOT NULL,
+    created_at_ms   BIGINT NOT NULL,
+    updated_at_ms   BIGINT NOT NULL,
+    expires_at_ms   BIGINT,
+    PRIMARY KEY (scope, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_idempotency_expire
+    ON msg_idempotency(expires_at_ms);
 
 CREATE TABLE IF NOT EXISTS contact_metadata (
     key   TEXT PRIMARY KEY,

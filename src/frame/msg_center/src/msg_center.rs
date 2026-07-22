@@ -43,6 +43,9 @@ const DELIVERY_SENDING_LEASE_MS: u64 = 60_000;
 const DELIVERY_RETRY_BASE_MS: u64 = 2_000;
 const DELIVERY_RETRY_MAX_MS: u64 = 300_000;
 const MSG_CENTER_BOX_CHANGED_EVENT_NAME: &str = "changed";
+const IDEMPOTENCY_SCOPE_DISPATCH: &str = "dispatch";
+const IDEMPOTENCY_SCOPE_POST_SEND: &str = "post_send";
+const IDEMPOTENCY_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Default)]
 struct MessageCenterState {
@@ -218,6 +221,10 @@ impl MessageCenter {
             .as_millis() as u64
     }
 
+    fn idempotency_expires_at(now_ms: u64) -> Option<u64> {
+        Some(now_ms.saturating_add(IDEMPOTENCY_TTL_MS))
+    }
+
     fn with_state_read<T, F>(&self, f: F) -> std::result::Result<T, RPCErrors>
     where
         F: FnOnce(&MessageCenterState) -> std::result::Result<T, RPCErrors>,
@@ -237,6 +244,110 @@ impl MessageCenter {
             RPCErrors::ReasonError("message center write lock poisoned".to_string())
         })?;
         f(&mut guard)
+    }
+
+    async fn load_dispatch_idempotency(
+        &self,
+        key: &str,
+    ) -> std::result::Result<Option<DispatchResult>, RPCErrors> {
+        if let Some(cached) =
+            self.with_state_read(|state| Ok(state.dispatch_idempotency.get(key).cloned()))?
+        {
+            return Ok(Some(cached));
+        }
+        let result: Option<DispatchResult> = self
+            .msg_box_db
+            .get_idempotency_result(IDEMPOTENCY_SCOPE_DISPATCH, key, Self::now_ms())
+            .await?;
+        if let Some(result) = result.as_ref() {
+            self.with_state_write(|state| {
+                state
+                    .dispatch_idempotency
+                    .insert(key.to_string(), result.clone());
+                Ok(())
+            })?;
+        }
+        Ok(result)
+    }
+
+    async fn remember_dispatch_idempotency(
+        &self,
+        key: Option<&String>,
+        msg_id: &ObjId,
+        result: &DispatchResult,
+    ) -> std::result::Result<(), RPCErrors> {
+        let Some(key) = key else {
+            return Ok(());
+        };
+        let now_ms = Self::now_ms();
+        self.msg_box_db
+            .upsert_idempotency_result(
+                IDEMPOTENCY_SCOPE_DISPATCH,
+                key,
+                Some(msg_id),
+                result,
+                now_ms,
+                Self::idempotency_expires_at(now_ms),
+            )
+            .await?;
+        self.with_state_write(|state| {
+            state
+                .dispatch_idempotency
+                .insert(key.clone(), result.clone());
+            Ok(())
+        })
+    }
+
+    async fn load_post_send_idempotency(
+        &self,
+        key: &str,
+    ) -> std::result::Result<Option<PostSendResult>, RPCErrors> {
+        if let Some(cached) =
+            self.with_state_read(|state| Ok(state.post_send_idempotency.get(key).cloned()))?
+        {
+            return Ok(Some(cached));
+        }
+        let result: Option<PostSendResult> = self
+            .msg_box_db
+            .get_idempotency_result(IDEMPOTENCY_SCOPE_POST_SEND, key, Self::now_ms())
+            .await?;
+        if let Some(result) = result.as_ref() {
+            self.with_state_write(|state| {
+                state
+                    .post_send_idempotency
+                    .insert(key.to_string(), result.clone());
+                Ok(())
+            })?;
+        }
+        Ok(result)
+    }
+
+    async fn remember_post_send_idempotency(
+        &self,
+        key: Option<&String>,
+        msg_id: &ObjId,
+        result: &PostSendResult,
+    ) -> std::result::Result<(), RPCErrors> {
+        let Some(key) = key else {
+            return Ok(());
+        };
+        let now_ms = Self::now_ms();
+        self.msg_box_db
+            .upsert_idempotency_result(
+                IDEMPOTENCY_SCOPE_POST_SEND,
+                key,
+                Some(msg_id),
+                result,
+                now_ms,
+                Self::idempotency_expires_at(now_ms),
+            )
+            .await?;
+        self.with_state_write(|state| {
+            state
+                .post_send_idempotency
+                .insert(key.clone(), result.clone());
+            Ok(())
+        })
     }
 
     fn sanitize_token(raw: &str) -> String {
@@ -882,6 +993,12 @@ impl MessageCenter {
         ingress_ctx: Option<IngressContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
+        if let Some(key) = idempotency_key.as_ref() {
+            if let Some(cached) = self.load_dispatch_idempotency(key).await? {
+                return Ok(cached);
+            }
+        }
+
         let ingress_contact_mgr_owner = ingress_ctx
             .as_ref()
             .and_then(|ctx| ctx.contact_mgr_owner.clone());
@@ -946,9 +1063,7 @@ impl MessageCenter {
         // Re-check idempotency before doing any work; a concurrent caller may
         // have completed the same dispatch while we were awaiting store_message.
         if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) =
-                self.with_state_read(|state| Ok(state.dispatch_idempotency.get(key).cloned()))?
-            {
+            if let Some(cached) = self.load_dispatch_idempotency(key).await? {
                 return Ok(cached);
             }
         }
@@ -987,14 +1102,12 @@ impl MessageCenter {
                     delivered_agents: Vec::new(),
                     reason: Some("blocked".to_string()),
                 };
-                if let Some(key) = idempotency_key.as_ref() {
-                    self.with_state_write(|state| {
-                        state
-                            .dispatch_idempotency
-                            .insert(key.clone(), blocked.clone());
-                        Ok(())
-                    })?;
-                }
+                self.remember_dispatch_idempotency(
+                    idempotency_key.as_ref(),
+                    &stored_msg_id,
+                    &blocked,
+                )
+                .await?;
                 return Ok(blocked);
             }
 
@@ -1139,14 +1252,8 @@ impl MessageCenter {
             }
         }
 
-        if let Some(key) = idempotency_key.as_ref() {
-            self.with_state_write(|state| {
-                state
-                    .dispatch_idempotency
-                    .insert(key.clone(), result.clone());
-                Ok(())
-            })?;
-        }
+        self.remember_dispatch_idempotency(idempotency_key.as_ref(), &stored_msg_id, &result)
+            .await?;
         Ok(result)
     }
 
@@ -1159,6 +1266,12 @@ impl MessageCenter {
             return Err(RPCErrors::ParseRequestError(
                 "post_send requires at least one target in msg.to".to_string(),
             ));
+        }
+
+        if let Some(key) = idempotency_key.as_ref() {
+            if let Some(cached) = self.load_post_send_idempotency(key).await? {
+                return Ok(cached);
+            }
         }
 
         enum PostSendPrepare {
@@ -1212,29 +1325,23 @@ impl MessageCenter {
             ),
         };
 
-        let cache_result =
-            |result: PostSendResult| -> std::result::Result<PostSendResult, RPCErrors> {
-                if let Some(key) = idempotency_key.as_ref() {
-                    self.with_state_write(|state| {
-                        state
-                            .post_send_idempotency
-                            .insert(key.clone(), result.clone());
-                        Ok(())
-                    })?;
-                }
-                Ok(result)
-            };
-
         if self
             .is_contact_blocked(&author, contact_mgr_owner.clone())
             .await?
         {
-            return cache_result(PostSendResult {
+            let result = PostSendResult {
                 ok: false,
                 msg_id: stored_msg_id.clone(),
                 deliveries: Vec::new(),
                 reason: Some("blocked_author".to_string()),
-            });
+            };
+            self.remember_post_send_idempotency(
+                idempotency_key.as_ref(),
+                &stored_msg_id,
+                &result,
+            )
+            .await?;
+            return Ok(result);
         }
 
         // Phase 1: resolve every target up front (pure, no writes). One
@@ -1246,12 +1353,19 @@ impl MessageCenter {
             match self.build_delivery_envelope(&stored_msg_id, target) {
                 Ok(envelope) => envelopes.push(envelope),
                 Err(reason) => {
-                    return cache_result(PostSendResult {
+                    let result = PostSendResult {
                         ok: false,
                         msg_id: stored_msg_id.clone(),
                         deliveries: Vec::new(),
                         reason: Some(reason),
-                    });
+                    };
+                    self.remember_post_send_idempotency(
+                        idempotency_key.as_ref(),
+                        &stored_msg_id,
+                        &result,
+                    )
+                    .await?;
+                    return Ok(result);
                 }
             }
         }
@@ -1262,9 +1376,7 @@ impl MessageCenter {
         Self::store_message(&stored_msg_id, &stored_msg_json).await?;
 
         if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) =
-                self.with_state_read(|state| Ok(state.post_send_idempotency.get(key).cloned()))?
-            {
+            if let Some(cached) = self.load_post_send_idempotency(key).await? {
                 return Ok(cached);
             }
         }
@@ -1311,12 +1423,15 @@ impl MessageCenter {
             });
         }
 
-        cache_result(PostSendResult {
+        let result = PostSendResult {
             ok: true,
             msg_id: stored_msg_id.clone(),
             deliveries,
             reason: None,
-        })
+        };
+        self.remember_post_send_idempotency(idempotency_key.as_ref(), &stored_msg_id, &result)
+            .await?;
+        Ok(result)
     }
 
     async fn get_next_internal(

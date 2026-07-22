@@ -22,9 +22,13 @@ async fn new_center(_tag: &str) -> (MessageCenter, TempDir) {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("msg-center.db");
     let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    let msg_box_db = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
-    let center = MessageCenter::open_with_db(msg_box_db).await.unwrap();
+    let center = open_center_at(&conn).await;
     (center, tmp)
+}
+
+async fn open_center_at(conn: &str) -> MessageCenter {
+    let msg_box_db = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
+    MessageCenter::open_with_db(msg_box_db).await.unwrap()
 }
 
 fn make_msg(from: DID, to: Vec<DID>, kind: MsgObjKind) -> MsgObject {
@@ -983,4 +987,62 @@ async fn idempotency_key_prevents_duplicate_records() {
         .await
         .unwrap();
     assert!(empty.is_none());
+}
+
+#[tokio::test]
+async fn idempotency_key_survives_message_center_restart() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("msg-center.db");
+    let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let first_center = open_center_at(&conn).await;
+    let sender = DID::new("bns", "sender-g");
+    let recipient = DID::new("bns", "recipient-g");
+
+    first_center
+        .handle_grant_temporary_access(
+            vec![sender.clone()],
+            "ctx-persist-idem".to_string(),
+            60,
+            Some(recipient.clone()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let first_dispatch = first_center
+        .handle_dispatch(
+            msg.clone(),
+            Some(IngressContext {
+                context_id: Some("ctx-persist-idem".to_string()),
+                ..Default::default()
+            }),
+            Some("dispatch-persisted-key".to_string()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(first_dispatch.ok);
+    drop(first_center);
+
+    let second_center = open_center_at(&conn).await;
+    let second_dispatch = second_center
+        .handle_dispatch(
+            msg,
+            Some(IngressContext {
+                context_id: Some("ctx-persist-idem".to_string()),
+                ..Default::default()
+            }),
+            Some("dispatch-persisted-key".to_string()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first_dispatch, second_dispatch);
+
+    let inbox = second_center
+        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .await
+        .unwrap();
+    assert_eq!(inbox.len(), 1);
 }
