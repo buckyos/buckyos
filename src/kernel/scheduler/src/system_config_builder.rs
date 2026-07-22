@@ -27,7 +27,7 @@ use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, DID};
 use package_lib::PackageId;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -38,8 +38,107 @@ const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 const DEFAULT_SN_AI_PROVIDER_MODELS: &[&str] =
     &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
 const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
-const SN_AI_PROVIDER_MODELS_API: &str = "https://sn.buckyos.ai/api/v1/ai/models";
-const SN_AI_PROVIDER_RESPONSES_API: &str = "https://sn.buckyos.ai/api/v1/ai/";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct SnAiProviderEndpoints {
+    pub models_url: String,
+    pub responses_url: String,
+}
+
+pub(crate) fn derive_sn_ai_provider_endpoints(
+    zone_sn: Option<&str>,
+) -> Result<SnAiProviderEndpoints> {
+    let zone_sn = zone_sn
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("ZoneDocument.sn is required for the SN AI provider"))?;
+    let normalized = if zone_sn.contains("://") {
+        zone_sn.to_string()
+    } else {
+        format!("https://{zone_sn}")
+    };
+    let mut origin = Url::parse(&normalized)
+        .map_err(|err| anyhow!("invalid ZoneDocument.sn {zone_sn:?}: {err}"))?;
+    if origin.scheme() != "https" {
+        return Err(anyhow!("ZoneDocument.sn must use https"));
+    }
+    if origin.host_str().is_none() {
+        return Err(anyhow!("ZoneDocument.sn must include a host"));
+    }
+    if !origin.username().is_empty() || origin.password().is_some() {
+        return Err(anyhow!("ZoneDocument.sn must not include user info"));
+    }
+    if !matches!(origin.path(), "" | "/") || origin.query().is_some() || origin.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "ZoneDocument.sn must be an HTTPS origin without path, query, or fragment"
+        ));
+    }
+
+    origin.set_path("/");
+    let models_url = origin
+        .join("api/v1/ai/models")
+        .map_err(|err| anyhow!("failed to derive SN AI models URL: {err}"))?
+        .to_string();
+    let responses_url = origin
+        .join("api/v1/ai/")
+        .map_err(|err| anyhow!("failed to derive SN AI responses URL: {err}"))?
+        .to_string();
+    Ok(SnAiProviderEndpoints {
+        models_url,
+        responses_url,
+    })
+}
+
+pub(crate) fn reconcile_managed_sn_ai_provider(
+    current: &Value,
+    endpoints: std::result::Result<&SnAiProviderEndpoints, &anyhow::Error>,
+) -> Result<Option<Value>> {
+    let mut next = current.clone();
+    let Some(provider) = next
+        .get_mut("sn-ai-provider")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(None);
+    };
+    let Some(instances) = provider.get_mut("instances").and_then(Value::as_array_mut) else {
+        return Ok(None);
+    };
+
+    let mut managed_found = false;
+    let mut changed = false;
+    for instance in instances.iter_mut().filter_map(Value::as_object_mut) {
+        let is_managed = instance.get("provider_driver").and_then(Value::as_str)
+            == Some("sn-ai-provider")
+            && instance.get("auth_mode").and_then(Value::as_str) == Some("runtime_session");
+        if !is_managed {
+            continue;
+        }
+        managed_found = true;
+        if let Ok(endpoints) = endpoints {
+            if instance.get("base_url").and_then(Value::as_str)
+                != Some(endpoints.responses_url.as_str())
+            {
+                instance.insert(
+                    "base_url".to_string(),
+                    Value::String(endpoints.responses_url.clone()),
+                );
+                changed = true;
+            }
+        }
+    }
+
+    if !managed_found {
+        return Ok(None);
+    }
+    let enabled = endpoints.is_ok();
+    if provider.get("enabled").and_then(Value::as_bool) != Some(enabled) {
+        provider.insert("enabled".to_string(), Value::Bool(enabled));
+        changed = true;
+    }
+
+    Ok(changed.then_some(next))
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AIProviderConfigSummary {
@@ -352,7 +451,11 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub async fn add_aicc(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+    pub async fn add_aicc(
+        &mut self,
+        config: &StartConfigSummary,
+        zone_sn: Option<&str>,
+    ) -> Result<&mut Self> {
         let service_doc = generate_aicc_service_doc();
         let mut service_spec = build_kernel_service_spec(
             AICC_SERVICE_UNIQUE_ID,
@@ -366,12 +469,21 @@ impl SystemConfigBuilder {
             buckyos_api::aicc_usage_log_default_rdb_instance_config(),
         );
         self.insert_json("services/aicc/spec", &service_spec)?;
-        let sn_ai_provider_models = if config.llm_router_enabled() {
-            fetch_sn_ai_provider_models(config.user_name.as_str()).await
+        let sn_ai_provider_endpoints = if config.llm_router_enabled() {
+            Some(derive_sn_ai_provider_endpoints(zone_sn)?)
         } else {
             None
         };
-        let settings = build_aicc_settings_with_sn_models(config, sn_ai_provider_models.as_deref());
+        let sn_ai_provider_models = if let Some(endpoints) = sn_ai_provider_endpoints.as_ref() {
+            fetch_sn_ai_provider_models(config.user_name.as_str(), endpoints).await
+        } else {
+            None
+        };
+        let settings = build_aicc_settings_with_endpoints(
+            config,
+            sn_ai_provider_endpoints.as_ref(),
+            sn_ai_provider_models.as_deref(),
+        );
         self.insert_json_if_absent("services/aicc/settings", &settings)?;
         Ok(self)
     }
@@ -717,12 +829,24 @@ fn build_zone_user_contact_settings(
     }))
 }
 
+#[cfg(test)]
 fn build_aicc_settings(config: &StartConfigSummary) -> Value {
     build_aicc_settings_with_sn_models(config, None)
 }
 
+#[cfg(test)]
 fn build_aicc_settings_with_sn_models(
     config: &StartConfigSummary,
+    sn_ai_provider_models: Option<&[String]>,
+) -> Value {
+    let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai"))
+        .expect("test SN AI endpoint must be valid");
+    build_aicc_settings_with_endpoints(config, Some(&endpoints), sn_ai_provider_models)
+}
+
+fn build_aicc_settings_with_endpoints(
+    config: &StartConfigSummary,
+    sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
     sn_ai_provider_models: Option<&[String]>,
 ) -> Value {
     const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
@@ -751,6 +875,8 @@ fn build_aicc_settings_with_sn_models(
     }
 
     if config.llm_router_enabled() {
+        let endpoints = sn_ai_provider_endpoints
+            .expect("SN AI endpoints are validated before building enabled provider settings");
         let sn_model_settings = build_sn_ai_provider_model_settings(sn_ai_provider_models);
         if !sn_ai_provider_alias_map.contains_key("llm.default") {
             sn_ai_provider_alias_map.insert(
@@ -775,7 +901,7 @@ fn build_aicc_settings_with_sn_models(
             "provider_instance_name": "sn-ai-provider-default",
             "provider_type": "cloud_api",
             "provider_driver": "sn-ai-provider",
-            "base_url": SN_AI_PROVIDER_RESPONSES_API,
+            "base_url": endpoints.responses_url,
             "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
             "models": sn_model_settings.models,
             "default_model": sn_model_settings.default_model,
@@ -949,24 +1075,30 @@ fn is_image_model(model_id: &str) -> bool {
         || value.contains("vision")
 }
 
-async fn fetch_sn_ai_provider_models(user_name: &str) -> Option<Vec<String>> {
-    match fetch_sn_ai_provider_models_impl(user_name).await {
+async fn fetch_sn_ai_provider_models(
+    user_name: &str,
+    endpoints: &SnAiProviderEndpoints,
+) -> Option<Vec<String>> {
+    match fetch_sn_ai_provider_models_impl(user_name, endpoints).await {
         Ok(models) => Some(models),
         Err(err) => {
             warn!(
                 "fetch sn-ai-provider models from {} failed: {}",
-                SN_AI_PROVIDER_MODELS_API, err
+                endpoints.models_url, err
             );
             None
         }
     }
 }
 
-async fn fetch_sn_ai_provider_models_impl(user_name: &str) -> Result<Vec<String>> {
+async fn fetch_sn_ai_provider_models_impl(
+    user_name: &str,
+    endpoints: &SnAiProviderEndpoints,
+) -> Result<Vec<String>> {
     let token = build_device_jwt_token_for_sn(user_name)?;
     let client = Client::new();
     let response = client
-        .get(SN_AI_PROVIDER_MODELS_API)
+        .get(endpoints.models_url.as_str())
         .bearer_auth(token)
         .send()
         .await

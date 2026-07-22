@@ -123,7 +123,7 @@ async fn create_init_list_by_template(
         .await?
         .add_repo_service()
         .await?
-        .add_aicc(&start_config)
+        .add_aicc(&start_config, zone_document.sn.as_deref())
         .await?
         .add_msg_center(&start_config)
         .await?

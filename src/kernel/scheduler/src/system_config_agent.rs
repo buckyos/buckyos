@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
+use crate::system_config_builder::{
+    derive_sn_ai_provider_endpoints, reconcile_managed_sn_ai_provider,
+};
 use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
@@ -1386,6 +1389,51 @@ async fn load_scheduler_input_config(
     Ok(input_system_config)
 }
 
+fn update_managed_sn_ai_provider(
+    input_system_config: &HashMap<String, String>,
+) -> Result<HashMap<String, KVAction>> {
+    const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
+    let Some(current_settings) = input_system_config.get(AICC_SETTINGS_KEY) else {
+        return Ok(HashMap::new());
+    };
+    let current_settings: Value = serde_json::from_str(current_settings)?;
+    if current_settings.get("sn-ai-provider").is_none() {
+        return Ok(HashMap::new());
+    }
+
+    let endpoints = (|| -> Result<_> {
+        let boot_config = input_system_config
+            .get("boot/config")
+            .ok_or_else(|| anyhow::anyhow!("boot/config is missing"))?;
+        let zone_config: ZoneConfig = serde_json::from_str(boot_config)?;
+        let zone_document = zone_config
+            .zone_document()
+            .map_err(|err| anyhow::anyhow!("decode ZoneDocument from boot/config failed: {err}"))?;
+        derive_sn_ai_provider_endpoints(zone_document.sn.as_deref())
+    })();
+
+    let reconciled = match &endpoints {
+        Ok(endpoints) => reconcile_managed_sn_ai_provider(&current_settings, Ok(endpoints))?,
+        Err(err) => {
+            warn!(
+                "disable managed SN AI provider because Zone SN endpoint is invalid: {}",
+                err
+            );
+            reconcile_managed_sn_ai_provider(&current_settings, Err(err))?
+        }
+    };
+    let Some(reconciled) = reconciled else {
+        return Ok(HashMap::new());
+    };
+
+    let mut actions = HashMap::new();
+    actions.insert(
+        AICC_SETTINGS_KEY.to_string(),
+        KVAction::Update(serde_json::to_string_pretty(&reconciled)?),
+    );
+    Ok(actions)
+}
+
 pub(crate) async fn refresh_rbac() -> Result<SchedulerRefreshRbacResponse> {
     let buckyos_api_runtime = get_buckyos_api_runtime()?;
     let system_config_client = buckyos_api_runtime.get_system_config_client().await?;
@@ -1492,6 +1540,9 @@ pub(crate) async fn build_schedule_plan(
             update_node_gateway_config(&need_update_gateway_node_list, input_system_config).await?;
         extend_kv_action_map(&mut tx_actions, &update_gateway_config_actions);
     }
+
+    let aicc_actions = update_managed_sn_ai_provider(input_system_config)?;
+    extend_kv_action_map(&mut tx_actions, &aicc_actions);
 
     let need_persist_snapshot =
         scheduler_ctx.needs_snapshot_persist(last_schedule_snapshot.as_ref());
