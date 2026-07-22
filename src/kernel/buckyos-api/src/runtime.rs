@@ -1721,12 +1721,30 @@ impl BuckyOSRuntime {
                         return new_session_token_str;
                     }
                 }
-                warn!("session-token expired!");
+                warn!("session token expired; re-authentication is required");
                 return "".to_string();
             }
         }
         warn!("use a session-token without expiration, it will be a BUG?");
         return session_token_str;
+    }
+
+    async fn get_required_session_token(&self) -> Result<String> {
+        let session_token = self.get_session_token().await;
+        if !session_token.trim().is_empty() {
+            return Ok(session_token);
+        }
+
+        let configured_session_token = self.session_token.read().await;
+        if configured_session_token.trim().is_empty() {
+            return Err(RPCErrors::InvalidToken(
+                "session token is missing; authentication is required".to_string(),
+            ));
+        }
+
+        Err(RPCErrors::TokenExpired(
+            "session token is expired; re-authentication is required".to_string(),
+        ))
     }
 
     pub fn get_data_folder(&self) -> Result<PathBuf> {
@@ -1985,7 +2003,7 @@ impl BuckyOSRuntime {
         let url = self.get_system_config_url();
 
         //let url = self.get_zone_service_url("system_config",self.force_https)?;
-        let session_token = self.get_session_token().await;
+        let session_token = self.get_required_session_token().await?;
         let client = self
             .system_config_client
             .get_or_try_init(|| async {
@@ -2261,10 +2279,10 @@ impl BuckyOSRuntime {
         let url = self
             .get_zone_service_url(service_name, self.force_https)
             .await?;
-        let session_token = self.session_token.read().await;
+        let session_token = self.get_required_session_token().await?;
         let timeout_secs = default_timeout_secs.unwrap_or(DEFAULT_KRPC_TIMEOUT_SECS);
 
-        let client = kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), timeout_secs);
+        let client = kRPC::new_with_timeout_secs(&url, Some(session_token), timeout_secs);
         Ok(client)
     }
 
@@ -2395,6 +2413,43 @@ mod tests {
             client_b.get_session_token().await,
             Some("token-b".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn required_session_token_reports_missing_and_expired_states() {
+        let runtime = BuckyOSRuntime::new("session_test", None, BuckyOSRuntimeType::Kernel);
+
+        let missing_error = runtime
+            .get_required_session_token()
+            .await
+            .expect_err("missing session token must fail locally");
+        assert!(matches!(
+            missing_error,
+            RPCErrors::InvalidToken(message)
+                if message == "session token is missing; authentication is required"
+        ));
+
+        let expired_token = serde_json::json!({
+            "appid": "session_test",
+            "exp": buckyos_get_unix_timestamp().saturating_sub(1),
+            "iss": "ood1",
+            "sub": "alice"
+        })
+        .to_string();
+        {
+            let mut session_token = runtime.session_token.write().await;
+            *session_token = expired_token;
+        }
+
+        let expired_error = match runtime.get_system_config_client().await {
+            Ok(_) => panic!("expired session token must fail before an RPC request"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            expired_error,
+            RPCErrors::TokenExpired(message)
+                if message == "session token is expired; re-authentication is required"
+        ));
     }
 
     #[tokio::test]
