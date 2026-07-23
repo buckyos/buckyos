@@ -35,7 +35,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{mpsc::UnboundedReceiver, Mutex};
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -47,6 +47,8 @@ const TG_BINDING_EXTRA_BOT_TOKEN: &str = "bot_token";
 const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 const TG_UI_SESSION_IDLE_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const TG_UI_SESSION_REFRESH_INTERVAL_MS: u64 = 5 * 1000;
+const TG_TASK_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
+const TG_BOT_API_OFFSET_STATE_KEY: &str = "bot_api_offset";
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "Create a new session"),
     ("clean", "Delete current session and create a new one"),
@@ -57,6 +59,49 @@ const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("switch", "Bind this chat to another session"),
     ("help", "Show supported commands"),
 ];
+
+struct ManagedTask {
+    stop_tx: Option<oneshot::Sender<()>>,
+    handle: JoinHandle<()>,
+}
+
+impl ManagedTask {
+    fn new(stop_tx: oneshot::Sender<()>, handle: JoinHandle<()>) -> Self {
+        Self {
+            stop_tx: Some(stop_tx),
+            handle,
+        }
+    }
+
+    async fn stop(mut self, label: &str) {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        let timeout = tokio::time::sleep(Duration::from_millis(TG_TASK_SHUTDOWN_TIMEOUT_MS));
+        tokio::pin!(timeout);
+        tokio::select! {
+            result = &mut self.handle => {
+                match result {
+                    Ok(()) => {}
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => {
+                        warn!("telegram task join failed ({}): {}", label, error);
+                    }
+                }
+            }
+            _ = &mut timeout => {
+                warn!("telegram task graceful stop timed out ({}), aborting", label);
+                self.handle.abort();
+                if let Err(error) = self.handle.await {
+                    if !error.is_cancelled() {
+                        warn!("telegram task abort join failed ({}): {}", label, error);
+                    }
+                }
+            }
+        }
+    }
+
+}
 
 #[derive(Debug, Clone)]
 pub struct TgTunnelConfig {
@@ -1215,7 +1260,7 @@ pub struct GrammersTgGateway {
     runtimes: Mutex<HashMap<String, GrammersTgRuntime>>,
     dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
     ui_session_tracker: Arc<Mutex<Option<Arc<TgUiSessionTracker>>>>,
-    ingress_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+    ingress_tasks: Mutex<HashMap<String, ManagedTask>>,
 }
 
 impl GrammersTgGateway {
@@ -1559,12 +1604,13 @@ impl GrammersTgGateway {
         bot_account_id: String,
         client: Client,
         updates_rx: UnboundedReceiver<UpdatesLike>,
-    ) -> JoinHandle<()> {
+    ) -> ManagedTask {
         let dispatcher = self.dispatcher.clone();
         let ui_session_tracker = self.ui_session_tracker.clone();
         let transport_did = self.cfg.transport_did.clone();
         let tunnel_instance_id = self.cfg.tunnel_instance_id.clone();
-        tokio::spawn(async move {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
             let mut updates = client.stream_updates(
                 updates_rx,
                 UpdatesConfiguration {
@@ -1573,7 +1619,11 @@ impl GrammersTgGateway {
                 },
             );
             loop {
-                match updates.next().await {
+                let update = tokio::select! {
+                    _ = &mut stop_rx => break,
+                    update = updates.next() => update,
+                };
+                match update {
                     Ok(Update::NewMessage(message)) => {
                         info!("tg_tunnel get tg msg:{}", message.text());
                         let dispatcher = {
@@ -1628,7 +1678,8 @@ impl GrammersTgGateway {
                     }
                 }
             }
-        })
+        });
+        ManagedTask::new(stop_tx, handle)
     }
 
     fn peer_ref_from_dialog_id(dialog_id: i64) -> AnyResult<PeerRef> {
@@ -1778,15 +1829,34 @@ impl TgGateway for GrammersTgGateway {
         }
 
         let mut started = HashMap::new();
-        let mut started_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
+        let mut started_tasks: HashMap<String, ManagedTask> = HashMap::new();
         for binding in bindings {
-            binding.validate()?;
-            let token = resolve_binding_bot_token(binding)?;
+            if let Err(error) = binding.validate() {
+                for (_, task) in started_tasks.drain() {
+                    task.stop("grammers-start-rollback").await;
+                }
+                for (_, runtime) in started.drain() {
+                    let _ = Self::stop_runtime(runtime).await;
+                }
+                return Err(error);
+            }
+            let token = match resolve_binding_bot_token(binding) {
+                Ok(token) => token,
+                Err(error) => {
+                    for (_, task) in started_tasks.drain() {
+                        task.stop("grammers-start-rollback").await;
+                    }
+                    for (_, runtime) in started.drain() {
+                        let _ = Self::stop_runtime(runtime).await;
+                    }
+                    return Err(error);
+                }
+            };
             let (runtime, updates_rx) = match self.start_binding(binding, &token).await {
                 Ok(runtime) => runtime,
                 Err(error) => {
                     for (_, task) in started_tasks.drain() {
-                        task.abort();
+                        task.stop("grammers-start-rollback").await;
                     }
                     for (_, runtime) in started.drain() {
                         let _ = Self::stop_runtime(runtime).await;
@@ -1808,7 +1878,7 @@ impl TgGateway for GrammersTgGateway {
         let mut guard = self.runtimes.lock().await;
         if !guard.is_empty() {
             for (_, task) in started_tasks.drain() {
-                task.abort();
+                task.stop("grammers-start-race").await;
             }
             for (_, runtime) in started.drain() {
                 let _ = Self::stop_runtime(runtime).await;
@@ -1832,7 +1902,7 @@ impl TgGateway for GrammersTgGateway {
         {
             let mut tasks_guard = self.ingress_tasks.lock().await;
             for (_, task) in tasks_guard.drain() {
-                task.abort();
+                task.stop("grammers-ingress").await;
             }
         }
 
@@ -2249,7 +2319,7 @@ pub struct BotApiTgGateway {
     runtimes: Mutex<HashMap<String, BotApiTgRuntime>>,
     dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
     ui_session_tracker: Arc<Mutex<Option<Arc<TgUiSessionTracker>>>>,
-    ingress_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
+    ingress_tasks: Mutex<HashMap<String, ManagedTask>>,
     transport_did: Option<DID>,
     tunnel_instance_id: Option<String>,
     poll_timeout_secs: u64,
@@ -2955,27 +3025,155 @@ impl BotApiTgGateway {
         trimmed.to_string()
     }
 
-    fn spawn_ingress_task(&self, runtime: BotApiTgRuntime) -> JoinHandle<()> {
+    fn bot_api_offset_session_id(
+        owner_did: &DID,
+        bot_account_id: &str,
+        tunnel_instance_id: &str,
+    ) -> String {
+        format!(
+            "tg:bot-api-offset:{}:{}:{}",
+            owner_did.to_string(),
+            bot_account_id,
+            tunnel_instance_id
+        )
+    }
+
+    async fn load_bot_api_offset(
+        dispatcher: &Arc<dyn MsgCenterHandler>,
+        owner_did: &DID,
+        bot_account_id: &str,
+        tunnel_instance_id: &str,
+    ) -> AnyResult<i64> {
+        let session_id =
+            Self::bot_api_offset_session_id(owner_did, bot_account_id, tunnel_instance_id);
+        match dispatcher
+            .handle_get_ui_session_state(
+                session_id,
+                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                RPCContext::default(),
+            )
+            .await
+        {
+            Ok(Some(entry)) => {
+                let offset = entry.value.as_i64().or_else(|| {
+                    entry
+                        .value
+                        .as_u64()
+                        .and_then(|value| i64::try_from(value).ok())
+                });
+                offset.filter(|value| *value >= 0).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid telegram bot api offset state for owner={}, bot={}, value={}",
+                        owner_did.to_string(),
+                        bot_account_id,
+                        entry.value
+                    )
+                })
+            }
+            Ok(None) => Ok(0),
+            Err(error) => Err(anyhow::anyhow!(
+                "telegram bot api offset load failed, owner={}, bot={}, error={}",
+                owner_did.to_string(),
+                bot_account_id,
+                error
+            )),
+        }
+    }
+
+    async fn persist_bot_api_offset(
+        dispatcher: &Arc<dyn MsgCenterHandler>,
+        owner_did: &DID,
+        bot_account_id: &str,
+        tunnel_instance_id: &str,
+        offset: i64,
+    ) -> AnyResult<()> {
+        let session_id =
+            Self::bot_api_offset_session_id(owner_did, bot_account_id, tunnel_instance_id);
+        dispatcher
+            .handle_update_ui_session_state(
+                session_id,
+                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                json!(offset.max(0)),
+                RPCContext::default(),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("persist telegram bot api offset failed: {}", error))
+    }
+
+    fn spawn_ingress_task(&self, runtime: BotApiTgRuntime) -> ManagedTask {
         let http = self.http.clone();
         let dispatcher = self.dispatcher.clone();
         let ui_session_tracker = self.ui_session_tracker.clone();
         let transport_did = self.transport_did.clone();
         let tunnel_instance_id = self.tunnel_instance_id.clone();
+        let offset_tunnel_instance_id = tunnel_instance_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("default")
+            .to_string();
         let poll_timeout_secs = self.poll_timeout_secs;
-        tokio::spawn(async move {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
             let mut offset = 0_i64;
-            loop {
-                let updates = Self::call_api_with_client::<Vec<TgBotApiUpdate>>(
-                    &http,
-                    &runtime.token,
-                    "getUpdates",
-                    Some(json!({
-                        "offset": offset,
-                        "timeout": poll_timeout_secs,
-                        "allowed_updates": ["message"]
-                    })),
-                )
-                .await;
+            let mut offset_loaded = false;
+            'poll_loop: loop {
+                let dispatcher = {
+                    let guard = dispatcher.lock().await;
+                    guard.clone()
+                };
+                let Some(dispatcher) = dispatcher else {
+                    warn!(
+                        "telegram ingress dispatcher missing, pause polling (gateway=bot_api): owner={}, bot={}",
+                        runtime.owner_did.to_string(),
+                        runtime.bot_account_id,
+                    );
+                    tokio::select! {
+                        _ = &mut stop_rx => break 'poll_loop,
+                        _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                    }
+                    continue;
+                };
+                if !offset_loaded {
+                    offset = match Self::load_bot_api_offset(
+                        &dispatcher,
+                        &runtime.owner_did,
+                        &runtime.bot_account_id,
+                        &offset_tunnel_instance_id,
+                    )
+                    .await
+                    {
+                        Ok(offset) => offset,
+                        Err(error) => {
+                            warn!(
+                                "telegram bot api offset load failed, pause polling: owner={}, bot={}, error={}",
+                                runtime.owner_did.to_string(),
+                                runtime.bot_account_id,
+                                error
+                            );
+                            tokio::select! {
+                                _ = &mut stop_rx => break 'poll_loop,
+                                _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                            }
+                            continue;
+                        }
+                    };
+                    offset_loaded = true;
+                }
+
+                let updates = tokio::select! {
+                    _ = &mut stop_rx => break 'poll_loop,
+                    updates = Self::call_api_with_client::<Vec<TgBotApiUpdate>>(
+                        &http,
+                        &runtime.token,
+                        "getUpdates",
+                        Some(json!({
+                            "offset": offset,
+                            "timeout": poll_timeout_secs,
+                            "allowed_updates": ["message"]
+                        })),
+                    ) => updates,
+                };
 
                 let updates = match updates {
                     Ok(updates) => updates,
@@ -2986,37 +3184,51 @@ impl BotApiTgGateway {
                             runtime.bot_account_id,
                             error
                         );
-                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        tokio::select! {
+                            _ = &mut stop_rx => break 'poll_loop,
+                            _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                        }
                         continue;
                     }
                 };
 
                 for update in updates {
-                    offset = offset.max(update.update_id.saturating_add(1));
+                    let next_offset = update.update_id.saturating_add(1);
                     let Some(message) = update.message else {
-                        continue;
-                    };
-                    let dispatcher = {
-                        let guard = dispatcher.lock().await;
-                        guard.clone()
-                    };
-                    let Some(dispatcher) = dispatcher else {
-                        warn!(
-                            "telegram ingress dispatcher missing, dropping message (gateway=bot_api): owner={}, bot={}, message_id={}",
-                            runtime.owner_did.to_string(),
-                            runtime.bot_account_id,
-                            message.message_id,
-                        );
+                        if let Err(error) = Self::persist_bot_api_offset(
+                            &dispatcher,
+                            &runtime.owner_did,
+                            &runtime.bot_account_id,
+                            &offset_tunnel_instance_id,
+                            next_offset,
+                        )
+                        .await
+                        {
+                            warn!(
+                                "telegram bot api offset persist failed after skipped update, owner={}, bot={}, update_id={}, error={}",
+                                runtime.owner_did.to_string(),
+                                runtime.bot_account_id,
+                                update.update_id,
+                                error
+                            );
+                            tokio::select! {
+                                _ = &mut stop_rx => break 'poll_loop,
+                                _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                            }
+                            break;
+                        }
+                        offset = offset.max(next_offset);
                         continue;
                     };
                     let ui_session_tracker = {
                         let guard = ui_session_tracker.lock().await;
                         guard.clone()
                     };
+                    let message_id = message.message_id;
                     if let Err(error) = Self::dispatch_incoming_message(
                         &http,
                         runtime.token.as_str(),
-                        dispatcher,
+                        dispatcher.clone(),
                         ui_session_tracker,
                         runtime.owner_did.clone(),
                         runtime.bot_account_id.clone(),
@@ -3032,10 +3244,39 @@ impl BotApiTgGateway {
                             runtime.bot_account_id,
                             error
                         );
+                        tokio::select! {
+                            _ = &mut stop_rx => break 'poll_loop,
+                            _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                        }
+                        break;
                     }
+                    if let Err(error) = Self::persist_bot_api_offset(
+                        &dispatcher,
+                        &runtime.owner_did,
+                        &runtime.bot_account_id,
+                        &offset_tunnel_instance_id,
+                        next_offset,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "telegram bot api offset persist failed after dispatch, owner={}, bot={}, message_id={}, error={}",
+                            runtime.owner_did.to_string(),
+                            runtime.bot_account_id,
+                            message_id,
+                            error
+                        );
+                        tokio::select! {
+                            _ = &mut stop_rx => break 'poll_loop,
+                            _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
+                        }
+                        break;
+                    }
+                    offset = offset.max(next_offset);
                 }
             }
-        })
+        });
+        ManagedTask::new(stop_tx, handle)
     }
 }
 
@@ -3054,11 +3295,24 @@ impl TgGateway for BotApiTgGateway {
         }
 
         let mut started = HashMap::<String, BotApiTgRuntime>::new();
-        let mut started_tasks = HashMap::<String, JoinHandle<()>>::new();
+        let mut started_tasks = HashMap::<String, ManagedTask>::new();
         for binding in bindings {
-            binding.validate()?;
-            let token = resolve_binding_bot_token(binding)?;
-            let me = Self::call_api_with_client::<TgBotApiMe>(&self.http, &token, "getMe", None)
+            if let Err(error) = binding.validate() {
+                for (_, task) in started_tasks.drain() {
+                    task.stop("bot-api-start-rollback").await;
+                }
+                return Err(error);
+            }
+            let token = match resolve_binding_bot_token(binding) {
+                Ok(token) => token,
+                Err(error) => {
+                    for (_, task) in started_tasks.drain() {
+                        task.stop("bot-api-start-rollback").await;
+                    }
+                    return Err(error);
+                }
+            };
+            let me = match Self::call_api_with_client::<TgBotApiMe>(&self.http, &token, "getMe", None)
                 .await
                 .with_context(|| {
                     format!(
@@ -3066,7 +3320,15 @@ impl TgGateway for BotApiTgGateway {
                         binding.owner_did.to_string(),
                         binding.bot_account_id
                     )
-                })?;
+                }) {
+                Ok(me) => me,
+                Err(error) => {
+                    for (_, task) in started_tasks.drain() {
+                        task.stop("bot-api-start-rollback").await;
+                    }
+                    return Err(error);
+                }
+            };
             info!(
                 "telegram bot api ready: owner={}, bot_id={}, username={:?}",
                 binding.owner_did.to_string(),
@@ -3096,7 +3358,7 @@ impl TgGateway for BotApiTgGateway {
         let mut guard = self.runtimes.lock().await;
         if !guard.is_empty() {
             for (_, task) in started_tasks.drain() {
-                task.abort();
+                task.stop("bot-api-start-race").await;
             }
             return Ok(());
         }
@@ -3116,7 +3378,7 @@ impl TgGateway for BotApiTgGateway {
         {
             let mut tasks_guard = self.ingress_tasks.lock().await;
             for (_, task) in tasks_guard.drain() {
-                task.abort();
+                task.stop("bot-api-ingress").await;
             }
         }
         let mut guard = self.runtimes.lock().await;
@@ -3409,7 +3671,7 @@ pub struct TgTunnel {
     dispatcher: Arc<RwLock<Option<Arc<dyn MsgCenterHandler>>>>,
     gateway: Arc<dyn TgGateway>,
     ui_session_tracker: Arc<TgUiSessionTracker>,
-    ui_session_worker: Mutex<Option<JoinHandle<()>>>,
+    ui_session_worker: Mutex<Option<ManagedTask>>,
 }
 
 impl TgTunnel {
@@ -3722,20 +3984,25 @@ impl TgTunnel {
 
         let tracker = self.ui_session_tracker.clone();
         let gateway = self.gateway.clone();
-        *worker_guard = Some(tokio::spawn(async move {
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
             let mut ticker =
                 tokio::time::interval(Duration::from_millis(TG_UI_SESSION_REFRESH_INTERVAL_MS));
             ticker.tick().await;
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    _ = ticker.tick() => {}
+                }
                 Self::refresh_ui_sessions(tracker.as_ref(), gateway.as_ref()).await;
             }
-        }));
+        });
+        *worker_guard = Some(ManagedTask::new(stop_tx, handle));
     }
 
     async fn stop_ui_session_worker(&self) {
         if let Some(worker) = self.ui_session_worker.lock().await.take() {
-            worker.abort();
+            worker.stop("telegram-ui-session-worker").await;
         }
         let sessions = {
             let mut guard = self.ui_session_tracker.sessions.lock().await;
@@ -4266,7 +4533,8 @@ mod tests {
     async fn new_msg_center() -> (MessageCenter, tempfile::TempDir) {
         let tmp = tempdir().unwrap();
         let db_path = tmp.path().join("msg-center.db");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let db_path = db_path.to_string_lossy().replace('\\', "/");
+        let conn = format!("sqlite:///{}?mode=rwc", db_path);
         let cfg = buckyos_api::msg_center_default_rdb_instance_config();
         let schema = cfg.schema.get(&RdbBackend::Sqlite).cloned();
         let db = MsgBoxDbMgr::open(&conn, RdbBackend::Sqlite, schema.as_deref())
@@ -4280,6 +4548,57 @@ mod tests {
         let mut cfg = TgTunnelConfig::new(DID::new("bns", "tg-test"));
         cfg.supports_ingress = false;
         TgTunnel::new(cfg)
+    }
+
+    #[tokio::test]
+    async fn bot_api_offset_invalid_state_returns_error() {
+        let (center, _tmp) = new_msg_center().await;
+        let owner = DID::new("bns", "alice");
+        let bot_account_id = "@alice_bot";
+        let tunnel_instance_id = "default";
+        let session_id =
+            BotApiTgGateway::bot_api_offset_session_id(&owner, bot_account_id, tunnel_instance_id);
+        center
+            .handle_update_ui_session_state(
+                session_id,
+                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                json!("not-an-offset"),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+
+        let handler: Arc<dyn MsgCenterHandler> = Arc::new(center);
+        let error = BotApiTgGateway::load_bot_api_offset(
+            &handler,
+            &owner,
+            bot_account_id,
+            tunnel_instance_id,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid telegram bot api offset"));
+
+        let session_id =
+            BotApiTgGateway::bot_api_offset_session_id(&owner, bot_account_id, tunnel_instance_id);
+        handler
+            .handle_update_ui_session_state(
+                session_id,
+                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                json!(-1),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+        let error = BotApiTgGateway::load_bot_api_offset(
+            &handler,
+            &owner,
+            bot_account_id,
+            tunnel_instance_id,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid telegram bot api offset"));
     }
 
     fn build_record(
@@ -4906,6 +5225,22 @@ mod tests {
             .to_string()
             .contains("missing tg bot binding for did:bns:no-binding"));
         tunnel.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn managed_task_stop_signals_and_awaits_task_exit() {
+        let (stop_observed_tx, stop_observed_rx) = oneshot::channel();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let task = ManagedTask::new(
+            stop_tx,
+            tokio::spawn(async move {
+                let _ = (&mut stop_rx).await;
+                let _ = stop_observed_tx.send(());
+            }),
+        );
+
+        task.stop("test-managed-task").await;
+        stop_observed_rx.await.unwrap();
     }
 
     // 测试方式：

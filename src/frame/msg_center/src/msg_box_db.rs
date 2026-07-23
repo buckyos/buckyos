@@ -27,9 +27,10 @@ use log::info;
 use name_lib::DID;
 use ndn_lib::{MsgObject, ObjId};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::any::{install_default_drivers, AnyPoolOptions, AnyRow};
-use sqlx::{AnyPool, Executor, Row};
+use sqlx::{Any, AnyPool, Executor, Row, Transaction};
 use std::sync::{Arc, Once};
 
 static INSTALL_DRIVERS: Once = Once::new();
@@ -44,6 +45,17 @@ pub struct SessionIndexEntry {
     pub session_id: String,
     pub updated_at_ms: u64,
     pub unread_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct IdempotencyStoredResult<T> {
+    pub result: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdempotencyCommitOutcome<T> {
+    Reused(T),
+    Committed,
 }
 
 #[derive(Clone, Debug)]
@@ -181,6 +193,288 @@ impl MsgBoxDbMgr {
         }
     }
 
+    async fn upsert_record_row_tx(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        record: &MailboxRecord,
+        msg: Option<&MsgObject>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let tags_json = serde_json::to_string(&record.tags).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode tags of mailbox record {}: {}",
+                record.record_id, error
+            ))
+        })?;
+        let ingress_json =
+            encode_optional_json(record.ingress.as_ref(), &record.record_id, "ingress")?;
+        let msg_from = Some(
+            msg.map(|obj| obj.from.clone())
+                .unwrap_or_else(|| record.from.clone())
+                .to_string(),
+        );
+        let msg_to = Some(
+            msg.and_then(|obj| obj.to.first().cloned())
+                .unwrap_or_else(|| record.to.clone())
+                .to_string(),
+        );
+        let msg_kind = msg.map(|obj| obj.kind).unwrap_or(record.msg_kind);
+
+        let sql = self.render_sql(&format!(
+            r#"
+INSERT INTO mailbox_records ({MAILBOX_COLUMNS})
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(owner, record_id) DO UPDATE SET
+    msg_kind = COALESCE(excluded.msg_kind, mailbox_records.msg_kind),
+    session_id = COALESCE(mailbox_records.session_id, excluded.session_id)
+"#
+        ));
+
+        sqlx::query(&sql)
+            .bind(record.owner.to_string())
+            .bind(record.record_id.clone())
+            .bind(mailbox_kind_name(&record.box_kind).to_string())
+            .bind(record.msg_id.to_string())
+            .bind(Some(msg_obj_kind_name(&msg_kind).to_string()))
+            .bind(msg_from)
+            .bind(msg_to)
+            .bind(recipient_state_name(&record.state).to_string())
+            .bind(record.session_id.clone())
+            .bind(to_sql_i64(record.sort_key))
+            .bind(tags_json)
+            .bind(ingress_json)
+            .bind(to_sql_i64(record.created_at_ms))
+            .bind(to_sql_i64(record.updated_at_ms))
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert mailbox record {}: {}",
+                    record.record_id, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    async fn touch_message_tx(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        owner: &DID,
+        msg_id: &ObjId,
+        created_at_ms: u64,
+    ) -> std::result::Result<(), RPCErrors> {
+        let sql = self.render_sql(
+            "INSERT INTO msg_refs(owner, msg_id, created_at_ms) VALUES(?, ?, ?)
+             ON CONFLICT(owner, msg_id) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(msg_id.to_string())
+            .bind(to_sql_i64(created_at_ms))
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to persist message ref {}: {}",
+                    msg_id.to_string(),
+                    error
+                ))
+            })?;
+        Ok(())
+    }
+
+    async fn upsert_record_with_msg_tx(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        record: &MailboxRecord,
+        msg: Option<&MsgObject>,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.upsert_record_row_tx(tx, record, msg).await?;
+        self.touch_message_tx(tx, &record.owner, &record.msg_id, record.created_at_ms)
+            .await
+    }
+
+    async fn create_delivery_if_absent_tx(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        record: &DeliveryRecord,
+    ) -> std::result::Result<(), RPCErrors> {
+        let envelope_json = serde_json::to_string(&record.envelope).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode delivery envelope {}: {}",
+                record.delivery_id, error
+            ))
+        })?;
+        let last_error_json = encode_optional_json(
+            record.last_error.as_ref(),
+            &record.delivery_id,
+            "last_error",
+        )?;
+        let sql = self.render_sql(&format!(
+            r#"
+INSERT INTO delivery_records ({DELIVERY_COLUMNS})
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(delivery_id) DO NOTHING
+"#
+        ));
+        sqlx::query(&sql)
+            .bind(record.delivery_id.clone())
+            .bind(record.envelope.transport_did.to_string())
+            .bind(record.envelope.msg_id.to_string())
+            .bind(record.envelope.target_did.to_string())
+            .bind(envelope_json)
+            .bind(delivery_state_name(&record.state).to_string())
+            .bind(record.attempts as i64)
+            .bind(record.next_retry_at_ms.map(to_sql_i64))
+            .bind(record.external_msg_id.clone())
+            .bind(record.delivered_at_ms.map(to_sql_i64))
+            .bind(last_error_json)
+            .bind(to_sql_i64(record.created_at_ms))
+            .bind(to_sql_i64(record.updated_at_ms))
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to create delivery record {}: {}",
+                    record.delivery_id, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    async fn prepare_idempotency_tx<T: DeserializeOwned>(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        scope: &str,
+        idempotency_key: &str,
+        retention_key: Option<&str>,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> std::result::Result<Option<T>, RPCErrors> {
+        let sql = self.render_sql(
+            "SELECT state, result_json, expires_at_ms FROM msg_idempotency
+             WHERE scope = ? AND idempotency_key = ?",
+        );
+        let row = sqlx::query(&sql)
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
+                ))
+            })?;
+
+        if let Some(row) = row {
+            let state: String = row.try_get("state").map_err(|e| decode_err("state", &e))?;
+            let result_json: Option<String> = row
+                .try_get("result_json")
+                .map_err(|e| decode_err("result_json", &e))?;
+            if state == "completed" {
+                let Some(result_json) = result_json else {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "completed msg idempotency key {}:{} has no result",
+                        scope, idempotency_key
+                    )));
+                };
+                let result = serde_json::from_str(&result_json).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "failed to decode msg idempotency result {}:{}: {}",
+                        scope, idempotency_key, error
+                    ))
+                })?;
+                return Ok(Some(result));
+            } else {
+                return Err(RPCErrors::ReasonError(format!(
+                    "msg idempotency key {}:{} is pending",
+                    scope, idempotency_key
+                )));
+            }
+        }
+
+        let sql = self.render_sql(
+            "INSERT INTO msg_idempotency(
+                scope, idempotency_key, msg_id, retention_key, state, result_json,
+                created_at_ms, updated_at_ms, expires_at_ms
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(scope, idempotency_key) DO NOTHING",
+        );
+        let result = sqlx::query(&sql)
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .bind(Option::<String>::None)
+            .bind(retention_key.map(|value| value.to_string()))
+            .bind("pending")
+            .bind(Option::<String>::None)
+            .bind(to_sql_i64(now_ms))
+            .bind(to_sql_i64(now_ms))
+            .bind(expires_at_ms.map(to_sql_i64))
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to reserve msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
+                ))
+            })?;
+        if result.rows_affected() == 0 {
+            return Err(RPCErrors::ReasonError(format!(
+                "msg idempotency key {}:{} is already reserved",
+                scope, idempotency_key
+            )));
+        }
+        Ok(None)
+    }
+
+    async fn complete_idempotency_tx<T: Serialize>(
+        &self,
+        tx: &mut Transaction<'_, Any>,
+        scope: &str,
+        idempotency_key: &str,
+        msg_id: Option<&ObjId>,
+        retention_key: Option<&str>,
+        result: &T,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let result_json = serde_json::to_string(result).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode msg idempotency result {}:{}: {}",
+                scope, idempotency_key, error
+            ))
+        })?;
+        let sql = self.render_sql(
+            "UPDATE msg_idempotency
+             SET msg_id = ?, retention_key = ?, state = 'completed', result_json = ?,
+                 updated_at_ms = ?, expires_at_ms = ?
+             WHERE scope = ? AND idempotency_key = ? AND state = 'pending'",
+        );
+        let updated = sqlx::query(&sql)
+            .bind(msg_id.map(|id| id.to_string()))
+            .bind(retention_key.map(|value| value.to_string()))
+            .bind(result_json)
+            .bind(to_sql_i64(now_ms))
+            .bind(expires_at_ms.map(to_sql_i64))
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to complete msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
+                ))
+            })?;
+        if updated.rows_affected() == 0 {
+            return Err(RPCErrors::ReasonError(format!(
+                "msg idempotency key {}:{} was not pending",
+                scope, idempotency_key
+            )));
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Mailbox records
     // ------------------------------------------------------------------
@@ -243,7 +537,7 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
     sort_key = excluded.sort_key,
     tags_json = excluded.tags_json,
     ingress_json = COALESCE(excluded.ingress_json, mailbox_records.ingress_json),
-    created_at_ms = excluded.created_at_ms,
+    created_at_ms = mailbox_records.created_at_ms,
     updated_at_ms = excluded.updated_at_ms
 "#
         ));
@@ -522,6 +816,7 @@ ON CONFLICT(delivery_id) DO UPDATE SET
 
     /// Insert-if-absent for `post_send`: an existing delivery (idempotent
     /// resubmission) keeps its current state/attempts untouched.
+    #[allow(dead_code)]
     pub async fn create_delivery_if_absent(
         &self,
         record: &DeliveryRecord,
@@ -694,6 +989,412 @@ LIMIT 1
                 ))
             })?;
         Ok(())
+    }
+
+    pub async fn get_idempotency_result<T: DeserializeOwned>(
+        &self,
+        scope: &str,
+        idempotency_key: &str,
+        _now_ms: u64,
+    ) -> std::result::Result<Option<IdempotencyStoredResult<T>>, RPCErrors> {
+        let sql = self.render_sql(
+            "SELECT result_json, expires_at_ms FROM msg_idempotency
+             WHERE scope = ? AND idempotency_key = ?
+               AND state = 'completed'
+               AND result_json IS NOT NULL",
+        );
+        let row = sqlx::query(&sql)
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
+                ))
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let result_json: String = row
+            .try_get("result_json")
+            .map_err(|e| decode_err("result_json", &e))?;
+        let result = serde_json::from_str(&result_json).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to decode msg idempotency result {}:{}: {}",
+                scope, idempotency_key, error
+            ))
+        })?;
+        Ok(Some(IdempotencyStoredResult { result }))
+    }
+
+    #[allow(dead_code)]
+    pub async fn upsert_idempotency_result<T: Serialize>(
+        &self,
+        scope: &str,
+        idempotency_key: &str,
+        msg_id: Option<&ObjId>,
+        retention_key: Option<&str>,
+        result: &T,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> std::result::Result<(), RPCErrors> {
+        let result_json = serde_json::to_string(result).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode msg idempotency result {}:{}: {}",
+                scope, idempotency_key, error
+            ))
+        })?;
+        let sql = self.render_sql(
+            "INSERT INTO msg_idempotency(
+                scope, idempotency_key, msg_id, retention_key, state, result_json,
+                created_at_ms, updated_at_ms, expires_at_ms
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(scope, idempotency_key) DO UPDATE SET
+                msg_id = excluded.msg_id,
+                retention_key = excluded.retention_key,
+                state = excluded.state,
+                result_json = excluded.result_json,
+                updated_at_ms = excluded.updated_at_ms,
+                expires_at_ms = excluded.expires_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(scope.to_string())
+            .bind(idempotency_key.to_string())
+            .bind(msg_id.map(|id| id.to_string()))
+            .bind(retention_key.map(|value| value.to_string()))
+            .bind("completed")
+            .bind(result_json)
+            .bind(to_sql_i64(now_ms))
+            .bind(to_sql_i64(now_ms))
+            .bind(expires_at_ms.map(to_sql_i64))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert msg idempotency key {}:{}: {}",
+                    scope, idempotency_key, error
+                ))
+        })?;
+        Ok(())
+    }
+
+    pub async fn commit_dispatch_records<T>(
+        &self,
+        scope: &str,
+        idempotency_key: Option<&str>,
+        retention_key: Option<&str>,
+        msg_id: &ObjId,
+        msg: &MsgObject,
+        records: &[MailboxRecord],
+        result: &T,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> std::result::Result<IdempotencyCommitOutcome<T>, RPCErrors>
+    where
+        T: Serialize + DeserializeOwned + Clone,
+    {
+        let mut tx = self.pool().begin().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("begin msg-center dispatch transaction failed: {}", error))
+        })?;
+        if let Some(key) = idempotency_key {
+            if let Some(cached) = self
+                .prepare_idempotency_tx::<T>(
+                    &mut tx,
+                    scope,
+                    key,
+                    retention_key,
+                    now_ms,
+                    expires_at_ms,
+                )
+                .await?
+            {
+                tx.commit().await.map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "commit reused msg idempotency transaction failed: {}",
+                        error
+                    ))
+                })?;
+                return Ok(IdempotencyCommitOutcome::Reused(cached));
+            }
+        }
+        for record in records {
+            self.upsert_record_with_msg_tx(&mut tx, record, Some(msg))
+                .await?;
+        }
+        if let Some(key) = idempotency_key {
+            self.complete_idempotency_tx(
+                &mut tx,
+                scope,
+                key,
+                Some(msg_id),
+                retention_key,
+                result,
+                now_ms,
+                expires_at_ms,
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "commit msg-center dispatch transaction failed: {}",
+                error
+            ))
+        })?;
+        Ok(IdempotencyCommitOutcome::Committed)
+    }
+
+    pub async fn commit_post_send_records<T>(
+        &self,
+        scope: &str,
+        idempotency_key: Option<&str>,
+        retention_key: Option<&str>,
+        msg_id: &ObjId,
+        msg: &MsgObject,
+        sent_record: Option<&MailboxRecord>,
+        deliveries: &[DeliveryRecord],
+        result: &T,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> std::result::Result<IdempotencyCommitOutcome<T>, RPCErrors>
+    where
+        T: Serialize + DeserializeOwned + Clone,
+    {
+        let mut tx = self.pool().begin().await.map_err(|error| {
+            RPCErrors::ReasonError(format!("begin msg-center post_send transaction failed: {}", error))
+        })?;
+        if let Some(key) = idempotency_key {
+            if let Some(cached) = self
+                .prepare_idempotency_tx::<T>(
+                    &mut tx,
+                    scope,
+                    key,
+                    retention_key,
+                    now_ms,
+                    expires_at_ms,
+                )
+                .await?
+            {
+                tx.commit().await.map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "commit reused msg idempotency transaction failed: {}",
+                        error
+                    ))
+                })?;
+                return Ok(IdempotencyCommitOutcome::Reused(cached));
+            }
+        }
+        if let Some(record) = sent_record {
+            self.upsert_record_with_msg_tx(&mut tx, record, Some(msg))
+                .await?;
+        }
+        for record in deliveries {
+            self.create_delivery_if_absent_tx(&mut tx, record).await?;
+        }
+        if let Some(key) = idempotency_key {
+            self.complete_idempotency_tx(
+                &mut tx,
+                scope,
+                key,
+                Some(msg_id),
+                retention_key,
+                result,
+                now_ms,
+                expires_at_ms,
+            )
+            .await?;
+        }
+        tx.commit().await.map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "commit msg-center post_send transaction failed: {}",
+                error
+            ))
+        })?;
+        Ok(IdempotencyCommitOutcome::Committed)
+    }
+
+    pub async fn sweep_expired_idempotency_bucket_by_capacity(
+        &self,
+        now_ms: u64,
+        retention_key: &str,
+        max_rows: u64,
+        target_rows: u64,
+    ) -> std::result::Result<u64, RPCErrors> {
+        if max_rows <= target_rows {
+            return Ok(0);
+        }
+        let count_sql = self
+            .render_sql("SELECT COUNT(*) AS row_count FROM msg_idempotency WHERE retention_key = ?");
+        let row = sqlx::query(&count_sql)
+            .bind(retention_key.to_string())
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to count msg idempotency rows for bucket {}: {}",
+                    retention_key, error
+                ))
+            })?;
+        let row_count: i64 = row
+            .try_get("row_count")
+            .map_err(|e| decode_err("row_count", &e))?;
+        let row_count = row_count.max(0) as u64;
+        if row_count <= max_rows {
+            return Ok(0);
+        }
+        let delete_limit = row_count.saturating_sub(target_rows);
+        let sql = match self.backend() {
+            RdbBackend::Sqlite => self.render_sql(
+                "DELETE FROM msg_idempotency
+                 WHERE rowid IN (
+                     SELECT rowid FROM msg_idempotency
+                     WHERE retention_key = ?
+                       AND expires_at_ms IS NOT NULL AND expires_at_ms <= ?
+                     ORDER BY expires_at_ms ASC, updated_at_ms ASC
+                     LIMIT ?
+                 )",
+            ),
+            RdbBackend::Postgres => self.render_sql(
+                "DELETE FROM msg_idempotency
+                 WHERE ctid IN (
+                     SELECT ctid FROM msg_idempotency
+                     WHERE retention_key = ?
+                       AND expires_at_ms IS NOT NULL AND expires_at_ms <= ?
+                     ORDER BY expires_at_ms ASC, updated_at_ms ASC
+                     LIMIT ?
+                 )",
+            ),
+        };
+        let result = sqlx::query(&sql)
+            .bind(retention_key.to_string())
+            .bind(to_sql_i64(now_ms))
+            .bind(delete_limit.min(i64::MAX as u64) as i64)
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to delete expired msg idempotency rows: {}",
+                    error
+                ))
+            })?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn sweep_expired_idempotency_buckets_by_capacity(
+        &self,
+        now_ms: u64,
+        max_rows: u64,
+        target_rows: u64,
+    ) -> std::result::Result<u64, RPCErrors> {
+        if max_rows <= target_rows {
+            return Ok(0);
+        }
+        let sql = self.render_sql(
+            "SELECT retention_key, COUNT(*) AS row_count
+             FROM msg_idempotency
+             WHERE retention_key IS NOT NULL
+             GROUP BY retention_key
+             HAVING COUNT(*) > ?",
+        );
+        let rows = sqlx::query(&sql)
+            .bind(max_rows.min(i64::MAX as u64) as i64)
+            .fetch_all(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to list over-capacity msg idempotency buckets: {}",
+                    error
+                ))
+            })?;
+
+        let mut deleted = 0_u64;
+        for row in rows {
+            let retention_key: String = row
+                .try_get("retention_key")
+                .map_err(|e| decode_err("retention_key", &e))?;
+            deleted = deleted.saturating_add(
+                self.sweep_expired_idempotency_bucket_by_capacity(
+                    now_ms,
+                    &retention_key,
+                    max_rows,
+                    target_rows,
+                )
+                .await?,
+            );
+        }
+        Ok(deleted)
+    }
+
+    pub async fn sweep_expired_idempotency_global_by_capacity(
+        &self,
+        now_ms: u64,
+        max_rows: u64,
+        target_rows: u64,
+        batch_rows: u64,
+        continue_to_target: bool,
+    ) -> std::result::Result<(u64, u64), RPCErrors> {
+        if max_rows <= target_rows || batch_rows == 0 {
+            return Ok((0, 0));
+        }
+        let row = sqlx::query("SELECT COUNT(*) AS row_count FROM msg_idempotency")
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to count global msg idempotency rows: {}",
+                    error
+                ))
+            })?;
+        let row_count: i64 = row
+            .try_get("row_count")
+            .map_err(|e| decode_err("row_count", &e))?;
+        let row_count = row_count.max(0) as u64;
+        let trigger_rows = if continue_to_target {
+            target_rows
+        } else {
+            max_rows
+        };
+        if row_count <= trigger_rows {
+            return Ok((0, row_count));
+        }
+        let delete_limit = row_count
+            .saturating_sub(target_rows)
+            .min(batch_rows)
+            .min(i64::MAX as u64) as i64;
+        let sql = match self.backend() {
+            RdbBackend::Sqlite => self.render_sql(
+                "DELETE FROM msg_idempotency
+                 WHERE rowid IN (
+                     SELECT rowid FROM msg_idempotency
+                     WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?
+                     ORDER BY expires_at_ms ASC, updated_at_ms ASC
+                     LIMIT ?
+                 )",
+            ),
+            RdbBackend::Postgres => self.render_sql(
+                "DELETE FROM msg_idempotency
+                 WHERE ctid IN (
+                     SELECT ctid FROM msg_idempotency
+                     WHERE expires_at_ms IS NOT NULL AND expires_at_ms <= ?
+                     ORDER BY expires_at_ms ASC, updated_at_ms ASC
+                     LIMIT ?
+                 )",
+            ),
+        };
+        let result = sqlx::query(&sql)
+            .bind(to_sql_i64(now_ms))
+            .bind(delete_limit)
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to delete global expired msg idempotency rows: {}",
+                    error
+                ))
+            })?;
+        let deleted = result.rows_affected();
+        Ok((deleted, row_count.saturating_sub(deleted)))
     }
 
     pub async fn has_message(
@@ -1254,7 +1955,8 @@ mod tests {
     async fn setup_test_mgr() -> (MsgBoxDbMgr, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("msg-box.db");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let db_path = db_path.to_string_lossy().replace('\\', "/");
+        let conn = format!("sqlite:///{}?mode=rwc", db_path);
         let mgr = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
         (mgr, temp_dir)
     }
@@ -1434,6 +2136,207 @@ mod tests {
             .unwrap();
         assert_eq!(again.attempts, 1);
         assert!(again.last_error.is_none() || again.last_error.unwrap().duplicate_risk);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idempotency_result_hits_until_capacity_sweep_deletes_expired_rows() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let stored = serde_json::json!({
+            "ok": true,
+            "msg_id": "mobjchat:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        });
+        mgr.upsert_idempotency_result(
+            "dispatch",
+            "idem-expiring",
+            None,
+            Some("bucket-a"),
+            &stored,
+            100,
+            Some(200),
+        )
+        .await
+        .unwrap();
+
+        let hit: Option<IdempotencyStoredResult<Value>> = mgr
+            .get_idempotency_result("dispatch", "idem-expiring", 150)
+            .await
+            .unwrap();
+        assert!(hit.is_some());
+        let expired: Option<IdempotencyStoredResult<Value>> = mgr
+            .get_idempotency_result("dispatch", "idem-expiring", 201)
+            .await
+            .unwrap();
+        assert!(expired.is_some());
+
+        let below_capacity = mgr
+            .sweep_expired_idempotency_bucket_by_capacity(201, "bucket-a", 10, 5)
+            .await
+            .unwrap();
+        assert_eq!(below_capacity, 0);
+
+        mgr.upsert_idempotency_result(
+            "dispatch",
+            "idem-fresh",
+            None,
+            Some("bucket-a"),
+            &stored,
+            100,
+            Some(300),
+        )
+        .await
+        .unwrap();
+        mgr.upsert_idempotency_result(
+            "dispatch",
+            "idem-other-bucket-expiring",
+            None,
+            Some("bucket-b"),
+            &stored,
+            100,
+            Some(200),
+        )
+        .await
+        .unwrap();
+        let deleted = mgr
+            .sweep_expired_idempotency_bucket_by_capacity(201, "bucket-a", 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+        let fresh: Option<IdempotencyStoredResult<Value>> = mgr
+            .get_idempotency_result("dispatch", "idem-fresh", 201)
+            .await
+            .unwrap();
+        assert!(fresh.is_some());
+        let other_bucket: Option<IdempotencyStoredResult<Value>> = mgr
+            .get_idempotency_result("dispatch", "idem-other-bucket-expiring", 201)
+            .await
+            .unwrap();
+        assert!(other_bucket.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idempotency_global_sweep_cleans_every_over_capacity_bucket() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let stored = serde_json::json!({"ok": true});
+        for bucket in ["bucket-a", "bucket-b"] {
+            for suffix in 0..2 {
+                mgr.upsert_idempotency_result(
+                    "dispatch",
+                    &format!("{bucket}-{suffix}"),
+                    None,
+                    Some(bucket),
+                    &stored,
+                    100,
+                    Some(200),
+                )
+                .await
+                .unwrap();
+            }
+        }
+        mgr.upsert_idempotency_result(
+            "dispatch",
+            "bucket-c-0",
+            None,
+            Some("bucket-c"),
+            &stored,
+            100,
+            Some(200),
+        )
+        .await
+        .unwrap();
+
+        let deleted = mgr
+            .sweep_expired_idempotency_buckets_by_capacity(201, 1, 0)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 4);
+
+        for bucket in ["bucket-a", "bucket-b"] {
+            for suffix in 0..2 {
+                let result: Option<IdempotencyStoredResult<Value>> = mgr
+                    .get_idempotency_result(
+                        "dispatch",
+                        &format!("{bucket}-{suffix}"),
+                        201,
+                    )
+                    .await
+                    .unwrap();
+                assert!(result.is_none());
+            }
+        }
+        let under_capacity: Option<IdempotencyStoredResult<Value>> = mgr
+            .get_idempotency_result("dispatch", "bucket-c-0", 201)
+            .await
+            .unwrap();
+        assert!(under_capacity.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idempotency_global_capacity_sweep_handles_high_cardinality_buckets_in_batches() {
+        let (mgr, _tmp) = setup_test_mgr().await;
+        let stored = serde_json::json!({"ok": true});
+        for suffix in 0..4 {
+            mgr.upsert_idempotency_result(
+                "dispatch",
+                &format!("expired-{suffix}"),
+                None,
+                Some(&format!("bucket-{suffix}")),
+                &stored,
+                100,
+                Some(200),
+            )
+            .await
+            .unwrap();
+        }
+        for suffix in 0..2 {
+            mgr.upsert_idempotency_result(
+                "dispatch",
+                &format!("fresh-{suffix}"),
+                None,
+                Some(&format!("fresh-bucket-{suffix}")),
+                &stored,
+                100,
+                Some(300),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut continue_to_target = false;
+        for expected_remaining in [5, 4, 3, 2] {
+            let (deleted, remaining) = mgr
+                .sweep_expired_idempotency_global_by_capacity(
+                    201,
+                    4,
+                    2,
+                    1,
+                    continue_to_target,
+                )
+                .await
+                .unwrap();
+            assert_eq!(deleted, 1);
+            assert_eq!(remaining, expected_remaining);
+            continue_to_target = remaining > 2;
+        }
+
+        let (deleted, remaining) = mgr
+            .sweep_expired_idempotency_global_by_capacity(201, 4, 2, 1, continue_to_target)
+            .await
+            .unwrap();
+        assert_eq!((deleted, remaining), (0, 2));
+        for suffix in 0..4 {
+            let result: Option<IdempotencyStoredResult<Value>> = mgr
+                .get_idempotency_result("dispatch", &format!("expired-{suffix}"), 201)
+                .await
+                .unwrap();
+            assert!(result.is_none());
+        }
+        for suffix in 0..2 {
+            let result: Option<IdempotencyStoredResult<Value>> = mgr
+                .get_idempotency_result("dispatch", &format!("fresh-{suffix}"), 201)
+                .await
+                .unwrap();
+            assert!(result.is_some());
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
