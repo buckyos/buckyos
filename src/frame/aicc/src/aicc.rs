@@ -40,10 +40,10 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{watch, Mutex as AsyncMutex};
 
 const DEFAULT_FALLBACK_LIMIT: usize = 2;
 const DEFAULT_BASE64_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -55,6 +55,73 @@ const REDACTED_DATA_URL_BASE64_PREFIX: &str = "[redacted_data_url_base64";
 const REDACTED_LONG_BASE64_LIKE_PLACEHOLDER: &str = "[redacted_base64_like_string]";
 const LOG_BASE64_LIKE_MIN_CHARS: usize = 512;
 const SN_AI_PROVIDER_FREE_CREDIT_USD: f64 = 15.0;
+const REFRESH_IDLE: u8 = 0;
+const REFRESH_REQUEST_ACTIVE: u8 = 1;
+const REFRESH_STOPPED: u8 = 2;
+
+#[derive(Debug)]
+pub(crate) struct ProviderRefreshTask {
+    shutdown_tx: watch::Sender<bool>,
+    state: AtomicU8,
+    #[cfg(test)]
+    started_requests: AtomicU64,
+}
+
+impl ProviderRefreshTask {
+    pub(crate) fn new() -> (Arc<Self>, watch::Receiver<bool>) {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        (
+            Arc::new(Self {
+                shutdown_tx,
+                state: AtomicU8::new(REFRESH_IDLE),
+                #[cfg(test)]
+                started_requests: AtomicU64::new(0),
+            }),
+            shutdown_rx,
+        )
+    }
+
+    pub(crate) fn try_start_request(&self) -> bool {
+        let started = self
+            .state
+            .compare_exchange(
+                REFRESH_IDLE,
+                REFRESH_REQUEST_ACTIVE,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .is_ok();
+        #[cfg(test)]
+        if started {
+            self.started_requests
+                .fetch_add(1, AtomicOrdering::Relaxed);
+        }
+        started
+    }
+
+    pub(crate) fn finish_request(&self) {
+        let _ = self.state.compare_exchange(
+            REFRESH_REQUEST_ACTIVE,
+            REFRESH_IDLE,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        );
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.state.store(REFRESH_STOPPED, AtomicOrdering::Release);
+        let _ = self.shutdown_tx.send(true);
+    }
+
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.state.load(AtomicOrdering::Acquire) == REFRESH_STOPPED
+    }
+
+    #[cfg(test)]
+    pub(crate) fn started_requests(&self) -> u64 {
+        self.started_requests.load(AtomicOrdering::Relaxed)
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct InvokeCtx {
@@ -1286,39 +1353,49 @@ pub struct Registry {
 impl Registry {
     pub fn add_provider(&self, provider: Arc<dyn Provider>) -> ProviderInventory {
         let inventory = provider.inventory();
-        let mut entries = self
-            .entries
-            .write()
-            .expect("registry lock should be available");
-        entries.insert(
-            inventory.provider_instance_name.clone(),
-            ProviderEntry {
-                provider,
-                metrics: ProviderMetrics::default(),
-            },
-        );
+        let replaced = {
+            let mut entries = self
+                .entries
+                .write()
+                .expect("registry lock should be available");
+            entries.insert(
+                inventory.provider_instance_name.clone(),
+                ProviderEntry {
+                    provider,
+                    metrics: ProviderMetrics::default(),
+                },
+            )
+        };
+        if let Some(entry) = replaced {
+            entry.provider.shutdown();
+        }
         inventory
     }
 
     pub fn remove_instance(&self, provider_instance_name: &str) {
-        let mut entries = self
-            .entries
-            .write()
-            .expect("registry lock should be available");
-        if let Some(entry) = entries.remove(provider_instance_name) {
+        let removed = {
+            let mut entries = self
+                .entries
+                .write()
+                .expect("registry lock should be available");
+            entries.remove(provider_instance_name)
+        };
+        if let Some(entry) = removed {
             entry.provider.shutdown();
         }
     }
 
     pub fn clear(&self) {
-        let mut entries = self
-            .entries
-            .write()
-            .expect("registry lock should be available");
-        for entry in entries.values() {
+        let removed = {
+            let mut entries = self
+                .entries
+                .write()
+                .expect("registry lock should be available");
+            std::mem::take(&mut *entries)
+        };
+        for entry in removed.values() {
             entry.provider.shutdown();
         }
-        entries.clear();
     }
 
     pub fn snapshot(&self, capability: Capability) -> RegistrySnapshot {
@@ -5767,6 +5844,7 @@ mod tests {
         cost: CostEstimateOutput,
         start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
         start_call_count: std::sync::atomic::AtomicUsize,
+        shutdown_call_count: std::sync::atomic::AtomicUsize,
         canceled: Mutex<Vec<String>>,
     }
 
@@ -5783,12 +5861,17 @@ mod tests {
                 cost,
                 start_results: Mutex::new(start_results.into_iter().collect()),
                 start_call_count: std::sync::atomic::AtomicUsize::new(0),
+                shutdown_call_count: std::sync::atomic::AtomicUsize::new(0),
                 canceled: Mutex::new(vec![]),
             }
         }
 
         fn start_calls(&self) -> usize {
             self.start_call_count.load(AtomicOrdering::Relaxed)
+        }
+
+        fn shutdown_calls(&self) -> usize {
+            self.shutdown_call_count.load(AtomicOrdering::Relaxed)
         }
     }
 
@@ -5800,6 +5883,11 @@ mod tests {
 
         fn estimate_cost(&self, _input: &CostEstimateInput) -> CostEstimateOutput {
             self.cost.clone()
+        }
+
+        fn shutdown(&self) {
+            self.shutdown_call_count
+                .fetch_add(1, AtomicOrdering::Relaxed);
         }
 
         async fn start(
@@ -6138,6 +6226,51 @@ mod tests {
             confidence: 1.0,
             estimated_latency_ms: Some(estimated_latency_ms),
         }
+    }
+
+    #[test]
+    fn registry_stops_displaced_and_removed_providers() {
+        let registry = Registry::default();
+        let first = Arc::new(MockProvider::new(
+            mock_instance("provider-1", "provider-a"),
+            cost(0.001, 100),
+            vec![],
+        ));
+        let replacement = Arc::new(MockProvider::new(
+            mock_instance("provider-1", "provider-b"),
+            cost(0.002, 200),
+            vec![],
+        ));
+        let other = Arc::new(MockProvider::new(
+            mock_instance("provider-2", "provider-c"),
+            cost(0.003, 300),
+            vec![],
+        ));
+
+        registry.add_provider(first.clone());
+        registry.add_provider(replacement.clone());
+        assert_eq!(first.shutdown_calls(), 1);
+        assert_eq!(replacement.shutdown_calls(), 0);
+
+        registry.remove_instance("provider-1");
+        assert_eq!(replacement.shutdown_calls(), 1);
+
+        registry.add_provider(other.clone());
+        registry.clear();
+        assert_eq!(other.shutdown_calls(), 1);
+    }
+
+    #[test]
+    fn refresh_task_shutdown_wins_over_request_completion() {
+        let (task, _) = ProviderRefreshTask::new();
+        assert!(task.try_start_request());
+
+        task.shutdown();
+        task.finish_request();
+
+        assert!(task.is_stopped());
+        assert!(!task.try_start_request());
+        assert_eq!(task.started_requests(), 1);
     }
 
     fn center_with_taskmgr(registry: Registry, catalog: ModelCatalog) -> AIComputeCenter {

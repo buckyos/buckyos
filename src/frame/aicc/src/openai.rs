@@ -1,6 +1,6 @@
 use crate::aicc::{
     provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 #[cfg(test)]
@@ -31,7 +31,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as _;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time;
@@ -95,7 +95,7 @@ pub struct OpenAIInstanceConfig {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OpenAIProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
@@ -104,7 +104,7 @@ pub struct OpenAIProvider {
     base_url: String,
     provider_type: crate::model_types::ProviderType,
     provider_driver: String,
-    refresh_shutdown: Arc<Mutex<Option<watch::Sender<bool>>>>,
+    refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +181,7 @@ impl OpenAIProvider {
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             provider_type,
             provider_driver,
-            refresh_shutdown: Arc::new(Mutex::new(None)),
+            refresh_task: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -190,39 +190,63 @@ impl OpenAIProvider {
             return;
         }
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        match self.refresh_shutdown.lock() {
-            Ok(mut current) => {
-                if let Some(existing) = current.take() {
-                    let _ = existing.send(true);
-                }
-                *current = Some(shutdown_tx);
-            }
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        let existing = match self.refresh_task.lock() {
+            Ok(mut current) => current.replace(refresh_task.clone()),
             Err(_) => {
                 warn!(
-                    "aicc.openai.inventory.refresh_shutdown_lock_poisoned provider_instance_name={}",
+                    "aicc.openai.inventory.refresh_task_lock_poisoned provider_instance_name={}",
                     self.instance.provider_instance_name
                 );
                 return;
             }
+        };
+        if let Some(existing) = existing {
+            existing.shutdown();
         }
-        let provider = self.clone();
+        let provider = Arc::downgrade(&self);
+        let provider_instance_name = self.instance.provider_instance_name.clone();
         tokio::spawn(async move {
-            provider.run_inventory_refresh(shutdown_rx).await;
+            Self::run_inventory_refresh(
+                provider,
+                provider_instance_name,
+                refresh_task,
+                shutdown_rx,
+            )
+            .await;
         });
     }
 
-    async fn run_inventory_refresh(self: Arc<Self>, mut shutdown_rx: watch::Receiver<bool>) {
-        if let Err(err) = self.refresh_inventory_once().await {
-            warn!(
-                "aicc.openai.inventory.initial_refresh_failed provider_instance_name={} err={}",
-                self.instance.provider_instance_name, err
-            );
-        }
-        if *shutdown_rx.borrow() {
+    async fn run_inventory_refresh(
+        provider: Weak<Self>,
+        provider_instance_name: String,
+        refresh_task: Arc<ProviderRefreshTask>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) {
+        if !refresh_task.try_start_request() {
             info!(
                 "aicc.openai.inventory.refresh_stopped provider_instance_name={}",
-                self.instance.provider_instance_name
+                provider_instance_name
+            );
+            return;
+        }
+        let Some(current) = provider.upgrade() else {
+            refresh_task.shutdown();
+            return;
+        };
+        let initial_result = current.refresh_inventory_once().await;
+        refresh_task.finish_request();
+        drop(current);
+        if let Err(err) = initial_result {
+            warn!(
+                "aicc.openai.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                provider_instance_name, err
+            );
+        }
+        if refresh_task.is_stopped() {
+            info!(
+                "aicc.openai.inventory.refresh_stopped provider_instance_name={}",
+                provider_instance_name
             );
             return;
         }
@@ -231,31 +255,60 @@ impl OpenAIProvider {
         interval.tick().await;
         loop {
             tokio::select! {
+                biased;
                 changed = shutdown_rx.changed() => {
                     if changed.is_err() || *shutdown_rx.borrow() {
                         info!(
                             "aicc.openai.inventory.refresh_stopped provider_instance_name={}",
-                            self.instance.provider_instance_name
+                            provider_instance_name
                         );
                         return;
                     }
                 }
                 _ = interval.tick() => {
-                    if let Err(err) = self.refresh_inventory_once().await {
+                    if !refresh_task.try_start_request() {
+                        return;
+                    }
+                    let Some(current) = provider.upgrade() else {
+                        refresh_task.shutdown();
+                        return;
+                    };
+                    let result = current.refresh_inventory_once().await;
+                    refresh_task.finish_request();
+                    drop(current);
+                    if let Err(err) = result {
                         warn!(
                             "aicc.openai.inventory.refresh_failed provider_instance_name={} err={}",
-                            self.instance.provider_instance_name, err
+                            provider_instance_name, err
                         );
                     }
-                    if *shutdown_rx.borrow() {
+                    if refresh_task.is_stopped() {
                         info!(
                             "aicc.openai.inventory.refresh_stopped provider_instance_name={}",
-                            self.instance.provider_instance_name
+                            provider_instance_name
                         );
                         return;
                     }
                 }
             }
+        }
+    }
+
+    fn stop_inventory_refresh(&self) {
+        match self.refresh_task.lock() {
+            Ok(mut current) => {
+                if let Some(task) = current.take() {
+                    task.shutdown();
+                    info!(
+                        "aicc.openai.inventory.refresh_stop_requested provider_instance_name={}",
+                        self.instance.provider_instance_name
+                    );
+                }
+            }
+            Err(_) => warn!(
+                "aicc.openai.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                self.instance.provider_instance_name
+            ),
         }
     }
 
@@ -3099,21 +3152,7 @@ impl Provider for OpenAIProvider {
     }
 
     fn shutdown(&self) {
-        match self.refresh_shutdown.lock() {
-            Ok(mut current) => {
-                if let Some(sender) = current.take() {
-                    let _ = sender.send(true);
-                    info!(
-                        "aicc.openai.inventory.refresh_stop_requested provider_instance_name={}",
-                        self.instance.provider_instance_name
-                    );
-                }
-            }
-            Err(_) => warn!(
-                "aicc.openai.inventory.refresh_shutdown_lock_poisoned provider_instance_name={}",
-                self.instance.provider_instance_name
-            ),
-        }
+        self.stop_inventory_refresh();
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -3212,6 +3251,12 @@ impl Provider for OpenAIProvider {
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
         Ok(())
+    }
+}
+
+impl Drop for OpenAIProvider {
+    fn drop(&mut self) {
+        self.stop_inventory_refresh();
     }
 }
 
@@ -3658,17 +3703,17 @@ pub fn register_openai_llm_providers(center: &AIComputeCenter, settings: &Value)
         return Ok(0);
     };
     let instances = build_openai_instances(&openai_settings)?;
-    let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<OpenAIProvider>)>::new();
     for config in instances.iter() {
         let provider = Arc::new(OpenAIProvider::new(
             config.clone(),
             config.api_token.as_str(),
         )?);
-        provider.clone().start_inventory_refresh();
         prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
+        provider.clone().start_inventory_refresh();
         let inventory = center.registry().add_provider(provider);
         info!(
             "registered openai base_url={} inventory={:?}",
@@ -4234,6 +4279,87 @@ data: [DONE]
         let instances = build_openai_instances(&settings).expect("instances should be built");
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].auth_mode, RUNTIME_SESSION_AUTH_MODE);
+    }
+
+    #[tokio::test]
+    async fn stopped_refresh_does_not_send_initial_request() {
+        let provider = Arc::new(
+            OpenAIProvider::new(
+                OpenAIInstanceConfig {
+                    provider_instance_name: "openai-stopped".to_string(),
+                    provider_type: "cloud_api".to_string(),
+                    api_token: "token".to_string(),
+                    base_url: "http://127.0.0.1:1".to_string(),
+                    auth_mode: "bearer".to_string(),
+                    timeout_ms: 100,
+                },
+                "token",
+            )
+            .expect("provider"),
+        );
+        let provider_instance_name = provider.instance.provider_instance_name.clone();
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        refresh_task.shutdown();
+
+        OpenAIProvider::run_inventory_refresh(
+            Arc::downgrade(&provider),
+            provider_instance_name,
+            refresh_task.clone(),
+            shutdown_rx,
+        )
+        .await;
+
+        assert_eq!(refresh_task.started_requests(), 0);
+    }
+
+    #[test]
+    fn dropping_provider_stops_refresh_task() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-drop".to_string(),
+                provider_type: "cloud_api".to_string(),
+                api_token: "token".to_string(),
+                base_url: "http://127.0.0.1:1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: 100,
+            },
+            "token",
+        )
+        .expect("provider");
+        let (refresh_task, _) = ProviderRefreshTask::new();
+        *provider.refresh_task.lock().expect("refresh task lock") = Some(refresh_task.clone());
+
+        drop(provider);
+
+        assert!(refresh_task.is_stopped());
+    }
+
+    #[tokio::test]
+    async fn registration_error_does_not_start_prepared_refresh() {
+        let center = AIComputeCenter::default();
+        let settings = json!({
+            "openai": {
+                "enabled": true,
+                "instances": [
+                    {
+                        "provider_instance_name": "openai-valid",
+                        "api_token": "token",
+                        "base_url": "http://127.0.0.1:1",
+                        "auth_mode": "bearer",
+                        "timeout_ms": 100
+                    },
+                    {
+                        "provider_instance_name": "openai-invalid",
+                        "auth_mode": "bearer"
+                    }
+                ]
+            }
+        });
+
+        let result = register_openai_llm_providers(&center, &settings);
+
+        assert!(result.is_err());
+        assert!(center.registry().inventories().is_empty());
     }
 
     #[test]
