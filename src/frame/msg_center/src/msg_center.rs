@@ -1,6 +1,6 @@
 use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
 use crate::group_mgr::GroupMgr;
-use crate::msg_box_db::MsgBoxDbMgr;
+use crate::msg_box_db::{IdempotencyCommitOutcome, IdempotencyStoredResult, MsgBoxDbMgr};
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, AccessDecision, AccessGroupLevel, AccountBinding, Contact,
@@ -46,13 +46,19 @@ const MSG_CENTER_BOX_CHANGED_EVENT_NAME: &str = "changed";
 const IDEMPOTENCY_SCOPE_DISPATCH: &str = "dispatch";
 const IDEMPOTENCY_SCOPE_POST_SEND: &str = "post_send";
 const IDEMPOTENCY_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+const IDEMPOTENCY_SWEEP_INTERVAL_MS: u64 = 60 * 60 * 1000;
+const IDEMPOTENCY_BUCKET_MAX_ROWS: u64 = 3_000;
+const IDEMPOTENCY_BUCKET_TARGET_ROWS: u64 = 2_000;
+const IDEMPOTENCY_GLOBAL_MAX_ROWS: u64 = 100_000;
+const IDEMPOTENCY_GLOBAL_TARGET_ROWS: u64 = 80_000;
+const IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS: u64 = 10_000;
 
 #[derive(Debug, Default)]
 struct MessageCenterState {
     messages: HashMap<String, MsgObject>,
     receipts: HashMap<String, MsgReceiptObj>,
-    dispatch_idempotency: HashMap<String, DispatchResult>,
-    post_send_idempotency: HashMap<String, PostSendResult>,
+    last_idempotency_sweep_ms: u64,
+    idempotency_global_sweep_active: bool,
 }
 
 /// Registry entry for a registered message tunnel: maps the stable
@@ -250,104 +256,98 @@ impl MessageCenter {
         &self,
         key: &str,
     ) -> std::result::Result<Option<DispatchResult>, RPCErrors> {
-        if let Some(cached) =
-            self.with_state_read(|state| Ok(state.dispatch_idempotency.get(key).cloned()))?
-        {
-            return Ok(Some(cached));
-        }
-        let result: Option<DispatchResult> = self
-            .msg_box_db
-            .get_idempotency_result(IDEMPOTENCY_SCOPE_DISPATCH, key, Self::now_ms())
-            .await?;
-        if let Some(result) = result.as_ref() {
-            self.with_state_write(|state| {
-                state
-                    .dispatch_idempotency
-                    .insert(key.to_string(), result.clone());
-                Ok(())
-            })?;
-        }
-        Ok(result)
-    }
-
-    async fn remember_dispatch_idempotency(
-        &self,
-        key: Option<&String>,
-        msg_id: &ObjId,
-        result: &DispatchResult,
-    ) -> std::result::Result<(), RPCErrors> {
-        let Some(key) = key else {
-            return Ok(());
-        };
         let now_ms = Self::now_ms();
-        self.msg_box_db
-            .upsert_idempotency_result(
-                IDEMPOTENCY_SCOPE_DISPATCH,
-                key,
-                Some(msg_id),
-                result,
-                now_ms,
-                Self::idempotency_expires_at(now_ms),
-            )
+        let stored: Option<IdempotencyStoredResult<DispatchResult>> = self
+            .msg_box_db
+            .get_idempotency_result(IDEMPOTENCY_SCOPE_DISPATCH, key, now_ms)
             .await?;
-        self.with_state_write(|state| {
-            state
-                .dispatch_idempotency
-                .insert(key.clone(), result.clone());
-            Ok(())
-        })
+        Ok(stored.map(|stored| stored.result))
     }
 
     async fn load_post_send_idempotency(
         &self,
         key: &str,
     ) -> std::result::Result<Option<PostSendResult>, RPCErrors> {
-        if let Some(cached) =
-            self.with_state_read(|state| Ok(state.post_send_idempotency.get(key).cloned()))?
-        {
-            return Ok(Some(cached));
-        }
-        let result: Option<PostSendResult> = self
+        let now_ms = Self::now_ms();
+        let stored: Option<IdempotencyStoredResult<PostSendResult>> = self
             .msg_box_db
-            .get_idempotency_result(IDEMPOTENCY_SCOPE_POST_SEND, key, Self::now_ms())
+            .get_idempotency_result(IDEMPOTENCY_SCOPE_POST_SEND, key, now_ms)
             .await?;
-        if let Some(result) = result.as_ref() {
-            self.with_state_write(|state| {
-                state
-                    .post_send_idempotency
-                    .insert(key.to_string(), result.clone());
-                Ok(())
-            })?;
-        }
-        Ok(result)
+        Ok(stored.map(|stored| stored.result))
     }
 
-    async fn remember_post_send_idempotency(
-        &self,
-        key: Option<&String>,
-        msg_id: &ObjId,
-        result: &PostSendResult,
-    ) -> std::result::Result<(), RPCErrors> {
-        let Some(key) = key else {
-            return Ok(());
-        };
+    async fn maybe_sweep_expired_idempotency(&self) {
         let now_ms = Self::now_ms();
-        self.msg_box_db
-            .upsert_idempotency_result(
-                IDEMPOTENCY_SCOPE_POST_SEND,
-                key,
-                Some(msg_id),
-                result,
+        let sweep_plan = self
+            .with_state_write(|state| {
+                let periodic_sweep_due = now_ms.saturating_sub(state.last_idempotency_sweep_ms)
+                    >= IDEMPOTENCY_SWEEP_INTERVAL_MS;
+                if !periodic_sweep_due && !state.idempotency_global_sweep_active {
+                    return Ok(None);
+                }
+                if periodic_sweep_due {
+                    state.last_idempotency_sweep_ms = now_ms;
+                }
+                Ok(Some((
+                    periodic_sweep_due,
+                    state.idempotency_global_sweep_active,
+                )))
+            })
+            .unwrap_or(None);
+        let Some((periodic_sweep_due, global_sweep_active)) = sweep_plan else {
+            return;
+        };
+        let bucket_deleted = if periodic_sweep_due {
+            match self
+                .msg_box_db
+                .sweep_expired_idempotency_buckets_by_capacity(
+                    now_ms,
+                    IDEMPOTENCY_BUCKET_MAX_ROWS,
+                    IDEMPOTENCY_BUCKET_TARGET_ROWS,
+                )
+                .await
+            {
+                Ok(deleted) => deleted,
+                Err(error) => {
+                    warn!("msg_center idempotency bucket sweep failed: {}", error);
+                    0
+                }
+            }
+        } else {
+            0
+        };
+        let global_deleted = match self
+            .msg_box_db
+            .sweep_expired_idempotency_global_by_capacity(
                 now_ms,
-                Self::idempotency_expires_at(now_ms),
+                IDEMPOTENCY_GLOBAL_MAX_ROWS,
+                IDEMPOTENCY_GLOBAL_TARGET_ROWS,
+                IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS,
+                global_sweep_active,
             )
-            .await?;
-        self.with_state_write(|state| {
-            state
-                .post_send_idempotency
-                .insert(key.clone(), result.clone());
-            Ok(())
-        })
+            .await
+        {
+            Ok((deleted, remaining_rows)) => {
+                let continue_sweep = remaining_rows > IDEMPOTENCY_GLOBAL_TARGET_ROWS
+                    && deleted >= IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS;
+                let _ = self.with_state_write(|state| {
+                    state.idempotency_global_sweep_active = continue_sweep;
+                    Ok(())
+                });
+                deleted
+            }
+            Err(error) => {
+                warn!("msg_center idempotency global sweep failed: {}", error);
+                0
+            }
+        };
+        let deleted = bucket_deleted.saturating_add(global_deleted);
+        if deleted > 0 {
+            info!(
+                "msg_center idempotency sweep deleted {} expired rows",
+                deleted
+            );
+        }
     }
 
     fn sanitize_token(raw: &str) -> String {
@@ -538,6 +538,47 @@ impl MessageCenter {
             .map(|value| value.to_string())
     }
 
+    fn dispatch_idempotency_retention_key(
+        msg: &MsgObject,
+        ingress: Option<&IngressContext>,
+    ) -> String {
+        if let Some(ctx) = ingress {
+            let platform = Self::normalize_non_empty(ctx.platform.as_deref())
+                .unwrap_or_else(|| "unknown".to_string());
+            let source_account = Self::normalize_non_empty(ctx.source_account_id.as_deref())
+                .unwrap_or_else(|| {
+                    ctx.transport_did
+                        .as_ref()
+                        .map(|did| did.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            let session = Self::normalize_non_empty(ctx.chat_id.as_deref())
+                .or_else(|| Self::normalize_non_empty(msg.thread.topic.as_deref()))
+                .or_else(|| Self::normalize_non_empty(ctx.context_id.as_deref()))
+                .unwrap_or_else(|| "unknown".to_string());
+            return format!("dispatch:{}:{}:{}", platform, source_account, session);
+        }
+
+        if let Some(topic) = Self::normalize_non_empty(msg.thread.topic.as_deref()) {
+            return format!("dispatch:thread:{}", topic);
+        }
+        if Self::is_group_message(msg) {
+            return msg
+                .to
+                .first()
+                .map(|group| format!("dispatch:group:{}", group.to_string()))
+                .unwrap_or_else(|| format!("dispatch:sender:{}", msg.from.to_string()));
+        }
+        format!("dispatch:sender:{}", msg.from.to_string())
+    }
+
+    fn post_send_idempotency_retention_key(msg: &MsgObject) -> String {
+        if let Some(topic) = Self::normalize_non_empty(msg.thread.topic.as_deref()) {
+            return format!("post_send:{}:{}", msg.from.to_string(), topic);
+        }
+        format!("post_send:{}", msg.from.to_string())
+    }
+
     fn normalize_ui_session_arg(
         label: &str,
         value: &str,
@@ -713,8 +754,7 @@ impl MessageCenter {
         format!("dlv-{}", hex::encode(&hasher.finalize()[..16]))
     }
 
-    async fn create_or_get_record(
-        &self,
+    fn build_mailbox_record(
         owner: DID,
         box_kind: MailboxKind,
         msg: &MsgObject,
@@ -722,35 +762,20 @@ impl MessageCenter {
         ingress: Option<IngressContext>,
         tags: Vec<String>,
         variant: &str,
-    ) -> std::result::Result<MailboxRecord, RPCErrors> {
+    ) -> MailboxRecord {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
         let session_id = Self::derive_session_id(&box_kind, msg);
-        if let Some(existing) = self.msg_box_db.get_record(&owner, &record_id).await? {
-            let mut record_for_update = existing.clone();
-            if record_for_update.msg_kind != msg.kind {
-                record_for_update.msg_kind = msg.kind;
-            }
-            if record_for_update.session_id.is_none() {
-                record_for_update.session_id = session_id;
-            }
-            self.msg_box_db
-                .upsert_record_with_msg(&record_for_update, Some(msg))
-                .await?;
-            Self::publish_box_changed_event(&record_for_update, "upsert");
-            return Ok(record_for_update);
-        }
-
         let now_ms = Self::now_ms();
         let record_to = match box_kind {
             MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => owner.clone(),
             MailboxKind::Sent => msg.to.first().cloned().unwrap_or_else(|| owner.clone()),
         };
-        let record = MailboxRecord {
-            record_id: record_id.clone(),
-            owner: owner.clone(),
+        MailboxRecord {
+            record_id,
+            owner,
             box_kind,
-            msg_id: msg_id.clone(),
+            msg_id,
             msg_kind: msg.kind,
             state: initial_state,
             from: msg.from.clone(),
@@ -766,13 +791,7 @@ impl MessageCenter {
             ingress,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
-        };
-
-        self.msg_box_db
-            .upsert_record_with_msg(&record, Some(msg))
-            .await?;
-        Self::publish_box_changed_event(&record, "upsert");
-        Ok(record)
+        }
     }
 
     async fn load_box_records(
@@ -1004,7 +1023,6 @@ impl MessageCenter {
             .and_then(|ctx| ctx.contact_mgr_owner.clone());
 
         enum DispatchPrepare {
-            Done(DispatchResult),
             Ready {
                 stored_msg: MsgObject,
                 stored_msg_id: ObjId,
@@ -1016,12 +1034,6 @@ impl MessageCenter {
         }
 
         let prepared = self.with_state_write(|state| {
-            if let Some(key) = idempotency_key.as_ref() {
-                if let Some(cached) = state.dispatch_idempotency.get(key) {
-                    return Ok(DispatchPrepare::Done(cached.clone()));
-                }
-            }
-
             let stored_msg = Self::ensure_message(state, msg);
             let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
 
@@ -1040,7 +1052,6 @@ impl MessageCenter {
 
         let (stored_msg, stored_msg_id, stored_msg_json, sender, context_id, ingress) =
             match prepared {
-                DispatchPrepare::Done(result) => return Ok(result),
                 DispatchPrepare::Ready {
                     stored_msg,
                     stored_msg_id,
@@ -1057,6 +1068,8 @@ impl MessageCenter {
                     ingress,
                 ),
             };
+        let retention_key =
+            Self::dispatch_idempotency_retention_key(&stored_msg, ingress.as_ref());
 
         Self::store_message(&stored_msg_id, &stored_msg_json).await?;
 
@@ -1077,6 +1090,7 @@ impl MessageCenter {
             delivered_agents: Vec::new(),
             reason: None,
         };
+        let mut mailbox_records = Vec::<MailboxRecord>::new();
 
         if Self::is_group_message(&stored_msg) {
             if self
@@ -1102,12 +1116,27 @@ impl MessageCenter {
                     delivered_agents: Vec::new(),
                     reason: Some("blocked".to_string()),
                 };
-                self.remember_dispatch_idempotency(
-                    idempotency_key.as_ref(),
-                    &stored_msg_id,
-                    &blocked,
-                )
-                .await?;
+                let now_ms = Self::now_ms();
+                let expires_at_ms = Self::idempotency_expires_at(now_ms);
+                self.maybe_sweep_expired_idempotency().await;
+                match self
+                    .msg_box_db
+                    .commit_dispatch_records(
+                        IDEMPOTENCY_SCOPE_DISPATCH,
+                        idempotency_key.as_deref(),
+                        Some(retention_key.as_str()),
+                        &stored_msg_id,
+                        &stored_msg,
+                        &[],
+                        &blocked,
+                        now_ms,
+                        expires_at_ms,
+                    )
+                    .await?
+                {
+                    IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
+                    IdempotencyCommitOutcome::Committed => {}
+                }
                 return Ok(blocked);
             }
 
@@ -1119,7 +1148,7 @@ impl MessageCenter {
                 group_id.to_string(),
                 context_id.as_deref().unwrap_or("-"),
             );
-            self.create_or_get_record(
+            mailbox_records.push(Self::build_mailbox_record(
                 group_id.clone(),
                 MailboxKind::GroupInbox,
                 &stored_msg,
@@ -1127,8 +1156,7 @@ impl MessageCenter {
                 ingress.clone(),
                 Vec::new(),
                 "group-inbox",
-            )
-            .await?;
+            ));
 
             // Prefer the authoritative member list from GroupMgr when this
             // group is hosted locally; fall back to the ContactMgr
@@ -1158,7 +1186,7 @@ impl MessageCenter {
             let readers = Self::dedupe_dids(readers);
             for agent_did in readers.iter() {
                 let tag = format!("group:{}", group_id.to_string());
-                self.create_or_get_record(
+                mailbox_records.push(Self::build_mailbox_record(
                     agent_did.clone(),
                     MailboxKind::Inbox,
                     &stored_msg,
@@ -1166,8 +1194,7 @@ impl MessageCenter {
                     ingress.clone(),
                     vec![tag],
                     &format!("group-agent-{}", group_id.to_string()),
-                )
-                .await?;
+                ));
             }
 
             result.delivered_group = Some(group_id);
@@ -1226,7 +1253,7 @@ impl MessageCenter {
                                 context_id.as_deref().unwrap_or("-"),
                             );
                         }
-                        self.create_or_get_record(
+                        mailbox_records.push(Self::build_mailbox_record(
                             recipient.clone(),
                             box_kind,
                             &stored_msg,
@@ -1234,8 +1261,7 @@ impl MessageCenter {
                             ingress.clone(),
                             Vec::new(),
                             "inbox",
-                        )
-                        .await?;
+                        ));
                         result.delivered_recipients.push(recipient);
                     }
                     None => {
@@ -1252,8 +1278,31 @@ impl MessageCenter {
             }
         }
 
-        self.remember_dispatch_idempotency(idempotency_key.as_ref(), &stored_msg_id, &result)
-            .await?;
+        let now_ms = Self::now_ms();
+        let expires_at_ms = Self::idempotency_expires_at(now_ms);
+        self.maybe_sweep_expired_idempotency().await;
+        match self
+            .msg_box_db
+            .commit_dispatch_records(
+                IDEMPOTENCY_SCOPE_DISPATCH,
+                idempotency_key.as_deref(),
+                Some(retention_key.as_str()),
+                &stored_msg_id,
+                &stored_msg,
+                &mailbox_records,
+                &result,
+                now_ms,
+                expires_at_ms,
+            )
+            .await?
+        {
+            IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
+            IdempotencyCommitOutcome::Committed => {
+                for record in mailbox_records.iter() {
+                    Self::publish_box_changed_event(record, "upsert");
+                }
+            }
+        }
         Ok(result)
     }
 
@@ -1275,7 +1324,6 @@ impl MessageCenter {
         }
 
         enum PostSendPrepare {
-            Done(PostSendResult),
             Ready {
                 stored_msg: MsgObject,
                 stored_msg_id: ObjId,
@@ -1286,12 +1334,6 @@ impl MessageCenter {
         }
 
         let prepared = self.with_state_write(|state| {
-            if let Some(key) = idempotency_key.as_ref() {
-                if let Some(cached) = state.post_send_idempotency.get(key) {
-                    return Ok(PostSendPrepare::Done(cached.clone()));
-                }
-            }
-
             let stored_msg = Self::ensure_message(state, msg);
             let (stored_msg_id, stored_msg_json) = stored_msg.gen_obj_id();
             let author = stored_msg.from.clone();
@@ -1309,7 +1351,6 @@ impl MessageCenter {
 
         let (stored_msg, stored_msg_id, stored_msg_json, author, contact_mgr_owner) = match prepared
         {
-            PostSendPrepare::Done(result) => return Ok(result),
             PostSendPrepare::Ready {
                 stored_msg,
                 stored_msg_id,
@@ -1324,6 +1365,7 @@ impl MessageCenter {
                 contact_mgr_owner,
             ),
         };
+        let retention_key = Self::post_send_idempotency_retention_key(&stored_msg);
 
         if self
             .is_contact_blocked(&author, contact_mgr_owner.clone())
@@ -1335,12 +1377,28 @@ impl MessageCenter {
                 deliveries: Vec::new(),
                 reason: Some("blocked_author".to_string()),
             };
-            self.remember_post_send_idempotency(
-                idempotency_key.as_ref(),
-                &stored_msg_id,
-                &result,
-            )
-            .await?;
+            let now_ms = Self::now_ms();
+            let expires_at_ms = Self::idempotency_expires_at(now_ms);
+            self.maybe_sweep_expired_idempotency().await;
+            match self
+                .msg_box_db
+                .commit_post_send_records(
+                    IDEMPOTENCY_SCOPE_POST_SEND,
+                    idempotency_key.as_deref(),
+                    Some(retention_key.as_str()),
+                    &stored_msg_id,
+                    &stored_msg,
+                    None,
+                    &[],
+                    &result,
+                    now_ms,
+                    expires_at_ms,
+                )
+                .await?
+            {
+                IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
+                IdempotencyCommitOutcome::Committed => {}
+            }
             return Ok(result);
         }
 
@@ -1359,12 +1417,28 @@ impl MessageCenter {
                         deliveries: Vec::new(),
                         reason: Some(reason),
                     };
-                    self.remember_post_send_idempotency(
-                        idempotency_key.as_ref(),
-                        &stored_msg_id,
-                        &result,
-                    )
-                    .await?;
+                    let now_ms = Self::now_ms();
+                    let expires_at_ms = Self::idempotency_expires_at(now_ms);
+                    self.maybe_sweep_expired_idempotency().await;
+                    match self
+                        .msg_box_db
+                        .commit_post_send_records(
+                            IDEMPOTENCY_SCOPE_POST_SEND,
+                            idempotency_key.as_deref(),
+                            Some(retention_key.as_str()),
+                            &stored_msg_id,
+                            &stored_msg,
+                            None,
+                            &[],
+                            &result,
+                            now_ms,
+                            expires_at_ms,
+                        )
+                        .await?
+                    {
+                        IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
+                        IdempotencyCommitOutcome::Committed => {}
+                    }
                     return Ok(result);
                 }
             }
@@ -1381,18 +1455,18 @@ impl MessageCenter {
             }
         }
 
-        self.create_or_get_record(
-            author,
+        let sent_record = Self::build_mailbox_record(
+            author.clone(),
             MailboxKind::Sent,
             &stored_msg,
             RecipientState::Read,
             None,
             Vec::new(),
             "owner-sent",
-        )
-        .await?;
+        );
 
         let now_ms = Self::now_ms();
+        let mut delivery_records = Vec::with_capacity(envelopes.len());
         let mut deliveries = Vec::with_capacity(envelopes.len());
         for envelope in envelopes {
             let delivery_id = Self::build_delivery_id(
@@ -1412,15 +1486,13 @@ impl MessageCenter {
                 created_at_ms: now_ms,
                 updated_at_ms: now_ms,
             };
-            self.msg_box_db.create_delivery_if_absent(&record).await?;
-            Self::publish_delivery_changed_event(&record, "enqueue");
-
             deliveries.push(PostSendDelivery {
-                delivery_id,
+                delivery_id: delivery_id.clone(),
                 transport_did: envelope.transport_did,
                 target_did: envelope.target_did,
                 transport: envelope.transport,
             });
+            delivery_records.push(record);
         }
 
         let result = PostSendResult {
@@ -1429,8 +1501,32 @@ impl MessageCenter {
             deliveries,
             reason: None,
         };
-        self.remember_post_send_idempotency(idempotency_key.as_ref(), &stored_msg_id, &result)
-            .await?;
+        let expires_at_ms = Self::idempotency_expires_at(now_ms);
+        self.maybe_sweep_expired_idempotency().await;
+        match self
+            .msg_box_db
+            .commit_post_send_records(
+                IDEMPOTENCY_SCOPE_POST_SEND,
+                idempotency_key.as_deref(),
+                Some(retention_key.as_str()),
+                &stored_msg_id,
+                &stored_msg,
+                Some(&sent_record),
+                &delivery_records,
+                &result,
+                now_ms,
+                expires_at_ms,
+            )
+            .await?
+        {
+            IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
+            IdempotencyCommitOutcome::Committed => {
+                Self::publish_box_changed_event(&sent_record, "upsert");
+                for record in delivery_records.iter() {
+                    Self::publish_delivery_changed_event(record, "enqueue");
+                }
+            }
+        }
         Ok(result)
     }
 

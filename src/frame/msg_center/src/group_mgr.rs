@@ -2286,7 +2286,8 @@ mod tests {
     async fn new_test_mgr() -> (GroupMgr, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("groups.sqlite3");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let db_path = db_path.to_string_lossy().replace('\\', "/");
+        let conn = format!("sqlite:///{}?mode=rwc", db_path);
         let msg_box_db = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
         let mgr = GroupMgr::new_with_msg_box(msg_box_db);
         (mgr, temp_dir)

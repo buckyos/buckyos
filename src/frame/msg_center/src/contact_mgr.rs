@@ -2349,7 +2349,8 @@ mod tests {
     async fn new_test_mgr() -> (ContactMgr, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("contacts.sqlite3");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let db_path = db_path.to_string_lossy().replace('\\', "/");
+        let conn = format!("sqlite:///{}?mode=rwc", db_path);
         let msg_box_db = MsgBoxDbMgr::open_default_sqlite(&conn).await.unwrap();
         let mgr = ContactMgr::new_with_msg_box(msg_box_db).await.unwrap();
         (mgr, temp_dir)

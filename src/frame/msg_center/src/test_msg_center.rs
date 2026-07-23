@@ -21,7 +21,8 @@ fn next_created_at_ms() -> u64 {
 async fn new_center(_tag: &str) -> (MessageCenter, TempDir) {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("msg-center.db");
-    let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db_path = db_path.to_string_lossy().replace('\\', "/");
+    let conn = format!("sqlite:///{}?mode=rwc", db_path);
     let center = open_center_at(&conn).await;
     (center, tmp)
 }
@@ -543,6 +544,113 @@ async fn update_record_state_checks_transition_rules() {
 }
 
 #[tokio::test]
+async fn dispatch_replay_preserves_existing_recipient_state() {
+    let (center, _tmp) = new_center("replay_state").await;
+    let sender = DID::new("bns", "sender-replay-state");
+    let recipient = DID::new("bns", "recipient-replay-state");
+    let context_id = "ctx-replay-state".to_string();
+
+    center
+        .handle_grant_temporary_access(
+            vec![sender.clone()],
+            context_id.clone(),
+            60,
+            Some(recipient.clone()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let ingress = IngressContext {
+        context_id: Some(context_id),
+        ..Default::default()
+    };
+    center
+        .handle_dispatch(
+            msg.clone(),
+            Some(ingress.clone()),
+            Some("replay-state-a".to_string()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let inbox = center
+        .handle_peek_box(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let record_id = inbox[0].record.record_id.clone();
+
+    center
+        .handle_update_record_state(record_id.clone(), RecipientState::Read, ctx())
+        .await
+        .unwrap();
+    center
+        .handle_dispatch(
+            msg.clone(),
+            Some(ingress.clone()),
+            Some("replay-state-b".to_string()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let record = center
+        .handle_peek_box(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record[0].record.state, RecipientState::Read);
+
+    center
+        .handle_update_record_state(record_id.clone(), RecipientState::Archived, ctx())
+        .await
+        .unwrap();
+    center
+        .handle_dispatch(msg.clone(), Some(ingress.clone()), None, ctx())
+        .await
+        .unwrap();
+    let record = center
+        .handle_peek_box(
+            recipient.clone(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record[0].record.state, RecipientState::Archived);
+
+    center
+        .handle_update_record_state(record_id, RecipientState::Deleted, ctx())
+        .await
+        .unwrap();
+    center
+        .handle_dispatch(msg, Some(ingress), None, ctx())
+        .await
+        .unwrap();
+    let record = center
+        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .await
+        .unwrap();
+    assert_eq!(record[0].record.state, RecipientState::Deleted);
+}
+
+#[tokio::test]
 async fn update_record_session_sets_session_id() {
     let (center, _tmp) = new_center("update_record_session").await;
     let sender = DID::new("bns", "sender-ui-session");
@@ -993,7 +1101,8 @@ async fn idempotency_key_prevents_duplicate_records() {
 async fn idempotency_key_survives_message_center_restart() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("msg-center.db");
-    let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db_path = db_path.to_string_lossy().replace('\\', "/");
+    let conn = format!("sqlite:///{}?mode=rwc", db_path);
     let first_center = open_center_at(&conn).await;
     let sender = DID::new("bns", "sender-g");
     let recipient = DID::new("bns", "recipient-g");
