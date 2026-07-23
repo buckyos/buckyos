@@ -65,6 +65,37 @@ fn shared_ring_delivers_first_event_from_late_producer() {
 }
 
 #[test]
+fn shared_ring_cross_process_publish_subscribe() {
+    if std::env::var("BUCKYOS_KEVENT_TEST_CHILD").as_deref() == Ok("publisher") {
+        let producer = SharedKEventRingBuffer::open().unwrap();
+        producer.publish_event(&event(42)).unwrap();
+        return;
+    }
+
+    let _guard = RING_ENV_LOCK.lock().unwrap();
+    let path = set_unique_ring_path("cross_process");
+    let consumer = SharedKEventRingBuffer::open().unwrap();
+    consumer.prime_cursors();
+
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("shared_ring_cross_process_publish_subscribe")
+        .arg("--nocapture")
+        .env(DEFAULT_RINGBUFFER_PATH_ENV, &path)
+        .env("BUCKYOS_KEVENT_TEST_CHILD", "publisher")
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let events = consumer.drain_events::<Event>(8);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].data["seq"], json!(42));
+
+    drop(consumer);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn shared_ring_overrun_drops_oldest_without_corrupting_events() {
     let _guard = RING_ENV_LOCK.lock().unwrap();
     let path = set_unique_ring_path("overrun");

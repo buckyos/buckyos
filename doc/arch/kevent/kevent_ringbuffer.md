@@ -512,7 +512,13 @@ EventBus 是信号通道，不是数据通道；大数据应走 kMsgQueue。
 
 ---
 
-## 12. 可选增强（不影响 v1，但能明显提升可维护性/可观测性）
+## 12. 运行环境与权限
+
+宿主机 Full client 默认使用 `$BUCKYOS_ROOT/run/kevent/ringbuffer_v2.shm`。Linux 安装时创建 `buckyos` 公共服务组，目录和文件权限分别为 `0770`、`0660`；路径与组可通过 `BUCKYOS_KEVENT_RINGBUFFER_PATH`、`BUCKYOS_KEVENT_GROUP` 覆盖。打开失败的日志必须包含实际路径、文件 owner/group/mode 和当前进程 uid/gid。
+
+容器不使用自己的 `/tmp` 或私有 mmap。node-daemon 向容器注入 `BUCKYOS_KEVENT_DAEMON_ADDR=host.docker.internal:3183`，Full client 通过 native TCP bridge 注册 reader、发布及拉取事件。TCP bridge 每次调用重新连接；宿主机 ringbuffer 打开失败时，客户端后台每秒重试，权限修复后无需重启进程。
+
+## 13. 可选增强（不影响 v1，但能明显提升可维护性/可观测性）
 
 1. **统计与诊断**（共享内存里放 counters）
 

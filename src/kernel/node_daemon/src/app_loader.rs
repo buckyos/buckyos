@@ -3,7 +3,8 @@ use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
     get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
     AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstanceState,
-    ServiceSpecConfig, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    ServiceSpecConfig, SubPkgDesc, KEVENT_DAEMON_ADDR_ENV, KEVENT_SERVICE_NATIVE_PORT,
+    VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -1101,6 +1102,15 @@ impl AppLoader {
             "BUCKYOS_HOST_GATEWAY".to_string(),
             AGENT_RUNTIME_HOST_GATEWAY.to_string(),
         );
+        if role == PackageRole::DockerImage {
+            env_vars.insert(
+                KEVENT_DAEMON_ADDR_ENV.to_string(),
+                format!(
+                    "{}:{}",
+                    AGENT_RUNTIME_HOST_GATEWAY, KEVENT_SERVICE_NATIVE_PORT
+                ),
+            );
+        }
 
         if let Some(media_info) = self.package_media_info(role).await? {
             env_vars.insert(
@@ -1859,6 +1869,13 @@ impl AppLoader {
                 "0".to_string()
             },
         );
+        env_vars.insert(
+            KEVENT_DAEMON_ADDR_ENV.to_string(),
+            format!(
+                "{}:{}",
+                AGENT_RUNTIME_HOST_GATEWAY, KEVENT_SERVICE_NATIVE_PORT
+            ),
+        );
         if let Some(port) = service_port {
             env_vars.insert("BUCKYOS_SERVICE_PORT".to_string(), port.to_string());
             // Legacy name kept for OpenDAN which still reads OPENDAN_SERVICE_PORT.
@@ -2301,6 +2318,11 @@ impl AppLoader {
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_APP_TYPE={}", app_type_label));
         docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "{}={}:{}",
+            KEVENT_DAEMON_ADDR_ENV, AGENT_RUNTIME_HOST_GATEWAY, KEVENT_SERVICE_NATIVE_PORT
+        ));
+        docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_OWNER_USER_ID={}", self.owner_user_id));
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!(
@@ -2382,6 +2404,9 @@ impl AppLoader {
             "BUCKYOS_THIS_DEVICE".to_string(),
             "BUCKYOS_HOST_GATEWAY".to_string(),
         ];
+        if role == PackageRole::DockerImage {
+            keys.push(KEVENT_DAEMON_ADDR_ENV.to_string());
+        }
         if self.media_pkg_id(role).is_some() {
             keys.push("app_media_info".to_string());
         }

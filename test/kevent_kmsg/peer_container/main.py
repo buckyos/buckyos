@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -121,6 +122,74 @@ def run_client(binary: Path) -> dict:
     return json.loads(lines[-1])
 
 
+def run_host_bridge_client(binary: Path) -> dict:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    server = subprocess.Popen(
+        [
+            str(binary),
+            "server",
+            "--node",
+            "host_node",
+            "--listen",
+            f"0.0.0.0:{port}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if server.poll() is not None:
+                stderr = server.stderr.read() if server.stderr else ""
+                raise RuntimeError(f"host kevent server exited early: {stderr}")
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("host kevent server did not become ready")
+
+        completed = run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                NETWORK,
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "-v",
+                f"{binary}:/usr/local/bin/kevent_peer_harness:ro",
+                IMAGE,
+                "/usr/local/bin/kevent_peer_harness",
+                "sdk-client",
+                "--daemon",
+                f"host.docker.internal:{port}",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+        print(completed.stdout, end="")
+        lines = [line for line in completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            raise RuntimeError("host bridge client produced no output")
+        return json.loads(lines[-1])
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
+
+
 def main() -> int:
     docker_available()
     binary = build_harness()
@@ -136,6 +205,9 @@ def main() -> int:
         result = run_client(binary)
         if result.get("status") != "passed":
             raise RuntimeError(f"unexpected result: {result}")
+        host_bridge_result = run_host_bridge_client(binary)
+        if host_bridge_result.get("status") != "passed":
+            raise RuntimeError(f"unexpected host bridge result: {host_bridge_result}")
         print(json.dumps({"status": "passed", "network": NETWORK, "image": IMAGE}, sort_keys=True))
         return 0
     finally:

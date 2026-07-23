@@ -511,6 +511,9 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_KEVENT_DAEMON_ADDR=host.docker.internal:3183".to_string()));
     assert!(start.commands[1].args.contains(
         &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/.local/share/buckyos_jarvis".to_string(),
     ));

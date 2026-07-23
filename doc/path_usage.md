@@ -87,6 +87,7 @@ $buckyos_root/data/srv/library/ => cyfs://$zone_id/srv/library/ : zone内共享�
 $buckyos_root/data/srv/publish/ => cyfs://$zone_id/srv/publish/ : zone级别的分享数据
 $buckyos_root/storage : 内核基础设施在本机的持久化存储(dcfs chunks、named_store,未来可能包含dRDB数据),卸载不会删除
 $buckyos_root/etc : 内核配置区,覆盖安装和卸载时的操作是逐个文件定义的
+$buckyos_root/run/kevent : 宿主机 kevent 共享 ringbuffer 运行目录；Linux 使用 `buckyos` 公共服务组和 `0770/0660` 权限，不向容器直接挂载
 
 
 ## 安装卸载整理

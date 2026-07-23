@@ -8,7 +8,7 @@ Subdirectories:
 - `dv`: standard devtest gateway smoke for kmsg and kevent.
 - `task_mgr`: TaskMgr `task_ready` gateway smoke.
 - `restart`: standard devtest restart recovery smoke.
-- `peer_container`: two-node peer delivery harness in Docker containers.
+- `peer_container`: two-node peer delivery in Docker plus a container Full SDK client publishing/subscribing through a host native bridge.
 - `peer_vm`: two-node peer delivery harness in QEMU/KVM VMs.
 - `reports`: local per-run reports and evidence snapshots. This directory is
   ignored by git; the repository keeps only the test plan and current summary

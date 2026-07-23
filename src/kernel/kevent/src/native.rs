@@ -105,6 +105,14 @@ impl KEventDaemonBridge for KEventDaemonClient {
     async fn publish_global(&self, event: &Event) -> KEventResult<()> {
         self.publish_global(event).await
     }
+
+    async fn pull_event(
+        &self,
+        reader_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> KEventResult<Option<Event>> {
+        self.pull_event(reader_id, timeout_ms).await
+    }
 }
 
 #[derive(Clone)]
@@ -203,7 +211,10 @@ pub fn map_response_error(code: &str, message: &str) -> KEventError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::{KEventClient, TcpKEventDaemonBridge};
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn test_local_transport_roundtrip() {
@@ -248,6 +259,52 @@ mod tests {
             .unwrap();
         assert_eq!(event.eventid, "/taskmgr/new/task_001");
         assert_eq!(event.ingress_node.as_deref(), Some("node_a"));
+    }
+
+    #[tokio::test]
+    async fn test_tcp_bridge_full_client_publish_subscribe() {
+        let service = Arc::new(KEventService::new("node_a"));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let service = service.clone();
+                tokio::spawn(async move {
+                    let frame_len = stream.read_u32().await.unwrap() as usize;
+                    let mut frame = vec![0_u8; frame_len];
+                    stream.read_exact(&mut frame).await.unwrap();
+                    let request = decode_daemon_request(&frame).unwrap();
+                    let response = service.handle_protocol_request(request).await;
+                    let payload = encode_daemon_response(&response).unwrap();
+                    stream.write_u32(payload.len() as u32).await.unwrap();
+                    stream.write_all(&payload).await.unwrap();
+                    stream.flush().await.unwrap();
+                });
+            }
+        });
+
+        let subscriber = KEventClient::new_full(
+            "subscriber",
+            Some(Arc::new(TcpKEventDaemonBridge::new(address.to_string()))),
+        );
+        let publisher = KEventClient::new_full(
+            "publisher",
+            Some(Arc::new(TcpKEventDaemonBridge::new(address.to_string()))),
+        );
+        let reader = subscriber
+            .create_event_reader(vec!["/bridge/test".to_string()])
+            .await
+            .unwrap();
+        publisher
+            .pub_event("/bridge/test", json!({"ok": true}))
+            .await
+            .unwrap();
+
+        let event = reader.pull_event(Some(500)).await.unwrap().unwrap();
+        assert_eq!(event.eventid, "/bridge/test");
+        assert_eq!(event.data["ok"], json!(true));
+        server.abort();
     }
 
     #[test]

@@ -70,6 +70,12 @@ publish:
             self.assertIn('cp -p "$DEFAULTS_DIR/etc/node_gateway.json" "$BUCKYOS_ROOT/etc/node_gateway.json"', postinst)
             self.assertIn('cp -a "$DEFAULTS_DIR/data/." "$BUCKYOS_ROOT/data/"', postinst)
             self.assertIn("ExecStart=/opt/buckyos/bin/node-daemon/node_daemon --enable_active", postinst)
+            self.assertIn('install -d -o root -g buckyos -m 0770 "$BUCKYOS_ROOT/run/kevent"', postinst)
+            self.assertIn("SupplementaryGroups=buckyos", postinst)
+            self.assertIn(
+                "Environment=BUCKYOS_KEVENT_RINGBUFFER_PATH=/opt/buckyos/run/kevent/ringbuffer_v2.shm",
+                postinst,
+            )
 
     def test_linux_hooks_are_discovered_from_deb_pkg(self) -> None:
         hook = debpkg._discover_linux_hook("buckyos", "preinstall")

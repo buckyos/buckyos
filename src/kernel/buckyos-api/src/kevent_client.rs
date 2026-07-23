@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock as StdRwLock, Weak};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::{oneshot, Mutex, Notify, RwLock};
 use tokio::time::Instant;
 
@@ -17,9 +19,13 @@ pub const KEVENT_SERVICE_UNIQUE_ID: &str = "kevent";
 pub const KEVENT_SERVICE_NAME: &str = "kevent";
 pub const KEVENT_SERVICE_MAIN_PORT: u16 = 3181;
 pub const KEVENT_SERVICE_NATIVE_PORT: u16 = 3183;
+pub const KEVENT_DAEMON_ADDR_ENV: &str = "BUCKYOS_KEVENT_DAEMON_ADDR";
 pub const DEFAULT_READER_CAPACITY: usize = 1024;
 pub const MAX_EVENT_DATA_SIZE_BYTES: usize = 64 * 1024;
 const SHARED_RING_DRAIN_BATCH: usize = 128;
+const MAX_DAEMON_FRAME_SIZE: usize = 1024 * 1024;
+const SHARED_RING_RECONNECT_INTERVAL_MS: u64 = 1000;
+static NEXT_READER_ID: AtomicU64 = AtomicU64::new(0);
 /// Maximum time the ShmDispatch thread blocks in futex/ulock before
 /// re-checking (acts as a heartbeat / fallback interval).
 ///
@@ -187,6 +193,160 @@ pub trait KEventDaemonBridge: Send + Sync {
         remove: &[String],
     ) -> KEventResult<()>;
     async fn publish_global(&self, event: &Event) -> KEventResult<()>;
+    async fn pull_event(
+        &self,
+        _reader_id: &str,
+        _timeout_ms: Option<u64>,
+    ) -> KEventResult<Option<Event>> {
+        Err(KEventError::NotSupported(
+            "daemon bridge does not support pulling events".to_string(),
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub struct TcpKEventDaemonBridge {
+    target: String,
+}
+
+impl TcpKEventDaemonBridge {
+    pub fn new(target: impl Into<String>) -> Self {
+        Self {
+            target: target.into(),
+        }
+    }
+
+    async fn call(&self, request: KEventDaemonRequest) -> KEventResult<KEventDaemonResponse> {
+        let mut stream = TcpStream::connect(self.target.as_str())
+            .await
+            .map_err(|error| {
+                KEventError::DaemonUnavailable(format!(
+                    "connect kevent daemon {} failed: {}",
+                    self.target, error
+                ))
+            })?;
+        let payload = serde_json::to_vec(&request).map_err(|error| {
+            KEventError::Internal(format!("encode daemon request failed: {}", error))
+        })?;
+        stream
+            .write_u32(payload.len() as u32)
+            .await
+            .map_err(|error| {
+                KEventError::Internal(format!("write frame length failed: {}", error))
+            })?;
+        stream.write_all(&payload).await.map_err(|error| {
+            KEventError::Internal(format!("write frame payload failed: {}", error))
+        })?;
+        stream
+            .flush()
+            .await
+            .map_err(|error| KEventError::Internal(format!("flush frame failed: {}", error)))?;
+
+        let frame_len = stream.read_u32().await.map_err(|error| {
+            KEventError::Internal(format!("read frame length failed: {}", error))
+        })? as usize;
+        if frame_len == 0 || frame_len > MAX_DAEMON_FRAME_SIZE {
+            return Err(KEventError::Internal(format!(
+                "invalid daemon response frame length: {}",
+                frame_len
+            )));
+        }
+        let mut frame = vec![0_u8; frame_len];
+        stream.read_exact(&mut frame).await.map_err(|error| {
+            KEventError::Internal(format!("read frame payload failed: {}", error))
+        })?;
+        serde_json::from_slice(&frame).map_err(|error| {
+            KEventError::Internal(format!("decode daemon response failed: {}", error))
+        })
+    }
+}
+
+#[async_trait]
+impl KEventDaemonBridge for TcpKEventDaemonBridge {
+    async fn register_reader(&self, reader_id: &str, patterns: &[String]) -> KEventResult<()> {
+        map_daemon_unit(
+            self.call(KEventDaemonRequest::RegisterReader {
+                reader_id: reader_id.to_string(),
+                patterns: patterns.to_vec(),
+            })
+            .await?,
+        )
+    }
+
+    async fn unregister_reader(&self, reader_id: &str) -> KEventResult<()> {
+        map_daemon_unit(
+            self.call(KEventDaemonRequest::UnregisterReader {
+                reader_id: reader_id.to_string(),
+            })
+            .await?,
+        )
+    }
+
+    async fn update_reader(
+        &self,
+        reader_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> KEventResult<()> {
+        map_daemon_unit(
+            self.call(KEventDaemonRequest::UpdateReader {
+                reader_id: reader_id.to_string(),
+                add: add.to_vec(),
+                remove: remove.to_vec(),
+            })
+            .await?,
+        )
+    }
+
+    async fn publish_global(&self, event: &Event) -> KEventResult<()> {
+        map_daemon_unit(
+            self.call(KEventDaemonRequest::PublishGlobal {
+                event: event.clone(),
+            })
+            .await?,
+        )
+    }
+
+    async fn pull_event(
+        &self,
+        reader_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> KEventResult<Option<Event>> {
+        match self
+            .call(KEventDaemonRequest::PullEvent {
+                reader_id: reader_id.to_string(),
+                timeout_ms,
+            })
+            .await?
+        {
+            KEventDaemonResponse::Ok { event } => Ok(event),
+            KEventDaemonResponse::Err { code, message } => {
+                Err(map_daemon_error(code.as_str(), message))
+            }
+        }
+    }
+}
+
+fn map_daemon_unit(response: KEventDaemonResponse) -> KEventResult<()> {
+    match response {
+        KEventDaemonResponse::Ok { .. } => Ok(()),
+        KEventDaemonResponse::Err { code, message } => {
+            Err(map_daemon_error(code.as_str(), message))
+        }
+    }
+}
+
+fn map_daemon_error(code: &str, message: String) -> KEventError {
+    match code {
+        "INVALID_EVENTID" => KEventError::InvalidEventId(message),
+        "INVALID_PATTERN" => KEventError::InvalidPattern(message),
+        "DAEMON_UNAVAILABLE" => KEventError::DaemonUnavailable(message),
+        "TIMER_INVALID_TARGET" => KEventError::TimerInvalidTarget(message),
+        "TIMER_NOT_FOUND" => KEventError::TimerNotFound(message),
+        "NOT_SUPPORTED" => KEventError::NotSupported(message),
+        "READER_CLOSED" => KEventError::ReaderClosed(message),
+        _ => KEventError::Internal(message),
+    }
 }
 
 #[derive(Clone)]
@@ -200,8 +360,9 @@ pub struct KEventClient {
 struct KEventClientInner {
     readers: RwLock<HashMap<String, Arc<ReaderState>>>,
     timers: RwLock<HashMap<TimerId, oneshot::Sender<()>>>,
-    shared_ring: Option<Arc<SharedKEventRingBuffer>>,
-    reader_seq: AtomicU64,
+    shared_ring: StdRwLock<Option<Arc<SharedKEventRingBuffer>>>,
+    shared_ring_enabled: bool,
+    shared_ring_reconnect: StdMutex<()>,
     timer_seq: AtomicU64,
     reader_capacity: usize,
     /// Signaled by ShmDispatch after dispatching shared-ring events to
@@ -269,6 +430,42 @@ impl ReaderState {
 }
 
 impl KEventClientInner {
+    fn shared_ring(&self) -> Option<Arc<SharedKEventRingBuffer>> {
+        self.shared_ring
+            .read()
+            .expect("shared ring lock poisoned")
+            .clone()
+    }
+
+    fn ensure_shared_ring(&self) -> Option<Arc<SharedKEventRingBuffer>> {
+        if !self.shared_ring_enabled {
+            return None;
+        }
+        if let Some(shared_ring) = self.shared_ring() {
+            return Some(shared_ring);
+        }
+        let _reconnect = self
+            .shared_ring_reconnect
+            .lock()
+            .expect("shared ring reconnect lock poisoned");
+        if let Some(shared_ring) = self.shared_ring() {
+            return Some(shared_ring);
+        }
+        match SharedKEventRingBuffer::open() {
+            Ok(shared_ring) => {
+                let shared_ring = Arc::new(shared_ring);
+                *self.shared_ring.write().expect("shared ring lock poisoned") =
+                    Some(shared_ring.clone());
+                log::info!("kevent shared ringbuffer connection restored");
+                Some(shared_ring)
+            }
+            Err(error) => {
+                log::debug!("kevent shared ringbuffer reconnect failed: {}", error);
+                None
+            }
+        }
+    }
+
     async fn dispatch_event(&self, event: &Event) {
         let snapshot: Vec<Arc<ReaderState>> = self.readers.read().await.values().cloned().collect();
         for reader in snapshot {
@@ -295,7 +492,7 @@ impl KEventClientInner {
     /// readers (synchronous, for ShmDispatch thread).
     /// Returns the number of events dispatched.
     fn import_shared_events_sync(&self, max_events: usize) -> usize {
-        let Some(shared_ring) = &self.shared_ring else {
+        let Some(shared_ring) = self.shared_ring() else {
             return 0;
         };
         let events = shared_ring.drain_events::<Event>(max_events);
@@ -365,7 +562,20 @@ impl KEventClient {
         bridge: Option<Arc<dyn KEventDaemonBridge>>,
         reader_capacity: usize,
     ) -> Self {
-        let shared_ring = if mode == KEventClientMode::Full {
+        let bridge = if mode == KEventClientMode::Full {
+            bridge.or_else(|| {
+                std::env::var(KEVENT_DAEMON_ADDR_ENV)
+                    .ok()
+                    .filter(|target| !target.trim().is_empty())
+                    .map(|target| {
+                        Arc::new(TcpKEventDaemonBridge::new(target)) as Arc<dyn KEventDaemonBridge>
+                    })
+            })
+        } else {
+            bridge
+        };
+        let shared_ring_enabled = mode == KEventClientMode::Full && bridge.is_none();
+        let shared_ring = if shared_ring_enabled {
             match SharedKEventRingBuffer::open() {
                 Ok(shared_ring) => Some(Arc::new(shared_ring)),
                 Err(err) => {
@@ -380,8 +590,9 @@ impl KEventClient {
         let inner = Arc::new(KEventClientInner {
             readers: RwLock::new(HashMap::new()),
             timers: RwLock::new(HashMap::new()),
-            shared_ring,
-            reader_seq: AtomicU64::new(0),
+            shared_ring: StdRwLock::new(shared_ring),
+            shared_ring_enabled,
+            shared_ring_reconnect: StdMutex::new(()),
             timer_seq: AtomicU64::new(0),
             reader_capacity: reader_capacity.max(1),
             shm_dispatch_notify: Notify::new(),
@@ -396,7 +607,7 @@ impl KEventClient {
         // We capture the tokio Handle here (on the caller's thread, which
         // is inside a tokio runtime) so the background OS thread can use
         // block_on to call async dispatch_event.
-        if inner.shared_ring.is_some() {
+        if shared_ring_enabled {
             let weak = Arc::downgrade(&inner);
             std::thread::Builder::new()
                 .name("kevent-shm-dispatch".into())
@@ -444,7 +655,7 @@ impl KEventClient {
         if self.mode == KEventClientMode::Full
             && has_global_patterns
             && self.bridge.is_none()
-            && self.inner.shared_ring.is_none()
+            && self.inner.ensure_shared_ring().is_none()
         {
             return Err(KEventError::DaemonUnavailable(
                 "global reader requires daemon bridge or shared ringbuffer in full mode"
@@ -454,8 +665,9 @@ impl KEventClient {
 
         let normalized = normalize_patterns(patterns);
         let reader_id = format!(
-            "r_{}",
-            self.inner.reader_seq.fetch_add(1, Ordering::Relaxed) + 1
+            "r_{}_{}",
+            std::process::id(),
+            NEXT_READER_ID.fetch_add(1, Ordering::Relaxed) + 1
         );
         let state = Arc::new(ReaderState::new(
             normalized.clone(),
@@ -468,7 +680,7 @@ impl KEventClient {
             .insert(reader_id.clone(), state);
 
         if self.mode == KEventClientMode::Full && has_global_patterns {
-            if let Some(shared_ring) = &self.inner.shared_ring {
+            if let Some(shared_ring) = self.inner.ensure_shared_ring() {
                 shared_ring.prime_cursors();
             }
         }
@@ -523,7 +735,7 @@ impl KEventClient {
             KEventClientMode::Full => {
                 if is_global {
                     let mut delivered_to_local_host = false;
-                    if let Some(shared_ring) = &self.inner.shared_ring {
+                    if let Some(shared_ring) = self.inner.ensure_shared_ring() {
                         match shared_ring.publish_event(&event) {
                             Ok(_) => {
                                 delivered_to_local_host = true;
@@ -689,9 +901,13 @@ fn shm_dispatch_thread(weak: Weak<KEventClientInner>) {
             return;
         }
 
-        let shared_ring = match &inner.shared_ring {
-            Some(sr) => sr.clone(),
-            None => return,
+        let shared_ring = match inner.ensure_shared_ring() {
+            Some(shared_ring) => shared_ring,
+            None => {
+                drop(inner);
+                std::thread::sleep(Duration::from_millis(SHARED_RING_RECONNECT_INTERVAL_MS));
+                continue;
+            }
         };
 
         // Snapshot notify_seq before draining, so we don't miss events
@@ -900,6 +1116,23 @@ impl EventReader {
             if let Some(ms) = timeout_ms {
                 if ms == 0 {
                     return Ok(None);
+                }
+            }
+
+            if self.has_global_patterns {
+                if let Some(bridge) = &self.bridge {
+                    let bridge_timeout_ms = deadline.map(|deadline_at| {
+                        deadline_at
+                            .saturating_duration_since(Instant::now())
+                            .as_millis()
+                            .min(u64::MAX as u128) as u64
+                    });
+                    let bridge_pull = bridge.pull_event(&self.reader_id, bridge_timeout_ms);
+                    tokio::select! {
+                        result = bridge_pull => return result,
+                        _ = inner.shm_dispatch_notify.notified() => continue,
+                        _ = state.notify.notified() => continue,
+                    }
                 }
             }
 
@@ -1633,5 +1866,41 @@ mod tests {
         let event = reader.pull_event(Some(600)).await.unwrap().unwrap();
         assert_eq!(event.eventid, eventid);
         assert_eq!(event.data.get("path"), Some(&json!("late_producer")));
+    }
+
+    #[tokio::test]
+    async fn test_full_mode_reconnects_shared_ring_after_path_is_repaired() {
+        let _ring_guard = crate::kevent_ringbuffer::test_support::lock_with_fresh_ring();
+        let root = std::env::temp_dir().join(format!(
+            "buckyos_kevent_reconnect_{}_{}",
+            std::process::id(),
+            now_millis()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let blocked_parent = root.join("blocked");
+        std::fs::write(&blocked_parent, b"not a directory").unwrap();
+        let ring_path = blocked_parent.join("ringbuffer_v2.shm");
+        std::env::set_var(
+            crate::kevent_ringbuffer::DEFAULT_RINGBUFFER_PATH_ENV,
+            &ring_path,
+        );
+
+        let publisher = KEventClient::new_full("publisher", None);
+        std::fs::remove_file(&blocked_parent).unwrap();
+        std::fs::create_dir(&blocked_parent).unwrap();
+
+        let subscriber = KEventClient::new_full("subscriber", None);
+        let eventid = format!("/kevent/reconnect/test_{}", now_millis());
+        let reader = subscriber
+            .create_event_reader(vec![eventid.clone()])
+            .await
+            .unwrap();
+        publisher
+            .pub_event(&eventid, json!({"reconnected": true}))
+            .await
+            .unwrap();
+
+        let event = reader.pull_event(Some(1000)).await.unwrap().unwrap();
+        assert_eq!(event.data.get("reconnected"), Some(&json!(true)));
     }
 }

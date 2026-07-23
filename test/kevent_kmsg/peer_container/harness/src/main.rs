@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use buckyos_api::{Event, KEventDaemonRequest, KEventDaemonResponse, KEventError, KEventResult};
+use buckyos_api::{
+    Event, KEventClient, KEventDaemonRequest, KEventDaemonResponse, KEventError, KEventResult,
+    TcpKEventDaemonBridge,
+};
 use kevent::{
     decode_daemon_request, encode_daemon_response, map_response_error, KEventPeerPublisher,
     KEventService,
@@ -49,10 +52,52 @@ async fn run() -> KEventResult<()> {
     match args.get(1).map(String::as_str) {
         Some("server") => run_server(&args).await,
         Some("client") => run_client(&args).await,
+        Some("sdk-client") => run_sdk_client(&args).await,
         _ => Err(KEventError::InvalidEventId(
             "usage: kevent_peer_harness server|client ...".to_string(),
         )),
     }
+}
+
+async fn run_sdk_client(args: &[String]) -> KEventResult<()> {
+    let daemon = arg_value(args, "--daemon")?;
+    let tag = now_millis();
+    let eventid = format!("/container/host/{tag}");
+    let subscriber = KEventClient::new_full(
+        "container-subscriber",
+        Some(Arc::new(TcpKEventDaemonBridge::new(daemon))),
+    );
+    let publisher = KEventClient::new_full(
+        "container-publisher",
+        Some(Arc::new(TcpKEventDaemonBridge::new(daemon))),
+    );
+    let reader = subscriber
+        .create_event_reader(vec![eventid.clone()])
+        .await?;
+
+    publisher
+        .pub_event(&eventid, json!({"transport": "native-bridge"}))
+        .await?;
+    let event = reader
+        .pull_event(Some(2000))
+        .await?
+        .ok_or_else(|| KEventError::DaemonUnavailable("container reader timed out".to_string()))?;
+    if event.eventid != eventid {
+        return Err(KEventError::Internal(format!(
+            "unexpected eventid: {}",
+            event.eventid
+        )));
+    }
+    println!(
+        "{}",
+        json!({
+            "status": "passed",
+            "eventid": event.eventid,
+            "source_node": event.source_node,
+            "transport": "native-bridge",
+        })
+    );
+    Ok(())
 }
 
 async fn run_server(args: &[String]) -> KEventResult<()> {

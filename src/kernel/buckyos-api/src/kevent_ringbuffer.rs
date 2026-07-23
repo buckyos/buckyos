@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::mem::size_of;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -21,7 +21,8 @@ const ENTRY_INIT: u8 = 1;
 const ENTRY_READY: u8 = 2;
 
 pub const DEFAULT_RINGBUFFER_PATH_ENV: &str = "BUCKYOS_KEVENT_RINGBUFFER_PATH";
-const DEFAULT_RINGBUFFER_PATH: &str = "/tmp/buckyos_kevent_ringbuffer_v2.shm";
+pub const KEVENT_RINGBUFFER_GROUP_ENV: &str = "BUCKYOS_KEVENT_GROUP";
+const DEFAULT_RINGBUFFER_RELATIVE_PATH: &str = "run/kevent/ringbuffer_v2.shm";
 
 const MAX_RINGS: usize = 16;
 const RING_CAPACITY: usize = 512; // must be power of 2
@@ -144,23 +145,49 @@ impl SharedKEventRingBuffer {
     pub fn open() -> Result<Self, String> {
         let path = ringbuffer_path();
         if let Some(parent) = path.parent() {
+            let parent_existed = parent.exists();
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create ringbuffer dir {} failed: {}", parent.display(), e))?;
+            configure_ringbuffer_directory(parent, parent_existed)?;
         }
 
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&path)
-            .map_err(|e| format!("open ringbuffer file {} failed: {}", path.display(), e))?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o660);
+        }
+        let file = options.open(&path).map_err(|e| {
+            format!(
+                "open ringbuffer file {} failed: {}; {}",
+                path.display(),
+                e,
+                ringbuffer_file_context(&path)
+            )
+        })?;
+
+        configure_ringbuffer_file(&file, &path)?;
 
         let region_len = size_of::<SharedRegion>() as u64;
-        file.set_len(region_len)
-            .map_err(|e| format!("resize ringbuffer file failed: {}", e))?;
+        file.set_len(region_len).map_err(|e| {
+            format!(
+                "resize ringbuffer file {} failed: {}; {}",
+                path.display(),
+                e,
+                ringbuffer_file_context(&path)
+            )
+        })?;
 
         let mmap = unsafe {
-            MmapMut::map_mut(&file).map_err(|e| format!("mmap ringbuffer file failed: {}", e))?
+            MmapMut::map_mut(&file).map_err(|e| {
+                format!(
+                    "mmap ringbuffer file {} failed: {}; {}",
+                    path.display(),
+                    e,
+                    ringbuffer_file_context(&path)
+                )
+            })?
         };
 
         let region_ptr = mmap.as_ptr() as *mut SharedRegion;
@@ -168,8 +195,19 @@ impl SharedKEventRingBuffer {
         initialize_region_if_needed(region);
 
         let pid = std::process::id();
-        let my_ring_id = allocate_ring(region, pid)
-            .ok_or_else(|| format!("no free ring entry in {}", path.display()))?;
+        let my_ring_id = allocate_ring(region, pid).ok_or_else(|| {
+            format!(
+                "no free ring entry in {}; {}",
+                path.display(),
+                ringbuffer_file_context(&path)
+            )
+        })?;
+
+        log::debug!(
+            "opened kevent shared ringbuffer: path={}, {}",
+            path.display(),
+            ringbuffer_file_context(&path)
+        );
 
         Ok(Self {
             publish: Mutex::new(PublishInner { mmap, my_ring_id }),
@@ -767,7 +805,146 @@ fn activate_ring(region: &mut SharedRegion, ring_id: usize, pid: u32) {
 fn ringbuffer_path() -> PathBuf {
     std::env::var(DEFAULT_RINGBUFFER_PATH_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_RINGBUFFER_PATH))
+        .unwrap_or_else(|_| {
+            buckyos_kit::get_buckyos_root_dir().join(DEFAULT_RINGBUFFER_RELATIVE_PATH)
+        })
+}
+
+#[cfg(unix)]
+fn configure_ringbuffer_directory(path: &Path, existed: bool) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !existed {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o770)).map_err(|e| {
+            format!(
+                "set ringbuffer dir permissions {} failed: {}",
+                path.display(),
+                e
+            )
+        })?;
+        if let Some(gid) = configured_ringbuffer_gid()? {
+            let path_c = path_to_cstring(path)?;
+            let rc = unsafe { libc::chown(path_c.as_ptr(), u32::MAX, gid) };
+            if rc != 0 {
+                return Err(format!(
+                    "set ringbuffer dir group {} failed: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn configure_ringbuffer_directory(_path: &Path, _existed: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn configure_ringbuffer_file(file: &std::fs::File, path: &Path) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = file.metadata().map_err(|e| {
+        format!(
+            "read ringbuffer file metadata {} failed: {}",
+            path.display(),
+            e
+        )
+    })?;
+    let process_uid = unsafe { libc::geteuid() };
+    if process_uid != 0 && process_uid != metadata.uid() {
+        return Ok(());
+    }
+
+    file.set_permissions(std::fs::Permissions::from_mode(0o660))
+        .map_err(|e| {
+            format!(
+                "set ringbuffer file permissions {} failed: {}; {}",
+                path.display(),
+                e,
+                ringbuffer_file_context(path)
+            )
+        })?;
+    if let Some(gid) = configured_ringbuffer_gid()? {
+        let rc = unsafe { libc::fchown(file.as_raw_fd(), u32::MAX, gid) };
+        if rc != 0 {
+            return Err(format!(
+                "set ringbuffer file group {} failed: {}; {}",
+                path.display(),
+                std::io::Error::last_os_error(),
+                ringbuffer_file_context(path)
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn configure_ringbuffer_file(_file: &std::fs::File, _path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn configured_ringbuffer_gid() -> Result<Option<u32>, String> {
+    use std::ffi::CString;
+
+    let Ok(group) = std::env::var(KEVENT_RINGBUFFER_GROUP_ENV) else {
+        return Ok(None);
+    };
+    let group = group.trim();
+    if group.is_empty() {
+        return Ok(None);
+    }
+    let group_c = CString::new(group)
+        .map_err(|_| format!("invalid {} value", KEVENT_RINGBUFFER_GROUP_ENV))?;
+    let entry = unsafe { libc::getgrnam(group_c.as_ptr()) };
+    if entry.is_null() {
+        return Err(format!(
+            "kevent service group '{}' from {} does not exist",
+            group, KEVENT_RINGBUFFER_GROUP_ENV
+        ));
+    }
+    Ok(Some(unsafe { (*entry).gr_gid }))
+}
+
+#[cfg(unix)]
+fn path_to_cstring(path: &Path) -> Result<std::ffi::CString, String> {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("path contains NUL: {}", path.display()))
+}
+
+#[cfg(unix)]
+fn ringbuffer_file_context(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+
+    let process = format!(
+        "process_uid={}, process_gid={}",
+        unsafe { libc::geteuid() },
+        unsafe { libc::getegid() }
+    );
+    match std::fs::metadata(path) {
+        Ok(metadata) => format!(
+            "owner_uid={}, owner_gid={}, mode={:04o}, {}",
+            metadata.uid(),
+            metadata.gid(),
+            metadata.mode() & 0o7777,
+            process
+        ),
+        Err(error) => format!("metadata_unavailable={}, {}", error, process),
+    }
+}
+
+#[cfg(not(unix))]
+fn ringbuffer_file_context(path: &Path) -> String {
+    match std::fs::metadata(path) {
+        Ok(metadata) => format!("readonly={}", metadata.permissions().readonly()),
+        Err(error) => format!("metadata_unavailable={}", error),
+    }
 }
 
 fn initial_read_seq(head_seq: u64, primed_existing_rings: bool) -> u64 {
@@ -874,6 +1051,19 @@ mod tests {
             assert!(!ptr.is_null());
             Box::from_raw(ptr)
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ringbuffer_file_is_group_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ring_guard = test_support::lock_with_fresh_ring();
+        let ring = SharedKEventRingBuffer::open().unwrap();
+        let path = ringbuffer_path();
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o660);
+        drop(ring);
     }
 
     #[test]

@@ -47,6 +47,12 @@ class MakeLocalRpmTests(unittest.TestCase):
         self.assertIn('cp -p "$DEFAULTS_DIR/etc/node_gateway.json" "$BUCKYOS_ROOT/etc/node_gateway.json"', spec)
         self.assertIn('cp -a "$DEFAULTS_DIR/data/." "$BUCKYOS_ROOT/data/"', spec)
         self.assertIn("systemctl start buckyos.service", spec)
+        self.assertIn('install -d -o root -g buckyos -m 0770 "$BUCKYOS_ROOT/run/kevent"', spec)
+        self.assertIn("SupplementaryGroups=buckyos", spec)
+        self.assertIn(
+            "Environment=BUCKYOS_KEVENT_RINGBUFFER_PATH=/opt/buckyos/run/kevent/ringbuffer_v2.shm",
+            spec,
+        )
         self.assertIn(".buckyos_installer_defaults", spec)
         self.assertIn("%preun", spec)
         self.assertIn("%global __os_install_post %{nil}", spec)

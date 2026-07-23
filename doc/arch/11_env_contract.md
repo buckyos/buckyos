@@ -109,7 +109,9 @@ AgentTool 新实现目标是只依赖 `OPENDAN_AGENT_ROOT`、`OPENDAN_SESSION_ID
 | `BUCKYOS_TG_API_ID` | msg-center Telegram tunnel | Telegram API id，启用 grammers gateway 时必填。 |
 | `BUCKYOS_TG_API_HASH` | msg-center Telegram tunnel | Telegram API hash，启用 grammers gateway 时必填。 |
 | `BUCKYOS_TG_SESSION_DIR` | msg-center Telegram tunnel | Telegram session 目录覆盖。 |
-| `BUCKYOS_KEVENT_RINGBUFFER_PATH` | kevent shared ringbuffer | 覆盖共享 ringbuffer 文件路径，默认 `/tmp/buckyos_kevent_ringbuffer_v2.shm`；测试中需要串行管理。 |
+| `BUCKYOS_KEVENT_RINGBUFFER_PATH` | kevent shared ringbuffer | 覆盖宿主机共享 ringbuffer 文件路径，默认 `$BUCKYOS_ROOT/run/kevent/ringbuffer_v2.shm`；测试中需要串行管理。 |
+| `BUCKYOS_KEVENT_GROUP` | kevent shared ringbuffer | Unix 上 ringbuffer 文件所属的公共服务组；Linux 安装包默认创建并使用 `buckyos` 组，文件模式为 `0660`。 |
+| `BUCKYOS_KEVENT_DAEMON_ADDR` | kevent daemon bridge | 启用 native TCP daemon bridge，例如容器内使用 `host.docker.internal:3183`；设置后 Full client 不打开容器私有 ringbuffer。 |
 | `BUCKYOS_KEVENT_KMSG_CASES` | `test/kevent_kmsg` | 选择 kevent/kmsg 测试 case。 |
 | `BUCKYOS_WEBSDK_ROOT` | sys_test | 覆盖 web sdk 搜索目录。 |
 
