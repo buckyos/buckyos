@@ -1,4 +1,4 @@
-use crate::aicc::{AIComputeCenter, Provider};
+use crate::aicc::AIComputeCenter;
 use crate::openai::{OpenAIInstanceConfig, OpenAIProvider};
 use anyhow::{anyhow, Result};
 use log::info;
@@ -119,17 +119,17 @@ pub fn register_sn_ai_provider(center: &AIComputeCenter, settings: &Value) -> Re
         return Ok(0);
     };
     let instances = build_sn_ai_provider_instances(&sn_settings)?;
-    let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(OpenAIInstanceConfig, Arc<OpenAIProvider>)>::new();
     for config in instances.iter() {
         let provider = Arc::new(OpenAIProvider::new(
             config.clone(),
             config.api_token.as_str(),
         )?);
-        provider.clone().start_inventory_refresh();
         prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
+        provider.clone().start_inventory_refresh();
         let inventory = center.registry().add_provider(provider);
         info!(
             "registered sn-ai-provider base_url={} inventory={:?}",
@@ -192,5 +192,33 @@ mod tests {
             parsed.instances[0].provider_instance_name,
             "sn-ai-provider-alias"
         );
+    }
+
+    #[tokio::test]
+    async fn registration_error_does_not_start_prepared_refresh() {
+        let center = AIComputeCenter::default();
+        let settings = json!({
+            "sn-ai-provider": {
+                "enabled": true,
+                "instances": [
+                    {
+                        "provider_instance_name": "sn-valid",
+                        "api_token": "token",
+                        "base_url": "http://127.0.0.1:1",
+                        "auth_mode": "bearer",
+                        "timeout_ms": 100
+                    },
+                    {
+                        "provider_instance_name": "sn-invalid",
+                        "auth_mode": "bearer"
+                    }
+                ]
+            }
+        });
+
+        let result = register_sn_ai_provider(&center, &settings);
+
+        assert!(result.is_err());
+        assert!(center.registry().inventories().is_empty());
     }
 }

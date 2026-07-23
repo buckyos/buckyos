@@ -1,6 +1,6 @@
 use crate::aicc::{
     provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 use crate::model_types::{
@@ -21,8 +21,9 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::time;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -94,7 +95,7 @@ pub struct GoogleGeminiInstanceConfig {
     pub alias_map: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GoogleGeminiProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
@@ -105,6 +106,7 @@ pub struct GoogleGeminiProvider {
     provider_driver: String,
     provider_instance_name: String,
     features: Vec<Feature>,
+    refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -238,6 +240,7 @@ impl GoogleGeminiProvider {
             provider_driver,
             provider_instance_name,
             features: cfg.features,
+            refresh_task: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -312,26 +315,126 @@ impl GoogleGeminiProvider {
             return;
         }
 
-        tokio::spawn(async move {
-            if let Err(err) = self.refresh_inventory_once().await {
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        let existing = match self.refresh_task.lock() {
+            Ok(mut current) => current.replace(refresh_task.clone()),
+            Err(_) => {
                 warn!(
-                    "aicc.gemini.inventory.initial_refresh_failed provider_instance_name={} err={}",
-                    self.provider_instance_name, err
+                    "aicc.gemini.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                    self.provider_instance_name
                 );
+                return;
             }
+        };
+        if let Some(existing) = existing {
+            existing.shutdown();
+        }
+        let provider = Arc::downgrade(&self);
+        let provider_instance_name = self.provider_instance_name.clone();
+        tokio::spawn(async move {
+            Self::run_inventory_refresh(
+                provider,
+                provider_instance_name,
+                refresh_task,
+                shutdown_rx,
+            )
+            .await;
+        });
+    }
 
-            let mut interval = time::interval(DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL);
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                if let Err(err) = self.refresh_inventory_once().await {
-                    warn!(
-                        "aicc.gemini.inventory.refresh_failed provider_instance_name={} err={}",
-                        self.provider_instance_name, err
+    async fn run_inventory_refresh(
+        provider: Weak<Self>,
+        provider_instance_name: String,
+        refresh_task: Arc<ProviderRefreshTask>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) {
+        if !refresh_task.try_start_request() {
+            info!(
+                "aicc.gemini.inventory.refresh_stopped provider_instance_name={}",
+                provider_instance_name
+            );
+            return;
+        }
+        let Some(current) = provider.upgrade() else {
+            refresh_task.shutdown();
+            return;
+        };
+        let initial_result = current.refresh_inventory_once().await;
+        refresh_task.finish_request();
+        drop(current);
+        if let Err(err) = initial_result {
+            warn!(
+                "aicc.gemini.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                provider_instance_name, err
+            );
+        }
+        if refresh_task.is_stopped() {
+            info!(
+                "aicc.gemini.inventory.refresh_stopped provider_instance_name={}",
+                provider_instance_name
+            );
+            return;
+        }
+
+        let mut interval = time::interval(DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                biased;
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        info!(
+                            "aicc.gemini.inventory.refresh_stopped provider_instance_name={}",
+                            provider_instance_name
+                        );
+                        return;
+                    }
+                }
+                _ = interval.tick() => {
+                    if !refresh_task.try_start_request() {
+                        return;
+                    }
+                    let Some(current) = provider.upgrade() else {
+                        refresh_task.shutdown();
+                        return;
+                    };
+                    let result = current.refresh_inventory_once().await;
+                    refresh_task.finish_request();
+                    drop(current);
+                    if let Err(err) = result {
+                        warn!(
+                            "aicc.gemini.inventory.refresh_failed provider_instance_name={} err={}",
+                            provider_instance_name, err
+                        );
+                    }
+                    if refresh_task.is_stopped() {
+                        info!(
+                            "aicc.gemini.inventory.refresh_stopped provider_instance_name={}",
+                            provider_instance_name
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn stop_inventory_refresh(&self) {
+        match self.refresh_task.lock() {
+            Ok(mut current) => {
+                if let Some(task) = current.take() {
+                    task.shutdown();
+                    info!(
+                        "aicc.gemini.inventory.refresh_stop_requested provider_instance_name={}",
+                        self.provider_instance_name
                     );
                 }
             }
-        });
+            Err(_) => warn!(
+                "aicc.gemini.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                self.provider_instance_name
+            ),
+        }
     }
 
     async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
@@ -2298,6 +2401,10 @@ impl Provider for GoogleGeminiProvider {
             })
     }
 
+    fn shutdown(&self) {
+        self.stop_inventory_refresh();
+    }
+
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
         let provider_model = provider_model_from_exact(input.exact_model.as_str());
         if matches!(
@@ -2415,6 +2522,12 @@ impl Provider for GoogleGeminiProvider {
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
         Ok(())
+    }
+}
+
+impl Drop for GoogleGeminiProvider {
+    fn drop(&mut self) {
+        self.stop_inventory_refresh();
     }
 }
 
@@ -2920,11 +3033,11 @@ pub fn register_google_gemini_providers(
             config.clone(),
             config.api_token.clone(),
         )?);
-        provider.clone().start_inventory_refresh();
         prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
+        provider.clone().start_inventory_refresh();
         let inventory = center.registry().add_provider(provider);
         info!(
             "registered google gemini base_url={} inventory={:?}",
@@ -3220,6 +3333,78 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].provider_instance_name, "google-gemini-default");
         assert_eq!(instances[0].provider_driver, "google-gemini");
+    }
+
+    #[tokio::test]
+    async fn stopped_refresh_does_not_send_initial_request() {
+        let config = build_gemini_instances(&GeminiSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        })
+        .expect("instances")
+        .remove(0);
+        let provider = Arc::new(
+            GoogleGeminiProvider::new(config, "token".to_string()).expect("provider should build"),
+        );
+        let provider_instance_name = provider.provider_instance_name.clone();
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        refresh_task.shutdown();
+
+        GoogleGeminiProvider::run_inventory_refresh(
+            Arc::downgrade(&provider),
+            provider_instance_name,
+            refresh_task.clone(),
+            shutdown_rx,
+        )
+        .await;
+
+        assert_eq!(refresh_task.started_requests(), 0);
+    }
+
+    #[test]
+    fn dropping_provider_stops_refresh_task() {
+        let config = build_gemini_instances(&GeminiSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        })
+        .expect("instances")
+        .remove(0);
+        let provider = GoogleGeminiProvider::new(config, "token".to_string()).expect("provider");
+        let (refresh_task, _) = ProviderRefreshTask::new();
+        *provider.refresh_task.lock().expect("refresh task lock") = Some(refresh_task.clone());
+
+        drop(provider);
+
+        assert!(refresh_task.is_stopped());
+    }
+
+    #[tokio::test]
+    async fn registration_error_does_not_start_prepared_refresh() {
+        let center = AIComputeCenter::default();
+        let settings = json!({
+            "gemini": {
+                "enabled": true,
+                "instances": [
+                    {
+                        "provider_instance_name": "gemini-valid",
+                        "api_token": "token",
+                        "base_url": "http://127.0.0.1:1"
+                    },
+                    {
+                        "provider_instance_name": "gemini-invalid"
+                    }
+                ]
+            }
+        });
+
+        let result = register_google_gemini_providers(&center, &settings);
+
+        assert!(result.is_err());
+        assert!(center.registry().inventories().is_empty());
     }
 
     #[test]
