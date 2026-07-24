@@ -57,8 +57,6 @@ const IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS: u64 = 10_000;
 struct MessageCenterState {
     messages: HashMap<String, MsgObject>,
     receipts: HashMap<String, MsgReceiptObj>,
-    last_idempotency_sweep_ms: u64,
-    idempotency_global_sweep_active: bool,
 }
 
 /// Registry entry for a registered message tunnel: maps the stable
@@ -254,93 +252,77 @@ impl MessageCenter {
 
     async fn load_dispatch_idempotency(
         &self,
+        owner_scope: &str,
         key: &str,
     ) -> std::result::Result<Option<DispatchResult>, RPCErrors> {
         let now_ms = Self::now_ms();
         let stored: Option<IdempotencyStoredResult<DispatchResult>> = self
             .msg_box_db
-            .get_idempotency_result(IDEMPOTENCY_SCOPE_DISPATCH, key, now_ms)
+            .get_idempotency_result(IDEMPOTENCY_SCOPE_DISPATCH, owner_scope, key, now_ms)
             .await?;
         Ok(stored.map(|stored| stored.result))
     }
 
     async fn load_post_send_idempotency(
         &self,
+        owner_scope: &str,
         key: &str,
     ) -> std::result::Result<Option<PostSendResult>, RPCErrors> {
         let now_ms = Self::now_ms();
         let stored: Option<IdempotencyStoredResult<PostSendResult>> = self
             .msg_box_db
-            .get_idempotency_result(IDEMPOTENCY_SCOPE_POST_SEND, key, now_ms)
+            .get_idempotency_result(IDEMPOTENCY_SCOPE_POST_SEND, owner_scope, key, now_ms)
             .await?;
         Ok(stored.map(|stored| stored.result))
     }
 
-    async fn maybe_sweep_expired_idempotency(&self) {
+    pub async fn sweep_expired_idempotency(&self) {
         let now_ms = Self::now_ms();
-        let sweep_plan = self
-            .with_state_write(|state| {
-                let periodic_sweep_due = now_ms.saturating_sub(state.last_idempotency_sweep_ms)
-                    >= IDEMPOTENCY_SWEEP_INTERVAL_MS;
-                if !periodic_sweep_due && !state.idempotency_global_sweep_active {
-                    return Ok(None);
-                }
-                if periodic_sweep_due {
-                    state.last_idempotency_sweep_ms = now_ms;
-                }
-                Ok(Some((
-                    periodic_sweep_due,
-                    state.idempotency_global_sweep_active,
-                )))
-            })
-            .unwrap_or(None);
-        let Some((periodic_sweep_due, global_sweep_active)) = sweep_plan else {
-            return;
-        };
-        let bucket_deleted = if periodic_sweep_due {
-            match self
-                .msg_box_db
-                .sweep_expired_idempotency_buckets_by_capacity(
-                    now_ms,
-                    IDEMPOTENCY_BUCKET_MAX_ROWS,
-                    IDEMPOTENCY_BUCKET_TARGET_ROWS,
-                )
-                .await
-            {
-                Ok(deleted) => deleted,
-                Err(error) => {
-                    warn!("msg_center idempotency bucket sweep failed: {}", error);
-                    0
-                }
-            }
-        } else {
-            0
-        };
-        let global_deleted = match self
+        let bucket_deleted = match self
             .msg_box_db
-            .sweep_expired_idempotency_global_by_capacity(
+            .sweep_expired_idempotency_buckets_by_capacity(
                 now_ms,
-                IDEMPOTENCY_GLOBAL_MAX_ROWS,
-                IDEMPOTENCY_GLOBAL_TARGET_ROWS,
-                IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS,
-                global_sweep_active,
+                IDEMPOTENCY_BUCKET_MAX_ROWS,
+                IDEMPOTENCY_BUCKET_TARGET_ROWS,
             )
             .await
         {
-            Ok((deleted, remaining_rows)) => {
-                let continue_sweep = remaining_rows > IDEMPOTENCY_GLOBAL_TARGET_ROWS
-                    && deleted >= IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS;
-                let _ = self.with_state_write(|state| {
-                    state.idempotency_global_sweep_active = continue_sweep;
-                    Ok(())
-                });
-                deleted
-            }
+            Ok(deleted) => deleted,
             Err(error) => {
-                warn!("msg_center idempotency global sweep failed: {}", error);
+                warn!("msg_center idempotency bucket sweep failed: {}", error);
                 0
             }
         };
+        let mut global_deleted = 0_u64;
+        let mut continue_to_target = false;
+        loop {
+            match self
+                .msg_box_db
+                .sweep_expired_idempotency_global_by_capacity(
+                    now_ms,
+                    IDEMPOTENCY_GLOBAL_MAX_ROWS,
+                    IDEMPOTENCY_GLOBAL_TARGET_ROWS,
+                    IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS,
+                    continue_to_target,
+                )
+                .await
+            {
+                Ok((deleted, remaining_rows)) => {
+                    global_deleted = global_deleted.saturating_add(deleted);
+                    if remaining_rows <= IDEMPOTENCY_GLOBAL_TARGET_ROWS
+                        || deleted < IDEMPOTENCY_GLOBAL_SWEEP_BATCH_ROWS
+                    {
+                        break;
+                    }
+                    continue_to_target = true;
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => {
+                    warn!("msg_center idempotency global sweep failed: {}", error);
+                    break;
+                }
+            }
+        }
         let deleted = bucket_deleted.saturating_add(global_deleted);
         if deleted > 0 {
             info!(
@@ -348,6 +330,19 @@ impl MessageCenter {
                 deleted
             );
         }
+    }
+
+    pub fn start_idempotency_sweep(&self) {
+        let center = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(
+                IDEMPOTENCY_SWEEP_INTERVAL_MS,
+            ));
+            loop {
+                ticker.tick().await;
+                center.sweep_expired_idempotency().await;
+            }
+        });
     }
 
     fn sanitize_token(raw: &str) -> String {
@@ -538,25 +533,26 @@ impl MessageCenter {
             .map(|value| value.to_string())
     }
 
-    fn dispatch_idempotency_retention_key(
+    pub(crate) fn dispatch_idempotency_retention_key(
         msg: &MsgObject,
         ingress: Option<&IngressContext>,
     ) -> String {
         if let Some(ctx) = ingress {
             let platform = Self::normalize_non_empty(ctx.platform.as_deref())
                 .unwrap_or_else(|| "unknown".to_string());
-            let source_account = Self::normalize_non_empty(ctx.source_account_id.as_deref())
-                .unwrap_or_else(|| {
-                    ctx.transport_did
-                        .as_ref()
-                        .map(|did| did.to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
-                });
+            let tunnel_account = ctx
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("tunnel_account_id"))
+                .and_then(Value::as_str)
+                .and_then(|value| Self::normalize_non_empty(Some(value)))
+                .or_else(|| ctx.transport_did.as_ref().map(|did| did.to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
             let session = Self::normalize_non_empty(ctx.chat_id.as_deref())
                 .or_else(|| Self::normalize_non_empty(msg.thread.topic.as_deref()))
                 .or_else(|| Self::normalize_non_empty(ctx.context_id.as_deref()))
                 .unwrap_or_else(|| "unknown".to_string());
-            return format!("dispatch:{}:{}:{}", platform, source_account, session);
+            return format!("dispatch:{}:{}:{}", platform, tunnel_account, session);
         }
 
         if let Some(topic) = Self::normalize_non_empty(msg.thread.topic.as_deref()) {
@@ -570,6 +566,31 @@ impl MessageCenter {
                 .unwrap_or_else(|| format!("dispatch:sender:{}", msg.from.to_string()));
         }
         format!("dispatch:sender:{}", msg.from.to_string())
+    }
+
+    fn dispatch_idempotency_owner_scope(
+        msg: &MsgObject,
+        ingress: Option<&IngressContext>,
+    ) -> String {
+        if let Some(owner) = ingress.and_then(|ctx| ctx.contact_mgr_owner.as_ref()) {
+            return owner.to_string();
+        }
+        let mut targets = msg.to.iter().map(|did| did.to_string()).collect::<Vec<_>>();
+        targets.sort();
+        targets.dedup();
+        if targets.is_empty() {
+            return msg.from.to_string();
+        }
+        let mut hasher = Sha256::new();
+        for target in targets {
+            hasher.update(target.as_bytes());
+            hasher.update([0]);
+        }
+        format!("targets:{}", hex::encode(hasher.finalize()))
+    }
+
+    fn post_send_idempotency_owner_scope(msg: &MsgObject) -> String {
+        msg.from.to_string()
     }
 
     fn post_send_idempotency_retention_key(msg: &MsgObject) -> String {
@@ -1012,8 +1033,13 @@ impl MessageCenter {
         ingress_ctx: Option<IngressContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
+        let idempotency_owner_scope =
+            Self::dispatch_idempotency_owner_scope(&msg, ingress_ctx.as_ref());
         if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) = self.load_dispatch_idempotency(key).await? {
+            if let Some(cached) = self
+                .load_dispatch_idempotency(&idempotency_owner_scope, key)
+                .await?
+            {
                 return Ok(cached);
             }
         }
@@ -1068,15 +1094,17 @@ impl MessageCenter {
                     ingress,
                 ),
             };
-        let retention_key =
-            Self::dispatch_idempotency_retention_key(&stored_msg, ingress.as_ref());
+        let retention_key = Self::dispatch_idempotency_retention_key(&stored_msg, ingress.as_ref());
 
         Self::store_message(&stored_msg_id, &stored_msg_json).await?;
 
         // Re-check idempotency before doing any work; a concurrent caller may
         // have completed the same dispatch while we were awaiting store_message.
         if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) = self.load_dispatch_idempotency(key).await? {
+            if let Some(cached) = self
+                .load_dispatch_idempotency(&idempotency_owner_scope, key)
+                .await?
+            {
                 return Ok(cached);
             }
         }
@@ -1118,11 +1146,11 @@ impl MessageCenter {
                 };
                 let now_ms = Self::now_ms();
                 let expires_at_ms = Self::idempotency_expires_at(now_ms);
-                self.maybe_sweep_expired_idempotency().await;
                 match self
                     .msg_box_db
                     .commit_dispatch_records(
                         IDEMPOTENCY_SCOPE_DISPATCH,
+                        &idempotency_owner_scope,
                         idempotency_key.as_deref(),
                         Some(retention_key.as_str()),
                         &stored_msg_id,
@@ -1280,11 +1308,11 @@ impl MessageCenter {
 
         let now_ms = Self::now_ms();
         let expires_at_ms = Self::idempotency_expires_at(now_ms);
-        self.maybe_sweep_expired_idempotency().await;
         match self
             .msg_box_db
             .commit_dispatch_records(
                 IDEMPOTENCY_SCOPE_DISPATCH,
+                &idempotency_owner_scope,
                 idempotency_key.as_deref(),
                 Some(retention_key.as_str()),
                 &stored_msg_id,
@@ -1317,8 +1345,13 @@ impl MessageCenter {
             ));
         }
 
+        let idempotency_owner_scope = Self::post_send_idempotency_owner_scope(&msg);
+
         if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) = self.load_post_send_idempotency(key).await? {
+            if let Some(cached) = self
+                .load_post_send_idempotency(&idempotency_owner_scope, key)
+                .await?
+            {
                 return Ok(cached);
             }
         }
@@ -1379,11 +1412,11 @@ impl MessageCenter {
             };
             let now_ms = Self::now_ms();
             let expires_at_ms = Self::idempotency_expires_at(now_ms);
-            self.maybe_sweep_expired_idempotency().await;
             match self
                 .msg_box_db
                 .commit_post_send_records(
                     IDEMPOTENCY_SCOPE_POST_SEND,
+                    &idempotency_owner_scope,
                     idempotency_key.as_deref(),
                     Some(retention_key.as_str()),
                     &stored_msg_id,
@@ -1419,11 +1452,11 @@ impl MessageCenter {
                     };
                     let now_ms = Self::now_ms();
                     let expires_at_ms = Self::idempotency_expires_at(now_ms);
-                    self.maybe_sweep_expired_idempotency().await;
                     match self
                         .msg_box_db
                         .commit_post_send_records(
                             IDEMPOTENCY_SCOPE_POST_SEND,
+                            &idempotency_owner_scope,
                             idempotency_key.as_deref(),
                             Some(retention_key.as_str()),
                             &stored_msg_id,
@@ -1450,7 +1483,10 @@ impl MessageCenter {
         Self::store_message(&stored_msg_id, &stored_msg_json).await?;
 
         if let Some(key) = idempotency_key.as_ref() {
-            if let Some(cached) = self.load_post_send_idempotency(key).await? {
+            if let Some(cached) = self
+                .load_post_send_idempotency(&idempotency_owner_scope, key)
+                .await?
+            {
                 return Ok(cached);
             }
         }
@@ -1502,11 +1538,11 @@ impl MessageCenter {
             reason: None,
         };
         let expires_at_ms = Self::idempotency_expires_at(now_ms);
-        self.maybe_sweep_expired_idempotency().await;
         match self
             .msg_box_db
             .commit_post_send_records(
                 IDEMPOTENCY_SCOPE_POST_SEND,
+                &idempotency_owner_scope,
                 idempotency_key.as_deref(),
                 Some(retention_key.as_str()),
                 &stored_msg_id,
@@ -2149,6 +2185,31 @@ impl MessageCenter {
         let session_id = Self::normalize_ui_session_arg("session_id", &session_id)?;
         self.msg_box_db.list_ui_session_state(&session_id).await
     }
+
+    async fn get_tunnel_cursor_internal(
+        &self,
+        tunnel_key: String,
+        cursor_key: String,
+    ) -> std::result::Result<Option<Value>, RPCErrors> {
+        let tunnel_key = Self::normalize_ui_session_arg("tunnel_key", &tunnel_key)?;
+        let cursor_key = Self::normalize_ui_session_arg("cursor_key", &cursor_key)?;
+        self.msg_box_db
+            .get_tunnel_cursor(&tunnel_key, &cursor_key)
+            .await
+    }
+
+    async fn update_tunnel_cursor_internal(
+        &self,
+        tunnel_key: String,
+        cursor_key: String,
+        value: Value,
+    ) -> std::result::Result<(), RPCErrors> {
+        let tunnel_key = Self::normalize_ui_session_arg("tunnel_key", &tunnel_key)?;
+        let cursor_key = Self::normalize_ui_session_arg("cursor_key", &cursor_key)?;
+        self.msg_box_db
+            .upsert_tunnel_cursor(&tunnel_key, &cursor_key, &value, Self::now_ms())
+            .await
+    }
 }
 
 #[async_trait]
@@ -2376,6 +2437,27 @@ impl MsgCenterHandler for MessageCenter {
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
         self.list_ui_session_state_internal(session_id).await
+    }
+
+    async fn handle_get_tunnel_cursor(
+        &self,
+        tunnel_key: String,
+        cursor_key: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<Value>, RPCErrors> {
+        self.get_tunnel_cursor_internal(tunnel_key, cursor_key)
+            .await
+    }
+
+    async fn handle_update_tunnel_cursor(
+        &self,
+        tunnel_key: String,
+        cursor_key: String,
+        value: Value,
+        _ctx: RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.update_tunnel_cursor_internal(tunnel_key, cursor_key, value)
+            .await
     }
 
     async fn handle_resolve_did(

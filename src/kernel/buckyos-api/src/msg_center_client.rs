@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 7;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 8;
 pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
 pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS msg_refs (
 
 CREATE TABLE IF NOT EXISTS msg_idempotency (
     scope           TEXT NOT NULL,
+    owner_scope     TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     msg_id          TEXT,
     retention_key   TEXT,
@@ -139,12 +140,20 @@ CREATE TABLE IF NOT EXISTS msg_idempotency (
     created_at_ms   INTEGER NOT NULL,
     updated_at_ms   INTEGER NOT NULL,
     expires_at_ms   INTEGER,
-    PRIMARY KEY (scope, idempotency_key)
+    PRIMARY KEY (scope, owner_scope, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_msg_idempotency_expire
     ON msg_idempotency(expires_at_ms);
 CREATE INDEX IF NOT EXISTS idx_msg_idempotency_retention_expire
     ON msg_idempotency(retention_key, expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS msg_tunnel_cursors (
+    tunnel_key    TEXT NOT NULL,
+    cursor_key    TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tunnel_key, cursor_key)
+);
 
 CREATE TABLE IF NOT EXISTS contact_metadata (
     key   TEXT PRIMARY KEY,
@@ -309,6 +318,7 @@ CREATE TABLE IF NOT EXISTS msg_refs (
 
 CREATE TABLE IF NOT EXISTS msg_idempotency (
     scope           TEXT NOT NULL,
+    owner_scope     TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     msg_id          TEXT,
     retention_key   TEXT,
@@ -317,12 +327,20 @@ CREATE TABLE IF NOT EXISTS msg_idempotency (
     created_at_ms   BIGINT NOT NULL,
     updated_at_ms   BIGINT NOT NULL,
     expires_at_ms   BIGINT,
-    PRIMARY KEY (scope, idempotency_key)
+    PRIMARY KEY (scope, owner_scope, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_msg_idempotency_expire
     ON msg_idempotency(expires_at_ms);
 CREATE INDEX IF NOT EXISTS idx_msg_idempotency_retention_expire
     ON msg_idempotency(retention_key, expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS msg_tunnel_cursors (
+    tunnel_key    TEXT NOT NULL,
+    cursor_key    TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (tunnel_key, cursor_key)
+);
 
 CREATE TABLE IF NOT EXISTS contact_metadata (
     key   TEXT PRIMARY KEY,
@@ -3492,6 +3510,29 @@ pub trait MsgCenterHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors>;
 
+    async fn handle_get_tunnel_cursor(
+        &self,
+        _tunnel_key: String,
+        _cursor_key: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<Value>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "msg_center.get_tunnel_cursor".to_string(),
+        ))
+    }
+
+    async fn handle_update_tunnel_cursor(
+        &self,
+        _tunnel_key: String,
+        _cursor_key: String,
+        _value: Value,
+        _ctx: RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "msg_center.update_tunnel_cursor".to_string(),
+        ))
+    }
+
     async fn handle_resolve_did(
         &self,
         platform: String,
@@ -4447,5 +4488,16 @@ mod tests {
             build_msg_tunnel_ui_session_id(" tg ", "bot:one", " chat:1 "),
             "tg:bot_one:chat_1"
         );
+    }
+
+    #[test]
+    fn schema_v8_scopes_idempotency_and_has_durable_tunnel_cursors() {
+        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 8);
+        for schema in [MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_RDB_SCHEMA_POSTGRES] {
+            assert!(schema.contains("owner_scope     TEXT NOT NULL"));
+            assert!(schema.contains("PRIMARY KEY (scope, owner_scope, idempotency_key)"));
+            assert!(schema.contains("CREATE TABLE IF NOT EXISTS msg_tunnel_cursors"));
+            assert!(schema.contains("PRIMARY KEY (tunnel_key, cursor_key)"));
+        }
     }
 }
