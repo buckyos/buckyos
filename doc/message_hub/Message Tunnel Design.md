@@ -257,15 +257,17 @@ delivery_id = hash(msg_id + target_did + executor_did)      # executor_did 即 t
 
 要求：同一平台事件重复上报得到同一 key；key 不含重试次数/批次/本地时间；持久化存储（带 TTL/容量控制），不能只放内存。
 
-`MessageCenter` 以 `msg_idempotency(scope, idempotency_key)` 保存入站和
+`MessageCenter` 以 `msg_idempotency(scope, owner_scope, idempotency_key)` 保存入站和
 `post_send` 幂等结果。记录先在事务内占用为 `pending`，全部 mailbox /
 delivery 副作用写入成功后再更新为 `completed` 和结果 JSON。TTL 只作为物理
 清理候选依据，不作为命中依据；只要 DB 记录仍在，就必须命中。清理先按
-`retention_key` 分桶控制热点：同一个外部会话或本地发送者 bucket 超过 3,000
+`retention_key` 分桶控制热点：外部会话必须使用稳定的 platform + tunnel/bot
+account + chat/topic 标识，不能按消息发送者拆桶；本地出站按发送者和 topic
+分桶。同一个外部会话或本地发送者 bucket 超过 3,000
 行后，只删除该 bucket 内已过期记录并尽量降到 2,000 行。另有全表
 100,000 → 80,000 的容量水位，用于清理大量低基数 bucket 中的过期记录；全局
-清理单批最多删除 10,000 行，删满且仍高于目标水位时由后续消息写入
-继续触发批次。两层清理都不得删除 30 天内的记录。
+清理单批最多删除 10,000 行。启动时及每小时运行的后台任务继续执行批次，
+清理不进入消息请求路径。两层清理都不得删除 30 天内的记录。
 
 **平台层幂等**：平台支持 client message id 时带上 `delivery_id`；发送超时后状态未知时，回报 retryable failure 并标记 duplicate risk，重试前尽量用外部 id 查询确认。
 
@@ -289,7 +291,7 @@ remote read           远端已读（平台 read receipt，若有）            
 ### 6.5 顺序与漏消息恢复
 
 - 顺序：只承诺同一外部会话内尽量按平台顺序提交；严格因果用 `thread.reply_to` / `correlation_id` / `ext_ids`。
-- 入站恢复：平台 offset/cursor 持久化，处理成功后推进；重启后按 cursor/时间窗补拉。offset/cursor 读取失败或数据非法时必须暂停 polling 并重试，不能退回 0 开始拉取。
+- 入站恢复：平台 offset/cursor 存入 msg-center 专用的 durable tunnel cursor 表，不能复用对外可写的 UI SessionState；处理成功后推进，重启后按 cursor/时间窗补拉。offset/cursor 读取失败或数据非法时必须暂停 polling 并重试，不能退回 0 开始拉取。
 - 出站恢复：`DELIVERY_QUEUE` 扫描（`WAIT` 到期 + `SENDING` 租约超时）。
 - webhook/stream/kevent 只能作为加速信号，不能作为唯一真相。
 

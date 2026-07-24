@@ -140,9 +140,9 @@ WAIT → SENDING → SENT
 
 - 出站幂等键：`msg_id + target_did + executor_did`；重复提交/重放收敛到同一 `DeliveryRecord`。
 - 入站幂等键：`{platform}:{tunnel_account_id}:{chat_id}:{external_message_id}`；无稳定 id 时用 `{event_timestamp}:{payload_hash}` 组合；必须持久化（带 TTL），不能只放内存。
-- 持久幂等记录使用 `pending` / `completed` 状态；业务副作用和 completed 结果必须在同一个本地 RDB 事务内提交。TTL 只作为物理清理候选依据，不作为命中依据。清理采用两层容量水位：单个 `retention_key` bucket 超过 3,000 行后删除该 bucket 的过期记录并尽量降到 2,000 行；全表超过 100,000 行后分批删除所有 bucket 的过期记录并逐轮降到 80,000 行，单批最多删除 10,000 行，删满后由后续消息写入继续触发。30 天内的记录不得删除。
+- 持久幂等记录使用 `(scope, owner_scope, idempotency_key)` 主键和 `pending` / `completed` 状态；业务副作用和 completed 结果必须在同一个本地 RDB 事务内提交。TTL 只作为物理清理候选依据，不作为命中依据。清理采用两层容量水位：外部入站以 platform + tunnel/bot account + chat/topic 为 `retention_key`，不能按消息发送者拆桶；单 bucket 超过 3,000 行后删除过期记录并尽量降到 2,000 行；全表超过 100,000 行后分批删除并逐轮降到 80,000 行，单批最多删除 10,000 行。清理由启动时及每小时运行的后台任务执行，不进入消息请求路径。30 天内的记录不得删除。
 - 投递语义四级：submission accepted → transport accepted（`SENT`）→ remote delivered → remote read；`SENT` 只承诺 transport accepted。
-- 恢复：入站靠平台 offset/cursor 持久化补拉；offset/cursor 读取失败或数据非法时暂停 polling 并重试，不能退回 0；出站靠 `DELIVERY_QUEUE` 扫描（`WAIT` 到期 + `SENDING` 租约超时 sweep）；webhook/stream/kevent 只是加速信号。
+- 恢复：入站靠 msg-center 专用 durable tunnel cursor 持久化平台 offset/cursor，不能复用 UI SessionState；读取失败或数据非法时暂停 polling 并重试，不能退回 0；出站靠 `DELIVERY_QUEUE` 扫描（`WAIT` 到期 + `SENDING` 租约超时 sweep）；webhook/stream/kevent 只是加速信号。
 - 顺序：同一外部会话内尽量按平台顺序提交；严格因果用 `thread.reply_to`/`correlation_id`/`ext_ids`。
 
 ## 7. 流式 AI 消息

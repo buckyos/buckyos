@@ -48,7 +48,7 @@ const TG_BOT_API_ENDPOINT: &str = "https://api.telegram.org";
 const TG_UI_SESSION_IDLE_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 const TG_UI_SESSION_REFRESH_INTERVAL_MS: u64 = 5 * 1000;
 const TG_TASK_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-const TG_BOT_API_OFFSET_STATE_KEY: &str = "bot_api_offset";
+const TG_BOT_API_OFFSET_CURSOR_KEY: &str = "bot_api_update_offset";
 const TG_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("new", "Create a new session"),
     ("clean", "Delete current session and create a new one"),
@@ -100,7 +100,6 @@ impl ManagedTask {
             }
         }
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -979,6 +978,7 @@ impl TgMessageConverter {
             extra: Some(json!({
                 "tg_message_id": message.id(),
                 "chat_type": chat_type,
+                "tunnel_account_id": bot_account_id,
             })),
         };
 
@@ -2918,6 +2918,7 @@ impl BotApiTgGateway {
             extra: Some(json!({
                 "tg_message_id": message.message_id,
                 "chat_type": chat_kind,
+                "tunnel_account_id": bot_account_id,
             })),
         };
         info!(
@@ -3025,13 +3026,13 @@ impl BotApiTgGateway {
         trimmed.to_string()
     }
 
-    fn bot_api_offset_session_id(
+    fn bot_api_cursor_tunnel_key(
         owner_did: &DID,
         bot_account_id: &str,
         tunnel_instance_id: &str,
     ) -> String {
         format!(
-            "tg:bot-api-offset:{}:{}:{}",
+            "telegram:{}:{}:{}",
             owner_did.to_string(),
             bot_account_id,
             tunnel_instance_id
@@ -3044,29 +3045,26 @@ impl BotApiTgGateway {
         bot_account_id: &str,
         tunnel_instance_id: &str,
     ) -> AnyResult<i64> {
-        let session_id =
-            Self::bot_api_offset_session_id(owner_did, bot_account_id, tunnel_instance_id);
+        let tunnel_key =
+            Self::bot_api_cursor_tunnel_key(owner_did, bot_account_id, tunnel_instance_id);
         match dispatcher
-            .handle_get_ui_session_state(
-                session_id,
-                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+            .handle_get_tunnel_cursor(
+                tunnel_key,
+                TG_BOT_API_OFFSET_CURSOR_KEY.to_string(),
                 RPCContext::default(),
             )
             .await
         {
             Ok(Some(entry)) => {
-                let offset = entry.value.as_i64().or_else(|| {
-                    entry
-                        .value
-                        .as_u64()
-                        .and_then(|value| i64::try_from(value).ok())
-                });
+                let offset = entry
+                    .as_i64()
+                    .or_else(|| entry.as_u64().and_then(|value| i64::try_from(value).ok()));
                 offset.filter(|value| *value >= 0).ok_or_else(|| {
                     anyhow::anyhow!(
                         "invalid telegram bot api offset state for owner={}, bot={}, value={}",
                         owner_did.to_string(),
                         bot_account_id,
-                        entry.value
+                        entry
                     )
                 })
             }
@@ -3087,17 +3085,16 @@ impl BotApiTgGateway {
         tunnel_instance_id: &str,
         offset: i64,
     ) -> AnyResult<()> {
-        let session_id =
-            Self::bot_api_offset_session_id(owner_did, bot_account_id, tunnel_instance_id);
+        let tunnel_key =
+            Self::bot_api_cursor_tunnel_key(owner_did, bot_account_id, tunnel_instance_id);
         dispatcher
-            .handle_update_ui_session_state(
-                session_id,
-                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+            .handle_update_tunnel_cursor(
+                tunnel_key,
+                TG_BOT_API_OFFSET_CURSOR_KEY.to_string(),
                 json!(offset.max(0)),
                 RPCContext::default(),
             )
             .await
-            .map(|_| ())
             .map_err(|error| anyhow::anyhow!("persist telegram bot api offset failed: {}", error))
     }
 
@@ -3312,23 +3309,24 @@ impl TgGateway for BotApiTgGateway {
                     return Err(error);
                 }
             };
-            let me = match Self::call_api_with_client::<TgBotApiMe>(&self.http, &token, "getMe", None)
-                .await
-                .with_context(|| {
-                    format!(
-                        "telegram bot api getMe failed for owner {} (bot account {})",
-                        binding.owner_did.to_string(),
-                        binding.bot_account_id
-                    )
-                }) {
-                Ok(me) => me,
-                Err(error) => {
-                    for (_, task) in started_tasks.drain() {
-                        task.stop("bot-api-start-rollback").await;
+            let me =
+                match Self::call_api_with_client::<TgBotApiMe>(&self.http, &token, "getMe", None)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "telegram bot api getMe failed for owner {} (bot account {})",
+                            binding.owner_did.to_string(),
+                            binding.bot_account_id
+                        )
+                    }) {
+                    Ok(me) => me,
+                    Err(error) => {
+                        for (_, task) in started_tasks.drain() {
+                            task.stop("bot-api-start-rollback").await;
+                        }
+                        return Err(error);
                     }
-                    return Err(error);
-                }
-            };
+                };
             info!(
                 "telegram bot api ready: owner={}, bot_id={}, username={:?}",
                 binding.owner_did.to_string(),
@@ -4551,24 +4549,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bot_api_offset_invalid_state_returns_error() {
+    async fn bot_api_offset_uses_internal_cursor_state() {
         let (center, _tmp) = new_msg_center().await;
         let owner = DID::new("bns", "alice");
         let bot_account_id = "@alice_bot";
         let tunnel_instance_id = "default";
-        let session_id =
-            BotApiTgGateway::bot_api_offset_session_id(&owner, bot_account_id, tunnel_instance_id);
+        let tunnel_key =
+            BotApiTgGateway::bot_api_cursor_tunnel_key(&owner, bot_account_id, tunnel_instance_id);
         center
             .handle_update_ui_session_state(
-                session_id,
-                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+                tunnel_key.clone(),
+                TG_BOT_API_OFFSET_CURSOR_KEY.to_string(),
                 json!("not-an-offset"),
                 RPCContext::default(),
             )
             .await
             .unwrap();
 
-        let handler: Arc<dyn MsgCenterHandler> = Arc::new(center);
+        let handler: Arc<dyn MsgCenterHandler> = Arc::new(center.clone());
+        let offset = BotApiTgGateway::load_bot_api_offset(
+            &handler,
+            &owner,
+            bot_account_id,
+            tunnel_instance_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(offset, 0);
+
+        center
+            .handle_update_tunnel_cursor(
+                tunnel_key.clone(),
+                TG_BOT_API_OFFSET_CURSOR_KEY.to_string(),
+                json!("not-an-offset"),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
         let error = BotApiTgGateway::load_bot_api_offset(
             &handler,
             &owner,
@@ -4577,14 +4594,14 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("invalid telegram bot api offset"));
+        assert!(error
+            .to_string()
+            .contains("invalid telegram bot api offset"));
 
-        let session_id =
-            BotApiTgGateway::bot_api_offset_session_id(&owner, bot_account_id, tunnel_instance_id);
         handler
-            .handle_update_ui_session_state(
-                session_id,
-                TG_BOT_API_OFFSET_STATE_KEY.to_string(),
+            .handle_update_tunnel_cursor(
+                tunnel_key,
+                TG_BOT_API_OFFSET_CURSOR_KEY.to_string(),
                 json!(-1),
                 RPCContext::default(),
             )
@@ -4598,7 +4615,28 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("invalid telegram bot api offset"));
+        assert!(error
+            .to_string()
+            .contains("invalid telegram bot api offset"));
+
+        BotApiTgGateway::persist_bot_api_offset(
+            &handler,
+            &owner,
+            bot_account_id,
+            tunnel_instance_id,
+            42,
+        )
+        .await
+        .unwrap();
+        let offset = BotApiTgGateway::load_bot_api_offset(
+            &handler,
+            &owner,
+            bot_account_id,
+            tunnel_instance_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(offset, 42);
     }
 
     fn build_record(

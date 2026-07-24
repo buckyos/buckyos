@@ -413,13 +413,18 @@ MessageCenter 可以建立 `thread.topic → session_id` 的映射（同 topic �
 ### 6.3.1 `msg_idempotency`
 
 `msg_idempotency` 是 `dispatch` / `post_send` 的持久幂等边界。主键是
-`(scope, idempotency_key)`，其中 `scope` 取 `dispatch` 或 `post_send`。
+`(scope, owner_scope, idempotency_key)`，其中 `scope` 取 `dispatch` 或
+`post_send`。`owner_scope` 对 dispatch 使用稳定的接收方 owner（tunnel 入站为
+`contact_mgr_owner`），对 post_send 使用消息 author；不同 owner 可以安全复用
+同一个调用方幂等键。
 每条记录包含：
 
 - `state`：`pending` 或 `completed`。
 - `msg_id`：已确定的内容寻址消息 id。
 - `result_json`：`completed` 记录保存对应 RPC result 的 JSON；`pending` 记录为空。
-- `retention_key`：清理分桶，按外部会话或本地发送者维度控制保留量。
+- `retention_key`：清理分桶。外部入站按 platform + tunnel/bot account +
+  chat/topic 会话分桶，不得使用单条消息的发送者账号；本地出站按发送者和 topic
+  分桶。
 - `expires_at_ms`：清理候选时间。
 
 服务在同一个本地 RDB 事务内完成：占用幂等键为 `pending`，写入全部
@@ -437,11 +442,11 @@ mailbox / delivery 副作用，再把同一行更新为 `completed` 并写入
 行；未过期记录不得删除，其它 bucket 不受分桶清理影响。全表超过 100,000 行
 时启动全局清理，按相同顺序删除任意 bucket 的过期记录，逐轮降到 80,000 行。
 全局清理每批最多删除 10,000 行，避免服务启动或长期停机后在一个事务中清空
-大量记录。服务每小时枚举并清理一次超限 bucket，再启动一批全局清理；若该批
-删满 10,000 行且仍高于目标水位，后续消息写入会继续执行全局清理批次，直到
-降到目标水位或某批没有删满。30 天内的记录不受任一容量水位影响。
+大量记录。独立后台任务在服务启动时和之后每小时枚举并清理一次超限 bucket，
+再执行全局清理；全局清理每批让出执行权，直到降到目标水位或某批没有删满。
+清理不进入 dispatch/post_send 请求路径。30 天内的记录不受任一容量水位影响。
 
-`result_json` 使用 schema version 7 下 RPC result 的 serde JSON 表示，不再
+`result_json` 使用 schema version 8 下 RPC result 的 serde JSON 表示，不再
 额外嵌套 envelope：
 
 - `scope=dispatch`：对象字段为 `ok: bool`、`msg_id: ObjId string`，以及可选的
@@ -453,21 +458,21 @@ mailbox / delivery 副作用，再把同一行更新为 `completed` 并写入
   `target_did`、`transport`；`transport` 为 `{"kind":"native"}`，或
   `{"kind":"tunnel","platform":string,"tunnel_instance_id":string}`。
 
-`scope`、主键语义、`state` 状态机及上述结果字段在 version 7 内冻结；未来增加
+`scope`、`owner_scope`、主键语义、`state` 状态机及上述结果字段在 version 8 内冻结；未来增加
 或改变结果字段必须提升 MessageCenter RDB schema version。当前共享 schema
-version 为 7，存放在 scheduler 下发的 msg-center RDB instance spec 中。
-beta2.2 尚处于 breaking-change 阶段，version 5/6 到 version 7 采用 no-compat
+version 为 8，存放在 scheduler 下发的 msg-center RDB instance spec 中。
+beta2.2 尚处于 breaking-change 阶段，version 7 到 version 8 采用 no-compat
 策略：旧实例数据必须重建，不提供表内迁移。
 
 主要查询及索引：
 
-- `(scope, idempotency_key)` 精确命中由主键支持。
+- `(scope, owner_scope, idempotency_key)` 精确命中由主键支持。
 - 超限 bucket 枚举和 bucket 行数统计由
   `idx_msg_idempotency_retention_expire(retention_key, expires_at_ms)` 支持。
 - bucket 内按过期时间选择删除候选由同一索引支持；每小时的超限 bucket 枚举
   会扫描该索引，是受 sweep 间隔控制的维护成本，不进入每次读取路径。
 - 全局清理的过期候选由 `idx_msg_idempotency_expire(expires_at_ms)` 支持，并受
-  全局水位和单批 10,000 行上限约束；连续批次由后续消息写入驱动。
+  全局水位和单批 10,000 行上限约束；连续批次由后台清理任务驱动。
 
 ### 6.4 崩溃恢复
 

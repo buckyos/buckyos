@@ -956,6 +956,7 @@ pub async fn start_msg_center_service() -> Result<()> {
     let center = MessageCenter::open_from_service_spec()
         .await
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
+    center.start_idempotency_sweep();
 
     let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
     register_message_hub(&center, executor_mgr.as_ref()).await?;

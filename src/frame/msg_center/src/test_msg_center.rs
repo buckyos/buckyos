@@ -1155,3 +1155,87 @@ async fn idempotency_key_survives_message_center_restart() {
         .unwrap();
     assert_eq!(inbox.len(), 1);
 }
+
+#[tokio::test]
+async fn idempotency_key_is_isolated_by_message_owner() {
+    let (center, _tmp) = new_center("idempotency_owner_scope").await;
+    let transport_did = DID::new("bns", "tg-owner-scope-tunnel");
+    center
+        .register_tunnel(
+            "tg-owner-scope".to_string(),
+            transport_did.clone(),
+            "telegram".to_string(),
+        )
+        .unwrap();
+    let target = DID::new("msgtunnel", "888.user.tg-owner-scope");
+    let first = center
+        .handle_post_send(
+            make_msg(
+                DID::new("bns", "owner-scope-a"),
+                vec![target.clone()],
+                MsgObjKind::Chat,
+            ),
+            Some("shared-caller-key".to_string()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let second = center
+        .handle_post_send(
+            make_msg(
+                DID::new("bns", "owner-scope-b"),
+                vec![target],
+                MsgObjKind::Chat,
+            ),
+            Some("shared-caller-key".to_string()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(first.msg_id, second.msg_id);
+    assert_ne!(first.deliveries, second.deliveries);
+    let first_delivery = center
+        .handle_get_next_delivery(transport_did.clone(), Some(true), None, ctx())
+        .await
+        .unwrap();
+    let second_delivery = center
+        .handle_get_next_delivery(transport_did, Some(true), None, ctx())
+        .await
+        .unwrap();
+    assert!(first_delivery.is_some());
+    assert!(second_delivery.is_some());
+}
+
+#[test]
+fn telegram_retention_bucket_uses_bot_and_chat_not_sender() {
+    let msg = make_msg(
+        DID::new("bns", "external-sender"),
+        vec![DID::new("bns", "recipient")],
+        MsgObjKind::Chat,
+    );
+    let ingress = |sender: &str, bot: &str| IngressContext {
+        transport_did: Some(DID::new("bns", "tg-retention-tunnel")),
+        platform: Some("telegram".to_string()),
+        chat_id: Some("-100123".to_string()),
+        source_account_id: Some(sender.to_string()),
+        extra: Some(json!({"tunnel_account_id": bot})),
+        ..Default::default()
+    };
+
+    let first = MessageCenter::dispatch_idempotency_retention_key(
+        &msg,
+        Some(&ingress("telegram-user-1", "@zone_bot")),
+    );
+    let second = MessageCenter::dispatch_idempotency_retention_key(
+        &msg,
+        Some(&ingress("telegram-user-2", "@zone_bot")),
+    );
+    let other_bot = MessageCenter::dispatch_idempotency_retention_key(
+        &msg,
+        Some(&ingress("telegram-user-1", "@other_bot")),
+    );
+
+    assert_eq!(first, second);
+    assert_ne!(first, other_bot);
+}

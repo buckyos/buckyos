@@ -345,6 +345,7 @@ ON CONFLICT(delivery_id) DO NOTHING
         &self,
         tx: &mut Transaction<'_, Any>,
         scope: &str,
+        owner_scope: &str,
         idempotency_key: &str,
         retention_key: Option<&str>,
         now_ms: u64,
@@ -352,17 +353,18 @@ ON CONFLICT(delivery_id) DO NOTHING
     ) -> std::result::Result<Option<T>, RPCErrors> {
         let sql = self.render_sql(
             "SELECT state, result_json, expires_at_ms FROM msg_idempotency
-             WHERE scope = ? AND idempotency_key = ?",
+             WHERE scope = ? AND owner_scope = ? AND idempotency_key = ?",
         );
         let row = sqlx::query(&sql)
             .bind(scope.to_string())
+            .bind(owner_scope.to_string())
             .bind(idempotency_key.to_string())
             .fetch_optional(&mut **tx)
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to query msg idempotency key {}:{}: {}",
-                    scope, idempotency_key, error
+                    "failed to query msg idempotency key {}:{}:{}: {}",
+                    scope, owner_scope, idempotency_key, error
                 ))
             })?;
 
@@ -374,34 +376,35 @@ ON CONFLICT(delivery_id) DO NOTHING
             if state == "completed" {
                 let Some(result_json) = result_json else {
                     return Err(RPCErrors::ReasonError(format!(
-                        "completed msg idempotency key {}:{} has no result",
-                        scope, idempotency_key
+                        "completed msg idempotency key {}:{}:{} has no result",
+                        scope, owner_scope, idempotency_key
                     )));
                 };
                 let result = serde_json::from_str(&result_json).map_err(|error| {
                     RPCErrors::ReasonError(format!(
-                        "failed to decode msg idempotency result {}:{}: {}",
-                        scope, idempotency_key, error
+                        "failed to decode msg idempotency result {}:{}:{}: {}",
+                        scope, owner_scope, idempotency_key, error
                     ))
                 })?;
                 return Ok(Some(result));
             } else {
                 return Err(RPCErrors::ReasonError(format!(
-                    "msg idempotency key {}:{} is pending",
-                    scope, idempotency_key
+                    "msg idempotency key {}:{}:{} is pending",
+                    scope, owner_scope, idempotency_key
                 )));
             }
         }
 
         let sql = self.render_sql(
             "INSERT INTO msg_idempotency(
-                scope, idempotency_key, msg_id, retention_key, state, result_json,
+                scope, owner_scope, idempotency_key, msg_id, retention_key, state, result_json,
                 created_at_ms, updated_at_ms, expires_at_ms
-             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(scope, idempotency_key) DO NOTHING",
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(scope, owner_scope, idempotency_key) DO NOTHING",
         );
         let result = sqlx::query(&sql)
             .bind(scope.to_string())
+            .bind(owner_scope.to_string())
             .bind(idempotency_key.to_string())
             .bind(Option::<String>::None)
             .bind(retention_key.map(|value| value.to_string()))
@@ -414,14 +417,14 @@ ON CONFLICT(delivery_id) DO NOTHING
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to reserve msg idempotency key {}:{}: {}",
-                    scope, idempotency_key, error
+                    "failed to reserve msg idempotency key {}:{}:{}: {}",
+                    scope, owner_scope, idempotency_key, error
                 ))
             })?;
         if result.rows_affected() == 0 {
             return Err(RPCErrors::ReasonError(format!(
-                "msg idempotency key {}:{} is already reserved",
-                scope, idempotency_key
+                "msg idempotency key {}:{}:{} is already reserved",
+                scope, owner_scope, idempotency_key
             )));
         }
         Ok(None)
@@ -431,6 +434,7 @@ ON CONFLICT(delivery_id) DO NOTHING
         &self,
         tx: &mut Transaction<'_, Any>,
         scope: &str,
+        owner_scope: &str,
         idempotency_key: &str,
         msg_id: Option<&ObjId>,
         retention_key: Option<&str>,
@@ -440,15 +444,15 @@ ON CONFLICT(delivery_id) DO NOTHING
     ) -> std::result::Result<(), RPCErrors> {
         let result_json = serde_json::to_string(result).map_err(|error| {
             RPCErrors::ReasonError(format!(
-                "failed to encode msg idempotency result {}:{}: {}",
-                scope, idempotency_key, error
+                "failed to encode msg idempotency result {}:{}:{}: {}",
+                scope, owner_scope, idempotency_key, error
             ))
         })?;
         let sql = self.render_sql(
             "UPDATE msg_idempotency
              SET msg_id = ?, retention_key = ?, state = 'completed', result_json = ?,
                  updated_at_ms = ?, expires_at_ms = ?
-             WHERE scope = ? AND idempotency_key = ? AND state = 'pending'",
+             WHERE scope = ? AND owner_scope = ? AND idempotency_key = ? AND state = 'pending'",
         );
         let updated = sqlx::query(&sql)
             .bind(msg_id.map(|id| id.to_string()))
@@ -457,19 +461,20 @@ ON CONFLICT(delivery_id) DO NOTHING
             .bind(to_sql_i64(now_ms))
             .bind(expires_at_ms.map(to_sql_i64))
             .bind(scope.to_string())
+            .bind(owner_scope.to_string())
             .bind(idempotency_key.to_string())
             .execute(&mut **tx)
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to complete msg idempotency key {}:{}: {}",
-                    scope, idempotency_key, error
+                    "failed to complete msg idempotency key {}:{}:{}: {}",
+                    scope, owner_scope, idempotency_key, error
                 ))
             })?;
         if updated.rows_affected() == 0 {
             return Err(RPCErrors::ReasonError(format!(
-                "msg idempotency key {}:{} was not pending",
-                scope, idempotency_key
+                "msg idempotency key {}:{}:{} was not pending",
+                scope, owner_scope, idempotency_key
             )));
         }
         Ok(())
@@ -994,24 +999,26 @@ LIMIT 1
     pub async fn get_idempotency_result<T: DeserializeOwned>(
         &self,
         scope: &str,
+        owner_scope: &str,
         idempotency_key: &str,
         _now_ms: u64,
     ) -> std::result::Result<Option<IdempotencyStoredResult<T>>, RPCErrors> {
         let sql = self.render_sql(
             "SELECT result_json, expires_at_ms FROM msg_idempotency
-             WHERE scope = ? AND idempotency_key = ?
+             WHERE scope = ? AND owner_scope = ? AND idempotency_key = ?
                AND state = 'completed'
                AND result_json IS NOT NULL",
         );
         let row = sqlx::query(&sql)
             .bind(scope.to_string())
+            .bind(owner_scope.to_string())
             .bind(idempotency_key.to_string())
             .fetch_optional(self.pool())
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to query msg idempotency key {}:{}: {}",
-                    scope, idempotency_key, error
+                    "failed to query msg idempotency key {}:{}:{}: {}",
+                    scope, owner_scope, idempotency_key, error
                 ))
             })?;
         let Some(row) = row else {
@@ -1022,8 +1029,8 @@ LIMIT 1
             .map_err(|e| decode_err("result_json", &e))?;
         let result = serde_json::from_str(&result_json).map_err(|error| {
             RPCErrors::ReasonError(format!(
-                "failed to decode msg idempotency result {}:{}: {}",
-                scope, idempotency_key, error
+                "failed to decode msg idempotency result {}:{}:{}: {}",
+                scope, owner_scope, idempotency_key, error
             ))
         })?;
         Ok(Some(IdempotencyStoredResult { result }))
@@ -1033,6 +1040,7 @@ LIMIT 1
     pub async fn upsert_idempotency_result<T: Serialize>(
         &self,
         scope: &str,
+        owner_scope: &str,
         idempotency_key: &str,
         msg_id: Option<&ObjId>,
         retention_key: Option<&str>,
@@ -1042,16 +1050,16 @@ LIMIT 1
     ) -> std::result::Result<(), RPCErrors> {
         let result_json = serde_json::to_string(result).map_err(|error| {
             RPCErrors::ReasonError(format!(
-                "failed to encode msg idempotency result {}:{}: {}",
-                scope, idempotency_key, error
+                "failed to encode msg idempotency result {}:{}:{}: {}",
+                scope, owner_scope, idempotency_key, error
             ))
         })?;
         let sql = self.render_sql(
             "INSERT INTO msg_idempotency(
-                scope, idempotency_key, msg_id, retention_key, state, result_json,
+                scope, owner_scope, idempotency_key, msg_id, retention_key, state, result_json,
                 created_at_ms, updated_at_ms, expires_at_ms
-             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(scope, idempotency_key) DO UPDATE SET
+             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(scope, owner_scope, idempotency_key) DO UPDATE SET
                 msg_id = excluded.msg_id,
                 retention_key = excluded.retention_key,
                 state = excluded.state,
@@ -1061,6 +1069,7 @@ LIMIT 1
         );
         sqlx::query(&sql)
             .bind(scope.to_string())
+            .bind(owner_scope.to_string())
             .bind(idempotency_key.to_string())
             .bind(msg_id.map(|id| id.to_string()))
             .bind(retention_key.map(|value| value.to_string()))
@@ -1073,16 +1082,17 @@ LIMIT 1
             .await
             .map_err(|error| {
                 RPCErrors::ReasonError(format!(
-                    "failed to upsert msg idempotency key {}:{}: {}",
-                    scope, idempotency_key, error
+                    "failed to upsert msg idempotency key {}:{}:{}: {}",
+                    scope, owner_scope, idempotency_key, error
                 ))
-        })?;
+            })?;
         Ok(())
     }
 
     pub async fn commit_dispatch_records<T>(
         &self,
         scope: &str,
+        owner_scope: &str,
         idempotency_key: Option<&str>,
         retention_key: Option<&str>,
         msg_id: &ObjId,
@@ -1096,13 +1106,17 @@ LIMIT 1
         T: Serialize + DeserializeOwned + Clone,
     {
         let mut tx = self.pool().begin().await.map_err(|error| {
-            RPCErrors::ReasonError(format!("begin msg-center dispatch transaction failed: {}", error))
+            RPCErrors::ReasonError(format!(
+                "begin msg-center dispatch transaction failed: {}",
+                error
+            ))
         })?;
         if let Some(key) = idempotency_key {
             if let Some(cached) = self
                 .prepare_idempotency_tx::<T>(
                     &mut tx,
                     scope,
+                    owner_scope,
                     key,
                     retention_key,
                     now_ms,
@@ -1127,6 +1141,7 @@ LIMIT 1
             self.complete_idempotency_tx(
                 &mut tx,
                 scope,
+                owner_scope,
                 key,
                 Some(msg_id),
                 retention_key,
@@ -1148,6 +1163,7 @@ LIMIT 1
     pub async fn commit_post_send_records<T>(
         &self,
         scope: &str,
+        owner_scope: &str,
         idempotency_key: Option<&str>,
         retention_key: Option<&str>,
         msg_id: &ObjId,
@@ -1162,13 +1178,17 @@ LIMIT 1
         T: Serialize + DeserializeOwned + Clone,
     {
         let mut tx = self.pool().begin().await.map_err(|error| {
-            RPCErrors::ReasonError(format!("begin msg-center post_send transaction failed: {}", error))
+            RPCErrors::ReasonError(format!(
+                "begin msg-center post_send transaction failed: {}",
+                error
+            ))
         })?;
         if let Some(key) = idempotency_key {
             if let Some(cached) = self
                 .prepare_idempotency_tx::<T>(
                     &mut tx,
                     scope,
+                    owner_scope,
                     key,
                     retention_key,
                     now_ms,
@@ -1196,6 +1216,7 @@ LIMIT 1
             self.complete_idempotency_tx(
                 &mut tx,
                 scope,
+                owner_scope,
                 key,
                 Some(msg_id),
                 retention_key,
@@ -1224,8 +1245,9 @@ LIMIT 1
         if max_rows <= target_rows {
             return Ok(0);
         }
-        let count_sql = self
-            .render_sql("SELECT COUNT(*) AS row_count FROM msg_idempotency WHERE retention_key = ?");
+        let count_sql = self.render_sql(
+            "SELECT COUNT(*) AS row_count FROM msg_idempotency WHERE retention_key = ?",
+        );
         let row = sqlx::query(&count_sql)
             .bind(retention_key.to_string())
             .fetch_one(self.pool())
@@ -1416,6 +1438,78 @@ LIMIT 1
                 ))
             })?;
         Ok(row.is_some())
+    }
+
+    pub async fn upsert_tunnel_cursor(
+        &self,
+        tunnel_key: &str,
+        cursor_key: &str,
+        value: &Value,
+        updated_at_ms: u64,
+    ) -> std::result::Result<(), RPCErrors> {
+        let value_json = serde_json::to_string(value).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "failed to encode tunnel cursor {}:{}: {}",
+                tunnel_key, cursor_key, error
+            ))
+        })?;
+        let sql = self.render_sql(
+            "INSERT INTO msg_tunnel_cursors(tunnel_key, cursor_key, value_json, updated_at_ms)
+             VALUES(?, ?, ?, ?)
+             ON CONFLICT(tunnel_key, cursor_key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at_ms = excluded.updated_at_ms",
+        );
+        sqlx::query(&sql)
+            .bind(tunnel_key.to_string())
+            .bind(cursor_key.to_string())
+            .bind(value_json)
+            .bind(to_sql_i64(updated_at_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to upsert tunnel cursor {}:{}: {}",
+                    tunnel_key, cursor_key, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    pub async fn get_tunnel_cursor(
+        &self,
+        tunnel_key: &str,
+        cursor_key: &str,
+    ) -> std::result::Result<Option<Value>, RPCErrors> {
+        let sql = self.render_sql(
+            "SELECT value_json FROM msg_tunnel_cursors
+             WHERE tunnel_key = ? AND cursor_key = ?",
+        );
+        let row = sqlx::query(&sql)
+            .bind(tunnel_key.to_string())
+            .bind(cursor_key.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query tunnel cursor {}:{}: {}",
+                    tunnel_key, cursor_key, error
+                ))
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let value_json: String = row
+            .try_get("value_json")
+            .map_err(|error| decode_err("value_json", &error))?;
+        serde_json::from_str(&value_json)
+            .map(Some)
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to decode tunnel cursor {}:{}: {}",
+                    tunnel_key, cursor_key, error
+                ))
+            })
     }
 
     pub async fn upsert_ui_session_state(
@@ -2147,6 +2241,7 @@ mod tests {
         });
         mgr.upsert_idempotency_result(
             "dispatch",
+            "owner-a",
             "idem-expiring",
             None,
             Some("bucket-a"),
@@ -2158,12 +2253,12 @@ mod tests {
         .unwrap();
 
         let hit: Option<IdempotencyStoredResult<Value>> = mgr
-            .get_idempotency_result("dispatch", "idem-expiring", 150)
+            .get_idempotency_result("dispatch", "owner-a", "idem-expiring", 150)
             .await
             .unwrap();
         assert!(hit.is_some());
         let expired: Option<IdempotencyStoredResult<Value>> = mgr
-            .get_idempotency_result("dispatch", "idem-expiring", 201)
+            .get_idempotency_result("dispatch", "owner-a", "idem-expiring", 201)
             .await
             .unwrap();
         assert!(expired.is_some());
@@ -2176,6 +2271,7 @@ mod tests {
 
         mgr.upsert_idempotency_result(
             "dispatch",
+            "owner-a",
             "idem-fresh",
             None,
             Some("bucket-a"),
@@ -2187,6 +2283,7 @@ mod tests {
         .unwrap();
         mgr.upsert_idempotency_result(
             "dispatch",
+            "owner-a",
             "idem-other-bucket-expiring",
             None,
             Some("bucket-b"),
@@ -2202,12 +2299,12 @@ mod tests {
             .unwrap();
         assert_eq!(deleted, 1);
         let fresh: Option<IdempotencyStoredResult<Value>> = mgr
-            .get_idempotency_result("dispatch", "idem-fresh", 201)
+            .get_idempotency_result("dispatch", "owner-a", "idem-fresh", 201)
             .await
             .unwrap();
         assert!(fresh.is_some());
         let other_bucket: Option<IdempotencyStoredResult<Value>> = mgr
-            .get_idempotency_result("dispatch", "idem-other-bucket-expiring", 201)
+            .get_idempotency_result("dispatch", "owner-a", "idem-other-bucket-expiring", 201)
             .await
             .unwrap();
         assert!(other_bucket.is_some());
@@ -2221,6 +2318,7 @@ mod tests {
             for suffix in 0..2 {
                 mgr.upsert_idempotency_result(
                     "dispatch",
+                    "owner-a",
                     &format!("{bucket}-{suffix}"),
                     None,
                     Some(bucket),
@@ -2234,6 +2332,7 @@ mod tests {
         }
         mgr.upsert_idempotency_result(
             "dispatch",
+            "owner-a",
             "bucket-c-0",
             None,
             Some("bucket-c"),
@@ -2255,6 +2354,7 @@ mod tests {
                 let result: Option<IdempotencyStoredResult<Value>> = mgr
                     .get_idempotency_result(
                         "dispatch",
+                        "owner-a",
                         &format!("{bucket}-{suffix}"),
                         201,
                     )
@@ -2264,7 +2364,7 @@ mod tests {
             }
         }
         let under_capacity: Option<IdempotencyStoredResult<Value>> = mgr
-            .get_idempotency_result("dispatch", "bucket-c-0", 201)
+            .get_idempotency_result("dispatch", "owner-a", "bucket-c-0", 201)
             .await
             .unwrap();
         assert!(under_capacity.is_some());
@@ -2277,6 +2377,7 @@ mod tests {
         for suffix in 0..4 {
             mgr.upsert_idempotency_result(
                 "dispatch",
+                "owner-a",
                 &format!("expired-{suffix}"),
                 None,
                 Some(&format!("bucket-{suffix}")),
@@ -2290,6 +2391,7 @@ mod tests {
         for suffix in 0..2 {
             mgr.upsert_idempotency_result(
                 "dispatch",
+                "owner-a",
                 &format!("fresh-{suffix}"),
                 None,
                 Some(&format!("fresh-bucket-{suffix}")),
@@ -2304,13 +2406,7 @@ mod tests {
         let mut continue_to_target = false;
         for expected_remaining in [5, 4, 3, 2] {
             let (deleted, remaining) = mgr
-                .sweep_expired_idempotency_global_by_capacity(
-                    201,
-                    4,
-                    2,
-                    1,
-                    continue_to_target,
-                )
+                .sweep_expired_idempotency_global_by_capacity(201, 4, 2, 1, continue_to_target)
                 .await
                 .unwrap();
             assert_eq!(deleted, 1);
@@ -2325,14 +2421,14 @@ mod tests {
         assert_eq!((deleted, remaining), (0, 2));
         for suffix in 0..4 {
             let result: Option<IdempotencyStoredResult<Value>> = mgr
-                .get_idempotency_result("dispatch", &format!("expired-{suffix}"), 201)
+                .get_idempotency_result("dispatch", "owner-a", &format!("expired-{suffix}"), 201)
                 .await
                 .unwrap();
             assert!(result.is_none());
         }
         for suffix in 0..2 {
             let result: Option<IdempotencyStoredResult<Value>> = mgr
-                .get_idempotency_result("dispatch", &format!("fresh-{suffix}"), 201)
+                .get_idempotency_result("dispatch", "owner-a", &format!("fresh-{suffix}"), 201)
                 .await
                 .unwrap();
             assert!(result.is_some());
