@@ -5,12 +5,16 @@
 //! real native TCP server, so "the daemon went away and came back" is
 //! exercised end to end rather than mocked.
 
-use buckyos_api::{KEventClient, KEventError, KEventTransportKind, BRIDGE_PULL_TIMEOUT_MS};
+use buckyos_api::{
+    KEventClient, KEventDaemonRequest, KEventDaemonResponse, KEventError, KEventTransportKind,
+    BRIDGE_PULL_TIMEOUT_MS,
+};
 use kevent::{handle_native_tcp_connection, KEventService};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::task::{JoinHandle, JoinSet};
 
 /// A stand-in node-daemon that can be stopped and restarted on a fixed port,
@@ -145,6 +149,20 @@ async fn expect_event_eventually(
         }
     }
     panic!("event {} never reached the reader", eventid);
+}
+
+async fn read_daemon_request(stream: &mut TcpStream) -> KEventDaemonRequest {
+    let frame_len = stream.read_u32().await.unwrap() as usize;
+    let mut frame = vec![0_u8; frame_len];
+    stream.read_exact(&mut frame).await.unwrap();
+    serde_json::from_slice(&frame).unwrap()
+}
+
+async fn write_daemon_ok(stream: &mut TcpStream) {
+    let payload = serde_json::to_vec(&KEventDaemonResponse::Ok { event: None }).unwrap();
+    stream.write_u32(payload.len() as u32).await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.flush().await.unwrap();
 }
 
 /// A bridge client with no endpoint must not be constructible. This is the
@@ -415,6 +433,61 @@ async fn concurrent_publishes_do_not_cross_responses() {
     }
     seen.sort_unstable();
     assert_eq!(seen, (0..32).collect::<Vec<u64>>());
+}
+
+#[tokio::test]
+async fn response_loss_does_not_replay_an_ambiguous_publish() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+
+        let first = read_daemon_request(&mut stream).await;
+        assert!(matches!(
+            first,
+            KEventDaemonRequest::PublishGlobal { ref event }
+                if event.eventid == "/publish/prime"
+        ));
+        write_daemon_ok(&mut stream).await;
+
+        let second = read_daemon_request(&mut stream).await;
+        assert!(matches!(
+            second,
+            KEventDaemonRequest::PublishGlobal { ref event }
+                if event.eventid == "/publish/ambiguous"
+        ));
+        let mut deliveries = 1_u32;
+
+        drop(stream);
+
+        if let Ok(Ok((mut replay, _))) =
+            tokio::time::timeout(Duration::from_millis(750), listener.accept()).await
+        {
+            let replayed = read_daemon_request(&mut replay).await;
+            if matches!(
+                replayed,
+                KEventDaemonRequest::PublishGlobal { ref event }
+                    if event.eventid == "/publish/ambiguous"
+            ) {
+                deliveries += 1;
+            }
+            write_daemon_ok(&mut replay).await;
+        }
+
+        deliveries
+    });
+
+    let client = KEventClient::new_daemon_bridge("publisher", &addr).unwrap();
+    client
+        .pub_event("/publish/prime", json!({ "seq": 1 }))
+        .await
+        .unwrap();
+    client
+        .pub_event("/publish/ambiguous", json!({ "seq": 2 }))
+        .await
+        .unwrap();
+
+    assert_eq!(server.await.unwrap(), 1);
 }
 
 /// Publishing while the daemon is down drops the event instead of failing the

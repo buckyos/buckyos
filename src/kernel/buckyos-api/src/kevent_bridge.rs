@@ -304,9 +304,10 @@ impl PublisherLink {
     async fn publish(&self, event: &Event) -> KEventResult<()> {
         let mut guard = self.conn.lock().await;
 
-        // Reuse the live connection first; a daemon that closed an idle
-        // socket shows up as a write/read error, which we retry once on a
-        // fresh connection before reporting the publish as dropped.
+        // Reuse the live connection first. Once a request has been written,
+        // a missing response leaves delivery ambiguous: the daemon may already
+        // have distributed the event. Never replay that event on a fresh
+        // connection because Event has no id that subscribers can deduplicate.
         if guard.is_some() {
             let conn = guard.as_mut().expect("checked above");
             match conn
@@ -319,12 +320,23 @@ impl PublisherLink {
                 .await
             {
                 Ok(resp) => {
+                    self.attempt.store(0, Ordering::Relaxed);
+                    self.next_connect_at_ms.store(0, Ordering::Relaxed);
                     self.stats.record_ok("publisher", &self.endpoint);
                     return response_to_result(resp).map(|_| ());
                 }
                 Err(err) if is_transport_error(&err) => {
                     *guard = None;
-                    self.stats.publisher_connected.store(false, Ordering::Relaxed);
+                    self.stats
+                        .publisher_connected
+                        .store(false, Ordering::Relaxed);
+                    let attempt = self.attempt.fetch_add(1, Ordering::Relaxed);
+                    self.next_connect_at_ms.store(
+                        now_millis() + backoff_delay(attempt).as_millis() as u64,
+                        Ordering::Relaxed,
+                    );
+                    self.stats.record_failure("publisher", &self.endpoint, &err);
+                    return Err(err);
                 }
                 Err(err) => return Err(err),
             }
@@ -350,8 +362,6 @@ impl PublisherLink {
                 return Err(err);
             }
         };
-        self.attempt.store(0, Ordering::Relaxed);
-        self.next_connect_at_ms.store(0, Ordering::Relaxed);
         self.stats.reconnects.fetch_add(1, Ordering::Relaxed);
 
         let result = conn
@@ -366,15 +376,23 @@ impl PublisherLink {
         match result {
             Ok(resp) => {
                 *guard = Some(conn);
-                self.stats.publisher_connected.store(true, Ordering::Relaxed);
+                self.stats
+                    .publisher_connected
+                    .store(true, Ordering::Relaxed);
+                self.attempt.store(0, Ordering::Relaxed);
+                self.next_connect_at_ms.store(0, Ordering::Relaxed);
                 self.stats.record_ok("publisher", &self.endpoint);
                 response_to_result(resp).map(|_| ())
             }
             Err(err) => {
                 if is_transport_error(&err) {
+                    self.stats
+                        .publisher_connected
+                        .store(false, Ordering::Relaxed);
+                    let attempt = self.attempt.fetch_add(1, Ordering::Relaxed);
                     self.stats.record_failure("publisher", &self.endpoint, &err);
                     self.next_connect_at_ms.store(
-                        now_millis() + backoff_delay(0).as_millis() as u64,
+                        now_millis() + backoff_delay(attempt).as_millis() as u64,
                         Ordering::Relaxed,
                     );
                 }
@@ -487,7 +505,7 @@ impl KEventBridgeReaderLink {
     /// Patterns changed locally; push the new full set after the in-flight
     /// pull returns.
     pub fn mark_dirty(&self) {
-        self.shared.dirty.store(true, Ordering::Relaxed);
+        self.shared.dirty.store(true, Ordering::Release);
     }
 
     pub fn stop(&self) {
@@ -543,6 +561,14 @@ impl Drop for ReaderGauge {
     }
 }
 
+async fn snapshot_global_patterns(
+    sink: &Arc<dyn BridgeReaderSink>,
+    link: &Arc<ReaderLinkShared>,
+) -> Option<Vec<String>> {
+    link.dirty.swap(false, Ordering::AcqRel);
+    sink.global_patterns().await
+}
+
 async fn run_reader_link(
     transport: Arc<KEventDaemonBridgeTransport>,
     reader_id: String,
@@ -563,7 +589,7 @@ async fn run_reader_link(
         // Registration is always the complete pattern set — the same call on
         // first connect and on every reconnect, so there is no add/remove
         // history to replay.
-        let patterns = match sink.global_patterns().await {
+        let patterns = match snapshot_global_patterns(&sink, &link).await {
             // Reader gone: nothing left to serve.
             None => break,
             // The reader dropped all its global patterns but is still alive
@@ -588,7 +614,6 @@ async fn run_reader_link(
             }
         };
         stats.reconnects.fetch_add(1, Ordering::Relaxed);
-        link.dirty.store(false, Ordering::Relaxed);
         match conn
             .request(
                 &KEventDaemonRequest::RegisterReader {
@@ -658,7 +683,7 @@ async fn pump_reader(
         }
 
         // A pattern edit landed while we were polling: resend the full set.
-        if link.dirty.swap(false, Ordering::Relaxed) {
+        if link.dirty.swap(false, Ordering::AcqRel) {
             let patterns = match sink.global_patterns().await {
                 None => return PumpExit::Stopped,
                 Some(patterns) if patterns.is_empty() => return PumpExit::Idle,
@@ -675,7 +700,7 @@ async fn pump_reader(
                 .await
                 .and_then(response_to_result)
             {
-                link.dirty.store(true, Ordering::Relaxed);
+                link.dirty.store(true, Ordering::Release);
                 return PumpExit::Failed(err);
             }
         }
@@ -709,7 +734,7 @@ async fn pump_reader(
             Err(err @ KEventError::ReaderClosed(_)) => {
                 // The connection survived but the daemon lost our reader.
                 // Re-register in place instead of tearing the socket down.
-                link.dirty.store(true, Ordering::Relaxed);
+                link.dirty.store(true, Ordering::Release);
                 reader_closed_streak += 1;
                 // Register-then-immediately-closed would otherwise spin at
                 // full speed; hand it to the outer loop so it gets backoff.
@@ -725,6 +750,9 @@ async fn pump_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+    use tokio::sync::Notify;
 
     #[test]
     fn backoff_is_bounded_and_jittered() {
@@ -751,5 +779,76 @@ mod tests {
         )));
         assert!(!is_transport_error(&KEventError::InvalidEventId("x".into())));
         assert!(!is_transport_error(&KEventError::NotSupported("x".into())));
+    }
+
+    #[tokio::test]
+    async fn request_failure_advances_publisher_backoff() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let frame_len = stream.read_u32().await.unwrap() as usize;
+            let mut frame = vec![0_u8; frame_len];
+            stream.read_exact(&mut frame).await.unwrap();
+        });
+
+        let publisher = PublisherLink::new(endpoint, Arc::new(BridgeStats::default()));
+        let event = Event {
+            eventid: "/publisher/backoff".to_string(),
+            source_node: "test".to_string(),
+            source_pid: std::process::id(),
+            ingress_node: Some("test".to_string()),
+            timestamp: now_millis(),
+            data: json!({}),
+        };
+
+        let err = publisher.publish(&event).await.unwrap_err();
+        assert!(is_transport_error(&err));
+        server.await.unwrap();
+        assert_eq!(publisher.attempt.load(Ordering::Relaxed), 1);
+        assert!(publisher.next_connect_at_ms.load(Ordering::Relaxed) > now_millis());
+    }
+
+    struct BlockingPatternSink {
+        entered: Notify,
+        release: Notify,
+    }
+
+    #[async_trait]
+    impl BridgeReaderSink for BlockingPatternSink {
+        async fn global_patterns(&self) -> Option<Vec<String>> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Some(vec!["/patterns/current".to_string()])
+        }
+
+        async fn deliver(&self, _event: Event) {}
+    }
+
+    #[tokio::test]
+    async fn pattern_edit_racing_with_snapshot_remains_dirty() {
+        let link = Arc::new(ReaderLinkShared {
+            dirty: AtomicBool::new(true),
+            stopped: AtomicBool::new(false),
+        });
+        let sink = Arc::new(BlockingPatternSink {
+            entered: Notify::new(),
+            release: Notify::new(),
+        });
+        let task_link = link.clone();
+        let task_sink: Arc<dyn BridgeReaderSink> = sink.clone();
+        let snapshot =
+            tokio::spawn(async move { snapshot_global_patterns(&task_sink, &task_link).await });
+
+        sink.entered.notified().await;
+        assert!(!link.dirty.load(Ordering::Acquire));
+        link.dirty.store(true, Ordering::Release);
+        sink.release.notify_one();
+
+        assert_eq!(
+            snapshot.await.unwrap(),
+            Some(vec!["/patterns/current".to_string()])
+        );
+        assert!(link.dirty.load(Ordering::Acquire));
     }
 }
