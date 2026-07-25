@@ -6,6 +6,7 @@ use buckyos_api::{
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -18,13 +19,59 @@ pub trait KEventPeerPublisher: Send + Sync {
     async fn broadcast(&self, event: &Event) -> KEventResult<()>;
 }
 
+/// Namespace a reader belongs to.
+///
+/// Readers registered over a native TCP connection live in that connection's
+/// own namespace: `reader_id` only has to be unique *within* the connection,
+/// and every reader of a connection is dropped when the connection ends.
+/// This is what makes reader ids collision-free across independent client
+/// processes (each container registers its own `r_1`) and what stops a
+/// crashed client from leaving a reader queue behind forever.
+///
+/// Stateless callers (the HTTP facade) share [`KEventSessionId::SHARED`] and
+/// must therefore pick process-unique reader ids themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct KEventSessionId(u64);
+
+impl KEventSessionId {
+    /// Namespace used by connection-less callers (HTTP facade, in-process
+    /// service API, tests).
+    pub const SHARED: KEventSessionId = KEventSessionId(0);
+
+    pub fn value(&self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for KEventSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "s{}", self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReaderKey {
+    session: KEventSessionId,
+    reader_id: String,
+}
+
+impl ReaderKey {
+    fn new(session: KEventSessionId, reader_id: &str) -> Self {
+        Self {
+            session,
+            reader_id: reader_id.to_string(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct KEventService {
     source_node: String,
     reader_capacity: usize,
-    readers: Arc<RwLock<HashMap<String, Arc<ServiceReaderState>>>>,
+    readers: Arc<RwLock<HashMap<ReaderKey, Arc<ServiceReaderState>>>>,
     peers: Arc<RwLock<Vec<Arc<dyn KEventPeerPublisher>>>>,
     shared_ring: Arc<RwLock<Option<Arc<SharedKEventRingBuffer>>>>,
+    session_seq: Arc<AtomicU64>,
 }
 
 struct ServiceReaderState {
@@ -77,11 +124,36 @@ impl KEventService {
             readers: Arc::new(RwLock::new(HashMap::new())),
             peers: Arc::new(RwLock::new(Vec::new())),
             shared_ring: Arc::new(RwLock::new(None)),
+            session_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub fn source_node(&self) -> &str {
         &self.source_node
+    }
+
+    /// Allocate a reader namespace for one connection. The caller must pair
+    /// this with [`close_session`] on every exit path so readers left behind
+    /// by a disconnecting client are reclaimed.
+    pub fn open_session(&self) -> KEventSessionId {
+        KEventSessionId(self.session_seq.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    /// Drop every reader registered in `session`. Returns how many were
+    /// reclaimed.
+    pub async fn close_session(&self, session: KEventSessionId) -> usize {
+        if session == KEventSessionId::SHARED {
+            return 0;
+        }
+        let mut readers = self.readers.write().await;
+        let before = readers.len();
+        readers.retain(|key, _| key.session != session);
+        before - readers.len()
+    }
+
+    /// Number of live readers; exposed for observability and tests.
+    pub async fn reader_count(&self) -> usize {
+        self.readers.read().await.len()
     }
 
     pub async fn add_peer_publisher(&self, peer: Arc<dyn KEventPeerPublisher>) {
@@ -94,6 +166,19 @@ impl KEventService {
 
     pub async fn register_reader(
         &self,
+        reader_id: &str,
+        patterns: Vec<String>,
+    ) -> KEventResult<()> {
+        self.register_reader_in(KEventSessionId::SHARED, reader_id, patterns)
+            .await
+    }
+
+    /// Idempotent full-set registration: an existing reader keeps its queue
+    /// and only swaps its pattern set. Clients always resend the complete
+    /// pattern set (never a diff), so this doubles as the reconnect path.
+    pub async fn register_reader_in(
+        &self,
+        session: KEventSessionId,
         reader_id: &str,
         patterns: Vec<String>,
     ) -> KEventResult<()> {
@@ -117,13 +202,14 @@ impl KEventService {
         }
 
         let normalized = normalize_patterns(patterns);
+        let key = ReaderKey::new(session, reader_id);
         let mut readers = self.readers.write().await;
-        if let Some(existing) = readers.get(reader_id) {
+        if let Some(existing) = readers.get(&key) {
             // Preserve queue / notify across re-register; just swap patterns.
             *existing.patterns.write().expect("patterns lock poisoned") = normalized;
         } else {
             readers.insert(
-                reader_id.to_string(),
+                key,
                 Arc::new(ServiceReaderState::new(normalized, self.reader_capacity)),
             );
         }
@@ -131,11 +217,32 @@ impl KEventService {
     }
 
     pub async fn unregister_reader(&self, reader_id: &str) {
-        self.readers.write().await.remove(reader_id);
+        self.unregister_reader_in(KEventSessionId::SHARED, reader_id)
+            .await
     }
 
+    pub async fn unregister_reader_in(&self, session: KEventSessionId, reader_id: &str) {
+        self.readers
+            .write()
+            .await
+            .remove(&ReaderKey::new(session, reader_id));
+    }
+
+    /// Incremental pattern edit. Kept for protocol compatibility only —
+    /// clients recover by resending the full set via `register_reader`.
     pub async fn update_reader(
         &self,
+        reader_id: &str,
+        add: Vec<String>,
+        remove: Vec<String>,
+    ) -> KEventResult<()> {
+        self.update_reader_in(KEventSessionId::SHARED, reader_id, add, remove)
+            .await
+    }
+
+    pub async fn update_reader_in(
+        &self,
+        session: KEventSessionId,
         reader_id: &str,
         add: Vec<String>,
         remove: Vec<String>,
@@ -156,7 +263,7 @@ impl KEventService {
 
         let reader = {
             let readers = self.readers.read().await;
-            readers.get(reader_id).cloned()
+            readers.get(&ReaderKey::new(session, reader_id)).cloned()
         };
         let Some(reader) = reader else {
             return Err(KEventError::ReaderClosed(reader_id.to_string()));
@@ -280,15 +387,30 @@ impl KEventService {
         reader_id: &str,
         timeout_ms: Option<u64>,
     ) -> KEventResult<Option<Event>> {
+        self.pull_event_in(KEventSessionId::SHARED, reader_id, timeout_ms)
+            .await
+    }
+
+    /// `Ok(None)` means "no event within the timeout"; a reader the daemon
+    /// does not know about is reported as `ReaderClosed` so a client can tell
+    /// "lost my registration" apart from "nothing happened" and re-register
+    /// instead of silently pulling into the void.
+    pub async fn pull_event_in(
+        &self,
+        session: KEventSessionId,
+        reader_id: &str,
+        timeout_ms: Option<u64>,
+    ) -> KEventResult<Option<Event>> {
         let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+        let key = ReaderKey::new(session, reader_id);
         loop {
             let reader = {
                 let readers = self.readers.read().await;
-                readers.get(reader_id).cloned()
+                readers.get(&key).cloned()
             };
 
             let Some(reader) = reader else {
-                return Ok(None);
+                return Err(KEventError::ReaderClosed(reader_id.to_string()));
             };
 
             if let Some(event) = reader.pop().await {
@@ -318,23 +440,38 @@ impl KEventService {
     }
 
     pub async fn handle_protocol_request(&self, req: KEventDaemonRequest) -> KEventDaemonResponse {
+        self.handle_protocol_request_in(KEventSessionId::SHARED, req)
+            .await
+    }
+
+    /// Serve one protocol request inside `session`'s reader namespace.
+    /// Connection-oriented transports pass their own session so reader ids
+    /// cannot collide across clients and die with the connection.
+    pub async fn handle_protocol_request_in(
+        &self,
+        session: KEventSessionId,
+        req: KEventDaemonRequest,
+    ) -> KEventDaemonResponse {
         match req {
             KEventDaemonRequest::RegisterReader {
                 reader_id,
                 patterns,
-            } => match self.register_reader(&reader_id, patterns).await {
+            } => match self
+                .register_reader_in(session, &reader_id, patterns)
+                .await
+            {
                 Ok(_) => KEventDaemonResponse::Ok { event: None },
                 Err(err) => err_to_response(err),
             },
             KEventDaemonRequest::UnregisterReader { reader_id } => {
-                self.unregister_reader(&reader_id).await;
+                self.unregister_reader_in(session, &reader_id).await;
                 KEventDaemonResponse::Ok { event: None }
             }
             KEventDaemonRequest::UpdateReader {
                 reader_id,
                 add,
                 remove,
-            } => match self.update_reader(&reader_id, add, remove).await {
+            } => match self.update_reader_in(session, &reader_id, add, remove).await {
                 Ok(_) => KEventDaemonResponse::Ok { event: None },
                 Err(err) => err_to_response(err),
             },
@@ -347,7 +484,7 @@ impl KEventService {
             KEventDaemonRequest::PullEvent {
                 reader_id,
                 timeout_ms,
-            } => match self.pull_event(&reader_id, timeout_ms).await {
+            } => match self.pull_event_in(session, &reader_id, timeout_ms).await {
                 Ok(event) => KEventDaemonResponse::Ok { event },
                 Err(err) => err_to_response(err),
             },

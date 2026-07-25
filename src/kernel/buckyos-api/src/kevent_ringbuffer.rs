@@ -200,12 +200,19 @@ impl SharedKEventRingBuffer {
     // Publish path  (lock-free on the shared-memory side)
     // -----------------------------------------------------------------------
 
+    /// Largest encoded record a slot can carry. Callers that must tell
+    /// "this event will never fit" (an input error) apart from "the ring is
+    /// unavailable right now" (a droppable transport error) check this first.
+    pub const fn max_payload_size() -> usize {
+        SLOT_DATA_SIZE
+    }
+
     pub fn publish_event<T: Serialize>(&self, event: &T) -> Result<(), String> {
         let bytes = serde_json::to_vec(event).map_err(|e| format!("encode event failed: {}", e))?;
         self.publish_payload(&bytes)
     }
 
-    fn publish_payload(&self, payload: &[u8]) -> Result<(), String> {
+    pub fn publish_payload(&self, payload: &[u8]) -> Result<(), String> {
         if payload.is_empty() {
             return Ok(());
         }

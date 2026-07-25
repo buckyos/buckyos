@@ -14,23 +14,6 @@ struct RecordingBridge {
 
 #[async_trait]
 impl KEventDaemonBridge for RecordingBridge {
-    async fn register_reader(&self, _reader_id: &str, _patterns: &[String]) -> KEventResult<()> {
-        Ok(())
-    }
-
-    async fn unregister_reader(&self, _reader_id: &str) -> KEventResult<()> {
-        Ok(())
-    }
-
-    async fn update_reader(
-        &self,
-        _reader_id: &str,
-        _add: &[String],
-        _remove: &[String],
-    ) -> KEventResult<()> {
-        Ok(())
-    }
-
     async fn publish_global(&self, event: &Event) -> KEventResult<()> {
         self.published.lock().await.push(event.clone());
         Ok(())

@@ -1,4 +1,4 @@
-use buckyos_api::{KEventClient, KEventClientMode, DEFAULT_RINGBUFFER_PATH_ENV};
+use buckyos_api::{KEventClient, DEFAULT_RINGBUFFER_PATH_ENV};
 use kevent::KEventService;
 use serde_json::json;
 use std::sync::Mutex;
@@ -148,8 +148,8 @@ async fn shared_ring_full_client_latency_baseline() {
     let _guard = RING_ENV_LOCK.lock().unwrap();
     let path = set_unique_ring_path("shared_ring_latency");
 
-    let publisher = KEventClient::new_with_mode("node_a", KEventClientMode::Full, None, 4096);
-    let subscriber = KEventClient::new_with_mode("node_a", KEventClientMode::Full, None, 4096);
+    let publisher = KEventClient::new_shared_memory_with_capacity("node_a", 4096).unwrap();
+    let subscriber = KEventClient::new_shared_memory_with_capacity("node_a", 4096).unwrap();
     let reader = subscriber
         .create_event_reader(vec!["/perf/shared_ring/**".to_string()])
         .await

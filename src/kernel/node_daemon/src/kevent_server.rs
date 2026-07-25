@@ -1,17 +1,14 @@
 use buckyos_api::{
-    Event, KEventDaemonResponse, KEventError, SharedKEventRingBuffer, KEVENT_SERVICE_MAIN_PORT,
-    KEVENT_SERVICE_NATIVE_PORT,
+    Event, SharedKEventRingBuffer, KEVENT_SERVICE_MAIN_PORT, KEVENT_SERVICE_NATIVE_PORT,
 };
 use buckyos_http_server::Runner;
-use kevent::{decode_daemon_request, encode_daemon_response, KEventHttpServer, KEventService};
+use kevent::{run_native_tcp_server, KEventHttpServer, KEventService};
 use log::{error, info};
-use std::io::{self, ErrorKind};
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-const MAX_NATIVE_FRAME_SIZE: usize = 1024 * 1024;
 const SHARED_RING_DRAIN_BATCH: usize = 128;
 #[cfg(target_os = "linux")]
 const SHARED_RING_WAIT_TIMEOUT_MS: u64 = 500;
@@ -48,7 +45,7 @@ pub async fn start_node_kevent_service(service: Arc<KEventService>) {
 
     let native_service = service.clone();
     tokio::spawn(async move {
-        if let Err(err) = run_native_tcp_server(native_service).await {
+        if let Err(err) = start_native_tcp_server(native_service).await {
             error!("kevent native tcp server stopped: {}", err);
         }
     });
@@ -93,223 +90,9 @@ fn start_shared_ring_importer(
     }
 }
 
-async fn run_native_tcp_server(service: Arc<KEventService>) -> io::Result<()> {
+async fn start_native_tcp_server(service: Arc<KEventService>) -> io::Result<()> {
     let addr = format!("0.0.0.0:{}", KEVENT_SERVICE_NATIVE_PORT);
     let listener = TcpListener::bind(&addr).await?;
     info!("kevent native tcp listener bound at {}", addr);
-
-    loop {
-        let (stream, peer_addr) = listener.accept().await?;
-        let service = service.clone();
-        tokio::spawn(async move {
-            if let Err(err) = handle_native_tcp_connection(service, stream).await {
-                error!("kevent native tcp connection {} failed: {}", peer_addr, err);
-            }
-        });
-    }
-}
-
-async fn handle_native_tcp_connection<S>(
-    service: Arc<KEventService>,
-    mut stream: S,
-) -> io::Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    loop {
-        let frame_len = match stream.read_u32().await {
-            Ok(len) => len as usize,
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-            Err(err) => return Err(err),
-        };
-
-        if frame_len == 0 || frame_len > MAX_NATIVE_FRAME_SIZE {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid kevent native frame length: {}", frame_len),
-            ));
-        }
-
-        let mut frame = vec![0_u8; frame_len];
-        stream.read_exact(&mut frame).await?;
-
-        let response = match decode_daemon_request(&frame) {
-            Ok(request) => service.handle_protocol_request(request).await,
-            Err(err) => error_response(err),
-        };
-
-        write_native_tcp_response(&mut stream, response).await?;
-    }
-}
-
-async fn write_native_tcp_response<S>(
-    stream: &mut S,
-    response: KEventDaemonResponse,
-) -> io::Result<()>
-where
-    S: AsyncWrite + Unpin,
-{
-    let payload = encode_daemon_response(&response)
-        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err.to_string()))?;
-    stream.write_u32(payload.len() as u32).await?;
-    stream.write_all(&payload).await?;
-    stream.flush().await
-}
-
-fn error_response(err: KEventError) -> KEventDaemonResponse {
-    KEventDaemonResponse::Err {
-        code: err.code().to_string(),
-        message: err.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use buckyos_api::{KEventDaemonRequest, KEventDaemonResponse, KEventResult};
-    use kevent::{map_response_error, KEventPeerPublisher};
-    use serde_json::json;
-    use tokio::io::duplex;
-
-    struct FramedPeerPublisher {
-        target: Arc<KEventService>,
-    }
-
-    impl FramedPeerPublisher {
-        fn new(target: Arc<KEventService>) -> Self {
-            Self { target }
-        }
-    }
-
-    #[async_trait]
-    impl KEventPeerPublisher for FramedPeerPublisher {
-        async fn broadcast(&self, event: &Event) -> KEventResult<()> {
-            let (mut client, server) = duplex(4096);
-            let server_task =
-                tokio::spawn(handle_native_tcp_connection(self.target.clone(), server));
-
-            write_client_frame(
-                &mut client,
-                KEventDaemonRequest::PublishGlobal {
-                    event: event.clone(),
-                },
-            )
-            .await;
-            let response = read_client_frame(&mut client).await;
-            drop(client);
-            server_task.await.unwrap().unwrap();
-
-            match response {
-                KEventDaemonResponse::Ok { .. } => Ok(()),
-                KEventDaemonResponse::Err { code, message } => {
-                    Err(map_response_error(&code, &message))
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn native_tcp_connection_roundtrip() {
-        let service = Arc::new(KEventService::new("node_a"));
-        let (mut client, server) = duplex(4096);
-
-        let server_task = tokio::spawn(handle_native_tcp_connection(service.clone(), server));
-
-        let register_req = KEventDaemonRequest::RegisterReader {
-            reader_id: "r1".to_string(),
-            patterns: vec!["/system/**".to_string()],
-        };
-        write_client_frame(&mut client, register_req).await;
-        let register_resp = read_client_frame(&mut client).await;
-        assert!(matches!(
-            register_resp,
-            KEventDaemonResponse::Ok { event: None }
-        ));
-
-        service
-            .publish_local_global("/system/node/online", json!({ "ok": true }))
-            .await
-            .unwrap();
-
-        let pull_req = KEventDaemonRequest::PullEvent {
-            reader_id: "r1".to_string(),
-            timeout_ms: Some(0),
-        };
-        write_client_frame(&mut client, pull_req).await;
-        let pull_resp = read_client_frame(&mut client).await;
-        match pull_resp {
-            KEventDaemonResponse::Ok { event: Some(event) } => {
-                assert_eq!(event.eventid, "/system/node/online");
-            }
-            other => panic!("unexpected response: {:?}", other),
-        }
-
-        drop(client);
-        server_task.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn native_tcp_rejects_invalid_frame_length() {
-        let service = Arc::new(KEventService::new("node_a"));
-
-        for invalid_len in [0_u32, (MAX_NATIVE_FRAME_SIZE as u32) + 1] {
-            let (mut client, server) = duplex(64);
-            let server_task = tokio::spawn(handle_native_tcp_connection(service.clone(), server));
-
-            client.write_u32(invalid_len).await.unwrap();
-            drop(client);
-
-            let err = server_task.await.unwrap().unwrap_err();
-            assert_eq!(err.kind(), ErrorKind::InvalidData);
-            assert!(err
-                .to_string()
-                .contains("invalid kevent native frame length"));
-        }
-    }
-
-    #[tokio::test]
-    async fn native_framed_peer_publish_delivers_one_way_current_behavior() {
-        let service_a = Arc::new(KEventService::new("node_a"));
-        let service_b = Arc::new(KEventService::new("node_b"));
-
-        service_a
-            .add_peer_publisher(Arc::new(FramedPeerPublisher::new(service_b.clone())))
-            .await;
-        service_b
-            .register_reader("b_reader", vec!["/peer/**".to_string()])
-            .await
-            .unwrap();
-
-        service_a
-            .publish_local_global("/peer/native-framed", json!({"ok": true}))
-            .await
-            .unwrap();
-
-        let event = service_b
-            .pull_event("b_reader", Some(100))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(event.eventid, "/peer/native-framed");
-        assert_eq!(event.source_node, "node_a");
-        assert_eq!(event.ingress_node.as_deref(), Some("node_b"));
-    }
-
-    async fn write_client_frame(
-        stream: &mut tokio::io::DuplexStream,
-        request: KEventDaemonRequest,
-    ) {
-        let payload = serde_json::to_vec(&request).unwrap();
-        stream.write_u32(payload.len() as u32).await.unwrap();
-        stream.write_all(&payload).await.unwrap();
-        stream.flush().await.unwrap();
-    }
-
-    async fn read_client_frame(stream: &mut tokio::io::DuplexStream) -> KEventDaemonResponse {
-        let frame_len = stream.read_u32().await.unwrap() as usize;
-        let mut frame = vec![0_u8; frame_len];
-        stream.read_exact(&mut frame).await.unwrap();
-        serde_json::from_slice(&frame).unwrap()
-    }
+    run_native_tcp_server(service, listener).await
 }

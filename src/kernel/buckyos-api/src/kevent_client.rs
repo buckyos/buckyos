@@ -1,3 +1,7 @@
+use crate::kevent_bridge::{
+    is_transport_error, BridgeReaderSink, KEventBridgeReaderLink, KEventDaemonBridgeTransport,
+    KEventTransportStatus,
+};
 use crate::kevent_ringbuffer::SharedKEventRingBuffer;
 use crate::{AppDoc, AppType, SelectorType};
 use async_trait::async_trait;
@@ -20,6 +24,9 @@ pub const KEVENT_SERVICE_NATIVE_PORT: u16 = 3183;
 pub const DEFAULT_READER_CAPACITY: usize = 1024;
 pub const MAX_EVENT_DATA_SIZE_BYTES: usize = 64 * 1024;
 const SHARED_RING_DRAIN_BATCH: usize = 128;
+/// While a transport is down we log one drop summary per this interval
+/// instead of one line per dropped event.
+const PUBLISH_DROP_LOG_INTERVAL_MS: u64 = 60_000;
 /// Maximum time the ShmDispatch thread blocks in futex/ulock before
 /// re-checking (acts as a heartbeat / fallback interval).
 ///
@@ -129,12 +136,65 @@ impl Default for TimerOptions {
 pub enum KEventClientMode {
     // Local pub/sub/timer, never talks to daemon.
     Local,
-    // Full SDK semantics. Global patterns/events use daemon bridge when provided.
+    // Full SDK semantics: local + global pub/sub over the chosen transport.
     Full,
     // Light SDK semantics. Only global pub is supported.
     Light,
     // Local publish-only mode.
     LocalPubOnly,
+}
+
+/// Which channel carries *global* events for this client.
+///
+/// The two real transports are mutually exclusive and are chosen when the
+/// client is built — never by probing at runtime. The daemon mirrors every
+/// global event it accepts into the shared ring, so a process that listened
+/// on both would receive each event twice, and `Event` has no id to
+/// deduplicate on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KEventTransportKind {
+    /// No global channel at all (`Local` / `LocalPubOnly`).
+    None,
+    /// Same-host processes sharing node-daemon's ring buffer.
+    SharedMemory,
+    /// Containers and anything else that cannot reach the host's ring:
+    /// a native TCP connection to node-daemon.
+    DaemonBridge,
+    /// Publish-only bridge injected by the caller (Light mode / in-process
+    /// transports in tests).
+    PublishOnlyBridge,
+}
+
+enum KEventTransport {
+    None,
+    SharedMemory(Arc<SharedKEventRingBuffer>),
+    DaemonBridge(Arc<KEventDaemonBridgeTransport>),
+    PublishOnlyBridge(Arc<dyn KEventDaemonBridge>),
+}
+
+impl KEventTransport {
+    fn kind(&self) -> KEventTransportKind {
+        match self {
+            KEventTransport::None => KEventTransportKind::None,
+            KEventTransport::SharedMemory(_) => KEventTransportKind::SharedMemory,
+            KEventTransport::DaemonBridge(_) => KEventTransportKind::DaemonBridge,
+            KEventTransport::PublishOnlyBridge(_) => KEventTransportKind::PublishOnlyBridge,
+        }
+    }
+
+    fn shared_ring(&self) -> Option<&Arc<SharedKEventRingBuffer>> {
+        match self {
+            KEventTransport::SharedMemory(ring) => Some(ring),
+            _ => None,
+        }
+    }
+
+    fn daemon_bridge(&self) -> Option<&Arc<KEventDaemonBridgeTransport>> {
+        match self {
+            KEventTransport::DaemonBridge(bridge) => Some(bridge),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -176,16 +236,12 @@ pub enum KEventDaemonResponse {
     },
 }
 
+/// Publish-only escape hatch for callers that already own a protocol client
+/// (Light SDK, in-process transports in tests). Reader lifecycle is
+/// deliberately *not* part of this trait: a reader needs its own connection
+/// with register/pull/reconnect, which only the concrete transports provide.
 #[async_trait]
 pub trait KEventDaemonBridge: Send + Sync {
-    async fn register_reader(&self, reader_id: &str, patterns: &[String]) -> KEventResult<()>;
-    async fn unregister_reader(&self, reader_id: &str) -> KEventResult<()>;
-    async fn update_reader(
-        &self,
-        reader_id: &str,
-        add: &[String],
-        remove: &[String],
-    ) -> KEventResult<()>;
     async fn publish_global(&self, event: &Event) -> KEventResult<()>;
 }
 
@@ -193,14 +249,17 @@ pub trait KEventDaemonBridge: Send + Sync {
 pub struct KEventClient {
     mode: KEventClientMode,
     source_node: String,
-    bridge: Option<Arc<dyn KEventDaemonBridge>>,
     inner: Arc<KEventClientInner>,
 }
 
 struct KEventClientInner {
     readers: RwLock<HashMap<String, Arc<ReaderState>>>,
     timers: RwLock<HashMap<TimerId, oneshot::Sender<()>>>,
-    shared_ring: Option<Arc<SharedKEventRingBuffer>>,
+    transport: KEventTransport,
+    /// Random per-instance tag so reader ids are unique across the processes
+    /// sharing one daemon. (The daemon also namespaces readers per
+    /// connection; this keeps ids readable and unambiguous in logs.)
+    instance_nonce: String,
     reader_seq: AtomicU64,
     timer_seq: AtomicU64,
     reader_capacity: usize,
@@ -210,6 +269,10 @@ struct KEventClientInner {
     /// Set to true when the client is being dropped, to stop the
     /// ShmDispatch background thread.
     shm_dispatch_stop: AtomicBool,
+    /// Best-effort publish bookkeeping for the shared-ring path (the bridge
+    /// keeps its own counters).
+    shm_publish_dropped: AtomicU64,
+    shm_drop_last_log_ms: AtomicU64,
 }
 
 struct ReaderState {
@@ -268,7 +331,66 @@ impl ReaderState {
     }
 }
 
+/// Bridges one `EventReader` to its dedicated daemon connection: the pull
+/// task asks for the reader's authoritative pattern set and hands back the
+/// events it pulled.
+struct ClientReaderSink {
+    inner: Weak<KEventClientInner>,
+    reader_id: String,
+}
+
+#[async_trait]
+impl BridgeReaderSink for ClientReaderSink {
+    async fn global_patterns(&self) -> Option<Vec<String>> {
+        let inner = self.inner.upgrade()?;
+        let readers = inner.readers.read().await;
+        let state = readers.get(&self.reader_id)?;
+        // An empty result is not the same as a missing reader: the caller may
+        // have removed every global pattern and can add one back later.
+        Some(
+            state
+                .snapshot_patterns()
+                .into_iter()
+                .filter(|p| is_global_pattern(p))
+                .collect(),
+        )
+    }
+
+    async fn deliver(&self, event: Event) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let state = {
+            let readers = inner.readers.read().await;
+            readers.get(&self.reader_id).cloned()
+        };
+        // Patterns are locally authoritative: re-check before queueing so a
+        // pattern the caller just dropped can't leak through the window
+        // before the daemon learns about it.
+        if let Some(state) = state {
+            if state.matches(&event.eventid) {
+                state.push(event).await;
+            }
+        }
+    }
+}
+
 impl KEventClientInner {
+    /// Count a dropped global publish and log at most one line per minute so
+    /// a long outage cannot flood the log.
+    fn note_shm_publish_dropped(&self, eventid: &str, err: &dyn std::fmt::Display) {
+        let dropped = self.shm_publish_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        let now = now_millis();
+        let last = self.shm_drop_last_log_ms.load(Ordering::Relaxed);
+        if dropped == 1 || now.saturating_sub(last) >= PUBLISH_DROP_LOG_INTERVAL_MS {
+            self.shm_drop_last_log_ms.store(now, Ordering::Relaxed);
+            warn!(
+                "kevent dropped global event {} ({} dropped so far): {}",
+                eventid, dropped, err
+            );
+        }
+    }
+
     async fn dispatch_event(&self, event: &Event) {
         let snapshot: Vec<Arc<ReaderState>> = self.readers.read().await.values().cloned().collect();
         for reader in snapshot {
@@ -295,7 +417,7 @@ impl KEventClientInner {
     /// readers (synchronous, for ShmDispatch thread).
     /// Returns the number of events dispatched.
     fn import_shared_events_sync(&self, max_events: usize) -> usize {
-        let Some(shared_ring) = &self.shared_ring else {
+        let Some(shared_ring) = self.transport.shared_ring() else {
             return 0;
         };
         let events = shared_ring.drain_events::<Event>(max_events);
@@ -313,7 +435,7 @@ impl KEventClientInner {
 pub struct EventReader {
     reader_id: String,
     inner: Weak<KEventClientInner>,
-    bridge: Option<Arc<dyn KEventDaemonBridge>>,
+    bridge_link: Option<Arc<KEventBridgeReaderLink>>,
     mode: KEventClientMode,
     has_global_patterns: bool,
     closed: AtomicBool,
@@ -321,82 +443,130 @@ pub struct EventReader {
 
 impl KEventClient {
     pub fn new_local(source_node: impl Into<String>) -> Self {
-        Self::new_with_mode(
+        Self::build(
             source_node,
             KEventClientMode::Local,
-            None,
-            DEFAULT_READER_CAPACITY,
-        )
-    }
-
-    pub fn new_full(
-        source_node: impl Into<String>,
-        bridge: Option<Arc<dyn KEventDaemonBridge>>,
-    ) -> Self {
-        Self::new_with_mode(
-            source_node,
-            KEventClientMode::Full,
-            bridge,
-            DEFAULT_READER_CAPACITY,
-        )
-    }
-
-    pub fn new_light(source_node: impl Into<String>, bridge: Arc<dyn KEventDaemonBridge>) -> Self {
-        Self::new_with_mode(
-            source_node,
-            KEventClientMode::Light,
-            Some(bridge),
+            KEventTransport::None,
             DEFAULT_READER_CAPACITY,
         )
     }
 
     pub fn new_local_pub_only(source_node: impl Into<String>) -> Self {
-        Self::new_with_mode(
+        Self::build(
             source_node,
             KEventClientMode::LocalPubOnly,
-            None,
+            KEventTransport::None,
             DEFAULT_READER_CAPACITY,
         )
     }
 
-    pub fn new_with_mode(
+    /// Full client whose global channel is node-daemon's shared ring buffer.
+    /// Only valid for processes that share the host's `/tmp` — i.e. not
+    /// containers.
+    ///
+    /// Configuration problems are fatal here on purpose: a client that cannot
+    /// open the ring must not be built and quietly fall back to a private one
+    /// that nobody else is attached to.
+    pub fn new_shared_memory(source_node: impl Into<String>) -> KEventResult<Self> {
+        Self::new_shared_memory_with_capacity(source_node, DEFAULT_READER_CAPACITY)
+    }
+
+    pub fn new_shared_memory_with_capacity(
+        source_node: impl Into<String>,
+        reader_capacity: usize,
+    ) -> KEventResult<Self> {
+        let shared_ring = SharedKEventRingBuffer::open().map_err(|err| {
+            KEventError::DaemonUnavailable(format!(
+                "kevent shared ringbuffer is unavailable: {}",
+                err
+            ))
+        })?;
+        Ok(Self::build(
+            source_node,
+            KEventClientMode::Full,
+            KEventTransport::SharedMemory(Arc::new(shared_ring)),
+            reader_capacity,
+        ))
+    }
+
+    /// Full client whose global channel is a native TCP connection to
+    /// node-daemon. The endpoint comes from deployment configuration
+    /// (`BuckyOSRuntime::get_kevent_client` fills it in); the local ring is
+    /// never used in this mode, even if it happens to be openable.
+    ///
+    /// Connecting is lazy and retried: a daemon that is down at startup is a
+    /// runtime condition the client recovers from, not a construction error.
+    pub fn new_daemon_bridge(
+        source_node: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> KEventResult<Self> {
+        Self::new_daemon_bridge_with_capacity(source_node, endpoint, DEFAULT_READER_CAPACITY)
+    }
+
+    pub fn new_daemon_bridge_with_capacity(
+        source_node: impl Into<String>,
+        endpoint: impl Into<String>,
+        reader_capacity: usize,
+    ) -> KEventResult<Self> {
+        let transport = Arc::new(KEventDaemonBridgeTransport::new(endpoint)?);
+        Ok(Self::build(
+            source_node,
+            KEventClientMode::Full,
+            KEventTransport::DaemonBridge(transport),
+            reader_capacity,
+        ))
+    }
+
+    /// Light client (global publish only) over the native TCP bridge.
+    pub fn new_light_daemon_bridge(
+        source_node: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> KEventResult<Self> {
+        let transport = Arc::new(KEventDaemonBridgeTransport::new(endpoint)?);
+        Ok(Self::build(
+            source_node,
+            KEventClientMode::Light,
+            KEventTransport::DaemonBridge(transport),
+            DEFAULT_READER_CAPACITY,
+        ))
+    }
+
+    /// Light client over a caller-provided publish channel.
+    pub fn new_light(source_node: impl Into<String>, bridge: Arc<dyn KEventDaemonBridge>) -> Self {
+        Self::build(
+            source_node,
+            KEventClientMode::Light,
+            KEventTransport::PublishOnlyBridge(bridge),
+            DEFAULT_READER_CAPACITY,
+        )
+    }
+
+    fn build(
         source_node: impl Into<String>,
         mode: KEventClientMode,
-        bridge: Option<Arc<dyn KEventDaemonBridge>>,
+        transport: KEventTransport,
         reader_capacity: usize,
     ) -> Self {
-        let shared_ring = if mode == KEventClientMode::Full {
-            match SharedKEventRingBuffer::open() {
-                Ok(shared_ring) => Some(Arc::new(shared_ring)),
-                Err(err) => {
-                    warn!("kevent shared ringbuffer is unavailable: {}", err);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
+        let has_shared_ring = transport.shared_ring().is_some();
         let inner = Arc::new(KEventClientInner {
             readers: RwLock::new(HashMap::new()),
             timers: RwLock::new(HashMap::new()),
-            shared_ring,
+            transport,
+            instance_nonce: format!("{:08x}", rand::random::<u32>()),
             reader_seq: AtomicU64::new(0),
             timer_seq: AtomicU64::new(0),
             reader_capacity: reader_capacity.max(1),
             shm_dispatch_notify: Notify::new(),
             shm_dispatch_stop: AtomicBool::new(false),
+            shm_publish_dropped: AtomicU64::new(0),
+            shm_drop_last_log_ms: AtomicU64::new(0),
         });
 
         // Launch the ShmDispatch background thread when we have a shared ring.
         // This thread blocks on the futex/ulock in shared memory, wakes up on
         // new events, drains them, dispatches to reader queues, and notifies
         // pull_event waiters.  It replaces the old 5ms polling approach.
-        //
-        // We capture the tokio Handle here (on the caller's thread, which
-        // is inside a tokio runtime) so the background OS thread can use
-        // block_on to call async dispatch_event.
-        if inner.shared_ring.is_some() {
+        if has_shared_ring {
             let weak = Arc::downgrade(&inner);
             std::thread::Builder::new()
                 .name("kevent-shm-dispatch".into())
@@ -409,13 +579,26 @@ impl KEventClient {
         Self {
             mode,
             source_node: source_node.into(),
-            bridge,
             inner,
         }
     }
 
     pub fn mode(&self) -> KEventClientMode {
         self.mode
+    }
+
+    pub fn transport_kind(&self) -> KEventTransportKind {
+        self.inner.transport.kind()
+    }
+
+    /// Queryable transport health for the daemon-bridge mode: last error,
+    /// consecutive failure count, whether links are currently connected.
+    /// `None` for transports that have no connection state.
+    pub fn transport_status(&self) -> Option<KEventTransportStatus> {
+        self.inner
+            .transport
+            .daemon_bridge()
+            .map(|bridge| bridge.status())
     }
 
     pub async fn create_event_reader(&self, patterns: Vec<String>) -> KEventResult<EventReader> {
@@ -441,20 +624,10 @@ impl KEventClient {
             }
         }
 
-        if self.mode == KEventClientMode::Full
-            && has_global_patterns
-            && self.bridge.is_none()
-            && self.inner.shared_ring.is_none()
-        {
-            return Err(KEventError::DaemonUnavailable(
-                "global reader requires daemon bridge or shared ringbuffer in full mode"
-                    .to_string(),
-            ));
-        }
-
         let normalized = normalize_patterns(patterns);
         let reader_id = format!(
-            "r_{}",
+            "r_{}_{}",
+            self.inner.instance_nonce,
             self.inner.reader_seq.fetch_add(1, Ordering::Relaxed) + 1
         );
         let state = Arc::new(ReaderState::new(
@@ -467,30 +640,29 @@ impl KEventClient {
             .await
             .insert(reader_id.clone(), state);
 
+        // Global subscriptions need the transport wired up. Both paths are
+        // optimistic: a daemon that is unreachable right now is a transient
+        // condition the reader recovers from on its own, so creation succeeds
+        // and the caller's pull loop keeps its normal cadence.
+        let mut bridge_link = None;
         if self.mode == KEventClientMode::Full && has_global_patterns {
-            if let Some(shared_ring) = &self.inner.shared_ring {
-                shared_ring.prime_cursors();
-            }
-        }
-
-        if self.mode == KEventClientMode::Full && has_global_patterns {
-            if let Some(bridge) = &self.bridge {
-                let global_only: Vec<String> = normalized
-                    .iter()
-                    .filter(|p| is_global_pattern(p))
-                    .cloned()
-                    .collect();
-                if let Err(err) = bridge.register_reader(&reader_id, &global_only).await {
-                    self.inner.readers.write().await.remove(&reader_id);
-                    return Err(err);
+            match &self.inner.transport {
+                KEventTransport::SharedMemory(shared_ring) => shared_ring.prime_cursors(),
+                KEventTransport::DaemonBridge(bridge) => {
+                    let sink = Arc::new(ClientReaderSink {
+                        inner: Arc::downgrade(&self.inner),
+                        reader_id: reader_id.clone(),
+                    });
+                    bridge_link = Some(bridge.spawn_reader(reader_id.clone(), sink));
                 }
+                KEventTransport::None | KEventTransport::PublishOnlyBridge(_) => {}
             }
         }
 
         Ok(EventReader {
             reader_id,
             inner: Arc::downgrade(&self.inner),
-            bridge: self.bridge.clone(),
+            bridge_link,
             mode: self.mode,
             has_global_patterns,
             closed: AtomicBool::new(false),
@@ -515,35 +687,28 @@ impl KEventClient {
         };
 
         let is_global = is_global_eventid(eventid);
-        self.dispatch_local(&event).await;
+
+        // Loop-back rule. The shared ring skips the publisher's own ring on
+        // drain, so a local dispatch is the only way we see our own global
+        // events there. Over the bridge the daemon *does* route the event
+        // back to us, so dispatching locally as well would deliver it twice —
+        // and `Event` carries no id to dedupe on. Let the daemon be the single
+        // ordering source instead.
+        let dispatch_locally =
+            !is_global || !matches!(self.inner.transport, KEventTransport::DaemonBridge(_));
+        if dispatch_locally {
+            self.dispatch_local(&event).await;
+        }
 
         match self.mode {
             KEventClientMode::Local => Ok(()),
             KEventClientMode::LocalPubOnly => Ok(()),
             KEventClientMode::Full => {
                 if is_global {
-                    let mut delivered_to_local_host = false;
-                    if let Some(shared_ring) = &self.inner.shared_ring {
-                        match shared_ring.publish_event(&event) {
-                            Ok(_) => {
-                                delivered_to_local_host = true;
-                            }
-                            Err(err) => {
-                                warn!("publish global event to shared ringbuffer failed: {}", err);
-                            }
-                        }
-                    }
-
-                    if let Some(bridge) = &self.bridge {
-                        bridge.publish_global(&event).await?;
-                    } else if !delivered_to_local_host {
-                        return Err(KEventError::DaemonUnavailable(
-                            "global event requires daemon bridge or shared ringbuffer in full mode"
-                                .to_string(),
-                        ));
-                    }
+                    self.publish_global_best_effort(&event).await
+                } else {
+                    Ok(())
                 }
-                Ok(())
             }
             KEventClientMode::Light => {
                 if !is_global {
@@ -551,12 +716,55 @@ impl KEventClient {
                         "light mode only supports global event publishing".to_string(),
                     ));
                 }
-                let bridge = self.bridge.as_ref().ok_or_else(|| {
-                    KEventError::DaemonUnavailable("light mode requires daemon bridge".to_string())
+                self.publish_global_best_effort(&event).await
+            }
+        }
+    }
+
+    /// KEvent is a lossy notification channel, so a transport that is down
+    /// drops the event instead of failing the caller's business operation:
+    /// input errors still surface as `Err`, transport errors become a counter
+    /// plus a rate-limited log. Reliable data keeps flowing through kMsgQueue,
+    /// the database, or the consumer's own sweep.
+    async fn publish_global_best_effort(&self, event: &Event) -> KEventResult<()> {
+        match &self.inner.transport {
+            KEventTransport::SharedMemory(shared_ring) => {
+                let payload = serde_json::to_vec(event).map_err(|err| {
+                    KEventError::Internal(format!("failed to encode event: {}", err))
                 })?;
-                bridge.publish_global(&event).await?;
+                if payload.len() > SharedKEventRingBuffer::max_payload_size() {
+                    // Deterministic input-size error, not an outage.
+                    return Err(KEventError::InvalidEventId(format!(
+                        "event too large for shared ring: {} bytes, max {}",
+                        payload.len(),
+                        SharedKEventRingBuffer::max_payload_size()
+                    )));
+                }
+                if let Err(err) = shared_ring.publish_payload(&payload) {
+                    self.inner.note_shm_publish_dropped(&event.eventid, &err);
+                }
                 Ok(())
             }
+            KEventTransport::DaemonBridge(bridge) => match bridge.publish_global(event).await {
+                Ok(_) => Ok(()),
+                // The bridge already rate-limits its own outage logging.
+                Err(err) if is_transport_error(&err) => {
+                    bridge.note_publish_dropped();
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            },
+            KEventTransport::PublishOnlyBridge(bridge) => match bridge.publish_global(event).await {
+                Ok(_) => Ok(()),
+                Err(err) if is_transport_error(&err) => {
+                    self.inner.note_shm_publish_dropped(&event.eventid, &err);
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            },
+            KEventTransport::None => Err(KEventError::NotSupported(
+                "client has no global event transport".to_string(),
+            )),
         }
     }
 
@@ -689,7 +897,7 @@ fn shm_dispatch_thread(weak: Weak<KEventClientInner>) {
             return;
         }
 
-        let shared_ring = match &inner.shared_ring {
+        let shared_ring = match inner.transport.shared_ring() {
             Some(sr) => sr.clone(),
             None => return,
         };
@@ -806,18 +1014,14 @@ impl EventReader {
             )
         };
 
-        if self.mode == KEventClientMode::Full
-            && self.has_global_patterns
-            && (!effective_added_globals.is_empty() || !removed_redundant_globals.is_empty())
-        {
-            if let Some(bridge) = &self.bridge {
-                bridge
-                    .update_reader(
-                        &self.reader_id,
-                        &effective_added_globals,
-                        &removed_redundant_globals,
-                    )
-                    .await?;
+        // The local pattern set is authoritative. Reaching the daemon is the
+        // background link's job: it resends the *complete* set once the
+        // in-flight long poll returns, so an edit made while the daemon is
+        // down still lands on reconnect and the caller never sees a transport
+        // error for a local state change.
+        if !effective_added_globals.is_empty() || !removed_redundant_globals.is_empty() {
+            if let Some(link) = &self.bridge_link {
+                link.mark_dirty();
             }
         }
 
@@ -864,14 +1068,9 @@ impl EventReader {
             removed
         };
 
-        if self.mode == KEventClientMode::Full
-            && self.has_global_patterns
-            && !removed_globals.is_empty()
-        {
-            if let Some(bridge) = &self.bridge {
-                bridge
-                    .update_reader(&self.reader_id, &[], &removed_globals)
-                    .await?;
+        if !removed_globals.is_empty() {
+            if let Some(link) = &self.bridge_link {
+                link.mark_dirty();
             }
         }
 
@@ -938,30 +1137,32 @@ impl EventReader {
         }
     }
 
+    /// Close the reader. Over the daemon bridge this drops the reader's
+    /// connection rather than sending an unregister: the daemon reclaims
+    /// every reader of a closed connection, so we don't have to wait for the
+    /// in-flight long poll to come back first.
     pub async fn close(&self) -> KEventResult<()> {
         if self.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
+        }
+        if let Some(link) = &self.bridge_link {
+            link.stop();
         }
 
         let Some(inner) = self.inner.upgrade() else {
             return Ok(());
         };
-        let removed = inner.readers.write().await.remove(&self.reader_id);
-        if removed.is_none() {
-            return Ok(());
-        }
-
-        if self.mode == KEventClientMode::Full && self.has_global_patterns {
-            if let Some(bridge) = &self.bridge {
-                bridge.unregister_reader(&self.reader_id).await?;
-            }
-        }
+        inner.readers.write().await.remove(&self.reader_id);
         Ok(())
     }
 }
 
 impl Drop for EventReader {
     fn drop(&mut self) {
+        // Dropping the link aborts the pull task and closes its connection.
+        if let Some(link) = &self.bridge_link {
+            link.stop();
+        }
         if self.closed.load(Ordering::Relaxed) {
             return;
         }
@@ -969,17 +1170,9 @@ impl Drop for EventReader {
             return;
         };
         let reader_id = self.reader_id.clone();
-        let bridge = self.bridge.clone();
-        let mode = self.mode;
-        let has_global_patterns = self.has_global_patterns;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 inner.readers.write().await.remove(&reader_id);
-                if mode == KEventClientMode::Full && has_global_patterns {
-                    if let Some(bridge) = bridge {
-                        let _ = bridge.unregister_reader(&reader_id).await;
-                    }
-                }
             });
         } else if let Ok(mut readers) = inner.readers.try_write() {
             readers.remove(&reader_id);
@@ -1270,27 +1463,6 @@ mod tests {
 
     #[async_trait]
     impl KEventDaemonBridge for MockBridge {
-        async fn register_reader(
-            &self,
-            _reader_id: &str,
-            _patterns: &[String],
-        ) -> KEventResult<()> {
-            Ok(())
-        }
-
-        async fn unregister_reader(&self, _reader_id: &str) -> KEventResult<()> {
-            Ok(())
-        }
-
-        async fn update_reader(
-            &self,
-            _reader_id: &str,
-            _add: &[String],
-            _remove: &[String],
-        ) -> KEventResult<()> {
-            Ok(())
-        }
-
         async fn publish_global(&self, event: &Event) -> KEventResult<()> {
             self.published.lock().await.push(event.clone());
             Ok(())
@@ -1577,7 +1749,7 @@ mod tests {
     #[tokio::test]
     async fn test_full_mode_global_process_short_circuit_without_bridge() {
         let _ring_guard = crate::kevent_ringbuffer::test_support::lock_with_fresh_ring();
-        let client = KEventClient::new_full("node_a", None);
+        let client = KEventClient::new_shared_memory("node_a").unwrap();
         let reader = client
             .create_event_reader(vec!["/system/node/online".to_string()])
             .await
@@ -1596,8 +1768,8 @@ mod tests {
     #[tokio::test]
     async fn test_full_mode_shared_ring_short_circuit_between_clients() {
         let _ring_guard = crate::kevent_ringbuffer::test_support::lock_with_fresh_ring();
-        let publisher = KEventClient::new_full("node_a", None);
-        let subscriber = KEventClient::new_full("node_a", None);
+        let publisher = KEventClient::new_shared_memory("node_a").unwrap();
+        let subscriber = KEventClient::new_shared_memory("node_a").unwrap();
         let eventid = format!("/kevent/shared_ring/test_{}", now_millis());
         let reader = subscriber
             .create_event_reader(vec![eventid.clone()])
@@ -1617,14 +1789,14 @@ mod tests {
     #[tokio::test]
     async fn test_full_mode_shared_ring_first_event_from_late_producer() {
         let _ring_guard = crate::kevent_ringbuffer::test_support::lock_with_fresh_ring();
-        let subscriber = KEventClient::new_full("node_a", None);
+        let subscriber = KEventClient::new_shared_memory("node_a").unwrap();
         let eventid = format!("/kevent/shared_ring/late_producer_{}", now_millis());
         let reader = subscriber
             .create_event_reader(vec![eventid.clone()])
             .await
             .unwrap();
 
-        let publisher = KEventClient::new_full("node_a", None);
+        let publisher = KEventClient::new_shared_memory("node_a").unwrap();
         publisher
             .pub_event(&eventid, json!({"path": "late_producer"}))
             .await

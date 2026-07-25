@@ -46,11 +46,13 @@ async fn service_register_publish_pull_and_invalid_inputs() {
     assert_eq!(event.eventid, "/system/node/online");
     assert_eq!(event.source_node, "node_a");
 
-    assert!(service
-        .pull_event("missing", Some(0))
-        .await
-        .unwrap()
-        .is_none());
+    // A reader the daemon doesn't know about must be distinguishable from
+    // "nothing happened within the timeout", otherwise a client that lost its
+    // registration keeps long-polling into the void forever.
+    assert!(matches!(
+        service.pull_event("missing", Some(0)).await,
+        Err(KEventError::ReaderClosed(_))
+    ));
     assert!(matches!(
         service
             .register_reader("", vec!["/system/**".to_string()])
@@ -107,7 +109,10 @@ async fn unregister_reader_closes_update_path_and_drops_queue() {
 
     service.unregister_reader("r1").await;
 
-    assert!(service.pull_event("r1", Some(0)).await.unwrap().is_none());
+    assert!(matches!(
+        service.pull_event("r1", Some(0)).await,
+        Err(KEventError::ReaderClosed(_))
+    ));
     assert!(matches!(
         service
             .update_reader("r1", vec!["/lifecycle/**".to_string()], vec![])

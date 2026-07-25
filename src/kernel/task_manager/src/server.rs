@@ -117,9 +117,12 @@ struct TaskManagerService {
 }
 
 impl TaskManagerService {
-    pub fn new(db: Arc<TaskDb>) -> Self {
+    /// The KEvent client is injected rather than built here: which transport
+    /// is correct depends on where the process runs, and only
+    /// `BuckyOSRuntime::get_kevent_client` knows that.
+    pub fn new(db: Arc<TaskDb>, kevent_client: KEventClient) -> Self {
         TaskManagerService {
-            kevent_client: KEventClient::new_full(TASK_MANAGER_SERVICE_NAME, None),
+            kevent_client,
             db,
             last_event_at: Arc::new(StdMutex::new(HashMap::new())),
         }
@@ -1188,7 +1191,11 @@ pub async fn start_task_manager_service() -> Result<()> {
         .map_err(RPCErrors::ReasonError)?;
     info!("task-manager database initialized");
 
-    let handler = TaskManagerService::new(Arc::new(db));
+    let kevent_client = get_buckyos_api_runtime()
+        .map_err(|err| RPCErrors::ReasonError(format!("api runtime unavailable: {}", err)))?
+        .get_kevent_client()
+        .await?;
+    let handler = TaskManagerService::new(Arc::new(db), kevent_client);
     let server = TaskManagerHttpServer::new(handler);
 
     info!("start node task manager service...");
@@ -1237,7 +1244,10 @@ mod tests {
         let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
 
         let db = TaskDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
-        let service = TaskManagerService::new(Arc::new(db));
+        let service = TaskManagerService::new(
+            Arc::new(db),
+            KEventClient::new_local(TASK_MANAGER_SERVICE_NAME),
+        );
         let server = buckyos_api::TaskManagerServerHandler::new(service);
         (server, temp_dir)
     }

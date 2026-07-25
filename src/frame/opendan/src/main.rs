@@ -12,8 +12,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    set_buckyos_api_runtime, BuckyOSRuntimeType, CreateTaskOptions, KEventClient, TaskStatus,
-    OPENDAN_SERVICE_NAME,
+    set_buckyos_api_runtime, BuckyOSRuntimeType, CreateTaskOptions, TaskStatus,
 };
 use buckyos_kit::{get_buckyos_app_data_dir, init_logging};
 use log::{error, info, warn};
@@ -579,11 +578,15 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
         }
     };
 
-    // KEventClient is local to the process; `source_node` only matters as a
-    // tag on locally published events. Use the opendan service name so the
-    // node-local view is self-describing — the actual subscription patterns
-    // are derived per-agent from `agent.toml`.
-    let kevent_client = Arc::new(KEventClient::new_full(OPENDAN_SERVICE_NAME, None));
+    // The KEvent client must come from the runtime: opendan runs in a
+    // container, so its only global-event channel is node-daemon's bridge.
+    // Building one here with no transport used to "succeed" against a private
+    // ring buffer nobody else was attached to — every global event silently
+    // stayed inside the container. This is a hard failure now: without the
+    // bridge, agent event subscriptions do not work at all.
+    let kevent_client = Arc::new(api_runtime.get_kevent_client().await.map_err(|err| {
+        anyhow!("opendan.bootstrap: kevent client unavailable: {err:?}")
+    })?);
 
     info!(
         "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} task_mgr={} kevent=ready",

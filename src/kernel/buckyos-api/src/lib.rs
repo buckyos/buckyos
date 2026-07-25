@@ -27,6 +27,7 @@ mod app_doc;
 pub mod app_install;
 mod app_mgr;
 mod gateway_control;
+mod kevent_bridge;
 mod kevent_client;
 mod kevent_ringbuffer;
 pub mod network_observation;
@@ -70,6 +71,7 @@ pub use zone_gateway::*;
 
 pub use app_mgr::*;
 pub use gateway_control::*;
+pub use kevent_bridge::*;
 pub use kevent_client::*;
 pub use kevent_ringbuffer::*;
 pub use network_observation::*;

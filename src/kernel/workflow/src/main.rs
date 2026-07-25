@@ -62,7 +62,7 @@ pub use types::*;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType, KEventClient,
+    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
     WORKFLOW_SERVICE_HTTP_PATH, WORKFLOW_SERVICE_NAME, WORKFLOW_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
@@ -231,8 +231,13 @@ pub async fn start_workflow_service() -> Result<()> {
     // TaskData 变更扇出到 `/task_mgr/{run_id}` 子树 channel。订阅管理器把这些
     // 事件回灌到 orchestrator.apply_task_data，把 human_action 翻译成内部状态机
     // 动作。每个 run 对应一条动态加进来的 pattern，run 终态后摘掉。
+    let kevent_client = get_buckyos_api_runtime()
+        .map_err(|err| anyhow::anyhow!("workflow api runtime unavailable: {:?}", err))?
+        .get_kevent_client()
+        .await
+        .map_err(|err| anyhow::anyhow!("workflow kevent client unavailable: {:?}", err))?;
     let subscriptions = RunSubscriptionManager::new(
-        KEventClient::new_full(WORKFLOW_SERVICE_NAME, None),
+        kevent_client,
         runs.clone(),
         definitions.clone(),
         orchestrator.clone(),

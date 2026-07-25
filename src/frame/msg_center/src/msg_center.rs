@@ -384,18 +384,23 @@ impl MessageCenter {
         }
     }
 
-    fn kevent_source_node() -> String {
-        match get_buckyos_api_runtime() {
-            Ok(runtime) => Self::sanitize_token(&runtime.get_full_appid()),
-            Err(_) => "msg_center".to_string(),
+    /// Always go through the runtime: it owns the single process-wide client
+    /// and decides which transport this deployment uses.
+    async fn get_kevent_client() -> Option<KEventClient> {
+        let runtime = match get_buckyos_api_runtime() {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                warn!("msg_center kevent client unavailable: {}", err);
+                return None;
+            }
+        };
+        match runtime.get_kevent_client().await {
+            Ok(client) => Some(client),
+            Err(err) => {
+                warn!("msg_center kevent client unavailable: {:?}", err);
+                None
+            }
         }
-    }
-
-    fn get_kevent_client() -> KEventClient {
-        static KEVENT_CLIENT: OnceLock<KEventClient> = OnceLock::new();
-        KEVENT_CLIENT
-            .get_or_init(|| KEventClient::new_full(Self::kevent_source_node(), None))
-            .clone()
     }
 
     fn build_box_id(owner: &DID, box_kind: &MailboxKind) -> String {
@@ -417,9 +422,11 @@ impl MessageCenter {
     }
 
     fn publish_event(event_id: String, payload: Value) {
-        let client = Self::get_kevent_client();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
+                let Some(client) = Self::get_kevent_client().await else {
+                    return;
+                };
                 if let Err(err) = client.pub_event(&event_id, payload).await {
                     warn!(
                         "publish msg_center changed event failed: event_id={}, err={:?}",

@@ -83,25 +83,12 @@ impl KEventDaemonClient {
     }
 }
 
+/// Publish-only view of the protocol client, for Light-mode SDK users.
+/// Reader lifecycle deliberately isn't part of `KEventDaemonBridge` — a
+/// reader needs its own connection with register / long-poll / reconnect,
+/// which the concrete transports own.
 #[async_trait]
 impl KEventDaemonBridge for KEventDaemonClient {
-    async fn register_reader(&self, reader_id: &str, patterns: &[String]) -> KEventResult<()> {
-        self.register_reader(reader_id, patterns).await
-    }
-
-    async fn unregister_reader(&self, reader_id: &str) -> KEventResult<()> {
-        self.unregister_reader(reader_id).await
-    }
-
-    async fn update_reader(
-        &self,
-        reader_id: &str,
-        add: &[String],
-        remove: &[String],
-    ) -> KEventResult<()> {
-        self.update_reader(reader_id, add, remove).await
-    }
-
     async fn publish_global(&self, event: &Event) -> KEventResult<()> {
         self.publish_global(event).await
     }

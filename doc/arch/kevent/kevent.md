@@ -312,6 +312,29 @@ SDK 提供两种运行模式，适配不同的设备能力和角色：
 
 适用于运行了 Node Daemon 的完整 BuckyOS 节点，支持 pub + sub + timer 全部能力。
 
+**全局事件通道由使用者在构造时明确指定，运行期不会自动切换：**
+
+| transport | 适用进程 | 构造入口 |
+|-----------|----------|----------|
+| `SharedMemory` | 与 node-daemon 同机、能访问宿主 `/tmp` 的进程（kernel service、native 进程） | `KEventClient::new_shared_memory(source_node)` |
+| `DaemonBridge` | 容器内进程（AppService / FrameService），访问不到宿主共享内存 | `KEventClient::new_daemon_bridge(source_node, endpoint)` |
+
+两者互斥。Daemon 收到的全局事件会 mirror 进共享内存（§4.3），因此同时挂两条通道的进程会把同一事件收到两份，而 `Event` 没有唯一 id 可以事后去重。
+
+**配置合法性在构造期硬失败，运行期抖动一律 best-effort：**
+
+- `SharedMemory` 打不开 ring、`DaemonBridge` 拿不到 endpoint → 构造失败，不允许拿到一个"看起来能用"的 client。
+  历史教训：容器内 `/tmp` 是私有的，带 `create(true)` 的 ring 会成功创建一个谁也不连的私有 ring，让全局事件长期静默失效。
+- 已经连上过、之后断了 → 丢事件 + 限频日志 + 计数，不升级为业务失败（§6.2）。
+
+**业务代码不自己选 transport**，统一通过：
+
+```rust
+let kevent_client = BuckyOSRuntime::get_kevent_client().await?;
+```
+
+runtime 按 `runtime_type` 决定通道（容器类型走 bridge，其余走 SHM），并复用同一个进程级单例——每个 client 会带一条 ShmDispatch 线程或一组 TCP 连接，按调用次数新建会按次泄漏线程/连接。
+
 ```
 EventClient (Full Mode) {
     // 进程内
@@ -477,8 +500,11 @@ pub_event 跨节点流程:
 语义约束：
 
 - `register_reader` 的 `patterns` 不能为空，且必须全部为全局 pattern
+- `register_reader` 是**幂等的全量覆盖**：reader 已存在时只换 pattern 集合，保留队列。client 永远发全量，不发 add/remove 历史，因此同一个调用既是首次注册也是重连恢复
+- `update_reader` 仅保留协议兼容，SDK 不再使用
 - `publish_global` 的 `event.eventid` 必须为全局 eventid
 - `pull_event` 超时时返回 `{ "status": "ok" }`，即 `event` 字段缺失
+- `pull_event` 遇到 daemon 侧不存在的 reader 时返回 `READER_CLOSED`，与"超时无事件"明确区分——否则丢了注册的 client 会一直空转长轮询
 - `timeout_ms == 0` 表示非阻塞读取
 - `reader_id` 为空应视为协议错误
 
@@ -500,6 +526,24 @@ pub_event 跨节点流程:
 ```
 
 其中 JSON payload 本身仍然保持上面的 native 协议结构，不额外引入新的字段。
+
+**连接模型（Full SDK 的 DaemonBridge transport）**
+
+wire 上是严格顺序的 request/response，没有 request id，所以一条连接同时只能有一个在途请求；long-poll `pull_event` 放在共享连接上会把 register / publish 全部 head-of-line 阻塞。因此：
+
+- **每个 `EventReader` 独占一条连接**：连上 → 全量 `register_reader` → 循环 long-poll `pull_event`（超时 5s）→ 收到的事件写进本地队列。业务的 `EventReader::pull_event(timeout)` 只等本地队列，因此 transport 抖动不会变成调用方的 busy loop。
+- **pattern 变更**标脏，等当前 long-poll 返回后重发全量注册。所以 **pull 超时就是 pattern 生效延迟的上界（5s）**。
+- **`pub_event`** 不属于任何 reader，用一条惰性建立的 publisher 连接，并用 mutex 串行化（无 request id，并发发送会导致响应串台）。失败丢弃失效连接，但不重放事件。
+- **reader 关闭 = 断开该连接**，不等在途 pull 返回，也不发 `unregister_reader`。
+
+**reader 命名空间与回收**：daemon 侧 reader 按 `(连接, reader_id)` 记账。这一条同时解决两件事——
+
+1. reader_id 只需在连接内唯一，多个容器各自从 `r_1` 开始也不会互相偷事件；
+2. 连接结束时该连接的所有 reader 一并回收，客户端崩溃/断线不再留下永久驻留、还在按上限吃事件的队列（这是一条既存的慢速内存泄漏）。
+
+回收发生在 daemon 的在途 long-poll 返回之后，因此延迟上界同样是一个 pull 超时。
+
+HTTP facade 这类无连接语义的调用方共用 `KEventSessionId::SHARED` 命名空间，需要自己保证 reader_id 唯一。
 
 #### 5.4.2 Peer Daemon 协议：单向事件广播
 
@@ -683,13 +727,31 @@ POST /kapi/kevent/publish
 
 EventBus 是 best-effort 的加速层，所有故障场景的兜底策略统一为：**事件丢失 → 消费端超时 → kMsgQueue 轮询找回**。因此容错设计追求简单，不做复杂补偿。
 
-### 6.2 Daemon 重启
+### 6.2 Daemon 重启与 transport 自恢复
+
+Daemon 侧：
 
 - 纯净启动，无需恢复任何状态
 - 重建共享内存区域
 - 等待 client SDK 重连并重新注册订阅
 - 重连 peer 节点
 - 重启期间的事件丢失，由 kMsgQueue 轮询兜底
+
+Client 侧（DaemonBridge transport）：订阅状态由 client 持有，不依赖 daemon 保存。长连接模型下 daemon 重启必然表现为断链，所以"断链 → 重连 → 全量重注册"就是主恢复路径：
+
+```text
+connect → register_reader(全量 patterns) → pull loop
+        → 连接断开 → 有上限的指数退避（200ms → 5s，带 jitter）
+        → 重连 → register_reader(当前全量 patterns) → 恢复 pull
+```
+
+- 重试是 single-flight 的：reader 由它自己的后台任务退避重连，publisher 由一个退避闸门控制，不会每个调用方各自建连。
+- 日志限频：一段故障只记首次失败、每 60s 一条摘要、恢复一条 info。
+- `READER_CLOSED` 作为防御性补充，覆盖"连接还在但 daemon 单独丢了 reader"，收到后原地重注册。它不是主触发器，因此老版本 daemon 不发这个错误码也不影响恢复正确性。
+- 恢复期间允许丢事件，不补发。
+- 状态可查询（`KEventClient::transport_status()`）：最近一次错误、连续失败次数、当前连接数、丢弃的 publish 数——验收"长时间不可用无 busy loop"时比翻日志可靠。
+
+`pub_event` 在两种 transport 下语义一致，都是 best-effort：eventid / pattern / payload 大小这类输入错误仍返回 `Err`；transport 不可用时本次事件直接丢弃、只更新状态与限频日志，不升级成业务失败。
 
 ### 6.3 节点离线
 
@@ -714,6 +776,9 @@ EventBus 是 best-effort 的加速层，所有故障场景的兜底策略统一�
 | `DAEMON_UNAVAILABLE` | 无法连接本机 Node Daemon / 共享内存不可用 |
 | `TIMER_INVALID_TARGET` | Timer 的 eventid 不是本地事件（以 `/` 开头） |
 | `TIMER_NOT_FOUND` | 取消的 timer_id 不存在 |
+| `READER_CLOSED` | reader 已关闭，或 daemon 侧不认识这个 reader（需重新注册） |
+| `NOT_SUPPORTED` | 当前模式不支持该操作（如 Light 模式创建 reader） |
+| `INTERNAL` | 编解码等内部错误 |
 
 注意：不再有 `EVENT_NOT_FOUND`、`NO_MATCH`、`PERMISSION_DENIED`（无注册机制，无内置权限校验）。
 

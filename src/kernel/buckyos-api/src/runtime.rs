@@ -27,7 +27,7 @@ use named_store::NamedDataMgr;
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
-use crate::kevent_client::KEventClient;
+use crate::kevent_client::{KEventClient, KEVENT_SERVICE_NATIVE_PORT};
 use crate::msg_center_client::*;
 use crate::msg_queue::*;
 use crate::opendan_client::*;
@@ -186,6 +186,7 @@ pub struct BuckyOSRuntime {
     last_update_service_info_time: RwLock<u64>,
     named_store_mgr: OnceCell<NamedDataMgr>,
     system_config_client: OnceCell<Arc<SystemConfigClient>>,
+    kevent_client: OnceCell<KEventClient>,
     background_task_status:
         Arc<RwLock<HashMap<RuntimeBackgroundTaskKind, RuntimeBackgroundTaskStatus>>>,
 
@@ -238,6 +239,7 @@ impl BuckyOSRuntime {
             last_update_service_info_time: RwLock::new(0),
             named_store_mgr: OnceCell::new(),
             system_config_client: OnceCell::new(),
+            kevent_client: OnceCell::new(),
             background_task_status: Arc::new(RwLock::new(HashMap::from([
                 (
                     RuntimeBackgroundTaskKind::RenewToken,
@@ -2009,13 +2011,53 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
-    /// In-process KEvent client bound to this runtime's `app_id`. The Full
-    /// mode shares the cross-process ring buffer when available; if the ring
-    /// isn't reachable, subscriptions still work for events published in the
-    /// same process and `wait_*_kevent` helpers degrade to their sweep
-    /// fallback.
+    /// The process-wide KEvent client, bound to this runtime's `app_id`.
+    ///
+    /// This is the only supported way to obtain one: the transport depends on
+    /// where the process runs, and business code has no business knowing about
+    /// `BUCKYOS_HOST_GATEWAY`, ports or ring-buffer paths.
+    ///
+    /// * `AppService` / `FrameService` run inside containers, cannot reach the
+    ///   host's ring buffer, and therefore talk to node-daemon's native bridge.
+    ///   (node-daemon is their loader, so it is always the right peer.)
+    /// * Everything else runs beside node-daemon on the host and uses the
+    ///   shared ring buffer.
+    ///
+    /// It is a *singleton*: each client owns a ring-dispatch thread or a set
+    /// of TCP connections, so handing out a fresh one per call would leak a
+    /// thread (or a connection) per caller — `wait_for_task_end_kevent` alone
+    /// would burn one per wait.
     pub async fn get_kevent_client(&self) -> Result<KEventClient> {
-        Ok(KEventClient::new_full(self.app_id.as_str(), None))
+        let client = self
+            .kevent_client
+            .get_or_try_init(|| async { self.build_kevent_client() })
+            .await?;
+        Ok(client.clone())
+    }
+
+    fn build_kevent_client(&self) -> Result<KEventClient> {
+        let source_node = self.app_id.as_str();
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                let endpoint = format!(
+                    "{}:{}",
+                    self.resolve_local_service_host(),
+                    KEVENT_SERVICE_NATIVE_PORT
+                );
+                info!(
+                    "kevent client for {} uses daemon bridge at {}",
+                    source_node, endpoint
+                );
+                KEventClient::new_daemon_bridge(source_node, endpoint)
+                    .map_err(|err| RPCErrors::ReasonError(err.to_string()))
+            }
+            _ => KEventClient::new_shared_memory(source_node).map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "kevent shared memory transport unavailable for {}: {}",
+                    source_node, err
+                ))
+            }),
+        }
     }
 
     pub async fn get_aicc_client(&self) -> Result<AiccClient> {
