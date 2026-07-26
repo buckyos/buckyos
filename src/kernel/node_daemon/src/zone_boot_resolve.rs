@@ -9,12 +9,9 @@
 //    node_identity（§12 / §13），更新 Owner Document 必须走维护流程（§15）。
 //
 // name-client 重构后的配套（buckyos-base doc/已有did-resolver介绍.md）：
-//  - dns_resolver 已降级为补充源，TXT 候选须 expected_owner + owner 验签才可见
-//    （介绍文档 §3 / §8）。Boot 场景 zone 自己的权威发布面还没启动，管线推不出
-//    expected_owner（一级名字无结构默认值），因此 resolve_did 管线拿不到 DNS
-//    引导文档——这不是缺陷，是介绍文档 §3 要求的安全语义；
-//  - Boot 的兜底路径改为直查 DnsProvider，并用 node_identity 里的 owner key
-//    在本地闭环验签（介绍文档 §3："本地已经有 Owner Document，验签在本地闭环"）。
+//  - dns_resolver 是 current-zone boot 专用补充源，普通 resolve 默认跳过；
+//  - Boot 通过 ResolvePolicy::with_current_zone 显式允许当前 Zone 的 DNS TXT
+//    候选进入 resolve_did 管线，候选仍须通过本地 Owner Document 验签。
 //
 // 信任纪律：来自网络的 candidate 只接受 Jwt 形态且必须用本地 owner key 验签通过；
 // JsonLd 形态结构上不携带签名，在 Boot 阶段一律拒绝（Boot 的信任锚是激活时建立
@@ -31,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
-use name_client::{resolve_did, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT};
+use name_client::{resolve_did, resolve_did_ex, ResolvePolicy, GLOBAL_NAME_CLIENT};
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
     DID,
@@ -408,13 +405,11 @@ where
     }
 }
 
-// 发现一个可验证的 Zone Document candidate。三条路径按顺序，first-win：
+// 发现一个可验证的 Zone Document candidate。两条路径按顺序，first-win：
 //  1. resolve_did 管线取 Zone Document（did:bns 合约、Warm Restart 时仍在线的
 //     权威发布面、did cache 都可能给出回答）；
-//  2. resolve_did 管线取 Zone Boot Document；
-//  3. Boot 特殊路径：直查 dns_resolver 取 TXT 引导文档（介绍文档 §3 的 Zone
-//     自举场景）。管线的 need_proof 验证在 Boot 场景推不出 expected_owner，
-//     这里用本地 owner key 直接闭环验签，不依赖任何额外网络查询。
+//  2. 带 current-zone policy 的 resolve_did 管线取 Zone Boot Document，允许
+//     dns_resolver 作为当前 Zone 自举专用补充源。
 // 所有路径的产物都必须通过"Jwt + 本地 owner key 验签 + Root Trust 锚定"。
 async fn discover_zone_document(
     node_identity: &LocalNodeIdentityConfig,
@@ -440,33 +435,17 @@ async fn discover_zone_document(
         }
     }
 
-    match discover_step(
-        "resolve_did(boot)",
-        resolve_did(zone_did, Some(DidDocType::Boot)),
-    )
+    let policy = ResolvePolicy::default().with_current_zone(zone_did.clone());
+    match discover_step("resolve_did_ex(boot,current_zone)", async {
+        resolve_did_ex(zone_did, Some(DidDocType::Boot), policy)
+            .await
+            .map(|resolved| resolved.document)
+    })
     .await
     .and_then(|doc| decode_signed_zone_boot_document(&doc, node_identity, owner_public_key))
     {
         Ok(zone_document) => {
-            info!("boot discover: got zone boot document via resolve_did pipeline");
-            return Ok(zone_document);
-        }
-        Err(err) => {
-            info!("boot discover: {}", err);
-            failures.push(err);
-        }
-    }
-
-    let dns_provider = DnsProvider::new(None);
-    match discover_step(
-        "dns_direct(boot)",
-        dns_provider.query_did(zone_did, Some(DidDocType::Boot), None),
-    )
-    .await
-    .and_then(|doc| decode_signed_zone_boot_document(&doc, node_identity, owner_public_key))
-    {
-        Ok(zone_document) => {
-            info!("boot discover: got zone boot document via direct dns query (local-verified)");
+            info!("boot discover: got zone boot document via current-zone resolve_did pipeline");
             return Ok(zone_document);
         }
         Err(err) => {

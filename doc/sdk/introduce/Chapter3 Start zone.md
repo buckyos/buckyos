@@ -76,9 +76,9 @@ let node_identity = NodeIdentityConfig {
 
 实现里，node-daemon 会在启动阶段尝试拿到 ZoneDocument：
 
-- 入口：`resolve_zone_document()`（`src/kernel/node_daemon/src/node_daemon.rs`）
-- 正常路径：先调用 `resolve_did(&node_identity.zone_did, Some("zone"))` 获取完整 ZoneDocument。
-- fallback 路径：如果完整 ZoneDocument 拿不到，再调用 `resolve_did(&node_identity.zone_did, Some("boot"))` 获取 ZoneBootConfig，并转换成 ZoneDocument。
+- 入口：`boot_resolve_zone_document()`（`src/kernel/node_daemon/src/zone_boot_resolve.rs`）
+- 正常路径：先用默认 policy 调用 `resolve_did(&node_identity.zone_did, Some("zone"))` 获取完整 ZoneDocument；默认 policy 不允许访问 DNS DID resolver。
+- fallback 路径：如果完整 ZoneDocument 拿不到，再调用 `resolve_did_ex(&node_identity.zone_did, Some(DidDocType::Boot), ResolvePolicy::default().with_current_zone(node_identity.zone_did.clone()))` 获取 ZoneBootConfig，并转换成 ZoneDocument。只有这个 current-zone self boot 调用可以启用 DNS TXT 补充源。
 
 ### 3.1. 一个很“实现细节但必须知道”的点：当前是 JSON 而不是 JWT
 
@@ -93,10 +93,10 @@ let node_identity = NodeIdentityConfig {
 
 ### 3.2. 离线/调试模式：从本地文件绕开解析
 
-`resolve_zone_document()` 还提供了一个很实用的 debug 入口：
+`boot_resolve_zone_document()` 还提供了一个很实用的 debug 入口：
 
 - 如果存在 `./<zone_raw_host_name>.zone.json`，会优先从本地加载并解析
-- 代码：`src/kernel/node_daemon/src/node_daemon.rs`
+- 代码：`src/kernel/node_daemon/src/zone_boot_resolve.rs`
 
 这让你在离线环境里也能绕开 DNS/BNS/SN 的解析链路，直接验证后续 boot/scheduler 的行为。
 

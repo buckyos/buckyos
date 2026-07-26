@@ -72,7 +72,7 @@ pub struct ZoneBootConfig {
 ### ZoneBootConfig 在启动链路中的“形态转换”
 有一个容易误解的点：
 - 设计上 ZoneBootConfig 常被描述为“JWT”；
-- node-daemon 的 `resolve_zone_document()` 会优先 `resolve_did(zone_did, "zone")` 获取完整 ZoneDocument；如果拿不到，才 `resolve_did(zone_did, "boot")` 获取 ZoneBootConfig 并转换成 ZoneDocument。
+- node-daemon 的 `boot_resolve_zone_document()` 会优先用默认 policy 调用 `resolve_did(zone_did, "zone")` 获取完整 ZoneDocument；如果拿不到，才通过 `resolve_did_ex(zone_did, "boot", ResolvePolicy::default().with_current_zone(zone_did))` 获取 ZoneBootConfig 并转换成 ZoneDocument。DNS TXT 只在后一个 current-zone self boot 调用中有资格作为补充源。
 - 当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化为 `ZoneDocument`，也就是说 `BUCKYOS_ZONE_DOC` 是“ZoneDocument 的 JSON 字符串”，不是 ZoneBootConfig JSON，也不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
 
 而这个环境变量是在 node-daemon 的启动流程里设置的（同一处还会设置 `BUCKYOS_THIS_DEVICE`）：`src/kernel/node_daemon/src/node_daemon.rs`。

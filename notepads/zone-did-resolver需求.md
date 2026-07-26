@@ -174,8 +174,8 @@ Accept 是 Boot State Machine 决策
 - Boot 首先安装本地 Owner trust：`node_identity.owner_public_key` 合成最小 OwnerDocument，注入 name-client local authority override。
 - Boot 发现 Zone Document 的顺序：
   1. `resolve_did(zone_did, zone)`
-  2. `resolve_did(zone_did, boot)`
-  3. 直查 `DnsProvider` 的 boot 文档
+  2. `resolve_did_ex(zone_did, boot, ResolvePolicy::default().with_current_zone(zone_did))`
+- DNS TXT resolver 只在第 2 步的 current-zone self boot policy 下作为补充源参与；普通 `resolve_did` 不会查询 DNS TXT。
 - 网络来源的 Zone / Boot document 只接受 owner-signed JWT，不接受网络返回的 JsonLd。
 - candidate 必须用 `node_identity.owner_public_key` 验签，并且 `zone_did`、`owner_did`、key material 与本地 `node_identity` 锚定一致。
 - First Boot 没有 LKGS，失败就是 Boot Failed。
