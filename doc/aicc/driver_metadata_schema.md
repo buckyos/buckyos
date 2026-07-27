@@ -84,6 +84,12 @@ Rules support these fields:
 - `estimated_cost_usd`, `estimated_latency_ms`: default scheduler estimates.
 - `quality_score`, `latency_class`, `cost_class`: routing attributes.
 
+All exact ids and wildcard patterns, including
+`version_rules[].model_pattern`, match the complete channel-local
+`provider_model_id`. Origin fields are only used for metadata attribution and
+mount template expansion. For example, OpenAI uses `gpt-*`, while OpenRouter
+uses `openai/gpt-*` for the same origin model family.
+
 Unknown fallback is intentionally conservative: it does not declare
 `tool_call`, `web_search`, `vision`, or `json_schema`.
 

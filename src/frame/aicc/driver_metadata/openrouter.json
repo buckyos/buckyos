@@ -1589,7 +1589,7 @@
                           {
                               "family":  "gpt",
                               "tier":  "standard",
-                              "model_pattern":  "gpt-*",
+                              "model_pattern":  "openai/gpt-*",
                               "exclude_tier_tokens":  [
                                                           "pro",
                                                           "mini",
@@ -1630,7 +1630,7 @@
                           {
                               "family":  "gpt",
                               "tier":  "pro",
-                              "model_pattern":  "gpt-*",
+                              "model_pattern":  "openai/gpt-*",
                               "tier_tokens":  [
                                                   "pro"
                                               ],
@@ -1665,7 +1665,7 @@
                           {
                               "family":  "gpt",
                               "tier":  "mini",
-                              "model_pattern":  "gpt-*",
+                              "model_pattern":  "openai/gpt-*",
                               "tier_tokens":  [
                                                   "mini"
                                               ],
@@ -1700,7 +1700,7 @@
                           {
                               "family":  "gpt",
                               "tier":  "nano",
-                              "model_pattern":  "gpt-*",
+                              "model_pattern":  "openai/gpt-*",
                               "tier_tokens":  [
                                                   "nano",
                                                   "nono"

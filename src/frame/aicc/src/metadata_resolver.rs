@@ -1070,7 +1070,7 @@ fn apply_driver_version_rule(
         }
         let origin =
             resolve_origin_identity(provider_driver, model.provider_model_id.as_str(), sources);
-        let Some(rank) = rank_model_for_version_rule(origin.model.as_str(), rule) else {
+        let Some(rank) = rank_model_for_version_rule(model.provider_model_id.as_str(), rule) else {
             continue;
         };
         remove_driver_auto_mounts(&mut model.logical_mounts, rule);
@@ -1312,6 +1312,12 @@ mod tests {
         assert_eq!(openai.pricing.input_token_usd, Some(0.000005));
         assert_eq!(openai.pricing.output_token_usd, Some(0.00003));
         assert_eq!(openai.pricing.cache_input_token_usd, Some(0.0000005));
+        assert!(
+            openai
+                .logical_mounts
+                .iter()
+                .any(|mount| mount == "llm.gpt-standard")
+        );
         assert!(
             openai
                 .logical_mounts
