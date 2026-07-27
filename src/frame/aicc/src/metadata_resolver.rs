@@ -120,6 +120,8 @@ pub struct DriverModelRule {
     #[serde(default)]
     pub model_driver: Option<String>,
     #[serde(default)]
+    pub provider_actual_model_id: Option<String>,
+    #[serde(default)]
     pub exclude: bool,
     #[serde(default)]
     pub parameter_scale: Option<String>,
@@ -131,6 +133,12 @@ pub struct DriverModelRule {
     pub capabilities: DriverCapabilitiesPatch,
     #[serde(default)]
     pub estimated_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub input_token_usd: Option<f64>,
+    #[serde(default)]
+    pub output_token_usd: Option<f64>,
+    #[serde(default)]
+    pub cache_input_token_usd: Option<f64>,
     #[serde(default)]
     pub estimated_latency_ms: Option<u64>,
     #[serde(default)]
@@ -310,11 +318,16 @@ fn resolve_driver_model(
     let mut latency_class = LatencyClass::Normal;
     let mut cost_class = CostClass::Medium;
     let mut model_driver = origin.driver.clone();
+    let mut provider_actual_model_id = None;
+    let mut input_token_usd = None;
+    let mut output_token_usd = None;
+    let mut cache_input_token_usd = None;
 
     if let Some(rule) = rule {
         if let Some(next) = rule.model_driver.as_ref() {
             model_driver = next.clone();
         }
+        provider_actual_model_id = rule.provider_actual_model_id.clone();
         if let Some(next_api_types) = rule.api_types.as_ref() {
             api_types = next_api_types.clone();
         }
@@ -333,6 +346,9 @@ fn resolve_driver_model(
         if rule.estimated_cost_usd.is_some() {
             estimated_cost_usd = rule.estimated_cost_usd;
         }
+        input_token_usd = rule.input_token_usd;
+        output_token_usd = rule.output_token_usd;
+        cache_input_token_usd = rule.cache_input_token_usd;
         if rule.estimated_latency_ms.is_some() {
             estimated_latency_ms = rule.estimated_latency_ms;
         }
@@ -366,7 +382,7 @@ fn resolve_driver_model(
         provider_model_id: provider_model_id.to_string(),
         exact_model: exact_model_name(provider_model_id, provider_instance_name),
         model_driver,
-        provider_actual_model_id: None,
+        provider_actual_model_id,
         provider_options: None,
         parameter_scale,
         api_types,
@@ -385,8 +401,10 @@ fn resolve_driver_model(
             cost_class,
         },
         pricing: ModelPricing {
+            input_token_usd,
+            output_token_usd,
+            cache_input_token_usd,
             estimated_cost_usd,
-            ..Default::default()
         },
         health: ModelHealth {
             status: HealthStatus::Available,
@@ -1262,6 +1280,10 @@ mod tests {
             DriverModelResolveRequest::new("openai/gpt-5.5", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("anthropic/claude-sonnet-4", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("x-ai/grok-4.5", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-chat-latest", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/o3-mini-high", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-5.6-sol-pro", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-oss-20b:free", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("~x-ai/grok-latest", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("openrouter/auto", vec![ApiType::Llm]),
         ];
@@ -1273,7 +1295,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(inventory.models.len(), 3);
+        assert_eq!(inventory.models.len(), 1);
         let openai = inventory
             .models
             .iter()
@@ -1281,25 +1303,21 @@ mod tests {
             .expect("OpenAI model should resolve");
         assert_eq!(openai.model_driver, "openai");
         assert_eq!(openai.exact_model, "openai/gpt-5.5@openrouter-main");
-        assert!(openai
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "llm.openai"));
-        assert!(openai
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "llm.openai.gpt-5-5"));
-
-        let xai = inventory
-            .models
-            .iter()
-            .find(|model| model.provider_model_id == "x-ai/grok-4.5")
-            .expect("xAI model should resolve");
-        assert_eq!(xai.model_driver, "xai");
-        assert!(xai
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "llm.xai.grok-4-5"));
+        assert_eq!(
+            openai.provider_actual_model_id.as_deref(),
+            Some("openai/gpt-5.5-20260423")
+        );
+        assert_eq!(openai.capabilities.max_context_tokens, Some(1_050_000));
+        assert_eq!(openai.capabilities.max_output_tokens, Some(128_000));
+        assert_eq!(openai.pricing.input_token_usd, Some(0.000005));
+        assert_eq!(openai.pricing.output_token_usd, Some(0.00003));
+        assert_eq!(openai.pricing.cache_input_token_usd, Some(0.0000005));
+        assert!(
+            openai
+                .logical_mounts
+                .iter()
+                .any(|mount| mount == "llm.openai.gpt-5-5")
+        );
 
         let official = resolve_driver_inventory(
             "openai-main",

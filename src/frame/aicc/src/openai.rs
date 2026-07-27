@@ -4773,7 +4773,7 @@ data: [DONE]
     }
 
     #[test]
-    fn openrouter_remote_inventory_has_no_openai_default_models() {
+    fn openrouter_remote_inventory_uses_strict_fixed_openai_whitelist() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
                 provider_instance_name: "openrouter-main".to_string(),
@@ -4792,16 +4792,21 @@ data: [DONE]
             .build_inventory_from_remote_value(json!({
                 "data": [
                     { "id": "openai/gpt-5.5" },
-                    { "id": "anthropic/claude-sonnet-4" }
+                    { "id": "anthropic/claude-sonnet-4" },
+                    { "id": "openai/gpt-chat-latest" },
+                    { "id": "openai/o3-mini-high" },
+                    { "id": "openai/gpt-5.6-sol-pro" },
+                    { "id": "openai/gpt-oss-20b:free" }
                 ]
             }))
             .expect("OpenRouter inventory should resolve");
 
-        assert_eq!(inventory.models.len(), 2);
-        assert!(inventory
-            .models
-            .iter()
-            .all(|model| model.provider_model_id.contains('/')));
+        assert_eq!(inventory.models.len(), 1);
+        assert_eq!(inventory.models[0].provider_model_id, "openai/gpt-5.5");
+        assert_eq!(
+            inventory.models[0].provider_actual_model_id.as_deref(),
+            Some("openai/gpt-5.5-20260423")
+        );
     }
 
     #[test]

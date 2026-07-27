@@ -68,6 +68,9 @@ Rules support these fields:
 - `model_driver`: optional per-model metadata driver. Defaults to the resolved
   origin driver. A rule can override it when metadata attribution differs from
   the physical model origin.
+- `provider_actual_model_id`: optional model id sent to the provider instead of
+  the discovered id. Aggregators can use it to pin a public alias to the
+  inventory's canonical fixed model revision.
 - `exclude`: drops the provider model from inventory.
 - `parameter_scale`: optional display/classification string.
 - `api_types`: AICC API types, for example `llm.chat`, `image.txt2img`, `audio.asr`.
@@ -76,6 +79,8 @@ Rules support these fields:
   The first pair identifies the physical origin; the second pair identifies the
   current delivery channel.
 - `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `max_context_tokens`, `max_output_tokens`.
+- `input_token_usd`, `output_token_usd`, `cache_input_token_usd`: optional
+  provider token prices in USD per token.
 - `estimated_cost_usd`, `estimated_latency_ms`: default scheduler estimates.
 - `quality_score`, `latency_class`, `cost_class`: routing attributes.
 
