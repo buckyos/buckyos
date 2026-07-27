@@ -77,6 +77,8 @@ pub struct StepRecord {
     /// Raw LLM response text, used verbatim as assistant message content
     /// when this step is rendered back to the LLM.
     pub assistant_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant_message: Option<AiMessage>,
 
     /// "Observation" slot — LLM's reading of the previous action's result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,6 +145,7 @@ impl StepRecord {
         Self {
             meta: StepMeta::default(),
             assistant_text,
+            assistant_message: None,
             observation,
             thought,
             actions: do_actions,
@@ -173,6 +176,7 @@ impl StepRecord {
         Self {
             meta: StepMeta::default(),
             assistant_text: String::new(),
+            assistant_message: None,
             observation: None,
             thought: None,
             actions: Vec::new(),

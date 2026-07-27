@@ -594,6 +594,11 @@ pub enum AiContent {
 }
 ```
 
+`ProviderState.provider` 保存 opaque state 的稳定所有者/消费者 namespace（例如
+`openai`、`openrouter`、`anthropic` 或 `google`），由各 adapter 定义其可还原的
+namespace；它不保存协议名或原生 item 类型。原生 item 类型继续由 `value` 自描述
+（例如 OpenAI Responses 的 `value.type`）。
+
 JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resource` + `resource`）：
 
 ```json

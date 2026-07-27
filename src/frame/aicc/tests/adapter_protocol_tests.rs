@@ -74,7 +74,7 @@ fn claude_provider(base_url: String, timeout_ms: u64) -> ClaudeProvider {
 async fn adapter_openai_01_http_200_success() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,
-        body: r#"{"id":"r1","status":"completed","output_text":"ok","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}"#.to_string(),
+        body: r#"{"id":"r1","status":"completed","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}"#.to_string(),
         content_type: "application/json",
         delay_ms: 0,
     }])

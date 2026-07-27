@@ -999,11 +999,32 @@ impl OpenAIProvider {
         // (只留 Text block),tool 信息全丢。
         for msg in &req.payload.messages {
             let role_str = Self::ai_role_to_openai(&msg.role);
-            let content_type = if role_str == "assistant" {
-                "output_text"
-            } else {
-                "input_text"
-            };
+            if role_str == "assistant" {
+                let provider_items = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        AiContent::ProviderState { provider, value }
+                            if provider.eq_ignore_ascii_case(&self.provider_driver) =>
+                        {
+                            Some(value.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if provider_items.is_empty() {
+                    if msg.text_content().trim().is_empty() && msg.tool_calls().is_empty() {
+                        continue;
+                    }
+                    return Err(ProviderError::fatal(format!(
+                        "assistant history is missing Responses output items for provider `{}`",
+                        self.provider_driver
+                    )));
+                }
+                items.extend(provider_items);
+                continue;
+            }
+            let content_type = "input_text";
             let mut pending_text_parts: Vec<Value> = Vec::new();
 
             for block in &msg.content {
@@ -1539,6 +1560,29 @@ impl OpenAIProvider {
             Value::Null => Some(Value::Object(Map::new())),
             other => Some(other),
         }
+    }
+
+    fn message_from_response_body(
+        &self,
+        body: &Value,
+        text: Option<String>,
+        tool_calls: Vec<AiToolCall>,
+    ) -> AiMessage {
+        let mut message = AiResponse::message_from_parts(text, tool_calls, vec![]);
+        if let Some(output_items) = body.get("output").and_then(Value::as_array) {
+            message
+                .content
+                .extend(
+                    output_items
+                        .iter()
+                        .cloned()
+                        .map(|value| AiContent::ProviderState {
+                            provider: self.provider_driver.clone(),
+                            value,
+                        }),
+                );
+        }
+        message
     }
 
     fn extract_text_content(payload: &Value) -> Option<String> {
@@ -2592,6 +2636,16 @@ impl OpenAIProvider {
             );
             return Err(err);
         }
+        if !self.use_chat_completions_endpoint()
+            && body
+                .get("output")
+                .and_then(Value::as_array)
+                .map_or(true, Vec::is_empty)
+        {
+            return Err(ProviderError::fatal(
+                "OpenAI Responses result is missing output items required for history replay",
+            ));
+        }
 
         let usage = body.get("usage").map(|usage| AiUsage {
             input_tokens: usage
@@ -2629,7 +2683,7 @@ impl OpenAIProvider {
         );
 
         let summary = AiResponse {
-            message: AiResponse::message_from_parts(content, tool_choices, vec![]),
+            message: self.message_from_response_body(&body, content, tool_choices),
             usage,
             cost,
             finish_reason: body
@@ -4961,6 +5015,161 @@ data: [DONE]
                 .and_then(|v| v.as_str()),
             Some("data:image/png;base64,aGVsbG8=")
         );
+    }
+
+    #[test]
+    fn responses_history_preserves_and_replays_provider_output_items() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let reasoning_item = json!({
+            "type": "reasoning",
+            "id": "rs_123",
+            "summary": [],
+            "encrypted_content": "opaque",
+        });
+        let message_item = json!({
+            "type": "message",
+            "id": "msg_123",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "hi",
+                "annotations": [{"type": "url_citation", "url": "https://example.com"}],
+            }],
+        });
+        let assistant = provider.message_from_response_body(
+            &json!({"output": [reasoning_item.clone(), message_item.clone()]}),
+            Some("hi".to_string()),
+            vec![],
+        );
+        assert!(assistant.content.iter().all(|content| match content {
+            AiContent::ProviderState { provider, .. } => provider == "openrouter",
+            _ => true,
+        }));
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::User, "hello"), assistant],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+
+        let messages = provider.build_messages(&request).expect("messages");
+
+        assert_eq!(messages[1], reasoning_item);
+        assert_eq!(messages[2], message_item);
+    }
+
+    #[test]
+    fn responses_history_does_not_replay_foreign_provider_output_items() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::new(
+                    AiRole::Assistant,
+                    vec![
+                        AiContent::text("hi"),
+                        AiContent::ProviderState {
+                            provider: "openai".to_string(),
+                            value: json!({
+                                "type": "message",
+                                "id": "msg_123",
+                                "status": "completed",
+                                "role": "assistant",
+                                "content": [{
+                                    "type": "output_text",
+                                    "text": "hi",
+                                    "annotations": [],
+                                }],
+                            }),
+                        },
+                    ],
+                )],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let err = provider
+            .build_messages(&request)
+            .expect_err("foreign provider state must not be replayed");
+        assert!(err.to_string().contains("provider `openrouter`"));
+    }
+
+    #[test]
+    fn responses_history_rejects_assistant_without_provider_output_items() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::Assistant, "hi")],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let err = provider
+            .build_messages(&request)
+            .expect_err("assistant history without provider items must fail");
+        assert!(err
+            .to_string()
+            .contains("missing Responses output items for provider `openai`"));
     }
 
     #[test]
