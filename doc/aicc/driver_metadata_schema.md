@@ -68,9 +68,6 @@ Rules support these fields:
 - `model_driver`: optional per-model metadata driver. Defaults to the resolved
   origin driver. A rule can override it when metadata attribution differs from
   the physical model origin.
-- `provider_actual_model_id`: optional model id sent to the provider instead of
-  the discovered id. Aggregators can use it to pin a public alias to the
-  inventory's canonical fixed model revision.
 - `exclude`: drops the provider model from inventory.
 - `parameter_scale`: optional display/classification string.
 - `api_types`: AICC API types, for example `llm.chat`, `image.txt2img`, `audio.asr`.

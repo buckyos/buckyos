@@ -1,7 +1,7 @@
 {
     "schema_version":  2,
     "provider_driver":  "openrouter",
-    "revision":  "builtin-2026-07-27-openai-fixed",
+    "revision":  "builtin-2026-07-27-openai-reviewed",
     "origin_provider_aliases":  {
                                     "google":  "google-gemini",
                                     "google-gemini":  "google-gemini",
@@ -38,1529 +38,1863 @@
     "models":  [
                    {
                        "id":  "openai/gpt-3.5-turbo",
-                       "provider_actual_model_id":  "openai/gpt-3.5-turbo",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  16385,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.002,
                        "input_token_usd":  5E-07,
                        "output_token_usd":  1.5E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-3.5-turbo-0613",
-                       "provider_actual_model_id":  "openai/gpt-3.5-turbo-0613",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  4095,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.003,
                        "input_token_usd":  1E-06,
                        "output_token_usd":  2E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-3.5-turbo-16k",
-                       "provider_actual_model_id":  "openai/gpt-3.5-turbo-16k",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  16385,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.007,
                        "input_token_usd":  3E-06,
                        "output_token_usd":  4E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-3.5-turbo-instruct",
-                       "provider_actual_model_id":  "openai/gpt-3.5-turbo-instruct",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  false,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  4095,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.0035,
                        "input_token_usd":  1.5E-06,
                        "output_token_usd":  2E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4",
-                       "provider_actual_model_id":  "openai/gpt-4",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  8191,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.090000000000000011,
                        "input_token_usd":  3E-05,
                        "output_token_usd":  6E-05,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4.1",
-                       "provider_actual_model_id":  "openai/gpt-4.1-2025-04-14",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1047576,
-                                            "max_output_tokens":  32768
+                                            "max_output_tokens":  32768,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0099999999999999985,
                        "input_token_usd":  2E-06,
                        "output_token_usd":  8E-06,
                        "cache_input_token_usd":  5E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4.1-mini",
-                       "provider_actual_model_id":  "openai/gpt-4.1-mini-2025-04-14",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1047576,
-                                            "max_output_tokens":  32768
+                                            "max_output_tokens":  32768,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.002,
                        "input_token_usd":  4E-07,
                        "output_token_usd":  1.6E-06,
                        "cache_input_token_usd":  1E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4.1-nano",
-                       "provider_actual_model_id":  "openai/gpt-4.1-nano-2025-04-14",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1047576,
-                                            "max_output_tokens":  32768
+                                            "max_output_tokens":  32768,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0005,
                        "input_token_usd":  1E-07,
                        "output_token_usd":  4E-07,
                        "cache_input_token_usd":  2.5E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o",
-                       "provider_actual_model_id":  "openai/gpt-4o",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0125,
                        "input_token_usd":  2.5E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-2024-05-13",
-                       "provider_actual_model_id":  "openai/gpt-4o-2024-05-13",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.02,
                        "input_token_usd":  5E-06,
                        "output_token_usd":  1.5E-05,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-2024-08-06",
-                       "provider_actual_model_id":  "openai/gpt-4o-2024-08-06",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0125,
                        "input_token_usd":  2.5E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-2024-11-20",
-                       "provider_actual_model_id":  "openai/gpt-4o-2024-11-20",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0125,
                        "input_token_usd":  2.5E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-06,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-mini",
-                       "provider_actual_model_id":  "openai/gpt-4o-mini",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.00075,
                        "input_token_usd":  1.5E-07,
                        "output_token_usd":  6E-07,
                        "cache_input_token_usd":  7.5E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-mini-2024-07-18",
-                       "provider_actual_model_id":  "openai/gpt-4o-mini-2024-07-18",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.00075,
                        "input_token_usd":  1.5E-07,
                        "output_token_usd":  6E-07,
                        "cache_input_token_usd":  7.5E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-mini-search-preview",
-                       "provider_actual_model_id":  "openai/gpt-4o-mini-search-preview-2025-03-11",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  false,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  false,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.00075,
                        "input_token_usd":  1.5E-07,
                        "output_token_usd":  6E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4o-search-preview",
-                       "provider_actual_model_id":  "openai/gpt-4o-search-preview-2025-03-11",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  false,
                                             "json_schema":  true,
                                             "web_search":  true,
-                                            "vision":  false,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.0125,
                        "input_token_usd":  2.5E-06,
                        "output_token_usd":  1E-05,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4-turbo",
-                       "provider_actual_model_id":  "openai/gpt-4-turbo",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.04,
                        "input_token_usd":  1E-05,
                        "output_token_usd":  3E-05,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-4-turbo-preview",
-                       "provider_actual_model_id":  "openai/gpt-4-turbo-preview",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  4096
+                                            "max_output_tokens":  4096,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.04,
                        "input_token_usd":  1E-05,
                        "output_token_usd":  3E-05,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5",
-                       "provider_actual_model_id":  "openai/gpt-5-2025-08-07",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.1",
-                       "provider_actual_model_id":  "openai/gpt-5.1-20251113",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.1-chat",
-                       "provider_actual_model_id":  "openai/gpt-5.1-chat-20251113",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.1-codex",
-                       "provider_actual_model_id":  "openai/gpt-5.1-codex-20251113",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.1-codex-max",
-                       "provider_actual_model_id":  "openai/gpt-5.1-codex-max-20251204",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.1-codex-mini",
-                       "provider_actual_model_id":  "openai/gpt-5.1-codex-mini-20251113",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0022500000000000003,
                        "input_token_usd":  2.5E-07,
                        "output_token_usd":  2E-06,
                        "cache_input_token_usd":  2.5E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.2",
-                       "provider_actual_model_id":  "openai/gpt-5.2-20251211",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.01575,
                        "input_token_usd":  1.75E-06,
                        "output_token_usd":  1.4E-05,
                        "cache_input_token_usd":  1.75E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.2-chat",
-                       "provider_actual_model_id":  "openai/gpt-5.2-chat-20251211",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.01575,
                        "input_token_usd":  1.75E-06,
                        "output_token_usd":  1.4E-05,
                        "cache_input_token_usd":  1.75E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.2-codex",
-                       "provider_actual_model_id":  "openai/gpt-5.2-codex-20260114",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.01575,
                        "input_token_usd":  1.75E-06,
                        "output_token_usd":  1.4E-05,
                        "cache_input_token_usd":  1.75E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.2-pro",
-                       "provider_actual_model_id":  "openai/gpt-5.2-pro-20251211",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.18899999999999997,
                        "input_token_usd":  2.1E-05,
                        "output_token_usd":  0.000168,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.3-chat",
-                       "provider_actual_model_id":  "openai/gpt-5.3-chat-20260303",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.01575,
                        "input_token_usd":  1.75E-06,
                        "output_token_usd":  1.4E-05,
                        "cache_input_token_usd":  1.75E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.3-codex",
-                       "provider_actual_model_id":  "openai/gpt-5.3-codex-20260224",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.01575,
                        "input_token_usd":  1.75E-06,
                        "output_token_usd":  1.4E-05,
                        "cache_input_token_usd":  1.75E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.4",
-                       "provider_actual_model_id":  "openai/gpt-5.4-20260305",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0175,
                        "input_token_usd":  2.5E-06,
                        "output_token_usd":  1.5E-05,
                        "cache_input_token_usd":  2.5E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.4-mini",
-                       "provider_actual_model_id":  "openai/gpt-5.4-mini-20260317",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.00525,
                        "input_token_usd":  7.5E-07,
                        "output_token_usd":  4.5E-06,
                        "cache_input_token_usd":  7.5E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.4-nano",
-                       "provider_actual_model_id":  "openai/gpt-5.4-nano-20260317",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0014500000000000001,
                        "input_token_usd":  2E-07,
                        "output_token_usd":  1.25E-06,
                        "cache_input_token_usd":  2E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.4-pro",
-                       "provider_actual_model_id":  "openai/gpt-5.4-pro-20260305",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.21000000000000002,
                        "input_token_usd":  3E-05,
                        "output_token_usd":  0.00018,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.5",
-                       "provider_actual_model_id":  "openai/gpt-5.5-20260423",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.035,
                        "input_token_usd":  5E-06,
                        "output_token_usd":  3E-05,
                        "cache_input_token_usd":  5E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.5-pro",
-                       "provider_actual_model_id":  "openai/gpt-5.5-pro-20260423",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.21000000000000002,
                        "input_token_usd":  3E-05,
                        "output_token_usd":  0.00018,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.6-luna",
-                       "provider_actual_model_id":  "openai/gpt-5.6-luna-20260709",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.007,
                        "input_token_usd":  1E-06,
                        "output_token_usd":  6E-06,
                        "cache_input_token_usd":  1E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.6-sol",
-                       "provider_actual_model_id":  "openai/gpt-5.6-sol-20260709",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.035,
                        "input_token_usd":  5E-06,
                        "output_token_usd":  3E-05,
                        "cache_input_token_usd":  5E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5.6-terra",
-                       "provider_actual_model_id":  "openai/gpt-5.6-terra-20260709",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  1050000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0175,
                        "input_token_usd":  2.5E-06,
                        "output_token_usd":  1.5E-05,
                        "cache_input_token_usd":  2.5E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5-chat",
-                       "provider_actual_model_id":  "openai/gpt-5-chat-2025-08-07",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  false,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  128000,
-                                            "max_output_tokens":  16384
+                                            "max_output_tokens":  16384,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5-codex",
-                       "provider_actual_model_id":  "openai/gpt-5-codex",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.011250000000000001,
                        "input_token_usd":  1.25E-06,
                        "output_token_usd":  1E-05,
                        "cache_input_token_usd":  1.25E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5-mini",
-                       "provider_actual_model_id":  "openai/gpt-5-mini-2025-08-07",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0022500000000000003,
                        "input_token_usd":  2.5E-07,
                        "output_token_usd":  2E-06,
                        "cache_input_token_usd":  2.5E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5-nano",
-                       "provider_actual_model_id":  "openai/gpt-5-nano-2025-08-07",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.00045,
                        "input_token_usd":  5E-08,
                        "output_token_usd":  4E-07,
                        "cache_input_token_usd":  5E-09,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-5-pro",
-                       "provider_actual_model_id":  "openai/gpt-5-pro-2025-10-06",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  400000,
-                                            "max_output_tokens":  128000
+                                            "max_output_tokens":  128000,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.135,
                        "input_token_usd":  1.5E-05,
                        "output_token_usd":  0.00012,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-oss-120b",
-                       "provider_actual_model_id":  "openai/gpt-oss-120b",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  131072,
-                                            "max_output_tokens":  131072
+                                            "max_output_tokens":  131072,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.000207,
                        "input_token_usd":  3.7E-08,
                        "output_token_usd":  1.7E-07,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-oss-20b",
-                       "provider_actual_model_id":  "openai/gpt-oss-20b",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  131072,
-                                            "max_output_tokens":  131072
+                                            "max_output_tokens":  131072,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.00016,
                        "input_token_usd":  3E-08,
                        "output_token_usd":  1.3E-07,
                        "cache_input_token_usd":  3E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/gpt-oss-safeguard-20b",
-                       "provider_actual_model_id":  "openai/gpt-oss-safeguard-20b",
                        "api_types":  [
-                                         "llm"
+                                         "llm",
+                                         "rerank"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.openai.{model}",
+                                              "rerank",
+                                              "rerank.openai",
+                                              "rerank.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
                                             "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  131072,
-                                            "max_output_tokens":  65536
+                                            "max_output_tokens":  65536,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.000375,
                        "input_token_usd":  7.5E-08,
                        "output_token_usd":  3E-07,
                        "cache_input_token_usd":  3.75E-08,
                        "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
+                       "quality_score":  0.9,
                        "latency_class":  "normal",
                        "cost_class":  "medium"
                    },
                    {
                        "id":  "openai/o1",
-                       "provider_actual_model_id":  "openai/o1-2024-12-17",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  false,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.075000000000000011,
                        "input_token_usd":  1.5E-05,
                        "output_token_usd":  6E-05,
                        "cache_input_token_usd":  7.5E-06,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o1-pro",
-                       "provider_actual_model_id":  "openai/o1-pro",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  false,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  false,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.74999999999999989,
                        "input_token_usd":  0.00015,
                        "output_token_usd":  0.0006,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o3",
-                       "provider_actual_model_id":  "openai/o3-2025-04-16",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  false,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0099999999999999985,
                        "input_token_usd":  2E-06,
                        "output_token_usd":  8E-06,
                        "cache_input_token_usd":  5E-07,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o3-deep-research",
-                       "provider_actual_model_id":  "openai/o3-deep-research-2025-06-26",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  true,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.05,
                        "input_token_usd":  1E-05,
                        "output_token_usd":  4E-05,
                        "cache_input_token_usd":  2.5E-06,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o3-mini",
-                       "provider_actual_model_id":  "openai/o3-mini-2025-01-31",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  false,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  false,
+                                            "vision":  false
                                         },
                        "estimated_cost_usd":  0.0055,
                        "input_token_usd":  1.1E-06,
                        "output_token_usd":  4.4E-06,
                        "cache_input_token_usd":  5.5E-07,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o3-pro",
-                       "provider_actual_model_id":  "openai/o3-pro-2025-06-10",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  false,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.1,
                        "input_token_usd":  2E-05,
                        "output_token_usd":  8E-05,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o4-mini",
-                       "provider_actual_model_id":  "openai/o4-mini-2025-04-16",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  false,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0055,
                        "input_token_usd":  1.1E-06,
                        "output_token_usd":  4.4E-06,
                        "cache_input_token_usd":  2.75E-07,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
                    },
                    {
                        "id":  "openai/o4-mini-deep-research",
-                       "provider_actual_model_id":  "openai/o4-mini-deep-research-2025-06-26",
                        "api_types":  [
                                          "llm"
                                      ],
                        "logical_mounts":  [
                                               "llm.{driver}",
-                                              "llm.{driver}.{model}"
+                                              "llm.gpt",
+                                              "llm.openai.{model}"
                                           ],
                        "capabilities":  {
                                             "streaming":  true,
                                             "tool_call":  true,
                                             "json_schema":  true,
-                                            "web_search":  false,
-                                            "vision":  true,
                                             "max_context_tokens":  200000,
-                                            "max_output_tokens":  100000
+                                            "max_output_tokens":  100000,
+                                            "web_search":  true,
+                                            "vision":  true
                                         },
                        "estimated_cost_usd":  0.0099999999999999985,
                        "input_token_usd":  2E-06,
                        "output_token_usd":  8E-06,
                        "cache_input_token_usd":  5E-07,
-                       "estimated_latency_ms":  1200,
-                       "quality_score":  0.8,
-                       "latency_class":  "normal",
-                       "cost_class":  "medium"
+                       "estimated_latency_ms":  1200
+                   },
+                   {
+                       "id":  "openai/gpt-5.4-image-2",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-5.6-luna-pro",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-5.6-sol-pro",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-5.6-terra-pro",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-5-image",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-5-image-mini",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-audio",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-audio-mini",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-chat-latest",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/gpt-oss-20b:free",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/o3-mini-high",
+                       "exclude":  true
+                   },
+                   {
+                       "id":  "openai/o4-mini-high",
+                       "exclude":  true
                    }
                ],
     "patterns":  [
+                     {
+                         "pattern":  "openai/*transcribe*",
+                         "api_types":  [
+                                           "audio.asr"
+                                       ],
+                         "logical_mounts":  [
+                                                "audio.asr",
+                                                "audio.asr.{driver}",
+                                                "audio.asr.{model}"
+                                            ],
+                         "estimated_cost_usd":  0.006,
+                         "estimated_latency_ms":  5000
+                     },
+                     {
+                         "pattern":  "openai/*-tts*",
+                         "api_types":  [
+                                           "audio.tts"
+                                       ],
+                         "logical_mounts":  [
+                                                "audio.tts",
+                                                "audio.tts.{driver}",
+                                                "audio.tts.{model}"
+                                            ],
+                         "estimated_cost_usd":  0.015,
+                         "estimated_latency_ms":  3000
+                     },
+                     {
+                         "pattern":  "openai/*audio*",
+                         "exclude":  true
+                     },
+                     {
+                         "pattern":  "openai/*realtime*",
+                         "exclude":  true
+                     },
+                     {
+                         "pattern":  "openai/dall-e-*",
+                         "api_types":  [
+                                           "image.txt2img"
+                                       ],
+                         "logical_mounts":  [
+                                                "image.txt2img.{driver}",
+                                                "image.txt2img.dalle",
+                                                "image.txt2img.{model}"
+                                            ],
+                         "estimated_cost_usd":  0.04,
+                         "estimated_latency_ms":  5000
+                     },
+                     {
+                         "pattern":  "openai/gpt-image-*",
+                         "api_types":  [
+                                           "image.txt2img",
+                                           "image.img2img",
+                                           "image.inpaint"
+                                       ],
+                         "logical_mounts":  [
+                                                "image.txt2img.{driver}",
+                                                "image.txt2img.gpt_image",
+                                                "image.txt2img.{model}",
+                                                "image.img2img",
+                                                "image.img2img.{driver}",
+                                                "image.img2img.{model}",
+                                                "image.inpaint",
+                                                "image.inpaint.{driver}",
+                                                "image.inpaint.{model}"
+                                            ],
+                         "estimated_cost_usd":  0.04,
+                         "estimated_latency_ms":  5000,
+                         "quality_score":  0.9
+                     },
+                     {
+                         "pattern":  "openai/text-embedding-*",
+                         "api_types":  [
+                                           "embedding.text"
+                                       ],
+                         "logical_mounts":  [
+                                                "embedding.text",
+                                                "embedding.text.{driver}",
+                                                "embedding.text.{model}"
+                                            ],
+                         "estimated_cost_usd":  0.0001,
+                         "estimated_latency_ms":  800
+                     },
+                     {
+                         "pattern":  "openai/gpt-*",
+                         "api_types":  [
+                                           "llm",
+                                           "rerank"
+                                       ],
+                         "logical_mounts":  [
+                                                "llm.{driver}",
+                                                "llm.openai.{model}",
+                                                "rerank",
+                                                "rerank.openai",
+                                                "rerank.{model}"
+                                            ],
+                         "capabilities":  {
+                                              "streaming":  true,
+                                              "tool_call":  true,
+                                              "json_schema":  true,
+                                              "web_search":  true,
+                                              "max_context_tokens":  128000,
+                                              "max_output_tokens":  8192
+                                          },
+                         "estimated_cost_usd":  0.01,
+                         "estimated_latency_ms":  1200,
+                         "quality_score":  0.9,
+                         "latency_class":  "normal",
+                         "cost_class":  "medium"
+                     },
+                     {
+                         "pattern":  "openai/chatgpt-*",
+                         "api_types":  [
+                                           "llm"
+                                       ],
+                         "logical_mounts":  [
+                                                "llm.{driver}",
+                                                "llm.openai.{model}"
+                                            ],
+                         "capabilities":  {
+                                              "streaming":  true,
+                                              "tool_call":  true,
+                                              "json_schema":  true,
+                                              "web_search":  true,
+                                              "vision":  true,
+                                              "max_context_tokens":  128000,
+                                              "max_output_tokens":  8192
+                                          },
+                         "estimated_cost_usd":  0.01,
+                         "estimated_latency_ms":  1200
+                     },
+                     {
+                         "pattern":  "openai/o*",
+                         "api_types":  [
+                                           "llm"
+                                       ],
+                         "logical_mounts":  [
+                                                "llm.{driver}",
+                                                "llm.gpt",
+                                                "llm.openai.{model}"
+                                            ],
+                         "capabilities":  {
+                                              "streaming":  true,
+                                              "tool_call":  true,
+                                              "json_schema":  true,
+                                              "max_context_tokens":  128000,
+                                              "max_output_tokens":  8192
+                                          },
+                         "estimated_cost_usd":  0.01,
+                         "estimated_latency_ms":  1200
+                     },
+                     {
+                         "pattern":  "openai/*",
+                         "api_types":  [
+                                           "llm"
+                                       ],
+                         "logical_mounts":  [
+                                                "llm.{driver}",
+                                                "llm.{driver}.{model}"
+                                            ],
+                         "capabilities":  {
+                                              "streaming":  false,
+                                              "tool_call":  false,
+                                              "json_schema":  false,
+                                              "web_search":  false,
+                                              "vision":  false
+                                          },
+                         "estimated_cost_usd":  0.01,
+                         "estimated_latency_ms":  1200
+                     },
                      {
                          "pattern":  "*",
                          "exclude":  true
@@ -1580,10 +1914,29 @@
                                           "json_schema":  false,
                                           "web_search":  false,
                                           "vision":  false
-                                      }
+                                      },
+                     "estimated_cost_usd":  0.01,
+                     "estimated_latency_ms":  1200
                  },
     "variants":  [
-
+                     {
+                         "name":  "reasoning.low",
+                         "mount_suffix":  "reasoning-low",
+                         "provider_options":  {
+                                                  "reasoning":  {
+                                                                    "effort":  "low"
+                                                                }
+                                              }
+                     },
+                     {
+                         "name":  "reasoning.high",
+                         "mount_suffix":  "reasoning-high",
+                         "provider_options":  {
+                                                  "reasoning":  {
+                                                                    "effort":  "high"
+                                                                }
+                                              }
+                     }
                  ],
     "version_rules":  [
                           {

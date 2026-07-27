@@ -4801,12 +4801,17 @@ data: [DONE]
             }))
             .expect("OpenRouter inventory should resolve");
 
-        assert_eq!(inventory.models.len(), 1);
-        assert_eq!(inventory.models[0].provider_model_id, "openai/gpt-5.5");
-        assert_eq!(
-            inventory.models[0].provider_actual_model_id.as_deref(),
-            Some("openai/gpt-5.5-20260423")
-        );
+        assert_eq!(inventory.models.len(), 3);
+        let base = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/gpt-5.5")
+            .expect("base model should resolve");
+        assert_eq!(base.provider_actual_model_id, None);
+        assert!(inventory.models.iter().any(|model| {
+            model.provider_model_id == "openai/gpt-5.5:reasoning-high"
+                && model.provider_actual_model_id.as_deref() == Some("openai/gpt-5.5")
+        }));
     }
 
     #[test]

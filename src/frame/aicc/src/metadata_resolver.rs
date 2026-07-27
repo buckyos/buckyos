@@ -120,8 +120,6 @@ pub struct DriverModelRule {
     #[serde(default)]
     pub model_driver: Option<String>,
     #[serde(default)]
-    pub provider_actual_model_id: Option<String>,
-    #[serde(default)]
     pub exclude: bool,
     #[serde(default)]
     pub parameter_scale: Option<String>,
@@ -318,7 +316,6 @@ fn resolve_driver_model(
     let mut latency_class = LatencyClass::Normal;
     let mut cost_class = CostClass::Medium;
     let mut model_driver = origin.driver.clone();
-    let mut provider_actual_model_id = None;
     let mut input_token_usd = None;
     let mut output_token_usd = None;
     let mut cache_input_token_usd = None;
@@ -327,7 +324,6 @@ fn resolve_driver_model(
         if let Some(next) = rule.model_driver.as_ref() {
             model_driver = next.clone();
         }
-        provider_actual_model_id = rule.provider_actual_model_id.clone();
         if let Some(next_api_types) = rule.api_types.as_ref() {
             api_types = next_api_types.clone();
         }
@@ -382,7 +378,7 @@ fn resolve_driver_model(
         provider_model_id: provider_model_id.to_string(),
         exact_model: exact_model_name(provider_model_id, provider_instance_name),
         model_driver,
-        provider_actual_model_id,
+        provider_actual_model_id: None,
         provider_options: None,
         parameter_scale,
         api_types,
@@ -1295,7 +1291,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(inventory.models.len(), 1);
+        assert_eq!(inventory.models.len(), 3);
         let openai = inventory
             .models
             .iter()
@@ -1303,10 +1299,8 @@ mod tests {
             .expect("OpenAI model should resolve");
         assert_eq!(openai.model_driver, "openai");
         assert_eq!(openai.exact_model, "openai/gpt-5.5@openrouter-main");
-        assert_eq!(
-            openai.provider_actual_model_id.as_deref(),
-            Some("openai/gpt-5.5-20260423")
-        );
+        assert_eq!(openai.provider_actual_model_id, None);
+        assert!(openai.api_types.contains(&ApiType::Rerank));
         assert_eq!(openai.capabilities.max_context_tokens, Some(1_050_000));
         assert_eq!(openai.capabilities.max_output_tokens, Some(128_000));
         assert_eq!(openai.pricing.input_token_usd, Some(0.000005));
@@ -1324,6 +1318,15 @@ mod tests {
                 .iter()
                 .any(|mount| mount == "llm.openai.gpt-5-5")
         );
+        let reasoning_high = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/gpt-5.5:reasoning-high")
+            .expect("OpenRouter should expand OpenAI reasoning variants");
+        assert_eq!(
+            reasoning_high.provider_actual_model_id.as_deref(),
+            Some("openai/gpt-5.5")
+        );
 
         let official = resolve_driver_inventory(
             "openai-main",
@@ -1339,6 +1342,64 @@ mod tests {
             .logical_mounts
             .iter()
             .any(|mount| mount == "llm.openai.gpt-5-5"));
+    }
+
+    #[test]
+    fn openrouter_patterns_inherit_openai_rules_and_defaults() {
+        let inventory = resolve_driver_inventory(
+            "openrouter-main",
+            ProviderType::CloudApi,
+            "openrouter",
+            &[
+                DriverModelResolveRequest::new("openai/gpt-9", vec![ApiType::Llm]),
+                DriverModelResolveRequest::new("openai/future-native", vec![ApiType::Llm]),
+                DriverModelResolveRequest::new("other/gpt-10", vec![ApiType::Llm]),
+            ],
+            None,
+        );
+
+        assert_eq!(inventory.models.len(), 4);
+        let gpt = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/gpt-9")
+            .expect("prefixed OpenAI pattern should match");
+        assert!(gpt.api_types.contains(&ApiType::Rerank));
+        assert!(gpt.capabilities.tool_call);
+        assert!(gpt.logical_mounts.iter().any(|mount| mount == "rerank"));
+
+        let fallback = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/future-native")
+            .expect("unknown native OpenAI model should use OpenAI defaults");
+        assert_eq!(fallback.api_types, vec![ApiType::Llm]);
+        assert!(!fallback.capabilities.tool_call);
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id.starts_with("other/gpt-10")));
+    }
+
+    #[test]
+    fn openrouter_deep_research_keeps_required_web_search() {
+        let inventory = resolve_driver_inventory(
+            "openrouter-main",
+            ProviderType::CloudApi,
+            "openrouter",
+            &[DriverModelResolveRequest::new(
+                "openai/o3-deep-research",
+                vec![ApiType::Llm],
+            )],
+            None,
+        );
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/o3-deep-research")
+            .expect("deep research model should resolve");
+        assert!(model.capabilities.web_search);
+        assert!(model.logical_mounts.iter().any(|mount| mount == "llm.gpt"));
     }
 
     #[test]
