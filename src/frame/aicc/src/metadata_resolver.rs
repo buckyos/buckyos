@@ -1290,6 +1290,10 @@ mod tests {
             DriverModelResolveRequest::new("openai/o3-mini-high", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("openai/gpt-5.6-sol-pro", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("openai/gpt-oss-20b:free", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-5.5:nitro", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-5.5:floor", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-5.5:exacto", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("openai/gpt-9-latest", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("~x-ai/grok-latest", vec![ApiType::Llm]),
             DriverModelResolveRequest::new("openrouter/auto", vec![ApiType::Llm]),
         ];

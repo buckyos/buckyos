@@ -4817,7 +4817,15 @@ data: [DONE]
                     { "id": "openai/gpt-chat-latest" },
                     { "id": "openai/o3-mini-high" },
                     { "id": "openai/gpt-5.6-sol-pro" },
-                    { "id": "openai/gpt-oss-20b:free" }
+                    { "id": "openai/gpt-oss-20b:free" },
+                    { "id": "openai/gpt-5.5:free" },
+                    { "id": "openai/gpt-5.5:extended" },
+                    { "id": "openai/gpt-5.5:thinking" },
+                    { "id": "openai/gpt-5.5:nitro" },
+                    { "id": "openai/gpt-5.5:floor" },
+                    { "id": "openai/gpt-5.5:exacto" },
+                    { "id": "openai/gpt-5.5:online" },
+                    { "id": "openai/gpt-9-latest" }
                 ]
             }))
             .expect("OpenRouter inventory should resolve");

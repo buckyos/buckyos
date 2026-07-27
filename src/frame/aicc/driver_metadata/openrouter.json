@@ -1727,6 +1727,14 @@
   ],
   "patterns": [
     {
+      "pattern": "openai/*:*",
+      "exclude": true
+    },
+    {
+      "pattern": "openai/*latest*",
+      "exclude": true
+    },
+    {
       "pattern": "openai/*transcribe*",
       "api_types": [
         "audio.asr"

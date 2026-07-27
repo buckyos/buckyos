@@ -152,7 +152,10 @@ are `trim`, `lowercase`, and `alias`; alias lookup only accepts the
 `origin_provider_aliases` table and `on_missing: keep`. Invalid mappings are
 ignored. Dynamic provider aliases such as `~x-ai/grok-latest` and router models
 such as `openrouter/auto` should be excluded with ordinary model or pattern
-rules.
+rules. Aggregators that only admit base OpenAI model ids should place
+`openai/*:*` and `openai/*latest*` exclusion patterns before family allow
+patterns so provider variants and moving aliases cannot inherit base-model
+metadata.
 
 ## Variants
 
