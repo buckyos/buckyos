@@ -89,6 +89,7 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
 pub struct OpenAIInstanceConfig {
     pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
     pub api_token: String,
     pub base_url: String,
     pub auth_mode: String,
@@ -149,10 +150,14 @@ impl OpenAIProvider {
 
         let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
         let provider_instance_name = cfg.provider_instance_name.clone();
-        let provider_driver = default_provider_driver_for_instance(
-            cfg.provider_instance_name.as_str(),
-            cfg.base_url.as_str(),
-        );
+        let provider_driver = if cfg.provider_driver.trim().is_empty() {
+            default_provider_driver_for_instance(
+                cfg.provider_instance_name.as_str(),
+                cfg.base_url.as_str(),
+            )
+        } else {
+            cfg.provider_driver.trim().to_string()
+        };
         let instance = ProviderInstance {
             provider_instance_name: provider_instance_name.clone(),
             provider_type: provider_type.clone(),
@@ -371,21 +376,26 @@ impl OpenAIProvider {
         provider_type: crate::model_types::ProviderType,
         provider_driver: &str,
     ) -> ProviderInventory {
-        let (models, image_models) = if provider_driver == SN_AI_PROVIDER_DRIVER {
-            (
-                normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
-            )
-        } else {
-            (
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS)),
-            )
-        };
-        let embedding_models =
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS));
-        let asr_models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS));
-        let tts_models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS));
+        let (models, image_models, embedding_models, asr_models, tts_models) =
+            if provider_driver == "openrouter" {
+                (vec![], vec![], vec![], vec![], vec![])
+            } else if provider_driver == SN_AI_PROVIDER_DRIVER {
+                (
+                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
+                )
+            } else {
+                (
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
+                )
+            };
 
         Self::build_inventory(
             provider_instance_name,
@@ -406,15 +416,24 @@ impl OpenAIProvider {
         image_models: &[String],
         revision: Option<String>,
     ) -> ProviderInventory {
+        let (embedding_models, asr_models, tts_models) = if self.provider_driver == "openrouter" {
+            (vec![], vec![], vec![])
+        } else {
+            (
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
+            )
+        };
         Self::build_inventory(
             self.instance.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
             models,
             image_models,
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)).as_slice(),
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)).as_slice(),
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)).as_slice(),
+            embedding_models.as_slice(),
+            asr_models.as_slice(),
+            tts_models.as_slice(),
             revision,
         )
     }
@@ -438,7 +457,8 @@ impl OpenAIProvider {
 
         let response = serde_json::from_value::<OpenAIModelsResponse>(body)
             .context("failed to parse openai models response")?;
-        let (llm_models, image_models) = normalize_remote_model_ids(response.data);
+        let (llm_models, image_models) =
+            normalize_remote_model_ids(response.data, self.provider_driver.as_str());
         if llm_models.is_empty() && image_models.is_empty() {
             return Err(anyhow!(
                 "openai inventory refresh returned no supported models"
@@ -3386,6 +3406,8 @@ struct SettingsOpenAIInstanceConfig {
     provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default)]
+    provider_driver: String,
     #[serde(default, alias = "api_key", alias = "apiKey")]
     api_token: String,
     #[serde(default = "default_base_url")]
@@ -3470,7 +3492,10 @@ fn is_supported_llm_model_name(model: &str) -> bool {
         || normalized.starts_with("o4")
 }
 
-fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, Vec<String>) {
+fn normalize_remote_model_ids(
+    entries: Vec<OpenAIModelEntry>,
+    provider_driver: &str,
+) -> (Vec<String>, Vec<String>) {
     let mut llm_seen = HashSet::<String>::new();
     let mut image_seen = HashSet::<String>::new();
     let mut llm_models = Vec::new();
@@ -3482,6 +3507,12 @@ fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, V
             continue;
         }
         let key = model.to_ascii_lowercase();
+        if provider_driver == "openrouter" {
+            if llm_seen.insert(key) {
+                llm_models.push(model.to_string());
+            }
+            continue;
+        }
         if is_text2image_model_name(model) {
             if image_seen.insert(key) {
                 image_models.push(model.to_string());
@@ -3565,6 +3596,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         vec![SettingsOpenAIInstanceConfig {
             provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: String::new(),
             api_token: settings.api_token.clone(),
             base_url: default_base_url(),
             auth_mode: default_auth_mode(),
@@ -3579,6 +3611,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         instances.push(OpenAIInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: raw_instance.provider_driver,
             api_token: if raw_instance.api_token.trim().is_empty() {
                 settings.api_token.clone()
             } else {
@@ -4248,6 +4281,7 @@ data: [DONE]
             instances: vec![SettingsOpenAIInstanceConfig {
                 provider_instance_name: "openai-1".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: String::new(),
                 base_url: default_base_url(),
                 auth_mode: default_auth_mode(),
@@ -4269,6 +4303,7 @@ data: [DONE]
             instances: vec![SettingsOpenAIInstanceConfig {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "sn-ai-provider".to_string(),
                 api_token: String::new(),
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: RUNTIME_SESSION_AUTH_MODE.to_string(),
@@ -4281,6 +4316,29 @@ data: [DONE]
         assert_eq!(instances[0].auth_mode, RUNTIME_SESSION_AUTH_MODE);
     }
 
+    #[test]
+    fn build_openai_instances_preserves_aggregator_driver() {
+        let settings = OpenAISettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            instances: vec![SettingsOpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: String::new(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: default_auth_mode(),
+                timeout_ms: default_timeout_ms(),
+            }],
+        };
+
+        let instances = build_openai_instances(&settings).expect("instances should be built");
+        let provider =
+            OpenAIProvider::new(instances[0].clone(), "token").expect("provider should be built");
+        assert_eq!(provider.instance.provider_driver, "openrouter");
+        assert!(provider.inventory().models.is_empty());
+    }
+
     #[tokio::test]
     async fn stopped_refresh_does_not_send_initial_request() {
         let provider = Arc::new(
@@ -4288,6 +4346,7 @@ data: [DONE]
                 OpenAIInstanceConfig {
                     provider_instance_name: "openai-stopped".to_string(),
                     provider_type: "cloud_api".to_string(),
+                    provider_driver: "openai".to_string(),
                     api_token: "token".to_string(),
                     base_url: "http://127.0.0.1:1".to_string(),
                     auth_mode: "bearer".to_string(),
@@ -4318,6 +4377,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-drop".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: "http://127.0.0.1:1".to_string(),
                 auth_mode: "bearer".to_string(),
@@ -4368,6 +4428,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "sn-ai-provider".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
                 auth_mode: "bearer".to_string(),
@@ -4385,6 +4446,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
@@ -4499,6 +4561,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
@@ -4622,20 +4685,23 @@ data: [DONE]
 
     #[test]
     fn remote_model_inventory_filters_supported_model_types() {
-        let (llm_models, image_models) = normalize_remote_model_ids(vec![
-            OpenAIModelEntry {
-                id: "gpt-5.2".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "text-embedding-3-large".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-image-1".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-image-2".to_string(),
-            },
-        ]);
+        let (llm_models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "gpt-5.2".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "text-embedding-3-large".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-image-1".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-image-2".to_string(),
+                },
+            ],
+            "openai",
+        );
 
         assert_eq!(llm_models, vec!["gpt-5.2".to_string()]);
         assert_eq!(
@@ -4650,29 +4716,92 @@ data: [DONE]
         // DEFAULT_OPENAI_{ASR,TTS}_MODELS 里登记，再当 LLM 收一遍会让
         // build_inventory 产生重复 exact_model，触发 model_registry
         // SessionConfigInvalid 把整个 refresh 卡死。
-        let (llm_models, image_models) = normalize_remote_model_ids(vec![
-            OpenAIModelEntry {
-                id: "gpt-4o-mini-transcribe".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-transcribe".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-mini-tts".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-audio-preview".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-realtime-preview".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-5".to_string(),
-            },
-        ]);
+        let (llm_models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "gpt-4o-mini-transcribe".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-transcribe".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-mini-tts".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-audio-preview".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-realtime-preview".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-5".to_string(),
+                },
+            ],
+            "openai",
+        );
 
         assert_eq!(llm_models, vec!["gpt-5".to_string()]);
         assert!(image_models.is_empty());
+    }
+
+    #[test]
+    fn openrouter_inventory_preserves_provider_native_model_ids() {
+        let (llm_models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "openai/gpt-5.5".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "anthropic/claude-sonnet-4".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "tencent/hy3:free".to_string(),
+                },
+            ],
+            "openrouter",
+        );
+
+        assert_eq!(
+            llm_models,
+            vec![
+                "openai/gpt-5.5".to_string(),
+                "anthropic/claude-sonnet-4".to_string(),
+                "tencent/hy3:free".to_string(),
+            ]
+        );
+        assert!(image_models.is_empty());
+    }
+
+    #[test]
+    fn openrouter_remote_inventory_has_no_openai_default_models() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "data": [
+                    { "id": "openai/gpt-5.5" },
+                    { "id": "anthropic/claude-sonnet-4" }
+                ]
+            }))
+            .expect("OpenRouter inventory should resolve");
+
+        assert_eq!(inventory.models.len(), 2);
+        assert!(inventory
+            .models
+            .iter()
+            .all(|model| model.provider_model_id.contains('/')));
     }
 
     #[test]
@@ -4707,6 +4836,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),

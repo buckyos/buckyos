@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "provider_driver": "openrouter",
+  "revision": "builtin-2026-07-27",
+  "origin_provider_aliases": {
+    "google": "google-gemini",
+    "google-gemini": "google-gemini",
+    "moonshotai": "moonshot",
+    "x-ai": "xai"
+  },
+  "origin_mappings": [
+    {
+      "mapping_key": "openrouter-path-id",
+      "priority": 100,
+      "match": {
+        "source": "provider_model_id",
+        "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
+      },
+      "transforms": {
+        "driver": [
+          { "op": "lowercase" },
+          { "op": "alias", "table": "origin_provider_aliases", "on_missing": "keep" }
+        ],
+        "model": [
+          { "op": "trim" }
+        ]
+      }
+    }
+  ],
+  "models": [
+    { "id": "openrouter/auto", "exclude": true },
+    { "id": "openrouter/free", "exclude": true },
+    { "id": "openrouter/fusion", "exclude": true }
+  ],
+  "patterns": [
+    { "pattern": "~*", "exclude": true }
+  ],
+  "defaults": {
+    "api_types": ["llm"],
+    "logical_mounts": [
+      "llm.{driver}",
+      "llm.{driver}.{model}"
+    ],
+    "capabilities": {
+      "streaming": false,
+      "tool_call": false,
+      "json_schema": false,
+      "web_search": false,
+      "vision": false
+    }
+  },
+  "variants": [],
+  "version_rules": [],
+  "signature": null
+}

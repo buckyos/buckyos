@@ -14,6 +14,7 @@ fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
         OpenAIInstanceConfig {
             provider_instance_name: "openai-test".to_string(),
             provider_type: "cloud_api".to_string(),
+            provider_driver: "openai".to_string(),
             api_token: "token".to_string(),
             base_url,
             auth_mode: "bearer".to_string(),

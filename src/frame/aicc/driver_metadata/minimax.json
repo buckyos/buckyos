@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "provider_driver": "minimax",
   "revision": "builtin-2026-05-30",
   "models": [],
