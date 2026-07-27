@@ -154,6 +154,7 @@ models.
 ```json
 {
   "name": "reasoning.high",
+  "model_pattern": "gpt-*",
   "mount_suffix": "reasoning-high",
   "provider_options": {
     "reasoning": {
@@ -162,6 +163,11 @@ models.
   }
 }
 ```
+
+`model_pattern` matches the complete channel-local `provider_model_id`. It can
+scope variants by origin within an aggregator, for example `openai/*` in
+OpenRouter metadata. When omitted, the variant applies to every otherwise
+eligible model in that driver metadata document.
 
 For a discovered OpenAI model `gpt-5.1`, the resolver emits:
 

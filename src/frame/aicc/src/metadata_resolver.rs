@@ -211,6 +211,8 @@ pub struct DriverCapabilitiesPatch {
 pub struct DriverModelVariant {
     pub name: String,
     #[serde(default)]
+    pub model_pattern: Option<String>,
+    #[serde(default)]
     pub mount_suffix: Option<String>,
     #[serde(default)]
     pub provider_options: serde_json::Value,
@@ -678,6 +680,13 @@ fn expand_model_variants(
 
     let mut models = vec![model.clone()];
     for variant in variants {
+        if variant
+            .model_pattern
+            .as_deref()
+            .is_some_and(|pattern| !wildcard_matches(pattern, model.provider_model_id.as_str()))
+        {
+            continue;
+        }
         let Some(suffix) = variant.mount_suffix.as_deref() else {
             continue;
         };
@@ -1367,6 +1376,12 @@ mod tests {
         assert!(gpt.api_types.contains(&ApiType::Rerank));
         assert!(gpt.capabilities.tool_call);
         assert!(gpt.logical_mounts.iter().any(|mount| mount == "rerank"));
+
+        let sources = load_driver_metadata_sources("openrouter");
+        let mut other_origin = gpt.clone();
+        other_origin.provider_model_id = "anthropic/claude-future".to_string();
+        other_origin.exact_model = "anthropic/claude-future@openrouter-main".to_string();
+        assert_eq!(expand_model_variants(other_origin, sources.as_slice()).len(), 1);
 
         let fallback = inventory
             .models
