@@ -2853,6 +2853,7 @@ pub fn provider_model_metadata(
         provider_model_id: provider_model_id.to_string(),
         exact_model: exact_model_name(provider_model_id, provider_instance_name),
         model_driver: model_driver.to_string(),
+        origin_model_id: None,
         provider_actual_model_id: None,
         provider_options: None,
         parameter_scale: None,

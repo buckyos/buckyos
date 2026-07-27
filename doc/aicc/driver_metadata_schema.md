@@ -102,6 +102,9 @@ Provider model ids are channel-local. An origin provider such as OpenAI can use
 the fallback identity `openai` / `gpt-5.5`. An aggregator such as OpenRouter
 returns a channel id such as `openai/gpt-5.5`, which must resolve to the same
 physical identity before logical mounts and semantic family rules are applied.
+The resolver stores the resolved model component in
+`ModelMetadata.origin_model_id`; consumers must use this field instead of
+inferring an origin model from provider-specific id syntax.
 
 Schema v2 defines these template variables:
 

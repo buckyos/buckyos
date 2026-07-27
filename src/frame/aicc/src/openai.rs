@@ -930,10 +930,31 @@ impl OpenAIProvider {
     fn estimate_cost_for_usage(&self, model: &str, usage: &AiUsage) -> Option<AiCost> {
         let input_tokens = usage.input_tokens? as f64;
         let output_tokens = usage.output_tokens? as f64;
-        let (input_per_m, output_per_m) = Self::price_per_1m_tokens(model);
-
-        let amount = ((input_tokens / 1_000_000.0) * input_per_m)
-            + ((output_tokens / 1_000_000.0) * output_per_m);
+        let pricing = self.inventory.read().ok().and_then(|inventory| {
+            inventory.models.iter().find_map(|metadata| {
+                (metadata.provider_model_id == model).then(|| {
+                    (
+                        metadata
+                            .origin_model_id
+                            .clone()
+                            .unwrap_or_else(|| model.to_string()),
+                        metadata.pricing.input_token_usd,
+                        metadata.pricing.output_token_usd,
+                    )
+                })
+            })
+        });
+        let (origin_model_id, input_per_token, output_per_token) =
+            pricing.unwrap_or_else(|| (model.to_string(), None, None));
+        let amount = if let (Some(input_per_token), Some(output_per_token)) =
+            (input_per_token, output_per_token)
+        {
+            (input_tokens * input_per_token) + (output_tokens * output_per_token)
+        } else {
+            let (input_per_m, output_per_m) = Self::price_per_1m_tokens(origin_model_id.as_str());
+            ((input_tokens / 1_000_000.0) * input_per_m)
+                + ((output_tokens / 1_000_000.0) * output_per_m)
+        };
 
         Some(AiCost {
             amount,
@@ -4808,10 +4829,67 @@ data: [DONE]
             .find(|model| model.provider_model_id == "openai/gpt-5.5")
             .expect("base model should resolve");
         assert_eq!(base.provider_actual_model_id, None);
+        assert_eq!(base.origin_model_id.as_deref(), Some("gpt-5.5"));
+        *provider.inventory.write().expect("inventory lock") = inventory.clone();
+        let cost = provider
+            .estimate_cost_for_usage(
+                "openai/gpt-5.5",
+                &AiUsage {
+                    input_tokens: Some(1_000_000),
+                    output_tokens: Some(1_000_000),
+                    total_tokens: Some(2_000_000),
+                },
+            )
+            .expect("OpenRouter usage cost should resolve");
+        assert_eq!(cost.amount, 35.0);
         assert!(inventory.models.iter().any(|model| {
             model.provider_model_id == "openai/gpt-5.5:reasoning-high"
                 && model.provider_actual_model_id.as_deref() == Some("openai/gpt-5.5")
         }));
+    }
+
+    #[test]
+    fn openrouter_cost_fallback_uses_metadata_origin_model_id() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let mut inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "data": [{ "id": "openai/gpt-5.4-pro" }]
+            }))
+            .expect("OpenRouter inventory should resolve");
+        let base = inventory
+            .models
+            .iter_mut()
+            .find(|model| model.provider_model_id == "openai/gpt-5.4-pro")
+            .expect("base model should resolve");
+        assert_eq!(base.origin_model_id.as_deref(), Some("gpt-5.4-pro"));
+        base.pricing.input_token_usd = None;
+        base.pricing.output_token_usd = None;
+        *provider.inventory.write().expect("inventory lock") = inventory;
+
+        let cost = provider
+            .estimate_cost_for_usage(
+                "openai/gpt-5.4-pro",
+                &AiUsage {
+                    input_tokens: Some(1_000_000),
+                    output_tokens: Some(1_000_000),
+                    total_tokens: Some(2_000_000),
+                },
+            )
+            .expect("OpenRouter fallback cost should resolve");
+        assert_eq!(cost.amount, 210.0);
     }
 
     #[test]
