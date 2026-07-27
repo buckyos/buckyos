@@ -23,6 +23,12 @@ For each model id, match priority is:
 Exact matches win before patterns, even if the pattern comes from a higher
 priority override.
 
+`origin_mappings` is a provider-level rule set, not an incremental patch. The
+resolver uses the complete list from the highest-priority metadata document
+that defines it and does not merge mappings from lower-priority documents.
+Therefore, an override document that defines `origin_mappings` must include the
+provider's complete mapping list.
+
 ## Document
 
 ```json
