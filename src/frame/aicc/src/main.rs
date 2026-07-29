@@ -7,6 +7,7 @@ mod default_logical_tree;
 mod fal;
 mod gemini;
 mod metadata_resolver;
+mod metadata_updater;
 mod minimax;
 mod model_registry;
 mod model_router;
@@ -40,13 +41,16 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::aicc::{AIComputeCenter, NamedStoreResourceResolver};
 use crate::aicc_usage_log_db::AiccUsageLogDb;
 use crate::claude::register_claude_providers;
 use crate::fal::register_fal_providers;
 use crate::gemini::register_google_gemini_providers;
+use crate::metadata_updater::{
+    DriverMetadataUpdateOutcome, DriverMetadataUpdateSettings, DriverMetadataUpdater,
+};
 use crate::minimax::register_minimax_providers;
 use crate::openai::register_openai_llm_providers;
 use crate::sn_ai_provider::register_sn_ai_provider;
@@ -1224,6 +1228,154 @@ impl AiccHttpServer {
     }
 }
 
+fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
+    let spawn_result = std::thread::Builder::new()
+        .name("aicc-metadata-updater".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    error!("create metadata updater runtime failed: {}", err);
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let mut consecutive_failures = 0u32;
+                let mut pending_runtime_revision = None;
+                loop {
+                    let settings_value = match get_buckyos_api_runtime() {
+                        Ok(runtime) => match runtime.get_my_settings().await {
+                            Ok(settings) => settings,
+                            Err(err) => {
+                                warn!("load settings for metadata update failed: {}", err);
+                                tokio::time::sleep(Duration::from_secs(60)).await;
+                                continue;
+                            }
+                        },
+                        Err(err) => {
+                            warn!("get runtime for metadata update failed: {}", err);
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            continue;
+                        }
+                    };
+                    let update_settings = match DriverMetadataUpdateSettings::from_aicc_settings(
+                        &settings_value,
+                    ) {
+                        Ok(Some(settings)) => settings,
+                        Ok(None) => {
+                            consecutive_failures = 0;
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!("invalid driver metadata update settings: {}", err);
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            continue;
+                        }
+                    };
+                    let normal_interval = update_settings.interval_secs;
+                    let result = match DriverMetadataUpdater::new(update_settings) {
+                        Ok(updater) => updater.update_once().await,
+                        Err(err) => Err(err),
+                    };
+                    let delay = match result {
+                        Ok(DriverMetadataUpdateOutcome::Activated { revision_seq }) => {
+                            pending_runtime_revision = Some(revision_seq);
+                            match apply_provider_settings(&server.rpc_handler.0, &settings_value) {
+                                Ok(registered) => {
+                                    consecutive_failures = 0;
+                                    pending_runtime_revision = None;
+                                    info!(
+                                        "aicc driver metadata activated revision={} providers_registered={}",
+                                        revision_seq, registered
+                                    );
+                                    normal_interval
+                                }
+                                Err(err) => {
+                                    consecutive_failures = consecutive_failures.saturating_add(1);
+                                    let delay = metadata_retry_delay(
+                                        consecutive_failures,
+                                        normal_interval,
+                                    );
+                                    warn!(
+                                        "driver metadata revision {} committed but runtime reload failed; retry_secs={} err={}",
+                                        revision_seq, delay, err
+                                    );
+                                    delay
+                                }
+                            }
+                        }
+                        Ok(DriverMetadataUpdateOutcome::Unchanged { revision_seq }) => {
+                            if pending_runtime_revision == Some(revision_seq) {
+                                match apply_provider_settings(
+                                    &server.rpc_handler.0,
+                                    &settings_value,
+                                ) {
+                                    Ok(registered) => {
+                                        consecutive_failures = 0;
+                                        pending_runtime_revision = None;
+                                        info!(
+                                            "aicc driver metadata runtime reload recovered revision={} providers_registered={}",
+                                            revision_seq, registered
+                                        );
+                                        normal_interval
+                                    }
+                                    Err(err) => {
+                                        consecutive_failures =
+                                            consecutive_failures.saturating_add(1);
+                                        let delay = metadata_retry_delay(
+                                            consecutive_failures,
+                                            normal_interval,
+                                        );
+                                        warn!(
+                                            "aicc driver metadata runtime reload retry failed revision={} retry_secs={} err={}",
+                                            revision_seq, delay, err
+                                        );
+                                        delay
+                                    }
+                                }
+                            } else {
+                                consecutive_failures = 0;
+                                info!("aicc driver metadata unchanged revision={}", revision_seq);
+                                normal_interval
+                            }
+                        }
+                        Err(err) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            let delay =
+                                metadata_retry_delay(consecutive_failures, normal_interval);
+                            warn!(
+                                "aicc driver metadata update failed failures={} retry_secs={} err={}",
+                                consecutive_failures,
+                                delay,
+                                err
+                            );
+                            delay
+                        }
+                    };
+                    tokio::time::sleep(Duration::from_secs(delay.max(1))).await;
+                }
+            });
+        });
+    if let Err(err) = spawn_result {
+        error!("start metadata updater thread failed: {}", err);
+    }
+}
+
+fn metadata_retry_delay(consecutive_failures: u32, normal_interval: u64) -> u64 {
+    let shift = consecutive_failures.saturating_sub(1).min(16);
+    let base = 60u64.saturating_mul(1u64 << shift);
+    let capped = base.min(normal_interval);
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as u64 % (capped / 4 + 1))
+        .unwrap_or(0);
+    capped.saturating_add(jitter)
+}
+
 fn filter_model_directory_by_path(mut value: Value, logical_path: &str) -> Value {
     let mut keep_paths = HashSet::new();
     if let Some(directory) = value.get("directory").and_then(Value::as_object) {
@@ -1436,10 +1588,11 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
         }
     }
 
-    let server = AiccHttpServer::new(center);
+    let server = Arc::new(AiccHttpServer::new(center));
+    start_driver_metadata_update_loop(server.clone());
 
     let runner = Runner::new(AICC_SERVICE_MAIN_PORT);
-    if let Err(err) = runner.add_http_server("/kapi/aicc".to_string(), Arc::new(server)) {
+    if let Err(err) = runner.add_http_server("/kapi/aicc".to_string(), server) {
         error!("failed to add aicc http server: {:?}", err);
         return Err(anyhow::anyhow!("failed to add aicc http server: {:?}", err));
     }

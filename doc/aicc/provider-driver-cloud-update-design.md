@@ -2,6 +2,8 @@
 
 状态：Draft  
 适用版本：beta 2.2 breaking change，不做向前兼容  
+
+客户端的 NDN 分发、增量下载、原子 activation、LKGS 和兼容边界以 `driver_metadata_update_protocol.md` 与 `driver_metadata_update_storage.md` 为准；本文其余内容主要描述云端编辑和发布服务，冲突处以前两份文档为准。
 相关文档：
 
 - `doc/aicc/driver_metadata_schema.md`

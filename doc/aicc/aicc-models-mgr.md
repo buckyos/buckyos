@@ -476,7 +476,7 @@ ModelMetadata {
 目标上，如果系统没有某个 driver 的 metadata，可以通过 HTTPS 可信通道从远程 URL 更新，并缓存到：
 
 ```text
-$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json
+$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/v1/{objects,activations,observed}/
 ```
 
 如果仍没有，则使用 conservative fallback。这样系统可用性优先，但不会把未知模型误判成具备高级能力。

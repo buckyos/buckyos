@@ -46,9 +46,15 @@ impl DriverModelResolveRequest {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DriverMetadataDocument {
+    #[serde(default)]
+    pub format: String,
     pub schema_version: u32,
+    #[serde(default)]
+    pub schema_revision: u32,
     pub provider_driver: String,
-    pub revision: String,
+    pub revision_seq: u64,
+    #[serde(default)]
+    pub required_features: Vec<String>,
     #[serde(default)]
     pub origin_provider_aliases: HashMap<String, String>,
     #[serde(default)]
@@ -422,6 +428,13 @@ fn load_driver_metadata_sources(provider_driver: &str) -> Vec<DriverMetadataSour
             document,
         });
     }
+    let normalized = normalize_driver(provider_driver);
+    if let Some(document) = crate::metadata_updater::load_active_remote_metadata(&normalized) {
+        sources.push(DriverMetadataSource {
+            name: "remote_cache_v1".to_string(),
+            document,
+        });
+    }
     for (name, path) in driver_metadata_override_paths(provider_driver) {
         match std::fs::read_to_string(path.as_path()) {
             Ok(content) => match parse_driver_metadata(content.as_str()) {
@@ -577,10 +590,6 @@ fn driver_metadata_override_paths(provider_driver: &str) -> Vec<(String, PathBuf
         .join("driver_metadata");
     let driver = normalize_driver(provider_driver);
     vec![
-        (
-            "remote_cache".to_string(),
-            etc.join("remote_cache").join(format!("{}.json", driver)),
-        ),
         (
             "local_override".to_string(),
             etc.join("local").join(format!("{}.json", driver)),

@@ -1,7 +1,10 @@
 {
+  "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 2,
+  "schema_revision": 0,
   "provider_driver": "google-gemini",
-  "revision": "builtin-2026-05-30",
+  "revision_seq": 1,
+  "required_features": [],
   "models": [
     {
       "id": "gemini-embedding-001",

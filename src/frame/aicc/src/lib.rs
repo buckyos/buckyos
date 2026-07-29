@@ -7,6 +7,7 @@ pub mod default_logical_tree;
 pub mod fal;
 pub mod gemini;
 pub mod metadata_resolver;
+pub mod metadata_updater;
 pub mod minimax;
 pub mod model_registry;
 pub mod model_router;

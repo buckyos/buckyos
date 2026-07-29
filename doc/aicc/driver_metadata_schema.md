@@ -9,7 +9,7 @@ API type, mount, cost, latency, and conservative fallback decisions.
 The resolver loads metadata in this override order:
 
 1. builtin metadata bundled under `src/frame/aicc/driver_metadata/`
-2. remote cache: `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`
+2. latest complete cloud activation under `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/v1/`
 3. local override: `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json`
 4. system-config override materialized at `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/<driver>.json`
 
@@ -33,9 +33,12 @@ provider's complete mapping list.
 
 ```json
 {
+  "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 2,
+  "schema_revision": 0,
   "provider_driver": "openai",
-  "revision": "builtin-2026-05-30",
+  "revision_seq": 1,
+  "required_features": [],
   "origin_provider_aliases": {},
   "origin_mappings": [],
   "models": [],
@@ -48,13 +51,16 @@ provider's complete mapping list.
 
 Fields:
 
-- `schema_version`: currently `2`.
-- `provider_driver`: driver id such as `openai`, `openrouter`, `claude`,
+ - `format`: fixed to `buckyos.aicc.provider-driver-metadata`.
+ - `schema_version`: incompatible schema major, currently `2`.
+ - `schema_revision`: additive schema revision, currently `0`.
+ - `provider_driver`: driver id such as `openai`, `openrouter`, `claude`,
   `google-gemini`, `fal`, or `minimax`.
-- `revision`: monotonically changing metadata revision string.
-- `origin_provider_aliases`: optional map from provider-specific origin slugs to
+ - `revision_seq`: monotonically increasing unsigned integer for this provider.
+ - `required_features`: features that a reader must understand; unknown values reject the document.
+ - `origin_provider_aliases`: optional map from provider-specific origin slugs to
   canonical BuckyOS driver names.
-- `origin_mappings`: optional ordered rules that derive the physical origin
+ - `origin_mappings`: optional ordered rules that derive the physical origin
   `driver` and `model` from the provider-native model id.
 - `models`: exact rules keyed by `id`.
 - `patterns`: wildcard rules keyed by `pattern`; `*` is the only wildcard.
@@ -63,7 +69,11 @@ Fields:
   matching base model into additional AICC exact models whose provider model id
   is `<base>:<mount_suffix>`, while provider calls are lowered back to the base
   provider model plus `provider_options`.
-- `signature`: optional signature envelope; verification is not enforced yet.
+- `signature`: deprecated compatibility field. Cloud trust comes from the NDN PathObject and FileObject chain.
+
+The beta 2.2 schema is the first compatibility baseline. Future optional fields
+with a safe default increment `schema_revision`; incompatible changes increment
+`schema_version` and are published on a compatible protocol track.
 
 ## Rule
 
