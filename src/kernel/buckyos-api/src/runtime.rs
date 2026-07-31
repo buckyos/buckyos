@@ -659,10 +659,11 @@ impl BuckyOSRuntime {
             | RPCErrors::InvalidPassword
             | RPCErrors::UserNotFound(_)
             | RPCErrors::KeyNotExist(_)
-            | RPCErrors::UnknownMethod(_) => RuntimeErrorClass::NonRetryable,
-            RPCErrors::TokenExpired(_) | RPCErrors::ServiceNotValid(_) => {
-                RuntimeErrorClass::Retryable
-            }
+            | RPCErrors::UnknownMethod(_)
+            | RPCErrors::S2sPermanentError(_) => RuntimeErrorClass::NonRetryable,
+            RPCErrors::TokenExpired(_)
+            | RPCErrors::ServiceNotValid(_)
+            | RPCErrors::S2sTransientError(_) => RuntimeErrorClass::Retryable,
             RPCErrors::ReasonError(message) => {
                 let message = message.to_ascii_lowercase();
                 if [
@@ -2500,6 +2501,18 @@ mod tests {
                 "NotImplemented: demo".to_string()
             )),
             RuntimeErrorClass::NonRetryable
+        );
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::S2sPermanentError(
+                "invalid key".to_string()
+            )),
+            RuntimeErrorClass::NonRetryable
+        );
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::S2sTransientError(
+                "connection reset".to_string()
+            )),
+            RuntimeErrorClass::Retryable
         );
     }
 
