@@ -727,6 +727,7 @@ impl LLMContext {
             //    actually dispatch.
             let mut new_step =
                 self.prepare_step(StepRecord::from_result(result), step_started_at_ms);
+            new_step.assistant_message = Some(response.message.clone());
 
             // 3a. Honor `forbid_next_behavior`: a fork sub-ctx must terminate
             //     into its own caller, not jump to a sibling behavior. We

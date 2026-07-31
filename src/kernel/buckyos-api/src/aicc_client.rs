@@ -822,8 +822,9 @@ pub enum AiContent {
     /// abstracted across providers (OpenAI reasoning item id/encrypted_content,
     /// Claude server_tool_use / web_search_tool_result, etc.).
     ///
-    /// Lowering: only blocks whose `provider` matches the target lowering
-    /// destination are restored to their native item; the rest are dropped.
+    /// `provider` is the stable owner/consumer namespace for the opaque item,
+    /// not the native item's protocol or type name. Each adapter defines the
+    /// provider namespaces it can restore; the rest are dropped.
     ProviderState { provider: String, value: Value },
 }
 

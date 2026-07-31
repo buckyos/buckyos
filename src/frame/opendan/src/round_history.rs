@@ -1185,6 +1185,12 @@ fn chat_msgonly_message(message: &AiMessage) -> Option<AiMessage> {
         .iter()
         .filter_map(|block| match block {
             AiContent::Text { text } => Some(AiContent::Text { text: text.clone() }),
+            AiContent::ProviderState { provider, value } if message.role == AiRole::Assistant => {
+                Some(AiContent::ProviderState {
+                    provider: provider.clone(),
+                    value: value.clone(),
+                })
+            }
             _ => None,
         })
         .collect();
@@ -1205,8 +1211,8 @@ fn behavior_msgonly_messages(entries: &[Entry]) -> Vec<AiMessage> {
                 }
             }
             EntryPayload::Step { step, .. } => {
-                if let Some(text) = behavior_step_assistant_text(step) {
-                    out.push(AiMessage::text(AiRole::Assistant, text));
+                if let Some(message) = step.assistant_message.clone() {
+                    out.push(message);
                 }
                 if let Some(text) = behavior_step_observation_text(step) {
                     out.push(AiMessage::text(AiRole::Tool, text));
@@ -1421,6 +1427,29 @@ mod tests {
 
     #[tokio::test]
     async fn waiting_tool_round_reopens_and_continues() {
+        fn provider_message(id: &str, text: &str) -> AiMessage {
+            AiMessage::new(
+                AiRole::Assistant,
+                vec![
+                    AiContent::text(text),
+                    AiContent::ProviderState {
+                        provider: "openrouter".to_string(),
+                        value: serde_json::json!({
+                            "type": "message",
+                            "id": id,
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [{
+                                "type": "output_text",
+                                "text": text,
+                                "annotations": [],
+                            }],
+                        }),
+                    },
+                ],
+            )
+        }
+
         let dir = tempdir().unwrap();
         {
             let mut writer = SessionHistoryWriter::open(dir.path()).await.unwrap();
@@ -1432,6 +1461,10 @@ mod tests {
                 .append_step(
                     StepRecord {
                         assistant_text: "<thought>call tool</thought>".to_string(),
+                        assistant_message: Some(provider_message(
+                            "msg_1",
+                            "<thought>call tool</thought>",
+                        )),
                         thought: Some("call tool".to_string()),
                         ..Default::default()
                     },
@@ -1452,6 +1485,7 @@ mod tests {
             .append_step(
                 StepRecord {
                     assistant_text: "done".to_string(),
+                    assistant_message: Some(provider_message("msg_2", "done")),
                     observation: Some("ok".to_string()),
                     action_results: vec![Observation::Success {
                         call_id: "call-1".to_string(),
@@ -1476,6 +1510,13 @@ mod tests {
             RoundPayload::Full(RoundFullPayload::Behavior { steps }) => {
                 assert_eq!(steps.len(), 2);
                 assert_eq!(steps[1].observation.as_deref(), Some("ok"));
+                assert!(steps[0]
+                    .assistant_message
+                    .as_ref()
+                    .unwrap()
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, AiContent::ProviderState { value, .. } if value["id"] == "msg_1")));
             }
             _ => panic!("expected behavior full payload"),
         }
@@ -1486,6 +1527,10 @@ mod tests {
                 assert_eq!(messages[0].role, AiRole::Assistant);
                 assert_eq!(messages[1].role, AiRole::Assistant);
                 assert_eq!(messages[2].role, AiRole::Tool);
+                assert!(messages[1]
+                    .content
+                    .iter()
+                    .any(|content| matches!(content, AiContent::ProviderState { value, .. } if value["id"] == "msg_2")));
             }
             _ => panic!("expected msgonly payload"),
         }

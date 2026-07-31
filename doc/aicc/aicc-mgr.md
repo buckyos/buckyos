@@ -96,7 +96,7 @@ services/control_panel/ai_models/provider_secrets
 | Provider type | settings section | instance 字段 |
 | --- | --- | --- |
 | `sn_router` | `sn-ai-provider` | `provider_instance_name`, `provider_type`, `api_token`, `base_url`, `auth_mode`, `timeout_ms` |
-| `openai` / `openrouter` / `custom` | `openai` | `provider_instance_name`, `provider_type`, `api_token`, `base_url`, `auth_mode`, `timeout_ms` |
+| `openai` / `openrouter` / `custom` | `openai` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `auth_mode`, `timeout_ms` |
 | `google` | `google` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `image_models`, `default_image_model`, `features`, `alias_map` |
 | `anthropic` | `claude` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `features`, `alias_map` |
 | `minimax` | `minimax` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `features`, `alias_map` |
@@ -278,6 +278,7 @@ minimax    -> minimax
       {
         "provider_instance_name": "openai-work",
         "provider_type": "cloud_api",
+        "provider_driver": "openai",
         "api_token": "sk-...",
         "base_url": "https://api.openai.com/v1",
         "auth_mode": "bearer",
@@ -290,8 +291,8 @@ minimax    -> minimax
 
 `openrouter` 和 `custom` 第一版复用 `openai` adapter：
 
-- `provider_driver` 当前 OpenAI instance 不支持配置，driver 会由代码根据 instance name / endpoint 推断，无法精确表达 `openrouter`。因此第一版仅保证 OpenAI-compatible 调用链可用，UI 上的 `provider_type` 需要从 `provider_instance_name` / endpoint 推断。
-- 如果要让后端 inventory 精确返回 `openrouter` / `custom`，需要扩展 `OpenAIInstanceConfig`，这属于实现阶段的协议/共享类型改动。
+- OpenAI instance 支持显式配置 `provider_driver`。OpenAI 使用 `openai`，OpenRouter 使用 `openrouter`，自定义 OpenAI-compatible provider 使用与其 driver metadata 文件一致的 driver id。后端 inventory 会原样返回该值，并用它选择对应的模型 metadata。
+- `provider_type` 只表示部署类型（例如 `cloud_api`），不能代替 `provider_driver`。未配置 `provider_driver` 时，SN endpoint 回退为 `sn-ai-provider`，其他 endpoint 回退为 `openai`；因此 OpenRouter 和 custom instance 应显式配置该字段。
 
 ### 4.4 `provider.delete`
 

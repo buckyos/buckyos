@@ -89,6 +89,7 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
 pub struct OpenAIInstanceConfig {
     pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
     pub api_token: String,
     pub base_url: String,
     pub auth_mode: String,
@@ -149,10 +150,14 @@ impl OpenAIProvider {
 
         let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
         let provider_instance_name = cfg.provider_instance_name.clone();
-        let provider_driver = default_provider_driver_for_instance(
-            cfg.provider_instance_name.as_str(),
-            cfg.base_url.as_str(),
-        );
+        let provider_driver = if cfg.provider_driver.trim().is_empty() {
+            default_provider_driver_for_instance(
+                cfg.provider_instance_name.as_str(),
+                cfg.base_url.as_str(),
+            )
+        } else {
+            cfg.provider_driver.trim().to_string()
+        };
         let instance = ProviderInstance {
             provider_instance_name: provider_instance_name.clone(),
             provider_type: provider_type.clone(),
@@ -371,21 +376,26 @@ impl OpenAIProvider {
         provider_type: crate::model_types::ProviderType,
         provider_driver: &str,
     ) -> ProviderInventory {
-        let (models, image_models) = if provider_driver == SN_AI_PROVIDER_DRIVER {
-            (
-                normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
-            )
-        } else {
-            (
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS)),
-            )
-        };
-        let embedding_models =
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS));
-        let asr_models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS));
-        let tts_models = normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS));
+        let (models, image_models, embedding_models, asr_models, tts_models) =
+            if provider_driver == "openrouter" {
+                (vec![], vec![], vec![], vec![], vec![])
+            } else if provider_driver == SN_AI_PROVIDER_DRIVER {
+                (
+                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
+                )
+            } else {
+                (
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_IMAGE_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
+                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
+                )
+            };
 
         Self::build_inventory(
             provider_instance_name,
@@ -406,15 +416,24 @@ impl OpenAIProvider {
         image_models: &[String],
         revision: Option<String>,
     ) -> ProviderInventory {
+        let (embedding_models, asr_models, tts_models) = if self.provider_driver == "openrouter" {
+            (vec![], vec![], vec![])
+        } else {
+            (
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
+                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
+            )
+        };
         Self::build_inventory(
             self.instance.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
             models,
             image_models,
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)).as_slice(),
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)).as_slice(),
-            normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)).as_slice(),
+            embedding_models.as_slice(),
+            asr_models.as_slice(),
+            tts_models.as_slice(),
             revision,
         )
     }
@@ -438,7 +457,8 @@ impl OpenAIProvider {
 
         let response = serde_json::from_value::<OpenAIModelsResponse>(body)
             .context("failed to parse openai models response")?;
-        let (llm_models, image_models) = normalize_remote_model_ids(response.data);
+        let (llm_models, image_models) =
+            normalize_remote_model_ids(response.data, self.provider_driver.as_str());
         if llm_models.is_empty() && image_models.is_empty() {
             return Err(anyhow!(
                 "openai inventory refresh returned no supported models"
@@ -910,10 +930,31 @@ impl OpenAIProvider {
     fn estimate_cost_for_usage(&self, model: &str, usage: &AiUsage) -> Option<AiCost> {
         let input_tokens = usage.input_tokens? as f64;
         let output_tokens = usage.output_tokens? as f64;
-        let (input_per_m, output_per_m) = Self::price_per_1m_tokens(model);
-
-        let amount = ((input_tokens / 1_000_000.0) * input_per_m)
-            + ((output_tokens / 1_000_000.0) * output_per_m);
+        let pricing = self.inventory.read().ok().and_then(|inventory| {
+            inventory.models.iter().find_map(|metadata| {
+                (metadata.provider_model_id == model).then(|| {
+                    (
+                        metadata
+                            .origin_model_id
+                            .clone()
+                            .unwrap_or_else(|| model.to_string()),
+                        metadata.pricing.input_token_usd,
+                        metadata.pricing.output_token_usd,
+                    )
+                })
+            })
+        });
+        let (origin_model_id, input_per_token, output_per_token) =
+            pricing.unwrap_or_else(|| (model.to_string(), None, None));
+        let amount = if let (Some(input_per_token), Some(output_per_token)) =
+            (input_per_token, output_per_token)
+        {
+            (input_tokens * input_per_token) + (output_tokens * output_per_token)
+        } else {
+            let (input_per_m, output_per_m) = Self::price_per_1m_tokens(origin_model_id.as_str());
+            ((input_tokens / 1_000_000.0) * input_per_m)
+                + ((output_tokens / 1_000_000.0) * output_per_m)
+        };
 
         Some(AiCost {
             amount,
@@ -958,11 +999,32 @@ impl OpenAIProvider {
         // (只留 Text block),tool 信息全丢。
         for msg in &req.payload.messages {
             let role_str = Self::ai_role_to_openai(&msg.role);
-            let content_type = if role_str == "assistant" {
-                "output_text"
-            } else {
-                "input_text"
-            };
+            if role_str == "assistant" {
+                let provider_items = msg
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        AiContent::ProviderState { provider, value }
+                            if provider.eq_ignore_ascii_case(&self.provider_driver) =>
+                        {
+                            Some(value.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if provider_items.is_empty() {
+                    if msg.text_content().trim().is_empty() && msg.tool_calls().is_empty() {
+                        continue;
+                    }
+                    return Err(ProviderError::fatal(format!(
+                        "assistant history is missing Responses output items for provider `{}`",
+                        self.provider_driver
+                    )));
+                }
+                items.extend(provider_items);
+                continue;
+            }
+            let content_type = "input_text";
             let mut pending_text_parts: Vec<Value> = Vec::new();
 
             for block in &msg.content {
@@ -1498,6 +1560,29 @@ impl OpenAIProvider {
             Value::Null => Some(Value::Object(Map::new())),
             other => Some(other),
         }
+    }
+
+    fn message_from_response_body(
+        &self,
+        body: &Value,
+        text: Option<String>,
+        tool_calls: Vec<AiToolCall>,
+    ) -> AiMessage {
+        let mut message = AiResponse::message_from_parts(text, tool_calls, vec![]);
+        if let Some(output_items) = body.get("output").and_then(Value::as_array) {
+            message
+                .content
+                .extend(
+                    output_items
+                        .iter()
+                        .cloned()
+                        .map(|value| AiContent::ProviderState {
+                            provider: self.provider_driver.clone(),
+                            value,
+                        }),
+                );
+        }
+        message
     }
 
     fn extract_text_content(payload: &Value) -> Option<String> {
@@ -2551,6 +2636,16 @@ impl OpenAIProvider {
             );
             return Err(err);
         }
+        if !self.use_chat_completions_endpoint()
+            && body
+                .get("output")
+                .and_then(Value::as_array)
+                .map_or(true, Vec::is_empty)
+        {
+            return Err(ProviderError::fatal(
+                "OpenAI Responses result is missing output items required for history replay",
+            ));
+        }
 
         let usage = body.get("usage").map(|usage| AiUsage {
             input_tokens: usage
@@ -2588,7 +2683,7 @@ impl OpenAIProvider {
         );
 
         let summary = AiResponse {
-            message: AiResponse::message_from_parts(content, tool_choices, vec![]),
+            message: self.message_from_response_body(&body, content, tool_choices),
             usage,
             cost,
             finish_reason: body
@@ -3386,6 +3481,8 @@ struct SettingsOpenAIInstanceConfig {
     provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default)]
+    provider_driver: String,
     #[serde(default, alias = "api_key", alias = "apiKey")]
     api_token: String,
     #[serde(default = "default_base_url")]
@@ -3470,7 +3567,10 @@ fn is_supported_llm_model_name(model: &str) -> bool {
         || normalized.starts_with("o4")
 }
 
-fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, Vec<String>) {
+fn normalize_remote_model_ids(
+    entries: Vec<OpenAIModelEntry>,
+    provider_driver: &str,
+) -> (Vec<String>, Vec<String>) {
     let mut llm_seen = HashSet::<String>::new();
     let mut image_seen = HashSet::<String>::new();
     let mut llm_models = Vec::new();
@@ -3482,6 +3582,12 @@ fn normalize_remote_model_ids(entries: Vec<OpenAIModelEntry>) -> (Vec<String>, V
             continue;
         }
         let key = model.to_ascii_lowercase();
+        if provider_driver == "openrouter" {
+            if llm_seen.insert(key) {
+                llm_models.push(model.to_string());
+            }
+            continue;
+        }
         if is_text2image_model_name(model) {
             if image_seen.insert(key) {
                 image_models.push(model.to_string());
@@ -3565,6 +3671,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         vec![SettingsOpenAIInstanceConfig {
             provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: String::new(),
             api_token: settings.api_token.clone(),
             base_url: default_base_url(),
             auth_mode: default_auth_mode(),
@@ -3579,6 +3686,7 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
         instances.push(OpenAIInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: raw_instance.provider_driver,
             api_token: if raw_instance.api_token.trim().is_empty() {
                 settings.api_token.clone()
             } else {
@@ -4248,6 +4356,7 @@ data: [DONE]
             instances: vec![SettingsOpenAIInstanceConfig {
                 provider_instance_name: "openai-1".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: String::new(),
                 base_url: default_base_url(),
                 auth_mode: default_auth_mode(),
@@ -4269,6 +4378,7 @@ data: [DONE]
             instances: vec![SettingsOpenAIInstanceConfig {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "sn-ai-provider".to_string(),
                 api_token: String::new(),
                 base_url: "https://sn.buckyos.ai/v1".to_string(),
                 auth_mode: RUNTIME_SESSION_AUTH_MODE.to_string(),
@@ -4281,6 +4391,29 @@ data: [DONE]
         assert_eq!(instances[0].auth_mode, RUNTIME_SESSION_AUTH_MODE);
     }
 
+    #[test]
+    fn build_openai_instances_preserves_aggregator_driver() {
+        let settings = OpenAISettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            instances: vec![SettingsOpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: String::new(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: default_auth_mode(),
+                timeout_ms: default_timeout_ms(),
+            }],
+        };
+
+        let instances = build_openai_instances(&settings).expect("instances should be built");
+        let provider =
+            OpenAIProvider::new(instances[0].clone(), "token").expect("provider should be built");
+        assert_eq!(provider.instance.provider_driver, "openrouter");
+        assert!(provider.inventory().models.is_empty());
+    }
+
     #[tokio::test]
     async fn stopped_refresh_does_not_send_initial_request() {
         let provider = Arc::new(
@@ -4288,6 +4421,7 @@ data: [DONE]
                 OpenAIInstanceConfig {
                     provider_instance_name: "openai-stopped".to_string(),
                     provider_type: "cloud_api".to_string(),
+                    provider_driver: "openai".to_string(),
                     api_token: "token".to_string(),
                     base_url: "http://127.0.0.1:1".to_string(),
                     auth_mode: "bearer".to_string(),
@@ -4318,6 +4452,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-drop".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: "http://127.0.0.1:1".to_string(),
                 auth_mode: "bearer".to_string(),
@@ -4368,6 +4503,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "sn-ai-provider".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
                 auth_mode: "bearer".to_string(),
@@ -4385,6 +4521,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
@@ -4499,6 +4636,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
@@ -4622,20 +4760,23 @@ data: [DONE]
 
     #[test]
     fn remote_model_inventory_filters_supported_model_types() {
-        let (llm_models, image_models) = normalize_remote_model_ids(vec![
-            OpenAIModelEntry {
-                id: "gpt-5.2".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "text-embedding-3-large".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-image-1".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-image-2".to_string(),
-            },
-        ]);
+        let (llm_models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "gpt-5.2".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "text-embedding-3-large".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-image-1".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-image-2".to_string(),
+                },
+            ],
+            "openai",
+        );
 
         assert_eq!(llm_models, vec!["gpt-5.2".to_string()]);
         assert_eq!(
@@ -4650,29 +4791,167 @@ data: [DONE]
         // DEFAULT_OPENAI_{ASR,TTS}_MODELS 里登记，再当 LLM 收一遍会让
         // build_inventory 产生重复 exact_model，触发 model_registry
         // SessionConfigInvalid 把整个 refresh 卡死。
-        let (llm_models, image_models) = normalize_remote_model_ids(vec![
-            OpenAIModelEntry {
-                id: "gpt-4o-mini-transcribe".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-transcribe".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-mini-tts".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-audio-preview".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-4o-realtime-preview".to_string(),
-            },
-            OpenAIModelEntry {
-                id: "gpt-5".to_string(),
-            },
-        ]);
+        let (llm_models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "gpt-4o-mini-transcribe".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-transcribe".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-mini-tts".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-audio-preview".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-4o-realtime-preview".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "gpt-5".to_string(),
+                },
+            ],
+            "openai",
+        );
 
         assert_eq!(llm_models, vec!["gpt-5".to_string()]);
         assert!(image_models.is_empty());
+    }
+
+    #[test]
+    fn openrouter_inventory_preserves_provider_native_model_ids() {
+        let (llm_models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "openai/gpt-5.5".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "anthropic/claude-sonnet-4".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "tencent/hy3:free".to_string(),
+                },
+            ],
+            "openrouter",
+        );
+
+        assert_eq!(
+            llm_models,
+            vec![
+                "openai/gpt-5.5".to_string(),
+                "anthropic/claude-sonnet-4".to_string(),
+                "tencent/hy3:free".to_string(),
+            ]
+        );
+        assert!(image_models.is_empty());
+    }
+
+    #[test]
+    fn openrouter_remote_inventory_uses_strict_fixed_openai_whitelist() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "data": [
+                    { "id": "openai/gpt-5.5" },
+                    { "id": "anthropic/claude-sonnet-4" },
+                    { "id": "openai/gpt-chat-latest" },
+                    { "id": "openai/o3-mini-high" },
+                    { "id": "openai/gpt-5.6-sol-pro" },
+                    { "id": "openai/gpt-oss-20b:free" },
+                    { "id": "openai/gpt-5.5:free" },
+                    { "id": "openai/gpt-5.5:extended" },
+                    { "id": "openai/gpt-5.5:thinking" },
+                    { "id": "openai/gpt-5.5:nitro" },
+                    { "id": "openai/gpt-5.5:floor" },
+                    { "id": "openai/gpt-5.5:exacto" },
+                    { "id": "openai/gpt-5.5:online" },
+                    { "id": "openai/gpt-9-latest" }
+                ]
+            }))
+            .expect("OpenRouter inventory should resolve");
+
+        assert_eq!(inventory.models.len(), 3);
+        let base = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "openai/gpt-5.5")
+            .expect("base model should resolve");
+        assert_eq!(base.provider_actual_model_id, None);
+        assert_eq!(base.origin_model_id.as_deref(), Some("gpt-5.5"));
+        *provider.inventory.write().expect("inventory lock") = inventory.clone();
+        let cost = provider
+            .estimate_cost_for_usage(
+                "openai/gpt-5.5",
+                &AiUsage {
+                    input_tokens: Some(1_000_000),
+                    output_tokens: Some(1_000_000),
+                    total_tokens: Some(2_000_000),
+                },
+            )
+            .expect("OpenRouter usage cost should resolve");
+        assert_eq!(cost.amount, 35.0);
+        assert!(inventory.models.iter().any(|model| {
+            model.provider_model_id == "openai/gpt-5.5:reasoning-high"
+                && model.provider_actual_model_id.as_deref() == Some("openai/gpt-5.5")
+        }));
+    }
+
+    #[test]
+    fn openrouter_cost_fallback_uses_metadata_origin_model_id() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let mut inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "data": [{ "id": "openai/gpt-5.4-pro" }]
+            }))
+            .expect("OpenRouter inventory should resolve");
+        let base = inventory
+            .models
+            .iter_mut()
+            .find(|model| model.provider_model_id == "openai/gpt-5.4-pro")
+            .expect("base model should resolve");
+        assert_eq!(base.origin_model_id.as_deref(), Some("gpt-5.4-pro"));
+        base.pricing.input_token_usd = None;
+        base.pricing.output_token_usd = None;
+        *provider.inventory.write().expect("inventory lock") = inventory;
+
+        let cost = provider
+            .estimate_cost_for_usage(
+                "openai/gpt-5.4-pro",
+                &AiUsage {
+                    input_tokens: Some(1_000_000),
+                    output_tokens: Some(1_000_000),
+                    total_tokens: Some(2_000_000),
+                },
+            )
+            .expect("OpenRouter fallback cost should resolve");
+        assert_eq!(cost.amount, 210.0);
     }
 
     #[test]
@@ -4707,6 +4986,7 @@ data: [DONE]
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
                 provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
                 auth_mode: "bearer".to_string(),
@@ -4735,6 +5015,161 @@ data: [DONE]
                 .and_then(|v| v.as_str()),
             Some("data:image/png;base64,aGVsbG8=")
         );
+    }
+
+    #[test]
+    fn responses_history_preserves_and_replays_provider_output_items() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let reasoning_item = json!({
+            "type": "reasoning",
+            "id": "rs_123",
+            "summary": [],
+            "encrypted_content": "opaque",
+        });
+        let message_item = json!({
+            "type": "message",
+            "id": "msg_123",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "hi",
+                "annotations": [{"type": "url_citation", "url": "https://example.com"}],
+            }],
+        });
+        let assistant = provider.message_from_response_body(
+            &json!({"output": [reasoning_item.clone(), message_item.clone()]}),
+            Some("hi".to_string()),
+            vec![],
+        );
+        assert!(assistant.content.iter().all(|content| match content {
+            AiContent::ProviderState { provider, .. } => provider == "openrouter",
+            _ => true,
+        }));
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::User, "hello"), assistant],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+
+        let messages = provider.build_messages(&request).expect("messages");
+
+        assert_eq!(messages[1], reasoning_item);
+        assert_eq!(messages[2], message_item);
+    }
+
+    #[test]
+    fn responses_history_does_not_replay_foreign_provider_output_items() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::new(
+                    AiRole::Assistant,
+                    vec![
+                        AiContent::text("hi"),
+                        AiContent::ProviderState {
+                            provider: "openai".to_string(),
+                            value: json!({
+                                "type": "message",
+                                "id": "msg_123",
+                                "status": "completed",
+                                "role": "assistant",
+                                "content": [{
+                                    "type": "output_text",
+                                    "text": "hi",
+                                    "annotations": [],
+                                }],
+                            }),
+                        },
+                    ],
+                )],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openrouter-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openrouter".to_string(),
+                api_token: "token".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let err = provider
+            .build_messages(&request)
+            .expect_err("foreign provider state must not be replayed");
+        assert!(err.to_string().contains("provider `openrouter`"));
+    }
+
+    #[test]
+    fn responses_history_rejects_assistant_without_provider_output_items() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::Assistant, "hi")],
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        );
+
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-main".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let err = provider
+            .build_messages(&request)
+            .expect_err("assistant history without provider items must fail");
+        assert!(err
+            .to_string()
+            .contains("missing Responses output items for provider `openai`"));
     }
 
     #[test]

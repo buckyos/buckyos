@@ -447,7 +447,7 @@ fn is_compressed_pair_at(history: &[AiMessage], idx: usize) -> bool {
 }
 
 fn is_compress_meta_message(msg: &AiMessage) -> bool {
-    msg.role == AiRole::Assistant && msg.text_content().contains(COMPRESS_META_MARKER)
+    msg.role == AiRole::Developer && msg.text_content().contains(COMPRESS_META_MARKER)
 }
 
 fn is_compress_summary_message(msg: &AiMessage) -> bool {
@@ -751,7 +751,7 @@ fn try_fold_agent_loop_history_block(
             range.start, range.end
         ),
     );
-    let assistant = AiMessage::text(AiRole::Assistant, format_mechanical_text(&meta, &body));
+    let assistant = AiMessage::text(AiRole::Developer, format_mechanical_text(&meta, &body));
     let mut out = Vec::with_capacity(
         range
             .start
@@ -1034,7 +1034,7 @@ fn build_compressed_pair(
     });
     vec![
         AiMessage::text(
-            AiRole::Assistant,
+            AiRole::Developer,
             format!(
                 "{}\n{}",
                 COMPRESS_META_MARKER,
@@ -1203,7 +1203,7 @@ mod tests {
 
     fn compressed_pair(summary: &str) -> Vec<AiMessage> {
         vec![
-            AiMessage::text(AiRole::Assistant, COMPRESS_META_MARKER),
+            AiMessage::text(AiRole::Developer, COMPRESS_META_MARKER),
             AiMessage::text(
                 AiRole::User,
                 format!("{}\n{}", COMPRESS_SUMMARY_MARKER, summary),
@@ -1592,7 +1592,7 @@ mod tests {
         assert_eq!(out[0].text_content(), "you are helpful");
         assert_eq!(out[1].role, AiRole::User);
         assert_eq!(out[1].text_content(), format!("q0: {}", big_blob));
-        assert_eq!(out[3].role, AiRole::Assistant);
+        assert_eq!(out[3].role, AiRole::Developer);
         assert!(out[3].text_content().contains(COMPRESS_META_MARKER));
         assert_eq!(out[4].role, AiRole::User);
         assert!(out[4].text_content().contains(COMPRESS_SUMMARY_MARKER));
@@ -1848,7 +1848,7 @@ mod tests {
         let out = try_fold_agent_loop_history_block(&history, &deps, &range).unwrap();
         assert_eq!(out.len(), 3);
         assert_eq!(out[1].role, AiRole::User);
-        assert_eq!(out[2].role, AiRole::Assistant);
+        assert_eq!(out[2].role, AiRole::Developer);
         let text = out[2].text_content();
         let meta = read_mechanical_meta(&out[2]).unwrap();
         assert_eq!(meta.message_pairs_in_history_block, 2);

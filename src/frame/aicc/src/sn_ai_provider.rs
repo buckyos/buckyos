@@ -99,6 +99,7 @@ fn build_sn_ai_provider_instances(
         instances.push(OpenAIInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: "sn-ai-provider".to_string(),
             api_token: if raw_instance.api_token.trim().is_empty() {
                 settings.api_token.clone()
             } else {
