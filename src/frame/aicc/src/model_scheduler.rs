@@ -302,6 +302,7 @@ mod tests {
             provider_model_id: exact.to_string(),
             exact_model: format!("{}@{}", exact, provider),
             model_driver: provider.to_string(),
+            origin_model_id: None,
             provider_actual_model_id: None,
             provider_options: None,
             parameter_scale: None,

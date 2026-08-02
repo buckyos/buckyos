@@ -69,10 +69,12 @@ impl XmlStepRenderer {
     }
 
     fn render_full(&self, step: &StepRecord) -> (AiMessage, AiMessage) {
-        let assistant = AiMessage::text(
-            AiRole::Assistant,
-            render_assistant_text_with_action_ids(step),
-        );
+        let assistant = step.assistant_message.clone().unwrap_or_else(|| {
+            AiMessage::text(
+                AiRole::Assistant,
+                render_assistant_text_with_action_ids(step),
+            )
+        });
         let user = step.next_user_message.clone().unwrap_or_else(|| {
             AiMessage::text(
                 AiRole::User,
