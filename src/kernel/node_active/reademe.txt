@@ -8,6 +8,11 @@ DeviceMini、Zone 四份文档。
 完成备份确认后注册 SN。钱包路径只接受 bridge 返回并校验通过的 OwnerDocument，
 再分两阶段请求钱包签名。
 
+浏览器注册前通过 `/kapi/active` 的 `start_region_probe` 启动 Region 探测，并用
+`get_region_probe_status` 读取结果。SN 配置获取、DNS 安全过滤和并行 TCP connect
+均由 node_daemon 执行；网页只展示自动/手工选择与状态，并将最终可选 Region 固定到
+本次 `auth.register` 请求。探测不可用或全部失败时省略 Region，继续注册。
+
 默认 BNS 域名只发布签名 ZoneDocument JWT。自有域名必须先完成 PKX TXT challenge，
 随后按 owner publish、zone publish、device.register 的顺序提交。SN 返回 submitted 后，
 激活服务等待 BNS 投影与提交原文一致，最后原子写入本地身份文件并启动系统。

@@ -15,6 +15,7 @@ import {
   GatewayType,
   JsonValue,
   PreparedActiveDocuments,
+  RegionProbeStatus,
   SignedActiveDocuments,
   WebOwnerMaterial,
 } from "./src/types";
@@ -79,6 +80,9 @@ export async function createInitialWizardData(
     sn_access_token: null,
     sn_refresh_token: null,
     enabled_features: resolveEnabledFeatures(initial?.sn_active_code, initial?.enabled_features),
+    region_preference: "auto",
+    region_probe_status: null,
+    selected_region: null,
     admin_password_hash: "",
     friend_passcode: "",
     enable_guest_access: false,
@@ -209,9 +213,10 @@ export async function registerWebOwner(params: {
   activeCode: string;
   ownerDocument: BuckyOSOwnerDocument;
   evmAddress: string;
+  region?: string | null;
 }) {
   const client = new sn.SnClient(SN_API_URL);
-  const result = await client.register({
+  const request = {
     name: params.name,
     email: params.email.trim(),
     pwd_hash: params.pwdHash,
@@ -219,7 +224,9 @@ export async function registerWebOwner(params: {
     request_id: `sn:register:${params.name}`,
     asset_owner: params.evmAddress,
     owner_config: params.ownerDocument,
-  });
+    ...(params.region ? { region: params.region } : {}),
+  };
+  const result = await client.register(request);
   if (
     result.code !== 0 ||
     result.need_bind_owner_key !== false
@@ -227,6 +234,24 @@ export async function registerWebOwner(params: {
     throw new Error("SN registration did not commit the BNS owner document");
   }
   return result;
+}
+
+export async function startRegionProbe(force = false): Promise<RegionProbeStatus> {
+  return (await activeRpc().call("start_region_probe", { force })) as RegionProbeStatus;
+}
+
+export async function getRegionProbeStatus(): Promise<RegionProbeStatus> {
+  return (await activeRpc().call("get_region_probe_status", {})) as RegionProbeStatus;
+}
+
+export async function waitForRegionProbe(force = false): Promise<RegionProbeStatus> {
+  let status = await startRegionProbe(force);
+  const deadline = Date.now() + 10_000;
+  while (status.phase === "running" && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+    status = await getRegionProbeStatus();
+  }
+  return status;
 }
 
 export async function check_sn_active_code(activeCode: string): Promise<boolean> {
@@ -301,7 +326,10 @@ async function refreshAccessToken(refreshToken: string | null): Promise<string |
 }
 
 async function loginForSession(name: string, pwdHash: string) {
-  const result = await new sn.SnClient(SN_API_URL).login(name, pwdHash);
+  const result = await new sn.SnClient(SN_API_URL).login({
+    name,
+    pwd_hash: pwdHash,
+  });
   if (result.code !== 0 || !result.access_token) {
     throw new Error("SN login failed");
   }

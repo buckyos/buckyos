@@ -14,6 +14,7 @@ mod kevent_server;
 mod local_app_mgr;
 mod node_daemon;
 mod node_executor;
+mod region_probe;
 mod run_item;
 mod run_plist;
 mod service_pkg;

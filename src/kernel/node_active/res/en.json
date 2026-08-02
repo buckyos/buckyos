@@ -148,5 +148,16 @@
     "error_copy_failed": "Copy failed. Please copy it manually.",
     "wallet_device_owner": "Device will belong to: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "Please add the following 3 TXT records to your domain before activation",
-    "language_label": "Language"
+    "language_label": "Language",
+    "region_probe_title": "Network Region",
+    "region_preference_label": "Region",
+    "region_auto_option": "Auto (recommended)",
+    "region_probe_detecting": "Detecting the nearest Region…",
+    "region_probe_selected": "Detected Region: {{region}}",
+    "region_manual_status": "Using manually selected Region: {{region}}",
+    "region_probe_unavailable": "Region detection is unavailable. Registration will continue with automatic server fallback.",
+    "region_probe_low_confidence": "Low confidence.",
+    "region_probe_cached": "Cached result.",
+    "region_server_fallback": "Automatic server fallback",
+    "retry_button": "Retry"
 }

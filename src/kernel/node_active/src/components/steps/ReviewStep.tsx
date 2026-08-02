@@ -76,6 +76,15 @@ const ReviewStep = ({ wizardData, onUpdate, onActivated, onBack, isWalletRuntime
           <Typography color="text.secondary">Gateway</Typography>
           <Typography>{topology.net_id}</Typography>
         </Stack>
+        {!isWalletRuntime && (
+          <Stack direction="row" justifyContent="space-between" gap={2}>
+            <Typography color="text.secondary">{t("region_probe_title", "Network Region")}</Typography>
+            <Typography>
+              {wizardData.selected_region ||
+                t("region_server_fallback", "Automatic server fallback")}
+            </Typography>
+          </Stack>
+        )}
         <Stack direction="row" justifyContent="space-between" gap={2}>
           <Typography color="text.secondary">BNS publish name</Typography>
           <Typography>{names.bns_publish_name}</Typography>

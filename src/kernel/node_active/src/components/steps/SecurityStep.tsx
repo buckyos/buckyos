@@ -15,18 +15,21 @@ import {
   Typography,
 } from "@mui/material";
 import { buckyos } from "buckyos";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   WEB3_BASE_HOST,
+  SN_API_URL,
   buildWebOwnerDocument,
   check_bucky_username,
   check_sn_active_code,
   generateWebOwnerMaterial,
   registerWebOwner,
   resolveEnabledFeatures,
+  waitForRegionProbe,
 } from "../../../active_lib";
-import { WebOwnerMaterial, WizardData } from "../../types";
+import { RegionProbeStatus, WebOwnerMaterial, WizardData } from "../../types";
+import RegionProbePanel from "../RegionProbePanel";
 
 type Props = {
   wizardData: WizardData;
@@ -36,6 +39,59 @@ type Props = {
 
 type NameStatus = "idle" | "checking" | "ok" | "taken" | "invalid";
 type Phase = "generate" | "backup" | "registering" | "complete";
+const REGION_PREFERENCE_STORAGE_KEY = "buckyos.node_active.region_preference";
+
+function unavailableRegionProbeStatus(): RegionProbeStatus {
+  return {
+    phase: "unavailable",
+    region: null,
+    source: "none",
+    config_version: null,
+    confidence: "none",
+    measured_at: null,
+    expires_at: null,
+    available_regions: [],
+    regions: [],
+  };
+}
+
+function loadSavedRegionPreference(): string {
+  try {
+    const value = JSON.parse(localStorage.getItem(REGION_PREFERENCE_STORAGE_KEY) || "null") as {
+      sn_url?: unknown;
+      region?: unknown;
+    } | null;
+    if (
+      value?.sn_url === SN_API_URL &&
+      typeof value.region === "string" &&
+      /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.region)
+    ) {
+      return value.region;
+    }
+  } catch {
+    return "auto";
+  }
+  return "auto";
+}
+
+function saveRegionPreference(region: string, configVersion: string | null) {
+  try {
+    if (region === "auto") {
+      localStorage.removeItem(REGION_PREFERENCE_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(
+      REGION_PREFERENCE_STORAGE_KEY,
+      JSON.stringify({
+        sn_url: SN_API_URL,
+        region,
+        config_version: configVersion,
+      }),
+    );
+  } catch {
+    return;
+  }
+}
 
 function confirmationPositions(): [number, number] {
   const bytes = new Uint8Array(2);
@@ -64,6 +120,57 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
   const [activeCodeValid, setActiveCodeValid] = useState<boolean | null>(null);
   const [error, setError] = useState("");
+  const [regionPreference, setRegionPreference] = useState(
+    wizardData.region_preference === "auto"
+      ? loadSavedRegionPreference()
+      : wizardData.region_preference,
+  );
+  const [regionProbeStatus, setRegionProbeStatus] = useState<RegionProbeStatus | null>(
+    wizardData.region_probe_status,
+  );
+  const mountedRef = useRef(true);
+  const probePromiseRef = useRef<Promise<RegionProbeStatus> | null>(null);
+  const registrationRegionRef = useRef<{ name: string; region: string | null } | null>(null);
+
+  const runRegionProbe = (force = false): Promise<RegionProbeStatus> => {
+    if (!force && probePromiseRef.current) return probePromiseRef.current;
+    const promise = waitForRegionProbe(force)
+      .catch(() => unavailableRegionProbeStatus())
+      .then((status) => {
+        if (mountedRef.current) {
+          setRegionProbeStatus(status);
+          onUpdate({ region_probe_status: status });
+        }
+        return status;
+      })
+      .finally(() => {
+        if (probePromiseRef.current === promise) probePromiseRef.current = null;
+      });
+    probePromiseRef.current = promise;
+    return promise;
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void runRegionProbe();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      regionPreference !== "auto" &&
+      regionProbeStatus?.config_version &&
+      !regionProbeStatus.available_regions.some(
+        (region) => region.region_id === regionPreference,
+      )
+    ) {
+      setRegionPreference("auto");
+      saveRegionPreference("auto", null);
+      onUpdate({ region_preference: "auto" });
+    }
+  }, [regionPreference, regionProbeStatus]);
 
   useEffect(() => {
     const name = username.trim().toLowerCase();
@@ -171,8 +278,19 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
 
     setPhase("registering");
     try {
+      let selectedRegion: string | null;
+      let effectiveProbeStatus = regionProbeStatus;
+      if (registrationRegionRef.current?.name === normalizedName) {
+        selectedRegion = registrationRegionRef.current.region;
+      } else if (regionPreference !== "auto") {
+        selectedRegion = regionPreference;
+      } else {
+        effectiveProbeStatus = await runRegionProbe();
+        selectedRegion = effectiveProbeStatus.region;
+      }
       const pwdHash = await buckyos.hashPassword(normalizedName, password);
       const ownerDocument = buildWebOwnerDocument(normalizedName, material);
+      registrationRegionRef.current = { name: normalizedName, region: selectedRegion };
       const result = await registerWebOwner({
         name: normalizedName,
         email: email.trim(),
@@ -180,6 +298,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
         activeCode: activeCode.trim(),
         ownerDocument,
         evmAddress: material.evm_address,
+        region: selectedRegion,
       });
       onUpdate({
         sn_user_name: normalizedName,
@@ -191,6 +310,9 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
         evm_address: material.evm_address,
         web_owner_material: material,
         enabled_features: resolveEnabledFeatures(activeCode, wizardData.enabled_features),
+        region_preference: regionPreference,
+        region_probe_status: effectiveProbeStatus,
+        selected_region: selectedRegion,
       });
       setPassword("");
       setPasswordConfirm("");
@@ -222,6 +344,13 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
   if (phase === "complete") {
     return (
       <Stack spacing={3}>
+        <RegionProbePanel
+          preference={regionPreference}
+          status={regionProbeStatus}
+          locked
+          onPreferenceChange={() => undefined}
+          onRetry={() => undefined}
+        />
         <Alert severity="success" icon={<CheckCircleRounded />}>
           {t("owner_registration_complete", "OwnerDocument and BNS name are registered.")}
         </Alert>
@@ -234,6 +363,20 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
 
   return (
     <Stack spacing={3}>
+      <RegionProbePanel
+        preference={regionPreference}
+        status={regionProbeStatus}
+        locked={
+          phase === "registering" ||
+          registrationRegionRef.current?.name === username.trim().toLowerCase()
+        }
+        onPreferenceChange={(preference) => {
+          setRegionPreference(preference);
+          saveRegionPreference(preference, regionProbeStatus?.config_version || null);
+          onUpdate({ region_preference: preference });
+        }}
+        onRetry={() => void runRegionProbe(true)}
+      />
       <Alert severity="warning">
         {t(
           "mnemonic_backup_warning",

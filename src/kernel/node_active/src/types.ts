@@ -55,6 +55,35 @@ export type EnabledFeatures = {
   llm_router: boolean;
 };
 
+export type RegionProbePhase = "idle" | "running" | "completed" | "unavailable";
+export type RegionSelectionSource = "probe" | "cache" | "none";
+export type RegionConfidence = "high" | "low" | "none";
+
+export interface AvailableRegion {
+  region_id: string;
+  priority: number;
+}
+
+export interface RegionMeasurement {
+  region_id: string;
+  priority: number;
+  score_ms: number | null;
+  valid_urls: number;
+  total_urls: number;
+}
+
+export interface RegionProbeStatus {
+  phase: RegionProbePhase;
+  region: string | null;
+  source: RegionSelectionSource;
+  config_version: string | null;
+  confidence: RegionConfidence;
+  measured_at: number | null;
+  expires_at: number | null;
+  available_regions: AvailableRegion[];
+  regions: RegionMeasurement[];
+}
+
 export interface WebOwnerMaterial {
   mnemonic_words: string[];
   owner_public_jwk: Ed25519Jwk;
@@ -125,6 +154,9 @@ export type ActiveWizzardData = {
   sn_access_token: string | null;
   sn_refresh_token: string | null;
   enabled_features: EnabledFeatures;
+  region_preference: "auto" | string;
+  region_probe_status: RegionProbeStatus | null;
+  selected_region: string | null;
   admin_password_hash: string;
   friend_passcode: string;
   enable_guest_access: boolean;

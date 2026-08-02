@@ -32,6 +32,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::region_probe::RegionProbeController;
 use crate::sn_zone_info::save_sn_zone_info;
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
@@ -174,6 +175,19 @@ pub struct GenerateDeviceKeyPairReq {}
 impl_from_json!(GenerateDeviceKeyPairReq);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartRegionProbeReq {
+    #[serde(default)]
+    pub force: bool,
+}
+impl_from_json!(StartRegionProbeReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetRegionProbeStatusReq {}
+impl_from_json!(GetRegionProbeStatusReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceKeyPair {
     pub public_key: Value,
     pub private_key: String,
@@ -253,13 +267,19 @@ pub struct CommitActiveResp {
 struct ActiveServer {
     device_mini_info: DeviceMiniInfo,
     config: ActiveServiceConfig,
+    region_probe: RegionProbeController,
 }
 
 impl ActiveServer {
     fn new(config: ActiveServiceConfig) -> Self {
+        let sn_url = format!(
+            "{}://sn.{}/kapi/sn",
+            config.http_schema, config.sn_base_host
+        );
         Self {
             device_mini_info: DeviceMiniInfo::default(),
             config,
+            region_probe: RegionProbeController::new(sn_url),
         }
     }
 
@@ -1402,6 +1422,14 @@ impl RPCHandler for ActiveServer {
                     seq,
                 )
             }
+            "start_region_probe" => {
+                let params = StartRegionProbeReq::from_json(req.params)?;
+                rpc_success(self.region_probe.start(params.force).await, seq)
+            }
+            "get_region_probe_status" => {
+                GetRegionProbeStatusReq::from_json(req.params)?;
+                rpc_success(self.region_probe.status().await, seq)
+            }
             "prepare_active_documents" => {
                 let params = PrepareActiveDocumentsReq::from_json(req.params)?;
                 rpc_success(self.prepare_active_documents(params).await?, seq)
@@ -1537,7 +1565,12 @@ mod tests {
     fn every_request_struct_has_strict_parsing() {
         assert!(GenerateWebOwnerMaterialReq::from_json(json!({})).is_ok());
         assert!(GenerateDeviceKeyPairReq::from_json(json!({})).is_ok());
+        assert!(StartRegionProbeReq::from_json(json!({})).is_ok());
+        assert!(StartRegionProbeReq::from_json(json!({"force": true})).is_ok());
+        assert!(GetRegionProbeStatusReq::from_json(json!({})).is_ok());
         assert!(GenerateWebOwnerMaterialReq::from_json(json!({"extra": true})).is_err());
+        assert!(StartRegionProbeReq::from_json(json!({"extra": true})).is_err());
+        assert!(GetRegionProbeStatusReq::from_json(json!({"extra": true})).is_err());
         assert!(PrepareActiveDocumentsReq::from_json(json!({})).is_err());
         assert!(AssembleZoneDocumentReq::from_json(json!({})).is_err());
         assert!(SignWebActiveDocumentsReq::from_json(json!({})).is_err());

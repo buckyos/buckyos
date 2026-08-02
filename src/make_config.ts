@@ -939,12 +939,20 @@ export async function makeConfigByGroupName(
   if (groupName === "nightly" || groupName === "release") {
     const targetDir = targetRoot ?? getBuckyosRoot();
     const envHosts = groupName === "nightly"
-      ? { snBaseHost: "buckyos.io", bnsHost: "bns.buckyos.io" }
-      : { snBaseHost: "buckyos.ai", bnsHost: "bns.buckyos.ai" };
+      ? {
+        web3BridgeHost: "web3.buckyos.io",
+        snBaseHost: "buckyos.io",
+        bnsHost: "bns.buckyos.io",
+      }
+      : {
+        web3BridgeHost: "web3.buckyos.ai",
+        snBaseHost: "buckyos.ai",
+        bnsHost: "bns.buckyos.ai",
+      };
     console.log(`${groupName} mode, write basic configs to ${targetDir}`);
     makeGlobalEnvConfig(
       targetDir,
-      "web3.buckyos.ai",
+      envHosts.web3BridgeHost,
       envHosts.bnsHost,
       DEFAULT_TRUST_DID,
       true,
