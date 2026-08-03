@@ -70,11 +70,10 @@ OwnerDocument 不是四份激活签名文档之一。传统 Web 注册时，Owne
 
 - `boot_jwt = <ZoneBootDocument JWT>`；
 - `devices["ood1"] = <DeviceDocument JSON payload>`；
-- `devices["ood1"].device_mini_document_jwt = <DeviceMiniDocument JWT>`；
 - `mini_device_jwts["ood1"] = <DeviceMiniDocument JWT>`；
 - `oods`、`sn`、owner、zone DID、gateway 信息与三个子文档一致。
 
-`DeviceDocument JWT` 仍作为独立签名产物和本地 `device_doc.jwt` 保存；`ZoneDocument.devices` 内放规范的 DeviceDocument JSON payload，不另造 `device_doc_jwt` 私有字段。
+`DeviceDocument JWT` 作为独立签名产物和本地 `device_doc.jwt` 保存，也是 DeviceDocument revision/hash 比较时的唯一表示；Zone Resolver 必须从 `devices/<device_name>/doc` 原样返回该 JWT，不能把 `ZoneDocument.devices` 内的 JSON 投影当成同一 revision。`DeviceMiniDocument JWT` 只进入 `mini_device_jwts` 和独立的 `device_mini_doc.jwt`，不得写入或替代 DeviceDocument。
 
 ### 1.3 激活从 bind 改为 publish document
 
@@ -212,7 +211,6 @@ interface SnBnsPublishDocumentReq {
 - [x] 计算幂等 payload hash 时包含 document 原文；同 request id 不同 JWT 必须明确失败。
 - [x] SN resolver 读取 canonical `name-lib::ZoneDocument` 时支持：
   - `devices[*].id`；
-  - `devices[*].device_mini_document_jwt`；
   - `mini_device_jwts[device_name]`；
   - 现有 `mini_config_jwt` 兼容只留在 cyfs-gateway 读侧，本任务的写侧使用 canonical 字段。
 - [ ] 增加 E2E：SN proxy 发布 ZoneDocument JWT → bns-indexer 投影 → resolver 得到 `boot_jwt`、gateway device DID、mini JWT → device token 可被权威锚定。（待真实 SN/BNS DV 环境验证）

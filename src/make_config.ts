@@ -525,6 +525,7 @@ function writeLocalDeviceIdentityFiles(
   deviceConfig.net_id = params.netid === "lan" ? "nat" : params.netid;
   deviceConfig.rtcp_port = params.rtcp_port;
   delete deviceConfig.support_container;
+  delete deviceConfig.device_mini_document_jwt;
   deviceConfig.iat = documentIat;
   deviceConfig.exp = documentExp;
   deviceConfig.version_seq = 0;
@@ -552,10 +553,7 @@ function writeLocalDeviceIdentityFiles(
   );
   zoneDocument.boot_jwt = bootDocumentJwt;
   zoneDocument.devices = {
-    [deviceName]: {
-      ...structuredClone(deviceConfig),
-      device_mini_document_jwt: deviceMiniDocJwt,
-    },
+    [deviceName]: structuredClone(deviceConfig),
   };
   zoneDocument.mini_device_jwts = {
     [deviceName]: deviceMiniDocJwt,

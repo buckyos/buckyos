@@ -238,8 +238,9 @@ impl ZoneDidResolver {
         }))
     }
 
-    // did:web:<short>.<zone_host> / 裸短名 → zone 命名空间内；zone 自身两种写法
-    //（zone did / zone hostname）→ ZoneItself；其余是 zone 外名字。
+    // 名字类 DID 的直接 child / did:web:<short>.<zone_host> / 裸短名 → zone
+    // 命名空间内；zone 自身两种写法（zone did / zone hostname）→ ZoneItself；
+    // 其余是 zone 外名字。
     fn classify(&self, zone: &ZoneIdentity, input: &str) -> Result<Target, String> {
         if !DID::is_did(input) {
             return Ok(Target::InZone(input.to_string()));
@@ -255,6 +256,12 @@ impl ZoneDidResolver {
         }
         if did == zone.zone_doc.id {
             return Ok(Target::ZoneItself);
+        }
+        if did.upper_did().as_ref() == Some(&zone.zone_doc.id) {
+            let short = did.id.split('.').next().unwrap_or_default();
+            if !short.is_empty() {
+                return Ok(Target::InZone(short.to_string()));
+            }
         }
         if did.method == "web" {
             let zone_host = zone.hostname();
@@ -693,7 +700,17 @@ impl ZoneDidResolver {
                 },
             },
             Ok(Target::InZone(short)) => {
-                let canonical = DID::new("web", format!("{}.{}", short, zone.hostname()).as_str());
+                let canonical = match zone_child_did(&zone.zone_doc.id, short.as_str()) {
+                    Ok(did) => did,
+                    Err(error) => {
+                        return ZoneAnswer::BadRequest(format!(
+                            "invalid zone child {} for {}: {}",
+                            short,
+                            zone.zone_doc.id.to_string(),
+                            error
+                        ))
+                    }
+                };
                 match self.cache_lookup(&canonical, doc_type).await {
                     Ok(Some(answer)) => Self::guard_cache_hit(&zone, answer, doc_type),
                     Ok(None) => self.resolve_in_zone(&zone, short.as_str(), doc_type).await,
@@ -1459,6 +1476,21 @@ mod tests {
         }
     }
 
+    fn test_bns_zone_identity() -> ZoneIdentity {
+        let jwk = serde_json::from_str(TEST_JWK).unwrap();
+        let zone_doc = ZoneDocument::new(
+            DID::new("bns", "devtest13"),
+            DID::new("bns", "devtest13"),
+            jwk,
+        );
+        let raw_value = serde_json::to_value(&zone_doc).unwrap();
+        ZoneIdentity {
+            zone_doc,
+            raw: EncodedDocument::JsonLd(raw_value),
+            raw_is_zone_doc: true,
+        }
+    }
+
     fn owner_doc_with_key(jwk_str: &str) -> OwnerDocument {
         let jwk: Jwk = serde_json::from_str(jwk_str).unwrap();
         let mut doc = OwnerDocument::new(
@@ -1499,6 +1531,17 @@ mod tests {
             resolver.classify(&zone, "did:bns:alice"),
             Ok(Target::Foreign(_))
         ));
+
+        let bns_zone = test_bns_zone_identity();
+        assert!(matches!(
+            resolver.classify(&bns_zone, "did:bns:devtest13"),
+            Ok(Target::ZoneItself)
+        ));
+        let Ok(Target::InZone(short)) = resolver.classify(&bns_zone, "did:bns:ood1.devtest13")
+        else {
+            panic!("expected BNS device to be an in-zone child");
+        };
+        assert_eq!(short, "ood1");
     }
 
     #[test]
@@ -1551,6 +1594,7 @@ mod tests {
     #[test]
     fn published_envelope_carries_status_and_anchor() {
         let jwt = "header.payload.sig".to_string();
+        let expected_hash = format!("sha256:{}", ZoneDidResolver::sha256_hex(jwt.as_str()));
         let answer = PublishedAnswer {
             status: PublishedStatus::Active,
             document: Some(EncodedDocument::Jwt(jwt.clone())),
@@ -1574,7 +1618,7 @@ mod tests {
         assert_eq!(buckyos["documentVersion"], 7);
         assert_eq!(buckyos["effectiveOwner"], "did:bns:testowner");
         assert_eq!(buckyos["authoritySeq"], 9);
-        assert!(buckyos["docHash"].as_str().unwrap().starts_with("sha256:"));
+        assert_eq!(buckyos["docHash"], expected_hash);
         assert_eq!(envelope["didDocumentMetadata"]["versionId"], "7");
         assert_eq!(envelope["didDocumentMetadata"]["deactivated"], false);
     }

@@ -732,6 +732,11 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
             names.zone_did, device.zone_did
         )));
     }
+    if device.device_mini_document_jwt.is_some() {
+        return Err(RPCErrors::ReasonError(
+            "DeviceMiniDocument JWT must not be embedded in DeviceDocument".to_string(),
+        ));
+    }
     if device.net_id.as_deref() != Some(topology.net_id.as_str()) {
         return Err(RPCErrors::ReasonError(format!(
             "DeviceDocument net_id mismatch: expected {:?}, got {:?}",
@@ -1027,11 +1032,10 @@ fn assemble_zone_document_internal(
     );
     zone_document.init_by_boot_document(&prepared.boot_document, &boot_document_jwt.to_string());
     zone_document.hostname = prepared.names.access_hostname.clone();
-    let mut embedded_device = prepared.device_document.clone();
-    embedded_device.device_mini_document_jwt = Some(device_mini_document_jwt.to_string());
-    zone_document
-        .devices
-        .insert(embedded_device.name.clone(), embedded_device);
+    zone_document.devices.insert(
+        prepared.device_document.name.clone(),
+        prepared.device_document.clone(),
+    );
     zone_document.mini_device_jwts.insert(
         prepared.device_document.name.clone(),
         device_mini_document_jwt.to_string(),
@@ -1073,15 +1077,29 @@ fn verify_signed_documents(
             "Zone JWT payload differs from assembled ZoneDocument".to_string(),
         ));
     }
-    if signed.zone_document.boot_jwt != signed.boot_document_jwt
-        || signed
-            .zone_document
-            .mini_device_jwts
-            .get(prepared.device_document.name.as_str())
-            != Some(&signed.device_mini_document_jwt)
+    if signed.zone_document.boot_jwt != signed.boot_document_jwt {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument BootDocument JWT mismatch".to_string(),
+        ));
+    }
+    if signed
+        .zone_document
+        .devices
+        .get(prepared.device_document.name.as_str())
+        != Some(&signed.device_document)
     {
         return Err(RPCErrors::ReasonError(
-            "ZoneDocument nested JWT mismatch".to_string(),
+            "ZoneDocument embedded DeviceDocument mismatch".to_string(),
+        ));
+    }
+    if signed
+        .zone_document
+        .mini_device_jwts
+        .get(prepared.device_document.name.as_str())
+        != Some(&signed.device_mini_document_jwt)
+    {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument DeviceMiniDocument JWT mismatch".to_string(),
         ));
     }
     Ok(())
@@ -1623,6 +1641,23 @@ mod tests {
             .unwrap();
         verify_signed_documents(&prepared, &signed).unwrap();
         assert_eq!(signed.zone_document.boot_jwt, signed.boot_document_jwt);
+        assert_eq!(
+            signed.zone_document.devices.get("ood1"),
+            Some(&signed.device_document)
+        );
+        assert!(
+            signed
+                .zone_document
+                .devices
+                .get("ood1")
+                .unwrap()
+                .device_mini_document_jwt
+                .is_none()
+        );
+        assert_eq!(
+            signed.zone_document.mini_device_jwts.get("ood1"),
+            Some(&signed.device_mini_document_jwt)
+        );
         assert!(signed.zone_document_jwt.len() < MAX_INLINE_DOCUMENT);
 
         let mut commit_req = CommitActiveReq {
@@ -1711,6 +1746,9 @@ mod tests {
             .await
             .unwrap();
         validate_prepared_relationships(&prepared).unwrap();
+        prepared.device_document.device_mini_document_jwt = Some("mini.jwt.value".to_string());
+        assert!(validate_prepared_relationships(&prepared).is_err());
+        prepared.device_document.device_mini_document_jwt = None;
         prepared.topology.net_id = "wan".to_string();
         prepared.topology.uses_sn_relay = false;
         assert!(validate_prepared_relationships(&prepared).is_err());
