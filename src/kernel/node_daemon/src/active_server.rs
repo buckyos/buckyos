@@ -550,6 +550,38 @@ impl ActiveServer {
             .await?;
         }
 
+        let device_doc_type = req.prepared.device_document.name.as_str();
+        let device_jwt = req.signed_documents.device_document_jwt.as_str();
+        let device_request_id = content_request_id(
+            "device",
+            req.prepared.names.owner_name.as_str(),
+            device_jwt.as_bytes(),
+        );
+        if !projection_matches_bytes(
+            &bns_client,
+            req.prepared.names.bns_publish_name.as_str(),
+            device_doc_type,
+            device_jwt.as_bytes(),
+        )
+        .await?
+        {
+            sn_client
+                .publish_document(SnBnsPublishDocumentReq {
+                    name: req.prepared.names.bns_publish_name.clone(),
+                    doc_type: device_doc_type.to_string(),
+                    document: SnBnsPublishDocumentContent::Jwt(device_jwt.to_string()),
+                    request_id: Some(device_request_id),
+                })
+                .await?;
+            wait_for_bytes_projection(
+                &bns_client,
+                req.prepared.names.bns_publish_name.as_str(),
+                device_doc_type,
+                device_jwt.as_bytes(),
+            )
+            .await?;
+        }
+
         let device_key_did = device_key_did_from_doc(&req.prepared.device_document)?;
         sn_client
             .register_device_online(build_sn_device_online_report(

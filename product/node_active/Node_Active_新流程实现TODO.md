@@ -73,7 +73,7 @@ OwnerDocument 不是四份激活签名文档之一。传统 Web 注册时，Owne
 - `mini_device_jwts["ood1"] = <DeviceMiniDocument JWT>`；
 - `oods`、`sn`、owner、zone DID、gateway 信息与三个子文档一致。
 
-`DeviceDocument JWT` 作为独立签名产物和本地 `device_doc.jwt` 保存，也是 DeviceDocument revision/hash 比较时的唯一表示；Zone Resolver 必须从 `devices/<device_name>/doc` 原样返回该 JWT，不能把 `ZoneDocument.devices` 内的 JSON 投影当成同一 revision。`DeviceMiniDocument JWT` 只进入 `mini_device_jwts` 和独立的 `device_mini_doc.jwt`，不得写入或替代 DeviceDocument。
+`DeviceDocument JWT` 作为独立签名产物和本地 `device_doc.jwt` 保存，也是 DeviceDocument revision/hash 比较时的唯一表示；本地 system-config 的 `devices/<device_name>/doc` 和 SN/BNS 的 `(name=<owner_name>, doc_type=<device_name>)` 都必须原样保存该 JWT。SN 解析 `did:bns:<device_name>.<owner>?type=device` 时也必须原样返回它，不能把 `ZoneDocument.devices` 内的 JSON 投影当成同一 revision。`DeviceMiniDocument JWT` 只进入 `mini_device_jwts` 和独立的 `device_mini_doc.jwt`，不得写入或替代 DeviceDocument。
 
 ### 1.3 激活从 bind 改为 publish document
 
@@ -81,6 +81,7 @@ OwnerDocument 不是四份激活签名文档之一。传统 Web 注册时，Owne
 - 自有域名 Zone：`zone_did = did:web:<user-domain>`，Owner 与 Zone 不同名。必须先完成 SN `domain.bind` 的 PKX proof，再把 Zone DID 写入 OwnerDocument 的 `binded_zone_list`/default zone 并发布更新后的 `owner` document，最后发布 `zone` document。
 - BNS 发布键始终是 SN token 所属的 owner BNS name，即 `name = owner_document.name`。即使 Zone DID 是 `did:web:<domain>`，也不能把自有域名作为 `bns.publish_document.name`，否则会触发 SN 的跨用户限制。
 - 发布 `zone` document 的内容是签名后的 ZoneDocument JWT 原文，不能退化为当前 `active_server.rs::bns_zone_document()` 拼出的无签名 JSON。
+- 发布完 `zone` 后，使用 `doc_type=<device_name>` 另行发布 DeviceDocument JWT 原文；`device_mini_doc` 不能占用这个文档槽位。
 
 ### 1.4 user domain 改成 TXT proof 在前、NS 委派在后
 
@@ -445,14 +446,17 @@ type DomainBindingState =
    - 等待 BNS 读回相同 owner doc 后再继续。
 2. `bns.publish_document(name=owner_name, doc_type=zone, document=<ZoneDocument JWT string>)`。
 3. 等待 BNS 读回逐字节相同的 ZoneDocument JWT。
-4. 调用 `device.register` 写初始在线态。
-5. 保存本地身份、文档和 start config。
-6. 2 秒后退出，让 supervisor 正常拉起。
+4. `bns.publish_document(name=owner_name, doc_type=<device_name>, document=<DeviceDocument JWT string>)`。
+5. 等待 BNS 读回逐字节相同的 DeviceDocument JWT。
+6. 调用 `device.register` 写初始在线态。
+7. 保存本地身份、文档和 start config。
+8. 2 秒后退出，让 supervisor 正常拉起。
 
 ### 9.2 幂等与最终一致性
 
 - [x] owner request id 使用 `node-active:owner:<owner-name>:<sha256(canonical-owner-json)>`。
 - [x] zone request id 使用 `node-active:zone:<owner-name>:<sha256(zone-jwt)>`。
+- [x] device request id 使用 `node-active:device:<owner-name>:<sha256(device-jwt)>`。
 - [x] 不用固定 request id 覆盖变更后的 gateway/domain 内容。
 - [x] SN 返回 `status=submitted` 只表示已投递，不等于成功；通过 `bns.BnsClient`/Rust `BnsIndexerClient` 轮询 document version 和原文。
 - [x] 轮询使用有限 deadline、指数或有上限的退避、明确进度状态；禁止固定 sleep 后假定成功。
@@ -488,6 +492,7 @@ type DomainBindingState =
 | `mnemonic_words` | Web 本机生成 | 仅用于备份确认和签名时重新派生 | 只在内存和一次本地 RPC中存在 |
 | `owner_public_key` | OwnerDocument default key | JWT 验签、`node_identity.owner_public_key` | 不再单独由 UI输入 |
 | `zone_document_jwt` | 四文档签名阶段 | `bns.publish_document(doc_type=zone)`、本地 cache | BNS 原文必须保留 |
+| `device_document_jwt` | 四文档签名阶段 | `bns.publish_document(doc_type=<device_name>)`、`device_doc.jwt`、system-config | 各解析路径必须保留同一 JWT 原文 |
 | `sn_access_token` | register/login/refresh | domain bind、publish、device register | Wizard 内存；不落盘/日志 |
 | `domain PKX challenge` | `domainProofInfo()` | 只展示给用户配置外部 TXT | 不提交回 SN |
 | `NS record` | active config/SN 部署信息 | Success 页面 | 只在激活成功后展示 |
