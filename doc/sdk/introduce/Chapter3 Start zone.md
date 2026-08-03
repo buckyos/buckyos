@@ -78,7 +78,7 @@ let node_identity = NodeIdentityConfig {
 
 - 入口：`boot_resolve_zone_document()`（`src/kernel/node_daemon/src/zone_boot_resolve.rs`）
 - 正常路径：先用默认 policy 调用 `resolve_did(&node_identity.zone_did, Some("zone"))` 获取完整 ZoneDocument；默认 policy 不允许访问 DNS DID resolver。
-- fallback 路径：如果完整 ZoneDocument 拿不到，再调用 `resolve_did_ex(&node_identity.zone_did, Some(DidDocType::Boot), ResolvePolicy::default().with_current_zone(node_identity.zone_did.clone()))` 获取 ZoneBootConfig，并转换成 ZoneDocument。只有这个 current-zone self boot 调用可以启用 DNS TXT 补充源。
+- fallback 路径：如果完整 ZoneDocument 拿不到，则直接查询 DNS TXT 获取 ZoneBootConfig，使用激活时保存在 `node_identity` 中的 owner key 验签，并转换成 ZoneDocument。该 boot fallback 不依赖尚未启动的 Zone HTTPS authority。
 
 ### 3.1. 一个很“实现细节但必须知道”的点：当前是 JSON 而不是 JWT
 

@@ -467,8 +467,8 @@ async function signWalletDocuments(prepared: PreparedActiveDocuments): Promise<{
 }> {
   const first = await walletSign([
     prepared.boot_document as Record<string, unknown>,
-    prepared.device_document as Record<string, unknown>,
     prepared.device_mini_document as Record<string, unknown>,
+    prepared.device_document as Record<string, unknown>,
   ]);
   if (first.signatures.length !== 3 || !first.pwdHash) {
     throw new Error("Wallet did not return three document JWTs and pwd_hash");
@@ -476,8 +476,8 @@ async function signWalletDocuments(prepared: PreparedActiveDocuments): Promise<{
   const zoneDocument = (await activeRpc().call("assemble_zone_document", {
     prepared,
     boot_document_jwt: first.signatures[0],
-    device_document_jwt: first.signatures[1],
-    device_mini_document_jwt: first.signatures[2],
+    device_document_jwt: first.signatures[2],
+    device_mini_document_jwt: first.signatures[1],
   })) as SignedActiveDocuments["zone_document"];
   const second = await walletSign([zoneDocument as Record<string, unknown>]);
   if (second.signatures.length !== 1) {
@@ -492,9 +492,9 @@ async function signWalletDocuments(prepared: PreparedActiveDocuments): Promise<{
       boot_document: prepared.boot_document,
       boot_document_jwt: first.signatures[0],
       device_document: prepared.device_document,
-      device_document_jwt: first.signatures[1],
+      device_document_jwt: first.signatures[2],
       device_mini_document: prepared.device_mini_document,
-      device_mini_document_jwt: first.signatures[2],
+      device_mini_document_jwt: first.signatures[1],
       zone_document: zoneDocument,
       zone_document_jwt: second.signatures[0],
     },

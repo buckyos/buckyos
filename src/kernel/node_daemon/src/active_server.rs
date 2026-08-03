@@ -321,8 +321,8 @@ impl ActiveServer {
         validate_ed25519_jwk(&device_public_key, "device public key")?;
 
         let boot_iat = buckyos_get_unix_timestamp();
-        let device_iat = next_document_iat("BootDocument", boot_iat)?;
-        let device_mini_iat = next_document_iat("DeviceDocument", device_iat)?;
+        let device_mini_iat = next_document_iat("BootDocument", boot_iat)?;
+        let device_iat = next_document_iat("DeviceMiniDocument", device_mini_iat)?;
         let exp = boot_iat + DEFAULT_EXPIRE_TIME;
         let ood_net_id = if req.topology.net_id == "nat" {
             None
@@ -429,17 +429,17 @@ impl ActiveServer {
             .encode(Some(&signing_key))
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
             .to_string();
+        let device_mini_document_jwt = req
+            .prepared
+            .device_mini_document
+            .to_jwt(&signing_key)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let device_document_jwt = req
             .prepared
             .device_document
             .encode(Some(&signing_key))
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
             .to_string();
-        let device_mini_document_jwt = req
-            .prepared
-            .device_mini_document
-            .to_jwt(&signing_key)
-            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let zone_document = assemble_zone_document_internal(
             &req.prepared,
             boot_document_jwt.as_str(),
@@ -727,12 +727,12 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
         "DeviceMiniDocument",
         &prepared.device_mini_document.extra_info,
     )?;
-    if device.iat != next_document_iat("BootDocument", boot_iat)?
-        || device_mini_iat != next_document_iat("DeviceDocument", device.iat)?
+    if device_mini_iat != next_document_iat("BootDocument", boot_iat)?
+        || device.iat != next_document_iat("DeviceMiniDocument", device_mini_iat)?
     {
         return Err(RPCErrors::ReasonError(format!(
-            "active document iat order mismatch: boot {}, device {}, device mini {}",
-            boot_iat, device.iat, device_mini_iat
+            "active document iat order mismatch: boot {}, device mini {}, device {}",
+            boot_iat, device_mini_iat, device.iat
         )));
     }
     let expected_ood = OODDescriptionString::new(
@@ -1100,13 +1100,7 @@ fn assemble_zone_document_internal(
         owner_jwk,
     );
     zone_document.init_by_boot_document(&prepared.boot_document, &boot_document_jwt.to_string());
-    zone_document.iat = next_document_iat(
-        "DeviceMiniDocument",
-        extra_document_iat(
-            "DeviceMiniDocument",
-            &prepared.device_mini_document.extra_info,
-        )?,
-    )?;
+    zone_document.iat = next_document_iat("DeviceDocument", prepared.device_document.iat)?;
     zone_document.hostname = prepared.names.access_hostname.clone();
     zone_document.devices.insert(
         prepared.device_document.name.clone(),
@@ -1713,8 +1707,8 @@ mod tests {
             .unwrap()
             .as_u64()
             .unwrap();
-        assert_eq!(prepared.device_document.iat, boot_iat + 1);
-        assert_eq!(device_mini_iat, prepared.device_document.iat + 1);
+        assert_eq!(device_mini_iat, boot_iat + 1);
+        assert_eq!(prepared.device_document.iat, device_mini_iat + 1);
         let signed = server
             .sign_web_active_documents(SignWebActiveDocumentsReq {
                 mnemonic_words: mnemonic
@@ -1725,7 +1719,7 @@ mod tests {
             })
             .unwrap();
         verify_signed_documents(&prepared, &signed).unwrap();
-        assert_eq!(signed.zone_document.iat, device_mini_iat + 1);
+        assert_eq!(signed.zone_document.iat, prepared.device_document.iat + 1);
         assert_eq!(signed.zone_document.boot_jwt, signed.boot_document_jwt);
         assert_eq!(
             signed.zone_document.devices.get("ood1"),

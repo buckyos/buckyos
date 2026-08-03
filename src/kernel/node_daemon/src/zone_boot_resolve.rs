@@ -9,9 +9,8 @@
 //    node_identity（§12 / §13），更新 Owner Document 必须走维护流程（§15）。
 //
 // name-client 重构后的配套（buckyos-base doc/已有did-resolver介绍.md）：
-//  - dns_resolver 是 current-zone boot 专用补充源，普通 resolve 默认跳过；
-//  - Boot 通过 ResolvePolicy::with_current_zone 显式允许当前 Zone 的 DNS TXT
-//    候选进入 resolve_did 管线，候选仍须通过本地 Owner Document 验签。
+//  - dns_resolver 已降级为补充源，普通 resolve 默认跳过；
+//  - Boot 直接查询 DNS TXT，并用 node_identity 里的 owner key 在本地闭环验签。
 //
 // 信任纪律：来自网络的 candidate 只接受 Jwt 形态且必须用本地 owner key 验签通过；
 // JsonLd 形态结构上不携带签名，在 Boot 阶段一律拒绝（Boot 的信任锚是激活时建立
@@ -28,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use buckyos_api::LocalNodeIdentityConfig;
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
-use name_client::{resolve_did, resolve_did_ex, ResolvePolicy, GLOBAL_NAME_CLIENT};
+use name_client::{resolve_did, DnsProvider, NsProvider, GLOBAL_NAME_CLIENT};
 use name_lib::{
     DIDDocumentTrait, DidDocType, EncodedDocument, OwnerDocument, ZoneBootDocument, ZoneDocument,
     DID,
@@ -405,11 +404,25 @@ where
     }
 }
 
+async fn discover_zone_boot_from_dns(
+    dns_provider: &dyn NsProvider,
+    zone_did: &DID,
+    node_identity: &LocalNodeIdentityConfig,
+    owner_public_key: &DecodingKey,
+) -> Result<ZoneDocument, String> {
+    discover_step(
+        "dns_direct(boot)",
+        dns_provider.query_did(zone_did, Some(DidDocType::Boot), None),
+    )
+    .await
+    .and_then(|doc| decode_signed_zone_boot_document(&doc, node_identity, owner_public_key))
+}
+
 // 发现一个可验证的 Zone Document candidate。两条路径按顺序，first-win：
 //  1. resolve_did 管线取 Zone Document（did:bns 合约、Warm Restart 时仍在线的
 //     权威发布面、did cache 都可能给出回答）；
-//  2. 带 current-zone policy 的 resolve_did 管线取 Zone Boot Document，允许
-//     dns_resolver 作为当前 Zone 自举专用补充源。
+//  2. 直查 dns_resolver 取 TXT 引导文档，用本地 owner key 验签，不依赖
+//     尚未启动的 Zone HTTPS authority。
 // 所有路径的产物都必须通过"Jwt + 本地 owner key 验签 + Root Trust 锚定"。
 async fn discover_zone_document(
     node_identity: &LocalNodeIdentityConfig,
@@ -435,17 +448,12 @@ async fn discover_zone_document(
         }
     }
 
-    let policy = ResolvePolicy::default().with_current_zone(zone_did.clone());
-    match discover_step("resolve_did_ex(boot,current_zone)", async {
-        resolve_did_ex(zone_did, Some(DidDocType::Boot), policy)
-            .await
-            .map(|resolved| resolved.document)
-    })
-    .await
-    .and_then(|doc| decode_signed_zone_boot_document(&doc, node_identity, owner_public_key))
+    let dns_provider = DnsProvider::new(None);
+    match discover_zone_boot_from_dns(&dns_provider, zone_did, node_identity, owner_public_key)
+        .await
     {
         Ok(zone_document) => {
-            info!("boot discover: got zone boot document via current-zone resolve_did pipeline");
+            info!("boot discover: got zone boot document via direct dns query (local-verified)");
             return Ok(zone_document);
         }
         Err(err) => {
@@ -648,6 +656,7 @@ pub async fn register_zone_resolver_cache(zone_did: &DID) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::EncodingKey;
     use name_lib::OODDescriptionString;
 
     const TEST_JWK: &str =
@@ -655,6 +664,82 @@ mod tests {
 
     fn test_jwk() -> Jwk {
         serde_json::from_str(TEST_JWK).unwrap()
+    }
+
+    struct StaticBootProvider {
+        document: EncodedDocument,
+    }
+
+    #[async_trait::async_trait]
+    impl NsProvider for StaticBootProvider {
+        fn get_id(&self) -> String {
+            "static-boot-provider".to_string()
+        }
+
+        async fn query(
+            &self,
+            name: &str,
+            _record_type: Option<name_client::RecordType>,
+            _from_ip: Option<std::net::IpAddr>,
+        ) -> name_lib::NSResult<name_client::NameInfo> {
+            Err(name_lib::NSError::NotFound(name.to_string()))
+        }
+
+        async fn query_did(
+            &self,
+            _did: &DID,
+            _doc_type: Option<DidDocType>,
+            _from_ip: Option<std::net::IpAddr>,
+        ) -> name_lib::NSResult<EncodedDocument> {
+            Ok(self.document.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_dns_bootstrap_does_not_require_web_authority() {
+        let private_key_pem = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIBwApVoYjauZFuKMBRe02wKlKm2B6a1F0/WIPMqDaw5F
+-----END PRIVATE KEY-----"#;
+        let owner_jwk: Jwk = serde_json::from_str(
+            r#"{"kty":"OKP","crv":"Ed25519","x":"qmtOLLWpZeBMzt97lpfj2MxZGWn3QfuDB7Q4uaP3Eok"}"#,
+        )
+        .unwrap();
+        let node_identity = LocalNodeIdentityConfig::new(
+            DID::new("web", "test.buckyos.io"),
+            DID::new("bns", "testowner"),
+            owner_jwk.clone(),
+            "ood1".to_string(),
+            DID::new("web", "ood1.test.buckyos.io"),
+            0,
+        );
+        let boot_document = ZoneBootDocument {
+            id: None,
+            oods: vec!["ood1@wan".parse().unwrap()],
+            sn: None,
+            exp: buckyos_get_unix_timestamp() + 3600,
+            owner: None,
+            owner_key: None,
+            extra_info: Default::default(),
+        };
+        let provider = StaticBootProvider {
+            document: boot_document
+                .encode(Some(
+                    &EncodingKey::from_ed_pem(private_key_pem.as_bytes()).unwrap(),
+                ))
+                .unwrap(),
+        };
+        let resolved = discover_zone_boot_from_dns(
+            &provider,
+            &node_identity.zone_did,
+            &node_identity,
+            &DecodingKey::from_jwk(&owner_jwk).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved.id, node_identity.zone_did);
+        assert_eq!(resolved.owner, node_identity.owner_did);
+        assert_eq!(resolved.oods.len(), 1);
     }
 
     fn make_zone_document(iat: u64, oods: &[&str]) -> ZoneDocument {
