@@ -320,8 +320,10 @@ impl ActiveServer {
             .map_err(|error| RPCErrors::ParseRequestError(error.to_string()))?;
         validate_ed25519_jwk(&device_public_key, "device public key")?;
 
-        let now = buckyos_get_unix_timestamp();
-        let exp = now + DEFAULT_EXPIRE_TIME;
+        let boot_iat = buckyos_get_unix_timestamp();
+        let device_iat = next_document_iat("BootDocument", boot_iat)?;
+        let device_mini_iat = next_document_iat("DeviceDocument", device_iat)?;
+        let exp = boot_iat + DEFAULT_EXPIRE_TIME;
         let ood_net_id = if req.topology.net_id == "nat" {
             None
         } else {
@@ -341,7 +343,7 @@ impl ActiveServer {
             exp,
             owner: None,
             owner_key: None,
-            extra_info: HashMap::new(),
+            extra_info: HashMap::from([("iat".to_string(), json!(boot_iat))]),
         };
 
         let device_did =
@@ -359,9 +361,12 @@ impl ActiveServer {
         } else {
             None
         };
-        device_document.iat = now;
+        device_document.iat = device_iat;
         device_document.exp = exp;
-        let device_mini_document = DeviceMiniDocument::new_by_device_document(&device_document);
+        let mut device_mini_document = DeviceMiniDocument::new_by_device_document(&device_document);
+        device_mini_document
+            .extra_info
+            .insert("iat".to_string(), json!(device_mini_iat));
         let mut device_info = DeviceInfo::from_device_doc(&device_document);
         device_info
             .auto_fill_by_system_info()
@@ -717,6 +722,19 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
             boot.exp, device.exp
         )));
     }
+    let boot_iat = extra_document_iat("BootDocument", &boot.extra_info)?;
+    let device_mini_iat = extra_document_iat(
+        "DeviceMiniDocument",
+        &prepared.device_mini_document.extra_info,
+    )?;
+    if device.iat != next_document_iat("BootDocument", boot_iat)?
+        || device_mini_iat != next_document_iat("DeviceDocument", device.iat)?
+    {
+        return Err(RPCErrors::ReasonError(format!(
+            "active document iat order mismatch: boot {}, device {}, device mini {}",
+            boot_iat, device.iat, device_mini_iat
+        )));
+    }
     let expected_ood = OODDescriptionString::new(
         "ood1".to_string(),
         DeviceNodeType::OOD,
@@ -793,7 +811,11 @@ fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result
             expected_ddns_sn_url, device.ddns_sn_url
         )));
     }
-    if prepared.device_mini_document != DeviceMiniDocument::new_by_device_document(device) {
+    let mut expected_device_mini = DeviceMiniDocument::new_by_device_document(device);
+    expected_device_mini
+        .extra_info
+        .insert("iat".to_string(), json!(device_mini_iat));
+    if prepared.device_mini_document != expected_device_mini {
         return Err(RPCErrors::ReasonError(
             "DeviceMiniDocument differs from DeviceDocument".to_string(),
         ));
@@ -831,6 +853,21 @@ fn sn_host_from_url(sn_url: &str) -> Result<String, RPCErrors> {
         .ok()
         .and_then(|url| url.host_str().map(ToString::to_string))
         .ok_or_else(|| RPCErrors::ReasonError("invalid SN URL".to_string()))
+}
+
+fn extra_document_iat(
+    doc_type: &str,
+    extra_info: &HashMap<String, Value>,
+) -> Result<u64, RPCErrors> {
+    extra_info
+        .get("iat")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{} iat is missing or invalid", doc_type)))
+}
+
+fn next_document_iat(doc_type: &str, iat: u64) -> Result<u64, RPCErrors> {
+    iat.checked_add(1)
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{} iat cannot be incremented", doc_type)))
 }
 
 fn normalize_endpoint(value: &str, label: &str) -> Result<url::Url, RPCErrors> {
@@ -1063,6 +1100,13 @@ fn assemble_zone_document_internal(
         owner_jwk,
     );
     zone_document.init_by_boot_document(&prepared.boot_document, &boot_document_jwt.to_string());
+    zone_document.iat = next_document_iat(
+        "DeviceMiniDocument",
+        extra_document_iat(
+            "DeviceMiniDocument",
+            &prepared.device_mini_document.extra_info,
+        )?,
+    )?;
     zone_document.hostname = prepared.names.access_hostname.clone();
     zone_document.devices.insert(
         prepared.device_document.name.clone(),
@@ -1662,6 +1706,15 @@ mod tests {
         let boot_document = serde_json::to_value(&prepared.boot_document).unwrap();
         assert!(boot_document.get("owner").is_none());
         assert!(boot_document.get("owner_key").is_none());
+        let boot_iat = boot_document.get("iat").unwrap().as_u64().unwrap();
+        let device_mini_iat = serde_json::to_value(&prepared.device_mini_document)
+            .unwrap()
+            .get("iat")
+            .unwrap()
+            .as_u64()
+            .unwrap();
+        assert_eq!(prepared.device_document.iat, boot_iat + 1);
+        assert_eq!(device_mini_iat, prepared.device_document.iat + 1);
         let signed = server
             .sign_web_active_documents(SignWebActiveDocumentsReq {
                 mnemonic_words: mnemonic
@@ -1672,6 +1725,7 @@ mod tests {
             })
             .unwrap();
         verify_signed_documents(&prepared, &signed).unwrap();
+        assert_eq!(signed.zone_document.iat, device_mini_iat + 1);
         assert_eq!(signed.zone_document.boot_jwt, signed.boot_document_jwt);
         assert_eq!(
             signed.zone_document.devices.get("ood1"),
@@ -1762,7 +1816,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_gateway_topology_cannot_change_after_signing() {
+    async fn prepared_documents_cannot_change_after_signing() {
         let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let owner = owner_document(mnemonic);
         let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
@@ -1778,6 +1832,20 @@ mod tests {
             .await
             .unwrap();
         validate_prepared_relationships(&prepared).unwrap();
+        let device_mini_iat = extra_document_iat(
+            "DeviceMiniDocument",
+            &prepared.device_mini_document.extra_info,
+        )
+        .unwrap();
+        prepared
+            .device_mini_document
+            .extra_info
+            .insert("iat".to_string(), json!(prepared.device_document.iat));
+        assert!(validate_prepared_relationships(&prepared).is_err());
+        prepared
+            .device_mini_document
+            .extra_info
+            .insert("iat".to_string(), json!(device_mini_iat));
         prepared.device_document.device_mini_document_jwt = Some("mini.jwt.value".to_string());
         assert!(validate_prepared_relationships(&prepared).is_err());
         prepared.device_document.device_mini_document_jwt = None;
