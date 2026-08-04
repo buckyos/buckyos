@@ -38,7 +38,7 @@ Driver 负责解释“这些模型有什么能力、属于哪个家族、默认�
   - 根据 provider driver 的 metadata，把 provider 返回的模型 id 解析成 `ModelMetadata`。
   - 支持 exact rule、wildcard pattern、defaults、variants。
   - 内置 driver metadata 位于 `src/frame/aicc/driver_metadata/`。
-  - override 路径位于 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/{remote_cache,local,system-config}/`。
+  - 云更新缓存位于 `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`；人工 override 只使用 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/{local,system-config}/`。
 - `model_registry.rs`
   - 接收每个 provider 的 `ProviderInventory`。
   - 建立 exact model 索引。
@@ -156,7 +156,7 @@ exact models[].id
 
 ```text
 builtin
--> remote_cache
+-> latest complete cloud activation
 -> local override
 -> system-config override
 ```
@@ -473,15 +473,15 @@ ModelMetadata {
 - 使用保守的成本、延迟、质量估计；
 - 生成泛化挂载，例如 `llm.chat`、`llm.<driver>`、`llm.<driver>.<model>`。
 
-目标上，如果系统没有某个 driver 的 metadata，可以通过 HTTPS 可信通道从远程 URL 更新，并缓存到：
+系统可以通过 HTTPS/NDN 可信通道从远程 URL 更新 driver metadata。更新器按发布源隔离水位和 activation，缓存到：
 
 ```text
-$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/v1/{objects,activations,observed}/
+$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/{objects,activations,observed}/
 ```
 
 如果仍没有，则使用 conservative fallback。这样系统可用性优先，但不会把未知模型误判成具备高级能力。
 
-这里的信任边界是 HTTPS 远程更新通道。也就是说，远程 driver metadata 不是任意 provider 自称的 metadata，而是 AICC 通过可信 HTTPS 源取得的系统 metadata。Provider 自发现仍只提供模型名和必要 hints，最终能力和挂载语义以 driver metadata resolver 为准。
+这里的信任边界是配置的 HTTPS host 和 NDN PathObject 验证链。远程 driver metadata 不是任意 provider 自称的 metadata，也不能通过手工写入旧的 `etc/.../remote_cache/<driver>.json` 生效。Provider 自发现仍只提供模型名和必要 hints，最终能力和挂载语义以 driver metadata resolver 为准。
 
 ### 5.3 Driver 如何挂载到模型家族目录
 
