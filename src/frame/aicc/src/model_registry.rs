@@ -38,11 +38,14 @@ impl ModelRegistry {
         }
         validate_inventory(&inventory)?;
         let provider_instance_name = inventory.provider_instance_name.clone();
-        if let (Some(current), Some(next_revision)) = (
-            self.inventories.get(provider_instance_name.as_str()),
-            inventory.inventory_revision.as_deref(),
-        ) {
-            if current.inventory_revision.as_deref() == Some(next_revision) {
+        if let Some(current) = self.inventories.get(provider_instance_name.as_str()) {
+            if inventory.driver_metadata_generation < current.driver_metadata_generation {
+                return Ok(false);
+            }
+            if inventory.driver_metadata_generation == current.driver_metadata_generation
+                && inventory.inventory_revision.is_some()
+                && current.inventory_revision == inventory.inventory_revision
+            {
                 return Ok(false);
             }
         }
@@ -489,6 +492,7 @@ mod tests {
             provider_type_revision: None,
             version: None,
             inventory_revision: Some(revision.to_string()),
+            driver_metadata_generation: 0,
             models,
         }
     }
@@ -578,6 +582,38 @@ mod tests {
         assert!(registry
             .exact_candidate("gpt-5.2@openai_primary", &ApiType::Llm)
             .is_some());
+    }
+
+    #[test]
+    fn metadata_generation_replaces_same_inventory_revision() {
+        let mut registry = ModelRegistry::new();
+        let mut first = inventory(
+            "openai_primary",
+            "models-r1",
+            vec![model("openai_primary", "gpt-5.2", "llm.old")],
+        );
+        first.driver_metadata_generation = 1;
+        assert!(registry.apply_inventory_if_changed(first).unwrap());
+
+        let mut updated = inventory(
+            "openai_primary",
+            "models-r1",
+            vec![model("openai_primary", "gpt-5.2", "llm.new")],
+        );
+        updated.driver_metadata_generation = 2;
+        assert!(registry.apply_inventory_if_changed(updated).unwrap());
+        assert!(registry.default_items_for_path("llm.old").is_empty());
+        assert_eq!(registry.default_items_for_path("llm.new").len(), 1);
+
+        let mut stale = inventory(
+            "openai_primary",
+            "models-r2",
+            vec![model("openai_primary", "gpt-5.2", "llm.stale")],
+        );
+        stale.driver_metadata_generation = 1;
+        assert!(!registry.apply_inventory_if_changed(stale).unwrap());
+        assert!(registry.default_items_for_path("llm.stale").is_empty());
+        assert_eq!(registry.default_items_for_path("llm.new").len(), 1);
     }
 
     #[test]

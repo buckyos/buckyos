@@ -6205,6 +6205,7 @@ mod tests {
             provider_type_revision: None,
             version: None,
             inventory_revision: Some("test".to_string()),
+            driver_metadata_generation: 0,
             models: vec![provider_model_metadata(
                 instance.provider_instance_name.as_str(),
                 instance.provider_type.clone(),

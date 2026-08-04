@@ -19,7 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::error::Error as _;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 const FAL_PROVIDER_SETTINGS_KEY: &str = "fal";
@@ -48,7 +48,8 @@ pub struct FalInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct FalProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
+    inventory_requests: Vec<DriverModelResolveRequest>,
     client: Client,
     api_token: String,
     base_url: String,
@@ -124,7 +125,8 @@ impl FalProvider {
 
         Ok(Self {
             instance,
-            inventory,
+            inventory: Arc::new(RwLock::new(inventory)),
+            inventory_requests: requests,
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
@@ -407,7 +409,18 @@ impl FalProvider {
 #[async_trait]
 impl Provider for FalProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                resolve_driver_inventory(
+                    self.instance.provider_instance_name.as_str(),
+                    self.instance.provider_type.clone(),
+                    self.instance.provider_driver.as_str(),
+                    self.inventory_requests.as_slice(),
+                    Some("settings-v1".to_string()),
+                )
+            })
     }
 
     fn legacy_instance(&self) -> Option<&ProviderInstance> {
@@ -429,6 +442,21 @@ impl Provider for FalProvider {
             confidence: 0.5,
             estimated_latency_ms: Some(latency),
         }
+    }
+
+    async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
+        let inventory = resolve_driver_inventory(
+            self.instance.provider_instance_name.as_str(),
+            self.instance.provider_type.clone(),
+            self.instance.provider_driver.as_str(),
+            self.inventory_requests.as_slice(),
+            Some("settings-v1".to_string()),
+        );
+        *self
+            .inventory
+            .write()
+            .map_err(|_| ProviderError::fatal("fal inventory lock poisoned"))? = inventory.clone();
+        Ok(inventory)
     }
 
     async fn start(

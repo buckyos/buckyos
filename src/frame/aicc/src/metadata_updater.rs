@@ -14,6 +14,7 @@ use std::io::Write;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -34,6 +35,13 @@ const MAX_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 static CONFIGURED_SOURCE_KEY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static METADATA_STORE_LOCK: OnceLock<RwLock<()>> = OnceLock::new();
+static DRIVER_METADATA_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn advance_driver_metadata_generation() -> u64 {
+    DRIVER_METADATA_GENERATION
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1)
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct DriverMetadataUpdateSettings {
@@ -93,10 +101,14 @@ pub fn configure_remote_metadata_source(settings: &Value) -> Result<()> {
         .ok()
         .and_then(|settings| settings.as_ref())
         .map(DriverMetadataUpdateSettings::source_key);
-    *CONFIGURED_SOURCE_KEY
+    let mut configured_source = CONFIGURED_SOURCE_KEY
         .get_or_init(|| RwLock::new(None))
         .write()
-        .map_err(|_| anyhow!("configured metadata source lock poisoned"))? = source_key;
+        .map_err(|_| anyhow!("configured metadata source lock poisoned"))?;
+    if *configured_source != source_key {
+        *configured_source = source_key;
+        advance_driver_metadata_generation();
+    }
     parsed.map(|_| ())
 }
 
@@ -304,11 +316,14 @@ impl DriverMetadataUpdater {
                 .get_or_init(|| RwLock::new(()))
                 .write()
                 .map_err(|_| anyhow!("metadata store lock poisoned"))?;
-            self.store.activate(
+            let created = self.store.activate(
                 index.index_revision_seq,
                 manifest_obj_id.to_string().as_str(),
                 manifest.clone(),
             )?;
+            if created {
+                advance_driver_metadata_generation();
+            }
         }
         Ok(DriverMetadataUpdateOutcome::Activated {
             revision_seq: manifest.revision_seq,
@@ -554,7 +569,7 @@ impl DriverMetadataStore {
         index_revision_seq: u64,
         manifest_obj_id: &str,
         manifest: DriverMetadataManifest,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let activation = DriverMetadataActivation {
             format: ACTIVATION_FORMAT.to_string(),
             storage_version: 1,
@@ -574,13 +589,14 @@ impl DriverMetadataStore {
                     if existing.manifest_obj_id == activation.manifest_obj_id
                         && existing.manifest == activation.manifest =>
                 {
-                    return Ok(())
+                    return Ok(false)
                 }
                 Some(_) => bail!("activation revision conflict"),
                 None => std::fs::remove_file(path.as_path())?,
             }
         }
-        atomic_create_json(path.as_path(), &activation)
+        atomic_create_json(path.as_path(), &activation)?;
+        Ok(true)
     }
 
     fn load_latest_activation(&self) -> Option<DriverMetadataActivation> {
@@ -708,20 +724,29 @@ impl DriverMetadataStore {
     }
 }
 
-pub(crate) fn load_active_remote_metadata(provider_driver: &str) -> Option<DriverMetadataDocument> {
-    let source_key = CONFIGURED_SOURCE_KEY
+pub(crate) fn load_active_remote_metadata(
+    provider_driver: &str,
+) -> (Option<DriverMetadataDocument>, u64) {
+    let source_key_guard = match CONFIGURED_SOURCE_KEY
         .get_or_init(|| RwLock::new(None))
         .read()
-        .ok()?
-        .clone()?;
-    let _guard = METADATA_STORE_LOCK
-        .get_or_init(|| RwLock::new(()))
-        .read()
-        .ok()?;
-    load_active_remote_metadata_in(
+    {
+        Ok(guard) => guard,
+        Err(_) => return (None, DRIVER_METADATA_GENERATION.load(Ordering::Acquire)),
+    };
+    let Some(source_key) = source_key_guard.as_ref() else {
+        return (None, DRIVER_METADATA_GENERATION.load(Ordering::Acquire));
+    };
+    let _store_guard = match METADATA_STORE_LOCK.get_or_init(|| RwLock::new(())).read() {
+        Ok(guard) => guard,
+        Err(_) => return (None, DRIVER_METADATA_GENERATION.load(Ordering::Acquire)),
+    };
+    let generation = DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+    let document = load_active_remote_metadata_in(
         source_store_root(source_key.as_str()).as_path(),
         provider_driver,
-    )
+    );
+    (document, generation)
 }
 
 fn load_active_remote_metadata_in(
@@ -1566,6 +1591,28 @@ mod tests {
             }
         });
         assert!(DriverMetadataUpdateSettings::from_aicc_settings(&invalid).is_err());
+    }
+
+    #[test]
+    fn metadata_source_change_advances_generation_once() {
+        let settings = serde_json::json!({
+            "driver_metadata_update": {
+                "enabled": true,
+                "source_url": "https://generation.example/aicc/driver-metadata/index.json",
+                "interval_secs": 3600
+            }
+        });
+        configure_remote_metadata_source(&settings).unwrap();
+        let configured_generation = DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+
+        configure_remote_metadata_source(&settings).unwrap();
+        assert_eq!(
+            DRIVER_METADATA_GENERATION.load(Ordering::Acquire),
+            configured_generation
+        );
+
+        configure_remote_metadata_source(&serde_json::json!({})).unwrap();
+        assert!(DRIVER_METADATA_GENERATION.load(Ordering::Acquire) > configured_generation);
     }
 
     #[test]

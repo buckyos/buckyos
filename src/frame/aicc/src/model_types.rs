@@ -636,6 +636,8 @@ pub struct ProviderInventory {
     pub version: Option<String>,
     #[serde(default)]
     pub inventory_revision: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub driver_metadata_generation: u64,
     #[serde(default)]
     pub models: Vec<ModelMetadata>,
 }

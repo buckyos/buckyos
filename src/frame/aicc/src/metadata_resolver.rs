@@ -247,7 +247,7 @@ pub fn resolve_driver_inventory(
     requests: &[DriverModelResolveRequest],
     inventory_revision: Option<String>,
 ) -> ProviderInventory {
-    let sources = load_driver_metadata_sources(provider_driver);
+    let (sources, driver_metadata_generation) = load_driver_metadata_sources(provider_driver);
     let mut models = Vec::new();
     for request in requests.iter() {
         if let Some(metadata) = resolve_driver_model(
@@ -275,6 +275,7 @@ pub fn resolve_driver_inventory(
         provider_type_revision: None,
         version: None,
         inventory_revision,
+        driver_metadata_generation,
         models,
     }
 }
@@ -420,7 +421,7 @@ fn resolve_driver_model(
     })
 }
 
-fn load_driver_metadata_sources(provider_driver: &str) -> Vec<DriverMetadataSource> {
+fn load_driver_metadata_sources(provider_driver: &str) -> (Vec<DriverMetadataSource>, u64) {
     let mut sources = Vec::new();
     if let Some(document) = load_builtin_driver_metadata(provider_driver) {
         sources.push(DriverMetadataSource {
@@ -429,7 +430,9 @@ fn load_driver_metadata_sources(provider_driver: &str) -> Vec<DriverMetadataSour
         });
     }
     let normalized = normalize_driver(provider_driver);
-    if let Some(document) = crate::metadata_updater::load_active_remote_metadata(&normalized) {
+    let (remote_document, driver_metadata_generation) =
+        crate::metadata_updater::load_active_remote_metadata(&normalized);
+    if let Some(document) = remote_document {
         sources.push(DriverMetadataSource {
             name: "remote_cache_v1".to_string(),
             document,
@@ -453,7 +456,7 @@ fn load_driver_metadata_sources(provider_driver: &str) -> Vec<DriverMetadataSour
             ),
         }
     }
-    sources
+    (sources, driver_metadata_generation)
 }
 
 fn parse_driver_metadata(content: &str) -> Result<DriverMetadataDocument, serde_json::Error> {
@@ -1329,18 +1332,14 @@ mod tests {
         assert_eq!(openai.pricing.input_token_usd, Some(0.000005));
         assert_eq!(openai.pricing.output_token_usd, Some(0.00003));
         assert_eq!(openai.pricing.cache_input_token_usd, Some(0.0000005));
-        assert!(
-            openai
-                .logical_mounts
-                .iter()
-                .any(|mount| mount == "llm.gpt-standard")
-        );
-        assert!(
-            openai
-                .logical_mounts
-                .iter()
-                .any(|mount| mount == "llm.openai.gpt-5-5")
-        );
+        assert!(openai
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "llm.gpt-standard"));
+        assert!(openai
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "llm.openai.gpt-5-5"));
         let reasoning_high = inventory
             .models
             .iter()
@@ -1391,11 +1390,14 @@ mod tests {
         assert!(gpt.capabilities.tool_call);
         assert!(gpt.logical_mounts.iter().any(|mount| mount == "rerank"));
 
-        let sources = load_driver_metadata_sources("openrouter");
+        let (sources, _) = load_driver_metadata_sources("openrouter");
         let mut other_origin = gpt.clone();
         other_origin.provider_model_id = "anthropic/claude-future".to_string();
         other_origin.exact_model = "anthropic/claude-future@openrouter-main".to_string();
-        assert_eq!(expand_model_variants(other_origin, sources.as_slice()).len(), 1);
+        assert_eq!(
+            expand_model_variants(other_origin, sources.as_slice()).len(),
+            1
+        );
 
         let fallback = inventory
             .models

@@ -19,7 +19,7 @@ use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimaxi.com/anthropic/v1";
@@ -45,7 +45,8 @@ pub struct MiniMaxInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct MiniMaxProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
+    inventory_requests: Vec<DriverModelResolveRequest>,
     client: Client,
     api_token: String,
     base_url: String,
@@ -98,7 +99,8 @@ impl MiniMaxProvider {
 
         Ok(Self {
             instance,
-            inventory,
+            inventory: Arc::new(RwLock::new(inventory)),
+            inventory_requests: requests,
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
@@ -313,7 +315,18 @@ impl MiniMaxProvider {
 #[async_trait]
 impl Provider for MiniMaxProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                resolve_driver_inventory(
+                    self.instance.provider_instance_name.as_str(),
+                    self.instance.provider_type.clone(),
+                    self.instance.provider_driver.as_str(),
+                    self.inventory_requests.as_slice(),
+                    Some("settings-v1".to_string()),
+                )
+            })
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -336,6 +349,22 @@ impl Provider for MiniMaxProvider {
             confidence: 0.7,
             estimated_latency_ms: Some(1400),
         }
+    }
+
+    async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
+        let inventory = resolve_driver_inventory(
+            self.instance.provider_instance_name.as_str(),
+            self.instance.provider_type.clone(),
+            self.instance.provider_driver.as_str(),
+            self.inventory_requests.as_slice(),
+            Some("settings-v1".to_string()),
+        );
+        *self
+            .inventory
+            .write()
+            .map_err(|_| ProviderError::fatal("minimax inventory lock poisoned"))? =
+            inventory.clone();
+        Ok(inventory)
     }
 
     async fn start(

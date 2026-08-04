@@ -164,7 +164,10 @@ candidate：已经完整下载并通过 NDN 与 JSON 身份校验的 provider �
 读取端按 revision 从高到低验证 activation 及其全部对象；最新 activation 不完整时回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
 
 activation 提交后不主动重建 provider inventory；新 metadata 在下一次
-`provider.refresh_models`、settings reload 或服务重启构建 inventory 时生效。
+`provider.refresh_models`、settings reload 或服务重启构建 inventory 时生效。activation
+或更新源切换只推进进程内的 `driver_metadata_generation`；重新解析 metadata 后生成的
+inventory 携带该 generation。ModelRegistry 在 generation 提高时必须替换 provider 快照，
+即使 provider 返回的 `inventory_revision` 没有变化；旧 generation 的迟到库存不得覆盖新快照。
 
 连续失败采用带 jitter 的指数退避，默认从 60 秒开始，最大不超过配置的正常更新周期；成功后清零。退避只影响调度，不改变安全校验。
 

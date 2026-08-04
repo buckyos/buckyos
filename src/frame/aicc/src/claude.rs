@@ -405,53 +405,57 @@ impl ClaudeProvider {
         inventory: ProviderInventory,
     ) -> ProviderInventory {
         let version = inventory.version.clone();
-        let models = inventory
-            .models
-            .into_iter()
-            .filter_map(|model| self.normalize_remote_provider_model(model))
+        let inventory_revision = inventory.inventory_revision.clone();
+        let remote_models = inventory.models;
+        let requests = remote_models
+            .iter()
+            .filter_map(|model| {
+                let provider_model_id = model.provider_model_id.trim();
+                if provider_model_id.is_empty() {
+                    return None;
+                }
+                let fallback_api_types = if model.api_types.is_empty() {
+                    vec![ApiType::Llm]
+                } else {
+                    model.api_types.clone()
+                };
+                Some(
+                    DriverModelResolveRequest::new(provider_model_id, fallback_api_types)
+                        .with_cost(model.pricing.estimated_cost_usd)
+                        .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms)),
+                )
+            })
             .collect::<Vec<_>>();
-
-        ProviderInventory {
-            provider_instance_name: self.provider_instance_name.clone(),
-            provider_type: self.provider_type.clone(),
-            provider_driver: self.provider_driver.clone(),
-            provider_origin: ProviderOrigin::SystemConfig,
-            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
-            provider_type_revision: None,
-            version: version.clone(),
-            inventory_revision: inventory
-                .inventory_revision
-                .or_else(|| Some(claude_inventory_revision_from_metadata(models.as_slice()))),
-            models,
-        }
-    }
-
-    fn normalize_remote_provider_model(&self, model: ModelMetadata) -> Option<ModelMetadata> {
-        let provider_model_id = model.provider_model_id.trim();
-        if provider_model_id.is_empty() {
-            return None;
-        }
-
-        let fallback_api_types = if model.api_types.is_empty() {
-            vec![ApiType::Llm]
-        } else {
-            model.api_types.clone()
-        };
-        let request = DriverModelResolveRequest::new(provider_model_id, fallback_api_types)
-            .with_cost(model.pricing.estimated_cost_usd)
-            .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms));
-        let inventory = resolve_driver_inventory(
+        let remote_by_id = remote_models
+            .iter()
+            .filter(|model| !model.provider_model_id.trim().is_empty())
+            .map(|model| (model.provider_model_id.trim().to_string(), model))
+            .collect::<HashMap<_, _>>();
+        let mut normalized = resolve_driver_inventory(
             self.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
-            &[request],
-            None,
+            requests.as_slice(),
+            inventory_revision,
         );
-        let mut normalized = inventory.models.into_iter().next()?;
-        normalized.parameter_scale = model.parameter_scale.clone();
-        Self::merge_remote_pricing(&mut normalized, &model);
-        Self::merge_remote_health(&mut normalized, &model);
-        Some(normalized)
+        for model in normalized.models.iter_mut() {
+            let base_model_id = model
+                .provider_actual_model_id
+                .as_deref()
+                .unwrap_or(model.provider_model_id.as_str());
+            if let Some(remote) = remote_by_id.get(base_model_id) {
+                model.parameter_scale = remote.parameter_scale.clone();
+                Self::merge_remote_pricing(model, remote);
+                Self::merge_remote_health(model, remote);
+            }
+        }
+        normalized.version = version.clone();
+        if normalized.inventory_revision.is_none() {
+            normalized.inventory_revision = Some(claude_inventory_revision_from_metadata(
+                normalized.models.as_slice(),
+            ));
+        }
+        normalized
     }
 
     fn merge_remote_pricing(normalized: &mut ModelMetadata, remote: &ModelMetadata) {
