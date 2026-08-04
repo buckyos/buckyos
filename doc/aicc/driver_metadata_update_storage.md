@@ -87,6 +87,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 | 最新 observed revision | 枚举小型目录并取最大 revision |
 | 最新可用 activation | revision 降序验证文件及引用对象；进程内缓存已完整验证的最高版本，普通读取只复核 activation wrapper 和目标 provider 对象，目标损坏时清除缓存并重新执行完整 LKGS 选择 |
 | 按 ObjId 读取 provider metadata | 文件名直接定位 |
+| 按 exact model 匹配规则 | metadata 载入后构造进程内索引；重启可重建，不持久化 |
 | 清理孤儿 | activation 引用集合与 objects 目录做差 |
 
 单个 source namespace 的目录规模由保留策略限制，不存在大规模扫描或复杂索引。

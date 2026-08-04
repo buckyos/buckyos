@@ -273,6 +273,7 @@ export type CloudUpdateStatus = 'disabled' | 'idle' | 'updating' | 'healthy' | '
 export interface CloudUpdateSettingsUpdate {
   enabled: boolean
   sourceUrl?: string
+  intervalSecs?: number
 }
 
 export interface UsageTimeRange {
@@ -737,6 +738,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       {
         enabled: settings.enabled,
         source_url: settings.sourceUrl?.trim() || undefined,
+        interval_secs: settings.intervalSecs,
       },
       { requireSession: true },
     )

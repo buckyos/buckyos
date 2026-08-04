@@ -123,6 +123,8 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
 
 文件内 `provider_driver`、`schema_version`、`revision_seq` 必须与 manifest 项一致。未知字段以及无效的 model id/pattern、variant、mount、token limit、成本和质量值均 fail-closed。`schema_revision` 可以增加具有明确缺省语义的可选字段；需要新解释能力的变化必须同时加入 `required_features`。不兼容结构变化提升 `schema_version`。
 
+协议不限制 `models`、`patterns`、`variants`、`version_rules`、`origin_mappings` 的条目数量，容量边界只由本协议的文件字节上限约束。客户端必须在进程内为 exact model 建立索引、复用已编译的 origin mapping，并避免在每个模型解析时复制完整 variants 或 version rules 集合；这些运行时索引属于可丢弃状态，不进入持久化格式。
+
 ## 6. 严格下载
 
 客户端使用 `CyfsNdnClient` 下载每个完整文件。每个响应都必须：

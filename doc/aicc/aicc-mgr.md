@@ -425,6 +425,66 @@ AI Center 通过这两个接口读取并启用或停用 Provider Driver Metadata
 - 写操作复用 settings revision CAS 和调用者 token，不允许前端直接写 `system_config`。
 - 停用或切换源时保留各 source namespace 的 LKGS 和防回滚水位；重新启用同一源仍沿用原有水位。
 
+`driver_metadata_update.get` Request：
+
+```json
+{}
+```
+
+Response：
+
+```json
+{
+  "enabled": true,
+  "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+  "source_configured": true,
+  "interval_secs": 900,
+  "status": "healthy",
+  "active_revision": 42,
+  "last_attempt_at_ms": 1785830400000,
+  "last_success_at_ms": 1785830400000,
+  "last_error": null,
+  "consecutive_failures": 0
+}
+```
+
+`status` 只允许 `disabled`、`idle`、`updating`、`healthy`、`degraded`、`error`。
+
+`driver_metadata_update.set` Request：
+
+```json
+{
+  "enabled": true,
+  "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+  "interval_secs": 900
+}
+```
+
+`enabled` 必填；`source_url` 和 `interval_secs` 可选。未知字段按请求解析错误拒绝，`interval_secs` 归一化到 60 至 86400 秒。停用时省略 `source_url` 表示保留当前源。
+
+Response：
+
+```json
+{
+  "ok": true,
+  "settings_revision": 17,
+  "settings": {
+    "enabled": true,
+    "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+    "source_configured": true,
+    "interval_secs": 900,
+    "status": "updating",
+    "consecutive_failures": 0
+  },
+  "runtime_apply": {
+    "ok": true,
+    "refresh_scheduled": true
+  }
+}
+```
+
+Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*` 类型、`AiccClient`、`AiccHandler` 和 `AiccServerHandler` 中；服务端和其它 Rust 调用方不得再手写字段名。
+
 ### 4.8 `service.reload_settings`
 
 状态：保留。

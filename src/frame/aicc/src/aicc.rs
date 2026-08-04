@@ -1432,6 +1432,18 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    fn is_current_provider(&self, instance_id: &str, provider: &Arc<dyn Provider>) -> bool {
+        self.entries
+            .read()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .get(instance_id)
+                    .map(|entry| Arc::ptr_eq(&entry.provider, provider))
+            })
+            .unwrap_or(false)
+    }
+
     pub fn provider_count(&self) -> usize {
         self.entries
             .read()
@@ -3367,13 +3379,15 @@ impl AIComputeCenter {
     pub async fn refresh_all_provider_inventories(&self) -> (usize, Vec<(String, String)>) {
         let mut refreshes = tokio::task::JoinSet::new();
         for (provider_instance_name, provider) in self.registry.providers() {
-            refreshes
-                .spawn(async move { (provider_instance_name, provider.refresh_inventory().await) });
+            refreshes.spawn(async move {
+                let inventory = provider.refresh_inventory().await;
+                (provider_instance_name, provider, inventory)
+            });
         }
         let mut refreshed = 0usize;
         let mut errors = Vec::new();
         while let Some(refresh_result) = refreshes.join_next().await {
-            let (provider_instance_name, inventory) = match refresh_result {
+            let (provider_instance_name, provider, inventory) = match refresh_result {
                 Ok(result) => result,
                 Err(err) => {
                     errors.push(("<refresh-task>".to_string(), err.to_string()));
@@ -3387,6 +3401,16 @@ impl AIComputeCenter {
                     continue;
                 }
             };
+            if !self
+                .registry
+                .is_current_provider(provider_instance_name.as_str(), &provider)
+            {
+                warn!(
+                    "aicc.provider_inventory_refresh_discarded provider_instance_name={} reason=registration_changed",
+                    provider_instance_name
+                );
+                continue;
+            }
             let apply_result = self
                 .model_registry
                 .write()
@@ -5895,6 +5919,8 @@ mod tests {
         inventory: ProviderInventory,
         cost: CostEstimateOutput,
         refresh_inventory: Option<ProviderInventory>,
+        refresh_started: Option<Arc<tokio::sync::Notify>>,
+        refresh_release: Option<Arc<tokio::sync::Notify>>,
         start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
         start_call_count: std::sync::atomic::AtomicUsize,
         shutdown_call_count: std::sync::atomic::AtomicUsize,
@@ -5913,6 +5939,8 @@ mod tests {
                 inventory,
                 cost,
                 refresh_inventory: None,
+                refresh_started: None,
+                refresh_release: None,
                 start_results: Mutex::new(start_results.into_iter().collect()),
                 start_call_count: std::sync::atomic::AtomicUsize::new(0),
                 shutdown_call_count: std::sync::atomic::AtomicUsize::new(0),
@@ -5930,6 +5958,16 @@ mod tests {
 
         fn with_refresh_inventory(mut self, inventory: ProviderInventory) -> Self {
             self.refresh_inventory = Some(inventory);
+            self
+        }
+
+        fn with_refresh_gate(
+            mut self,
+            started: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        ) -> Self {
+            self.refresh_started = Some(started);
+            self.refresh_release = Some(release);
             self
         }
     }
@@ -5950,6 +5988,12 @@ mod tests {
         }
 
         async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
+            if let Some(started) = self.refresh_started.as_ref() {
+                started.notify_one();
+            }
+            if let Some(release) = self.refresh_release.as_ref() {
+                release.notified().await;
+            }
             Ok(self
                 .refresh_inventory
                 .clone()
@@ -6366,6 +6410,44 @@ mod tests {
         assert!(model_registry
             .default_items_for_path("llm.plan.default")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_all_provider_inventories_rejects_removed_provider_result() {
+        let instance = mock_instance("provider-removed", "provider-a");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let provider = Arc::new(
+            MockProvider::new(instance, cost(0.001, 100), vec![])
+                .with_refresh_gate(started.clone(), release.clone()),
+        );
+        let registry = Registry::default();
+        let inventory = registry.add_provider(provider);
+        let center = Arc::new(AIComputeCenter::new(registry, ModelCatalog::default()));
+        center
+            .model_registry()
+            .write()
+            .unwrap()
+            .apply_inventory(inventory)
+            .unwrap();
+
+        let refresh_center = center.clone();
+        let refresh =
+            tokio::spawn(async move { refresh_center.refresh_all_provider_inventories().await });
+        started.notified().await;
+        center.registry().remove_instance("provider-removed");
+        center.reset_model_routes();
+        release.notify_one();
+
+        let (refreshed, errors) = refresh.await.unwrap();
+        assert_eq!(refreshed, 0);
+        assert!(errors.is_empty());
+        assert!(center
+            .model_registry()
+            .read()
+            .unwrap()
+            .inventory_revision("provider-removed")
+            .is_none());
     }
 
     fn center_with_taskmgr(registry: Registry, catalog: ModelCatalog) -> AIComputeCenter {

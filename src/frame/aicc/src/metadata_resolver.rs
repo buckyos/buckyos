@@ -250,6 +250,40 @@ pub struct DriverMetadataSignature {
 struct DriverMetadataSource {
     name: String,
     document: DriverMetadataDocument,
+    exact_model_index: HashMap<String, usize>,
+    origin_mappings: Vec<(usize, Regex)>,
+}
+
+impl DriverMetadataSource {
+    fn new(name: String, document: DriverMetadataDocument) -> Self {
+        let exact_model_index = document
+            .models
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rule)| {
+                rule.id
+                    .as_deref()
+                    .map(|id| (id.to_ascii_lowercase(), index))
+            })
+            .collect();
+        let mut origin_mappings = document
+            .origin_mappings
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mapping)| {
+                Regex::new(mapping.match_rule.regex.as_str())
+                    .ok()
+                    .map(|regex| (index, regex))
+            })
+            .collect::<Vec<_>>();
+        origin_mappings.sort_by_key(|(index, _)| document.origin_mappings[*index].priority);
+        Self {
+            name,
+            document,
+            exact_model_index,
+            origin_mappings,
+        }
+    }
 }
 
 pub fn resolve_driver_inventory(
@@ -436,19 +470,16 @@ fn resolve_driver_model(
 fn load_driver_metadata_sources(provider_driver: &str) -> (Vec<DriverMetadataSource>, u64) {
     let mut sources = Vec::new();
     if let Some(document) = load_builtin_driver_metadata(provider_driver) {
-        sources.push(DriverMetadataSource {
-            name: "builtin".to_string(),
-            document,
-        });
+        sources.push(DriverMetadataSource::new("builtin".to_string(), document));
     }
     let normalized = normalize_driver(provider_driver);
     let (remote_document, driver_metadata_generation) =
         crate::metadata_updater::load_active_remote_metadata(&normalized);
     if let Some(document) = remote_document {
-        sources.push(DriverMetadataSource {
-            name: "remote_cache_v1".to_string(),
+        sources.push(DriverMetadataSource::new(
+            "remote_cache_v1".to_string(),
             document,
-        });
+        ));
     }
     for (name, path) in driver_metadata_override_paths(provider_driver) {
         match std::fs::read_to_string(path.as_path()) {
@@ -456,7 +487,7 @@ fn load_driver_metadata_sources(provider_driver: &str) -> (Vec<DriverMetadataSou
                 content.as_str(),
                 Some(normalized.as_str()),
             ) {
-                Ok(document) => sources.push(DriverMetadataSource { name, document }),
+                Ok(document) => sources.push(DriverMetadataSource::new(name, document)),
                 Err(err) => warn!(
                     "aicc.metadata_resolver.skip_invalid_metadata path={} err={}",
                     path.display(),
@@ -791,9 +822,8 @@ fn resolve_origin_identity(
         return fallback;
     };
 
-    let mut mappings = source.document.origin_mappings.iter().collect::<Vec<_>>();
-    mappings.sort_by_key(|mapping| mapping.priority);
-    for mapping in mappings {
+    for (mapping_index, regex) in source.origin_mappings.iter() {
+        let mapping = &source.document.origin_mappings[*mapping_index];
         if mapping.match_rule.source != "provider_model_id" {
             warn!(
                 "aicc.metadata_resolver.skip_origin_mapping source={} mapping={} unsupported_source={}",
@@ -801,16 +831,6 @@ fn resolve_origin_identity(
             );
             continue;
         }
-        let regex = match Regex::new(mapping.match_rule.regex.as_str()) {
-            Ok(regex) => regex,
-            Err(err) => {
-                warn!(
-                    "aicc.metadata_resolver.skip_origin_mapping source={} mapping={} invalid_regex={}",
-                    source.name, mapping.mapping_key, err
-                );
-                continue;
-            }
-        };
         let Some(captures) = regex.captures(provider_model_id) else {
             continue;
         };
@@ -929,15 +949,8 @@ fn find_exact_rule<'a>(
             );
             continue;
         }
-        for rule in source.document.models.iter().rev() {
-            if rule
-                .id
-                .as_deref()
-                .map(|id| id.eq_ignore_ascii_case(key.as_str()))
-                .unwrap_or(false)
-            {
-                return Some(rule);
-            }
+        if let Some(index) = source.exact_model_index.get(key.as_str()) {
+            return source.document.models.get(*index);
         }
     }
     None
@@ -982,16 +995,16 @@ fn find_default_rule(sources: &[DriverMetadataSource]) -> Option<&DriverModelRul
     None
 }
 
-fn driver_variants(sources: &[DriverMetadataSource]) -> Vec<DriverModelVariant> {
+fn driver_variants(sources: &[DriverMetadataSource]) -> &[DriverModelVariant] {
     for source in sources.iter().rev() {
         if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
             continue;
         }
         if !source.document.variants.is_empty() {
-            return source.document.variants.clone();
+            return source.document.variants.as_slice();
         }
     }
-    Vec::new()
+    &[]
 }
 
 fn expand_model_variants(
@@ -1004,7 +1017,7 @@ fn expand_model_variants(
     }
 
     let mut models = vec![model.clone()];
-    for variant in variants {
+    for variant in variants.iter() {
         if variant
             .model_pattern
             .as_deref()
@@ -1366,20 +1379,20 @@ fn apply_driver_post_rules(
     sources: &[DriverMetadataSource],
 ) {
     for rule in driver_version_rules(sources) {
-        apply_driver_version_rule(provider_driver, models, &rule, sources);
+        apply_driver_version_rule(provider_driver, models, rule, sources);
     }
 }
 
-fn driver_version_rules(sources: &[DriverMetadataSource]) -> Vec<DriverVersionRule> {
+fn driver_version_rules(sources: &[DriverMetadataSource]) -> &[DriverVersionRule] {
     for source in sources.iter().rev() {
         if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
             continue;
         }
         if !source.document.version_rules.is_empty() {
-            return source.document.version_rules.clone();
+            return source.document.version_rules.as_slice();
         }
     }
-    Vec::new()
+    &[]
 }
 
 fn apply_driver_version_rule(

@@ -50,6 +50,8 @@ pub mod ai_methods {
     pub const QUOTA_QUERY: &str = "quota.query";
     pub const PROVIDER_LIST: &str = "provider.list";
     pub const PROVIDER_HEALTH: &str = "provider.health";
+    pub const DRIVER_METADATA_UPDATE_GET: &str = "driver_metadata_update.get";
+    pub const DRIVER_METADATA_UPDATE_SET: &str = "driver_metadata_update.set";
 
     pub fn is_ai_method(method: &str) -> bool {
         matches!(
@@ -1819,6 +1821,101 @@ pub struct CancelResponse {
     pub accepted: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DriverMetadataUpdateGetReq {}
+
+impl DriverMetadataUpdateGetReq {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse DriverMetadataUpdateGetReq: {}",
+                error
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DriverMetadataUpdateSetReq {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+}
+
+impl DriverMetadataUpdateSetReq {
+    pub fn new(enabled: bool, source_url: Option<String>, interval_secs: Option<u64>) -> Self {
+        Self {
+            enabled,
+            source_url,
+            interval_secs,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!(
+                "Failed to parse DriverMetadataUpdateSetReq: {}",
+                error
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverMetadataUpdateStatus {
+    Disabled,
+    Idle,
+    Updating,
+    Healthy,
+    Degraded,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriverMetadataUpdateView {
+    pub enabled: bool,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    pub source_configured: bool,
+    pub interval_secs: u64,
+    pub status: DriverMetadataUpdateStatus,
+    #[serde(default)]
+    pub active_revision: Option<u64>,
+    #[serde(default)]
+    pub last_attempt_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_success_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    pub consecutive_failures: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriverMetadataRuntimeApply {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_scheduled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriverMetadataUpdateSetResponse {
+    pub ok: bool,
+    pub settings_revision: u64,
+    pub settings: DriverMetadataUpdateView,
+    pub runtime_apply: DriverMetadataRuntimeApply,
+}
+
 impl CancelResponse {
     pub fn new(task_id: String, accepted: bool) -> Self {
         Self { task_id, accepted }
@@ -2066,6 +2163,66 @@ impl AiccClient {
             Self::KRPC(client) => client.call("models.list", serde_json::json!({})).await,
         }
     }
+
+    pub async fn get_driver_metadata_update(
+        &self,
+    ) -> std::result::Result<DriverMetadataUpdateView, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_driver_metadata_update_get(ctx).await
+            }
+            Self::KRPC(client) => {
+                let request = DriverMetadataUpdateGetReq::new();
+                let request = serde_json::to_value(request).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize DriverMetadataUpdateGetReq: {}",
+                        error
+                    ))
+                })?;
+                let result = client
+                    .call(ai_methods::DRIVER_METADATA_UPDATE_GET, request)
+                    .await?;
+                serde_json::from_value(result).map_err(|error| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to parse driver metadata update view: {}",
+                        error
+                    ))
+                })
+            }
+        }
+    }
+
+    pub async fn set_driver_metadata_update(
+        &self,
+        request: DriverMetadataUpdateSetReq,
+    ) -> std::result::Result<DriverMetadataUpdateSetResponse, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_driver_metadata_update_set(request, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let request = serde_json::to_value(request).map_err(|error| {
+                    RPCErrors::ReasonError(format!(
+                        "Failed to serialize DriverMetadataUpdateSetReq: {}",
+                        error
+                    ))
+                })?;
+                let result = client
+                    .call(ai_methods::DRIVER_METADATA_UPDATE_SET, request)
+                    .await?;
+                serde_json::from_value(result).map_err(|error| {
+                    RPCErrors::ParserResponseError(format!(
+                        "Failed to parse driver metadata update set response: {}",
+                        error
+                    ))
+                })
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -2132,6 +2289,25 @@ pub trait AiccHandler: Send + Sync {
             ai_methods::HELPER_TEXT_TO_IMAGE.to_string(),
         ))
     }
+
+    async fn handle_driver_metadata_update_get(
+        &self,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DriverMetadataUpdateView, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::DRIVER_METADATA_UPDATE_GET.to_string(),
+        ))
+    }
+
+    async fn handle_driver_metadata_update_set(
+        &self,
+        _request: DriverMetadataUpdateSetReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DriverMetadataUpdateSetResponse, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            ai_methods::DRIVER_METADATA_UPDATE_SET.to_string(),
+        ))
+    }
 }
 
 pub struct AiccServerHandler<T: AiccHandler>(pub T);
@@ -2193,6 +2369,19 @@ impl<T: AiccHandler> RPCHandler for AiccServerHandler<T> {
             ai_methods::HELPER_TEXT_TO_IMAGE => {
                 let method_req = AiMethodRequest::from_json(req.params)?;
                 let result = self.0.handle_helper_text_to_image(method_req, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            ai_methods::DRIVER_METADATA_UPDATE_GET => {
+                DriverMetadataUpdateGetReq::from_json(req.params)?;
+                let result = self.0.handle_driver_metadata_update_get(ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            ai_methods::DRIVER_METADATA_UPDATE_SET => {
+                let update_req = DriverMetadataUpdateSetReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_driver_metadata_update_set(update_req, ctx)
+                    .await?;
                 RPCResult::Success(json!(result))
             }
             method if ai_methods::is_ai_method(method) => {
@@ -2294,6 +2483,45 @@ mod tests {
             let mut calls = self.calls.lock().unwrap();
             calls.cancel_task_id = Some(task_id.to_string());
             Ok(CancelResponse::new(task_id.to_string(), true))
+        }
+
+        async fn handle_driver_metadata_update_get(
+            &self,
+            _ctx: RPCContext,
+        ) -> std::result::Result<DriverMetadataUpdateView, RPCErrors> {
+            Ok(DriverMetadataUpdateView {
+                enabled: true,
+                source_url: Some(
+                    "https://metadata.example/aicc/driver-metadata/index.json".to_string(),
+                ),
+                source_configured: true,
+                interval_secs: 900,
+                status: DriverMetadataUpdateStatus::Healthy,
+                active_revision: Some(7),
+                last_attempt_at_ms: None,
+                last_success_at_ms: None,
+                last_error: None,
+                consecutive_failures: 0,
+            })
+        }
+
+        async fn handle_driver_metadata_update_set(
+            &self,
+            request: DriverMetadataUpdateSetReq,
+            ctx: RPCContext,
+        ) -> std::result::Result<DriverMetadataUpdateSetResponse, RPCErrors> {
+            let mut settings = self.handle_driver_metadata_update_get(ctx).await?;
+            settings.enabled = request.enabled;
+            Ok(DriverMetadataUpdateSetResponse {
+                ok: true,
+                settings_revision: 42,
+                settings,
+                runtime_apply: DriverMetadataRuntimeApply {
+                    ok: true,
+                    refresh_scheduled: Some(true),
+                    error: None,
+                },
+            })
         }
     }
 
@@ -2413,6 +2641,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn driver_metadata_update_protocol_is_typed_end_to_end() {
+        let client = AiccClient::new_in_process(Box::new(MockAicc::new()));
+        let view = client.get_driver_metadata_update().await.unwrap();
+        assert_eq!(view.status, DriverMetadataUpdateStatus::Healthy);
+        assert_eq!(view.active_revision, Some(7));
+
+        let response = client
+            .set_driver_metadata_update(DriverMetadataUpdateSetReq::new(false, None, Some(900)))
+            .await
+            .unwrap();
+        assert!(response.ok);
+        assert!(!response.settings.enabled);
+        assert_eq!(response.settings_revision, 42);
+        assert!(DriverMetadataUpdateSetReq::from_json(json!({
+            "enabled": true,
+            "unexpected": true
+        }))
+        .is_err());
+    }
+
+    #[tokio::test]
     async fn test_rpc_handler_adapter_with_mock() {
         let mock = MockAicc::new();
         let calls = mock.calls.clone();
@@ -2450,6 +2699,39 @@ mod tests {
                 let cancel_result: CancelResponse = serde_json::from_value(value).unwrap();
                 assert_eq!(cancel_result.task_id, "task-001");
                 assert!(cancel_result.accepted);
+            }
+            _ => panic!("Expected success response"),
+        }
+
+        let metadata_get = RPCRequest {
+            method: ai_methods::DRIVER_METADATA_UPDATE_GET.to_string(),
+            params: json!({}),
+            seq: 11,
+            token: None,
+            trace_id: None,
+        };
+        let metadata_get = rpc_handler.handle_rpc_call(metadata_get, ip).await.unwrap();
+        match metadata_get.result {
+            RPCResult::Success(value) => {
+                let view: DriverMetadataUpdateView = serde_json::from_value(value).unwrap();
+                assert_eq!(view.status, DriverMetadataUpdateStatus::Healthy);
+            }
+            _ => panic!("Expected success response"),
+        }
+
+        let metadata_set = RPCRequest {
+            method: ai_methods::DRIVER_METADATA_UPDATE_SET.to_string(),
+            params: json!({"enabled": false, "interval_secs": 900}),
+            seq: 12,
+            token: None,
+            trace_id: None,
+        };
+        let metadata_set = rpc_handler.handle_rpc_call(metadata_set, ip).await.unwrap();
+        match metadata_set.result {
+            RPCResult::Success(value) => {
+                let response: DriverMetadataUpdateSetResponse =
+                    serde_json::from_value(value).unwrap();
+                assert!(!response.settings.enabled);
             }
             _ => panic!("Expected success response"),
         }

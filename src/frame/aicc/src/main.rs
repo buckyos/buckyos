@@ -21,8 +21,10 @@ mod sn_ai_provider;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiccServerHandler,
-    BuckyOSRuntimeType, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
+    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
+    AiccServerHandler, BuckyOSRuntimeType, DriverMetadataRuntimeApply, DriverMetadataUpdateGetReq,
+    DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus,
+    DriverMetadataUpdateView, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
     QueryUsageResponse, SystemConfigClient, SystemConfigError, AICC_SERVICE_SERVICE_NAME,
 };
 use buckyos_http_server::Runner;
@@ -69,8 +71,6 @@ const METHOD_PROVIDER_VALIDATE: &str = "provider.validate";
 const METHOD_PROVIDER_ADD: &str = "provider.add";
 const METHOD_PROVIDER_DELETE: &str = "provider.delete";
 const METHOD_PROVIDER_REFRESH_MODELS: &str = "provider.refresh_models";
-const METHOD_DRIVER_METADATA_UPDATE_GET: &str = "driver_metadata_update.get";
-const METHOD_DRIVER_METADATA_UPDATE_SET: &str = "driver_metadata_update.set";
 const METHOD_USAGE_QUERY: &str = "usage.query";
 const METHOD_TRACE_QUERY: &str = "trace.query";
 const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
@@ -343,43 +343,53 @@ fn redact_metadata_error(error: &str, settings: &Value) -> String {
     redacted.chars().take(512).collect()
 }
 
-fn driver_metadata_update_view(settings: &Value, runtime: &DriverMetadataRuntimeState) -> Value {
+fn driver_metadata_update_view(
+    settings: &Value,
+    runtime: &DriverMetadataRuntimeState,
+) -> DriverMetadataUpdateView {
     let configured = settings
         .get("driver_metadata_update")
         .and_then(Value::as_object);
-    json!({
-        "enabled": configured
+    let status = match runtime.status {
+        "idle" => DriverMetadataUpdateStatus::Idle,
+        "updating" => DriverMetadataUpdateStatus::Updating,
+        "healthy" => DriverMetadataUpdateStatus::Healthy,
+        "degraded" => DriverMetadataUpdateStatus::Degraded,
+        "error" => DriverMetadataUpdateStatus::Error,
+        _ => DriverMetadataUpdateStatus::Disabled,
+    };
+    DriverMetadataUpdateView {
+        enabled: configured
             .and_then(|value| value.get("enabled"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        "source_url": configured
+        source_url: configured
             .and_then(|value| value.get("source_url"))
             .map(redact_url_userinfo)
-            .unwrap_or(Value::Null),
-        "source_configured": configured
+            .and_then(|value| value.as_str().map(ToOwned::to_owned)),
+        source_configured: configured
             .and_then(|value| value.get("source_url"))
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty()),
-        "interval_secs": configured
+        interval_secs: configured
             .and_then(|value| value.get("interval_secs"))
             .and_then(Value::as_u64)
             .map(normalize_update_interval_secs)
             .unwrap_or(3600),
-        "status": runtime.status,
-        "active_revision": runtime.active_revision,
-        "last_attempt_at_ms": runtime.last_attempt_at_ms,
-        "last_success_at_ms": runtime.last_success_at_ms,
-        "last_error": runtime.last_error,
-        "consecutive_failures": runtime.consecutive_failures,
-    })
+        status,
+        active_revision: runtime.active_revision,
+        last_attempt_at_ms: runtime.last_attempt_at_ms,
+        last_success_at_ms: runtime.last_success_at_ms,
+        last_error: runtime.last_error.clone(),
+        consecutive_failures: runtime.consecutive_failures,
+    }
 }
 
 fn update_driver_metadata_settings(
     settings: &mut Value,
-    params: &Value,
+    request: &DriverMetadataUpdateSetReq,
 ) -> std::result::Result<(), RPCErrors> {
-    let enabled = param_bool(params, "enabled")
-        .ok_or_else(|| RPCErrors::ReasonError("enabled is required".to_string()))?;
+    let enabled = request.enabled;
     let root = settings_object(settings);
     let update = root
         .entry("driver_metadata_update".to_string())
@@ -391,10 +401,16 @@ fn update_driver_metadata_settings(
         .as_object_mut()
         .expect("driver metadata update settings must be an object");
     update.insert("enabled".to_string(), Value::Bool(enabled));
-    if let Some(source_url) = param_string(params, "source_url") {
+    if let Some(source_url) = request
+        .source_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+    {
         update.insert("source_url".to_string(), Value::String(source_url));
     }
-    if let Some(interval_secs) = params.get("interval_secs").and_then(Value::as_u64) {
+    if let Some(interval_secs) = request.interval_secs {
         update.insert(
             "interval_secs".to_string(),
             json!(normalize_update_interval_secs(interval_secs)),
@@ -409,15 +425,15 @@ fn update_driver_metadata_settings(
 
 fn driver_metadata_update_set_result(
     settings_revision: u64,
-    settings: Value,
-    runtime_apply: Value,
-) -> Value {
-    json!({
-        "ok": true,
-        "settings_revision": settings_revision,
-        "settings": settings,
-        "runtime_apply": runtime_apply,
-    })
+    settings: DriverMetadataUpdateView,
+    runtime_apply: DriverMetadataRuntimeApply,
+) -> DriverMetadataUpdateSetResponse {
+    DriverMetadataUpdateSetResponse {
+        ok: true,
+        settings_revision,
+        settings,
+        runtime_apply,
+    }
 }
 
 fn rpc_success(req: &RPCRequest, result: Value) -> RPCResponse {
@@ -461,6 +477,14 @@ fn param_string(params: &Value, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn typed_request_params(params: &Value) -> Value {
+    let mut params = params.clone();
+    if let Some(params) = params.as_object_mut() {
+        params.remove("session_token");
+    }
+    params
 }
 
 fn param_bool(params: &Value, key: &str) -> Option<bool> {
@@ -967,7 +991,7 @@ impl AiccHttpServer {
         }
     }
 
-    fn metadata_update_view(&self, settings: &Value) -> Value {
+    fn metadata_update_view(&self, settings: &Value) -> DriverMetadataUpdateView {
         driver_metadata_update_view(settings, &self.metadata_runtime_state())
     }
 
@@ -996,8 +1020,6 @@ impl AiccHttpServer {
 
     fn apply_settings_value(&self, settings: &Value) -> std::result::Result<Value, RPCErrors> {
         let settings_for_log = redact_settings_for_log(&settings);
-        self.metadata_settings_tx
-            .send_replace(Some(settings.clone()));
         info!(
             "aicc.reload_settings current settings: {}",
             settings_for_log
@@ -1007,6 +1029,8 @@ impl AiccHttpServer {
             apply_provider_settings(&self.rpc_handler.0, &settings).map_err(|err| {
                 RPCErrors::ReasonError(format!("reload aicc settings failed: {}", err))
             })?;
+        self.metadata_settings_tx
+            .send_replace(Some(settings.clone()));
         Ok(serde_json::json!({
             "ok": true,
             "providers_registered": registered
@@ -1418,12 +1442,16 @@ impl AiccHttpServer {
         &self,
         req: &RPCRequest,
         ip_from: IpAddr,
-    ) -> std::result::Result<Value, RPCErrors> {
+    ) -> std::result::Result<DriverMetadataUpdateView, RPCErrors> {
+        DriverMetadataUpdateGetReq::from_json(typed_request_params(&req.params))?;
         let (_, doc) = self.load_settings_for_request(req, ip_from).await?;
         Ok(self.metadata_update_view(&doc.value))
     }
 
-    fn apply_driver_metadata_settings_runtime(&self, settings: &Value) -> Value {
+    fn apply_driver_metadata_settings_runtime(
+        &self,
+        settings: &Value,
+    ) -> DriverMetadataRuntimeApply {
         if let Err(err) = configure_remote_metadata_source(settings) {
             let message = redact_metadata_error(err.to_string().as_str(), settings);
             self.update_metadata_runtime_state(|state| {
@@ -1434,7 +1462,11 @@ impl AiccHttpServer {
             });
             self.metadata_settings_tx
                 .send_replace(Some(settings.clone()));
-            return json!({ "ok": false, "error": message });
+            return DriverMetadataRuntimeApply {
+                ok: false,
+                refresh_scheduled: None,
+                error: Some(message),
+            };
         }
 
         let enabled = DriverMetadataUpdateSettings::from_aicc_settings(settings)
@@ -1454,16 +1486,22 @@ impl AiccHttpServer {
 
         self.metadata_settings_tx
             .send_replace(Some(settings.clone()));
-        json!({ "ok": true, "refresh_scheduled": true })
+        DriverMetadataRuntimeApply {
+            ok: true,
+            refresh_scheduled: Some(true),
+            error: None,
+        }
     }
 
     async fn handle_driver_metadata_update_set(
         &self,
         req: &RPCRequest,
         ip_from: IpAddr,
-    ) -> std::result::Result<Value, RPCErrors> {
+    ) -> std::result::Result<DriverMetadataUpdateSetResponse, RPCErrors> {
+        let update_request =
+            DriverMetadataUpdateSetReq::from_json(typed_request_params(&req.params))?;
         let (client, mut doc) = self.load_settings_for_request(req, ip_from).await?;
-        update_driver_metadata_settings(&mut doc.value, &req.params)?;
+        update_driver_metadata_settings(&mut doc.value, &update_request)?;
         let settings_revision = self.write_settings(client, &doc, &doc.value).await?;
         let runtime_apply = self.apply_driver_metadata_settings_runtime(&doc.value);
         Ok(driver_metadata_update_set_result(
@@ -1888,17 +1926,33 @@ impl RPCHandler for AiccHttpServer {
             let result = self.handle_provider_refresh_models(&req.params).await?;
             return Ok(rpc_success(&req, result));
         }
-        if req.method == METHOD_DRIVER_METADATA_UPDATE_GET {
+        if req.method == ai_methods::DRIVER_METADATA_UPDATE_GET {
             let result = self
                 .handle_driver_metadata_update_get(&req, ip_from)
                 .await?;
-            return Ok(rpc_success(&req, result));
+            return Ok(rpc_success(
+                &req,
+                serde_json::to_value(result).map_err(|err| {
+                    RPCErrors::ReasonError(format!(
+                        "serialize driver metadata update view failed: {}",
+                        err
+                    ))
+                })?,
+            ));
         }
-        if req.method == METHOD_DRIVER_METADATA_UPDATE_SET {
+        if req.method == ai_methods::DRIVER_METADATA_UPDATE_SET {
             let result = self
                 .handle_driver_metadata_update_set(&req, ip_from)
                 .await?;
-            return Ok(rpc_success(&req, result));
+            return Ok(rpc_success(
+                &req,
+                serde_json::to_value(result).map_err(|err| {
+                    RPCErrors::ReasonError(format!(
+                        "serialize driver metadata update response failed: {}",
+                        err
+                    ))
+                })?,
+            ));
         }
         if req.method == METHOD_USAGE_QUERY {
             let result = self.handle_usage_query(&req.params).await?;
@@ -2084,17 +2138,21 @@ mod tests {
         let mut settings = json!({});
         update_driver_metadata_settings(
             &mut settings,
-            &json!({
-                "enabled": true,
-                "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
-                "interval_secs": 900,
-            }),
+            &DriverMetadataUpdateSetReq::new(
+                true,
+                Some("https://metadata.example/aicc/driver-metadata/index.json".to_string()),
+                Some(900),
+            ),
         )
         .unwrap();
         assert_eq!(settings["driver_metadata_update"]["enabled"], true);
         assert_eq!(settings["driver_metadata_update"]["interval_secs"], 900);
 
-        update_driver_metadata_settings(&mut settings, &json!({ "enabled": false })).unwrap();
+        update_driver_metadata_settings(
+            &mut settings,
+            &DriverMetadataUpdateSetReq::new(false, None, None),
+        )
+        .unwrap();
         assert_eq!(settings["driver_metadata_update"]["enabled"], false);
         assert_eq!(
             settings["driver_metadata_update"]["source_url"],
@@ -2107,7 +2165,11 @@ mod tests {
         let mut settings = json!({});
         assert!(update_driver_metadata_settings(
             &mut settings,
-            &json!({ "enabled": true, "source_url": "http://metadata.example/index.json" }),
+            &DriverMetadataUpdateSetReq::new(
+                true,
+                Some("http://metadata.example/index.json".to_string()),
+                None,
+            ),
         )
         .is_err());
     }
@@ -2117,18 +2179,18 @@ mod tests {
         let mut settings = json!({});
         update_driver_metadata_settings(
             &mut settings,
-            &json!({
-                "enabled": true,
-                "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
-                "interval_secs": 1,
-            }),
+            &DriverMetadataUpdateSetReq::new(
+                true,
+                Some("https://metadata.example/aicc/driver-metadata/index.json".to_string()),
+                Some(1),
+            ),
         )
         .unwrap();
         assert_eq!(settings["driver_metadata_update"]["interval_secs"], 60);
 
         update_driver_metadata_settings(
             &mut settings,
-            &json!({ "enabled": true, "interval_secs": 100_000 }),
+            &DriverMetadataUpdateSetReq::new(true, None, Some(100_000)),
         )
         .unwrap();
         assert_eq!(settings["driver_metadata_update"]["interval_secs"], 86_400);
@@ -2136,7 +2198,7 @@ mod tests {
         settings["driver_metadata_update"]["interval_secs"] = json!(1);
         let runtime = DriverMetadataRuntimeState::for_settings(Some(&settings));
         assert_eq!(
-            driver_metadata_update_view(&settings, &runtime)["interval_secs"],
+            driver_metadata_update_view(&settings, &runtime).interval_secs,
             60
         );
     }
@@ -2156,14 +2218,35 @@ mod tests {
                 &settings,
                 &DriverMetadataRuntimeState::for_settings(Some(&settings)),
             ),
-            json!({ "ok": true, "refresh_scheduled": true }),
+            DriverMetadataRuntimeApply {
+                ok: true,
+                refresh_scheduled: Some(true),
+                error: None,
+            },
         );
 
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["settings_revision"], 42);
-        assert_eq!(result["settings"]["enabled"], true);
-        assert_eq!(result["settings"]["status"], "idle");
-        assert_eq!(result["runtime_apply"]["ok"], true);
-        assert_eq!(result["runtime_apply"]["refresh_scheduled"], true);
+        assert!(result.ok);
+        assert_eq!(result.settings_revision, 42);
+        assert!(result.settings.enabled);
+        assert_eq!(result.settings.status, DriverMetadataUpdateStatus::Idle);
+        assert!(result.runtime_apply.ok);
+        assert_eq!(result.runtime_apply.refresh_scheduled, Some(true));
+    }
+
+    #[test]
+    fn typed_metadata_request_ignores_transport_token_only() {
+        let params = typed_request_params(&json!({
+            "enabled": true,
+            "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+            "session_token": "test-token",
+        }));
+        assert!(DriverMetadataUpdateSetReq::from_json(params).is_ok());
+
+        let params = typed_request_params(&json!({
+            "enabled": true,
+            "unexpected": true,
+            "session_token": "test-token",
+        }));
+        assert!(DriverMetadataUpdateSetReq::from_json(params).is_err());
     }
 }
