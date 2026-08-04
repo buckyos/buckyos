@@ -184,8 +184,9 @@ Installer 必须区分以下结果：
 
 系统可以通过多种方式取得 App Document，包括但不限于：
 
-- App DID；
-- App 名称或 BNS 名称；
+- App DID （App 名称或 BNS 名称）
+  - 当用户输入 app1.owner 的时候，系统会自动尝试did:bns:app1.owner
+  - 但用户输入 app1.example.com的时候，系统会自动尝试did:web:app1.example.com
 - App Document Object ID；
 - App Document URL；
 - `.pikg` 内置的 `APPDOC.wt` 或 `APPDOC.json`；
@@ -750,29 +751,22 @@ App Document 应提供足够的参数定义，使用户在大体积下载或部�
 
 第三方网页可以放置“安装 App”按钮。
 
-推荐入口：
+推荐入口：(jump的流程会引导到current_zone的对应url)
 
 ```text
-cyfs://sys.current_zone/app/installer
-    ?method=install_app
-    &identifier=$ENCODED_APP_IDENTIFIER
+https://jump.buckyos.ai/sysdlg/app_installer?
+    identifier=$ENCODED_APP_IDENTIFIER
+    &ref=$REFERRER_ID
+
+jump后实际打开
+https://bob.web3.buckyos.ai/sysdlg/app_installer?
+    identifier=$ENCODED_APP_IDENTIFIER
     &ref=$REFERRER_ID
 ```
 
 `identifier` 可以是 App DID、App Document Object ID、App Document URL 或 `.pikg` URL。
 
-流程：
-
-1. HTTPS Gateway Page 尝试唤起 BuckyOS Desktop；
-2. 未安装 BuckyOS 时，跳转官方安装引导页；
-3. 已安装时，Desktop 接收 `identifier`；
-4. 系统归一化 App DID；必要时先获取最小 Manifest / App Document，再执行 `(App DID, "app")` 解析和剩余 Package Acquisition，将 `.pikg` 放入本地 Staging Area；
-5. Acquisition 成功后打开标准安装 UI；
-6. 用户在 UI 中看到包是否离线就绪、是否仍需补充内容以及实际安装风险。
-
-旧参数 `url=$APP_META_JSON_URL` 可以作为兼容入口，但内部必须转换为统一 `identifier` 和 App Document 解析流程。
-
-> TODO：补充现代浏览器环境下 URL Scheme 唤起检测方案，包括用户手势、超时、页面可见性和隐私限制处理。
+流程： (参考 buckyos 通用jump协议设计)
 
 ### 6.4 开发者与 Agent 自构建流程
 
@@ -819,24 +813,19 @@ Zone 级开发应优先使用 Zone Resolver cache 注入 `(App DID, "app")` 的�
 
 ---
 
-## 7. 分享与应用商店
+## 7. 应用分享
 
 ### 7.1 HTTPS 链接分享
 
 兼容格式：
 
 ```text
-https://sys.$USER_ZONE_HOST/share/share_app.html?id=$APP_OBJ_ID
-```
-
-推荐扩展为可表达不同目标类型：
-
-```text
-https://sys.$USER_ZONE_HOST/share/share_app.html
+https://$USER_ZONE_HOST/sysdlg/share
     ?type=app_doc|pikg
     &id=$OBJECT_ID
     &ref=$REFERRER_ID
 ```
+
 
 分享页负责调用 Gateway / URL Scheme，并尽量先完成 `.pikg` Acquisition。
 
@@ -846,58 +835,21 @@ https://sys.$USER_ZONE_HOST/share/share_app.html
 
 这是提高“离线成功率”的首选方式。
 
-### 7.3 二维码分享
+### 7.3 二维码分享（文本分享)
+
+> 这个和AppInstaller的new app text 的输入一致，应能自动识别
 
 二维码可以编码：
 
 - HTTPS 分享链接；
 - App DID 或 App Document Object ID；
 - `.pikg` Object ID / 下载描述；
-- 有长度限制的短码。
+
 
 二维码本身通常不携带完整 `.pikg` 实体内容，除非应用非常小并采用专门的多码传输方案。
 
-### 7.4 纯文本或短码分享
 
-文本内容可以表示：
-
-```text
-bucky-app:<app-did-or-object-id>
-```
-
-或包含最小 Acquisition Descriptor。Desktop 的“添加 App”入口解析后，先取得 `.pikg`，再进入安装。
-
-### 7.5 对象投递（Inbox Push）
-
-基于 CYFS Content Network 投递推荐 ActionObject，不依赖传统社交信道。
-
-建议结构：
-
-```jsonc
-{
-  "action": "recommend",
-  "userid": "did:bucky:sender_id",
-  "device_id": "did:dev:xxx",
-  "iat": 1769990599,
-  "exp": 1801094599,
-  "target": {
-    "type": "app_doc",
-    "id": "obj:appdoc:sha256:..."
-  },
-  "score": 5,
-  "details": {
-    "comment": "这个 App 很好用，推荐给你",
-    "pikg": {
-      "id": "obj:pikg:sha256:...",
-      "url": "https://example.com/app.pikg"
-    }
-  }
-}
-```
-
-接收方在“消息 / 分享给我的”列表中看到卡片，先查看来源、包就绪状态和权限，再决定获取或安装。
-
-### 7.6 内置应用商店
+### 7.5 s应用商店（规划)
 
 - 内容聚合：用户自管理 App Document + 订阅 Source List + Curator Inclusion Proof；
 - 去重：按 App DID 聚合同一逻辑应用，按 App Document Object ID 区分具体版本；
@@ -1068,6 +1020,10 @@ Installer 必须防范：
 
 ## 10. 经济模型
 
+
+> 该章节是 《BNS + CYFS 通用内容发行协议》的一部分，这里只简要说明 
+
+
 ### 10.1 安装成功证明
 
 生态价值事件应定义为应用完成 Activate 并通过规定的健康检查，而不是仅点击安装或下载完成。
@@ -1148,253 +1104,416 @@ Installer 必须防范：
 
 ## 11. 核心数据结构
 
-### 11.1 Inclusion Proof
+> 本章字段以当前实现为准（`buckyos-api` / `control_panel` / `ndn-lib` / `package-lib`）。Object ID、JCS 与 schema 冻结规则见 §14.0 D1/D2；安装事务与长期记录见 §14.0 D3。
+
+### 11.1 InclusionProof
+
+收录证明定义在 `ndn-lib`（obj type `cyinc`），由 RepoService 作为 `RepoProof::Collection` 持久化；Installer 安装流水线不依赖本结构，但应用商店/Curator 收录仍使用它。
 
 ```rust
 pub const OBJ_TYPE_INCLUSION_PROOF: &str = "cyinc";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InclusionProof {
+    /// 被收录内容的 ObjId，必须与 content_obj 一致
     pub content_id: String,
     pub content_obj: serde_json::Value,
     pub curator: DID,
     pub editor: Vec<String>,
     pub meta: Option<serde_json::Value>,
+    /// 1-100
     pub rank: i64,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collection: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_url: Option<String>,
     pub iat: u64,
     pub exp: u64,
 }
 ```
 
-### 11.2 App Document（APPDOC v1）
+### 11.2 App Document（AppDoc）
 
-下例为说明性结构；正式字段、规范化编码和 Object ID 计算规则需要独立 Schema 固化。
+实现类型为 `buckyos_api::AppDoc`：在 `PackageMeta`（flatten）之上叠加 App 专用字段。不另造第二套 schema；`doc_type` 必填且固定为 `"app"`，`did` 必填。Object ID 规则：`ObjId = appdoc:hex(sha256(JCS(body)))`。
+
+Rust 形状（省略 serde 细节）：
+
+```rust
+pub struct AppDoc {
+    pub doc_type: AppDocType,              // 固定 "app"
+    #[serde(flatten)]
+    pub _base: PackageMeta,                // 含 did/name/version/owner/author/...
+    pub pkg_list: SubPkgList,              // key → SubPkgDesc
+    pub show_name: String,
+    pub presentation: Option<AppPresentation>,
+    pub sdk_version: Option<String>,
+    pub req_capbilities: HashMap<String, i64>,
+    pub permissions: Vec<PermissionItem>,
+    pub selector_type: SelectorType,       // single | static | random | by_event | custom
+    pub service_config_tips: ServiceConfigTips,
+}
+```
+
+`PackageMeta` flatten 后常见 JSON 字段（来自 `BaseContentObject` / `FileObject` / `PackageMeta`）：
+
+| 字段 | 说明 |
+|---|---|
+| `did` | App DID（必填） |
+| `name` | 逻辑应用名（亦作 `app_id`） |
+| `version` | 应用语义版本；不是 DID `document_version` |
+| `version_tag` | 可选版本标签 |
+| `author` / `owner` | 作者与 owner DID |
+| `create_time` / `last_update_time` / `exp` | 时间戳 |
+| `deps` | `pkg_name → version_req` |
+| `tags` / `categories` | `categories[0]` 表达 `AppType`（见 §11.6） |
+| `meta` | 自由扩展；描述文案常落在 `meta.description.detail.<lang>` |
+| `content` / `size` | FileObject 内容引用（App 级通常为空/`0`） |
+
+App 专用字段：
+
+| 字段 | 说明 |
+|---|---|
+| `doc_type` | 固定 `"app"` |
+| `pkg_list` | subpackage 映射，见 §11.3 |
+| `show_name` | 展示名 |
+| `presentation` | 可选：`title` / `summary` / `description` / `icons` / `links` / `license` |
+| `permissions` | `PermissionItem[]`，见 §11.5 |
+| `selector_type` | 实例选择策略 |
+| `service_config_tips` | 安装 UI 提示（端点、挂载、RDB、instance volume 等），不是最终运行配置 |
+| `sdk_version` / `req_capbilities` | SDK 与能力需求 |
+
+示例（对齐当前样例包与实现字段名；非完整必填清单）：
 
 ```jsonc
 {
-  "@schema": "buckyos.app.document.v1",
-  "did": "did:bns:filebrowser.buckyos",
+  "did": "did:bns:pikg-docker.root",
   "doc_type": "app",
-  "name": "buckyos_filebrowser",
-  "version": "2.27.0",
-
-  "meta": {
-    "show_name": "File Browser",
-    "icon_url": "https://example.com/icon.png",
-    "homepage_url": "https://example.com",
-    "support_url": "https://example.com/support",
-    "description": {
-      "en": "A web-based file manager.",
-      "zh": "一个基于 Web 的文件管理器。"
-    },
-    "license": "Apache-2.0"
-  },
-
-  "pub_time": 1760000000,
-  "exp": 0,
+  "name": "pikg-docker",
+  "show_name": "PIKG Docker Fixture",
+  "version": "0.1.0",
+  "author": "did:bns:root",
+  "owner": "did:bns:root",
+  "categories": ["dapp"],
+  "create_time": 1800000000,
+  "last_update_time": 1785800758,
   "deps": {
-    "buckyos_kernel": ">1.0.0"
+    "e2e.pikg-docker-image": "0.1.0"
   },
-  "tags": ["file", "web", "nas"],
-  "category": "app",
-
-  "author": "Filebrowser Team",
-  "owner": "did:bns:buckyos",
-  "curators": [
-    "did:bns:curator1",
-    "did:web:gitpot.ai"
-  ],
-
-  "packages": [
-    {
-      "name": "amd64_docker_image",
-      "package_meta": "obj:pkgmeta:linux-amd64:sha256:...",
-      "selector": {
-        "os": "linux",
-        "arch": "x86_64"
-      },
-      "required": true
-    },
-    {
-      "name": "aarch64_docker_image",
-      "package_meta": "obj:pkgmeta:linux-arm64:sha256:...",
-      "selector": {
-        "os": "linux",
-        "arch": "aarch64"
-      },
-      "required": true
-    }
-  ],
-
-  "economics": {
-    "version": "*",
-    "revenue_split": {
-      "author": 0.8,
-      "source": 0.15,
-      "referrer": 0.05
-    },
-    "payment": {
-      "usdb": {
-        "price": "1.99",
-        "contract": "default_payment_contract_address"
+  "meta": {
+    "description": {
+      "detail": {
+        "en": "Local docker fixture for app_installer lifecycle testing."
       }
     }
   },
-
-  "install": {
-    "selector_type": "single",
-    "parameters": [
-      {
-        "name": "data_path",
-        "type": "path",
+  "pkg_list": {
+    "aarch64_docker_image": {
+      "pkg_id": "e2e.pikg-docker-image#0.1.0",
+      "pkg_objid": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
+      "docker_image_name": "local/pikg-docker:0.1.0-arm64"
+      // 可选: "docker_image_digest", "source_url",
+      //       "selector": { "os": "linux", "arch": "aarch64" },
+      //       "required": true
+    }
+  },
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 80,
         "required": true,
-        "affects_package_selection": false
-      }
-    ],
-    "services": [
-      {
-        "name": "www",
-        "protocol": "tcp",
-        "container_port": 80,
         "expose": {
-          "mode": "gateway_http",
-          "default_subdomain": "file"
+          "route": { "type": "web" },
+          "scope": "",
+          "allow_guest": false
         }
       }
-    ],
-    "mounts": [
-      {
-        "kind": "data",
-        "container_path": "/data",
-        "persistence": "keep_on_uninstall"
-      },
-      {
-        "kind": "config",
-        "container_path": "/config",
-        "persistence": "delete_on_uninstall"
-      }
-    ],
-    "network": {
-      "bind_default": "127.0.0.1",
-      "allow_bind_public": true
-    }
+    },
+    "data_mount_points": {},
+    "local_cache_mount_points": {},
+    "external_mount_points": {},
+    "rdb_instances": {},
+    "instance_volume": { "mode": "required" }
   },
-
   "permissions": [
     {
       "scope_path": "user/home",
       "required": true,
       "actions": ["read", "write"],
-      "exp": null
-    },
-    {
-      "scope_path": "wan",
-      "required": false,
-      "actions": [],
       "exp": null
     }
   ]
 }
 ```
 
-示例中的 `owner` 与 `did:bns:filebrowser.buckyos` 的结构 owner `did:bns:buckyos` 一致。实际验证时仍以权威源返回的 owner 绑定优先；若权威绑定存在，文档声明必须与其一致。`did`、`owner`、签名 `iat` 和发布 `doc_hash` 属于 DID 验证约束，不得只按 App schema 做格式检查。
+要点：
 
-兼容说明：旧名称 `APP_META_JSON` 在过渡期可以作为 App Document 的兼容别名，但新协议与新 API 应统一使用 `App Document / APPDOC`。
+- 旧草案中的 `packages[]` / `install{}` / `economics` / `curators` / `@schema: buckyos.app.document.v1` **不是**当前 `AppDoc` 字段；平台选择在 `pkg_list.*.selector`（或按 key 派生），安装/暴露提示在 `service_config_tips`，收录背书走 `InclusionProof`。
+- `owner` 与 `did:bns:$app_name.$owner_id` 的结构默认值应一致；验证时以权威源 owner 绑定优先，候选自声明不得充当 `expected_owner`。
+- `did`、`owner`、签名与发布 `doc_hash` 属于 DID 验证约束，不得只做 App schema 格式检查。
+- 旧名称 `APP_META_JSON` 仅作兼容入口别名；新协议与 API 统一使用 `App Document / APPDOC`。
 
-### 11.3 Package Meta Object
+### 11.3 Package Meta 与 SubPkgDesc
 
-```jsonc
-{
-  "@schema": "buckyos.package.meta.v1",
-  "name": "amd64_docker_image",
-  "selector": {
-    "os": "linux",
-    "arch": "x86_64"
-  },
-  "content": [
-    {
-      "kind": "archive",
-      "format": "tar.gz",
-      "path": "amd64_docker_image.tar.gz",
-      "size": 104857600,
-      "digest": "sha256:..."
-    }
-  ],
-  "runtime": {
-    "type": "container",
-    "entry": "filebrowser"
-  }
+存在两层“Package Meta”，不得混用：
+
+1. **Named Object `PackageMeta`**（`package-lib`，obj type `pkg`）：描述某个 subpackage 内容对象本身。
+2. **`.pikg` 内 `PACKAGE_META.json`**（`PikgPackageMetaFile`，`@schema = buckyos.pikg.package-meta.v1`）：传输层索引，把若干 `PackageMeta` 与包内 payload 绑在一起；结构见 §4.4。
+
+#### 11.3.1 SubPkgDesc（AppDoc.pkg_list 的 value）
+
+平台选择条件挂在 App Document 的 `pkg_list` entry 上，不挂在 Package Meta Named Object 上：
+
+```rust
+pub struct PackageSelector {
+    pub os: Option<String>,
+    pub arch: Option<String>,
+    pub min_kernel_version: Option<String>,
+}
+
+pub struct SubPkgDesc {
+    pub pkg_id: String,
+    pub pkg_objid: Option<ObjId>,          // Package Meta Object ID（pkg:...）
+    pub docker_image_name: Option<String>,
+    pub docker_image_digest: Option<String>,
+    pub source_url: Option<String>,        // 内容获取位置，与 pkg_objid 独立
+    pub selector: Option<PackageSelector>, // 省略时按已知 key 派生
+    pub required: Option<bool>,            // 省略视为 true
 }
 ```
 
-`name = "amd64_docker_image"` 时，`pikg` 内首选文件名为 `amd64_docker_image.tar.gz`。Installer 必须对该文件最终压缩字节计算 SHA-256，并要求结果与 Package Meta 的 `content[].digest` 完全一致。
+已知 `pkg_list` key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 `selector` 时按固定命名表派生；未知 key 无显式 selector 时不参与自动选择。
 
-### 11.4 InstallPlan
-
-`InstallPlan` 是 Inspect Stage 的输出，建议至少包含：
+#### 11.3.2 PackageMeta Named Object
 
 ```jsonc
 {
-  "app_did": "did:bns:filebrowser.buckyos",
+  "name": "e2e.pikg-docker-image",
+  "version": "0.1.0",
+  "author": "did:bns:root",
+  "owner": "did:bns:root",
+  "create_time": 1785800758,
+  "last_update_time": 1785800758,
+  "size": 1896103,
+  // content 为 chunk / mix256 等内容寻址引用，不是路径列表
+  "content": "mix256:a7dd73a1d37ee65cbbdf3a27dfaee22d62ef01accb2721e8687c9af8bcaf45d2b69c98"
+}
+```
+
+`pkg_list` key（如 `aarch64_docker_image`）是 App 内逻辑名；`PackageMeta.name` 是包内容对象名（常与 `pkg_id` 的 name 段一致）。`.pikg` 内首选 payload 名为 `$sub_pkg_name.tar.gz`；Installer 对该文件最终压缩字节计算 SHA-256，并要求与 `PACKAGE_META.json.content_index` 及（可用时）Package Meta 内容引用一致。
+
+### 11.4 InstallPlan
+
+`InstallPlan` 是 Inspect Stage 的输出，定义在 `buckyos_api::app_install`：
+
+```rust
+pub struct InstallPlan {
+    pub app_did: DID,
+    pub doc_type: String,                    // 固定 "app"
+    pub app_doc_object_id: ObjId,
+    pub app_name: String,
+    pub app_version: String,                 // App Document.version
+    pub did_resolution: DidResolutionSnapshot,
+    pub target: InstallTarget,
+    pub selected_packages: Vec<SelectedPackage>,
+    pub required_contents: Vec<PlannedContent>,
+    pub readiness: PlanReadiness,
+    pub permissions: Vec<PermissionItem>,
+    pub install_params: Value,
+    pub estimated_download_bytes: u64,
+    pub plan_fingerprint: String,
+    pub created_at: u64,
+}
+```
+
+相关子结构：
+
+```rust
+pub struct InstallTarget {
+    pub node_did: Option<DID>,
+    pub node_id: Option<String>,
+    pub os: String,
+    pub arch: String,
+    pub kernel_version: Option<String>,
+    pub runtime_version: Option<String>,
+}
+
+pub struct SelectedPackage {
+    pub sub_pkg_name: String,                // pkg_list key
+    pub pkg_id: String,
+    pub package_meta_id: Option<ObjId>,
+    pub docker_image_name: Option<String>,
+    pub required: bool,
+}
+
+pub struct PlannedContent {
+    pub content_id: String,                  // ObjId 或 sha256:<hex>
+    pub sub_pkg_name: Option<String>,
+    pub package_meta_id: Option<ObjId>,
+    pub format: Option<String>,
+    pub size: Option<u64>,
+    pub location: ContentLocation,           // installed | named_store | pikg | missing
+    pub sources: Vec<String>,
+}
+
+/// 六维 readiness；install 为综合结论（§4.5 / §4.6）
+pub struct PlanReadiness {
+    pub document_syntax: ReadinessState,     // READY | NOT_READY | UNKNOWN
+    pub trust: ReadinessState,
+    pub package_integrity: ReadinessState,
+    pub content: ReadinessState,
+    pub config: ReadinessState,
+    pub install: InstallReadiness,           // OFFLINE_READY | CONTENT_DOWNLOAD_REQUIRED | ...
+}
+```
+
+示例：
+
+```jsonc
+{
+  "app_did": "did:bns:pikg-docker.root",
   "doc_type": "app",
-  "app_doc_id": "obj:appdoc:sha256:...",
+  "app_doc_object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
+  "app_name": "pikg-docker",
+  "app_version": "0.1.0",
   "did_resolution": {
+    "app_did": "did:bns:pikg-docker.root",
+    "doc_type": "app",
+    "app_doc_object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
     "document_status": "Active",
-    "document_version": 1769990000,
-    "expected_owner": "did:bns:buckyos",
+    "document_version": 1785800758,
+    "expected_owner": "did:bns:root",
     "evidence": "Anchored",
     "verification_status": "Passed",
     "cache_status": "ZoneHit",
     "warnings": []
   },
   "target": {
-    "node": "did:dev:target",
+    "node_id": "node1",
     "os": "linux",
-    "arch": "x86_64"
+    "arch": "aarch64"
   },
-  "selected_package_meta_ids": [
-    "obj:pkgmeta:linux-amd64:sha256:..."
-  ],
-  "required_content_ids": [
-    "sha256:..."
-  ],
-  "content_state": {
-    "local": [],
-    "pikg": ["sha256:..."],
-    "missing": []
-  },
-  "readiness": {
-    "content": "READY",
-    "trust": "READY",
-    "install": "OFFLINE_READY"
-  },
-  "permissions": [
+  "selected_packages": [
     {
-      "scope_path": "user/home",
-      "required": true,
-      "actions": ["read", "write"],
-      "exp": null
+      "sub_pkg_name": "aarch64_docker_image",
+      "pkg_id": "e2e.pikg-docker-image#0.1.0",
+      "package_meta_id": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
+      "docker_image_name": "local/pikg-docker:0.1.0-arm64",
+      "required": true
     }
   ],
-  "install_params": {}
+  "required_contents": [
+    {
+      "content_id": "sha256:a1d37ee65cbbdf3a27dfaee22d62ef01accb2721e8687c9af8bcaf45d2b69c98",
+      "sub_pkg_name": "aarch64_docker_image",
+      "format": "tar.gz",
+      "size": 1896103,
+      "location": "pikg",
+      "sources": []
+    }
+  ],
+  "readiness": {
+    "document_syntax": "READY",
+    "trust": "READY",
+    "package_integrity": "READY",
+    "content": "READY",
+    "config": "READY",
+    "install": "OFFLINE_READY"
+  },
+  "permissions": [],
+  "install_params": {},
+  "estimated_download_bytes": 0,
+  "plan_fingerprint": "planfp:...",
+  "created_at": 1785800800
 }
 ```
 
-InstallPlan 必须在 App Document、DID 发布状态/owner 绑定、目标平台或影响 package selector 的参数发生变化后失效并重新生成。若 resolver 后续返回 `Revoked` / `Tombstoned`，任何尚未 Deploy 的计划必须立即作废。
+`plan_fingerprint` 绑定 `app_doc_object_id`、resolver 状态/版本、`target`、影响 selector 的参数与 selected meta ids；任一变化必须重新 Inspect。若 resolver 后续返回 `Revoked` / `Tombstoned`，任何尚未 Deploy 的计划必须立即作废。`os`/`arch` 必须来自目标 Node 信息，禁止用 Control Panel 编译期 `cfg!(target_*)` 代替。
 
-### 11.5 App 类型变体
+### 11.5 权限、解析快照与安装记录
 
-- **Static Web App**：package 主要包含 Web 资源，无后端容器；
-- **Service App**：包含一个或多个长期运行服务；
-- **Agent**：核心资产可以是 Prompt、Tool 配置、知识库索引或模型配置；package 可能为空，也可能引用模型权重；
-- **Hybrid App**：同时包含前端、服务、Agent 和模型等多个 subpackage；
-- **System App**：由 BuckyOS 发行并采用更严格的系统签名和升级策略。
+#### PermissionItem
+
+```rust
+pub struct PermissionItem {
+    pub scope_path: String,       // 如 user/home、wan、kapi/repo-service
+    pub required: bool,
+    pub actions: Vec<String>,     // 如 ["read","write"]；可空
+    pub exp: Option<u32>,         // None = 长期有效
+}
+```
+
+安装确认接口的 `accepted_permissions` 使用 `scope_path` 字符串列表；最终批准的完整条目写入 `AppServiceSpec.permission`。
+
+#### DidResolutionSnapshot
+
+`(App DID, "app")` 解析证据快照，写入 plan / task data / install_record / proof：
+
+```rust
+pub struct DidResolutionSnapshot {
+    pub app_did: DID,
+    pub doc_type: String,                          // 固定 "app"
+    pub app_doc_object_id: Option<ObjId>,
+    pub resolver_id: Option<String>,
+    pub document_status: DocumentStatus,           // Active|Missing|Expired|Revoked|Tombstoned|Migrated|Unknown
+    pub document_version: Option<u64>,             // 发布 revision = iat
+    pub authority_seq: Option<u64>,
+    pub effective_owner: Option<DID>,
+    pub expected_owner: Option<DID>,
+    pub evidence: Option<DidEvidenceLevel>,        // Anchored|NeedProof|UnproofInfo
+    pub verification_status: Option<DidVerificationStatus>,
+    pub cache_status: Option<DidCacheStatus>,
+    pub doc_hash: Option<String>,                  // sha256:<hex>
+    pub warnings: Vec<String>,
+    pub migration_target: Option<DID>,
+    pub resolved_at: Option<u64>,
+}
+```
+
+#### AppInstallTaskData / InstallRecord
+
+- in-flight 事务：`Task.data` → `AppInstallTaskData { request, state: InstallTransactionState }`（含 `plan` / `approval` / `verification` / `prepared` 等）。
+- 长期记录：`users/{uid}/apps|agents/{app_name}/install_record` → `InstallRecord`。
+
+```rust
+pub struct InstallRecord {
+    pub app_did: DID,
+    pub doc_type: String,
+    pub app_name: String,
+    pub user_id: String,
+    pub app_version: String,
+    pub app_doc_object_id: ObjId,
+    pub did_resolution: DidResolutionSnapshot,
+    pub package_meta_ids: Vec<ObjId>,
+    pub pikg_digest: Option<String>,
+    pub target: InstallTarget,
+    pub state: InstallRecordState, // prepared|deploying|installed|deployed_but_activation_failed|rolled_back|failed
+    pub task_id: i64,
+    pub proof_id: Option<String>,
+    pub plan_fingerprint: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub last_error: Option<InstallError>,
+}
+```
+
+`AppServiceSpec` 只承载调度/部署所需的 `app_doc`、`permission`、`spec_config` 等，不复制解析证据与任务历史。
+
+### 11.6 App 类型变体
+
+实现枚举 `AppType`，写入 `AppDoc.categories[0]`：
+
+| AppType | categories[0] | 典型 pkg_list | 说明 |
+|---|---|---|---|
+| `Service` | `service` | 无 web / docker | 系统服务 |
+| `AppService` | `dapp` | docker 或 script / 原生 app | 应用服务（含 Docker / Script Host 等部署形态） |
+| `Web` | `web` | `web`；`selector_type = static` | 静态网页 |
+| `Agent` | `agent` | `agent`，可选 `agent_skills` / `agent_tools` | AI Agent |
+
+同一 App Document 可通过多个 subpackage 组合前端、服务、Agent 等能力；发行方也可采用更严格的系统签名与升级策略，但这不是单独的 `AppType` 枚举值。Docker 容器与 Script Host 是 `AppService` 下的部署形态差异（由 `pkg_list` 选用 `*_docker_image` 或 `script` 等 key 表达），不是额外的顶层类型。
 
 ---
-
 ## 12. 命名、版本与生命周期
 
 ### 12.1 唯一性
@@ -1460,40 +1579,13 @@ $author_$appname
 
 ## 13. 兼容性与迁移
 
-### 13.1 旧 APP_META_JSON
 
-旧 `APP_META_JSON` URL 入口继续兼容，但内部按以下方式处理：
 
-```text
-APP_META_JSON URL
-    ↓ parse as candidate App Document and extract App DID
-resolve_did(App DID, "app")
-    ↓ bind candidate body to status / doc_hash / expected_owner
-resolve referenced Package Meta
-    ↓ build acquisition context
-produce or stage pikg-equivalent local package
-    ↓ standard Installer flow
-```
-
-### 13.2 旧 URL Scheme
-
-旧形式：
-
-```text
-cyfs://sys.current_zone/app/installer?method=install_app&url=$APP_META_JSON_URL
-```
-
-可以继续接受，但应转换为：
-
-```text
-method=install_app&identifier=$APP_META_JSON_URL
-```
-
-### 13.3 旧直接下载源
+### 13.1 旧直接下载源
 
 App Document 中既有的 Docker、GitHub Releases、Source OOD 和作者 OOD 地址仍可作为 Object Provider。迁移不要求所有发行者立即生成 `.pikg`，但推荐 Source 在服务端或客户端 Acquisition 阶段生成可下载的 `.pikg`。这些地址只提供内容，不得注册成 DID resolver-provider 或改变 App DID 的发布状态。
 
-### 13.4 pikg 与网络对象共存
+### 13.2 pikg 与网络对象共存
 
 `.pikg` 可以是：
 
@@ -1596,25 +1688,16 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - 部分失败后的恢复规则；
 - 多 Node 安装的一致性模型。
 
-### 14.5 Web 唤起体验
 
-需要补充：
-
-- JS 检测和 URL Scheme 唤起策略；
-- 现代浏览器隐私限制；
-- 手机与桌面端差异；
-- 未安装 BuckyOS 时的安全回退；
-- 防止恶意网页静默触发安装。
-
-### 14.6 支付与 HTTP 402
+### 14.5 支付与 HTTP 402
 
 需要定义 BuckyOS 对 HTTP 402 的标准 UI、Receipt 格式、授权缓存、退款和跨 Source 补救下载流程。
 
-### 14.7 Anti-Sybil
+### 14.6 Anti-Sybil
 
 安装证明激励需要引入抗女巫机制，并在隐私、去中心化和可验证性之间取得平衡。
 
-### 14.8 评论与版权保护
+### 14.7 评论与版权保护
 
 - 去中心化评论、垃圾信息过滤和 AI 摘要；
 - Runtime 授权校验与 DRM；
