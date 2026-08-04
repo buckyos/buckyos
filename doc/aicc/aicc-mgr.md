@@ -421,7 +421,7 @@ AI Center 通过这两个接口读取并启用或停用 Provider Driver Metadata
 
 - `get` 返回 `enabled`、脱敏后的 `source_url`、`source_configured`、`interval_secs`，以及 `status`、`active_revision`、`last_attempt_at_ms`、`last_success_at_ms`、`last_error`、`consecutive_failures` 运行状态。
 - `set` 接收 `enabled`，并可选接收 `source_url`；启用时校验 HTTPS、固定路径 `/aicc/driver-metadata/index.json`。写入后只切换 metadata source 并刷新现有 Provider inventory，不执行会清空 registry 的全量 Provider reload。
-- `set.ok` 表示 settings 已持久化且 metadata updater 已收到新配置；即时 inventory 刷新的独立结果放在 `runtime_apply.ok/error`，并同步反映到 `settings.status/last_error`。
+- `set.ok` 表示 settings 已持久化；`runtime_apply.refresh_scheduled=true` 表示 metadata updater 已收到新配置。接口不等待 Provider 的外部模型发现请求，后台刷新结果随后同步到 `settings.status/last_error`。
 - 写操作复用 settings revision CAS 和调用者 token，不允许前端直接写 `system_config`。
 - 停用或切换源时保留各 source namespace 的 LKGS 和防回滚水位；重新启用同一源仍沿用原有水位。
 

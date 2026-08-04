@@ -877,10 +877,6 @@ function cloudUpdateSettingsFromSetResult(
   if (result.ok !== true) {
     throw new Error(asNonEmptyString(result.error, asNonEmptyString(result.reason, 'aicc.cloud_update_save_failed')))
   }
-  const runtimeApply = isRecord(result.runtime_apply) ? result.runtime_apply : {}
-  if (runtimeApply.ok === false) {
-    throw new Error(asNonEmptyString(runtimeApply.error, 'aicc.cloud_update_runtime_apply_failed'))
-  }
   return toCloudUpdateSettings(isRecord(result.settings) ? result.settings : result)
 }
 

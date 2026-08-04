@@ -75,6 +75,7 @@ pub struct DriverMetadataDocument {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverOriginMapping {
     #[serde(default)]
     pub mapping_key: String,
@@ -87,6 +88,7 @@ pub struct DriverOriginMapping {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverOriginMatch {
     #[serde(default)]
     pub source: String,
@@ -95,6 +97,7 @@ pub struct DriverOriginMatch {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverOriginTransforms {
     #[serde(default)]
     pub driver: Vec<DriverOriginTransform>,
@@ -103,6 +106,7 @@ pub struct DriverOriginTransforms {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverOriginTransform {
     #[serde(default)]
     pub op: String,
@@ -512,6 +516,26 @@ pub(crate) fn validate_driver_metadata_document(
         return Err("provider metadata requires unsupported features".to_string());
     }
 
+    for (alias, driver) in document.origin_provider_aliases.iter() {
+        validate_trimmed_value(alias, "origin_provider_aliases key")?;
+        validate_trimmed_value(driver, "origin_provider_aliases value")?;
+    }
+    let mut mapping_keys = HashSet::new();
+    for (index, mapping) in document.origin_mappings.iter().enumerate() {
+        let location = format!("origin_mappings[{}]", index);
+        validate_trimmed_value(
+            mapping.mapping_key.as_str(),
+            format!("{}.mapping_key", location).as_str(),
+        )?;
+        if !mapping_keys.insert(mapping.mapping_key.to_ascii_lowercase()) {
+            return Err(format!(
+                "duplicate origin mapping key '{}'",
+                mapping.mapping_key
+            ));
+        }
+        validate_origin_mapping(mapping, location.as_str())?;
+    }
+
     let mut model_ids = HashSet::new();
     for (index, rule) in document.models.iter().enumerate() {
         let id = rule
@@ -614,6 +638,58 @@ pub(crate) fn validate_driver_metadata_document(
             &rule.capabilities,
             format!("version_rules[{}]", index).as_str(),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_origin_mapping(mapping: &DriverOriginMapping, location: &str) -> Result<(), String> {
+    if mapping.match_rule.source != "provider_model_id" {
+        return Err(format!("{}.match.source is unsupported", location));
+    }
+    validate_trimmed_value(
+        mapping.match_rule.regex.as_str(),
+        format!("{}.match.regex", location).as_str(),
+    )?;
+    let regex = Regex::new(mapping.match_rule.regex.as_str())
+        .map_err(|err| format!("{}.match.regex is invalid: {}", location, err))?;
+    let capture_names = regex.capture_names().flatten().collect::<HashSet<_>>();
+    if !capture_names.contains("driver") || !capture_names.contains("model") {
+        return Err(format!(
+            "{}.match.regex must define driver and model captures",
+            location
+        ));
+    }
+    validate_origin_transforms(
+        mapping.transforms.driver.as_slice(),
+        format!("{}.transforms.driver", location).as_str(),
+    )?;
+    validate_origin_transforms(
+        mapping.transforms.model.as_slice(),
+        format!("{}.transforms.model", location).as_str(),
+    )
+}
+
+fn validate_origin_transforms(
+    transforms: &[DriverOriginTransform],
+    location: &str,
+) -> Result<(), String> {
+    for (index, transform) in transforms.iter().enumerate() {
+        let item = format!("{}[{}]", location, index);
+        match transform.op.as_str() {
+            "trim" | "lowercase" => {
+                if transform.table.is_some() || transform.on_missing.is_some() {
+                    return Err(format!("{} has unsupported options", item));
+                }
+            }
+            "alias" => {
+                if transform.table.as_deref() != Some("origin_provider_aliases")
+                    || transform.on_missing.as_deref().unwrap_or("keep") != "keep"
+                {
+                    return Err(format!("{} has unsupported alias options", item));
+                }
+            }
+            _ => return Err(format!("{}.op is unsupported", item)),
+        }
     }
     Ok(())
 }
@@ -1579,6 +1655,68 @@ mod tests {
     }
 
     #[test]
+    fn origin_mapping_validation_is_fail_closed() {
+        let valid = serde_json::json!({
+            "format": "buckyos.aicc.provider-driver-metadata",
+            "schema_version": 2,
+            "schema_revision": 0,
+            "provider_driver": "aggregator",
+            "revision_seq": 1,
+            "required_features": [],
+            "origin_provider_aliases": { "vendor": "canonical-vendor" },
+            "origin_mappings": [{
+                "mapping_key": "provider-path",
+                "priority": 100,
+                "match": {
+                    "source": "provider_model_id",
+                    "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
+                },
+                "transforms": {
+                    "driver": [{ "op": "lowercase" }, {
+                        "op": "alias",
+                        "table": "origin_provider_aliases",
+                        "on_missing": "keep"
+                    }],
+                    "model": [{ "op": "trim" }]
+                }
+            }]
+        });
+        assert!(parse_and_validate_driver_metadata(&valid.to_string(), Some("aggregator")).is_ok());
+
+        let mut unknown_field = valid.clone();
+        unknown_field["origin_mappings"][0]["match"]["future"] = serde_json::json!(true);
+        assert!(
+            parse_and_validate_driver_metadata(&unknown_field.to_string(), Some("aggregator"))
+                .is_err()
+        );
+
+        let mut invalid_regex = valid.clone();
+        invalid_regex["origin_mappings"][0]["match"]["regex"] = serde_json::json!("(");
+        assert!(
+            parse_and_validate_driver_metadata(&invalid_regex.to_string(), Some("aggregator"))
+                .is_err()
+        );
+
+        let mut missing_capture = valid.clone();
+        missing_capture["origin_mappings"][0]["match"]["regex"] =
+            serde_json::json!("^(?<driver>[^/]+)/.+$");
+        assert!(parse_and_validate_driver_metadata(
+            &missing_capture.to_string(),
+            Some("aggregator")
+        )
+        .is_err());
+
+        let mut unsupported_transform = valid;
+        unsupported_transform["origin_mappings"][0]["transforms"]["model"][0]["op"] =
+            serde_json::json!("future-transform");
+        assert!(parse_and_validate_driver_metadata(
+            &unsupported_transform.to_string(),
+            Some("aggregator")
+        )
+        .is_err());
+    }
+
+    #[test]
     fn openrouter_models_resolve_to_origin_identity() {
         let requests = vec![
             DriverModelResolveRequest::new("openai/gpt-5.5", vec![ApiType::Llm]),
@@ -1720,28 +1858,25 @@ mod tests {
     }
 
     #[test]
-    fn origin_mapping_invalid_regex_falls_back_to_channel_identity() {
-        let source = DriverMetadataSource {
-            name: "test".to_string(),
-            document: DriverMetadataDocument {
-                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
-                provider_driver: "aggregator".to_string(),
-                origin_mappings: vec![DriverOriginMapping {
-                    mapping_key: "invalid".to_string(),
-                    priority: 1,
-                    match_rule: DriverOriginMatch {
-                        source: "provider_model_id".to_string(),
-                        regex: "(".to_string(),
-                    },
-                    ..Default::default()
-                }],
+    fn origin_mapping_invalid_regex_is_rejected() {
+        let document = DriverMetadataDocument {
+            format: "buckyos.aicc.provider-driver-metadata".to_string(),
+            schema_version: DRIVER_METADATA_SCHEMA_VERSION,
+            provider_driver: "aggregator".to_string(),
+            revision_seq: 1,
+            origin_mappings: vec![DriverOriginMapping {
+                mapping_key: "invalid".to_string(),
+                priority: 1,
+                match_rule: DriverOriginMatch {
+                    source: "provider_model_id".to_string(),
+                    regex: "(".to_string(),
+                },
                 ..Default::default()
-            },
+            }],
+            ..Default::default()
         };
 
-        let origin = resolve_origin_identity("aggregator", "vendor/model", &[source]);
-        assert_eq!(origin.driver, "aggregator");
-        assert_eq!(origin.model, "vendor/model");
+        assert!(validate_driver_metadata_document(&document).is_err());
     }
 
     #[test]

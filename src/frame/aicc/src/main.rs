@@ -1423,7 +1423,7 @@ impl AiccHttpServer {
         Ok(self.metadata_update_view(&doc.value))
     }
 
-    async fn apply_driver_metadata_settings_runtime(&self, settings: &Value) -> Value {
+    fn apply_driver_metadata_settings_runtime(&self, settings: &Value) -> Value {
         if let Err(err) = configure_remote_metadata_source(settings) {
             let message = redact_metadata_error(err.to_string().as_str(), settings);
             self.update_metadata_runtime_state(|state| {
@@ -1452,41 +1452,9 @@ impl AiccHttpServer {
             state.consecutive_failures = 0;
         });
 
-        let (refreshed, refresh_errors) =
-            self.rpc_handler.0.refresh_all_provider_inventories().await;
         self.metadata_settings_tx
             .send_replace(Some(settings.clone()));
-
-        if refresh_errors.is_empty() {
-            self.update_metadata_runtime_state(|state| {
-                state.status = if !enabled {
-                    "disabled"
-                } else if active_revision.is_some() {
-                    "healthy"
-                } else {
-                    "idle"
-                };
-            });
-            json!({ "ok": true, "providers_refreshed": refreshed })
-        } else {
-            let message = format!(
-                "{} provider inventory refreshes failed",
-                refresh_errors.len()
-            );
-            self.update_metadata_runtime_state(|state| {
-                state.status = "degraded";
-                state.last_error = Some(message.clone());
-            });
-            json!({
-                "ok": false,
-                "providers_refreshed": refreshed,
-                "refresh_errors": refresh_errors
-                    .into_iter()
-                    .map(|(provider, _)| provider)
-                    .collect::<Vec<_>>(),
-                "error": message,
-            })
-        }
+        json!({ "ok": true, "refresh_scheduled": true })
     }
 
     async fn handle_driver_metadata_update_set(
@@ -1497,9 +1465,7 @@ impl AiccHttpServer {
         let (client, mut doc) = self.load_settings_for_request(req, ip_from).await?;
         update_driver_metadata_settings(&mut doc.value, &req.params)?;
         let settings_revision = self.write_settings(client, &doc, &doc.value).await?;
-        let runtime_apply = self
-            .apply_driver_metadata_settings_runtime(&doc.value)
-            .await;
+        let runtime_apply = self.apply_driver_metadata_settings_runtime(&doc.value);
         Ok(driver_metadata_update_set_result(
             settings_revision,
             self.metadata_update_view(&doc.value),
@@ -1550,6 +1516,7 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
             };
             runtime.block_on(async move {
                 let mut consecutive_failures = 0u32;
+                let mut refresh_after_settings_change = false;
                 loop {
                     let Some(settings_value) = settings_rx.borrow().clone() else {
                         consecutive_failures = consecutive_failures.saturating_add(1);
@@ -1593,7 +1560,11 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                         }
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
-                            _ = settings_rx.changed() => {}
+                            changed = settings_rx.changed() => {
+                                if changed.is_ok() {
+                                    refresh_after_settings_change = true;
+                                }
+                            }
                         }
                         continue;
                     };
@@ -1606,13 +1577,39 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                         Ok(Some(settings)) => settings,
                         Ok(None) => {
                             consecutive_failures = 0;
+                            let refresh_error_count = if refresh_after_settings_change {
+                                server.update_metadata_runtime_state(|state| {
+                                    state.status = "updating";
+                                    state.last_attempt_at_ms = Some(metadata_now_ms());
+                                });
+                                let count = refresh_provider_inventories_for_metadata(
+                                    server.as_ref(),
+                                    "settings-disabled",
+                                )
+                                .await;
+                                refresh_after_settings_change = false;
+                                count
+                            } else {
+                                0
+                            };
                             server.update_metadata_runtime_state(|state| {
-                                state.status = "disabled";
+                                state.status = if refresh_error_count == 0 {
+                                    "disabled"
+                                } else {
+                                    "degraded"
+                                };
                                 state.active_revision = None;
-                                state.last_error = None;
+                                state.last_error = (refresh_error_count > 0).then(|| {
+                                    format!(
+                                        "{} provider inventory refreshes failed",
+                                        refresh_error_count
+                                    )
+                                });
                                 state.consecutive_failures = 0;
                             });
-                            let _ = settings_rx.changed().await;
+                            if settings_rx.changed().await.is_ok() {
+                                refresh_after_settings_change = true;
+                            }
                             continue;
                         }
                         Err(err) => {
@@ -1626,7 +1623,9 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                                 state.consecutive_failures =
                                     state.consecutive_failures.saturating_add(1);
                             });
-                            let _ = settings_rx.changed().await;
+                            if settings_rx.changed().await.is_ok() {
+                                refresh_after_settings_change = true;
+                            }
                             continue;
                         }
                     };
@@ -1645,6 +1644,7 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                                     match changed {
                                         Ok(()) => {
                                             info!("aicc driver metadata update canceled after settings changed");
+                                            refresh_after_settings_change = true;
                                             None
                                         }
                                         Err(err) => Some(Err(anyhow::anyhow!(
@@ -1664,24 +1664,12 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                     let delay = match result {
                         Ok(DriverMetadataUpdateOutcome::Activated { revision_seq }) => {
                             consecutive_failures = 0;
-                            let (refreshed, refresh_errors) = server
-                                .rpc_handler
-                                .0
-                                .refresh_all_provider_inventories()
-                                .await;
-                            info!(
-                                "aicc driver metadata activation committed revision={} refreshed_providers={} refresh_errors={}",
-                                revision_seq,
-                                refreshed,
-                                refresh_errors.len()
-                            );
-                            let refresh_error_count = refresh_errors.len();
-                            for (provider_instance_name, err) in refresh_errors {
-                                warn!(
-                                    "aicc driver metadata provider refresh failed provider_instance_name={} err={}",
-                                    provider_instance_name, err
-                                );
-                            }
+                            let refresh_error_count = refresh_provider_inventories_for_metadata(
+                                server.as_ref(),
+                                "activation-committed",
+                            )
+                            .await;
+                            refresh_after_settings_change = false;
                             server.update_metadata_runtime_state(|state| {
                                 record_metadata_update_success(
                                     state,
@@ -1694,30 +1682,20 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                         Ok(DriverMetadataUpdateOutcome::Unchanged { revision_seq }) => {
                             consecutive_failures = 0;
                             info!("aicc driver metadata unchanged revision={}", revision_seq);
-                            let retry_provider_refresh =
-                                server.metadata_runtime_state().status == "degraded";
+                            let retry_provider_refresh = refresh_after_settings_change
+                                || server.metadata_runtime_state().status == "degraded";
                             let refresh_error_count = if retry_provider_refresh {
-                                let (refreshed, refresh_errors) = server
-                                    .rpc_handler
-                                    .0
-                                    .refresh_all_provider_inventories()
-                                    .await;
-                                info!(
-                                    "aicc driver metadata provider refresh retry revision={} refreshed_providers={} refresh_errors={}",
-                                    revision_seq,
-                                    refreshed,
-                                    refresh_errors.len()
-                                );
-                                for (provider_instance_name, err) in refresh_errors.iter() {
-                                    warn!(
-                                        "aicc driver metadata provider refresh retry failed provider_instance_name={} err={}",
-                                        provider_instance_name, err
-                                    );
-                                }
-                                Some(refresh_errors.len())
+                                Some(
+                                    refresh_provider_inventories_for_metadata(
+                                        server.as_ref(),
+                                        "activation-unchanged",
+                                    )
+                                    .await,
+                                )
                             } else {
                                 None
                             };
+                            refresh_after_settings_change = false;
                             server.update_metadata_runtime_state(|state| {
                                 record_metadata_update_success(
                                     state,
@@ -1731,6 +1709,14 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                             consecutive_failures = consecutive_failures.saturating_add(1);
                             let delay =
                                 metadata_retry_delay(consecutive_failures, normal_interval);
+                            if refresh_after_settings_change {
+                                refresh_provider_inventories_for_metadata(
+                                    server.as_ref(),
+                                    "update-failed-after-settings-change",
+                                )
+                                .await;
+                                refresh_after_settings_change = false;
+                            }
                             let message =
                                 redact_metadata_error(err.to_string().as_str(), &settings_value);
                             warn!(
@@ -1749,7 +1735,11 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                     };
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(delay.max(1))) => {}
-                        _ = settings_rx.changed() => {}
+                        changed = settings_rx.changed() => {
+                            if changed.is_ok() {
+                                refresh_after_settings_change = true;
+                            }
+                        }
                     }
                 }
             });
@@ -1757,6 +1747,27 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
     if let Err(err) = spawn_result {
         error!("start metadata updater thread failed: {}", err);
     }
+}
+
+async fn refresh_provider_inventories_for_metadata(server: &AiccHttpServer, reason: &str) -> usize {
+    let (refreshed, refresh_errors) = server
+        .rpc_handler
+        .0
+        .refresh_all_provider_inventories()
+        .await;
+    info!(
+        "aicc driver metadata provider refresh reason={} refreshed_providers={} refresh_errors={}",
+        reason,
+        refreshed,
+        refresh_errors.len()
+    );
+    for (provider_instance_name, err) in refresh_errors.iter() {
+        warn!(
+            "aicc driver metadata provider refresh failed reason={} provider_instance_name={} err={}",
+            reason, provider_instance_name, err
+        );
+    }
+    refresh_errors.len()
 }
 
 fn metadata_retry_delay(consecutive_failures: u32, normal_interval: u64) -> u64 {
@@ -2131,7 +2142,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_update_set_exposes_runtime_apply_failure() {
+    fn metadata_update_set_reports_background_refresh_scheduling() {
         let settings = json!({
             "driver_metadata_update": {
                 "enabled": true,
@@ -2145,13 +2156,14 @@ mod tests {
                 &settings,
                 &DriverMetadataRuntimeState::for_settings(Some(&settings)),
             ),
-            json!({ "ok": false, "error": "provider refresh failed" }),
+            json!({ "ok": true, "refresh_scheduled": true }),
         );
 
         assert_eq!(result["ok"], true);
         assert_eq!(result["settings_revision"], 42);
         assert_eq!(result["settings"]["enabled"], true);
         assert_eq!(result["settings"]["status"], "idle");
-        assert_eq!(result["runtime_apply"]["ok"], false);
+        assert_eq!(result["runtime_apply"]["ok"], true);
+        assert_eq!(result["runtime_apply"]["refresh_scheduled"], true);
     }
 }

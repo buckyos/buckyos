@@ -163,8 +163,10 @@ If no rule succeeds, the resolver uses `provider_driver` and
 
 The regex must use named `driver` and `model` captures. Supported transforms
 are `trim`, `lowercase`, and `alias`; alias lookup only accepts the
-`origin_provider_aliases` table and `on_missing: keep`. Invalid mappings are
-ignored. Dynamic provider aliases such as `~x-ai/grok-latest` and router models
+`origin_provider_aliases` table and `on_missing: keep`. Unknown fields, invalid
+regular expressions, missing named captures, unsupported sources or transforms,
+and invalid transform options reject the complete metadata document before
+activation. Dynamic provider aliases such as `~x-ai/grok-latest` and router models
 such as `openrouter/auto` should be excluded with ordinary model or pattern
 rules. Aggregators that only admit base OpenAI model ids should place
 `openai/*:*` and `openai/*latest*` exclusion patterns before family allow
