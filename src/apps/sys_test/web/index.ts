@@ -8,8 +8,8 @@
  *   Step 3. getXxxClient().foo()           — exercise individual ServiceClients
  *
  * The page is split into "service groups". Each group offers two run buttons:
- *   - 在页面中运行检测 → run the cases through the in-page browser SDK
- *   - 在后台服务中运行检测 → POST /sdk/appservice/selftest so the AppService
+ *   - Run tests in page → run the cases through the in-page browser SDK
+ *   - Run tests on backend service → POST /sdk/appservice/selftest so the AppService
  *     runtime in main.ts runs the same cases on the server side
  *
  * Each group also leaves a placeholder area for future per-service manual

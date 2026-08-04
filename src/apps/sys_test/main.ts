@@ -6,7 +6,7 @@
  *   1) Serve the static web bundle for the in-page tester.
  *   2) Run the same selftest cases inside an AppService runtime, exposed via
  *      `POST /sdk/appservice/selftest`. The frontend calls this endpoint to
- *      execute the cases on the server side ("在后台服务中运行检测").
+ *      execute the cases on the server side ("Run tests on backend service").
  *
  * Phase 1 (initBuckyOS as AppService) is done up front. If the required
  * environment (`app_instance_config` + the `<OWNER>_<APP>_TOKEN`) is missing
@@ -986,7 +986,7 @@ Deno.serve({
     //   2. queryObjectById — query the object state
     //   3. isObjectStored/queryChunkState — query content + qcid state
     // The qcid is stored alongside the FileObject so that future uploads
-    // of the same file content can be resolved instantly (秒传).
+    // of the same file content can be resolved instantly (instant upload).
     if (
       req.method === "POST" && url.pathname === `${sdkRoutePrefix}/ndm_query`
     ) {
