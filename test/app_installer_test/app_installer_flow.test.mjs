@@ -8,7 +8,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
-import { buckyos, RuntimeType, TaskManagerClient } from 'buckyos/node'
+import { buckyos, TaskManagerClient } from 'buckyos/node'
 
 const execFileAsync = promisify(execFile)
 
@@ -97,7 +97,7 @@ function buildMetaFields() {
 }
 
 
-// v0.5: AppDoc requires `id` (App DID); derive via the frozen rule did:bns:{app_name}.{owner_id}.
+// v0.5: AppDoc requires `did` (App DID); derive via the frozen rule did:bns:{app_name}.{owner_id}.
 function deriveAppDid(appId) {
   const ownerIdPart = OWNER_DID.split(':').pop()
   return `did:bns:${appId}.${ownerIdPart}`
@@ -213,15 +213,26 @@ function encodeJwtPart(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url')
 }
 
+async function getNodeSigningCredential() {
+  const identity = JSON.parse(
+    await readFile('/opt/buckyos/etc/node_identity.json', 'utf8'),
+  )
+  const deviceHost = String(identity.device_did ?? '').replace(/^did:web:/, '')
+  return {
+    path: path.join(
+      '/opt/buckyos/security',
+      deviceHost,
+      'authentication.private.pem',
+    ),
+    kid: identity.device_name ?? getEnv('BUCKYOS_TEST_NODE_KID') ?? 'ood1',
+  }
+}
+
 async function createOwnerSignedLoginJwt(userId) {
-  // 本地可用的 zone 信任凭证，按优先级：
-  // 1) zone owner key（标准 DV 布局 /opt/buckyos/etc/.buckycli）
-  // 2) node/device key（node_active 布局；设备 key 在 zone trust keys 中，
-  //    verify-hub 接受其签发的 login jwt）
-  const nodeKid = getEnv('BUCKYOS_TEST_NODE_KID') ?? 'ood1'
+  // 本地可用的 zone owner 或当前 device 信任凭证。
   const candidates = [
     { path: '/opt/buckyos/etc/.buckycli/user_private_key.pem', kid: 'root' },
-    { path: '/opt/buckyos/etc/node_private_key.pem', kid: nodeKid },
+    await getNodeSigningCredential(),
   ]
   for (const candidate of candidates) {
     if (!(await fileExists(candidate.path))) {
@@ -261,28 +272,13 @@ async function createOwnerSignedLoginJwt(userId) {
 
 async function loginWithAppClient() {
   const ownerSignedJwt = await createOwnerSignedLoginJwt(TEST_USER_ID)
-
-  await buckyos.initBuckyOS(TEST_APP_ID, {
-    appId: TEST_APP_ID,
-    runtimeType: RuntimeType.AppClient,
-    zoneHost: '',
-    defaultProtocol: 'https://',
-    systemConfigServiceUrl: SYSTEM_CONFIG_URL,
-    privateKeySearchPaths: [
-      '/opt/buckyos/etc/.buckycli',
-      '/opt/buckyos/etc',
-      '/opt/buckyos',
-      `${process.env.HOME ?? ''}/.buckycli`,
-      `${process.env.HOME ?? ''}/.buckyos`,
-    ],
-  })
-
-  const accountInfo = ownerSignedJwt
-    ? {
-        session_token: ownerSignedJwt,
-        user_id: TEST_USER_ID,
-      }
-    : await buckyos.login()
+  if (!ownerSignedJwt) {
+    throw new Error('No local owner or device signing credential is available')
+  }
+  const accountInfo = {
+    session_token: ownerSignedJwt,
+    user_id: TEST_USER_ID,
+  }
 
   if (!accountInfo?.session_token) {
     throw new Error('AppClient login did not return a session_token')
@@ -495,17 +491,15 @@ async function getSeedRpcClient() {
   if (seedRpcClient) {
     return seedRpcClient
   }
-  const nodeKid = getEnv('BUCKYOS_TEST_NODE_KID') ?? 'ood1'
-  const keyPem = (
-    await readFile('/opt/buckyos/etc/node_private_key.pem', 'utf8')
-  ).trim()
+  const credential = await getNodeSigningCredential()
+  const keyPem = (await readFile(credential.path, 'utf8')).trim()
   const now = Math.floor(Date.now() / 1000)
-  const header = { alg: 'EdDSA', kid: nodeKid }
+  const header = { alg: 'EdDSA', kid: credential.kid }
   const payload = {
     appid: 'node-daemon',
     userid: 'root',
     sub: 'root',
-    iss: nodeKid,
+    iss: credential.kid,
     jti: String(now),
     session: now,
     exp: now + 3600,
@@ -776,10 +770,6 @@ async function fileExists(targetPath) {
 }
 
 after(async () => {
-  if (sdkContextPromise) {
-    buckyos.logout(false)
-  }
-
   if (UNINSTALL_AFTER_INSTALL) {
     for (const imageName of [...dockerImages]) {
       await removeDockerImage(imageName)
@@ -815,7 +805,7 @@ test('app_installer local publish lifecycle', async (t) => {
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
       assert.equal(spec.app_doc.version, fixture.version)
-      assert.equal(spec.app_doc.id, published.app_did)
+      assert.equal(spec.app_doc.did, published.app_did)
       assert.equal(spec.app_doc.selector_type, 'static')
       assert.ok(
         isInstalledSpecState(spec.state),

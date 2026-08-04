@@ -7,9 +7,9 @@
 >   需在 Docker Desktop Settings → Resources → File sharing 手工加入
 >   `/opt/buckyos` 后重跑（属本机 Docker 配置，测试不代改）。
 > - `BUCKYOS_TEST_SKIP_DOCKER=1` 可跳过 docker 用例（本机镜像拉取被网络阻断时用）。
-> - 登录凭证：优先 `/opt/buckyos/etc/.buckycli/user_private_key.pem`（zone owner），
->   回退 `/opt/buckyos/etc/node_private_key.pem`（设备 key，node_active 布局），
->   kid 用 `BUCKYOS_TEST_NODE_KID`（默认 ood1）。
+> - 登录凭证：优先 zone owner key；否则从
+>   `/opt/buckyos/etc/node_identity.json` 解析当前设备，读取
+>   `/opt/buckyos/security/<device-host>/authentication.private.pem`。
 > - fixture 的 pkg 名必须带 `.`（如 `e2e.{app}-agent`）或自带 env 前缀：
 >   PackageEnv 对无点名字会加 `nightly-{os}-{arch}.` 前缀查找，而 pkg meta 是
 >   内容寻址对象不可改名（node_daemon 旧的静默改名路径已改为显式报错）。
@@ -53,6 +53,14 @@ pnpm install
 pnpm test
 ```
 
+生成用于文件导入、Inspect 和安装测试的三类 `.pikg` 样例：
+
+```bash
+pnpm run generate:pikg-samples
+```
+
+产物保存在 `pikg_samples/`，包含 static web、script host 和当前主机架构的 Docker 镜像包。生成器通过当前 Control Panel 的 `app.publish` 入口打包，并核对 ZIP 结构、App Document、`PACKAGE_META.json` 和整包 SHA-256。
+
 可选环境变量：
 
 ```bash
@@ -91,19 +99,20 @@ import { buckyos, RuntimeType, parseSessionTokenClaims } from 'buckyos/node'
 BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 ```
 
-测试目录下已包含三类本地构造 app 所需配置：
+测试目录下已包含四类本地构造 app 所需配置：
 
 - `fixtures/static-web/`: 静态网页内容
+- `fixtures/script-host/`: Host Script 的 Python HTTP 服务与入口描述
 - `fixtures/agent/`: agent 行为与 prompts
 - `fixtures/docker/`: 本地构建镜像的 Dockerfile 与入口脚本
-- `fixtures/templates/*.json`: 三类 app 的 `app_doc` 模板
+- `fixtures/templates/*.json`: 四类 app 的 `app_doc` 模板
 
 说明：
 
-- 测试默认使用 `buckyos/node` 的 AppClient 本地自签方式生成初始 JWT，并把 `appid` 固定成 `control-panel`。
+- 测试默认使用本机 zone owner 或当前 device 信任凭证生成初始 JWT，并把 `appid` 固定成 `control-panel`。
 - 自签 JWT 之后，测试会显式调用 `verify-hub.login_by_jwt`，换取 `control-panel` 可接受的 verify-hub session token。
 - `app_installer_flow.test.mjs` 不再允许通过环境变量覆盖测试 `appid`。
-- 当前自签 token 的 `sub` 取决于本机找到的是 `user_private_key.pem` 还是 `node_private_key.pem`。
+- 当前自签 token 的 `sub` 固定为测试用户，签名 key 来自 zone owner 或当前 device 的 `authentication.private.pem`。
 - `app.publish` 依赖 `repo-service`；测试启动时会检查 `services/repo-service/info`，缺失时直接报错。
 - 测试里生成的 app / sub-pkg version 会保持在 `0.1.x` 且 `x <= 65535`，因为当前 package env 的版本索引不接受超过 `65535` 的 patch 号。
 - static web case 按 `/opt/buckyos/bin/<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。

@@ -3,27 +3,27 @@
   "doc_type": "app",
   "name": "__APP_ID__",
   "version": "__VERSION__",
-  "show_name": "App Installer Agent Fixture",
+  "show_name": "PIKG Script Host Fixture",
   "author": "__OWNER_DID__",
   "owner": "__OWNER_DID__",
   "size": 0,
   "content": "",
   "categories": [
-    "agent"
+    "dapp"
   ],
   "meta": {
     "description": {
       "detail": {
-        "en": "Local agent fixture for app_installer lifecycle testing."
+        "en": "Portable Python HTTP service for PIKG host-script testing."
       }
     }
   },
   "selector_type": "single",
   "service_config_tips": {
     "service_endpoints": {
-      "http": {
+      "www": {
         "protocol": "http",
-        "inner_port": 4060,
+        "inner_port": 3000,
         "required": true,
         "expose": {
           "route": {
@@ -36,11 +36,11 @@
     }
   },
   "pkg_list": {
-    "agent": {
-      "pkg_id": "__AGENT_PKG_ID__"
+    "script": {
+      "pkg_id": "__SCRIPT_PKG_ID__"
     }
   },
   "deps": {
-    "e2e.__APP_ID__-agent": "__VERSION__"
+    "e2e.__APP_ID__-script": "__VERSION__"
   }
 }

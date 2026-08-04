@@ -1,0 +1,36 @@
+{
+  "schema": "buckyos.pikg.samples.v1",
+  "generated_at": "2026-08-03T23:45:58.196Z",
+  "samples": [
+    {
+      "file": "static-web.pikg",
+      "bytes": 1894,
+      "sha256": "6cdf374df6185e11b266e62caeff7b281ff7a6fdc59d1485e64114d3735e10de",
+      "pikg_handle": "pikg:sha256:6cdf374df6185e11b266e62caeff7b281ff7a6fdc59d1485e64114d3735e10de",
+      "app_did": "did:bns:pikg-static-web.root",
+      "app_doc_id": "appdoc:af40b44d259c03fbd832b493b279769aa0fde93129ede0b343951476c554365c",
+      "app_type": "web",
+      "package_key": "web"
+    },
+    {
+      "file": "script-host.pikg",
+      "bytes": 1923,
+      "sha256": "e27c28a223c2fff453baddbd8750ce6840239be65b33fd19b2d7dbceb16d5083",
+      "pikg_handle": "pikg:sha256:e27c28a223c2fff453baddbd8750ce6840239be65b33fd19b2d7dbceb16d5083",
+      "app_did": "did:bns:pikg-script-host.root",
+      "app_doc_id": "appdoc:31d87a761ff50bde35c96e64359607351cc7e45d14b0f852a8b980e35139a108",
+      "app_type": "dapp",
+      "package_key": "script"
+    },
+    {
+      "file": "docker.pikg",
+      "bytes": 1897484,
+      "sha256": "c192608235c9692be0080a8bd24e46b7ecfaaa23bb873c7df5c3b8ae728f20b8",
+      "pikg_handle": "pikg:sha256:c192608235c9692be0080a8bd24e46b7ecfaaa23bb873c7df5c3b8ae728f20b8",
+      "app_did": "did:bns:pikg-docker.root",
+      "app_doc_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
+      "app_type": "dapp",
+      "package_key": "aarch64_docker_image"
+    }
+  ]
+}

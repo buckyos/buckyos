@@ -436,6 +436,9 @@ impl SubPkgList {
         if let Some(pkg) = &self.amd64_apple_app {
             list.push(("amd64_apple_app".to_string(), pkg));
         }
+        if let Some(pkg) = &self.script {
+            list.push(("script".to_string(), pkg));
+        }
         if let Some(pkg) = &self.web {
             list.push(("web".to_string(), pkg));
         }
@@ -1044,6 +1047,7 @@ impl AppDocBuilder {
     pub fn build(mut self) -> Result<AppDoc> {
         let has_docker = self.pkg_list.amd64_docker_image.is_some()
             || self.pkg_list.aarch64_docker_image.is_some();
+        let has_script = self.pkg_list.script.is_some();
         let has_web = self.pkg_list.web.is_some();
         let has_native_app = self.pkg_list.amd64_linux_app.is_some()
             || self.pkg_list.aarch64_linux_app.is_some()
@@ -1075,8 +1079,8 @@ impl AppDocBuilder {
                 }
             }
             AppType::AppService => {
-                if !has_docker {
-                    errors.push("AppService app must include docker images (set `amd64_docker_image` and/or `aarch64_docker_image`)".to_string());
+                if !has_docker && !has_script {
+                    errors.push("AppService app must include a runtime package (set `pkg_list.script`, `amd64_docker_image`, and/or `aarch64_docker_image`)".to_string());
                 }
                 if has_web {
                     errors.push(
@@ -1424,10 +1428,10 @@ mod tests {
     }
 
     #[test]
-    fn test_app_doc_builder_appservice_requires_docker_and_sets_default_permissions() {
+    fn test_app_doc_builder_appservice_requires_runtime_and_sets_default_permissions() {
         let owner = DID::from_str("did:web:example.com").unwrap();
 
-        // AppService must require docker image.
+        // AppService must require a runnable package.
         let err = AppDoc::builder(
             AppType::AppService,
             "demo_dapp_bad",
@@ -1439,7 +1443,7 @@ mod tests {
         .err()
         .unwrap();
         assert!(
-            format!("{:?}", err).contains("must include docker images"),
+            format!("{:?}", err).contains("must include a runtime package"),
             "unexpected error: {:?}",
             err
         );
@@ -1484,6 +1488,24 @@ mod tests {
             "permissions: {:?}",
             doc.permissions
         );
+
+        let script_doc = AppDoc::builder(
+            AppType::AppService,
+            "demo_script_dapp",
+            "0.1.0",
+            "did:web:example.com",
+            &owner,
+        )
+        .script_pkg(SubPkgDesc::new("demo_script_dapp-script#0.1.0"))
+        .build()
+        .unwrap();
+        assert!(script_doc.pkg_list.script.is_some());
+        assert!(script_doc
+            .pkg_list
+            .iter()
+            .iter()
+            .any(|(key, _)| key == "script"));
+        assert_eq!(script_doc.get_app_type(), AppType::AppService);
     }
 
     #[test]

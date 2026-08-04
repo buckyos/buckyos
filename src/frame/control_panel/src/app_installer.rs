@@ -838,16 +838,40 @@ impl AppInstaller {
                 })
             }
             AppType::AppService => {
-                let has_unsupported_subpkg = app_doc_template
-                    .pkg_list
-                    .iter()
-                    .into_iter()
-                    .any(|(key, _)| key != "amd64_docker_image" && key != "aarch64_docker_image");
+                let has_unsupported_subpkg =
+                    app_doc_template
+                        .pkg_list
+                        .iter()
+                        .into_iter()
+                        .any(|(key, _)| {
+                            key != "amd64_docker_image"
+                                && key != "aarch64_docker_image"
+                                && key != "script"
+                        });
                 if has_unsupported_subpkg {
                     return Err(RPCErrors::ReasonError(
-                        "AppService publish currently only supports `amd64_docker_image` and `aarch64_docker_image`"
+                        "AppService publish currently only supports `script`, `amd64_docker_image`, and `aarch64_docker_image`"
                             .to_string(),
                     ));
+                }
+
+                if let Some(script_desc) = app_doc_template.pkg_list.script.clone() {
+                    if app_doc_template.pkg_list.amd64_docker_image.is_some()
+                        || app_doc_template.pkg_list.aarch64_docker_image.is_some()
+                    {
+                        return Err(RPCErrors::ReasonError(
+                            "AppService publish does not support mixing `script` and docker image packages yet"
+                                .to_string(),
+                        ));
+                    }
+                    return Ok(PublishScanPlan {
+                        app_bundle: None,
+                        sub_pkgs: vec![ScannedSubPkg {
+                            key: "script".to_string(),
+                            desc: script_desc,
+                            source: PackageSource::Directory(local_dir.to_path_buf()),
+                        }],
+                    });
                 }
 
                 let mut sub_pkgs = Vec::new();
@@ -1411,6 +1435,7 @@ impl AppInstaller {
             "aarch64_win_app" => app_doc.pkg_list.aarch64_win_app = Some(desc),
             "aarch64_apple_app" => app_doc.pkg_list.aarch64_apple_app = Some(desc),
             "amd64_apple_app" => app_doc.pkg_list.amd64_apple_app = Some(desc),
+            "script" => app_doc.pkg_list.script = Some(desc),
             "web" => app_doc.pkg_list.web = Some(desc),
             "agent" => app_doc.pkg_list.agent = Some(desc),
             "agent_skills" => app_doc.pkg_list.agent_skills = Some(desc),
@@ -2063,6 +2088,19 @@ mod tests {
         .expect("build appservice template")
     }
 
+    fn build_script_appservice_template() -> AppDoc {
+        AppDoc::builder(
+            AppType::AppService,
+            "demo_script_service",
+            "0.1.0",
+            "tester",
+            &test_owner(),
+        )
+        .script_pkg(SubPkgDesc::new("demo_script_service-script#0.1.0"))
+        .build()
+        .expect("build script appservice template")
+    }
+
     fn temp_test_dir(prefix: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("{}-{}", prefix, Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -2197,6 +2235,64 @@ mod tests {
             }
             other => panic!("unexpected source: {:?}", std::mem::discriminant(other)),
         }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn publish_example_script_appservice_uses_local_dir() {
+        let installer = test_installer();
+        let template = build_script_appservice_template();
+        let dir = temp_test_dir("appservice-script-layout");
+        std::fs::write(dir.join("main.py"), "print('hello')").expect("write script entry");
+
+        let scan_plan = installer
+            .scan_publish_sources(AppType::AppService, &dir, &template)
+            .expect("scan script appservice");
+
+        assert!(scan_plan.app_bundle.is_none());
+        assert_eq!(scan_plan.sub_pkgs.len(), 1);
+        assert_eq!(scan_plan.sub_pkgs[0].key, "script");
+        match &scan_plan.sub_pkgs[0].source {
+            PackageSource::Directory(path) => assert_eq!(path, &dir),
+            other => panic!("unexpected source: {:?}", std::mem::discriminant(other)),
+        }
+
+        let desc = template.pkg_list.script.clone().expect("script pkg");
+        let meta_id = ObjId::new_by_raw("pkg".to_string(), vec![7; 32]);
+        let final_doc = AppInstaller::build_final_app_doc_for_publish(
+            &template,
+            None,
+            &[("script".to_string(), desc, meta_id.clone())],
+        )
+        .expect("build script final doc");
+        assert_eq!(
+            final_doc
+                .pkg_list
+                .script
+                .as_ref()
+                .and_then(|value| value.pkg_objid.clone()),
+            Some(meta_id)
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn publish_example_script_and_docker_mix_is_rejected() {
+        let installer = test_installer();
+        let mut template = build_script_appservice_template();
+        template.pkg_list.amd64_docker_image = Some(
+            SubPkgDesc::new("demo_script_service-img#0.1.0")
+                .docker_image_name("buckyos/demo_script_service:0.1.0-amd64"),
+        );
+        let dir = temp_test_dir("appservice-script-docker-rejected");
+
+        let error = match installer.scan_publish_sources(AppType::AppService, &dir, &template) {
+            Ok(_) => panic!("mixed script and docker packages should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("mixing `script` and docker"));
 
         let _ = std::fs::remove_dir_all(dir);
     }
