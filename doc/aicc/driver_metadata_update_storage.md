@@ -29,6 +29,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 <source-key>/observed/index/<index-revision>.json
 <source-key>/observed/manifest/<manifest-revision>.json
 <source-key>/staging/<attempt>/...
+<source-key>/last_used
 ```
 
 这是文件系统直接作为核心数据模型的显式例外，风险为目录损坏和跨文件提交。选择该方式的原因是数据都是小型、不可变、内容寻址的 NDN 文件，没有结构化查询；activation 单文件是唯一提交点，避免 RDB head 与运行时文件之间的双提交。所有 durable 文件都先写同目录临时文件、`sync_all`，再用原子的 create-if-absent 操作提交到此前不存在的最终路径：Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。文件系统布局不进入用户配置或 API，未来可迁移到对象存储。
@@ -93,4 +94,4 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 每个 source namespace 最多保留两个有效 activation、两个 index 水位和两个 manifest
 水位；对象保留集合是这些 activation 与最新 observed manifest 的引用并集。它覆盖当前
 生效版本、一次必要回退/并发读取版本和正在更新的 candidate。其它对象、旧水位、旧
-activation 和 staging 均清理。未使用 source namespace 保留其 LKGS、对象和 observed 水位，防止停用或切源后丢失防回滚状态；因此单个 source 的占用有确定上界，总占用还取决于历史配置过的 source 数量。删除历史 source namespace 只能由显式维护操作完成。
+activation 和 staging 均清理。全局最多保留四个最近使用的 source namespace，当前 source 每次更新前刷新 `last_used`；超过上限时整体删除最旧 namespace。仍在保留窗口内的 source 可以继续使用原有 LKGS 和 observed 水位，超出窗口后再次启用则按新 source 首次同步处理。由此单个 source 和 source 总数都有确定上界。

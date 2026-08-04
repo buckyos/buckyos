@@ -31,6 +31,7 @@ const MAX_MANIFEST_METADATA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PROVIDER_FILES: usize = 1024;
 const MAX_RETAINED_ACTIVATIONS: usize = 2;
 const MAX_RETAINED_WATERMARKS: usize = 2;
+const MAX_RETAINED_SOURCE_NAMESPACES: usize = 4;
 const MIN_UPDATE_INTERVAL_SECS: u64 = 60;
 const MAX_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
@@ -286,6 +287,22 @@ pub struct DriverMetadataUpdater {
     source_key: String,
 }
 
+struct DriverMetadataAttempt {
+    path: PathBuf,
+}
+
+impl DriverMetadataAttempt {
+    fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+}
+
+impl Drop for DriverMetadataAttempt {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.path.as_path());
+    }
+}
+
 impl DriverMetadataUpdater {
     pub fn new(settings: DriverMetadataUpdateSettings) -> Result<Self> {
         let source_key = settings.source_key()?;
@@ -308,10 +325,15 @@ impl DriverMetadataUpdater {
                 .write()
                 .map_err(|_| anyhow!("metadata store lock poisoned"))?;
             self.store.prepare()?;
+            touch_source_namespace(self.store.root.as_path())?;
+            prune_source_namespaces(
+                default_store_root().as_path(),
+                self.source_key.as_str(),
+                MAX_RETAINED_SOURCE_NAMESPACES,
+            )?;
         }
         let attempt = self.store.new_attempt_dir()?;
-        let result = self.update_once_inner(attempt.as_path()).await;
-        let _ = std::fs::remove_dir_all(attempt.as_path());
+        let result = self.update_once_inner(attempt.path()).await;
         if let Ok(_guard) = METADATA_STORE_LOCK.get_or_init(|| RwLock::new(())).write() {
             let _ = self.store.prune_history();
             let _ = self.store.cleanup_parts_and_orphans();
@@ -576,13 +598,13 @@ impl DriverMetadataStore {
         self.root.join("staging")
     }
 
-    fn new_attempt_dir(&self) -> Result<PathBuf> {
+    fn new_attempt_dir(&self) -> Result<DriverMetadataAttempt> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = self
             .staging_dir()
             .join(format!("{}-{}", std::process::id(), now));
         std::fs::create_dir(&path)?;
-        Ok(path)
+        Ok(DriverMetadataAttempt { path })
     }
 
     fn object_path(&self, obj_id: &ObjId) -> PathBuf {
@@ -1004,6 +1026,20 @@ pub(crate) fn load_active_remote_metadata(
     )
 }
 
+pub fn active_remote_metadata_revision(settings: &Value) -> Option<u64> {
+    let settings = DriverMetadataUpdateSettings::from_aicc_settings(settings)
+        .ok()
+        .flatten()?;
+    let source_key = settings.source_key().ok()?;
+    let _store_guard = METADATA_STORE_LOCK
+        .get_or_init(|| RwLock::new(()))
+        .read()
+        .ok()?;
+    DriverMetadataStore::new(source_store_root(source_key.as_str()))
+        .load_latest_activation_cached()
+        .map(|activation| activation.manifest.revision_seq)
+}
+
 #[cfg(test)]
 fn load_active_remote_metadata_in(
     root: &Path,
@@ -1075,6 +1111,58 @@ fn default_store_root() -> PathBuf {
 
 fn source_store_root(source_key: &str) -> PathBuf {
     default_store_root().join(source_key)
+}
+
+fn touch_source_namespace(root: &Path) -> Result<()> {
+    let path = root.join("last_used");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path.as_path())?;
+    file.write_all(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_millis()
+            .to_string()
+            .as_bytes(),
+    )?;
+    file.sync_all()?;
+    sync_parent_dir(root)
+}
+
+fn prune_source_namespaces(root: &Path, active_source_key: &str, retain: usize) -> Result<()> {
+    if !root.is_dir() || retain == 0 {
+        return Ok(());
+    }
+    let mut namespaces = std::fs::read_dir(root)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .map(|entry| {
+            let path = entry.path();
+            let source_key = entry.file_name().to_string_lossy().to_string();
+            let last_used = std::fs::read_to_string(path.join("last_used"))
+                .ok()
+                .and_then(|value| value.parse::<u128>().ok())
+                .unwrap_or(0);
+            (source_key, path, last_used)
+        })
+        .collect::<Vec<_>>();
+    namespaces.sort_by_key(|(source_key, _, last_used)| {
+        (
+            std::cmp::Reverse(source_key == active_source_key),
+            std::cmp::Reverse(*last_used),
+        )
+    });
+    for (_, path, _) in namespaces.into_iter().skip(retain) {
+        std::fs::remove_dir_all(path)?;
+    }
+    sync_parent_dir(root)
 }
 
 fn validate_index(index: &DriverMetadataIndex) -> Result<()> {
@@ -2449,21 +2537,36 @@ mod tests {
     }
 
     #[test]
-    fn source_maintenance_does_not_delete_inactive_namespace() {
+    fn source_namespace_gc_keeps_active_and_most_recent_namespaces() {
         let temp = tempfile::tempdir().unwrap();
-        let active = DriverMetadataStore::new(temp.path().join("a".repeat(64)));
-        let inactive = temp.path().join("b".repeat(64));
-        active.prepare().unwrap();
-        std::fs::create_dir_all(inactive.as_path()).unwrap();
-        std::fs::write(inactive.join("watermark"), b"retained").unwrap();
+        let active_key = "a".repeat(64);
+        let recent_key = "b".repeat(64);
+        let old_key = "c".repeat(64);
+        for (key, last_used) in [(&active_key, 30), (&recent_key, 20), (&old_key, 10)] {
+            let namespace = temp.path().join(key);
+            std::fs::create_dir_all(namespace.as_path()).unwrap();
+            std::fs::write(namespace.join("last_used"), last_used.to_string()).unwrap();
+        }
 
-        active.prune_history().unwrap();
-        active.cleanup_parts_and_orphans().unwrap();
+        prune_source_namespaces(temp.path(), active_key.as_str(), 2).unwrap();
 
-        assert_eq!(
-            std::fs::read(inactive.join("watermark")).unwrap(),
-            b"retained"
-        );
+        assert!(temp.path().join(active_key).is_dir());
+        assert!(temp.path().join(recent_key).is_dir());
+        assert!(!temp.path().join(old_key).exists());
+    }
+
+    #[test]
+    fn dropping_update_attempt_removes_staging_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        let attempt = store.new_attempt_dir().unwrap();
+        let path = attempt.path().to_path_buf();
+        std::fs::write(path.join("index.part"), b"partial").unwrap();
+
+        drop(attempt);
+
+        assert!(!path.exists());
     }
 
     #[test]

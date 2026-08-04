@@ -26,7 +26,7 @@ AICC settings 中显式启用更新源：
 }
 ```
 
-`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。每个 canonical `source_url` 使用独立的本地水位和 activation namespace，不跨发布源比较 revision。settings 日志必须掩盖 URL userinfo。未配置、配置无效或 `enabled=false` 时停止轮询，但保留所有已知 source namespace 的 LKGS 和防回滚水位；重新启用或切回同一 canonical source 时继续沿用原有水位。settings 暂时不可用是独立状态，只退避重试，不能按禁用处理或清理 LKGS。`interval_secs` 归一化到 60 秒至 1 天。
+`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。每个 canonical `source_url` 使用独立的本地水位和 activation namespace，不跨发布源比较 revision。settings 日志必须掩盖 URL userinfo。未配置、配置无效或 `enabled=false` 时停止轮询。客户端最多保留最近使用的四个 source namespace；重新启用仍在保留窗口内的 canonical source 时继续沿用原有 LKGS 和水位，超出窗口的最旧 namespace 会被整体回收。settings 暂时不可用是独立状态，只退避重试，不能按禁用处理或清理当前 LKGS。`interval_secs` 归一化到 60 秒至 1 天。
 
 ```text
 /aicc/driver-metadata/index.json
@@ -159,6 +159,7 @@ NDN SDK 是下载时文件内容正确性的唯一协议校验层，AICC 不重�
 candidate：已经完整下载并通过 NDN 与 JSON 身份校验的 provider 对象可以跨重试复用，
 但重试仍从 index 和 manifest 开始，不恢复下载中间进度。既不被保留 activation、也不被
 最新 candidate 引用的对象属于垃圾并立即清理，不存在持久化的 `updating` 锁或阶段机。
+settings 发生变化时立即取消当前下载并删除本次 staging，然后按新 settings 重新调度；旧 source 的慢响应不能阻塞切源或禁用。
 
 读取端首次按 revision 从高到低验证 activation 及其全部对象，并在进程内缓存已完整验证的最高版本。普通读取复核 activation wrapper 和当前 provider 对象；目标对象损坏时清除缓存，重新执行完整验证并回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
 

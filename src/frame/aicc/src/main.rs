@@ -49,8 +49,9 @@ use crate::claude::register_claude_providers;
 use crate::fal::register_fal_providers;
 use crate::gemini::register_google_gemini_providers;
 use crate::metadata_updater::{
-    configure_remote_metadata_source, normalize_update_interval_secs, DriverMetadataUpdateOutcome,
-    DriverMetadataUpdateSettings, DriverMetadataUpdater,
+    active_remote_metadata_revision, configure_remote_metadata_source,
+    normalize_update_interval_secs, DriverMetadataUpdateOutcome, DriverMetadataUpdateSettings,
+    DriverMetadataUpdater,
 };
 use crate::minimax::register_minimax_providers;
 use crate::openai::register_openai_llm_providers;
@@ -110,9 +111,16 @@ impl DriverMetadataRuntimeState {
             .and_then(|value| value.get("enabled"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let active_revision = settings.and_then(active_remote_metadata_revision);
         Self {
-            status: if enabled { "idle" } else { "disabled" },
-            active_revision: None,
+            status: if !enabled {
+                "disabled"
+            } else if active_revision.is_some() {
+                "healthy"
+            } else {
+                "idle"
+            },
+            active_revision,
             last_attempt_at_ms: None,
             last_success_at_ms: None,
             last_error: None,
@@ -1409,9 +1417,12 @@ impl AiccHttpServer {
             .ok()
             .flatten()
             .is_some();
+        let active_revision = enabled
+            .then(|| active_remote_metadata_revision(settings))
+            .flatten();
         self.update_metadata_runtime_state(|state| {
             state.status = if enabled { "updating" } else { "disabled" };
-            state.active_revision = None;
+            state.active_revision = active_revision;
             state.last_attempt_at_ms = Some(metadata_now_ms());
             state.last_error = None;
             state.consecutive_failures = 0;
@@ -1424,7 +1435,13 @@ impl AiccHttpServer {
 
         if refresh_errors.is_empty() {
             self.update_metadata_runtime_state(|state| {
-                state.status = if enabled { "idle" } else { "disabled" };
+                state.status = if !enabled {
+                    "disabled"
+                } else if active_revision.is_some() {
+                    "healthy"
+                } else {
+                    "idle"
+                };
             });
             json!({ "ok": true, "providers_refreshed": refreshed })
         } else {
@@ -1595,8 +1612,30 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                         state.last_attempt_at_ms = Some(metadata_now_ms());
                     });
                     let result = match DriverMetadataUpdater::new(update_settings) {
-                        Ok(updater) => updater.update_once().await,
-                        Err(err) => Err(err),
+                        Ok(updater) => {
+                            let update = updater.update_once();
+                            tokio::pin!(update);
+                            tokio::select! {
+                                result = &mut update => Some(result),
+                                changed = settings_rx.changed() => {
+                                    match changed {
+                                        Ok(()) => {
+                                            info!("aicc driver metadata update canceled after settings changed");
+                                            None
+                                        }
+                                        Err(err) => Some(Err(anyhow::anyhow!(
+                                            "metadata settings channel closed: {}",
+                                            err
+                                        ))),
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => Some(Err(err)),
+                    };
+                    let Some(result) = result else {
+                        consecutive_failures = 0;
+                        continue;
                     };
                     let delay = match result {
                         Ok(DriverMetadataUpdateOutcome::Activated { revision_seq }) => {

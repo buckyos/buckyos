@@ -21,6 +21,7 @@ export function CloudUpdateCard() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [sourceUrl, setSourceUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const statusLabel = cloudUpdateStatusLabel(settings.status, t)
   const statusColor = settings.status === 'healthy'
     ? 'var(--cp-success)'
@@ -34,17 +35,28 @@ export function CloudUpdateCard() {
 
   useEffect(() => {
     let cancelled = false
-    void store.getCloudUpdateSettings()
-      .then((value) => {
-        if (!cancelled) setSettings(value)
-      })
-      .catch((cause) => {
-        if (!cancelled) setError(errorMessage(cause))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => { cancelled = true }
+    let timer: number | undefined
+    const refresh = async () => {
+      try {
+        const value = await store.getCloudUpdateSettings()
+        if (!cancelled) {
+          setSettings(value)
+          setRefreshError(null)
+        }
+      } catch (cause) {
+        if (!cancelled) setRefreshError(errorMessage(cause))
+      } finally {
+        if (!cancelled) {
+          setLoading(false)
+          timer = window.setTimeout(() => void refresh(), 5_000)
+        }
+      }
+    }
+    void refresh()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [store])
 
   const openDialog = () => {
@@ -121,8 +133,8 @@ export function CloudUpdateCard() {
             <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
               {t('aiCenter.cloudUpdate.desc', 'Keep provider model capabilities, pricing, and routing metadata current from a trusted publisher.')}
             </p>
-            {error && !dialogOpen && <p className="mt-1 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p>}
-            {!error && settings.lastError && !dialogOpen && (
+            {(error || refreshError) && !dialogOpen && <p className="mt-1 text-xs" style={{ color: 'var(--cp-danger)' }}>{error || refreshError}</p>}
+            {!error && !refreshError && settings.lastError && !dialogOpen && (
               <p className="mt-1 text-xs" style={{ color: settings.status === 'error' ? 'var(--cp-danger)' : 'var(--cp-warning)' }}>
                 {settings.lastError}
               </p>
