@@ -740,11 +740,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       },
       { requireSession: true },
     )
-    if (result.ok !== true) {
-      const reload = isRecord(result.reload) ? result.reload : {}
-      throw new Error(asNonEmptyString(reload.error, 'aicc.cloud_update_save_failed'))
-    }
-    return toCloudUpdateSettings(isRecord(result.settings) ? result.settings : result)
+    return cloudUpdateSettingsFromSetResult(result)
   }
 
   private async call<T>(
@@ -873,6 +869,19 @@ function toCloudUpdateSettings(raw: Record<string, unknown>): CloudUpdateSetting
     lastError: asOptionalString(raw.last_error),
     consecutiveFailures: asOptionalNumber(raw.consecutive_failures) ?? 0,
   }
+}
+
+function cloudUpdateSettingsFromSetResult(
+  result: Record<string, unknown>,
+): CloudUpdateSettings {
+  if (result.ok !== true) {
+    throw new Error(asNonEmptyString(result.error, asNonEmptyString(result.reason, 'aicc.cloud_update_save_failed')))
+  }
+  const runtimeApply = isRecord(result.runtime_apply) ? result.runtime_apply : {}
+  if (runtimeApply.ok === false) {
+    throw new Error(asNonEmptyString(runtimeApply.error, 'aicc.cloud_update_runtime_apply_failed'))
+  }
+  return toCloudUpdateSettings(isRecord(result.settings) ? result.settings : result)
 }
 
 function isCloudUpdateStatus(value: string | undefined): value is CloudUpdateStatus {

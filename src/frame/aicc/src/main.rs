@@ -35,6 +35,7 @@ use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
+use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -127,6 +128,24 @@ impl DriverMetadataRuntimeState {
             consecutive_failures: 0,
         }
     }
+}
+
+fn record_metadata_update_success(
+    state: &mut DriverMetadataRuntimeState,
+    revision_seq: u64,
+    refresh_error_count: Option<usize>,
+) {
+    state.status = if refresh_error_count.is_some_and(|count| count > 0) {
+        "degraded"
+    } else {
+        "healthy"
+    };
+    state.active_revision = Some(revision_seq);
+    state.last_success_at_ms = Some(metadata_now_ms());
+    state.last_error = refresh_error_count
+        .filter(|count| *count > 0)
+        .map(|count| format!("{} provider inventory refreshes failed", count));
+    state.consecutive_failures = 0;
 }
 
 struct ProviderValidationCacheEntry {
@@ -305,6 +324,11 @@ fn metadata_now_ms() -> u64 {
 
 fn redact_metadata_error(error: &str, settings: &Value) -> String {
     let mut redacted = error.to_string();
+    if let Ok(userinfo_pattern) = Regex::new(r"(?i)https://[^/\s]+@") {
+        redacted = userinfo_pattern
+            .replace_all(redacted.as_str(), "https://***@")
+            .into_owned();
+    }
     if let Some(source_url) = settings
         .get("driver_metadata_update")
         .and_then(|value| value.get("source_url"))
@@ -1659,32 +1683,47 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                                 );
                             }
                             server.update_metadata_runtime_state(|state| {
-                                state.status = if refresh_error_count == 0 {
-                                    "healthy"
-                                } else {
-                                    "degraded"
-                                };
-                                state.active_revision = Some(revision_seq);
-                                state.last_success_at_ms = Some(metadata_now_ms());
-                                state.last_error = (refresh_error_count > 0).then(|| {
-                                    format!(
-                                        "{} provider inventory refreshes failed",
-                                        refresh_error_count
-                                    )
-                                });
-                                state.consecutive_failures = 0;
+                                record_metadata_update_success(
+                                    state,
+                                    revision_seq,
+                                    Some(refresh_error_count),
+                                );
                             });
                             normal_interval
                         }
                         Ok(DriverMetadataUpdateOutcome::Unchanged { revision_seq }) => {
                             consecutive_failures = 0;
                             info!("aicc driver metadata unchanged revision={}", revision_seq);
+                            let retry_provider_refresh =
+                                server.metadata_runtime_state().status == "degraded";
+                            let refresh_error_count = if retry_provider_refresh {
+                                let (refreshed, refresh_errors) = server
+                                    .rpc_handler
+                                    .0
+                                    .refresh_all_provider_inventories()
+                                    .await;
+                                info!(
+                                    "aicc driver metadata provider refresh retry revision={} refreshed_providers={} refresh_errors={}",
+                                    revision_seq,
+                                    refreshed,
+                                    refresh_errors.len()
+                                );
+                                for (provider_instance_name, err) in refresh_errors.iter() {
+                                    warn!(
+                                        "aicc driver metadata provider refresh retry failed provider_instance_name={} err={}",
+                                        provider_instance_name, err
+                                    );
+                                }
+                                Some(refresh_errors.len())
+                            } else {
+                                None
+                            };
                             server.update_metadata_runtime_state(|state| {
-                                state.status = "healthy";
-                                state.active_revision = Some(revision_seq);
-                                state.last_success_at_ms = Some(metadata_now_ms());
-                                state.last_error = None;
-                                state.consecutive_failures = 0;
+                                record_metadata_update_success(
+                                    state,
+                                    revision_seq,
+                                    refresh_error_count,
+                                );
                             });
                             normal_interval
                         }
@@ -1692,14 +1731,14 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                             consecutive_failures = consecutive_failures.saturating_add(1);
                             let delay =
                                 metadata_retry_delay(consecutive_failures, normal_interval);
+                            let message =
+                                redact_metadata_error(err.to_string().as_str(), &settings_value);
                             warn!(
                                 "aicc driver metadata update failed failures={} retry_secs={} err={}",
                                 consecutive_failures,
                                 delay,
-                                err
+                                message
                             );
-                            let message =
-                                redact_metadata_error(err.to_string().as_str(), &settings_value);
                             server.update_metadata_runtime_state(|state| {
                                 state.status = "error";
                                 state.last_error = Some(message);
@@ -1997,6 +2036,36 @@ mod tests {
         assert!(!redacted.contains("user"));
         assert!(!redacted.contains("secret"));
         assert!(redacted.contains("metadata.example"));
+    }
+
+    #[test]
+    fn metadata_error_redacts_userinfo_from_derived_urls() {
+        let settings = serde_json::json!({
+            "driver_metadata_update": {
+                "source_url": "https://user:secret@metadata.example/aicc/driver-metadata/index.json"
+            }
+        });
+        let error = "download manifest failed for https://user:secret@metadata.example/aicc/driver-metadata/v1/manifest-2.json";
+        let redacted = redact_metadata_error(error, &settings);
+        assert!(!redacted.contains("user"));
+        assert!(!redacted.contains("secret"));
+        assert!(redacted.contains("https://***@metadata.example/"));
+    }
+
+    #[test]
+    fn metadata_refresh_state_stays_degraded_until_retry_succeeds() {
+        let mut state = DriverMetadataRuntimeState::for_settings(None);
+        record_metadata_update_success(&mut state, 7, Some(2));
+        assert_eq!(state.status, "degraded");
+        assert_eq!(state.active_revision, Some(7));
+        assert_eq!(
+            state.last_error.as_deref(),
+            Some("2 provider inventory refreshes failed")
+        );
+
+        record_metadata_update_success(&mut state, 7, Some(0));
+        assert_eq!(state.status, "healthy");
+        assert_eq!(state.last_error, None);
     }
 
     #[test]
