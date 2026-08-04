@@ -49,7 +49,8 @@ use crate::claude::register_claude_providers;
 use crate::fal::register_fal_providers;
 use crate::gemini::register_google_gemini_providers;
 use crate::metadata_updater::{
-    DriverMetadataUpdateOutcome, DriverMetadataUpdateSettings, DriverMetadataUpdater,
+    configure_remote_metadata_source, DriverMetadataUpdateOutcome, DriverMetadataUpdateSettings,
+    DriverMetadataUpdater,
 };
 use crate::minimax::register_minimax_providers;
 use crate::openai::register_openai_llm_providers;
@@ -103,6 +104,9 @@ fn apply_provider_settings(
     center: &AIComputeCenter,
     settings: &serde_json::Value,
 ) -> Result<usize> {
+    if let Err(err) = configure_remote_metadata_source(settings) {
+        warn!("invalid driver metadata update settings: {}", err);
+    }
     center.registry().clear();
     center.reset_model_routes();
 
@@ -1228,7 +1232,7 @@ impl AiccHttpServer {
     }
 }
 
-fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
+fn start_driver_metadata_update_loop() {
     let spawn_result = std::thread::Builder::new()
         .name("aicc-metadata-updater".to_string())
         .spawn(move || {
@@ -1244,7 +1248,6 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
             };
             runtime.block_on(async move {
                 let mut consecutive_failures = 0u32;
-                let mut pending_runtime_revision = None;
                 loop {
                     let settings_value = match get_buckyos_api_runtime() {
                         Ok(runtime) => match runtime.get_my_settings().await {
@@ -1261,6 +1264,9 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                             continue;
                         }
                     };
+                    if let Err(err) = configure_remote_metadata_source(&settings_value) {
+                        warn!("invalid driver metadata update settings: {}", err);
+                    }
                     let update_settings = match DriverMetadataUpdateSettings::from_aicc_settings(
                         &settings_value,
                     ) {
@@ -1283,65 +1289,17 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                     };
                     let delay = match result {
                         Ok(DriverMetadataUpdateOutcome::Activated { revision_seq }) => {
-                            pending_runtime_revision = Some(revision_seq);
-                            match apply_provider_settings(&server.rpc_handler.0, &settings_value) {
-                                Ok(registered) => {
-                                    consecutive_failures = 0;
-                                    pending_runtime_revision = None;
-                                    info!(
-                                        "aicc driver metadata activated revision={} providers_registered={}",
-                                        revision_seq, registered
-                                    );
-                                    normal_interval
-                                }
-                                Err(err) => {
-                                    consecutive_failures = consecutive_failures.saturating_add(1);
-                                    let delay = metadata_retry_delay(
-                                        consecutive_failures,
-                                        normal_interval,
-                                    );
-                                    warn!(
-                                        "driver metadata revision {} committed but runtime reload failed; retry_secs={} err={}",
-                                        revision_seq, delay, err
-                                    );
-                                    delay
-                                }
-                            }
+                            consecutive_failures = 0;
+                            info!(
+                                "aicc driver metadata activation committed revision={}; it will apply on the next provider inventory refresh",
+                                revision_seq
+                            );
+                            normal_interval
                         }
                         Ok(DriverMetadataUpdateOutcome::Unchanged { revision_seq }) => {
-                            if pending_runtime_revision == Some(revision_seq) {
-                                match apply_provider_settings(
-                                    &server.rpc_handler.0,
-                                    &settings_value,
-                                ) {
-                                    Ok(registered) => {
-                                        consecutive_failures = 0;
-                                        pending_runtime_revision = None;
-                                        info!(
-                                            "aicc driver metadata runtime reload recovered revision={} providers_registered={}",
-                                            revision_seq, registered
-                                        );
-                                        normal_interval
-                                    }
-                                    Err(err) => {
-                                        consecutive_failures =
-                                            consecutive_failures.saturating_add(1);
-                                        let delay = metadata_retry_delay(
-                                            consecutive_failures,
-                                            normal_interval,
-                                        );
-                                        warn!(
-                                            "aicc driver metadata runtime reload retry failed revision={} retry_secs={} err={}",
-                                            revision_seq, delay, err
-                                        );
-                                        delay
-                                    }
-                                }
-                            } else {
-                                consecutive_failures = 0;
-                                info!("aicc driver metadata unchanged revision={}", revision_seq);
-                                normal_interval
-                            }
+                            consecutive_failures = 0;
+                            info!("aicc driver metadata unchanged revision={}", revision_seq);
+                            normal_interval
                         }
                         Err(err) => {
                             consecutive_failures = consecutive_failures.saturating_add(1);
@@ -1368,12 +1326,12 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
 fn metadata_retry_delay(consecutive_failures: u32, normal_interval: u64) -> u64 {
     let shift = consecutive_failures.saturating_sub(1).min(16);
     let base = 60u64.saturating_mul(1u64 << shift);
-    let capped = base.min(normal_interval);
+    let capped = base.min(normal_interval).max(1);
     let jitter = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.subsec_nanos() as u64 % (capped / 4 + 1))
         .unwrap_or(0);
-    capped.saturating_add(jitter)
+    capped.saturating_add(jitter).min(normal_interval.max(1))
 }
 
 fn filter_model_directory_by_path(mut value: Value, logical_path: &str) -> Value {
@@ -1589,7 +1547,7 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
     }
 
     let server = Arc::new(AiccHttpServer::new(center));
-    start_driver_metadata_update_loop(server.clone());
+    start_driver_metadata_update_loop();
 
     let runner = Runner::new(AICC_SERVICE_MAIN_PORT);
     if let Err(err) = runner.add_http_server("/kapi/aicc".to_string(), server) {

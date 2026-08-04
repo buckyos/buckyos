@@ -9,7 +9,7 @@ API type, mount, cost, latency, and conservative fallback decisions.
 The resolver loads metadata in this override order:
 
 1. builtin metadata bundled under `src/frame/aicc/driver_metadata/`
-2. latest complete cloud activation under `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/v1/`
+2. latest complete cloud activation under `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`
 3. local override: `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json`
 4. system-config override materialized at `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/<driver>.json`
 

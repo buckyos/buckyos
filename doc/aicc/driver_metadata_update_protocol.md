@@ -83,7 +83,7 @@ PathObject 的有效期不得超过 24 小时。业务内容回滚也必须发�
     {
       "provider_driver": "openai",
       "path": "v1/providers/openai-18.json",
-      "schema_version": 1,
+      "schema_version": 2,
       "revision_seq": 18,
       "obj_id": "<FileObject ObjId>"
     }
@@ -108,7 +108,7 @@ PathObject 的有效期不得超过 24 小时。业务内容回滚也必须发�
 ```json
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 1,
+  "schema_version": 2,
   "schema_revision": 0,
   "provider_driver": "openai",
   "revision_seq": 18,
@@ -135,6 +135,10 @@ PathObject 的有效期不得超过 24 小时。业务内容回滚也必须发�
 
 NDN 已完成内容校验，AICC 不重复计算内容 hash。
 
+`index.json` 最大 256 KiB，manifest 最大 1 MiB，单个 provider metadata
+最大 64 MiB；manifest 引用的全部 provider metadata 实际大小之和最大
+512 MiB。大小在 NDN 已验证的 Chunk/FileObject 声明上预检，并在完整下载后再次检查。
+
 ## 7. 增量计划与原子提交
 
 客户端把最新有效 activation 与 manifest 比较：
@@ -146,15 +150,21 @@ NDN 已完成内容校验，AICC 不重复计算内容 hash。
 
 严格验证过的 index/manifest 会先推进 observed 水位；即使随后某个 provider body 校验失败，已观察到的 manifest revision、provider revision 和 tombstone revision 也不能回退。发布端可以保留相同 ObjId 修复传输，或发布更高 revision 的修复版本。
 
-所有文件准备完成后写一个新的不可变 activation。activation 是唯一提交标记，引用内容寻址的只读对象。它通过同目录临时文件 `sync_all` 后，以原子的 create-if-absent hard link 提交到一个此前不存在的 revision 文件名，不覆盖旧 activation。
+所有文件准备完成后写一个新的不可变 activation。activation 是唯一提交标记，引用内容寻址的只读对象。它通过同目录临时文件 `sync_all` 后，以原子的 create-if-absent 操作提交到一个此前不存在的 revision 文件名，不覆盖旧 activation；Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。
 
 例如只有 `openai.json` 变化时，请求是 `index.json + manifest.json + openai.json`；其他 provider 对象直接复用。
 
 ## 8. 中断、恢复与退避
 
-启动和每次尝试前都删除 staging、`.part` 和未被有效 activation 引用的孤儿对象。更新失败不恢复阶段，下一次从 index 开始。
+启动和每次尝试前都删除 staging 和 `.part`。最新 observed manifest 是正在更新的
+candidate：已经完整下载并通过 NDN 与 JSON 身份校验的 provider 对象可以跨重试复用，
+但重试仍从 index 和 manifest 开始，不恢复下载中间进度。既不被保留 activation、也不被
+最新 candidate 引用的对象属于垃圾并立即清理，不存在持久化的 `updating` 锁或阶段机。
 
 读取端按 revision 从高到低验证 activation 及其全部对象；最新 activation 不完整时回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
+
+activation 提交后不主动重建 provider inventory；新 metadata 在下一次
+`provider.refresh_models`、settings reload 或服务重启构建 inventory 时生效。
 
 连续失败采用带 jitter 的指数退避，默认从 60 秒开始，最大不超过配置的正常更新周期；成功后清零。退避只影响调度，不改变安全校验。
 

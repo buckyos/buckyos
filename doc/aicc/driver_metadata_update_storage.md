@@ -11,25 +11,26 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 | 数据项 | 分类 | 生命周期 |
 |---|---|---|
 | observed index/manifest 水位 | Durable | 跨重启、安装覆盖和升级保留 |
-| provider metadata objects | Durable | 被保留 activation 引用时保留 |
-| activation | Durable | 当前 LKGS 及回退版本保留 |
+| provider metadata objects | Durable | 被保留 activation 或最新 candidate 引用时保留 |
+| activation | Durable | 当前 LKGS 及一个并发读取/回退版本保留 |
 | staging、`.part` | Disposable | 启动及失败时整体删除 |
 | 未引用对象 | Disposable | mark-and-sweep 删除 |
 | 退避计数 | Disposable | 进程重启后可重新开始 |
 
 ## 3. Storage Strategy
 
-位置：`$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/v1/`。
+位置：`$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`。
+`source-key` 是 canonical `source_url` 的 SHA-256，不同发布源的防回滚水位和对象严格隔离。
 
 ```text
-objects/<FileObject-ObjId>.json
-activations/<manifest-revision>.json
-observed/index/<index-revision>.json
-observed/manifest/<manifest-revision>.json
-staging/<attempt>/...
+<source-key>/objects/<FileObject-ObjId>.json
+<source-key>/activations/<manifest-revision>.json
+<source-key>/observed/index/<index-revision>.json
+<source-key>/observed/manifest/<manifest-revision>.json
+<source-key>/staging/<attempt>/...
 ```
 
-这是文件系统直接作为核心数据模型的显式例外，风险为目录损坏和跨文件提交。选择该方式的原因是数据都是小型、不可变、内容寻址的 NDN 文件，没有结构化查询；activation 单文件是唯一提交点，避免 RDB head 与运行时文件之间的双提交。所有 durable 文件都先写同目录临时文件、`sync_all`，再用原子的 create-if-absent hard link 提交到此前不存在的最终路径。
+这是文件系统直接作为核心数据模型的显式例外，风险为目录损坏和跨文件提交。选择该方式的原因是数据都是小型、不可变、内容寻址的 NDN 文件，没有结构化查询；activation 单文件是唯一提交点，避免 RDB head 与运行时文件之间的双提交。所有 durable 文件都先写同目录临时文件、`sync_all`，再用原子的 create-if-absent 操作提交到此前不存在的最终路径：Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。文件系统布局不进入用户配置或 API，未来可迁移到对象存储。
 
 ## 4. Schema Definitions
 
@@ -50,6 +51,7 @@ staging/<attempt>/...
 - 文件名：FileObject ObjId 加 `.json`。
 - 内容：协议定义的 UTF-8 JSON。
 - 约束：ObjId 已由 NDN SDK 校验；内部 provider、schema、revision 与 manifest 一致。
+- 大小：单对象不超过 64 MiB；单 manifest 的对象总大小不超过 512 MiB。
 
 ### Object: activation
 
@@ -86,3 +88,8 @@ staging/<attempt>/...
 | 清理孤儿 | activation 引用集合与 objects 目录做差 |
 
 目录规模由保留策略限制，不存在大规模扫描或复杂索引。
+
+每个 source namespace 最多保留两个有效 activation、两个 index 水位和两个 manifest
+水位；对象保留集合是这些 activation 与最新 observed manifest 的引用并集。它覆盖当前
+生效版本、一次必要回退/并发读取版本和正在更新的 candidate。其它对象、旧水位、旧
+activation、staging 和未使用 source namespace 均清理，磁盘占用因此有确定上界。

@@ -1,8 +1,8 @@
 use crate::metadata_resolver::DriverMetadataDocument;
 use anyhow::{anyhow, bail, Context, Result};
-use buckyos_kit::get_buckyos_system_etc_dir;
-use ndn_lib::ObjId;
-use ndn_toolkit::cyfs_ndn_client::CyfsNdnClient;
+use buckyos_kit::get_buckyos_service_home_dir;
+use ndn_lib::{ChunkId, ChunkList, FileObject, ObjId, OBJ_TYPE_CHUNK_LIST};
+use ndn_toolkit::cyfs_ndn_client::{CyfsNdnClient, CyfsResponseMeta, VerifiedPathObject};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,24 +11,36 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const INDEX_FORMAT: &str = "buckyos.aicc.driver-metadata-index";
 const MANIFEST_FORMAT: &str = "buckyos.aicc.driver-metadata-manifest";
 const ACTIVATION_FORMAT: &str = "buckyos.aicc.driver-metadata-activation";
 const PROTOCOL_VERSION: u32 = 1;
-const METADATA_SCHEMA_VERSION: u32 = 1;
+const METADATA_SCHEMA_VERSION: u32 = 2;
 const MAX_PATH_OBJECT_TTL_SECS: u64 = 24 * 60 * 60;
 const MAX_INDEX_BYTES: u64 = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAX_METADATA_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MANIFEST_METADATA_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PROVIDER_FILES: usize = 1024;
+const MAX_RETAINED_ACTIVATIONS: usize = 2;
+const MAX_RETAINED_WATERMARKS: usize = 2;
+const MIN_UPDATE_INTERVAL_SECS: u64 = 60;
+const MAX_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+static CONFIGURED_SOURCE_KEY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+static METADATA_STORE_LOCK: OnceLock<RwLock<()>> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct DriverMetadataUpdateSettings {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
     pub source_url: String,
     #[serde(default = "default_interval_secs")]
     pub interval_secs: u64,
@@ -62,9 +74,31 @@ impl DriverMetadataUpdateSettings {
         {
             bail!("metadata source_url must use /aicc/driver-metadata/index.json");
         }
-        parsed.interval_secs = parsed.interval_secs.max(60);
+        parsed.interval_secs = parsed
+            .interval_secs
+            .clamp(MIN_UPDATE_INTERVAL_SECS, MAX_UPDATE_INTERVAL_SECS);
         Ok(Some(parsed))
     }
+
+    fn source_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(self.source_url.as_bytes());
+        format!("{digest:x}")
+    }
+}
+
+pub fn configure_remote_metadata_source(settings: &Value) -> Result<()> {
+    let parsed = DriverMetadataUpdateSettings::from_aicc_settings(settings);
+    let source_key = parsed
+        .as_ref()
+        .ok()
+        .and_then(|settings| settings.as_ref())
+        .map(DriverMetadataUpdateSettings::source_key);
+    *CONFIGURED_SOURCE_KEY
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .map_err(|_| anyhow!("configured metadata source lock poisoned"))? = source_key;
+    parsed.map(|_| ())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,10 +191,12 @@ pub struct DriverMetadataUpdater {
     settings: DriverMetadataUpdateSettings,
     client: CyfsNdnClient,
     store: DriverMetadataStore,
+    source_key: String,
 }
 
 impl DriverMetadataUpdater {
     pub fn new(settings: DriverMetadataUpdateSettings) -> Result<Self> {
+        let source_key = settings.source_key();
         let client = CyfsNdnClient::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -168,16 +204,27 @@ impl DriverMetadataUpdater {
         Ok(Self {
             settings,
             client,
-            store: DriverMetadataStore::new(default_store_root()),
+            store: DriverMetadataStore::new(source_store_root(source_key.as_str())),
+            source_key,
         })
     }
 
     pub async fn update_once(&self) -> Result<DriverMetadataUpdateOutcome> {
-        self.store.prepare()?;
+        {
+            let _guard = METADATA_STORE_LOCK
+                .get_or_init(|| RwLock::new(()))
+                .write()
+                .map_err(|_| anyhow!("metadata store lock poisoned"))?;
+            cleanup_source_namespaces(self.source_key.as_str())?;
+            self.store.prepare()?;
+        }
         let attempt = self.store.new_attempt_dir()?;
         let result = self.update_once_inner(attempt.as_path()).await;
         let _ = std::fs::remove_dir_all(attempt.as_path());
-        let _ = self.store.cleanup_parts_and_orphans();
+        if let Ok(_guard) = METADATA_STORE_LOCK.get_or_init(|| RwLock::new(())).write() {
+            let _ = self.store.prune_history();
+            let _ = self.store.cleanup_parts_and_orphans();
+        }
         result
     }
 
@@ -224,8 +271,10 @@ impl DriverMetadataUpdater {
             }
         }
 
+        let mut metadata_bytes = 0u64;
         for file in manifest.files.iter() {
-            if self.store.prepare_object_slot(file)? {
+            if let Some(size) = self.store.prepare_object_slot(file)? {
+                metadata_bytes = checked_manifest_metadata_bytes(metadata_bytes, size)?;
                 continue;
             }
             let expected_obj_id = parse_obj_id(file.obj_id.as_str())?;
@@ -245,6 +294,7 @@ impl DriverMetadataUpdater {
                     file.provider_driver
                 );
             }
+            metadata_bytes = checked_manifest_metadata_bytes(metadata_bytes, bytes.len() as u64)?;
             validate_metadata_bytes(bytes.as_slice(), file)?;
             self.store
                 .store_object(&expected_obj_id, bytes.as_slice())?;
@@ -259,11 +309,17 @@ impl DriverMetadataUpdater {
             }
         }
 
-        self.store.activate(
-            index.index_revision_seq,
-            manifest_obj_id.to_string().as_str(),
-            manifest.clone(),
-        )?;
+        {
+            let _guard = METADATA_STORE_LOCK
+                .get_or_init(|| RwLock::new(()))
+                .write()
+                .map_err(|_| anyhow!("metadata store lock poisoned"))?;
+            self.store.activate(
+                index.index_revision_seq,
+                manifest_obj_id.to_string().as_str(),
+                manifest.clone(),
+            )?;
+        }
         Ok(DriverMetadataUpdateOutcome::Activated {
             revision_seq: manifest.revision_seq,
         })
@@ -277,27 +333,16 @@ impl DriverMetadataUpdater {
         attempt: &Path,
         label: &str,
     ) -> Result<(Vec<u8>, ObjId)> {
-        let response = self
-            .client
-            .get(url.to_string())
+        let mut request = self.client.get(url.to_string());
+        if let Some(expected) = expected_obj_id {
+            request = request.obj_id(expected.clone());
+        }
+        let response = request
             .send()
             .await
-            .map_err(|err| anyhow!(err.to_string()))?;
-        let path_object = response
-            .meta()
-            .path_object
-            .clone()
-            .ok_or_else(|| anyhow!("{} response has no verified PathObject", label))?;
-        if path_object.exp < path_object.iat
-            || path_object.exp - path_object.iat > MAX_PATH_OBJECT_TTL_SECS
-        {
-            bail!("{} PathObject TTL exceeds 24 hours", label);
-        }
-        if let Some(expected) = expected_obj_id {
-            if &path_object.target != expected {
-                bail!("{} PathObject target does not match expected ObjId", label);
-            }
-        }
+            .map_err(|err| anyhow!("download {} through NDN failed: {}", label, err))?;
+        let path_object =
+            validate_verified_path_response(response.meta(), expected_obj_id, max_bytes, label)?;
         if response
             .meta()
             .cyfs_headers
@@ -309,10 +354,13 @@ impl DriverMetadataUpdater {
         }
 
         let output = attempt.join(format!("{}.part", safe_label(label)));
-        response
+        let pull_result = response
             .pull_to_local_file(output.as_path())
             .await
-            .map_err(|err| anyhow!(err.to_string()))?;
+            .map_err(|err| anyhow!("download and verify {} through NDN failed: {}", label, err))?;
+        if pull_result.total_size > max_bytes {
+            bail!("{} exceeds the maximum size", label);
+        }
         let metadata = std::fs::metadata(output.as_path())?;
         if metadata.len() > max_bytes {
             bail!("{} exceeds the maximum size", label);
@@ -320,6 +368,89 @@ impl DriverMetadataUpdater {
         let bytes = std::fs::read(output.as_path())?;
         Ok((bytes, path_object.target))
     }
+}
+
+fn validate_verified_path_response(
+    meta: &CyfsResponseMeta,
+    expected_obj_id: Option<&ObjId>,
+    max_bytes: u64,
+    label: &str,
+) -> Result<VerifiedPathObject> {
+    let path_object = meta
+        .path_object
+        .clone()
+        .ok_or_else(|| anyhow!("{} response has no verified PathObject", label))?;
+    if path_object.exp < path_object.iat
+        || path_object.exp - path_object.iat > MAX_PATH_OBJECT_TTL_SECS
+    {
+        bail!("{} PathObject TTL exceeds 24 hours", label);
+    }
+    if let Some(expected) = expected_obj_id {
+        if &path_object.target != expected {
+            bail!("{} PathObject target does not match expected ObjId", label);
+        }
+    }
+    validate_verified_ndn_size(meta, &path_object.target, max_bytes, label)?;
+    Ok(path_object)
+}
+
+fn validate_verified_ndn_size(
+    meta: &CyfsResponseMeta,
+    target: &ObjId,
+    max_bytes: u64,
+    label: &str,
+) -> Result<()> {
+    let declared_size = if target.is_chunk() {
+        ChunkId::from_obj_id(target)
+            .get_length()
+            .ok_or_else(|| anyhow!("{} NDN ChunkId has no verified content length", label))?
+    } else {
+        let parent = meta
+            .parents
+            .iter()
+            .rev()
+            .find(|parent| &parent.obj_id == target)
+            .ok_or_else(|| anyhow!("{} response has no verified size-bearing parent", label))?;
+        let value = parent
+            .obj_json
+            .as_ref()
+            .ok_or_else(|| anyhow!("{} verified parent has no canonical object data", label))?;
+        if target.is_file_object() {
+            serde_json::from_value::<FileObject>(value.clone())
+                .with_context(|| format!("parse verified {} FileObject", label))?
+                .size
+        } else if target.obj_type == OBJ_TYPE_CHUNK_LIST {
+            let chunk_list = ChunkList::from_json_value(value.clone())
+                .map_err(|err| anyhow!("parse verified {} ChunkList: {}", label, err))?;
+            chunk_list.body.iter().try_fold(0u64, |total, chunk_id| {
+                let size = chunk_id.get_length().ok_or_else(|| {
+                    anyhow!(
+                        "{} ChunkList contains a chunk without verified length",
+                        label
+                    )
+                })?;
+                total
+                    .checked_add(size)
+                    .ok_or_else(|| anyhow!("{} verified content size overflow", label))
+            })?
+        } else {
+            bail!("{} NDN target type has no trusted size declaration", label);
+        }
+    };
+    if declared_size > max_bytes {
+        bail!("{} exceeds the maximum size", label);
+    }
+    Ok(())
+}
+
+fn checked_manifest_metadata_bytes(current: u64, next: u64) -> Result<u64> {
+    let total = current
+        .checked_add(next)
+        .ok_or_else(|| anyhow!("manifest metadata size overflow"))?;
+    if total > MAX_MANIFEST_METADATA_BYTES {
+        bail!("manifest metadata exceeds the maximum total size");
+    }
+    Ok(total)
 }
 
 #[derive(Clone)]
@@ -459,25 +590,39 @@ impl DriverMetadataStore {
         atomic_create_bytes(self.object_path(obj_id).as_path(), bytes)
     }
 
-    fn prepare_object_slot(&self, file: &DriverMetadataManifestFile) -> Result<bool> {
-        if self.load_valid_object(file).is_some() {
-            return Ok(true);
+    fn prepare_object_slot(&self, file: &DriverMetadataManifestFile) -> Result<Option<u64>> {
+        if let Some((_, size)) = self.load_valid_object_with_size(file) {
+            return Ok(Some(size));
         }
         let obj_id = parse_obj_id(file.obj_id.as_str())?;
         let path = self.object_path(&obj_id);
         if path.is_file() {
             std::fs::remove_file(path)?;
         }
-        Ok(false)
+        Ok(None)
     }
 
     fn load_valid_object(
         &self,
         file: &DriverMetadataManifestFile,
     ) -> Option<DriverMetadataDocument> {
+        self.load_valid_object_with_size(file)
+            .map(|(document, _)| document)
+    }
+
+    fn load_valid_object_with_size(
+        &self,
+        file: &DriverMetadataManifestFile,
+    ) -> Option<(DriverMetadataDocument, u64)> {
         let obj_id = parse_obj_id(file.obj_id.as_str()).ok()?;
         let bytes = std::fs::read(self.object_path(&obj_id)).ok()?;
-        validate_metadata_bytes(bytes.as_slice(), file).ok()
+        let size = bytes.len() as u64;
+        if size > MAX_METADATA_BYTES {
+            return None;
+        }
+        validate_metadata_bytes(bytes.as_slice(), file)
+            .ok()
+            .map(|document| (document, size))
     }
 
     fn activate(
@@ -524,6 +669,24 @@ impl DriverMetadataStore {
         if activation.format != ACTIVATION_FORMAT || activation.storage_version != 1 {
             return false;
         }
+        let track = DriverMetadataTrack {
+            protocol_version: activation.manifest.protocol_version,
+            protocol_revision: activation.manifest.protocol_revision,
+            revision_seq: activation.manifest.revision_seq,
+            required_features: activation.manifest.required_features.clone(),
+            manifest: DriverMetadataIndexManifest {
+                path: format!(
+                    "v{}/manifest-{}.json",
+                    PROTOCOL_VERSION, activation.manifest.revision_seq
+                ),
+                obj_id: activation.manifest_obj_id.clone(),
+            },
+        };
+        if parse_obj_id(activation.manifest_obj_id.as_str()).is_err()
+            || validate_manifest(&activation.manifest, &track).is_err()
+        {
+            return false;
+        }
         activation
             .manifest
             .files
@@ -544,12 +707,24 @@ impl DriverMetadataStore {
         }
         remove_part_files(self.root.as_path())?;
 
-        let referenced = load_activations(self.activations_dir().as_path())
+        let mut referenced = load_activations(self.activations_dir().as_path())
             .into_iter()
             .flat_map(|activation| activation.manifest.files)
             .filter_map(|file| parse_obj_id(file.obj_id.as_str()).ok())
             .map(|obj_id| format!("{}.json", obj_id.to_base32()))
             .collect::<HashSet<_>>();
+        if let Some(observed) =
+            latest_json_strict::<ObservedManifest>(self.observed_manifest_dir().as_path())?
+        {
+            referenced.extend(
+                observed
+                    .manifest
+                    .files
+                    .iter()
+                    .filter_map(|file| parse_obj_id(file.obj_id.as_str()).ok())
+                    .map(|obj_id| format!("{}.json", obj_id.to_base32())),
+            );
+        }
         if self.objects_dir().is_dir() {
             for entry in std::fs::read_dir(self.objects_dir())? {
                 let entry = entry?;
@@ -561,10 +736,68 @@ impl DriverMetadataStore {
         }
         Ok(())
     }
+
+    fn prune_history(&self) -> Result<()> {
+        self.prune_activations()?;
+        latest_json_strict::<ObservedIndex>(self.observed_index_dir().as_path())?;
+        latest_json_strict::<ObservedManifest>(self.observed_manifest_dir().as_path())?;
+        prune_revision_files(self.observed_index_dir().as_path(), MAX_RETAINED_WATERMARKS)?;
+        prune_revision_files(
+            self.observed_manifest_dir().as_path(),
+            MAX_RETAINED_WATERMARKS,
+        )
+    }
+
+    fn prune_activations(&self) -> Result<()> {
+        let mut entries = std::fs::read_dir(self.activations_dir())?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .filter_map(|entry| {
+                let path = entry.path();
+                let activation = std::fs::read(path.as_path()).ok().and_then(|bytes| {
+                    serde_json::from_slice::<DriverMetadataActivation>(&bytes).ok()
+                });
+                Some((path, activation))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(path, _)| {
+            std::cmp::Reverse(
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.parse::<u64>().ok())
+                    .unwrap_or(0),
+            )
+        });
+        let mut retained = 0usize;
+        for (path, activation) in entries {
+            let valid = activation
+                .as_ref()
+                .map(|activation| self.validate_activation(activation))
+                .unwrap_or(false);
+            if valid && retained < MAX_RETAINED_ACTIVATIONS {
+                retained += 1;
+            } else {
+                std::fs::remove_file(path)?;
+            }
+        }
+        sync_parent_dir(self.activations_dir().as_path())
+    }
 }
 
 pub(crate) fn load_active_remote_metadata(provider_driver: &str) -> Option<DriverMetadataDocument> {
-    load_active_remote_metadata_in(default_store_root().as_path(), provider_driver)
+    let source_key = CONFIGURED_SOURCE_KEY
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .ok()?
+        .clone()?;
+    let _guard = METADATA_STORE_LOCK
+        .get_or_init(|| RwLock::new(()))
+        .read()
+        .ok()?;
+    load_active_remote_metadata_in(
+        source_store_root(source_key.as_str()).as_path(),
+        provider_driver,
+    )
 }
 
 fn load_active_remote_metadata_in(
@@ -582,11 +815,36 @@ fn load_active_remote_metadata_in(
 }
 
 fn default_store_root() -> PathBuf {
-    get_buckyos_system_etc_dir()
-        .join("aicc")
+    get_buckyos_service_home_dir("aicc")
         .join("driver_metadata")
         .join("remote_cache")
         .join("v1")
+}
+
+fn source_store_root(source_key: &str) -> PathBuf {
+    default_store_root().join(source_key)
+}
+
+fn cleanup_source_namespaces(retained_source_key: &str) -> Result<()> {
+    let root = default_store_root();
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root.as_path())? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if entry.path().is_dir()
+            && name != retained_source_key
+            && name.len() == 64
+            && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            std::fs::remove_dir_all(entry.path())?;
+        }
+    }
+    sync_parent_dir(root.as_path())
 }
 
 fn validate_index(index: &DriverMetadataIndex) -> Result<()> {
@@ -599,12 +857,24 @@ fn validate_index(index: &DriverMetadataIndex) -> Result<()> {
     if !index.required_features.is_empty() {
         bail!("metadata index requires unsupported features");
     }
+    if index.index_revision_seq == 0 {
+        bail!("metadata index revision must be positive");
+    }
     let mut protocol_versions = HashSet::new();
     for track in index.tracks.iter() {
         if !protocol_versions.insert(track.protocol_version) {
             bail!("duplicate protocol track in metadata index");
         }
         validate_relative_path(track.manifest.path.as_str())?;
+        if track.revision_seq == 0 {
+            bail!("metadata track revision must be positive");
+        }
+        if track.protocol_version == PROTOCOL_VERSION {
+            let expected = format!("v{}/manifest-{}.json", PROTOCOL_VERSION, track.revision_seq);
+            if track.manifest.path != expected {
+                bail!("supported metadata track uses a non-canonical manifest path");
+            }
+        }
         parse_obj_id(track.manifest.obj_id.as_str())?;
     }
     Ok(())
@@ -634,6 +904,9 @@ fn validate_manifest(manifest: &DriverMetadataManifest, track: &DriverMetadataTr
     if manifest.revision_seq != track.revision_seq {
         bail!("track and manifest revisions differ");
     }
+    if manifest.protocol_revision != track.protocol_revision {
+        bail!("track and manifest protocol revisions differ");
+    }
     if !manifest.required_features.is_empty() {
         bail!("metadata manifest requires unsupported features");
     }
@@ -649,7 +922,17 @@ fn validate_manifest(manifest: &DriverMetadataManifest, track: &DriverMetadataTr
         if file.schema_version != METADATA_SCHEMA_VERSION {
             bail!("unsupported provider metadata schema version");
         }
+        if file.revision_seq == 0 {
+            bail!("provider metadata revision must be positive");
+        }
         validate_relative_path(file.path.as_str())?;
+        let expected = format!(
+            "v{}/providers/{}-{}.json",
+            PROTOCOL_VERSION, file.provider_driver, file.revision_seq
+        );
+        if file.path != expected {
+            bail!("provider metadata uses a non-canonical path");
+        }
         parse_obj_id(file.obj_id.as_str())?;
     }
     let mut tombstones = HashSet::new();
@@ -659,6 +942,9 @@ fn validate_manifest(manifest: &DriverMetadataManifest, track: &DriverMetadataTr
             || !tombstones.insert(tombstone.provider_driver.as_str())
         {
             bail!("duplicate or active tombstone provider_driver");
+        }
+        if tombstone.revision_seq == 0 {
+            bail!("provider tombstone revision must be positive");
         }
     }
     Ok(())
@@ -841,11 +1127,8 @@ fn atomic_create_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
-    match std::fs::hard_link(temp.as_path(), path) {
-        Ok(()) => {
-            std::fs::remove_file(temp.as_path())?;
-            sync_parent_dir(parent)
-        }
+    match durable_commit_create(temp.as_path(), path) {
+        Ok(()) => Ok(()),
         Err(err) if path.is_file() => {
             let _ = std::fs::remove_file(temp.as_path());
             let existing = std::fs::read(path)?;
@@ -878,9 +1161,71 @@ fn sync_parent_dir(_parent: &Path) -> Result<()> {
 }
 
 fn load_activations(dir: &Path) -> Vec<DriverMetadataActivation> {
-    let mut values = read_json_files::<DriverMetadataActivation>(dir);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut values = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let revision = entry
+                .path()
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<u64>().ok())?;
+            let bytes = std::fs::read(entry.path()).ok()?;
+            let activation = serde_json::from_slice::<DriverMetadataActivation>(&bytes).ok()?;
+            (activation.manifest.revision_seq == revision).then_some(activation)
+        })
+        .collect::<Vec<_>>();
     values.sort_by_key(|value| std::cmp::Reverse(value.manifest.revision_seq));
     values
+}
+
+#[cfg(not(windows))]
+fn durable_commit_create(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::hard_link(source, destination)?;
+    std::fs::remove_file(source)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow!("state path has no parent"))?;
+    sync_parent_dir(parent)
+}
+
+#[cfg(windows)]
+fn durable_commit_create(source: &Path, destination: &Path) -> Result<()> {
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    fn wide_path(path: &Path) -> Result<Vec<u16>> {
+        let mut value = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        if value.contains(&0) {
+            bail!("state path contains an embedded null");
+        }
+        value.push(0);
+        Ok(value)
+    }
+
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 fn latest_json_strict<T>(dir: &Path) -> Result<Option<T>>
@@ -935,21 +1280,6 @@ impl Revisioned for ObservedManifest {
     }
 }
 
-fn read_json_files<T>(dir: &Path) -> Vec<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
-        .filter_map(|entry| std::fs::read(entry.path()).ok())
-        .filter_map(|bytes| serde_json::from_slice(bytes.as_slice()).ok())
-        .collect()
-}
-
 fn remove_part_files(root: &Path) -> Result<()> {
     if !root.is_dir() {
         return Ok(());
@@ -970,9 +1300,54 @@ fn remove_part_files(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn prune_revision_files(dir: &Path, retain: usize) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let mut paths = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    paths.sort_by_key(|path| {
+        std::cmp::Reverse(
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<u64>().ok())
+                .unwrap_or(0),
+        )
+    });
+    for path in paths.into_iter().skip(retain) {
+        std::fs::remove_file(path)?;
+    }
+    sync_parent_dir(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn response_meta(path_object: Option<VerifiedPathObject>) -> CyfsResponseMeta {
+        CyfsResponseMeta {
+            requested_url: "https://metadata.example/aicc/driver-metadata/index.json".to_string(),
+            transport_url: "https://metadata.example/aicc/driver-metadata/index.json".to_string(),
+            known_obj_id: None,
+            url_obj_id: None,
+            url_inner_path_steps: vec![],
+            resp_raw: false,
+            cyfs_headers: ndn_lib::CYFSHttpRespHeaders::default(),
+            path_object,
+            parents: vec![],
+        }
+    }
+
+    fn sized_chunk(bytes: &[u8]) -> ObjId {
+        ndn_lib::ChunkHasher::new(None)
+            .unwrap()
+            .calc_mix_chunk_id_from_bytes(bytes)
+            .unwrap()
+            .to_obj_id()
+    }
 
     fn obj_id(seed: &str) -> ObjId {
         use sha2::{Digest, Sha256};
@@ -981,11 +1356,39 @@ mod tests {
         chunk.to_obj_id()
     }
 
+    #[test]
+    fn unsigned_path_response_is_rejected() {
+        let meta = response_meta(None);
+        assert!(validate_verified_path_response(&meta, None, 1024, "index").is_err());
+    }
+
+    #[test]
+    fn path_response_enforces_target_ttl_and_verified_size() {
+        let target = sized_chunk(b"verified metadata");
+        let valid = VerifiedPathObject {
+            path: "/aicc/driver-metadata/index.json".to_string(),
+            target: target.clone(),
+            iat: 100,
+            exp: 101,
+        };
+        let meta = response_meta(Some(valid.clone()));
+        validate_verified_path_response(&meta, Some(&target), 64, "index").unwrap();
+        assert!(
+            validate_verified_path_response(&meta, Some(&obj_id("other")), 64, "index").is_err()
+        );
+        assert!(validate_verified_path_response(&meta, Some(&target), 1, "index").is_err());
+
+        let mut long_lived = valid;
+        long_lived.exp = long_lived.iat + MAX_PATH_OBJECT_TTL_SECS + 1;
+        let meta = response_meta(Some(long_lived));
+        assert!(validate_verified_path_response(&meta, Some(&target), 64, "index").is_err());
+    }
+
     fn file(driver: &str, revision: u64, obj_id: &ObjId) -> DriverMetadataManifestFile {
         DriverMetadataManifestFile {
             provider_driver: driver.to_string(),
             path: format!("v1/providers/{}-{}.json", driver, revision),
-            schema_version: 1,
+            schema_version: 2,
             revision_seq: revision,
             obj_id: obj_id.to_string(),
         }
@@ -1006,7 +1409,7 @@ mod tests {
     fn document(driver: &str, revision: u64) -> DriverMetadataDocument {
         DriverMetadataDocument {
             format: "buckyos.aicc.provider-driver-metadata".to_string(),
-            schema_version: 1,
+            schema_version: 2,
             schema_revision: 0,
             provider_driver: driver.to_string(),
             revision_seq: revision,
@@ -1052,6 +1455,94 @@ mod tests {
         .unwrap();
         assert!(store.load_valid_object(&second.files[0]).is_none());
         assert!(store.load_valid_object(&second.files[1]).is_some());
+    }
+
+    #[test]
+    fn interrupted_update_keeps_completed_candidate_objects() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        let openai = obj_id("candidate-openai");
+        let claude = obj_id("candidate-claude");
+        let candidate = manifest(
+            7,
+            vec![file("openai", 3, &openai), file("claude", 2, &claude)],
+        );
+        store
+            .observe_manifest(
+                &candidate,
+                obj_id("candidate-manifest").to_string().as_str(),
+            )
+            .unwrap();
+        store
+            .store_object(
+                &openai,
+                serde_json::to_vec(&document("openai", 3))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+
+        store.cleanup_parts_and_orphans().unwrap();
+
+        assert!(store
+            .prepare_object_slot(&candidate.files[0])
+            .unwrap()
+            .is_some());
+        assert!(store
+            .prepare_object_slot(&candidate.files[1])
+            .unwrap()
+            .is_none());
+        assert!(store.load_latest_activation().is_none());
+    }
+
+    #[test]
+    fn manifest_total_size_is_bounded() {
+        assert_eq!(
+            checked_manifest_metadata_bytes(
+                MAX_MANIFEST_METADATA_BYTES - MAX_METADATA_BYTES,
+                MAX_METADATA_BYTES,
+            )
+            .unwrap(),
+            MAX_MANIFEST_METADATA_BYTES
+        );
+        assert!(checked_manifest_metadata_bytes(MAX_MANIFEST_METADATA_BYTES, 1).is_err());
+    }
+
+    #[test]
+    fn history_pruning_keeps_two_complete_activations() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        for revision in 1..=3 {
+            let object = obj_id(format!("openai-{revision}").as_str());
+            store
+                .store_object(
+                    &object,
+                    serde_json::to_vec(&document("openai", revision))
+                        .unwrap()
+                        .as_slice(),
+                )
+                .unwrap();
+            let value = manifest(revision, vec![file("openai", revision, &object)]);
+            store
+                .activate(
+                    revision,
+                    obj_id(format!("manifest-{revision}").as_str())
+                        .to_string()
+                        .as_str(),
+                    value,
+                )
+                .unwrap();
+        }
+
+        store.prune_activations().unwrap();
+
+        let revisions = load_activations(store.activations_dir().as_path())
+            .into_iter()
+            .map(|activation| activation.manifest.revision_seq)
+            .collect::<Vec<_>>();
+        assert_eq!(revisions, vec![3, 2]);
     }
 
     #[test]
@@ -1225,7 +1716,7 @@ mod tests {
         let object_id = obj_id("corrupt-object");
         let entry = file("openai", 1, &object_id);
         store.store_object(&object_id, b"broken").unwrap();
-        assert!(!store.prepare_object_slot(&entry).unwrap());
+        assert!(store.prepare_object_slot(&entry).unwrap().is_none());
         assert!(!store.object_path(&object_id).exists());
     }
 
