@@ -168,6 +168,8 @@ activation 提交后不主动重建 provider inventory；新 metadata 在下一�
 或更新源切换只推进进程内的 `driver_metadata_generation`；重新解析 metadata 后生成的
 inventory 携带该 generation。ModelRegistry 在 generation 提高时必须替换 provider 快照，
 即使 provider 返回的 `inventory_revision` 没有变化；旧 generation 的迟到库存不得覆盖新快照。
+所有内置 Provider 都在注册后启动相同生命周期的库存刷新任务；没有远端模型列表接口的
+Provider 只按现有 settings 模型列表重新应用 metadata，不额外访问网络。
 
 连续失败采用带 jitter 的指数退避，默认从 60 秒开始，最大不超过配置的正常更新周期；成功后清零。退避只影响调度，不改变安全校验。
 
