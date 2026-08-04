@@ -12,6 +12,10 @@ const EMPTY_SETTINGS: CloudUpdateSettings = {
   consecutiveFailures: 0,
 }
 
+const ACTIVE_POLL_INTERVAL_MS = 5_000
+const DEGRADED_POLL_INTERVAL_MS = 15_000
+const STABLE_POLL_INTERVAL_MS = 60_000
+
 export function CloudUpdateCard() {
   const { t } = useI18n()
   const store = useAICCStore()
@@ -36,26 +40,56 @@ export function CloudUpdateCard() {
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
-    const refresh = async () => {
+    let refreshing = false
+    let refreshFailures = 0
+
+    const scheduleRefresh = (delay: number): void => {
+      if (cancelled || document.visibilityState === 'hidden') return
+      timer = window.setTimeout(() => void refresh(), delay)
+    }
+
+    const refresh = async (): Promise<void> => {
+      if (refreshing || document.visibilityState === 'hidden') return
+      refreshing = true
+      let nextDelay = ACTIVE_POLL_INTERVAL_MS
       try {
         const value = await store.getCloudUpdateSettings()
+        refreshFailures = 0
+        nextDelay = cloudUpdatePollInterval(value.status)
         if (!cancelled) {
           setSettings(value)
           setRefreshError(null)
         }
       } catch (cause) {
+        refreshFailures += 1
+        nextDelay = Math.min(
+          STABLE_POLL_INTERVAL_MS,
+          ACTIVE_POLL_INTERVAL_MS * (2 ** Math.min(refreshFailures - 1, 4)),
+        )
         if (!cancelled) setRefreshError(errorMessage(cause))
       } finally {
+        refreshing = false
         if (!cancelled) {
           setLoading(false)
-          timer = window.setTimeout(() => void refresh(), 5_000)
+          scheduleRefresh(nextDelay)
         }
       }
     }
+
+    const handleVisibilityChange = () => {
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        timer = undefined
+      }
+      if (document.visibilityState === 'visible') void refresh()
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     void refresh()
     return () => {
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [store])
 
@@ -214,6 +248,12 @@ function isValidSourceUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function cloudUpdatePollInterval(status: CloudUpdateSettings['status']): number {
+  if (status === 'updating') return ACTIVE_POLL_INTERVAL_MS
+  if (status === 'degraded' || status === 'error') return DEGRADED_POLL_INTERVAL_MS
+  return STABLE_POLL_INTERVAL_MS
 }
 
 function errorMessage(error: unknown): string {
