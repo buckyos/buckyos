@@ -34,6 +34,10 @@ const MAX_RETAINED_WATERMARKS: usize = 2;
 const MIN_UPDATE_INTERVAL_SECS: u64 = 60;
 const MAX_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
+pub(crate) fn normalize_update_interval_secs(value: u64) -> u64 {
+    value.clamp(MIN_UPDATE_INTERVAL_SECS, MAX_UPDATE_INTERVAL_SECS)
+}
+
 static CONFIGURED_SOURCE_KEY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static METADATA_STORE_LOCK: OnceLock<RwLock<()>> = OnceLock::new();
 static ACTIVATION_CACHE: OnceLock<RwLock<HashMap<PathBuf, CachedActivation>>> = OnceLock::new();
@@ -149,9 +153,7 @@ impl DriverMetadataUpdateSettings {
         {
             bail!("metadata source_url must use /aicc/driver-metadata/index.json");
         }
-        parsed.interval_secs = parsed
-            .interval_secs
-            .clamp(MIN_UPDATE_INTERVAL_SECS, MAX_UPDATE_INTERVAL_SECS);
+        parsed.interval_secs = normalize_update_interval_secs(parsed.interval_secs);
         Ok(Some(parsed))
     }
 

@@ -49,8 +49,8 @@ use crate::claude::register_claude_providers;
 use crate::fal::register_fal_providers;
 use crate::gemini::register_google_gemini_providers;
 use crate::metadata_updater::{
-    configure_remote_metadata_source, DriverMetadataUpdateOutcome, DriverMetadataUpdateSettings,
-    DriverMetadataUpdater,
+    configure_remote_metadata_source, normalize_update_interval_secs,
+    DriverMetadataUpdateOutcome, DriverMetadataUpdateSettings, DriverMetadataUpdater,
 };
 use crate::minimax::register_minimax_providers;
 use crate::openai::register_openai_llm_providers;
@@ -279,6 +279,7 @@ fn driver_metadata_update_view(settings: &Value) -> Value {
         "interval_secs": configured
             .and_then(|value| value.get("interval_secs"))
             .and_then(Value::as_u64)
+            .map(normalize_update_interval_secs)
             .unwrap_or(3600),
     })
 }
@@ -304,13 +305,29 @@ fn update_driver_metadata_settings(
         update.insert("source_url".to_string(), Value::String(source_url));
     }
     if let Some(interval_secs) = params.get("interval_secs").and_then(Value::as_u64) {
-        update.insert("interval_secs".to_string(), json!(interval_secs));
+        update.insert(
+            "interval_secs".to_string(),
+            json!(normalize_update_interval_secs(interval_secs)),
+        );
     }
     if enabled {
         DriverMetadataUpdateSettings::from_aicc_settings(settings)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     }
     Ok(())
+}
+
+fn driver_metadata_update_set_result(
+    settings_revision: u64,
+    settings: &Value,
+    reload: Value,
+) -> Value {
+    json!({
+        "ok": true,
+        "settings_revision": settings_revision,
+        "settings": driver_metadata_update_view(settings),
+        "reload": reload,
+    })
 }
 
 fn rpc_success(req: &RPCRequest, result: Value) -> RPCResponse {
@@ -867,12 +884,7 @@ impl AiccHttpServer {
         })
     }
 
-    async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
-        let runtime = get_buckyos_api_runtime()
-            .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
-        let settings = runtime.get_my_settings().await.map_err(|err| {
-            RPCErrors::ReasonError(format!("load aicc settings during reload failed: {}", err))
-        })?;
+    fn apply_settings_value(&self, settings: &Value) -> std::result::Result<Value, RPCErrors> {
         let settings_for_log = redact_settings_for_log(&settings);
         self.metadata_settings_tx
             .send_replace(Some(settings.clone()));
@@ -889,6 +901,15 @@ impl AiccHttpServer {
             "ok": true,
             "providers_registered": registered
         }))
+    }
+
+    async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()
+            .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
+        let settings = runtime.get_my_settings().await.map_err(|err| {
+            RPCErrors::ReasonError(format!("load aicc settings during reload failed: {}", err))
+        })?;
+        self.apply_settings_value(&settings)
     }
 
     async fn load_settings_for_request(
@@ -1300,13 +1321,18 @@ impl AiccHttpServer {
         let (client, mut doc) = self.load_settings_for_request(req, ip_from).await?;
         update_driver_metadata_settings(&mut doc.value, &req.params)?;
         let settings_revision = self.write_settings(client, &doc, &doc.value).await?;
-        let reload = self.reload_result_value().await;
-        Ok(json!({
-            "ok": reload.get("ok").and_then(Value::as_bool).unwrap_or(false),
-            "settings_revision": settings_revision,
-            "settings": driver_metadata_update_view(&doc.value),
-            "reload": reload,
-        }))
+        let reload = match self.apply_settings_value(&doc.value) {
+            Ok(value) => value,
+            Err(err) => json!({
+                "ok": false,
+                "error": err.to_string()
+            }),
+        };
+        Ok(driver_metadata_update_set_result(
+            settings_revision,
+            &doc.value,
+            reload,
+        ))
     }
 
     async fn handle_usage_query(&self, params: &Value) -> std::result::Result<Value, RPCErrors> {
@@ -1436,10 +1462,23 @@ fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
                     let delay = match result {
                         Ok(DriverMetadataUpdateOutcome::Activated { revision_seq }) => {
                             consecutive_failures = 0;
+                            let (refreshed, refresh_errors) = server
+                                .rpc_handler
+                                .0
+                                .refresh_all_provider_inventories()
+                                .await;
                             info!(
-                                "aicc driver metadata activation committed revision={}; it will apply on the next provider inventory refresh",
-                                revision_seq
+                                "aicc driver metadata activation committed revision={} refreshed_providers={} refresh_errors={}",
+                                revision_seq,
+                                refreshed,
+                                refresh_errors.len()
                             );
+                            for (provider_instance_name, err) in refresh_errors {
+                                warn!(
+                                    "aicc driver metadata provider refresh failed provider_instance_name={} err={}",
+                                    provider_instance_name, err
+                                );
+                            }
                             normal_interval
                         }
                         Ok(DriverMetadataUpdateOutcome::Unchanged { revision_seq }) => {
@@ -1782,5 +1821,51 @@ mod tests {
             &json!({ "enabled": true, "source_url": "http://metadata.example/index.json" }),
         )
         .is_err());
+    }
+
+    #[test]
+    fn metadata_update_interval_is_normalized_before_persisting_and_reading() {
+        let mut settings = json!({});
+        update_driver_metadata_settings(
+            &mut settings,
+            &json!({
+                "enabled": true,
+                "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+                "interval_secs": 1,
+            }),
+        )
+        .unwrap();
+        assert_eq!(settings["driver_metadata_update"]["interval_secs"], 60);
+
+        update_driver_metadata_settings(
+            &mut settings,
+            &json!({ "enabled": true, "interval_secs": 100_000 }),
+        )
+        .unwrap();
+        assert_eq!(settings["driver_metadata_update"]["interval_secs"], 86_400);
+
+        settings["driver_metadata_update"]["interval_secs"] = json!(1);
+        assert_eq!(driver_metadata_update_view(&settings)["interval_secs"], 60);
+    }
+
+    #[test]
+    fn metadata_update_set_reports_saved_when_provider_reload_fails() {
+        let settings = json!({
+            "driver_metadata_update": {
+                "enabled": true,
+                "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+                "interval_secs": 900,
+            }
+        });
+        let result = driver_metadata_update_set_result(
+            42,
+            &settings,
+            json!({ "ok": false, "error": "provider reload failed" }),
+        );
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["settings_revision"], 42);
+        assert_eq!(result["settings"]["enabled"], true);
+        assert_eq!(result["reload"]["ok"], false);
     }
 }

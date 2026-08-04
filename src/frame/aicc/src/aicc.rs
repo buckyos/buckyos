@@ -1421,6 +1421,18 @@ impl Registry {
         entries.get(instance_id).map(|entry| entry.provider.clone())
     }
 
+    fn providers(&self) -> Vec<(String, Arc<dyn Provider>)> {
+        self.entries
+            .read()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|(name, entry)| (name.clone(), entry.provider.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn provider_count(&self) -> usize {
         self.entries
             .read()
@@ -3351,6 +3363,50 @@ impl AIComputeCenter {
             .apply_inventory(inventory.clone())
             .map_err(route_error_to_rpc)?;
         Ok(inventory)
+    }
+
+    pub async fn refresh_all_provider_inventories(&self) -> (usize, Vec<(String, String)>) {
+        let mut refreshes = tokio::task::JoinSet::new();
+        for (provider_instance_name, provider) in self.registry.providers() {
+            refreshes.spawn(async move {
+                (
+                    provider_instance_name,
+                    provider.refresh_inventory().await,
+                )
+            });
+        }
+        let mut refreshed = 0usize;
+        let mut errors = Vec::new();
+        while let Some(refresh_result) = refreshes.join_next().await {
+            let (provider_instance_name, inventory) = match refresh_result {
+                Ok(result) => result,
+                Err(err) => {
+                    errors.push(("<refresh-task>".to_string(), err.to_string()));
+                    continue;
+                }
+            };
+            let inventory = match inventory {
+                Ok(inventory) => inventory,
+                Err(err) => {
+                    errors.push((provider_instance_name, err.to_string()));
+                    continue;
+                }
+            };
+            let apply_result = self
+                .model_registry
+                .write()
+                .map_err(|_| "model registry lock poisoned".to_string())
+                .and_then(|mut registry| {
+                    registry
+                        .apply_inventory(inventory)
+                        .map_err(|err| err.to_string())
+                });
+            match apply_result {
+                Ok(()) => refreshed = refreshed.saturating_add(1),
+                Err(err) => errors.push((provider_instance_name, err)),
+            }
+        }
+        (refreshed, errors)
     }
 
     pub fn update_route_config(&self, new_cfg: RouteConfig) {
@@ -5843,6 +5899,7 @@ mod tests {
         instance: ProviderInstance,
         inventory: ProviderInventory,
         cost: CostEstimateOutput,
+        refresh_inventory: Option<ProviderInventory>,
         start_results: Mutex<VecDeque<std::result::Result<ProviderStartResult, ProviderError>>>,
         start_call_count: std::sync::atomic::AtomicUsize,
         shutdown_call_count: std::sync::atomic::AtomicUsize,
@@ -5860,6 +5917,7 @@ mod tests {
                 instance,
                 inventory,
                 cost,
+                refresh_inventory: None,
                 start_results: Mutex::new(start_results.into_iter().collect()),
                 start_call_count: std::sync::atomic::AtomicUsize::new(0),
                 shutdown_call_count: std::sync::atomic::AtomicUsize::new(0),
@@ -5873,6 +5931,11 @@ mod tests {
 
         fn shutdown_calls(&self) -> usize {
             self.shutdown_call_count.load(AtomicOrdering::Relaxed)
+        }
+
+        fn with_refresh_inventory(mut self, inventory: ProviderInventory) -> Self {
+            self.refresh_inventory = Some(inventory);
+            self
         }
     }
 
@@ -5889,6 +5952,15 @@ mod tests {
         fn shutdown(&self) {
             self.shutdown_call_count
                 .fetch_add(1, AtomicOrdering::Relaxed);
+        }
+
+        async fn refresh_inventory(
+            &self,
+        ) -> std::result::Result<ProviderInventory, ProviderError> {
+            Ok(self
+                .refresh_inventory
+                .clone()
+                .unwrap_or_else(|| self.inventory.clone()))
         }
 
         async fn start(
@@ -6273,6 +6345,36 @@ mod tests {
         assert!(task.is_stopped());
         assert!(!task.try_start_request());
         assert_eq!(task.started_requests(), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_all_provider_inventories_applies_metadata_generation_immediately() {
+        let instance = mock_instance("provider-1", "provider-a");
+        let mut refreshed_inventory = mock_inventory(&instance);
+        refreshed_inventory.driver_metadata_generation = 1;
+        refreshed_inventory.models[0].logical_mounts = vec!["llm.refreshed".to_string()];
+        let provider = Arc::new(
+            MockProvider::new(instance, cost(0.001, 100), vec![])
+                .with_refresh_inventory(refreshed_inventory),
+        );
+        let registry = Registry::default();
+        registry.add_provider(provider);
+        let center = AIComputeCenter::new(registry, ModelCatalog::default());
+
+        let (refreshed, errors) = center.refresh_all_provider_inventories().await;
+
+        assert_eq!(refreshed, 1);
+        assert!(errors.is_empty());
+        let model_registry = center.model_registry.read().unwrap();
+        assert_eq!(
+            model_registry
+                .default_items_for_path("llm.refreshed")
+                .len(),
+            1
+        );
+        assert!(model_registry
+            .default_items_for_path("llm.plan.default")
+            .is_empty());
     }
 
     fn center_with_taskmgr(registry: Registry, catalog: ModelCatalog) -> AIComputeCenter {

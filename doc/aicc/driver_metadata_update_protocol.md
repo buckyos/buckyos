@@ -162,8 +162,9 @@ candidate：已经完整下载并通过 NDN 与 JSON 身份校验的 provider �
 
 读取端首次按 revision 从高到低验证 activation 及其全部对象，并在进程内缓存已完整验证的最高版本。普通读取复核 activation wrapper 和当前 provider 对象；目标对象损坏时清除缓存，重新执行完整验证并回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
 
-activation 提交后不主动重建 provider inventory；新 metadata 在下一次
-`provider.refresh_models`、settings reload 或服务重启构建 inventory 时生效。activation
+activation 提交后立即对所有已注册 Provider 执行一次 best-effort inventory refresh，并把
+成功结果直接写入 ModelRegistry；单个 Provider 刷新失败只记录错误，不阻断其它 Provider，
+后续仍可通过周期刷新、`provider.refresh_models`、settings reload 或服务重启恢复。activation
 提交、同 revision 缓存修复、LKGS 降级、全部 activation 失效或更新源切换都会在实际生效
 identity 变化时推进进程内的 `driver_metadata_generation`；identity 包含 source、manifest
 revision、ObjId 和 digest。重新解析 metadata 后生成的 inventory 携带该 generation。

@@ -421,6 +421,7 @@ AI Center 通过这两个接口读取并启用或停用 Provider Driver Metadata
 
 - `get` 返回 `enabled`、脱敏后的 `source_url`、`source_configured` 和 `interval_secs`。
 - `set` 接收 `enabled`，并可选接收 `source_url`；启用时校验 HTTPS、固定路径 `/aicc/driver-metadata/index.json`，写入后自动 reload。
+- `set.ok` 表示 settings 已持久化且 metadata updater 已收到新配置；Provider reload 的独立结果放在 `reload.ok/error`，reload 失败不回滚已经提交的云更新设置。
 - 写操作复用 settings revision CAS 和调用者 token，不允许前端直接写 `system_config`。
 - 停用时保留现有发布源，便于之后直接重新启用；切换发布源时由云更新运行时执行既有的信任源切换规则。
 
