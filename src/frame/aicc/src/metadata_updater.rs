@@ -1,7 +1,7 @@
 use crate::metadata_resolver::DriverMetadataDocument;
 use anyhow::{anyhow, bail, Context, Result};
 use buckyos_kit::get_buckyos_service_home_dir;
-use ndn_lib::{ChunkId, ChunkList, FileObject, ObjId, OBJ_TYPE_CHUNK_LIST};
+use ndn_lib::ObjId;
 use ndn_toolkit::cyfs_ndn_client::{CyfsNdnClient, CyfsResponseMeta, VerifiedPathObject};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,6 @@ const MANIFEST_FORMAT: &str = "buckyos.aicc.driver-metadata-manifest";
 const ACTIVATION_FORMAT: &str = "buckyos.aicc.driver-metadata-activation";
 const PROTOCOL_VERSION: u32 = 1;
 const METADATA_SCHEMA_VERSION: u32 = 2;
-const MAX_PATH_OBJECT_TTL_SECS: u64 = 24 * 60 * 60;
 const MAX_INDEX_BYTES: u64 = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
@@ -241,7 +240,7 @@ impl DriverMetadataUpdater {
 
         let manifest_obj_id = parse_obj_id(track.manifest.obj_id.as_str())?;
         let manifest_url = join_canonical_url(&source_url, track.manifest.path.as_str())?;
-        let (manifest_bytes, downloaded_manifest_obj_id) = self
+        let (manifest_bytes, _) = self
             .download_verified(
                 manifest_url.as_str(),
                 Some(&manifest_obj_id),
@@ -250,9 +249,6 @@ impl DriverMetadataUpdater {
                 "manifest",
             )
             .await?;
-        if downloaded_manifest_obj_id != manifest_obj_id {
-            bail!("manifest PathObject target does not match index ObjId");
-        }
         let manifest: DriverMetadataManifest =
             serde_json::from_slice(manifest_bytes.as_slice()).context("parse metadata manifest")?;
         validate_manifest(&manifest, track)?;
@@ -279,7 +275,7 @@ impl DriverMetadataUpdater {
             }
             let expected_obj_id = parse_obj_id(file.obj_id.as_str())?;
             let file_url = join_canonical_url(&source_url, file.path.as_str())?;
-            let (bytes, downloaded_obj_id) = self
+            let (bytes, _) = self
                 .download_verified(
                     file_url.as_str(),
                     Some(&expected_obj_id),
@@ -288,12 +284,6 @@ impl DriverMetadataUpdater {
                     file.provider_driver.as_str(),
                 )
                 .await?;
-            if downloaded_obj_id != expected_obj_id {
-                bail!(
-                    "metadata PathObject target for {} does not match manifest ObjId",
-                    file.provider_driver
-                );
-            }
             metadata_bytes = checked_manifest_metadata_bytes(metadata_bytes, bytes.len() as u64)?;
             validate_metadata_bytes(bytes.as_slice(), file)?;
             self.store
@@ -341,17 +331,7 @@ impl DriverMetadataUpdater {
             .send()
             .await
             .map_err(|err| anyhow!("download {} through NDN failed: {}", label, err))?;
-        let path_object =
-            validate_verified_path_response(response.meta(), expected_obj_id, max_bytes, label)?;
-        if response
-            .meta()
-            .cyfs_headers
-            .chunk_size
-            .map(|size| size > max_bytes)
-            .unwrap_or(false)
-        {
-            bail!("{} exceeds the maximum size", label);
-        }
+        let path_object = validate_verified_path_response(response.meta(), expected_obj_id, label)?;
 
         let output = attempt.join(format!("{}.part", safe_label(label)));
         let pull_result = response
@@ -373,74 +353,18 @@ impl DriverMetadataUpdater {
 fn validate_verified_path_response(
     meta: &CyfsResponseMeta,
     expected_obj_id: Option<&ObjId>,
-    max_bytes: u64,
     label: &str,
 ) -> Result<VerifiedPathObject> {
     let path_object = meta
         .path_object
         .clone()
         .ok_or_else(|| anyhow!("{} response has no verified PathObject", label))?;
-    if path_object.exp < path_object.iat
-        || path_object.exp - path_object.iat > MAX_PATH_OBJECT_TTL_SECS
-    {
-        bail!("{} PathObject TTL exceeds 24 hours", label);
-    }
     if let Some(expected) = expected_obj_id {
         if &path_object.target != expected {
             bail!("{} PathObject target does not match expected ObjId", label);
         }
     }
-    validate_verified_ndn_size(meta, &path_object.target, max_bytes, label)?;
     Ok(path_object)
-}
-
-fn validate_verified_ndn_size(
-    meta: &CyfsResponseMeta,
-    target: &ObjId,
-    max_bytes: u64,
-    label: &str,
-) -> Result<()> {
-    let declared_size = if target.is_chunk() {
-        ChunkId::from_obj_id(target)
-            .get_length()
-            .ok_or_else(|| anyhow!("{} NDN ChunkId has no verified content length", label))?
-    } else {
-        let parent = meta
-            .parents
-            .iter()
-            .rev()
-            .find(|parent| &parent.obj_id == target)
-            .ok_or_else(|| anyhow!("{} response has no verified size-bearing parent", label))?;
-        let value = parent
-            .obj_json
-            .as_ref()
-            .ok_or_else(|| anyhow!("{} verified parent has no canonical object data", label))?;
-        if target.is_file_object() {
-            serde_json::from_value::<FileObject>(value.clone())
-                .with_context(|| format!("parse verified {} FileObject", label))?
-                .size
-        } else if target.obj_type == OBJ_TYPE_CHUNK_LIST {
-            let chunk_list = ChunkList::from_json_value(value.clone())
-                .map_err(|err| anyhow!("parse verified {} ChunkList: {}", label, err))?;
-            chunk_list.body.iter().try_fold(0u64, |total, chunk_id| {
-                let size = chunk_id.get_length().ok_or_else(|| {
-                    anyhow!(
-                        "{} ChunkList contains a chunk without verified length",
-                        label
-                    )
-                })?;
-                total
-                    .checked_add(size)
-                    .ok_or_else(|| anyhow!("{} verified content size overflow", label))
-            })?
-        } else {
-            bail!("{} NDN target type has no trusted size declaration", label);
-        }
-    };
-    if declared_size > max_bytes {
-        bail!("{} exceeds the maximum size", label);
-    }
-    Ok(())
 }
 
 fn checked_manifest_metadata_bytes(current: u64, next: u64) -> Result<u64> {
@@ -1341,14 +1265,6 @@ mod tests {
         }
     }
 
-    fn sized_chunk(bytes: &[u8]) -> ObjId {
-        ndn_lib::ChunkHasher::new(None)
-            .unwrap()
-            .calc_mix_chunk_id_from_bytes(bytes)
-            .unwrap()
-            .to_obj_id()
-    }
-
     fn obj_id(seed: &str) -> ObjId {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(seed.as_bytes());
@@ -1359,29 +1275,21 @@ mod tests {
     #[test]
     fn unsigned_path_response_is_rejected() {
         let meta = response_meta(None);
-        assert!(validate_verified_path_response(&meta, None, 1024, "index").is_err());
+        assert!(validate_verified_path_response(&meta, None, "index").is_err());
     }
 
     #[test]
-    fn path_response_enforces_target_ttl_and_verified_size() {
-        let target = sized_chunk(b"verified metadata");
-        let valid = VerifiedPathObject {
+    fn path_response_enforces_expected_target_without_app_ttl_policy() {
+        let target = obj_id("target");
+        let long_lived = VerifiedPathObject {
             path: "/aicc/driver-metadata/index.json".to_string(),
             target: target.clone(),
             iat: 100,
-            exp: 101,
+            exp: 100 + 3 * 365 * 24 * 60 * 60,
         };
-        let meta = response_meta(Some(valid.clone()));
-        validate_verified_path_response(&meta, Some(&target), 64, "index").unwrap();
-        assert!(
-            validate_verified_path_response(&meta, Some(&obj_id("other")), 64, "index").is_err()
-        );
-        assert!(validate_verified_path_response(&meta, Some(&target), 1, "index").is_err());
-
-        let mut long_lived = valid;
-        long_lived.exp = long_lived.iat + MAX_PATH_OBJECT_TTL_SECS + 1;
         let meta = response_meta(Some(long_lived));
-        assert!(validate_verified_path_response(&meta, Some(&target), 64, "index").is_err());
+        validate_verified_path_response(&meta, Some(&target), "index").unwrap();
+        assert!(validate_verified_path_response(&meta, Some(&obj_id("other")), "index").is_err());
     }
 
     fn file(driver: &str, revision: u64, obj_id: &ObjId) -> DriverMetadataManifestFile {

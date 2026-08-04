@@ -36,7 +36,7 @@ AICC settings 中显式启用更新源：
 
 发布目录由 `NdnDirServer` 扫描、对象化并签发 PathObject。发布顺序必须是 provider 文件、manifest、index；index 最后更新。
 
-PathObject 的有效期不得超过 24 小时。业务内容回滚也必须发布更高的 `revision_seq`，不得重新使用旧 revision。
+PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设 TTL 上限。业务内容回滚也必须发布更高的 `revision_seq`，不得重新使用旧 revision。
 
 ## 3. Index
 
@@ -129,15 +129,15 @@ PathObject 的有效期不得超过 24 小时。业务内容回滚也必须发�
 
 1. 存在且成功验证 `response.meta().path_object`，禁止退回只信任未签名 `cyfs-obj-id` header。
 2. 通过 SDK 对 PathObject signer scope、host、path、exp 的验证。
-3. PathObject TTL 不超过 24 小时。
-4. manifest/provider 的 PathObject target 与上级声明的 FileObject ObjId 相同。
-5. 通过 SDK 完成 FileObject/Chunk 链和内容校验。
+3. manifest/provider 的 PathObject target 与上级声明的 FileObject ObjId 相同。
+4. 通过 SDK 完成 FileObject/Chunk 链和内容校验。
 
-NDN 已完成内容校验，AICC 不重复计算内容 hash。
+NDN SDK 是文件内容正确性的唯一校验层。AICC 不重复计算内容 hash，也不自行解析
+Chunk/FileObject/ChunkList 来复核内容；PathObject target 比较只用于确认下载对象是上级协议对象指定的 ObjId。
 
 `index.json` 最大 256 KiB，manifest 最大 1 MiB，单个 provider metadata
 最大 64 MiB；manifest 引用的全部 provider metadata 实际大小之和最大
-512 MiB。大小在 NDN 已验证的 Chunk/FileObject 声明上预检，并在完整下载后再次检查。
+512 MiB。AICC 在 NDN SDK 完成下载和校验后，以落盘文件的实际大小执行这些容量限制。
 
 ## 7. 增量计划与原子提交
 

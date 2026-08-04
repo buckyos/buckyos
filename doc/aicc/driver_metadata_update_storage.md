@@ -37,13 +37,13 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 ### Object: observed index
 
 - 文件名：`<index_revision_seq>.json`
-- 内容：完整且已严格验证的 index，加 `path_obj_id`。
+- 内容：经 NDN SDK 下载并验证、且通过协议解析的完整 index，加 `path_obj_id`。
 - 约束：revision 单调；同名文件内容冲突时 fail-closed。
 
 ### Object: observed manifest
 
 - 文件名：`<revision_seq>.json`
-- 内容：完整且已严格验证的 manifest，加 index 声明的 manifest ObjId。
+- 内容：经 NDN SDK 下载并验证、且通过协议解析的完整 manifest，加 index 声明的 manifest ObjId。
 - 约束：revision 单调；同 revision 不同 ObjId fail-closed。
 
 ### Object: provider metadata
