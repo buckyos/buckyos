@@ -240,6 +240,15 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
   await expect(page.getByTestId('window-ai-center')).toBeVisible()
   await expect(page.getByText('AI Features Not Enabled')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Get Started' })).toBeVisible()
+  await expect(page.getByText('Cloud metadata updates')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Enable cloud updates' }).click()
+  const sourceInput = page.getByLabel('Metadata source URL')
+  await expect(sourceInput).toBeVisible()
+  await sourceInput.fill('https://metadata.example/aicc/driver-metadata/index.json')
+  await page.getByRole('dialog').getByRole('button', { name: 'Enable cloud updates' }).click()
+  await expect(page.getByText('Enabled', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Configure' })).toBeVisible()
 
   expect(consoleErrors).toEqual([])
 })

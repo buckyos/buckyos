@@ -231,6 +231,8 @@ interface AiccDataProvider {
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
   queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
+  getCloudUpdateSettings(): Promise<CloudUpdateSettings>
+  setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings>
 }
 
 export interface AICCMgr {
@@ -249,6 +251,20 @@ export interface AICCMgr {
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
   queryRoutingDirectory(path: string | null): Promise<RoutingDirectoryView>
   queryRouteTraces(params: RouteTracesQuery): Promise<RouteTracesPage>
+  getCloudUpdateSettings(): Promise<CloudUpdateSettings>
+  setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings>
+}
+
+export interface CloudUpdateSettings {
+  enabled: boolean
+  sourceUrl?: string
+  sourceConfigured: boolean
+  intervalSecs: number
+}
+
+export interface CloudUpdateSettingsUpdate {
+  enabled: boolean
+  sourceUrl?: string
 }
 
 export interface UsageTimeRange {
@@ -388,6 +404,14 @@ export class AICCModelStore implements AICCMgr {
     return this.provider.queryRouteTraces(params)
   }
 
+  getCloudUpdateSettings(): Promise<CloudUpdateSettings> {
+    return this.provider.getCloudUpdateSettings()
+  }
+
+  setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings> {
+    return this.provider.setCloudUpdateSettings(settings)
+  }
+
   private emit() {
     this.listeners.forEach((listener) => listener())
   }
@@ -404,6 +428,11 @@ export function createAICCMgr(options: { useMock?: boolean } = {}): AICCMgr {
 
 class MockAiccProvider implements AiccDataProvider {
   private readonly store = new MockDataStore()
+  private cloudUpdateSettings: CloudUpdateSettings = {
+    enabled: false,
+    sourceConfigured: false,
+    intervalSecs: 3600,
+  }
 
   fetchSnapshotSync(): StoreSnapshot {
     return this.store.getSnapshot()
@@ -489,6 +518,20 @@ class MockAiccProvider implements AiccDataProvider {
         ...snapshot.localModels,
       ],
     }
+  }
+
+  async getCloudUpdateSettings(): Promise<CloudUpdateSettings> {
+    return this.cloudUpdateSettings
+  }
+
+  async setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings> {
+    this.cloudUpdateSettings = {
+      enabled: settings.enabled,
+      sourceUrl: settings.sourceUrl ?? this.cloudUpdateSettings.sourceUrl,
+      sourceConfigured: Boolean(settings.sourceUrl ?? this.cloudUpdateSettings.sourceUrl),
+      intervalSecs: this.cloudUpdateSettings.intervalSecs,
+    }
+    return this.cloudUpdateSettings
   }
 }
 
@@ -665,6 +708,31 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     }
   }
 
+  async getCloudUpdateSettings(): Promise<CloudUpdateSettings> {
+    const result = await this.call<Record<string, unknown>>(
+      'driver_metadata_update.get',
+      {},
+      { requireSession: true },
+    )
+    return toCloudUpdateSettings(result)
+  }
+
+  async setCloudUpdateSettings(settings: CloudUpdateSettingsUpdate): Promise<CloudUpdateSettings> {
+    const result = await this.call<Record<string, unknown>>(
+      'driver_metadata_update.set',
+      {
+        enabled: settings.enabled,
+        source_url: settings.sourceUrl?.trim() || undefined,
+      },
+      { requireSession: true },
+    )
+    if (result.ok !== true) {
+      const reload = isRecord(result.reload) ? result.reload : {}
+      throw new Error(asNonEmptyString(reload.error, 'aicc.cloud_update_save_failed'))
+    }
+    return toCloudUpdateSettings(isRecord(result.settings) ? result.settings : result)
+  }
+
   private async call<T>(
     method: string,
     params: Record<string, unknown>,
@@ -775,6 +843,15 @@ function withProviderInstanceName(draft: WizardDraft, snapshot: StoreSnapshot): 
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function toCloudUpdateSettings(raw: Record<string, unknown>): CloudUpdateSettings {
+  return {
+    enabled: asBoolean(raw.enabled, false),
+    sourceUrl: asOptionalString(raw.source_url),
+    sourceConfigured: asBoolean(raw.source_configured, false),
+    intervalSecs: asOptionalNumber(raw.interval_secs) ?? 3600,
+  }
 }
 
 function defaultProviderInstanceName(providerType: ProviderType, name: string): string {

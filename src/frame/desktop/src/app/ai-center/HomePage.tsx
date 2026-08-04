@@ -1,6 +1,7 @@
 import { useAIStatus } from './hooks/use-aicc-store'
 import { EnableAIGuide } from './components/home/EnableAIGuide'
 import { UsageDashboard } from './components/home/UsageDashboard'
+import { CloudUpdateCard } from './components/home/CloudUpdateCard'
 import type { AICenterPage } from './components/layout/Sidebar'
 
 interface HomePageProps {
@@ -11,8 +12,18 @@ export function HomePage({ navigate }: HomePageProps) {
   const status = useAIStatus()
 
   if (status.state === 'disabled') {
-    return <EnableAIGuide onGetStarted={() => navigate('providers/add')} />
+    return (
+      <>
+        <CloudUpdateCard />
+        <EnableAIGuide onGetStarted={() => navigate('providers/add')} />
+      </>
+    )
   }
 
-  return <UsageDashboard />
+  return (
+    <>
+      <CloudUpdateCard />
+      <UsageDashboard />
+    </>
+  )
 }

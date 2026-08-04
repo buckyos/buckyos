@@ -415,7 +415,16 @@ Response 直接复用 `buckyos_api::QueryUsageResponse`：
 - Summary：`time_range.kind=explicit`, `output_mode=summary`, `group_by=["provider_model"]`。
 - Trend：`time_range.kind=explicit`, `time_bucket=day`, `output_mode=summary`。
 
-### 4.7 `service.reload_settings`
+### 4.7 `driver_metadata_update.get` / `driver_metadata_update.set`
+
+AI Center 通过这两个接口读取并启用或停用 Provider Driver Metadata 云更新。配置仍持久化在 `services/aicc/settings.driver_metadata_update`：
+
+- `get` 返回 `enabled`、脱敏后的 `source_url`、`source_configured` 和 `interval_secs`。
+- `set` 接收 `enabled`，并可选接收 `source_url`；启用时校验 HTTPS、固定路径 `/aicc/driver-metadata/index.json`，写入后自动 reload。
+- 写操作复用 settings revision CAS 和调用者 token，不允许前端直接写 `system_config`。
+- 停用时保留现有发布源，便于之后直接重新启用；切换发布源时由云更新运行时执行既有的信任源切换规则。
+
+### 4.8 `service.reload_settings`
 
 状态：保留。
 

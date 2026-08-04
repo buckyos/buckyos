@@ -67,6 +67,8 @@ const METHOD_PROVIDER_VALIDATE: &str = "provider.validate";
 const METHOD_PROVIDER_ADD: &str = "provider.add";
 const METHOD_PROVIDER_DELETE: &str = "provider.delete";
 const METHOD_PROVIDER_REFRESH_MODELS: &str = "provider.refresh_models";
+const METHOD_DRIVER_METADATA_UPDATE_GET: &str = "driver_metadata_update.get";
+const METHOD_DRIVER_METADATA_UPDATE_SET: &str = "driver_metadata_update.set";
 const METHOD_USAGE_QUERY: &str = "usage.query";
 const METHOD_TRACE_QUERY: &str = "trace.query";
 const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
@@ -255,6 +257,60 @@ fn redact_url_userinfo(value: &Value) -> Value {
         let _ = url.set_password(Some(REDACTED_SECRET));
     }
     Value::String(url.to_string())
+}
+
+fn driver_metadata_update_view(settings: &Value) -> Value {
+    let configured = settings
+        .get("driver_metadata_update")
+        .and_then(Value::as_object);
+    json!({
+        "enabled": configured
+            .and_then(|value| value.get("enabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "source_url": configured
+            .and_then(|value| value.get("source_url"))
+            .map(redact_url_userinfo)
+            .unwrap_or(Value::Null),
+        "source_configured": configured
+            .and_then(|value| value.get("source_url"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+        "interval_secs": configured
+            .and_then(|value| value.get("interval_secs"))
+            .and_then(Value::as_u64)
+            .unwrap_or(3600),
+    })
+}
+
+fn update_driver_metadata_settings(
+    settings: &mut Value,
+    params: &Value,
+) -> std::result::Result<(), RPCErrors> {
+    let enabled = param_bool(params, "enabled")
+        .ok_or_else(|| RPCErrors::ReasonError("enabled is required".to_string()))?;
+    let root = settings_object(settings);
+    let update = root
+        .entry("driver_metadata_update".to_string())
+        .or_insert_with(|| json!({}));
+    if !update.is_object() {
+        *update = json!({});
+    }
+    let update = update
+        .as_object_mut()
+        .expect("driver metadata update settings must be an object");
+    update.insert("enabled".to_string(), Value::Bool(enabled));
+    if let Some(source_url) = param_string(params, "source_url") {
+        update.insert("source_url".to_string(), Value::String(source_url));
+    }
+    if let Some(interval_secs) = params.get("interval_secs").and_then(Value::as_u64) {
+        update.insert("interval_secs".to_string(), json!(interval_secs));
+    }
+    if enabled {
+        DriverMetadataUpdateSettings::from_aicc_settings(settings)
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    }
+    Ok(())
 }
 
 fn rpc_success(req: &RPCRequest, result: Value) -> RPCResponse {
@@ -1227,6 +1283,32 @@ impl AiccHttpServer {
         }))
     }
 
+    async fn handle_driver_metadata_update_get(
+        &self,
+        req: &RPCRequest,
+        ip_from: IpAddr,
+    ) -> std::result::Result<Value, RPCErrors> {
+        let (_, doc) = self.load_settings_for_request(req, ip_from).await?;
+        Ok(driver_metadata_update_view(&doc.value))
+    }
+
+    async fn handle_driver_metadata_update_set(
+        &self,
+        req: &RPCRequest,
+        ip_from: IpAddr,
+    ) -> std::result::Result<Value, RPCErrors> {
+        let (client, mut doc) = self.load_settings_for_request(req, ip_from).await?;
+        update_driver_metadata_settings(&mut doc.value, &req.params)?;
+        let settings_revision = self.write_settings(client, &doc, &doc.value).await?;
+        let reload = self.reload_result_value().await;
+        Ok(json!({
+            "ok": reload.get("ok").and_then(Value::as_bool).unwrap_or(false),
+            "settings_revision": settings_revision,
+            "settings": driver_metadata_update_view(&doc.value),
+            "reload": reload,
+        }))
+    }
+
     async fn handle_usage_query(&self, params: &Value) -> std::result::Result<Value, RPCErrors> {
         let query: QueryUsageRequest = serde_json::from_value(params.clone()).map_err(|err| {
             RPCErrors::ReasonError(format!("invalid usage.query request: {}", err))
@@ -1508,6 +1590,18 @@ impl RPCHandler for AiccHttpServer {
             let result = self.handle_provider_refresh_models(&req.params).await?;
             return Ok(rpc_success(&req, result));
         }
+        if req.method == METHOD_DRIVER_METADATA_UPDATE_GET {
+            let result = self
+                .handle_driver_metadata_update_get(&req, ip_from)
+                .await?;
+            return Ok(rpc_success(&req, result));
+        }
+        if req.method == METHOD_DRIVER_METADATA_UPDATE_SET {
+            let result = self
+                .handle_driver_metadata_update_set(&req, ip_from)
+                .await?;
+            return Ok(rpc_success(&req, result));
+        }
         if req.method == METHOD_USAGE_QUERY {
             let result = self.handle_usage_query(&req.params).await?;
             return Ok(rpc_success(&req, result));
@@ -1655,5 +1749,38 @@ mod tests {
         assert!(!redacted.contains("user"));
         assert!(!redacted.contains("secret"));
         assert!(redacted.contains("metadata.example"));
+    }
+
+    #[test]
+    fn metadata_update_settings_can_be_enabled_and_disabled_without_losing_source() {
+        let mut settings = json!({});
+        update_driver_metadata_settings(
+            &mut settings,
+            &json!({
+                "enabled": true,
+                "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+                "interval_secs": 900,
+            }),
+        )
+        .unwrap();
+        assert_eq!(settings["driver_metadata_update"]["enabled"], true);
+        assert_eq!(settings["driver_metadata_update"]["interval_secs"], 900);
+
+        update_driver_metadata_settings(&mut settings, &json!({ "enabled": false })).unwrap();
+        assert_eq!(settings["driver_metadata_update"]["enabled"], false);
+        assert_eq!(
+            settings["driver_metadata_update"]["source_url"],
+            "https://metadata.example/aicc/driver-metadata/index.json"
+        );
+    }
+
+    #[test]
+    fn metadata_update_settings_reject_invalid_enabled_source() {
+        let mut settings = json!({});
+        assert!(update_driver_metadata_settings(
+            &mut settings,
+            &json!({ "enabled": true, "source_url": "http://metadata.example/index.json" }),
+        )
+        .is_err());
     }
 }
