@@ -88,9 +88,9 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 | 按 ObjId 读取 provider metadata | 文件名直接定位 |
 | 清理孤儿 | activation 引用集合与 objects 目录做差 |
 
-目录规模由保留策略限制，不存在大规模扫描或复杂索引。
+单个 source namespace 的目录规模由保留策略限制，不存在大规模扫描或复杂索引。
 
 每个 source namespace 最多保留两个有效 activation、两个 index 水位和两个 manifest
 水位；对象保留集合是这些 activation 与最新 observed manifest 的引用并集。它覆盖当前
 生效版本、一次必要回退/并发读取版本和正在更新的 candidate。其它对象、旧水位、旧
-activation、staging 和未使用 source namespace 均清理。source 清理同时保护当前配置源与正在更新的源，磁盘占用因此有确定上界。
+activation 和 staging 均清理。未使用 source namespace 保留其 LKGS、对象和 observed 水位，防止停用或切源后丢失防回滚状态；因此单个 source 的占用有确定上界，总占用还取决于历史配置过的 source 数量。删除历史 source namespace 只能由显式维护操作完成。

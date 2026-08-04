@@ -302,7 +302,6 @@ impl DriverMetadataUpdater {
     }
 
     pub async fn update_once(&self) -> Result<DriverMetadataUpdateOutcome> {
-        cleanup_remote_metadata_source_namespaces(Some(self.source_key.as_str()))?;
         {
             let _guard = METADATA_STORE_LOCK
                 .get_or_init(|| RwLock::new(()))
@@ -317,7 +316,6 @@ impl DriverMetadataUpdater {
             let _ = self.store.prune_history();
             let _ = self.store.cleanup_parts_and_orphans();
         }
-        let _ = cleanup_remote_metadata_source_namespaces(None);
         result
     }
 
@@ -1077,50 +1075,6 @@ fn default_store_root() -> PathBuf {
 
 fn source_store_root(source_key: &str) -> PathBuf {
     default_store_root().join(source_key)
-}
-
-pub fn cleanup_remote_metadata_source_namespaces(updating_source_key: Option<&str>) -> Result<()> {
-    let mut retained = HashSet::new();
-    if let Some(configured_source_key) = CONFIGURED_SOURCE_KEY
-        .get_or_init(|| RwLock::new(None))
-        .read()
-        .map_err(|_| anyhow!("configured metadata source lock poisoned"))?
-        .clone()
-    {
-        retained.insert(configured_source_key);
-    }
-    if let Some(updating_source_key) = updating_source_key {
-        retained.insert(updating_source_key.to_string());
-    }
-    let _guard = METADATA_STORE_LOCK
-        .get_or_init(|| RwLock::new(()))
-        .write()
-        .map_err(|_| anyhow!("metadata store lock poisoned"))?;
-    cleanup_remote_metadata_source_namespaces_in(default_store_root().as_path(), &retained)
-}
-
-fn cleanup_remote_metadata_source_namespaces_in(
-    root: &Path,
-    retained_source_keys: &HashSet<String>,
-) -> Result<()> {
-    if !root.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if entry.path().is_dir()
-            && !retained_source_keys.contains(name)
-            && name.len() == 64
-            && name.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            std::fs::remove_dir_all(entry.path())?;
-        }
-    }
-    sync_parent_dir(root)
 }
 
 fn validate_index(index: &DriverMetadataIndex) -> Result<()> {
@@ -2495,26 +2449,21 @@ mod tests {
     }
 
     #[test]
-    fn source_cleanup_preserves_configured_and_updating_namespaces() {
+    fn source_maintenance_does_not_delete_inactive_namespace() {
         let temp = tempfile::tempdir().unwrap();
-        let configured = "a".repeat(64);
-        let updating = "b".repeat(64);
-        let inactive = "c".repeat(64);
-        std::fs::create_dir_all(temp.path().join(configured.as_str())).unwrap();
-        std::fs::create_dir_all(temp.path().join(updating.as_str())).unwrap();
-        std::fs::create_dir_all(temp.path().join(inactive.as_str())).unwrap();
-        std::fs::create_dir_all(temp.path().join("unmanaged")).unwrap();
+        let active = DriverMetadataStore::new(temp.path().join("a".repeat(64)));
+        let inactive = temp.path().join("b".repeat(64));
+        active.prepare().unwrap();
+        std::fs::create_dir_all(inactive.as_path()).unwrap();
+        std::fs::write(inactive.join("watermark"), b"retained").unwrap();
 
-        cleanup_remote_metadata_source_namespaces_in(
-            temp.path(),
-            &HashSet::from([configured.clone(), updating.clone()]),
-        )
-        .unwrap();
+        active.prune_history().unwrap();
+        active.cleanup_parts_and_orphans().unwrap();
 
-        assert!(temp.path().join(configured).is_dir());
-        assert!(temp.path().join(updating).is_dir());
-        assert!(!temp.path().join(inactive).exists());
-        assert!(temp.path().join("unmanaged").is_dir());
+        assert_eq!(
+            std::fs::read(inactive.join("watermark")).unwrap(),
+            b"retained"
+        );
     }
 
     #[test]

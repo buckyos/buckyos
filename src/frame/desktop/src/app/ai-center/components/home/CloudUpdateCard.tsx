@@ -8,6 +8,8 @@ const EMPTY_SETTINGS: CloudUpdateSettings = {
   enabled: false,
   sourceConfigured: false,
   intervalSecs: 3600,
+  status: 'disabled',
+  consecutiveFailures: 0,
 }
 
 export function CloudUpdateCard() {
@@ -19,6 +21,16 @@ export function CloudUpdateCard() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [sourceUrl, setSourceUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const statusLabel = cloudUpdateStatusLabel(settings.status, t)
+  const statusColor = settings.status === 'healthy'
+    ? 'var(--cp-success)'
+    : settings.status === 'error'
+      ? 'var(--cp-danger)'
+      : settings.status === 'degraded'
+        ? 'var(--cp-warning)'
+        : settings.status === 'updating'
+          ? 'var(--cp-accent)'
+          : 'var(--cp-muted)'
 
   useEffect(() => {
     let cancelled = false
@@ -98,20 +110,28 @@ export function CloudUpdateCard() {
                 className="rounded-full px-2 py-0.5 text-xs"
                 style={{
                   background: settings.enabled ? 'color-mix(in oklch, var(--cp-success), transparent 86%)' : 'var(--cp-bg)',
-                  color: settings.enabled ? 'var(--cp-success)' : 'var(--cp-muted)',
+                  color: statusColor,
                 }}
               >
                 {loading
                   ? t('common.loading', 'Loading...')
-                  : settings.enabled
-                    ? t('aiCenter.home.enabled', 'Enabled')
-                    : t('aiCenter.home.disabled', 'Disabled')}
+                  : statusLabel}
               </span>
             </div>
             <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
               {t('aiCenter.cloudUpdate.desc', 'Keep provider model capabilities, pricing, and routing metadata current from a trusted publisher.')}
             </p>
             {error && !dialogOpen && <p className="mt-1 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p>}
+            {!error && settings.lastError && !dialogOpen && (
+              <p className="mt-1 text-xs" style={{ color: settings.status === 'error' ? 'var(--cp-danger)' : 'var(--cp-warning)' }}>
+                {settings.lastError}
+              </p>
+            )}
+            {settings.activeRevision !== undefined && (
+              <p className="mt-1 text-xs" style={{ color: 'var(--cp-muted)' }}>
+                {t('aiCenter.cloudUpdate.activeRevision', 'Active revision')}: {settings.activeRevision}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -186,4 +206,18 @@ function isValidSourceUrl(value: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function cloudUpdateStatusLabel(
+  status: CloudUpdateSettings['status'],
+  t: (key: string, fallback?: string) => string,
+): string {
+  switch (status) {
+    case 'healthy': return t('aiCenter.cloudUpdate.statusHealthy', 'Healthy')
+    case 'updating': return t('aiCenter.cloudUpdate.statusUpdating', 'Updating')
+    case 'degraded': return t('aiCenter.cloudUpdate.statusDegraded', 'Attention needed')
+    case 'error': return t('aiCenter.cloudUpdate.statusError', 'Update failed')
+    case 'idle': return t('aiCenter.cloudUpdate.statusIdle', 'Waiting for first update')
+    default: return t('aiCenter.home.disabled', 'Disabled')
+  }
 }

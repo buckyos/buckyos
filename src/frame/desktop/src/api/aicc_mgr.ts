@@ -260,7 +260,15 @@ export interface CloudUpdateSettings {
   sourceUrl?: string
   sourceConfigured: boolean
   intervalSecs: number
+  status: CloudUpdateStatus
+  activeRevision?: number
+  lastAttemptAtMs?: number
+  lastSuccessAtMs?: number
+  lastError?: string
+  consecutiveFailures: number
 }
+
+export type CloudUpdateStatus = 'disabled' | 'idle' | 'updating' | 'healthy' | 'degraded' | 'error'
 
 export interface CloudUpdateSettingsUpdate {
   enabled: boolean
@@ -432,6 +440,8 @@ class MockAiccProvider implements AiccDataProvider {
     enabled: false,
     sourceConfigured: false,
     intervalSecs: 3600,
+    status: 'disabled',
+    consecutiveFailures: 0,
   }
 
   fetchSnapshotSync(): StoreSnapshot {
@@ -530,6 +540,10 @@ class MockAiccProvider implements AiccDataProvider {
       sourceUrl: settings.sourceUrl ?? this.cloudUpdateSettings.sourceUrl,
       sourceConfigured: Boolean(settings.sourceUrl ?? this.cloudUpdateSettings.sourceUrl),
       intervalSecs: this.cloudUpdateSettings.intervalSecs,
+      status: settings.enabled ? 'healthy' : 'disabled',
+      lastAttemptAtMs: Date.now(),
+      lastSuccessAtMs: settings.enabled ? Date.now() : this.cloudUpdateSettings.lastSuccessAtMs,
+      consecutiveFailures: 0,
     }
     return this.cloudUpdateSettings
   }
@@ -846,12 +860,28 @@ function delay(ms: number): Promise<void> {
 }
 
 function toCloudUpdateSettings(raw: Record<string, unknown>): CloudUpdateSettings {
+  const status = asOptionalString(raw.status)
   return {
     enabled: asBoolean(raw.enabled, false),
     sourceUrl: asOptionalString(raw.source_url),
     sourceConfigured: asBoolean(raw.source_configured, false),
     intervalSecs: asOptionalNumber(raw.interval_secs) ?? 3600,
+    status: isCloudUpdateStatus(status) ? status : 'disabled',
+    activeRevision: asOptionalNumber(raw.active_revision),
+    lastAttemptAtMs: asOptionalNumber(raw.last_attempt_at_ms),
+    lastSuccessAtMs: asOptionalNumber(raw.last_success_at_ms),
+    lastError: asOptionalString(raw.last_error),
+    consecutiveFailures: asOptionalNumber(raw.consecutive_failures) ?? 0,
   }
+}
+
+function isCloudUpdateStatus(value: string | undefined): value is CloudUpdateStatus {
+  return value === 'disabled'
+    || value === 'idle'
+    || value === 'updating'
+    || value === 'healthy'
+    || value === 'degraded'
+    || value === 'error'
 }
 
 function defaultProviderInstanceName(providerType: ProviderType, name: string): string {

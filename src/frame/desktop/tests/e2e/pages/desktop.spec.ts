@@ -247,7 +247,7 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
   await expect(sourceInput).toBeVisible()
   await sourceInput.fill('https://metadata.example/aicc/driver-metadata/index.json')
   await page.getByRole('dialog').getByRole('button', { name: 'Enable cloud updates' }).click()
-  await expect(page.getByText('Enabled', { exact: true })).toBeVisible()
+  await expect(page.getByText('Healthy', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Configure' })).toBeVisible()
 
   expect(consoleErrors).toEqual([])

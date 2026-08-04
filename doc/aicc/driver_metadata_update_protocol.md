@@ -26,7 +26,7 @@ AICC settings 中显式启用更新源：
 }
 ```
 
-`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。每个 canonical `source_url` 使用独立的本地水位和 activation namespace，不跨发布源比较 revision。settings 日志必须掩盖 URL userinfo。缓存清理同时保留当前配置源和正在更新的源，避免旧任务误删新源；未配置、配置无效或 `enabled=false` 时清除旧源缓存并等待 `reload_settings` 通知，不轮询。settings 暂时不可用是独立状态，只退避重试，不能按禁用处理或清理 LKGS。`interval_secs` 归一化到 60 秒至 1 天。
+`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。每个 canonical `source_url` 使用独立的本地水位和 activation namespace，不跨发布源比较 revision。settings 日志必须掩盖 URL userinfo。未配置、配置无效或 `enabled=false` 时停止轮询，但保留所有已知 source namespace 的 LKGS 和防回滚水位；重新启用或切回同一 canonical source 时继续沿用原有水位。settings 暂时不可用是独立状态，只退避重试，不能按禁用处理或清理 LKGS。`interval_secs` 归一化到 60 秒至 1 天。
 
 ```text
 /aicc/driver-metadata/index.json
@@ -172,6 +172,7 @@ ModelRegistry 在 generation 提高时必须替换 provider 快照，
 即使 provider 返回的 `inventory_revision` 没有变化；旧 generation 的迟到库存不得覆盖新快照。
 所有内置 Provider 都在注册后启动相同生命周期的库存刷新任务；没有远端模型列表接口的
 Provider 只按现有 settings 模型列表重新应用 metadata，不额外访问网络。
+Claude 和 Gemini 模型列表分页最多读取 10 页，cursor/page token 不能为空且不能重复，并通过 URL query 编码传递；超过边界时本次刷新失败并保留当前 inventory。OpenAI 模型发现当前是单次 `/models` 请求，不存在客户端分页循环。
 
 连续失败采用带 jitter 的指数退避，默认从 60 秒开始，最大不超过配置的正常更新周期；成功后清零。退避只影响调度，不改变安全校验。
 

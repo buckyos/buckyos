@@ -93,8 +93,7 @@ impl ProviderRefreshTask {
             .is_ok();
         #[cfg(test)]
         if started {
-            self.started_requests
-                .fetch_add(1, AtomicOrdering::Relaxed);
+            self.started_requests.fetch_add(1, AtomicOrdering::Relaxed);
         }
         started
     }
@@ -3368,12 +3367,8 @@ impl AIComputeCenter {
     pub async fn refresh_all_provider_inventories(&self) -> (usize, Vec<(String, String)>) {
         let mut refreshes = tokio::task::JoinSet::new();
         for (provider_instance_name, provider) in self.registry.providers() {
-            refreshes.spawn(async move {
-                (
-                    provider_instance_name,
-                    provider.refresh_inventory().await,
-                )
-            });
+            refreshes
+                .spawn(async move { (provider_instance_name, provider.refresh_inventory().await) });
         }
         let mut refreshed = 0usize;
         let mut errors = Vec::new();
@@ -5954,9 +5949,7 @@ mod tests {
                 .fetch_add(1, AtomicOrdering::Relaxed);
         }
 
-        async fn refresh_inventory(
-            &self,
-        ) -> std::result::Result<ProviderInventory, ProviderError> {
+        async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
             Ok(self
                 .refresh_inventory
                 .clone()
@@ -6367,9 +6360,7 @@ mod tests {
         assert!(errors.is_empty());
         let model_registry = center.model_registry.read().unwrap();
         assert_eq!(
-            model_registry
-                .default_items_for_path("llm.refreshed")
-                .len(),
+            model_registry.default_items_for_path("llm.refreshed").len(),
             1
         );
         assert!(model_registry

@@ -37,6 +37,7 @@ const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-002";
 const DEFAULT_GEMINI_VIDEO_MODELS: &str = "veo-3.1-generate-preview";
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
+const GEMINI_MODELS_MAX_PAGES: usize = 10;
 const GEMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
     "candidate_count",
     "max_output_tokens",
@@ -156,6 +157,22 @@ struct GeminiModelsResponse {
     models: Vec<GeminiModelEntry>,
     #[serde(default, alias = "nextPageToken")]
     next_page_token: Option<String>,
+}
+
+fn next_gemini_models_page_token(
+    next_page_token: Option<String>,
+    seen_tokens: &mut HashSet<String>,
+) -> Result<Option<String>> {
+    let Some(token) = next_page_token
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if !seen_tokens.insert(token.clone()) {
+        return Err(anyhow!("gemini models pagination repeated next_page_token"));
+    }
+    Ok(Some(token))
 }
 
 #[derive(Debug, Deserialize)]
@@ -445,11 +462,12 @@ impl GoogleGeminiProvider {
         let mut tts_seen = HashSet::<String>::new();
         let mut music_seen = HashSet::<String>::new();
         let mut video_seen = HashSet::<String>::new();
+        let mut seen_page_tokens = HashSet::<String>::new();
         let mut page_token: Option<String> = None;
 
         let endpoint = format!("{}/models", self.base_url);
         let page_size = GEMINI_MODELS_PAGE_SIZE.to_string();
-        loop {
+        for page in 0..GEMINI_MODELS_MAX_PAGES {
             let mut request = self
                 .client
                 .get(endpoint.as_str())
@@ -534,9 +552,17 @@ impl GoogleGeminiProvider {
                 }
             }
 
-            match parsed.next_page_token {
-                Some(token) if !token.is_empty() => page_token = Some(token),
-                _ => break,
+            let Some(token) =
+                next_gemini_models_page_token(parsed.next_page_token, &mut seen_page_tokens)?
+            else {
+                break;
+            };
+            page_token = Some(token);
+            if page + 1 == GEMINI_MODELS_MAX_PAGES {
+                return Err(anyhow!(
+                    "gemini models pagination exceeded {} pages",
+                    GEMINI_MODELS_MAX_PAGES
+                ));
             }
         }
 
@@ -3060,6 +3086,22 @@ mod tests {
     use crate::aicc::ModelCatalog;
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
+
+    #[test]
+    fn gemini_models_pagination_rejects_repeated_tokens() {
+        let mut seen = HashSet::new();
+        assert_eq!(
+            next_gemini_models_page_token(None, &mut seen).unwrap(),
+            None
+        );
+        assert_eq!(
+            next_gemini_models_page_token(Some(" page/2 ".to_string()), &mut seen)
+                .unwrap()
+                .as_deref(),
+            Some("page/2")
+        );
+        assert!(next_gemini_models_page_token(Some("page/2".to_string()), &mut seen).is_err());
+    }
 
     fn build_text2image_request(options: Option<Value>) -> AiMethodRequest {
         AiMethodRequest::new(
