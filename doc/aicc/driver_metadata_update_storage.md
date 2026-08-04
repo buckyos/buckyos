@@ -24,6 +24,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 
 ```text
 <source-key>/objects/<FileObject-ObjId>.json
+<source-key>/objects/<FileObject-ObjId>.sha256
 <source-key>/activations/<manifest-revision>.json
 <source-key>/observed/index/<index-revision>.json
 <source-key>/observed/manifest/<manifest-revision>.json
@@ -50,14 +51,14 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 
 - 文件名：FileObject ObjId 加 `.json`。
 - 内容：协议定义的 UTF-8 JSON。
-- 约束：ObjId 已由 NDN SDK 校验；内部 provider、schema、revision 与 manifest 一致。
+- 约束：ObjId 已由 NDN SDK 校验；首次落盘同时保存内容 SHA-256，缓存复用时重新计算并匹配，用于发现落盘后的静默损坏；内部 provider、schema、revision 与 manifest 一致。
 - 大小：单对象不超过 64 MiB；单 manifest 的对象总大小不超过 512 MiB。
 
 ### Object: activation
 
 - 文件名：`<manifest revision_seq>.json`。
 - 内容：已接受 manifest、manifest ObjId 及 manifest SHA-256。
-- 约束：文件名必须等于 manifest `revision_seq`；每次读取都验证 wrapper、manifest SHA-256、协议字段及全部 provider object。只有引用对象全部落盘且可解析后才能创建；文件创建即提交。
+- 约束：文件名必须等于 manifest `revision_seq`；首次选择该 activation 时验证 wrapper、manifest SHA-256、协议字段及全部 provider object，命中进程内验证缓存后只复核 wrapper 和当前 provider object。只有引用对象全部落盘且可解析后才能创建；文件创建即提交。
 
 ## 5. Schema Version
 
@@ -83,7 +84,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 | 查询 | 支持方式 |
 |---|---|
 | 最新 observed revision | 枚举小型目录并取最大 revision |
-| 最新可用 activation | revision 降序验证文件及引用对象 |
+| 最新可用 activation | revision 降序验证文件及引用对象；进程内缓存已完整验证的最高版本，普通读取只复核 activation wrapper 和目标 provider 对象，目标损坏时清除缓存并重新执行完整 LKGS 选择 |
 | 按 ObjId 读取 provider metadata | 文件名直接定位 |
 | 清理孤儿 | activation 引用集合与 objects 目录做差 |
 

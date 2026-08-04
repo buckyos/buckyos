@@ -16,7 +16,7 @@ use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const INDEX_FORMAT: &str = "buckyos.aicc.driver-metadata-index";
@@ -36,12 +36,79 @@ const MAX_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 static CONFIGURED_SOURCE_KEY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static METADATA_STORE_LOCK: OnceLock<RwLock<()>> = OnceLock::new();
+static ACTIVATION_CACHE: OnceLock<RwLock<HashMap<PathBuf, CachedActivation>>> = OnceLock::new();
+static EFFECTIVE_METADATA_SELECTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static EFFECTIVE_METADATA_IDENTITY: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 static DRIVER_METADATA_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn advance_driver_metadata_generation() -> u64 {
     DRIVER_METADATA_GENERATION
         .fetch_add(1, Ordering::AcqRel)
         .wrapping_add(1)
+}
+
+fn observe_effective_metadata_identity(identity: String) -> u64 {
+    let Ok(mut current) = EFFECTIVE_METADATA_IDENTITY
+        .get_or_init(|| RwLock::new(None))
+        .write()
+    else {
+        return DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+    };
+    if current.as_ref() != Some(&identity) {
+        *current = Some(identity);
+        return advance_driver_metadata_generation();
+    }
+    DRIVER_METADATA_GENERATION.load(Ordering::Acquire)
+}
+
+fn activation_identity(source_key: &str, activation: &DriverMetadataActivation) -> String {
+    activation_identity_from_parts(
+        source_key,
+        activation.manifest.revision_seq,
+        activation.manifest_obj_id.as_str(),
+        activation.manifest_sha256.as_str(),
+    )
+}
+
+fn activation_identity_from_parts(
+    source_key: &str,
+    revision_seq: u64,
+    manifest_obj_id: &str,
+    manifest_sha256: &str,
+) -> String {
+    format!(
+        "source:{}:activation:{}:{}:{}",
+        source_key, revision_seq, manifest_obj_id, manifest_sha256
+    )
+}
+
+fn observe_effective_activation(
+    source_key: &str,
+    activation: Option<&DriverMetadataActivation>,
+) -> u64 {
+    let identity = activation
+        .map(|activation| activation_identity(source_key, activation))
+        .unwrap_or_else(|| format!("source:{}:no-valid-activation", source_key));
+    observe_effective_metadata_identity(identity)
+}
+
+fn observe_effective_identity_if_configured(source_key: &str, identity: String) -> u64 {
+    let Ok(configured_source) = CONFIGURED_SOURCE_KEY
+        .get_or_init(|| RwLock::new(None))
+        .read()
+    else {
+        return DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+    };
+    if configured_source.as_deref() != Some(source_key) {
+        return DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+    }
+    let Ok(_selection_guard) = EFFECTIVE_METADATA_SELECTION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    else {
+        return DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+    };
+    observe_effective_metadata_identity(identity)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -106,8 +173,12 @@ pub fn configure_remote_metadata_source(settings: &Value) -> Result<()> {
             .write()
             .map_err(|_| anyhow!("configured metadata source lock poisoned"))?;
         if *configured_source != source_key {
-            *configured_source = source_key;
-            advance_driver_metadata_generation();
+            *configured_source = source_key.clone();
+            let identity = source_key
+                .as_deref()
+                .map(|source_key| format!("source:{}:unresolved", source_key))
+                .unwrap_or_else(|| "disabled".to_string());
+            observe_effective_metadata_identity(identity);
         }
     }
     parsed.map(|_| ())
@@ -184,7 +255,7 @@ struct ObservedManifest {
     manifest: DriverMetadataManifest,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct DriverMetadataActivation {
     format: String,
     storage_version: u32,
@@ -192,6 +263,12 @@ struct DriverMetadataActivation {
     manifest_obj_id: String,
     manifest_sha256: String,
     manifest: DriverMetadataManifest,
+}
+
+#[derive(Clone)]
+struct CachedActivation {
+    head_revision: u64,
+    activation: DriverMetadataActivation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,6 +348,11 @@ impl DriverMetadataUpdater {
             .observe_manifest(&manifest, manifest_obj_id.to_string().as_str())?;
 
         let current = self.store.load_latest_activation();
+        let current_identity = current
+            .as_ref()
+            .map(|activation| activation_identity(self.source_key.as_str(), activation))
+            .unwrap_or_else(|| format!("source:{}:no-valid-activation", self.source_key.as_str()));
+        observe_effective_identity_if_configured(self.source_key.as_str(), current_identity);
         validate_manifest_transition(current.as_ref(), &manifest, &manifest_obj_id)?;
         if let Some(current) = current.as_ref() {
             if current.manifest.revision_seq == manifest.revision_seq
@@ -314,20 +396,24 @@ impl DriverMetadataUpdater {
             }
         }
 
+        let candidate_identity = activation_identity_from_parts(
+            self.source_key.as_str(),
+            manifest.revision_seq,
+            manifest_obj_id.to_string().as_str(),
+            manifest_sha256(&manifest)?.as_str(),
+        );
         {
             let _guard = METADATA_STORE_LOCK
                 .get_or_init(|| RwLock::new(()))
                 .write()
                 .map_err(|_| anyhow!("metadata store lock poisoned"))?;
-            let created = self.store.activate(
+            self.store.activate(
                 index.index_revision_seq,
                 manifest_obj_id.to_string().as_str(),
                 manifest.clone(),
             )?;
-            if created {
-                advance_driver_metadata_generation();
-            }
         }
+        observe_effective_identity_if_configured(self.source_key.as_str(), candidate_identity);
         Ok(DriverMetadataUpdateOutcome::Activated {
             revision_seq: manifest.revision_seq,
         })
@@ -504,6 +590,11 @@ impl DriverMetadataStore {
             .join(format!("{}.json", obj_id.to_base32()))
     }
 
+    fn object_digest_path(&self, obj_id: &ObjId) -> PathBuf {
+        self.objects_dir()
+            .join(format!("{}.sha256", obj_id.to_base32()))
+    }
+
     fn observe_index(&self, index: &DriverMetadataIndex, obj_id: &ObjId) -> Result<()> {
         if let Some(latest) =
             latest_json_strict::<ObservedIndex>(self.observed_index_dir().as_path())?
@@ -586,7 +677,11 @@ impl DriverMetadataStore {
     }
 
     fn store_object(&self, obj_id: &ObjId, bytes: &[u8]) -> Result<()> {
-        atomic_create_bytes(self.object_path(obj_id).as_path(), bytes)
+        atomic_create_bytes(self.object_path(obj_id).as_path(), bytes)?;
+        atomic_create_bytes(
+            self.object_digest_path(obj_id).as_path(),
+            content_sha256(bytes).as_bytes(),
+        )
     }
 
     fn prepare_object_slot(&self, file: &DriverMetadataManifestFile) -> Result<Option<u64>> {
@@ -598,6 +693,11 @@ impl DriverMetadataStore {
         if path.is_file() {
             std::fs::remove_file(path)?;
         }
+        let digest_path = self.object_digest_path(&obj_id);
+        if digest_path.is_file() {
+            std::fs::remove_file(digest_path)?;
+        }
+        self.invalidate_activation_cache();
         Ok(None)
     }
 
@@ -617,6 +717,10 @@ impl DriverMetadataStore {
         let bytes = std::fs::read(self.object_path(&obj_id)).ok()?;
         let size = bytes.len() as u64;
         if size > MAX_METADATA_BYTES {
+            return None;
+        }
+        let stored_digest = std::fs::read_to_string(self.object_digest_path(&obj_id)).ok()?;
+        if stored_digest != content_sha256(bytes.as_slice()) {
             return None;
         }
         validate_metadata_bytes(bytes.as_slice(), file)
@@ -659,16 +763,58 @@ impl DriverMetadataStore {
             }
         }
         atomic_create_json(path.as_path(), &activation)?;
+        if self.validate_activation(&activation) {
+            self.cache_activation(activation.clone());
+        }
         Ok(true)
     }
 
     fn load_latest_activation(&self) -> Option<DriverMetadataActivation> {
-        load_activations(self.activations_dir().as_path())
+        let activation = load_activations(self.activations_dir().as_path())
             .into_iter()
-            .find(|activation| self.validate_activation(activation))
+            .find(|activation| self.validate_activation(activation));
+        if let Some(activation) = activation.as_ref() {
+            self.cache_activation(activation.clone());
+        } else {
+            self.invalidate_activation_cache();
+        }
+        activation
+    }
+
+    fn load_latest_activation_cached(&self) -> Option<DriverMetadataActivation> {
+        let cached = ACTIVATION_CACHE
+            .get_or_init(|| RwLock::new(HashMap::new()))
+            .read()
+            .ok()
+            .and_then(|cache| cache.get(&self.root).cloned());
+        if let Some(cached) = cached {
+            let latest_revision = latest_activation_revision(self.activations_dir().as_path());
+            let wrapper = load_activation(
+                self.activations_dir()
+                    .join(format!("{}.json", cached.activation.manifest.revision_seq))
+                    .as_path(),
+            );
+            if latest_revision == Some(cached.head_revision)
+                && wrapper.as_ref() == Some(&cached.activation)
+                && self.validate_activation_wrapper(&cached.activation)
+            {
+                return Some(cached.activation);
+            }
+            self.invalidate_activation_cache();
+        }
+        self.load_latest_activation()
     }
 
     fn validate_activation(&self, activation: &DriverMetadataActivation) -> bool {
+        self.validate_activation_wrapper(activation)
+            && activation
+                .manifest
+                .files
+                .iter()
+                .all(|file| self.load_valid_object(file).is_some())
+    }
+
+    fn validate_activation_wrapper(&self, activation: &DriverMetadataActivation) -> bool {
         if activation.format != ACTIVATION_FORMAT || activation.storage_version != 1 {
             return false;
         }
@@ -696,11 +842,35 @@ impl DriverMetadataStore {
         {
             return false;
         }
-        activation
-            .manifest
-            .files
-            .iter()
-            .all(|file| self.load_valid_object(file).is_some())
+        true
+    }
+
+    fn cache_activation(&self, activation: DriverMetadataActivation) {
+        let Some(head_revision) = latest_activation_revision(self.activations_dir().as_path())
+        else {
+            return;
+        };
+        if let Ok(mut cache) = ACTIVATION_CACHE
+            .get_or_init(|| RwLock::new(HashMap::new()))
+            .write()
+        {
+            cache.insert(
+                self.root.clone(),
+                CachedActivation {
+                    head_revision,
+                    activation,
+                },
+            );
+        }
+    }
+
+    fn invalidate_activation_cache(&self) {
+        if let Ok(mut cache) = ACTIVATION_CACHE
+            .get_or_init(|| RwLock::new(HashMap::new()))
+            .write()
+        {
+            cache.remove(&self.root);
+        }
     }
 
     fn cleanup_parts_and_orphans(&self) -> Result<()> {
@@ -720,7 +890,12 @@ impl DriverMetadataStore {
             .into_iter()
             .flat_map(|activation| activation.manifest.files)
             .filter_map(|file| parse_obj_id(file.obj_id.as_str()).ok())
-            .map(|obj_id| format!("{}.json", obj_id.to_base32()))
+            .flat_map(|obj_id| {
+                [
+                    format!("{}.json", obj_id.to_base32()),
+                    format!("{}.sha256", obj_id.to_base32()),
+                ]
+            })
             .collect::<HashSet<_>>();
         if let Some(observed) =
             latest_json_strict::<ObservedManifest>(self.observed_manifest_dir().as_path())?
@@ -731,7 +906,12 @@ impl DriverMetadataStore {
                     .files
                     .iter()
                     .filter_map(|file| parse_obj_id(file.obj_id.as_str()).ok())
-                    .map(|obj_id| format!("{}.json", obj_id.to_base32())),
+                    .flat_map(|obj_id| {
+                        [
+                            format!("{}.json", obj_id.to_base32()),
+                            format!("{}.sha256", obj_id.to_base32()),
+                        ]
+                    }),
             );
         }
         if self.objects_dir().is_dir() {
@@ -810,19 +990,36 @@ pub(crate) fn load_active_remote_metadata(
         Ok(guard) => guard,
         Err(_) => return (None, DRIVER_METADATA_GENERATION.load(Ordering::Acquire)),
     };
-    let generation = DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
-    let document = load_active_remote_metadata_in(
+    let _selection_guard = match EFFECTIVE_METADATA_SELECTION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+    {
+        Ok(guard) => guard,
+        Err(_) => return (None, DRIVER_METADATA_GENERATION.load(Ordering::Acquire)),
+    };
+    load_active_remote_metadata_for_source(
         source_store_root(source_key.as_str()).as_path(),
         provider_driver,
-    );
-    (document, generation)
+        source_key.as_str(),
+    )
 }
 
+#[cfg(test)]
 fn load_active_remote_metadata_in(
     root: &Path,
     provider_driver: &str,
 ) -> Option<DriverMetadataDocument> {
     let store = DriverMetadataStore::new(root.to_path_buf());
+    let activation = store.load_latest_activation_cached()?;
+    let file = activation
+        .manifest
+        .files
+        .iter()
+        .find(|file| file.provider_driver == provider_driver)?;
+    if let Some(document) = store.load_valid_object(file) {
+        return Some(document);
+    }
+    store.invalidate_activation_cache();
     let activation = store.load_latest_activation()?;
     let file = activation
         .manifest
@@ -830,6 +1027,43 @@ fn load_active_remote_metadata_in(
         .iter()
         .find(|file| file.provider_driver == provider_driver)?;
     store.load_valid_object(file)
+}
+
+fn load_active_remote_metadata_for_source(
+    root: &Path,
+    provider_driver: &str,
+    source_key: &str,
+) -> (Option<DriverMetadataDocument>, u64) {
+    let store = DriverMetadataStore::new(root.to_path_buf());
+    let Some(activation) = store.load_latest_activation_cached() else {
+        return (None, observe_effective_activation(source_key, None));
+    };
+    let mut generation = observe_effective_activation(source_key, Some(&activation));
+    let Some(file) = activation
+        .manifest
+        .files
+        .iter()
+        .find(|file| file.provider_driver == provider_driver)
+    else {
+        return (None, generation);
+    };
+    if let Some(document) = store.load_valid_object(file) {
+        return (Some(document), generation);
+    }
+    store.invalidate_activation_cache();
+    let Some(activation) = store.load_latest_activation() else {
+        return (None, observe_effective_activation(source_key, None));
+    };
+    generation = observe_effective_activation(source_key, Some(&activation));
+    let Some(file) = activation
+        .manifest
+        .files
+        .iter()
+        .find(|file| file.provider_driver == provider_driver)
+    else {
+        return (None, generation);
+    };
+    (store.load_valid_object(file), generation)
 }
 
 fn default_store_root() -> PathBuf {
@@ -1239,6 +1473,31 @@ fn load_activations(dir: &Path) -> Vec<DriverMetadataActivation> {
     values
 }
 
+fn load_activation(path: &Path) -> Option<DriverMetadataActivation> {
+    let revision = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.parse::<u64>().ok())?;
+    let bytes = std::fs::read(path).ok()?;
+    let activation = serde_json::from_slice::<DriverMetadataActivation>(&bytes).ok()?;
+    (activation.manifest.revision_seq == revision).then_some(activation)
+}
+
+fn latest_activation_revision(dir: &Path) -> Option<u64> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<u64>().ok())
+        })
+        .max()
+}
+
 #[cfg(not(windows))]
 fn durable_commit_create(source: &Path, destination: &Path) -> Result<()> {
     std::fs::hard_link(source, destination)?;
@@ -1384,6 +1643,8 @@ fn prune_revision_files(dir: &Path, retain: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static GENERATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn response_meta(path_object: Option<VerifiedPathObject>) -> CyfsResponseMeta {
         CyfsResponseMeta {
@@ -1845,10 +2106,38 @@ mod tests {
             &entry,
         )
         .is_err());
+
+        let mut invalid_cost = invalid_variant.clone();
+        invalid_cost["variants"] = serde_json::json!([]);
+        invalid_cost["models"] = serde_json::json!([{
+            "id": "gpt-test",
+            "input_token_usd": -0.01
+        }]);
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&invalid_cost).unwrap().as_slice(),
+            &entry,
+        )
+        .is_err());
+
+        let mut invalid_version_limit = invalid_variant;
+        invalid_version_limit["variants"] = serde_json::json!([]);
+        invalid_version_limit["models"] = serde_json::json!([]);
+        invalid_version_limit["version_rules"] = serde_json::json!([{
+            "family": "gpt",
+            "capabilities": {"max_context_tokens": 0}
+        }]);
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&invalid_version_limit)
+                .unwrap()
+                .as_slice(),
+            &entry,
+        )
+        .is_err());
     }
 
     #[test]
     fn metadata_source_change_advances_generation_once() {
+        let _guard = GENERATION_TEST_LOCK.lock().unwrap();
         let settings = serde_json::json!({
             "driver_metadata_update": {
                 "enabled": true,
@@ -1943,6 +2232,169 @@ mod tests {
         store.store_object(&object_id, b"broken").unwrap();
         assert!(store.prepare_object_slot(&entry).unwrap().is_none());
         assert!(!store.object_path(&object_id).exists());
+        assert!(!store.object_digest_path(&object_id).exists());
+    }
+
+    #[test]
+    fn semantically_valid_cached_object_corruption_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        let object_id = obj_id("silently-corrupted-object");
+        let entry = file("openai", 1, &object_id);
+        let original = serde_json::to_vec(&document("openai", 1)).unwrap();
+        store.store_object(&object_id, original.as_slice()).unwrap();
+
+        let mut changed: serde_json::Value = serde_json::from_slice(original.as_slice()).unwrap();
+        changed["schema_revision"] = serde_json::json!(1);
+        std::fs::write(
+            store.object_path(&object_id),
+            serde_json::to_vec(&changed).unwrap(),
+        )
+        .unwrap();
+
+        assert!(store.load_valid_object(&entry).is_none());
+        assert!(store.prepare_object_slot(&entry).unwrap().is_none());
+        assert!(!store.object_path(&object_id).exists());
+        assert!(!store.object_digest_path(&object_id).exists());
+    }
+
+    #[test]
+    fn cached_activation_revalidates_only_requested_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        let openai_id = obj_id("cached-openai");
+        let claude_id = obj_id("cached-claude");
+        let activation_manifest = manifest(
+            1,
+            vec![file("openai", 1, &openai_id), file("claude", 1, &claude_id)],
+        );
+        store
+            .store_object(
+                &openai_id,
+                serde_json::to_vec(&document("openai", 1))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+        store
+            .store_object(
+                &claude_id,
+                serde_json::to_vec(&document("claude", 1))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+        store
+            .activate(
+                1,
+                obj_id("cached-manifest").to_string().as_str(),
+                activation_manifest,
+            )
+            .unwrap();
+
+        std::fs::write(store.object_path(&claude_id), b"broken").unwrap();
+
+        assert_eq!(
+            load_active_remote_metadata_in(temp.path(), "openai")
+                .unwrap()
+                .provider_driver,
+            "openai"
+        );
+        assert!(load_active_remote_metadata_in(temp.path(), "claude").is_none());
+    }
+
+    #[test]
+    fn effective_activation_fallback_and_recovery_advance_generation() {
+        let _guard = GENERATION_TEST_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        let source_key = "generation-fallback-source";
+
+        let old_obj_id = obj_id("generation-openai-v1");
+        let old_file = file("openai", 1, &old_obj_id);
+        store
+            .store_object(
+                &old_obj_id,
+                serde_json::to_vec(&document("openai", 1))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+        store
+            .activate(
+                1,
+                obj_id("generation-manifest-v1").to_string().as_str(),
+                manifest(1, vec![old_file]),
+            )
+            .unwrap();
+
+        let new_obj_id = obj_id("generation-openai-v2");
+        let new_file = file("openai", 2, &new_obj_id);
+        let new_manifest = manifest(2, vec![new_file.clone()]);
+        let new_manifest_obj_id = obj_id("generation-manifest-v2");
+        store
+            .store_object(
+                &new_obj_id,
+                serde_json::to_vec(&document("openai", 2))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+        store
+            .activate(
+                2,
+                new_manifest_obj_id.to_string().as_str(),
+                new_manifest.clone(),
+            )
+            .unwrap();
+
+        let (current, current_generation) =
+            load_active_remote_metadata_for_source(temp.path(), "openai", source_key);
+        assert_eq!(current.unwrap().revision_seq, 2);
+
+        std::fs::write(store.object_path(&new_obj_id), b"broken").unwrap();
+        let (fallback, fallback_generation) =
+            load_active_remote_metadata_for_source(temp.path(), "openai", source_key);
+        assert_eq!(fallback.unwrap().revision_seq, 1);
+        assert!(fallback_generation > current_generation);
+
+        std::fs::write(store.object_path(&old_obj_id), b"broken").unwrap();
+        let (unavailable, unavailable_generation) =
+            load_active_remote_metadata_for_source(temp.path(), "openai", source_key);
+        assert!(unavailable.is_none());
+        assert!(unavailable_generation > fallback_generation);
+
+        store.prepare_object_slot(&new_file).unwrap();
+        store
+            .store_object(
+                &new_obj_id,
+                serde_json::to_vec(&document("openai", 2))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
+        store
+            .activate(
+                2,
+                new_manifest_obj_id.to_string().as_str(),
+                new_manifest.clone(),
+            )
+            .unwrap();
+        let recovered_generation =
+            observe_effective_metadata_identity(activation_identity_from_parts(
+                source_key,
+                new_manifest.revision_seq,
+                new_manifest_obj_id.to_string().as_str(),
+                manifest_sha256(&new_manifest).unwrap().as_str(),
+            ));
+        let (recovered, loaded_generation) =
+            load_active_remote_metadata_for_source(temp.path(), "openai", source_key);
+        assert_eq!(recovered.unwrap().revision_seq, 2);
+        assert!(recovered_generation > unavailable_generation);
+        assert!(loaded_generation >= recovered_generation);
     }
 
     #[test]

@@ -132,7 +132,7 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
 3. manifest/provider 的 PathObject target 与上级声明的 FileObject ObjId 相同。
 4. 通过 SDK 完成 FileObject/Chunk 链和内容校验。
 
-NDN SDK 是文件内容正确性的唯一校验层。AICC 不重复计算内容 hash。为在下载前执行容量限制，AICC 只读取 SDK 已验证的 ChunkId 长度，或已验证 parent 中 FileObject/ChunkList 的长度声明；没有可信长度时 fail-closed。PathObject target 比较只用于确认下载对象是上级协议对象指定的 ObjId。
+NDN SDK 是下载时文件内容正确性的唯一协议校验层，AICC 不重复实现 ObjId 或 ChunkList 校验。首次验证成功落盘时，AICC 记录裸内容 SHA-256；后续缓存复用重新计算该摘要，以发现落盘后的静默损坏。为在下载前执行容量限制，AICC 只读取 SDK 已验证的 ChunkId 长度，或已验证 parent 中 FileObject/ChunkList 的长度声明；没有可信长度时 fail-closed。PathObject target 比较只用于确认下载对象是上级协议对象指定的 ObjId。
 
 `index.json` 最大 256 KiB，manifest 最大 1 MiB，单个 provider metadata
 最大 64 MiB；manifest 引用的全部 provider metadata 实际大小之和最大
@@ -160,12 +160,14 @@ candidate：已经完整下载并通过 NDN 与 JSON 身份校验的 provider �
 但重试仍从 index 和 manifest 开始，不恢复下载中间进度。既不被保留 activation、也不被
 最新 candidate 引用的对象属于垃圾并立即清理，不存在持久化的 `updating` 锁或阶段机。
 
-读取端按 revision 从高到低验证 activation 及其全部对象；最新 activation 不完整时回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
+读取端首次按 revision 从高到低验证 activation 及其全部对象，并在进程内缓存已完整验证的最高版本。普通读取复核 activation wrapper 和当前 provider 对象；目标对象损坏时清除缓存，重新执行完整验证并回退到前一份，均不可用时回退内置 metadata。旧 activation 不会被候选就地修改，因此任何断电点都不会产生半生效配置。
 
 activation 提交后不主动重建 provider inventory；新 metadata 在下一次
 `provider.refresh_models`、settings reload 或服务重启构建 inventory 时生效。activation
-或更新源切换只推进进程内的 `driver_metadata_generation`；重新解析 metadata 后生成的
-inventory 携带该 generation。ModelRegistry 在 generation 提高时必须替换 provider 快照，
+提交、同 revision 缓存修复、LKGS 降级、全部 activation 失效或更新源切换都会在实际生效
+identity 变化时推进进程内的 `driver_metadata_generation`；identity 包含 source、manifest
+revision、ObjId 和 digest。重新解析 metadata 后生成的 inventory 携带该 generation。
+ModelRegistry 在 generation 提高时必须替换 provider 快照，
 即使 provider 返回的 `inventory_revision` 没有变化；旧 generation 的迟到库存不得覆盖新快照。
 所有内置 Provider 都在注册后启动相同生命周期的库存刷新任务；没有远端模型列表接口的
 Provider 只按现有 settings 模型列表重新应用 metadata，不额外访问网络。

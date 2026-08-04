@@ -610,6 +610,10 @@ pub(crate) fn validate_driver_metadata_document(
             rule.auto_mounts.as_slice(),
             format!("version_rules[{}].auto_mounts", index).as_str(),
         )?;
+        validate_capabilities_patch(
+            &rule.capabilities,
+            format!("version_rules[{}]", index).as_str(),
+        )?;
     }
     Ok(())
 }
@@ -629,21 +633,39 @@ fn validate_driver_model_rule(rule: &DriverModelRule, location: &str) -> Result<
     if let Some(mounts) = rule.logical_mounts.as_ref() {
         validate_string_list(mounts.as_slice(), &format!("{}.logical_mounts", location))?;
     }
-    if rule
-        .estimated_cost_usd
-        .is_some_and(|value| !value.is_finite() || value < 0.0)
-    {
-        return Err(format!("{}.estimated_cost_usd is invalid", location));
-    }
+    validate_non_negative_number(rule.estimated_cost_usd, "estimated_cost_usd", location)?;
+    validate_non_negative_number(rule.input_token_usd, "input_token_usd", location)?;
+    validate_non_negative_number(rule.output_token_usd, "output_token_usd", location)?;
+    validate_non_negative_number(
+        rule.cache_input_token_usd,
+        "cache_input_token_usd",
+        location,
+    )?;
     if rule
         .quality_score
         .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
     {
         return Err(format!("{}.quality_score is invalid", location));
     }
-    if rule.capabilities.max_context_tokens == Some(0)
-        || rule.capabilities.max_output_tokens == Some(0)
-    {
+    validate_capabilities_patch(&rule.capabilities, location)
+}
+
+fn validate_non_negative_number(
+    value: Option<f64>,
+    field: &str,
+    location: &str,
+) -> Result<(), String> {
+    if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+        return Err(format!("{}.{} is invalid", location, field));
+    }
+    Ok(())
+}
+
+fn validate_capabilities_patch(
+    capabilities: &DriverCapabilitiesPatch,
+    location: &str,
+) -> Result<(), String> {
+    if capabilities.max_context_tokens == Some(0) || capabilities.max_output_tokens == Some(0) {
         return Err(format!(
             "{}.capability token limits must be positive",
             location
