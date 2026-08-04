@@ -30,7 +30,7 @@ collections:
 stacks:
   node_rtcp:
     protocol: rtcp
-    bind: 0.0.0.0:2980
+    bind: "[::]:2980"
     device_did: "{{device_did}}"
     keep_tunnel: []
     hook_point:
@@ -49,7 +49,7 @@ stacks:
 
   zone_gateway_http:
     protocol: tcp
-    bind: 0.0.0.0:80
+    bind: "[::]:80"
     hook_point:
       main:
         priority: 1
@@ -63,7 +63,7 @@ stacks:
 
   node_gateway_http:
     protocol: tcp
-    bind: 0.0.0.0:3180
+    bind: "[::]:3180"
     hook_point:
       main:
         priority: 1

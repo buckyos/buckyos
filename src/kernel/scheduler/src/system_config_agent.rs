@@ -1220,7 +1220,7 @@ pub(crate) async fn update_node_gateway_config(
                 },
                 "stacks": {
                     "zone_tls": {
-                        "bind": "0.0.0.0:443",
+                        "bind": "[::]:443",
                         "protocol": "tls",
                         "hosts": [
                             wildcard_zone_domain,
