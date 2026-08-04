@@ -1,11 +1,12 @@
-use crate::metadata_resolver::DriverMetadataDocument;
+use crate::metadata_resolver::{validate_driver_metadata_document, DriverMetadataDocument};
 use anyhow::{anyhow, bail, Context, Result};
 use buckyos_kit::get_buckyos_service_home_dir;
-use ndn_lib::ObjId;
+use ndn_lib::{ChunkId, ChunkList, FileObject, ObjId, OBJ_TYPE_CHUNK_LIST};
 use ndn_toolkit::cyfs_ndn_client::{CyfsNdnClient, CyfsResponseMeta, VerifiedPathObject};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::fs::File;
@@ -87,27 +88,27 @@ impl DriverMetadataUpdateSettings {
         Ok(Some(parsed))
     }
 
-    fn source_key(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(self.source_url.as_bytes());
-        format!("{digest:x}")
+    fn source_key(&self) -> Result<String> {
+        let url = Url::parse(self.source_url.as_str()).context("parse metadata source_url")?;
+        Ok(content_sha256(url.as_str().as_bytes()))
     }
 }
 
 pub fn configure_remote_metadata_source(settings: &Value) -> Result<()> {
     let parsed = DriverMetadataUpdateSettings::from_aicc_settings(settings);
-    let source_key = parsed
-        .as_ref()
-        .ok()
-        .and_then(|settings| settings.as_ref())
-        .map(DriverMetadataUpdateSettings::source_key);
-    let mut configured_source = CONFIGURED_SOURCE_KEY
-        .get_or_init(|| RwLock::new(None))
-        .write()
-        .map_err(|_| anyhow!("configured metadata source lock poisoned"))?;
-    if *configured_source != source_key {
-        *configured_source = source_key;
-        advance_driver_metadata_generation();
+    let source_key = match parsed.as_ref() {
+        Ok(Some(settings)) => Some(settings.source_key()?),
+        _ => None,
+    };
+    {
+        let mut configured_source = CONFIGURED_SOURCE_KEY
+            .get_or_init(|| RwLock::new(None))
+            .write()
+            .map_err(|_| anyhow!("configured metadata source lock poisoned"))?;
+        if *configured_source != source_key {
+            *configured_source = source_key;
+            advance_driver_metadata_generation();
+        }
     }
     parsed.map(|_| ())
 }
@@ -189,6 +190,7 @@ struct DriverMetadataActivation {
     storage_version: u32,
     index_revision_seq: u64,
     manifest_obj_id: String,
+    manifest_sha256: String,
     manifest: DriverMetadataManifest,
 }
 
@@ -207,7 +209,7 @@ pub struct DriverMetadataUpdater {
 
 impl DriverMetadataUpdater {
     pub fn new(settings: DriverMetadataUpdateSettings) -> Result<Self> {
-        let source_key = settings.source_key();
+        let source_key = settings.source_key()?;
         let client = CyfsNdnClient::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -221,12 +223,12 @@ impl DriverMetadataUpdater {
     }
 
     pub async fn update_once(&self) -> Result<DriverMetadataUpdateOutcome> {
+        cleanup_remote_metadata_source_namespaces(Some(self.source_key.as_str()))?;
         {
             let _guard = METADATA_STORE_LOCK
                 .get_or_init(|| RwLock::new(()))
                 .write()
                 .map_err(|_| anyhow!("metadata store lock poisoned"))?;
-            cleanup_source_namespaces(self.source_key.as_str())?;
             self.store.prepare()?;
         }
         let attempt = self.store.new_attempt_dir()?;
@@ -236,6 +238,7 @@ impl DriverMetadataUpdater {
             let _ = self.store.prune_history();
             let _ = self.store.cleanup_parts_and_orphans();
         }
+        let _ = cleanup_remote_metadata_source_namespaces(None);
         result
     }
 
@@ -347,6 +350,7 @@ impl DriverMetadataUpdater {
             .await
             .map_err(|err| anyhow!("download {} through NDN failed: {}", label, err))?;
         let path_object = validate_verified_path_response(response.meta(), expected_obj_id, label)?;
+        validate_verified_ndn_size(response.meta(), &path_object.target, max_bytes, label)?;
 
         let output = attempt.join(format!("{}.part", safe_label(label)));
         let pull_result = response
@@ -361,6 +365,7 @@ impl DriverMetadataUpdater {
             bail!("{} exceeds the maximum size", label);
         }
         let bytes = std::fs::read(output.as_path())?;
+        std::fs::remove_file(output.as_path())?;
         Ok((bytes, path_object.target))
     }
 }
@@ -380,6 +385,60 @@ fn validate_verified_path_response(
         }
     }
     Ok(path_object)
+}
+
+fn validate_verified_ndn_size(
+    meta: &CyfsResponseMeta,
+    target: &ObjId,
+    max_bytes: u64,
+    label: &str,
+) -> Result<()> {
+    let declared_size = if target.is_chunk() {
+        ChunkId::from_obj_id(target).get_length().ok_or_else(|| {
+            anyhow!(
+                "{} NDN ChunkId does not carry a verified content length",
+                label
+            )
+        })?
+    } else {
+        let parent = meta
+            .parents
+            .iter()
+            .rev()
+            .find(|parent| &parent.obj_id == target)
+            .ok_or_else(|| anyhow!("{} response has no verified size-bearing parent", label))?;
+        let value = parent.obj_json.as_ref().ok_or_else(|| {
+            anyhow!(
+                "{} verified parent does not include canonical object data",
+                label
+            )
+        })?;
+        if target.is_file_object() {
+            serde_json::from_value::<FileObject>(value.clone())
+                .with_context(|| format!("parse verified {} FileObject", label))?
+                .size
+        } else if target.obj_type == OBJ_TYPE_CHUNK_LIST {
+            let chunk_list = ChunkList::from_json_value(value.clone())
+                .map_err(|err| anyhow!("parse verified {} ChunkList: {}", label, err))?;
+            chunk_list.body.iter().try_fold(0u64, |total, chunk_id| {
+                let size = chunk_id.get_length().ok_or_else(|| {
+                    anyhow!(
+                        "{} ChunkList contains a chunk without verified length",
+                        label
+                    )
+                })?;
+                total
+                    .checked_add(size)
+                    .ok_or_else(|| anyhow!("{} verified content size overflow", label))
+            })?
+        } else {
+            bail!("{} NDN target type has no trusted size declaration", label);
+        }
+    };
+    if declared_size > max_bytes {
+        bail!("{} exceeds the maximum size", label);
+    }
+    Ok(())
 }
 
 fn checked_manifest_metadata_bytes(current: u64, next: u64) -> Result<u64> {
@@ -509,6 +568,7 @@ impl DriverMetadataStore {
                 storage_version: 1,
                 index_revision_seq: latest.manifest.revision_seq,
                 manifest_obj_id: latest.obj_id,
+                manifest_sha256: manifest_sha256(&latest.manifest)?,
                 manifest: latest.manifest,
             };
             validate_manifest_transition(Some(&observed_state), manifest, &parse_obj_id(obj_id)?)?;
@@ -570,11 +630,13 @@ impl DriverMetadataStore {
         manifest_obj_id: &str,
         manifest: DriverMetadataManifest,
     ) -> Result<bool> {
+        let manifest_sha256 = manifest_sha256(&manifest)?;
         let activation = DriverMetadataActivation {
             format: ACTIVATION_FORMAT.to_string(),
             storage_version: 1,
             index_revision_seq,
             manifest_obj_id: manifest_obj_id.to_string(),
+            manifest_sha256,
             manifest,
         };
         let path = self
@@ -587,6 +649,7 @@ impl DriverMetadataStore {
             {
                 Some(existing)
                     if existing.manifest_obj_id == activation.manifest_obj_id
+                        && existing.manifest_sha256 == activation.manifest_sha256
                         && existing.manifest == activation.manifest =>
                 {
                     return Ok(false)
@@ -607,6 +670,12 @@ impl DriverMetadataStore {
 
     fn validate_activation(&self, activation: &DriverMetadataActivation) -> bool {
         if activation.format != ACTIVATION_FORMAT || activation.storage_version != 1 {
+            return false;
+        }
+        if manifest_sha256(&activation.manifest)
+            .map(|sha256| sha256 != activation.manifest_sha256)
+            .unwrap_or(true)
+        {
             return false;
         }
         let track = DriverMetadataTrack {
@@ -774,26 +843,48 @@ fn source_store_root(source_key: &str) -> PathBuf {
     default_store_root().join(source_key)
 }
 
-fn cleanup_source_namespaces(retained_source_key: &str) -> Result<()> {
-    let root = default_store_root();
+pub fn cleanup_remote_metadata_source_namespaces(updating_source_key: Option<&str>) -> Result<()> {
+    let mut retained = HashSet::new();
+    if let Some(configured_source_key) = CONFIGURED_SOURCE_KEY
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .map_err(|_| anyhow!("configured metadata source lock poisoned"))?
+        .clone()
+    {
+        retained.insert(configured_source_key);
+    }
+    if let Some(updating_source_key) = updating_source_key {
+        retained.insert(updating_source_key.to_string());
+    }
+    let _guard = METADATA_STORE_LOCK
+        .get_or_init(|| RwLock::new(()))
+        .write()
+        .map_err(|_| anyhow!("metadata store lock poisoned"))?;
+    cleanup_remote_metadata_source_namespaces_in(default_store_root().as_path(), &retained)
+}
+
+fn cleanup_remote_metadata_source_namespaces_in(
+    root: &Path,
+    retained_source_keys: &HashSet<String>,
+) -> Result<()> {
     if !root.is_dir() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(root.as_path())? {
+    for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
         };
         if entry.path().is_dir()
-            && name != retained_source_key
+            && !retained_source_keys.contains(name)
             && name.len() == 64
             && name.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             std::fs::remove_dir_all(entry.path())?;
         }
     }
-    sync_parent_dir(root.as_path())
+    sync_parent_dir(root)
 }
 
 fn validate_index(index: &DriverMetadataIndex) -> Result<()> {
@@ -985,6 +1076,7 @@ fn validate_metadata_bytes(
     {
         bail!("provider metadata identity or schema does not match manifest");
     }
+    validate_driver_metadata_document(&document).map_err(anyhow::Error::msg)?;
     Ok(document)
 }
 
@@ -1006,6 +1098,7 @@ fn validate_relative_path(value: &str) -> Result<()> {
         || value.contains('\\')
         || value.contains('?')
         || value.contains('#')
+        || value.contains('%')
         || value
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
@@ -1023,6 +1116,14 @@ fn join_canonical_url(base: &Url, relative: &str) -> Result<Url> {
         || joined.port_or_known_default() != base.port_or_known_default()
     {
         bail!("metadata path changed the source origin");
+    }
+    let base_directory = base
+        .path()
+        .rsplit_once('/')
+        .map(|(directory, _)| format!("{}/", directory))
+        .ok_or_else(|| anyhow!("metadata source URL has no base directory"))?;
+    if !joined.path().starts_with(base_directory.as_str()) {
+        bail!("metadata path escaped the source directory");
     }
     Ok(joined)
 }
@@ -1042,6 +1143,14 @@ fn safe_label(value: &str) -> String {
             }
         })
         .collect()
+}
+
+fn manifest_sha256(manifest: &DriverMetadataManifest) -> Result<String> {
+    Ok(content_sha256(serde_json::to_vec(manifest)?.as_slice()))
+}
+
+fn content_sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn atomic_create_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -1297,6 +1406,14 @@ mod tests {
         chunk.to_obj_id()
     }
 
+    fn sized_chunk(bytes: &[u8]) -> ObjId {
+        ndn_lib::ChunkHasher::new(None)
+            .unwrap()
+            .calc_mix_chunk_id_from_bytes(bytes)
+            .unwrap()
+            .to_obj_id()
+    }
+
     #[test]
     fn unsigned_path_response_is_rejected() {
         let meta = response_meta(None);
@@ -1315,6 +1432,19 @@ mod tests {
         let meta = response_meta(Some(long_lived));
         validate_verified_path_response(&meta, Some(&target), "index").unwrap();
         assert!(validate_verified_path_response(&meta, Some(&obj_id("other")), "index").is_err());
+    }
+
+    #[test]
+    fn verified_chunk_size_is_checked_before_pull() {
+        let target = sized_chunk(b"verified metadata");
+        let meta = response_meta(Some(VerifiedPathObject {
+            path: "/aicc/driver-metadata/index.json".to_string(),
+            target: target.clone(),
+            iat: 100,
+            exp: 101,
+        }));
+        validate_verified_ndn_size(&meta, &target, 64, "index").unwrap();
+        assert!(validate_verified_ndn_size(&meta, &target, 1, "index").is_err());
     }
 
     fn file(driver: &str, revision: u64, obj_id: &ObjId) -> DriverMetadataManifestFile {
@@ -1481,12 +1611,14 @@ mod tests {
     #[test]
     fn deletion_requires_newer_tombstone() {
         let openai = obj_id("openai-v3");
+        let current_manifest = manifest(3, vec![file("openai", 3, &openai)]);
         let current = DriverMetadataActivation {
             format: ACTIVATION_FORMAT.to_string(),
             storage_version: 1,
             index_revision_seq: 3,
             manifest_obj_id: obj_id("manifest-v3").to_string(),
-            manifest: manifest(3, vec![file("openai", 3, &openai)]),
+            manifest_sha256: manifest_sha256(&current_manifest).unwrap(),
+            manifest: current_manifest,
         };
         let missing = manifest(4, vec![]);
         assert!(validate_manifest_transition(Some(&current), &missing, &obj_id("m4")).is_err());
@@ -1594,6 +1726,128 @@ mod tests {
     }
 
     #[test]
+    fn settings_bound_update_interval() {
+        let settings = |interval_secs| {
+            serde_json::json!({
+                "driver_metadata_update": {
+                    "enabled": true,
+                    "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+                    "interval_secs": interval_secs
+                }
+            })
+        };
+
+        let too_short = DriverMetadataUpdateSettings::from_aicc_settings(&settings(0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(too_short.interval_secs, MIN_UPDATE_INTERVAL_SECS);
+
+        let too_long = DriverMetadataUpdateSettings::from_aicc_settings(&settings(u64::MAX))
+            .unwrap()
+            .unwrap();
+        assert_eq!(too_long.interval_secs, MAX_UPDATE_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn metadata_paths_reject_encoded_traversal() {
+        let base = Url::parse("https://metadata.example/aicc/driver-metadata/index.json").unwrap();
+        assert!(join_canonical_url(&base, "v1/providers/openai-1.json").is_ok());
+        assert!(join_canonical_url(&base, "%2e%2e/escape.json").is_err());
+        assert!(join_canonical_url(&base, "v1/%2E%2E/escape.json").is_err());
+    }
+
+    #[test]
+    fn metadata_protocol_rejects_non_canonical_object_paths() {
+        let mut index = DriverMetadataIndex {
+            format: INDEX_FORMAT.to_string(),
+            index_version: 1,
+            index_revision: 0,
+            index_revision_seq: 1,
+            required_features: vec![],
+            tracks: vec![DriverMetadataTrack {
+                protocol_version: 1,
+                protocol_revision: 0,
+                revision_seq: 1,
+                required_features: vec![],
+                manifest: DriverMetadataIndexManifest {
+                    path: "v1/manifest-1.json".to_string(),
+                    obj_id: obj_id("manifest-1").to_string(),
+                },
+            }],
+        };
+        assert!(validate_index(&index).is_ok());
+        index.tracks[0].manifest.path = "v1/other.json".to_string();
+        assert!(validate_index(&index).is_err());
+
+        let object_id = obj_id("openai-1");
+        let mut candidate = manifest(1, vec![file("openai", 1, &object_id)]);
+        let track = DriverMetadataTrack {
+            protocol_version: 1,
+            protocol_revision: 0,
+            revision_seq: 1,
+            required_features: vec![],
+            manifest: DriverMetadataIndexManifest {
+                path: "v1/manifest-1.json".to_string(),
+                obj_id: obj_id("manifest-1").to_string(),
+            },
+        };
+        assert!(validate_manifest(&candidate, &track).is_ok());
+        candidate.files[0].path = "v1/providers/other.json".to_string();
+        assert!(validate_manifest(&candidate, &track).is_err());
+    }
+
+    #[test]
+    fn provider_metadata_rejects_invalid_rules_and_unknown_fields() {
+        let object_id = obj_id("openai-v1");
+        let entry = file("openai", 1, &object_id);
+        let duplicate_rules = serde_json::json!({
+            "format": "buckyos.aicc.provider-driver-metadata",
+            "schema_version": 2,
+            "schema_revision": 0,
+            "provider_driver": "openai",
+            "revision_seq": 1,
+            "required_features": [],
+            "models": [
+                {"id": "gpt-test"},
+                {"id": "GPT-TEST"}
+            ],
+            "patterns": [],
+            "defaults": {},
+            "variants": [],
+            "version_rules": []
+        });
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&duplicate_rules).unwrap().as_slice(),
+            &entry,
+        )
+        .is_err());
+
+        let mut unknown_field = duplicate_rules;
+        unknown_field["models"] = serde_json::json!([]);
+        unknown_field["unexpected"] = serde_json::json!(true);
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&unknown_field).unwrap().as_slice(),
+            &entry,
+        )
+        .is_err());
+
+        let mut invalid_variant = unknown_field;
+        invalid_variant
+            .as_object_mut()
+            .unwrap()
+            .remove("unexpected");
+        invalid_variant["variants"] = serde_json::json!([{
+            "name": "reasoning.high",
+            "provider_options": {"reasoning": {"effort": "high"}}
+        }]);
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&invalid_variant).unwrap().as_slice(),
+            &entry,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn metadata_source_change_advances_generation_once() {
         let settings = serde_json::json!({
             "driver_metadata_update": {
@@ -1613,6 +1867,22 @@ mod tests {
 
         configure_remote_metadata_source(&serde_json::json!({})).unwrap();
         assert!(DRIVER_METADATA_GENERATION.load(Ordering::Acquire) > configured_generation);
+    }
+
+    #[test]
+    fn metadata_sources_have_independent_storage_namespaces() {
+        let first = DriverMetadataUpdateSettings {
+            enabled: true,
+            source_url: "https://metadata-a.example/aicc/driver-metadata/index.json".to_string(),
+            interval_secs: 3600,
+        };
+        let second = DriverMetadataUpdateSettings {
+            enabled: true,
+            source_url: "https://metadata-b.example/aicc/driver-metadata/index.json".to_string(),
+            interval_secs: 3600,
+        };
+        assert_ne!(first.source_key().unwrap(), second.source_key().unwrap());
+        assert_eq!(first.source_key().unwrap(), first.source_key().unwrap());
     }
 
     #[test]
@@ -1694,6 +1964,103 @@ mod tests {
                 .revision_seq,
             2
         );
+    }
+
+    #[test]
+    fn activation_manifest_digest_rejects_semantic_corruption() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        store
+            .activate(
+                1,
+                obj_id("manifest-1").to_string().as_str(),
+                manifest(1, vec![]),
+            )
+            .unwrap();
+        let path = store.activations_dir().join("1.json");
+        let mut activation: DriverMetadataActivation =
+            serde_json::from_slice(std::fs::read(path.as_path()).unwrap().as_slice()).unwrap();
+        activation.manifest.protocol_revision = 1;
+        std::fs::write(path, serde_json::to_vec_pretty(&activation).unwrap()).unwrap();
+
+        assert!(store.load_latest_activation().is_none());
+    }
+
+    #[test]
+    fn semantically_invalid_activation_falls_back_to_lkgs() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        store
+            .activate(
+                1,
+                obj_id("manifest-1").to_string().as_str(),
+                manifest(1, vec![]),
+            )
+            .unwrap();
+
+        let mut invalid = manifest(2, vec![]);
+        invalid.protocol_version = 2;
+        store
+            .activate(2, obj_id("manifest-2").to_string().as_str(), invalid)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .load_latest_activation()
+                .unwrap()
+                .manifest
+                .revision_seq,
+            1
+        );
+    }
+
+    #[test]
+    fn activation_filename_must_match_manifest_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = DriverMetadataStore::new(temp.path().to_path_buf());
+        store.prepare().unwrap();
+        let activation_manifest = manifest(9, vec![]);
+        let activation = DriverMetadataActivation {
+            format: ACTIVATION_FORMAT.to_string(),
+            storage_version: 1,
+            index_revision_seq: 9,
+            manifest_obj_id: obj_id("manifest-9").to_string(),
+            manifest_sha256: manifest_sha256(&activation_manifest).unwrap(),
+            manifest: activation_manifest,
+        };
+        std::fs::write(
+            store.activations_dir().join("2.json"),
+            serde_json::to_vec(&activation).unwrap(),
+        )
+        .unwrap();
+
+        assert!(store.load_latest_activation().is_none());
+        assert!(load_activations(store.activations_dir().as_path()).is_empty());
+    }
+
+    #[test]
+    fn source_cleanup_preserves_configured_and_updating_namespaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let configured = "a".repeat(64);
+        let updating = "b".repeat(64);
+        let inactive = "c".repeat(64);
+        std::fs::create_dir_all(temp.path().join(configured.as_str())).unwrap();
+        std::fs::create_dir_all(temp.path().join(updating.as_str())).unwrap();
+        std::fs::create_dir_all(temp.path().join(inactive.as_str())).unwrap();
+        std::fs::create_dir_all(temp.path().join("unmanaged")).unwrap();
+
+        cleanup_remote_metadata_source_namespaces_in(
+            temp.path(),
+            &HashSet::from([configured.clone(), updating.clone()]),
+        )
+        .unwrap();
+
+        assert!(temp.path().join(configured).is_dir());
+        assert!(temp.path().join(updating).is_dir());
+        assert!(!temp.path().join(inactive).exists());
+        assert!(temp.path().join("unmanaged").is_dir());
     }
 
     #[test]

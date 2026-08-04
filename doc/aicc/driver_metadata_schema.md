@@ -75,6 +75,10 @@ The beta 2.2 schema is the first compatibility baseline. Future optional fields
 with a safe default increment `schema_revision`; incompatible changes increment
 `schema_version` and are published on a compatible protocol track.
 
+Cloud and local override documents use the same strict parser. Unknown fields,
+unsupported features, schema/provider identity mismatches, and statically invalid
+rules are rejected before they can participate in inventory construction.
+
 ## Rule
 
 Rules support these fields:

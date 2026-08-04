@@ -56,8 +56,8 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 ### Object: activation
 
 - 文件名：`<manifest revision_seq>.json`。
-- 内容：已接受 manifest 的原文及 manifest ObjId。
-- 约束：只有它引用的全部 provider object 已落盘且可解析后才能创建；文件创建即提交。
+- 内容：已接受 manifest、manifest ObjId 及 manifest SHA-256。
+- 约束：文件名必须等于 manifest `revision_seq`；每次读取都验证 wrapper、manifest SHA-256、协议字段及全部 provider object。只有引用对象全部落盘且可解析后才能创建；文件创建即提交。
 
 ## 5. Schema Version
 
@@ -69,7 +69,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 |---|---|
 | v1 observed 水位 | Additive-only；冻结 revision/ObjId 语义 |
 | v1 provider object | Rebuild；可按相同 ObjId 从发布端重新获取 |
-| v1 activation | Additive-only；旧 reader 必须能忽略新增可选字段 |
+| v1 activation | Rebuild；缺少必需 manifest 摘要的旧 activation 视为无效并重新下载 |
 | staging | Rebuild；任何升级都可删除 |
 
 不兼容本地布局使用新目录版本并从旧 activation 一次性导入；导入失败继续读旧目录，不原地改写旧状态。
@@ -92,4 +92,4 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 每个 source namespace 最多保留两个有效 activation、两个 index 水位和两个 manifest
 水位；对象保留集合是这些 activation 与最新 observed manifest 的引用并集。它覆盖当前
 生效版本、一次必要回退/并发读取版本和正在更新的 candidate。其它对象、旧水位、旧
-activation、staging 和未使用 source namespace 均清理，磁盘占用因此有确定上界。
+activation、staging 和未使用 source namespace 均清理。source 清理同时保护当前配置源与正在更新的源，磁盘占用因此有确定上界。

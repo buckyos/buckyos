@@ -26,7 +26,7 @@ AICC settings 中显式启用更新源：
 }
 ```
 
-`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。`interval_secs` 最小 60 秒；未配置或 `enabled=false` 时不启动云更新。
+`source_url` 的 HTTPS host 是发布者信任锚，path 固定为 `/aicc/driver-metadata/index.json`。每个 canonical `source_url` 使用独立的本地水位和 activation namespace，不跨发布源比较 revision。settings 日志必须掩盖 URL userinfo。缓存清理同时保留当前配置源和正在更新的源，避免旧任务误删新源；未配置、配置无效或 `enabled=false` 时清除旧源缓存并等待 `reload_settings` 通知，不轮询。settings 暂时不可用是独立状态，只退避重试，不能按禁用处理或清理 LKGS。`interval_secs` 归一化到 60 秒至 1 天。
 
 ```text
 /aicc/driver-metadata/index.json
@@ -66,7 +66,7 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
 - `index_revision_seq` 全局严格递增；同 revision 的 index 内容或 ObjId 不同是发布冲突。
 - `tracks` 按 protocol major 唯一。客户端只选择自己支持且 `required_features` 全部已知的 track。
 - track 的 `protocol_revision` 只允许增加具有缺省语义的可选字段；`revision_seq` 与该 track manifest 一致。
-- `manifest.path` 必须是相对 index 目录的 canonical path，禁止 `..`、query、fragment 和绝对 URL。
+- `manifest.path` 必须是相对 index 目录的 canonical path，禁止 `..`、百分号编码、query、fragment 和绝对 URL；URL join 后仍必须位于 `/aicc/driver-metadata/` 目录内。
 
 未来发布 protocol v2 时在同一 index 并列增加 v2 track，不能替换 v1 track；因此旧客户端仍可获得 v1 安全修复。
 
@@ -121,7 +121,7 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
 }
 ```
 
-文件内 `provider_driver`、`schema_version`、`revision_seq` 必须与 manifest 项一致。`schema_revision` 可以增加可选字段；需要新解释能力的变化必须同时加入 `required_features`。不兼容结构变化提升 `schema_version`。
+文件内 `provider_driver`、`schema_version`、`revision_seq` 必须与 manifest 项一致。未知字段以及无效的 model id/pattern、variant、mount、token limit、成本和质量值均 fail-closed。`schema_revision` 可以增加具有明确缺省语义的可选字段；需要新解释能力的变化必须同时加入 `required_features`。不兼容结构变化提升 `schema_version`。
 
 ## 6. 严格下载
 
@@ -132,8 +132,7 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
 3. manifest/provider 的 PathObject target 与上级声明的 FileObject ObjId 相同。
 4. 通过 SDK 完成 FileObject/Chunk 链和内容校验。
 
-NDN SDK 是文件内容正确性的唯一校验层。AICC 不重复计算内容 hash，也不自行解析
-Chunk/FileObject/ChunkList 来复核内容；PathObject target 比较只用于确认下载对象是上级协议对象指定的 ObjId。
+NDN SDK 是文件内容正确性的唯一校验层。AICC 不重复计算内容 hash。为在下载前执行容量限制，AICC 只读取 SDK 已验证的 ChunkId 长度，或已验证 parent 中 FileObject/ChunkList 的长度声明；没有可信长度时 fail-closed。PathObject target 比较只用于确认下载对象是上级协议对象指定的 ObjId。
 
 `index.json` 最大 256 KiB，manifest 最大 1 MiB，单个 provider metadata
 最大 64 MiB；manifest 引用的全部 provider metadata 实际大小之和最大
@@ -150,7 +149,7 @@ Chunk/FileObject/ChunkList 来复核内容；PathObject target 比较只用于�
 
 严格验证过的 index/manifest 会先推进 observed 水位；即使随后某个 provider body 校验失败，已观察到的 manifest revision、provider revision 和 tombstone revision 也不能回退。发布端可以保留相同 ObjId 修复传输，或发布更高 revision 的修复版本。
 
-所有文件准备完成后写一个新的不可变 activation。activation 是唯一提交标记，引用内容寻址的只读对象。它通过同目录临时文件 `sync_all` 后，以原子的 create-if-absent 操作提交到一个此前不存在的 revision 文件名，不覆盖旧 activation；Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。
+所有文件准备完成后写一个新的不可变 activation。activation 是唯一提交标记，引用内容寻址的只读对象，并保存 manifest 的 SHA-256 用于检测本地 wrapper 被部分改写；这不是对 NDN 下载内容的二次校验。activation 通过同目录临时文件 `sync_all` 后，以原子的 create-if-absent 操作提交到一个此前不存在的 revision 文件名，不覆盖旧 activation；Unix 使用 hard link 并同步父目录，Windows 使用 `MOVEFILE_WRITE_THROUGH`。
 
 例如只有 `openai.json` 变化时，请求是 `index.json + manifest.json + openai.json`；其他 provider 对象直接复用。
 

@@ -87,6 +87,7 @@ const PROVIDER_SECTIONS: &[&str] = &[
 struct AiccHttpServer {
     rpc_handler: AiccServerHandler<AIComputeCenter>,
     provider_validation_cache: Mutex<HashMap<String, ProviderValidationCacheEntry>>,
+    metadata_settings_tx: tokio::sync::watch::Sender<Option<Value>>,
 }
 
 struct ProviderValidationCacheEntry {
@@ -217,6 +218,8 @@ fn redact_settings_for_log(value: &serde_json::Value) -> serde_json::Value {
                         k.clone(),
                         serde_json::Value::String(REDACTED_SECRET.to_string()),
                     );
+                } else if lower == "source_url" {
+                    next.insert(k.clone(), redact_url_userinfo(v));
                 } else {
                     next.insert(k.clone(), redact_settings_for_log(v));
                 }
@@ -231,6 +234,27 @@ fn redact_settings_for_log(value: &serde_json::Value) -> serde_json::Value {
         ),
         _ => value.clone(),
     }
+}
+
+fn redact_url_userinfo(value: &Value) -> Value {
+    let Some(raw) = value.as_str() else {
+        return redact_settings_for_log(value);
+    };
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return if raw.contains('@') {
+            Value::String(REDACTED_SECRET.to_string())
+        } else {
+            value.clone()
+        };
+    };
+    if url.username().is_empty() && url.password().is_none() {
+        return value.clone();
+    }
+    let _ = url.set_username(REDACTED_SECRET);
+    if url.password().is_some() {
+        let _ = url.set_password(Some(REDACTED_SECRET));
+    }
+    Value::String(url.to_string())
 }
 
 fn rpc_success(req: &RPCRequest, result: Value) -> RPCResponse {
@@ -755,10 +779,12 @@ async fn discover_google_models(
 }
 
 impl AiccHttpServer {
-    fn new(center: AIComputeCenter) -> Self {
+    fn new(center: AIComputeCenter, initial_settings: Option<Value>) -> Self {
+        let (metadata_settings_tx, _) = tokio::sync::watch::channel(initial_settings);
         Self {
             rpc_handler: AiccServerHandler::new(center),
             provider_validation_cache: Mutex::new(HashMap::new()),
+            metadata_settings_tx,
         }
     }
 
@@ -788,17 +814,12 @@ impl AiccHttpServer {
     async fn handle_reload_settings(&self) -> std::result::Result<serde_json::Value, RPCErrors> {
         let runtime = get_buckyos_api_runtime()
             .map_err(|err| RPCErrors::ReasonError(format!("get runtime failed: {}", err)))?;
-        let settings = match runtime.get_my_settings().await {
-            Ok(settings) => settings,
-            Err(err) => {
-                warn!(
-                    "load aicc settings failed during reload, use empty settings: {}",
-                    err
-                );
-                serde_json::json!({})
-            }
-        };
+        let settings = runtime.get_my_settings().await.map_err(|err| {
+            RPCErrors::ReasonError(format!("load aicc settings during reload failed: {}", err))
+        })?;
         let settings_for_log = redact_settings_for_log(&settings);
+        self.metadata_settings_tx
+            .send_replace(Some(settings.clone()));
         info!(
             "aicc.reload_settings current settings: {}",
             settings_for_log
@@ -1232,7 +1253,8 @@ impl AiccHttpServer {
     }
 }
 
-fn start_driver_metadata_update_loop() {
+fn start_driver_metadata_update_loop(server: Arc<AiccHttpServer>) {
+    let mut settings_rx = server.metadata_settings_tx.subscribe();
     let spawn_result = std::thread::Builder::new()
         .name("aicc-metadata-updater".to_string())
         .spawn(move || {
@@ -1249,20 +1271,45 @@ fn start_driver_metadata_update_loop() {
             runtime.block_on(async move {
                 let mut consecutive_failures = 0u32;
                 loop {
-                    let settings_value = match get_buckyos_api_runtime() {
-                        Ok(runtime) => match runtime.get_my_settings().await {
-                            Ok(settings) => settings,
-                            Err(err) => {
-                                warn!("load settings for metadata update failed: {}", err);
-                                tokio::time::sleep(Duration::from_secs(60)).await;
-                                continue;
-                            }
-                        },
-                        Err(err) => {
-                            warn!("get runtime for metadata update failed: {}", err);
-                            tokio::time::sleep(Duration::from_secs(60)).await;
-                            continue;
+                    let Some(settings_value) = settings_rx.borrow().clone() else {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        let delay = metadata_retry_delay(consecutive_failures, 3600);
+                        match get_buckyos_api_runtime() {
+                            Ok(runtime) => match runtime.get_my_settings().await {
+                                Ok(settings) => {
+                                    match apply_provider_settings(&server.rpc_handler.0, &settings) {
+                                        Ok(registered) => {
+                                            consecutive_failures = 0;
+                                            server
+                                                .metadata_settings_tx
+                                                .send_replace(Some(settings));
+                                            info!(
+                                                "aicc settings recovery registered {} providers",
+                                                registered
+                                            );
+                                            continue;
+                                        }
+                                        Err(err) => warn!(
+                                            "apply recovered aicc settings failed retry_secs={}: {}",
+                                            delay, err
+                                        ),
+                                    }
+                                }
+                                Err(err) => warn!(
+                                    "load unavailable driver metadata settings failed retry_secs={}: {}",
+                                    delay, err
+                                ),
+                            },
+                            Err(err) => warn!(
+                                "get runtime for unavailable driver metadata settings failed retry_secs={}: {}",
+                                delay, err
+                            ),
                         }
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+                            _ = settings_rx.changed() => {}
+                        }
+                        continue;
                     };
                     if let Err(err) = configure_remote_metadata_source(&settings_value) {
                         warn!("invalid driver metadata update settings: {}", err);
@@ -1273,12 +1320,29 @@ fn start_driver_metadata_update_loop() {
                         Ok(Some(settings)) => settings,
                         Ok(None) => {
                             consecutive_failures = 0;
-                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            if let Err(err) =
+                                crate::metadata_updater::cleanup_remote_metadata_source_namespaces(
+                                    None,
+                                )
+                            {
+                                warn!("cleanup disabled metadata sources failed: {}", err);
+                            }
+                            let _ = settings_rx.changed().await;
                             continue;
                         }
                         Err(err) => {
                             warn!("invalid driver metadata update settings: {}", err);
-                            tokio::time::sleep(Duration::from_secs(60)).await;
+                            if let Err(cleanup_err) =
+                                crate::metadata_updater::cleanup_remote_metadata_source_namespaces(
+                                    None,
+                                )
+                            {
+                                warn!(
+                                    "cleanup invalid metadata sources failed: {}",
+                                    cleanup_err
+                                );
+                            }
+                            let _ = settings_rx.changed().await;
                             continue;
                         }
                     };
@@ -1314,7 +1378,10 @@ fn start_driver_metadata_update_loop() {
                             delay
                         }
                     };
-                    tokio::time::sleep(Duration::from_secs(delay.max(1))).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(delay.max(1))) => {}
+                        _ = settings_rx.changed() => {}
+                    }
                 }
             });
         });
@@ -1509,24 +1576,23 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
     center.set_resource_resolver(Arc::new(NamedStoreResourceResolver));
 
     let settings = match runtime.get_my_settings().await {
-        Ok(settings) => settings,
+        Ok(settings) => Some(settings),
         Err(err) => {
-            warn!(
-                "load aicc settings failed, fallback to empty settings, err={}",
-                err
-            );
-            serde_json::json!({})
+            warn!("load aicc settings failed, wait for retry, err={}", err);
+            None
         }
     };
-    match apply_provider_settings(&center, &settings) {
-        Ok(registered) => {
-            info!("aicc providers initialized with {} instances", registered);
-        }
-        Err(err) => {
-            warn!(
-                "aicc settings apply failed during startup, continue without providers: {}",
-                err
-            );
+    if let Some(settings) = settings.as_ref() {
+        match apply_provider_settings(&center, settings) {
+            Ok(registered) => {
+                info!("aicc providers initialized with {} instances", registered);
+            }
+            Err(err) => {
+                warn!(
+                    "aicc settings apply failed during startup, continue without providers: {}",
+                    err
+                );
+            }
         }
     }
 
@@ -1546,8 +1612,8 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
         }
     }
 
-    let server = Arc::new(AiccHttpServer::new(center));
-    start_driver_metadata_update_loop();
+    let server = Arc::new(AiccHttpServer::new(center, settings));
+    start_driver_metadata_update_loop(server.clone());
 
     let runner = Runner::new(AICC_SERVICE_MAIN_PORT);
     if let Err(err) = runner.add_http_server("/kapi/aicc".to_string(), server) {
@@ -1571,5 +1637,23 @@ fn main() {
         start_aicc_service(center).await
     }) {
         error!("aicc service start failed: {:?}", err);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_log_redacts_source_url_userinfo() {
+        let settings = serde_json::json!({
+            "driver_metadata_update": {
+                "source_url": "https://user:secret@metadata.example/aicc/driver-metadata/index.json"
+            }
+        });
+        let redacted = redact_settings_for_log(&settings).to_string();
+        assert!(!redacted.contains("user"));
+        assert!(!redacted.contains("secret"));
+        assert!(redacted.contains("metadata.example"));
     }
 }

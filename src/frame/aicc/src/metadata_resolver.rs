@@ -45,6 +45,7 @@ impl DriverModelResolveRequest {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverMetadataDocument {
     #[serde(default)]
     pub format: String,
@@ -118,6 +119,7 @@ struct DriverOriginIdentity {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverModelRule {
     #[serde(default)]
     pub id: Option<String>,
@@ -154,6 +156,7 @@ pub struct DriverModelRule {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverVersionRule {
     #[serde(default)]
     pub family: String,
@@ -182,12 +185,14 @@ pub struct DriverVersionRule {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverVersionRankRule {
     #[serde(default)]
     pub prefix: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverVersionStabilityRule {
     #[serde(default)]
     pub unstable_tokens: Vec<String>,
@@ -196,6 +201,7 @@ pub struct DriverVersionStabilityRule {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverCapabilitiesPatch {
     #[serde(default)]
     pub streaming: Option<bool>,
@@ -214,6 +220,7 @@ pub struct DriverCapabilitiesPatch {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverModelVariant {
     pub name: String,
     #[serde(default)]
@@ -225,6 +232,7 @@ pub struct DriverModelVariant {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverMetadataSignature {
     #[serde(default)]
     pub algorithm: String,
@@ -440,7 +448,10 @@ fn load_driver_metadata_sources(provider_driver: &str) -> (Vec<DriverMetadataSou
     }
     for (name, path) in driver_metadata_override_paths(provider_driver) {
         match std::fs::read_to_string(path.as_path()) {
-            Ok(content) => match parse_driver_metadata(content.as_str()) {
+            Ok(content) => match parse_and_validate_driver_metadata(
+                content.as_str(),
+                Some(normalized.as_str()),
+            ) {
                 Ok(document) => sources.push(DriverMetadataSource { name, document }),
                 Err(err) => warn!(
                     "aicc.metadata_resolver.skip_invalid_metadata path={} err={}",
@@ -461,6 +472,209 @@ fn load_driver_metadata_sources(provider_driver: &str) -> (Vec<DriverMetadataSou
 
 fn parse_driver_metadata(content: &str) -> Result<DriverMetadataDocument, serde_json::Error> {
     serde_json::from_str::<DriverMetadataDocument>(content)
+}
+
+fn parse_and_validate_driver_metadata(
+    content: &str,
+    expected_provider_driver: Option<&str>,
+) -> Result<DriverMetadataDocument, String> {
+    let document = parse_driver_metadata(content).map_err(|err| err.to_string())?;
+    validate_driver_metadata_document(&document)?;
+    if let Some(expected) = expected_provider_driver {
+        if document.provider_driver != expected {
+            return Err(format!(
+                "provider_driver '{}' does not match expected '{}'",
+                document.provider_driver, expected
+            ));
+        }
+    }
+    Ok(document)
+}
+
+pub(crate) fn validate_driver_metadata_document(
+    document: &DriverMetadataDocument,
+) -> Result<(), String> {
+    if document.format != "buckyos.aicc.provider-driver-metadata" {
+        return Err("unsupported provider metadata format".to_string());
+    }
+    if document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported provider metadata schema_version {}",
+            document.schema_version
+        ));
+    }
+    if document.provider_driver.is_empty()
+        || document.provider_driver.trim() != document.provider_driver
+    {
+        return Err("provider_driver must be a non-empty trimmed string".to_string());
+    }
+    if !document.required_features.is_empty() {
+        return Err("provider metadata requires unsupported features".to_string());
+    }
+
+    let mut model_ids = HashSet::new();
+    for (index, rule) in document.models.iter().enumerate() {
+        let id = rule
+            .id
+            .as_deref()
+            .ok_or_else(|| format!("models[{}].id is required", index))?;
+        validate_trimmed_value(id, format!("models[{}].id", index).as_str())?;
+        if rule.pattern.is_some() {
+            return Err(format!("models[{}].pattern is not allowed", index));
+        }
+        if !model_ids.insert(id.to_ascii_lowercase()) {
+            return Err(format!("duplicate model id '{}'", id));
+        }
+        validate_driver_model_rule(rule, format!("models[{}]", index).as_str())?;
+    }
+
+    let mut patterns = HashSet::new();
+    for (index, rule) in document.patterns.iter().enumerate() {
+        let pattern = rule
+            .pattern
+            .as_deref()
+            .ok_or_else(|| format!("patterns[{}].pattern is required", index))?;
+        validate_trimmed_value(pattern, format!("patterns[{}].pattern", index).as_str())?;
+        if rule.id.is_some() {
+            return Err(format!("patterns[{}].id is not allowed", index));
+        }
+        if !patterns.insert(pattern.to_ascii_lowercase()) {
+            return Err(format!("duplicate model pattern '{}'", pattern));
+        }
+        validate_driver_model_rule(rule, format!("patterns[{}]", index).as_str())?;
+    }
+
+    if document.defaults.id.is_some() || document.defaults.pattern.is_some() {
+        return Err("defaults cannot declare id or pattern".to_string());
+    }
+    validate_driver_model_rule(&document.defaults, "defaults")?;
+
+    let mut variant_names = HashSet::new();
+    let mut variant_suffixes = HashSet::new();
+    for (index, variant) in document.variants.iter().enumerate() {
+        validate_trimmed_value(
+            variant.name.as_str(),
+            format!("variants[{}].name", index).as_str(),
+        )?;
+        if !variant_names.insert(variant.name.to_ascii_lowercase()) {
+            return Err(format!("duplicate variant name '{}'", variant.name));
+        }
+        let suffix = variant
+            .mount_suffix
+            .as_deref()
+            .ok_or_else(|| format!("variants[{}].mount_suffix is required", index))?;
+        if !is_valid_variant_suffix(suffix) || suffix.trim() != suffix || suffix.is_empty() {
+            return Err(format!("variants[{}].mount_suffix is invalid", index));
+        }
+        if !variant_suffixes.insert(suffix.to_ascii_lowercase()) {
+            return Err(format!("duplicate variant mount_suffix '{}'", suffix));
+        }
+        if !variant.provider_options.is_null() && !variant.provider_options.is_object() {
+            return Err(format!(
+                "variants[{}].provider_options must be null or an object",
+                index
+            ));
+        }
+    }
+
+    for (index, rule) in document.version_rules.iter().enumerate() {
+        validate_trimmed_value(
+            rule.family.as_str(),
+            format!("version_rules[{}].family", index).as_str(),
+        )?;
+        validate_optional_trimmed_value(
+            rule.tier.as_deref(),
+            format!("version_rules[{}].tier", index).as_str(),
+        )?;
+        validate_optional_trimmed_value(
+            rule.model_pattern.as_deref(),
+            format!("version_rules[{}].model_pattern", index).as_str(),
+        )?;
+        validate_optional_trimmed_value(
+            rule.current_mount.as_deref(),
+            format!("version_rules[{}].current_mount", index).as_str(),
+        )?;
+        validate_optional_trimmed_value(
+            rule.version_mount.as_deref(),
+            format!("version_rules[{}].version_mount", index).as_str(),
+        )?;
+        validate_string_list(
+            rule.tier_tokens.as_slice(),
+            format!("version_rules[{}].tier_tokens", index).as_str(),
+        )?;
+        validate_string_list(
+            rule.exclude_tier_tokens.as_slice(),
+            format!("version_rules[{}].exclude_tier_tokens", index).as_str(),
+        )?;
+        validate_string_list(
+            rule.auto_mounts.as_slice(),
+            format!("version_rules[{}].auto_mounts", index).as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_driver_model_rule(rule: &DriverModelRule, location: &str) -> Result<(), String> {
+    validate_optional_trimmed_value(
+        rule.model_driver.as_deref(),
+        &format!("{}.model_driver", location),
+    )?;
+    validate_optional_trimmed_value(
+        rule.parameter_scale.as_deref(),
+        &format!("{}.parameter_scale", location),
+    )?;
+    if rule.api_types.as_ref().is_some_and(Vec::is_empty) {
+        return Err(format!("{}.api_types cannot be empty", location));
+    }
+    if let Some(mounts) = rule.logical_mounts.as_ref() {
+        validate_string_list(mounts.as_slice(), &format!("{}.logical_mounts", location))?;
+    }
+    if rule
+        .estimated_cost_usd
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        return Err(format!("{}.estimated_cost_usd is invalid", location));
+    }
+    if rule
+        .quality_score
+        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        return Err(format!("{}.quality_score is invalid", location));
+    }
+    if rule.capabilities.max_context_tokens == Some(0)
+        || rule.capabilities.max_output_tokens == Some(0)
+    {
+        return Err(format!(
+            "{}.capability token limits must be positive",
+            location
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_trimmed_value(value: Option<&str>, location: &str) -> Result<(), String> {
+    if let Some(value) = value {
+        validate_trimmed_value(value, location)?;
+    }
+    Ok(())
+}
+
+fn validate_trimmed_value(value: &str, location: &str) -> Result<(), String> {
+    if value.is_empty() || value.trim() != value {
+        return Err(format!("{} must be a non-empty trimmed string", location));
+    }
+    Ok(())
+}
+
+fn validate_string_list(values: &[String], location: &str) -> Result<(), String> {
+    let mut unique = HashSet::new();
+    for value in values {
+        validate_trimmed_value(value, location)?;
+        if !unique.insert(value.to_ascii_lowercase()) {
+            return Err(format!("{} contains duplicate value '{}'", location, value));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_origin_identity(
@@ -576,7 +790,7 @@ fn load_builtin_driver_metadata(provider_driver: &str) -> Option<DriverMetadataD
         "minimax" => include_str!("../driver_metadata/minimax.json"),
         _ => return None,
     };
-    parse_driver_metadata(raw)
+    parse_and_validate_driver_metadata(raw, None)
         .map_err(|err| {
             warn!(
                 "aicc.metadata_resolver.invalid_builtin provider_driver={} err={}",
@@ -1291,6 +1505,56 @@ fn remove_driver_auto_mounts(mounts: &mut Vec<String>, rule: &DriverVersionRule)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_driver_metadata_passes_semantic_validation() {
+        for driver in [
+            "openai",
+            "openrouter",
+            "claude",
+            "google-gemini",
+            "fal",
+            "minimax",
+        ] {
+            let document = load_builtin_driver_metadata(driver).unwrap();
+            validate_driver_metadata_document(&document)
+                .unwrap_or_else(|err| panic!("{} metadata is invalid: {}", driver, err));
+        }
+    }
+
+    #[test]
+    fn override_metadata_rejects_schema_and_provider_identity_mismatch() {
+        let valid = serde_json::json!({
+            "format": "buckyos.aicc.provider-driver-metadata",
+            "schema_version": 2,
+            "schema_revision": 0,
+            "provider_driver": "openai",
+            "revision_seq": 1,
+            "required_features": [],
+            "models": [],
+            "patterns": [],
+            "defaults": {},
+            "variants": [],
+            "version_rules": []
+        });
+        assert!(parse_and_validate_driver_metadata(&valid.to_string(), Some("openai")).is_ok());
+
+        let mut wrong_schema = valid.clone();
+        wrong_schema["schema_version"] = serde_json::json!(1);
+        assert!(
+            parse_and_validate_driver_metadata(&wrong_schema.to_string(), Some("openai")).is_err()
+        );
+
+        let mut unsupported_features = valid.clone();
+        unsupported_features["required_features"] = serde_json::json!(["future-semantics"]);
+        assert!(parse_and_validate_driver_metadata(
+            &unsupported_features.to_string(),
+            Some("openai")
+        )
+        .is_err());
+
+        assert!(parse_and_validate_driver_metadata(&valid.to_string(), Some("claude")).is_err());
+    }
 
     #[test]
     fn openrouter_models_resolve_to_origin_identity() {
