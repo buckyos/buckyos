@@ -327,9 +327,10 @@ function EmptyApps({ onAdd }: { onAdd: () => void }) {
 
 interface HomePageProps {
   onNavigate: (nav: AppServiceNav) => void
+  onOpenInstaller: (taskId: string) => Promise<void>
 }
 
-export function HomePage({ onNavigate }: HomePageProps) {
+export function HomePage({ onNavigate, onOpenInstaller }: HomePageProps) {
   const store = useAppServiceStore()
   const { t } = useI18n()
   const apps = store.getByLayer('app')
@@ -373,7 +374,9 @@ export function HomePage({ onNavigate }: HomePageProps) {
           {store.activeTask && (
             <ActiveTaskBanner
               task={store.activeTask}
-              onOpen={() => onNavigate({ page: 'install', taskId: store.activeTask?.taskId })}
+              onOpen={() => {
+                if (store.activeTask) void onOpenInstaller(store.activeTask.taskId)
+              }}
             />
           )}
 

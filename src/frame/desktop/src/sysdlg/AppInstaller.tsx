@@ -26,13 +26,13 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react'
-import { useI18n } from '../../../../i18n/provider'
-import { AppIcon } from '../../../../components/DesktopVisuals'
-import { useAppServiceStore } from '../../hooks/use-app-service-store'
+import { useI18n } from '../i18n/provider'
+import { AppIcon } from '../components/DesktopVisuals'
+import { useSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
 import {
   installerApprovalSchema,
   type InstallerApprovalInput,
-} from '../../schemas'
+} from '../app/app-service/schemas'
 import type {
   InstallAppInfo,
   InstallOptions,
@@ -40,7 +40,7 @@ import type {
   InstallTask,
   InstallTaskStage,
   TrustCheck,
-} from '../../mock/types'
+} from '../app/app-service/mock/types'
 
 function sourceKindLabel(kind: InstallAppInfo['source']['kind'], t: ReturnType<typeof useI18n>['t']) {
   return t(`appService.source.kind.${kind}`, kind)
@@ -345,7 +345,7 @@ function PermissionIcon({ kind }: { kind: InstallPermission['kind'] }) {
 }
 
 function ApprovalStep({ task, onBack }: { task: InstallTask; onBack: () => void }) {
-  const store = useAppServiceStore()
+  const store = useSharedAppServiceStore()
   const { t } = useI18n()
   const form = useForm<InstallerApprovalInput>({
     resolver: zodResolver(installerApprovalSchema),
@@ -622,7 +622,7 @@ function ProgressStep({ task, onBackground }: { task: InstallTask; onBackground:
 }
 
 function FailureStep({ task, onChangeSource }: { task: InstallTask; onChangeSource: () => void }) {
-  const store = useAppServiceStore()
+  const store = useSharedAppServiceStore()
   const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const failure = task.failure
@@ -767,7 +767,7 @@ function ResultStep({ task, onClose, onViewApp }: { task: InstallTask; onClose: 
   )
 }
 
-interface AppInstallerDialogProps {
+export interface AppInstallerProps {
   taskId: string
   onBackground: () => void
   onChangeSource: () => void
@@ -775,8 +775,8 @@ interface AppInstallerDialogProps {
   onViewApp: (serviceId: string) => void
 }
 
-export function AppInstallerDialog({ taskId, onBackground, onChangeSource, onClose, onViewApp }: AppInstallerDialogProps) {
-  const store = useAppServiceStore()
+export function AppInstaller({ taskId, onBackground, onChangeSource, onClose, onViewApp }: AppInstallerProps) {
+  const store = useSharedAppServiceStore()
   const { t } = useI18n()
   const [approvalOpen, setApprovalOpen] = useState(false)
   const task = store.getTask(taskId)

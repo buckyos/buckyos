@@ -46,6 +46,12 @@ export function MobileWindowSheet({
   return (
     <div className="absolute inset-0 z-40 overflow-hidden bg-[color:color-mix(in_srgb,var(--cp-bg)_94%,var(--cp-surface))]">
       <WindowDialogProvider
+        insets={{
+          top: topInset,
+          right: 0,
+          bottom: safeAreaBottom + deadZone.bottom,
+          left: 0,
+        }}
         permissions={resolveWindowDialogPermissions(app)}
         surface="mobile"
       >

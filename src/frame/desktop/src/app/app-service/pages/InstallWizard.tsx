@@ -14,7 +14,6 @@ import {
 } from 'lucide-react'
 import { useI18n } from '../../../i18n/provider'
 import type { AppServiceNav } from '../components/layout/navigation'
-import { AppInstallerDialog } from '../components/installer/AppInstallerDialog'
 import { FilePickerDialog } from '../components/installer/FilePickerDialog'
 import { useAppServiceStore } from '../hooks/use-app-service-store'
 import {
@@ -305,29 +304,15 @@ function SourceEntry({ onBack, onResolved }: { onBack: () => void; onResolved: (
 }
 
 interface InstallWizardProps {
-  taskId?: string
   onNavigate: (nav: AppServiceNav) => void
+  onOpenInstaller: (taskId: string) => Promise<void>
 }
 
-export function InstallWizard({ taskId, onNavigate }: InstallWizardProps) {
-  const store = useAppServiceStore()
-
-  if (taskId) {
-    return (
-      <AppInstallerDialog
-        taskId={taskId}
-        onBackground={() => onNavigate({ page: 'home' })}
-        onChangeSource={() => { store.clearActiveTask(); onNavigate({ page: 'install' }) }}
-        onClose={() => { store.clearActiveTask(); onNavigate({ page: 'home' }) }}
-        onViewApp={(serviceId) => { store.clearActiveTask(); onNavigate({ page: 'detail', serviceId }) }}
-      />
-    )
-  }
-
+export function InstallWizard({ onNavigate, onOpenInstaller }: InstallWizardProps) {
   return (
     <SourceEntry
       onBack={() => onNavigate({ page: 'home' })}
-      onResolved={(resolvedTaskId) => onNavigate({ page: 'install', taskId: resolvedTaskId })}
+      onResolved={(resolvedTaskId) => void onOpenInstaller(resolvedTaskId)}
     />
   )
 }

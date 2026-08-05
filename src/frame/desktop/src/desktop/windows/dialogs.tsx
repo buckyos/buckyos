@@ -15,12 +15,20 @@ export type WindowDialogSurface = 'desktop' | 'mobile'
 export type WindowDialogPresentation = 'auto' | 'modal' | 'sheet' | 'fullscreen'
 export type WindowDialogSize = 'sm' | 'md' | 'lg' | 'fullscreen'
 
+export interface WindowDialogInsets {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
+
 export interface WindowDialogControls<TResult = unknown> {
   close: (result?: TResult) => void
   dismiss: () => void
 }
 
 export interface WindowDialogOptions<TResult = unknown> {
+  ariaLabel?: string
   title?: string
   description?: string
   presentation?: WindowDialogPresentation
@@ -125,10 +133,12 @@ function settleDialog(
 
 function WindowDialogOverlay({
   dialog,
+  insets,
   surface,
   onClose,
 }: {
   dialog: ActiveWindowDialog
+  insets: WindowDialogInsets
   onClose: (result?: unknown) => void
   surface: WindowDialogSurface
 }) {
@@ -151,7 +161,16 @@ function WindowDialogOverlay({
   const isFullscreen = presentation === 'fullscreen' || size === 'fullscreen'
 
   return (
-    <div className="absolute inset-0 z-[90]" data-testid="window-dialog-layer">
+    <div
+      className="absolute inset-0 z-[90]"
+      data-testid="window-dialog-layer"
+      style={{
+        top: insets.top,
+        right: insets.right,
+        bottom: insets.bottom,
+        left: insets.left,
+      }}
+    >
       <div
         aria-hidden="true"
         className="absolute inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_24%,transparent)] backdrop-blur-[2px]"
@@ -172,7 +191,7 @@ function WindowDialogOverlay({
       >
         <section
           aria-modal="true"
-          aria-label={dialog.options.title}
+          aria-label={dialog.options.ariaLabel ?? dialog.options.title}
           role="dialog"
           data-testid="window-dialog"
           className={clsx(
@@ -228,10 +247,12 @@ function WindowDialogOverlay({
 
 export function WindowDialogProvider({
   children,
+  insets = { top: 0, right: 0, bottom: 0, left: 0 },
   permissions,
   surface,
 }: {
   children: ReactNode
+  insets?: WindowDialogInsets
   permissions: WindowDialogPermissions
   surface: WindowDialogSurface
 }) {
@@ -302,6 +323,7 @@ export function WindowDialogProvider({
         {activeDialog ? (
           <WindowDialogOverlay
             dialog={activeDialog}
+            insets={insets}
             onClose={(result) => api.close(activeDialog.id, result)}
             surface={surface}
           />

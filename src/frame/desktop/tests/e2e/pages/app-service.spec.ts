@@ -83,6 +83,7 @@ test('App Service normalizes a URL and completes the shared Installer task flow'
   await expect(next).toBeEnabled()
   await next.click()
 
+  await expect(page.getByTestId('window-dialog')).toBeVisible()
   const installer = page.getByTestId('app-installer-dialog')
   await expect(installer).toContainText('System App Installer')
   await expect(installer).toContainText('Nextcloud')
@@ -210,11 +211,22 @@ test.describe('mobile App Service', () => {
     await page.goto('/?scenario=normal')
     await openAppService(page)
     await page.getByRole('button', { name: 'Add app' }).click()
-    await expect(page.getByLabel('Installation source')).toBeVisible()
+    const source = page.getByLabel('Installation source')
+    await expect(source).toBeVisible()
     await expect(page.getByTestId('app-service-source-next')).toBeDisabled()
 
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
-    expect(overflow).toBeFalsy()
+    const sourceOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
+    expect(sourceOverflow).toBeFalsy()
+
+    await source.fill('https://apps.buckyos.ai/nextcloud/app-meta.jwt')
+    await expect(page.getByTestId('app-service-source-result')).toBeVisible()
+    await page.getByTestId('app-service-source-next').click()
+
+    const dialog = page.getByTestId('window-dialog')
+    await expect(dialog).toBeVisible()
+    const dialogBox = await dialog.boundingBox()
+    expect(dialogBox?.y).toBeGreaterThanOrEqual(40)
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBeTruthy()
     expect(consoleErrors).toEqual([])
   })
 })
