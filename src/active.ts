@@ -12,14 +12,13 @@ import {
   buildUserEnv,
   copyIdentityOutputs,
   getBuckyosRoot,
-  type LocalDeviceIdentityFiles,
   type ProvisionKeyPair,
 } from "./make_config.ts";
 
 const DEFAULT_RTCP_PORT = 2980;
 const DOCUMENT_VALIDITY_SECONDS = 3600 * 24 * 365 * 5;
 const DEVICE_NAME = "ood1";
-const ZONE_TXT_RECORD_FILE_NAME = "zone_txt_record.json";
+const ZONE_DNS_RECORD_FILE_NAME = "zone_dns_records.json";
 
 interface JsonObject {
   [key: string]: unknown;
@@ -39,7 +38,7 @@ export interface OfflineActivationOptions {
 }
 
 export interface DnsRecord {
-  type: "A" | "AAAA" | "TXT";
+  type: "A" | "AAAA";
   name: string;
   value: string;
 }
@@ -178,7 +177,6 @@ function refreshGeneratedDocumentTimes(
     const filePath of [
       path.join(userDir, "user_config.json"),
       path.join(userDir, "zone_config.json"),
-      path.join(userDir, `${domain}.zone.json`),
     ]
   ) {
     const document = readJsonObject(filePath);
@@ -186,6 +184,11 @@ function refreshGeneratedDocumentTimes(
     document.exp = exp;
     writeJson(filePath, document);
   }
+  const bootDocumentPath = path.join(userDir, `${domain}.zone.json`);
+  const bootDocument = readJsonObject(bootDocumentPath);
+  delete bootDocument.iat;
+  bootDocument.exp = exp;
+  writeJson(bootDocumentPath, bootDocument);
   const visit = (dirPath: string): void => {
     for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
       const entryPath = path.join(dirPath, entry.name);
@@ -279,7 +282,6 @@ function saveOwnerKeyBackup(filePath: string, privateKeyPem: string): void {
 function buildDnsRecords(
   domain: string,
   publicIp: string | undefined,
-  identity: LocalDeviceIdentityFiles,
 ): DnsRecord[] {
   const records: DnsRecord[] = [];
   if (publicIp) {
@@ -289,26 +291,10 @@ function buildDnsRecords(
       value: publicIp,
     });
   }
-  const verificationMethods = identity.ownerDocument.verificationMethod;
-  const mainKey = Array.isArray(verificationMethods)
-    ? verificationMethods.find((item) =>
-      item && typeof item === "object" &&
-      (item as JsonObject).id === "#main_key"
-    ) as JsonObject | undefined
-    : undefined;
-  const publicKeyJwk = mainKey?.publicKeyJwk as JsonObject | undefined;
-  if (typeof publicKeyJwk?.x !== "string" || publicKeyJwk.x.length === 0) {
-    throw new Error("OwnerDocument has no #main_key Ed25519 x value");
-  }
-  records.push(
-    { type: "TXT", name: domain, value: `BOOT=${identity.bootDocumentJwt};` },
-    { type: "TXT", name: domain, value: `PKX=${publicKeyJwk.x};` },
-    { type: "TXT", name: domain, value: `DEV=${identity.deviceMiniDocJwt};` },
-  );
   return records;
 }
 
-function requireUnactivatedRoot(rootDir: string): void {
+function requireUnactivatedRoot(rootDir: string, domain: string): void {
   if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) {
     throw new Error(`BUCKYOS_ROOT does not exist: ${rootDir}`);
   }
@@ -323,6 +309,7 @@ function requireUnactivatedRoot(rootDir: string): void {
       "node_identity.json",
       "start_config.json",
       "zone_document.jwt",
+      `${domain}.zone.json`,
     ]
   ) {
     const markerPath = path.join(rootDir, "etc", marker);
@@ -354,7 +341,7 @@ export async function activateOffline(
   if (publicIp && net.isIP(publicIp) === 0) {
     throw new Error(`invalid public IP address: ${publicIp}`);
   }
-  requireUnactivatedRoot(rootDir);
+  requireUnactivatedRoot(rootDir, domain);
 
   const ownerDid = `did:web:${domain}`;
   const ownerKeyPair = options.ownerKeyPair ?? generateEd25519KeyPair();
@@ -415,8 +402,13 @@ export async function activateOffline(
     startConfig.jarvis_msg_tunnel_config = {};
     writeJson(startConfigPath, startConfig);
 
-    const dnsRecords = buildDnsRecords(domain, publicIp, identity);
-    writeJson(path.join(stagedRoot, "etc", ZONE_TXT_RECORD_FILE_NAME), {
+    writeJson(
+      path.join(stagedRoot, "etc", `${domain}.zone.json`),
+      identity.bootDocument,
+    );
+
+    const dnsRecords = buildDnsRecords(domain, publicIp);
+    writeJson(path.join(stagedRoot, "etc", ZONE_DNS_RECORD_FILE_NAME), {
       hostname: domain,
       records: dnsRecords,
     });
@@ -621,7 +613,7 @@ async function main(): Promise<void> {
     console.log(`Owner/Zone DID: ${result.zoneDid}`);
     console.log(`Device DID:     ${result.deviceDid}`);
     console.log(`Owner key:      ${result.ownerKeyBackupPath}`);
-    console.log("\nConfigure these DNS records before public access:");
+    console.log("\nConfigure this DNS address record before public access:");
     for (const record of result.dnsRecords) {
       console.log(`  ${record.type} ${record.name} ${record.value}`);
     }
@@ -629,9 +621,14 @@ async function main(): Promise<void> {
       console.log(`  A/AAAA ${domain} <this node's fixed public IP>`);
     }
     console.log(
-      `\nThe records are also saved in ${
-        path.join(result.rootDir, "etc", ZONE_TXT_RECORD_FILE_NAME)
+      `\nThe address record is also saved in ${
+        path.join(result.rootDir, "etc", ZONE_DNS_RECORD_FILE_NAME)
       }.`,
+    );
+    console.log(
+      `Local boot uses ${
+        path.join(result.rootDir, "etc", `${domain}.zone.json`)
+      }; no DNS BOOT/PKX/DEV records are required.`,
     );
     console.log(
       "Restart BuckyOS to leave activation mode and boot the new Zone.",

@@ -126,17 +126,40 @@ Deno.test("offline activation writes a self-contained did:web identity", async (
     ) {
       assert(verifyJwt(jwt, ownerPublicJwk), "owner JWT signature is invalid");
     }
-    assert(boot.owner === result.ownerDid, "boot owner mismatch");
     assert(boot.id === result.zoneDid, "boot zone mismatch");
+    assert(!("owner" in boot), "boot document must not contain owner");
+    assert(!("owner_key" in boot), "boot document must not contain owner key");
+    assert(!("iat" in boot), "boot document must not contain iat");
     assert(!("sn" in boot), "boot document must not contain SN");
+    assert(
+      JSON.stringify(Object.keys(boot).sort()) ===
+        JSON.stringify(["exp", "id", "oods"]),
+      "boot document contains unexpected fields",
+    );
+    const bootOverridePath = path.join(
+      rootDir,
+      "etc",
+      "home.example.com.zone.json",
+    );
+    assert(fs.existsSync(bootOverridePath), "local boot override missing");
+    const bootOverride = readJson(bootOverridePath);
+    assert(
+      JSON.stringify(bootOverride) === JSON.stringify(boot),
+      "local boot override must contain the minimal boot document JSON",
+    );
     assert(device.owner === result.ownerDid, "device owner mismatch");
     assert(device.zone_did === result.zoneDid, "device zone mismatch");
     assert(device.net_id === "wan", "device must use wan topology");
     assert(!("ddns_sn_url" in device), "device must not contain SN DDNS URL");
     assert(zone.owner === result.ownerDid, "zone owner mismatch");
     assert(zone.id === result.zoneDid, "zone DID mismatch");
+    assert(
+      zone.boot_jwt === startConfig.boot_config_jwt,
+      "zone document must embed the same minimal boot JWT",
+    );
     assert(!("sn" in zone), "zone document must not contain SN");
-    for (const document of [boot, device, mini, zone]) {
+    assert(boot.exp > after, "boot document expiry is invalid");
+    for (const document of [device, mini, zone]) {
       assert(
         document.iat >= before && document.iat <= after,
         "document iat is stale",
@@ -144,14 +167,15 @@ Deno.test("offline activation writes a self-contained did:web identity", async (
       assert(document.exp > document.iat, "document expiry is invalid");
     }
 
-    const dns = readJson(path.join(rootDir, "etc", "zone_txt_record.json"));
+    const dns = readJson(path.join(rootDir, "etc", "zone_dns_records.json"));
     assert(dns.hostname === "home.example.com", "DNS hostname mismatch");
-    assert(dns.records.length === 4, "expected A plus three TXT records");
+    assert(dns.records.length === 1, "expected only one address record");
+    assert(dns.records[0].type === "A", "expected an A record");
     assert(
       dns.records.every((record: Record<string, unknown>) =>
-        !JSON.stringify(record).includes("buckyos.ai")
+        record.type !== "TXT"
       ),
-      "DNS records must not depend on BNS/SN hosts",
+      "DNS records must not contain BOOT/PKX/DEV TXT records",
     );
     for (const filePath of listFiles(rootDir)) {
       const content = fs.readFileSync(filePath, "utf8");

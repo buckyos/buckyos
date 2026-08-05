@@ -347,6 +347,7 @@ const MAX_INLINE_DOCUMENT_BYTES = 4096;
 
 export interface LocalDeviceIdentityFiles {
   ownerDocument: Record<string, unknown>;
+  bootDocument: Record<string, unknown>;
   bootDocumentJwt: string;
   deviceDocJwt: string;
   deviceMiniDocJwt: string;
@@ -527,8 +528,9 @@ function writeLocalDeviceIdentityFiles(
     );
   }
   bootDocument.id = zoneDid;
-  bootDocument.owner = ownerDid;
-  bootDocument.owner_key = ownerPublicKey;
+  delete bootDocument.owner;
+  delete bootDocument.owner_key;
+  delete bootDocument.iat;
   if (usesSnRelay) {
     bootDocument.sn = `sn.${params.sn_base_host.trim()}`;
   } else {
@@ -641,6 +643,7 @@ function writeLocalDeviceIdentityFiles(
 
   return {
     ownerDocument,
+    bootDocument,
     bootDocumentJwt,
     deviceDocJwt,
     deviceMiniDocJwt,
