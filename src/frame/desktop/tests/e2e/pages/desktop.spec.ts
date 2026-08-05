@@ -244,15 +244,19 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
 
   await page.getByRole('button', { name: 'Providers', exact: true }).click()
   await expect(page.getByTestId('aicenter-provider-global-settings')).toBeVisible()
-  await expect(page.getByText('Cloud metadata updates')).toBeVisible()
+  await expect(page.getByText('Cloud metadata updates')).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'Enable cloud updates' }).click()
+  await page.getByRole('button', { name: 'Advanced settings' }).click()
+  await expect(page.getByText('Provider metadata settings')).toBeVisible()
   const sourceInput = page.getByLabel('Metadata source URL')
   await expect(sourceInput).toBeVisible()
   await sourceInput.fill('https://metadata.example/aicc/driver-metadata/index.json')
   await page.getByRole('dialog').getByRole('button', { name: 'Enable cloud updates' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Advanced settings' }).click()
   await expect(page.getByText('Healthy', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Configure' })).toBeVisible()
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Save' })).toBeVisible()
 
   expect(consoleErrors).toEqual([])
 })

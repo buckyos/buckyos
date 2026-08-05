@@ -82,52 +82,50 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
             setShowMobileDetail(true)
           }}
           onAdd={() => navigate('providers/add')}
+          footer={(
+            <div data-testid="aicenter-provider-global-settings">
+              <CloudUpdateCard />
+            </div>
+          )}
         />
-        <div className="mt-6" data-testid="aicenter-provider-global-settings">
-          <CloudUpdateCard />
-        </div>
       </div>
     )
   }
 
   // Desktop: split view
   return (
-    <div className="-mx-8 -my-6 flex h-full min-h-0 flex-col">
-      <div className={`${isCompactDesktop ? 'flex flex-col' : 'flex'} min-h-0 flex-1 gap-6`}>
-        <div
-          className={isCompactDesktop ? 'max-h-72 shrink-0 overflow-y-auto px-4 py-4' : 'w-80 shrink-0 overflow-y-auto px-4 py-4'}
-          style={isCompactDesktop ? { borderBottom: '1px solid var(--cp-border)' } : { borderRight: '1px solid var(--cp-border)' }}
-        >
-          <ProviderList
-            providers={providers}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onAdd={() => navigate('providers/add')}
-          />
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-          {selectedProvider ? (
-            <ProviderDetailPanel
-              provider={selectedProvider}
-              routingWeight={routingView.provider_weights[selectedProvider.config.provider_instance_name] ?? 1}
-              onDeleted={() => {
-                const remaining = providers.filter((p) => p.config.id !== selectedId)
-                setSelectedId(remaining.length > 0 ? remaining[0].config.id : null)
-              }}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--cp-muted)' }}>
-              {t('aiCenter.providers.detail', 'Provider Detail')}
+    <div className={`${isCompactDesktop ? 'flex flex-col' : 'flex'} h-full gap-6 -mx-8 -my-6`}>
+      <div
+        className={isCompactDesktop ? 'max-h-72 shrink-0 overflow-y-auto px-4 py-4' : 'w-80 shrink-0 overflow-y-auto px-4 py-4'}
+        style={isCompactDesktop ? { borderBottom: '1px solid var(--cp-border)' } : { borderRight: '1px solid var(--cp-border)' }}
+      >
+        <ProviderList
+          providers={providers}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onAdd={() => navigate('providers/add')}
+          footer={(
+            <div data-testid="aicenter-provider-global-settings">
+              <CloudUpdateCard />
             </div>
           )}
-        </div>
+        />
       </div>
-      <div
-        className="shrink-0 px-6 py-3"
-        data-testid="aicenter-provider-global-settings"
-        style={{ borderTop: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}
-      >
-        <CloudUpdateCard />
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        {selectedProvider ? (
+          <ProviderDetailPanel
+            provider={selectedProvider}
+            routingWeight={routingView.provider_weights[selectedProvider.config.provider_instance_name] ?? 1}
+            onDeleted={() => {
+              const remaining = providers.filter((p) => p.config.id !== selectedId)
+              setSelectedId(remaining.length > 0 ? remaining[0].config.id : null)
+            }}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.providers.detail', 'Provider Detail')}
+          </div>
+        )}
       </div>
     </div>
   )
