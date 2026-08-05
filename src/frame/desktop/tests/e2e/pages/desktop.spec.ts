@@ -240,6 +240,9 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
   await expect(page.getByTestId('window-ai-center')).toBeVisible()
   await expect(page.getByText('AI Features Not Enabled')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Get Started' })).toBeVisible()
+  await expect(page.getByText('Cloud metadata updates')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Providers', exact: true }).click()
   await expect(page.getByText('Cloud metadata updates')).toBeVisible()
 
   await page.getByRole('button', { name: 'Enable cloud updates' }).click()

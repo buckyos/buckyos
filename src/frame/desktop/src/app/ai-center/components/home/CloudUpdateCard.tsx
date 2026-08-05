@@ -140,16 +140,16 @@ export function CloudUpdateCard() {
   return (
     <>
       <section
-        className="mb-5 flex flex-col gap-4 rounded-xl p-4 sm:flex-row sm:items-center sm:justify-between"
-        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+        className="flex flex-col gap-3 rounded-lg px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
+        style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)' }}
       >
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" style={{ background: 'color-mix(in oklch, var(--cp-accent), transparent 88%)', color: 'var(--cp-accent)' }}>
-            <CloudDownload size={20} />
+        <div className="flex min-w-0 items-start gap-2.5">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center" style={{ color: 'var(--cp-muted)' }}>
+            <CloudDownload size={17} />
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+              <h2 className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
                 {t('aiCenter.cloudUpdate.title', 'Cloud metadata updates')}
               </h2>
               <span
@@ -164,7 +164,7 @@ export function CloudUpdateCard() {
                   : statusLabel}
               </span>
             </div>
-            <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+            <p className="mt-0.5 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
               {t('aiCenter.cloudUpdate.desc', 'Keep provider model capabilities, pricing, and routing metadata current from a trusted publisher.')}
             </p>
             {(error || refreshError) && !dialogOpen && <p className="mt-1 text-xs" style={{ color: 'var(--cp-danger)' }}>{error || refreshError}</p>}
@@ -182,11 +182,11 @@ export function CloudUpdateCard() {
         </div>
         <div className="flex shrink-0 gap-2">
           {settings.enabled && (
-            <button type="button" disabled={saving} onClick={() => void disable()} className="min-h-10 rounded-lg px-3 text-sm disabled:opacity-60" style={{ color: 'var(--cp-muted)', border: '1px solid var(--cp-border)' }}>
+            <button type="button" disabled={saving} onClick={() => void disable()} className="min-h-9 rounded-md px-2.5 text-xs disabled:opacity-60" style={{ color: 'var(--cp-muted)' }}>
               {t('aiCenter.cloudUpdate.disable', 'Disable')}
             </button>
           )}
-          <button type="button" disabled={loading || saving} onClick={openDialog} className="min-h-10 rounded-lg px-4 text-sm font-medium disabled:opacity-60" style={{ background: 'var(--cp-accent)', color: '#fff' }}>
+          <button type="button" disabled={loading || saving} onClick={openDialog} className="min-h-9 rounded-md px-3 text-xs font-medium disabled:opacity-60" style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)', background: 'var(--cp-surface)' }}>
             {settings.enabled
               ? t('aiCenter.cloudUpdate.configure', 'Configure')
               : t('aiCenter.cloudUpdate.enable', 'Enable cloud updates')}

@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/provider'
 import { useProviders, useGlobalRoutingView } from './hooks/use-aicc-store'
 import { ProviderList } from './components/providers/ProviderList'
 import { ProviderDetailPanel } from './components/providers/ProviderDetailPanel'
+import { CloudUpdateCard } from './components/home/CloudUpdateCard'
 import { EmptyState } from './components/shared/EmptyState'
 import { Plug } from 'lucide-react'
 import type { AICenterPage } from './components/layout/Sidebar'
@@ -37,14 +38,17 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
 
   if (providers.length === 0) {
     return (
-      <EmptyState
-        icon={<Plug size={48} />}
-        title={t('aiCenter.providers.noProviders', 'No providers configured')}
-        action={{
-          label: t('aiCenter.providers.addProvider', 'Add Provider'),
-          onClick: () => navigate('providers/add'),
-        }}
-      />
+      <div className="mx-auto max-w-3xl">
+        <EmptyState
+          icon={<Plug size={48} />}
+          title={t('aiCenter.providers.noProviders', 'No providers configured')}
+          action={{
+            label: t('aiCenter.providers.addProvider', 'Add Provider'),
+            onClick: () => navigate('providers/add'),
+          }}
+        />
+        <CloudUpdateCard />
+      </div>
     )
   }
 
@@ -77,6 +81,9 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
           }}
           onAdd={() => navigate('providers/add')}
         />
+        <div className="mt-6">
+          <CloudUpdateCard />
+        </div>
       </div>
     )
   }
@@ -97,18 +104,26 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
       </div>
       <div className="flex-1 py-6 px-6 overflow-y-auto">
         {selectedProvider ? (
-          <ProviderDetailPanel
-            provider={selectedProvider}
-            routingWeight={routingView.provider_weights[selectedProvider.config.provider_instance_name] ?? 1}
-            onDeleted={() => {
-              const remaining = providers.filter((p) => p.config.id !== selectedId)
-              setSelectedId(remaining.length > 0 ? remaining[0].config.id : null)
-            }}
-          />
+          <>
+            <ProviderDetailPanel
+              provider={selectedProvider}
+              routingWeight={routingView.provider_weights[selectedProvider.config.provider_instance_name] ?? 1}
+              onDeleted={() => {
+                const remaining = providers.filter((p) => p.config.id !== selectedId)
+                setSelectedId(remaining.length > 0 ? remaining[0].config.id : null)
+              }}
+            />
+            <div className="mt-8">
+              <CloudUpdateCard />
+            </div>
+          </>
         ) : (
-          <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--cp-muted)' }}>
-            {t('aiCenter.providers.detail', 'Provider Detail')}
-          </div>
+          <>
+            <div className="flex min-h-48 items-center justify-center text-sm" style={{ color: 'var(--cp-muted)' }}>
+              {t('aiCenter.providers.detail', 'Provider Detail')}
+            </div>
+            <CloudUpdateCard />
+          </>
         )}
       </div>
     </div>
