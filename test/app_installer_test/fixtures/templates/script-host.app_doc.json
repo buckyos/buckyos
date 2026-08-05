@@ -41,6 +41,6 @@
     }
   },
   "deps": {
-    "e2e.__APP_ID__-script": "__VERSION__"
+    "__SCRIPT_PKG_NAME__": "__VERSION__"
   }
 }

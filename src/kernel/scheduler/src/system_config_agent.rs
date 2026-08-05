@@ -2887,7 +2887,7 @@ mod tests {
                 }
             ])
         );
-        assert_eq!(gateway_config["stacks"]["zone_tls"]["bind"], "0.0.0.0:443");
+        assert_eq!(gateway_config["stacks"]["zone_tls"]["bind"], "[::]:443");
         assert_eq!(
             gateway_config["stacks"]["zone_tls"]["hosts"],
             json!(["*.test.buckyos.io", "test.buckyos.io"])

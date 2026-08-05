@@ -14,6 +14,9 @@ use crate::app_install_resolver::{
     bind_candidate_document, normalize_identifier, AppDidResolver, NameClientAppResolver,
     NormalizedIdentifier,
 };
+use crate::app_package_namespace::{
+    validate_app_package_namespace, validate_package_meta_namespace,
+};
 use crate::pikg::{PikgInspection, PikgReader};
 use async_trait::async_trait;
 use buckyos_api::{
@@ -713,6 +716,18 @@ impl InstallStageDriver for ProductionInstallDriver {
 
         let pikg_reader = self.open_candidate_pikg(data).await?;
 
+        let app_doc: buckyos_api::AppDoc =
+            serde_json::from_value(doc_value.clone()).map_err(|err| {
+                InstallError::new(
+                    InstallStage::Verify,
+                    InstallErrorCode::VerificationFailed,
+                    false,
+                    format!("persisted app document invalid: {err}"),
+                )
+            })?;
+        let namespace =
+            validate_app_package_namespace(&app_doc, &plan.did_resolution, InstallStage::Verify)?;
+
         // 2. 逐 selected Package Meta 重新读取并重算 ObjId（不信 Inspect 缓存）。
         for package in &plan.selected_packages {
             let Some(meta_id) = package.package_meta_id.as_ref() else {
@@ -728,7 +743,26 @@ impl InstallStageDriver for ProductionInstallDriver {
                 }
             }
             match meta_value {
-                Some(_) => checks.push(VerificationCheck::pass(&subject, "package_meta_obj_id")),
+                Some(value) => {
+                    let meta: package_lib::PackageMeta =
+                        serde_json::from_value(value).map_err(|err| {
+                            InstallError::new(
+                                InstallStage::Verify,
+                                InstallErrorCode::InvalidPackage,
+                                false,
+                                format!("package meta `{subject}` schema invalid: {err}"),
+                            )
+                        })?;
+                    validate_package_meta_namespace(
+                        &namespace,
+                        &package.sub_pkg_name,
+                        &package.pkg_id,
+                        meta.name.as_str(),
+                        InstallStage::Verify,
+                    )?;
+                    checks.push(VerificationCheck::pass(&subject, "package_meta_obj_id"));
+                    checks.push(VerificationCheck::pass(&subject, "package_namespace"));
+                }
                 None => checks.push(VerificationCheck::fail(
                     &subject,
                     "package_meta_obj_id",
@@ -779,15 +813,6 @@ impl InstallStageDriver for ProductionInstallDriver {
         }
 
         // 4. 目标约束复核。
-        let app_doc: buckyos_api::AppDoc =
-            serde_json::from_value(doc_value.clone()).map_err(|err| {
-                InstallError::new(
-                    InstallStage::Verify,
-                    InstallErrorCode::VerificationFailed,
-                    false,
-                    format!("persisted app document invalid: {err}"),
-                )
-            })?;
         for package in &plan.selected_packages {
             let desc = app_doc.pkg_list.get(&package.sub_pkg_name);
             let ok = desc

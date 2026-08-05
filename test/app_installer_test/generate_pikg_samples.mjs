@@ -43,6 +43,26 @@ const DOCKER_BASE_IMAGE =
   process.env.BUCKYOS_TEST_DOCKER_BASE_IMAGE ?? 'busybox:1.36.1'
 const VERSION = '0.1.0'
 
+function appPackageNamespace(appId) {
+  const ownerIdPart = OWNER_DID.split(':').pop()
+  return `${ownerIdPart}_${appId}`
+}
+
+function packageEnvQualifier() {
+  const osName =
+    process.platform === 'darwin'
+      ? 'apple'
+      : process.platform === 'win32'
+        ? 'windows'
+        : process.platform
+  const archName = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'aarch64' : process.arch
+  return `nightly-${osName}-${archName}`
+}
+
+function appPackageName(appId, role, qualifier = packageEnvQualifier()) {
+  return `${qualifier}.${appPackageNamespace(appId)}-${role}`
+}
+
 const execQuiet = async (command, args, options = {}) => {
   try {
     return await execFileAsync(command, args, {
@@ -190,25 +210,29 @@ function dockerArchKey() {
 
 async function prepareSamples(tempRoot) {
   const staticAppId = 'pikg-static-web'
+  const staticPackageName = appPackageName(staticAppId, 'web')
   const staticDoc = addStableMeta(
     await loadTemplate('static-web.app_doc.json', {
       APP_ID: staticAppId,
       APP_DID: deriveAppDid(staticAppId),
       VERSION,
       OWNER_DID,
-      WEB_PKG_ID: `e2e.${staticAppId}-web#${VERSION}`,
+      WEB_PKG_ID: `${staticPackageName}#${VERSION}`,
+      WEB_PKG_NAME: staticPackageName,
     }),
   )
   staticDoc.show_name = 'PIKG Static Web Fixture'
 
   const scriptAppId = 'pikg-script-host'
+  const scriptPackageName = appPackageName(scriptAppId, 'script')
   const scriptDoc = addStableMeta(
     await loadTemplate('script-host.app_doc.json', {
       APP_ID: scriptAppId,
       APP_DID: deriveAppDid(scriptAppId),
       VERSION,
       OWNER_DID,
-      SCRIPT_PKG_ID: `e2e.${scriptAppId}-script#${VERSION}`,
+      SCRIPT_PKG_ID: `${scriptPackageName}#${VERSION}`,
+      SCRIPT_PKG_NAME: scriptPackageName,
     }),
   )
 
@@ -241,13 +265,19 @@ async function prepareSamples(tempRoot) {
     }),
   )
   dockerDoc.show_name = 'PIKG Docker Fixture'
+  const dockerArchName = process.arch === 'x64' ? 'amd64' : 'aarch64'
+  const dockerPackageName = appPackageName(
+    dockerAppId,
+    'image',
+    `nightly-linux-${dockerArchName}`,
+  )
   dockerDoc.pkg_list = {
     [archKey]: {
-      pkg_id: `e2e.${dockerAppId}-image#${VERSION}`,
+      pkg_id: `${dockerPackageName}#${VERSION}`,
       docker_image_name: imageName,
     },
   }
-  dockerDoc.deps = { [`e2e.${dockerAppId}-image`]: VERSION }
+  dockerDoc.deps = { [dockerPackageName]: VERSION }
 
   return {
     imageName,

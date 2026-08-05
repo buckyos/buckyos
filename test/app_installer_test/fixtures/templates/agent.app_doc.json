@@ -41,6 +41,6 @@
     }
   },
   "deps": {
-    "e2e.__APP_ID__-agent": "__VERSION__"
+    "__AGENT_PKG_NAME__": "__VERSION__"
   }
 }

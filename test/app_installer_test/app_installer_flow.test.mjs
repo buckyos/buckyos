@@ -103,6 +103,26 @@ function deriveAppDid(appId) {
   return `did:bns:${appId}.${ownerIdPart}`
 }
 
+function appPackageNamespace(appId) {
+  const ownerIdPart = OWNER_DID.split(':').pop()
+  return `${ownerIdPart}_${appId}`
+}
+
+function packageEnvQualifier() {
+  const osName =
+    process.platform === 'darwin'
+      ? 'apple'
+      : process.platform === 'win32'
+        ? 'windows'
+        : process.platform
+  const archName = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'aarch64' : process.arch
+  return `nightly-${osName}-${archName}`
+}
+
+function appPackageName(appId, role, qualifier = packageEnvQualifier()) {
+  return `${qualifier}.${appPackageNamespace(appId)}-${role}`
+}
+
 function replacePlaceholders(value, tokens) {
   if (typeof value === 'string') {
     return Object.entries(tokens).reduce(
@@ -612,12 +632,14 @@ async function stageStaticWebFixture() {
   const localDir = await ensureTempDir('cp-web')
   await cp(path.join(FIXTURES_ROOT, 'static-web'), localDir, { recursive: true })
 
+  const webPackageName = appPackageName(appId, 'web')
   const appDoc = await loadTemplate('static-web.app_doc.json', {
     APP_ID: appId,
     APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
-    WEB_PKG_ID: `${appId}-web#${version}`,
+    WEB_PKG_ID: `${webPackageName}#${version}`,
+    WEB_PKG_NAME: webPackageName,
   })
 
   Object.assign(appDoc, buildMetaFields())
@@ -629,7 +651,7 @@ async function stageStaticWebFixture() {
     appDoc,
     specPath: (userId) => `users/${userId}/apps/${appId}/spec`,
     specId: (userId) => `${appId}@${userId}`,
-    binPath: () => path.join('/opt/buckyos/bin', `${appId}-web`),
+    binPath: () => path.join('/opt/buckyos/bin', `${appPackageNamespace(appId)}-web`),
   }
 }
 
@@ -650,12 +672,14 @@ async function stageAgentFixture() {
     `${JSON.stringify(agentDoc, null, 2)}\n`,
   )
 
+  const agentPackageName = appPackageName(appId, 'agent')
   const appDoc = await loadTemplate('agent.app_doc.json', {
     APP_ID: appId,
     APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
-    AGENT_PKG_ID: `e2e.${appId}-agent#${version}`,
+    AGENT_PKG_ID: `${agentPackageName}#${version}`,
+    AGENT_PKG_NAME: agentPackageName,
   })
 
   Object.assign(appDoc, buildMetaFields())
@@ -704,14 +728,16 @@ async function stageDockerFixture() {
   })
 
   Object.assign(appDoc, buildMetaFields())
+  const dockerArchName = process.arch === 'x64' ? 'amd64' : 'aarch64'
+  const dockerPackageName = appPackageName(appId, 'img', `nightly-linux-${dockerArchName}`)
   appDoc.pkg_list = {
     [dockerArchKey]: {
-      pkg_id: `e2e.${appId}-img#${version}`,
+      pkg_id: `${dockerPackageName}#${version}`,
       docker_image_name: imageName,
     },
   }
   appDoc.deps = {
-    [`e2e.${appId}-img`]: version,
+    [dockerPackageName]: version,
   }
 
   return {

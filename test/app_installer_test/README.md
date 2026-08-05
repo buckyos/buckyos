@@ -10,9 +10,10 @@
 > - 登录凭证：优先 zone owner key；否则从
 >   `/opt/buckyos/etc/node_identity.json` 解析当前设备，读取
 >   `/opt/buckyos/security/<device-host>/authentication.private.pem`。
-> - fixture 的 pkg 名必须带 `.`（如 `e2e.{app}-agent`）或自带 env 前缀：
->   PackageEnv 对无点名字会加 `nightly-{os}-{arch}.` 前缀查找，而 pkg meta 是
->   内容寻址对象不可改名（node_daemon 旧的静默改名路径已改为显式报错）。
+> - fixture 的 pkg 名使用目标 PackageEnv 的标准 qualifier，并在 qualifier 后使用
+>   App DID 派生的 `$owner_$app` namespace，例如
+>   `nightly-linux-amd64.root_demo-web-agent`。自定义 `e2e.` qualifier 和未绑定 App DID
+>   的名字会在 Inspect 阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
 
 > **v0.5 更新（2026-07-16）**：安装链路已切换到 App 安装协议 v0.5：
 > `app.publish` 产出 `.pikg`（返回 `pikg_handle`/`app_did`/`app_doc`），测试
@@ -115,7 +116,7 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - 当前自签 token 的 `sub` 固定为测试用户，签名 key 来自 zone owner 或当前 device 的 `authentication.private.pem`。
 - `app.publish` 依赖 `repo-service`；测试启动时会检查 `services/repo-service/info`，缺失时直接报错。
 - 测试里生成的 app / sub-pkg version 会保持在 `0.1.x` 且 `x <= 65535`，因为当前 package env 的版本索引不接受超过 `65535` 的 patch 号。
-- static web case 按 `/opt/buckyos/bin/<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
+- static web case 按 `/opt/buckyos/bin/<owner>_<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
 - agent case 当前默认跳过，因为安装完成判定仍依赖 runtime 设计调整。
 - docker case 按容器是否已运行来判断安装成功；如果 install task 只是因为等待 ready 超时而失败，测试仍视为可接受。
 - docker case 会先在本地 `docker build`，再 `docker save` 成 `amd64_docker_image.tar` 或 `aarch64_docker_image.tar`，然后再 publish。

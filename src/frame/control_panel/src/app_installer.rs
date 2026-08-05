@@ -2049,8 +2049,8 @@ mod tests {
     }
 
     fn build_web_template() -> AppDoc {
-        AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &test_owner())
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &test_owner())
+            .web_pkg(SubPkgDesc::new("tester_demo-web-web#0.1.0"))
             .build()
             .expect("build web template")
     }
@@ -2058,12 +2058,12 @@ mod tests {
     fn build_agent_template() -> AppDoc {
         AppDoc::builder(
             AppType::Agent,
-            "demo_agent",
+            "demo-agent",
             "0.1.0",
             "tester",
             &test_owner(),
         )
-        .agent_pkg(SubPkgDesc::new("demo_agent-agent#0.1.0"))
+        .agent_pkg(SubPkgDesc::new("tester_demo-agent-agent#0.1.0"))
         .build()
         .expect("build agent template")
     }
@@ -2071,17 +2071,17 @@ mod tests {
     fn build_appservice_template() -> AppDoc {
         AppDoc::builder(
             AppType::AppService,
-            "demo_service",
+            "demo-service",
             "0.1.0",
             "tester",
             &test_owner(),
         )
         .amd64_docker_image(
-            SubPkgDesc::new("demo_service-img-amd64#0.1.0")
+            SubPkgDesc::new("tester_demo-service-img-amd64#0.1.0")
                 .docker_image_name("buckyos/demo_service:0.1.0-amd64"),
         )
         .aarch64_docker_image(
-            SubPkgDesc::new("demo_service-img-aarch64#0.1.0")
+            SubPkgDesc::new("tester_demo-service-img-aarch64#0.1.0")
                 .docker_image_name("buckyos/demo_service:0.1.0-aarch64"),
         )
         .build()
@@ -2091,12 +2091,12 @@ mod tests {
     fn build_script_appservice_template() -> AppDoc {
         AppDoc::builder(
             AppType::AppService,
-            "demo_script_service",
+            "demo-script-service",
             "0.1.0",
             "tester",
             &test_owner(),
         )
-        .script_pkg(SubPkgDesc::new("demo_script_service-script#0.1.0"))
+        .script_pkg(SubPkgDesc::new("tester_demo-script-service-script#0.1.0"))
         .build()
         .expect("build script appservice template")
     }
@@ -2113,7 +2113,7 @@ mod tests {
         let template = build_web_template();
         let web_desc = template.pkg_list.web.clone().expect("web pkg");
         let web_file = FileObject::new(
-            "demo_web-web.tar.gz".to_string(),
+            "tester_demo-web-web.tar.gz".to_string(),
             321,
             "chunk:demo-web-content".to_string(),
         );
@@ -2138,7 +2138,7 @@ mod tests {
             serde_json::to_string_pretty(&final_doc).expect("serialize final app doc")
         );
 
-        assert_eq!(sub_pkg_meta.name, "demo_web-web");
+        assert_eq!(sub_pkg_meta.name, "tester_demo-web-web");
         assert_eq!(sub_pkg_meta.version, "0.1.0");
         assert_eq!(sub_pkg_meta.size, 321);
         assert_eq!(sub_pkg_meta.content, "chunk:demo-web-content");
@@ -2231,7 +2231,7 @@ mod tests {
                 packaged_name,
             } => {
                 assert_eq!(path, &dir.join("amd64_docker_image.tar"));
-                assert_eq!(packaged_name.as_deref(), Some("demo_service.tar"));
+                assert_eq!(packaged_name.as_deref(), Some("demo-service.tar"));
             }
             other => panic!("unexpected source: {:?}", std::mem::discriminant(other)),
         }
@@ -2283,7 +2283,7 @@ mod tests {
         let installer = test_installer();
         let mut template = build_script_appservice_template();
         template.pkg_list.amd64_docker_image = Some(
-            SubPkgDesc::new("demo_script_service-img#0.1.0")
+            SubPkgDesc::new("tester_demo-script-service-img#0.1.0")
                 .docker_image_name("buckyos/demo_script_service:0.1.0-amd64"),
         );
         let dir = temp_test_dir("appservice-script-docker-rejected");
@@ -2302,13 +2302,13 @@ mod tests {
         let installer = test_installer();
         let template = AppDoc::builder(
             AppType::Agent,
-            "demo_agent_skills",
+            "demo-agent-skills",
             "0.1.0",
             "tester",
             &test_owner(),
         )
-        .agent_pkg(SubPkgDesc::new("demo_agent_skills-agent#0.1.0"))
-        .agent_skills_pkg(SubPkgDesc::new("demo_agent_skills-skills#0.1.0"))
+        .agent_pkg(SubPkgDesc::new("tester_demo-agent-skills-agent#0.1.0"))
+        .agent_skills_pkg(SubPkgDesc::new("tester_demo-agent-skills-skills#0.1.0"))
         .build()
         .expect("build agent template with skills");
         let dir = temp_test_dir("agent-skills-rejected");
@@ -2329,7 +2329,7 @@ mod tests {
         let template = build_agent_template();
         let agent_desc = template.pkg_list.agent.clone().expect("agent pkg");
         let agent_file = FileObject::new(
-            "demo_agent-agent.tar.gz".to_string(),
+            "tester_demo-agent-agent.tar.gz".to_string(),
             512,
             "chunk:demo-agent-content".to_string(),
         );
@@ -2353,7 +2353,7 @@ mod tests {
             serde_json::to_string_pretty(&final_doc).expect("serialize agent final doc")
         );
 
-        assert_eq!(sub_pkg_meta.name, "demo_agent-agent");
+        assert_eq!(sub_pkg_meta.name, "tester_demo-agent-agent");
         assert!(final_doc._base.content.is_empty());
         assert_eq!(final_doc._base.size, 0);
     }

@@ -7214,6 +7214,40 @@ mod tests {
         }
     }
 
+    async fn read_json_http_request(stream: &mut tokio::net::TcpStream) -> (String, Json) {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let n = stream.read(&mut chunk).await.expect("read request");
+            assert!(n > 0, "request ended before its body was complete");
+            request.extend_from_slice(&chunk[..n]);
+
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let body_start = header_end + 4;
+            if request.len() < body_start + content_length {
+                continue;
+            }
+
+            let headers = headers.to_string();
+            let body = serde_json::from_slice(&request[body_start..body_start + content_length])
+                .expect("parse request body");
+            return (headers, body);
+        }
+    }
+
     fn dev_test_env(agent_env_root: PathBuf, current_dir: PathBuf) -> CliRuntimeEnv {
         let agent_env_root = canonicalize_or_normalize(agent_env_root, None);
         let runtime_context = RuntimeContext::from_agent_root(
@@ -7487,14 +7521,12 @@ mod tests {
         let endpoint = format!("http://{}", listener.local_addr().expect("local addr"));
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.expect("accept request");
-            let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).await.expect("read request");
-            let request = String::from_utf8_lossy(&buf[..n]);
-            assert!(request.starts_with("POST /adapter/x-call "));
-            assert!(request.contains("\"object\":\"obj://demo/item\""));
-            assert!(request.contains("\"action\":\"reserve\""));
-            assert!(request.contains("\"qty\":2"));
-            assert!(request.contains("\"dry_run\":true"));
+            let (headers, request) = read_json_http_request(&mut stream).await;
+            assert!(headers.starts_with("POST /adapter/x-call "));
+            assert_eq!(request["object"], "obj://demo/item");
+            assert_eq!(request["action"], "reserve");
+            assert_eq!(request["params"]["qty"], 2);
+            assert_eq!(request["params"]["dry_run"], true);
             let body = r#"{"agent_tool_protocol":"1","status":"success","detail":{"reserved":true},"output":"ok"}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",

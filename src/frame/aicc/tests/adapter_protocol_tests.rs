@@ -213,7 +213,14 @@ async fn adapter_openai_05_invalid_json_fatal() {
 // - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
 // - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn adapter_openai_06_timeout_or_network_error_classified() {
-    let provider = openai_provider("http://127.0.0.1:9".to_string(), 80);
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: "{}".to_string(),
+        content_type: "application/json",
+        delay_ms: 200,
+    }])
+    .await;
+    let provider = openai_provider(base_url, 20);
     let err = provider
         .start(
             InvokeCtx::default(),
@@ -385,7 +392,14 @@ async fn adapter_claude_03_http_400_fatal() {
 // - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
 // - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn adapter_claude_04_timeout_or_network_error_classified() {
-    let provider = claude_provider("http://127.0.0.1:9".to_string(), 80);
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: "{}".to_string(),
+        content_type: "application/json",
+        delay_ms: 200,
+    }])
+    .await;
+    let provider = claude_provider(base_url, 20);
     let err = provider
         .start(
             InvokeCtx::default(),
@@ -395,7 +409,10 @@ async fn adapter_claude_04_timeout_or_network_error_classified() {
         )
         .await
         .expect_err("must fail");
-    assert!(err.is_retryable(), "assert failed in adapter_claude_04_timeout_or_network_error_classified: condition is false; check preconditions and expected branch outcome.");
+    assert!(
+        err.is_retryable(),
+        "expected retryable timeout/network error, got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -486,7 +503,14 @@ async fn adapter_gemini_05_invalid_json_fatal() {
 // - 澶勭悊娴佺▼锛氳皟鐢ㄥ叿浣?provider adapter锛岃姹?mock 鏈嶅姟骞舵墽琛屽搷搴旇В鏋愪笌閿欒鍒嗙被銆?
 // - 棰勬湡杈撳嚭锛氭柇瑷€涓殑鐘舵€併€侀敊璇爜銆佽矾鐢遍€夋嫨鎴栦簨浠跺瓧娈靛叏閮ㄦ弧瓒抽鏈熴€?
 async fn adapter_gemini_06_timeout_or_network_error_classified() {
-    let provider = gemini_provider("http://127.0.0.1:9".to_string(), 80);
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: "{}".to_string(),
+        content_type: "application/json",
+        delay_ms: 200,
+    }])
+    .await;
+    let provider = gemini_provider(base_url, 20);
     let err = provider
         .start(
             InvokeCtx::default(),

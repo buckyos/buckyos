@@ -26,6 +26,6 @@
     }
   },
   "deps": {
-    "__APP_ID__-web": "__VERSION__"
+    "__WEB_PKG_NAME__": "__VERSION__"
   }
 }

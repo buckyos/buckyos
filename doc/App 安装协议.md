@@ -22,6 +22,7 @@
 8. **分离签字权与发布权。** App Document 签名证明 owner 授权构造了该内容，权威发布状态证明该内容已经公开生效；已签名但未发布的候选不能覆盖已发布结果或撤销状态。
 9. **交付格式统一命名为 `pikg`。** 文件扩展名固定为 `.pikg`，避免被误读为 Python `pip` 包或重量单位组合。
 10. **统一 subpackage 归档命名。** `pikg` 内携带的 subpackage 优先命名为 `$sub_pkg_name.tar.gz`，归档文件 hash 必须与对应 Package Meta 的内容配置一致。
+11. **绑定 App DID 与 subpackage 命名空间。** AppInstaller 接受外部 App Document 时，必须从可信 App DID 派生该 App 可占用的 package namespace，并拒绝 `pkg_list` 中越权占用其它 App、系统包或宿主目录名字的 Package ID。
 
 ---
 
@@ -72,6 +73,10 @@ DID resolver-provider 由内核按 DID method 配置，每个 method 至多一�
 
 公开分发、本地开发、好友分享和自有应用不应强制使用完全相同的信任策略。系统应保留基础安全检查，同时根据来源和使用场景调整外部信任要求。
 
+#### 1.2.8 Identity-bound Package Namespace
+
+App DID 验证只证明“哪份 App Document 属于该身份”，不自动授权文档占用任意 Package ID、gateway server 名或宿主文件目录。Installer 必须把 App DID 绑定到一个确定的 package namespace；App 自有的全部 `pkg_list` entry 都必须位于该命名空间内。该约束属于身份授权和文件系统安全边界，不能由 Source、Curator、有效内容 hash 或本地开发模式绕过。
+
 ### 1.3 术语定义
 
 - **OOD（Owner Online Device）**：个人 AI 服务器（Personal AI Server），用户的核心计算节点。
@@ -84,6 +89,7 @@ DID resolver-provider 由内核按 DID method 配置，每个 method 至多一�
 - **expected_owner**：验证 App Document 时使用的 owner，只能来自 DID method 权威源的 owner 绑定或名字结构的确定性默认值，不能由候选文档自证。
 - **Package Meta**：描述某个 subpackage 的平台选择条件、实体内容、Chunk、依赖和启动信息的结构化对象。
 - **subpackage**：App 的一个可独立选择、下载或部署的内容单元，例如特定平台的服务包、Web 资源、模型或 Agent 资产。
+- **App Package Namespace**：从可信 App DID 确定性派生、由该 App 独占的 package name 前缀。它约束 `AppDoc.pkg_list` 中 App 自有 subpackage 的 Package ID，也约束由 Package ID 派生的 gateway server 名和宿主友好目录名。
 - **pikg**：Personal AI Package 的规范短名称，扩展名为 `.pikg` 的 App 交付文件。
 - **Curator**：应用收录源或收录人，为 App 提供收录证明、分类、评分或审查信息。
 - **Source**：提供 App Document、Package Meta、Chunk 或 `.pikg` 下载的内容源。
@@ -143,6 +149,57 @@ NeedProof body：document.owner == expected_owner
 ```
 
 验证 `NeedProof` body 的 owner 时递归调用 `resolve_did(expected_owner, "owner")`。Owner Document 是递归基，只接受 DID method 权威渠道或其明确锚定的结果。Installer 不得自行从 App Document 的 `owner` 字段建立信任链。
+
+#### 2.2.1 App DID 与 Package Namespace 绑定
+
+AppInstaller 是接受外部 App 的安全入口。任何外部 App Document 在进入 InstallPlan、内容获取或目录准备之前，必须完成 App DID 与 `pkg_list` Package ID 的命名空间归属校验。
+
+对于本版本已经冻结映射的标准 BNS App DID：
+
+```text
+did:bns:$app_name.$owner_name
+```
+
+其中 `$app_name` 与 `$owner_name` 都是单个合法 BNS label。其 App Package Namespace 按与当前 `PackageId::from_did` 一致的规则派生：
+
+```text
+package_namespace = $owner_name + "_" + $app_name
+```
+
+例如：
+
+```text
+App DID:             did:bns:app1.user1
+AppDoc.name:         app1
+package_namespace:   user1_app1
+
+允许的 subpackage unique name:
+  user1_app1
+  user1_app1-web
+  user1_app1-agent
+  user1_app1-amd64-docker-image
+
+拒绝：
+  app1
+  user1_other-app
+  user1_app10
+  control-panel
+  ../control-panel
+```
+
+采用 `$owner_name_$app_name` 而不是 DID 中的 `$app_name.$owner_name` 顺序，是为了把发布者命名空间放在平铺 package/file namespace 的最前部：同一 owner 的包可以按前缀归组，Installer 也可以在不信任候选文档自声明字段的情况下执行明确的所有权边界检查。
+
+校验规则如下：
+
+1. `AppDoc.did` 必须等于已解析的 App DID；对于上述标准 BNS 形态，`AppDoc.name` 必须等于 `$app_name`，`expected_owner` 必须与 `$owner_name` 对应的 owner DID 一致。
+2. Installer 必须解析 `pkg_list` 中每一个 `SubPkgDesc.pkg_id`，取得去除 channel/platform env 前缀及版本/ObjId 后的 `unique_name`。
+3. `unique_name` 必须等于 `package_namespace`，或以 `package_namespace + "-"` 开头。这里的 `-` 是命名空间边界；只做无边界的字符串 `starts_with(package_namespace)` 不合格，`user1_app10` 不能被 `user1_app1` 接受。
+4. `unique_name` 必须是安全的单段名字，只能包含 ASCII 小写字母、数字、下划线和连字符，不得包含点、`/`、`\\`、`..`、绝对路径、控制字符或规范化后发生变化的编码。可选 env 前缀必须由目标 PackageEnv 识别，不能用自定义点前缀绕过 `unique_name` 校验。
+5. `pkg_objid` 指向的 Package Meta，其 `name` 在去除合法 env 前缀后必须得到同一个 `unique_name`；内容寻址和签名正确不能替代命名空间归属校验，也不得通过静默改写 Package Meta 名称来“修复”不一致。
+6. 本规则约束 `AppDoc.pkg_list` 中由该 App 部署并可能映射到宿主目录、gateway server 或运行入口的自有 subpackage。Package Meta 的第三方依赖可以位于其它 namespace，但必须通过独立的依赖解析、完整性和信任策略，不能因此取得当前 App 的目录或 gateway 名称所有权。
+7. 标准映射尚未冻结的 DID method 或非标准 BNS 形态，必须由权威 resolver 结果提供等价、不可由候选 body 自声明的 `package_namespace` 绑定；在该能力实现前，外部公开安装必须拒绝，而不能猜测或截断 DID。`SYSTEM_INTERNAL` 例外必须来自系统编译期/管理员 allowlist，不能来自 App Document 自声明。
+
+任一规则失败时，Installer 必须在 Inspect Stage 返回 `APP_PACKAGE_NAMESPACE_MISMATCH`（归类为 `INVALID_PACKAGE`），且不得 Acquire payload、创建目录、更新 PackageEnv 友好链接、生成 gateway 配置或进入 Deploy。该检查是所有安装策略等级的硬规则。
 
 ### 2.3 DID 解析结果与安装语义
 
@@ -276,6 +333,8 @@ ZoneGateway 暴露路由使用强类型枚举：`Web` 通过子域名或 URI 路
 | 5 | Prepare | 已验证内容、安装参数、目标 Node | `PreparedDeployment` |
 | 6 | Deploy | PreparedDeployment | 已部署文件、容器、配置和服务注册 |
 | 7 | Activate | 已部署应用 | 运行状态、健康检查和安装成功证明 |
+
+Inspect Stage 必须先完成 §2.2.1 的 App Package Namespace 校验，再选择目标平台 package 或生成 `InstallPlan`。Verify Stage 必须使用实际取得的 Package Meta 重新核对相同 namespace；两个 Stage 任一处不一致都必须使计划失效。
 
 ### 3.3 Stage 隔离要求
 
@@ -619,14 +678,15 @@ installed app
 
 1. 读取 App Document；
 2. 将包内 body 与 Resolve Stage 的 App DID、发布状态、`doc_hash`、`expected_owner` 和 owner policy 对齐，并验证内容身份；
-3. 根据目标设备生成 InstallPlan；
-4. 展示应用、权限、来源和离线就绪状态；
-5. 收集安装参数；
-6. 获取并验证当前目标仍缺失的内容；
-7. 准备目录、配置、容器、网络和服务；
-8. 部署；
-9. 启动和健康检查；
-10. 记录安装状态并生成安装成功证明。
+3. 从可信 App DID 派生 App Package Namespace，校验 `AppDoc.name` 和全部 `pkg_list.*.pkg_id` 的归属；
+4. 根据目标设备生成 InstallPlan；
+5. 展示应用、权限、来源和离线就绪状态；
+6. 收集安装参数；
+7. 获取并验证当前目标仍缺失的内容，并用实际 Package Meta 再次校验 namespace；
+8. 准备目录、配置、容器、网络和服务；
+9. 部署；
+10. 启动和健康检查；
+11. 记录安装状态并生成安装成功证明。
 
 只有当必需内容已全部就绪，且 DID 发布/owner 证据与所有内容验证均通过后，系统才应进入实际 Deploy 阶段。
 
@@ -801,7 +861,8 @@ Zone 级开发应优先使用 Zone Resolver cache 注入 `(App DID, "app")` 的�
 但以下检查不得被跳过：
 
 - JSON、对象和路径结构合法性；
-- App Document 的 `id == App DID`，以及开发上下文声明的 owner 约束；
+- App Document 的 `did == App DID`，以及开发上下文声明的 owner 约束；
+- App DID、`AppDoc.name`、App Package Namespace 与全部 `pkg_list.*.pkg_id` 的归属约束；
 - Package Meta 与 Object ID 一致性；
 - Chunk / 文件 Digest；
 - 目标平台与 Runtime 兼容性；
@@ -984,7 +1045,7 @@ LOCAL_DEVELOPER    本地开发模式
 SYSTEM_INTERNAL    系统内置应用模式
 ```
 
-每个等级可以调整自签名候选、`ObservedFallback` 结果、Curator、Source 和网络查询要求，但不能绕过以下硬规则：`id / expected_owner` 一致性、权威 `doc_hash`、`Revoked / Tombstoned` 终止状态、内容 Object ID / Digest 和基础沙箱安全。公开模式必须拒绝未验证结果；开发模式的放宽必须通过带 scope 和 warning 的本地覆盖表达。
+每个等级可以调整自签名候选、`ObservedFallback` 结果、Curator、Source 和网络查询要求，但不能绕过以下硬规则：`did / expected_owner` 一致性、App Package Namespace 归属、权威 `doc_hash`、`Revoked / Tombstoned` 终止状态、内容 Object ID / Digest 和基础沙箱安全。公开模式必须拒绝未验证结果；开发模式的放宽必须通过带 scope 和 warning 的本地覆盖表达。
 
 ### 9.7 用户干预
 
@@ -1012,6 +1073,8 @@ Installer 必须防范：
 - TOCTOU（校验后文件被替换）；
 - 部分部署残留；
 - App Document 与实际启动内容不一致；
+- 合法 App DID 的持有者通过越权 Package ID 占用其它 App、系统包、gateway server 或宿主友好目录的 namespace；
+- 仅做无边界字符串前缀匹配，使 `user1_app10` 被错误识别为 `user1_app1` 的 subpackage；
 - 使用候选文档自声明的 owner 完成“自选 owner、自签名、自验证”；
 - 权威源不可达时用更新的自签名候选覆盖已发布或负状态记忆；
 - 将 Object Provider、应用商店、`.pikg` 或 App 动态注册成 DID resolver-provider。
@@ -1197,7 +1260,7 @@ App 专用字段：
   "create_time": 1800000000,
   "last_update_time": 1785800758,
   "deps": {
-    "e2e.pikg-docker-image": "0.1.0"
+    "nightly-linux-aarch64.root_pikg-docker-image": "0.1.0"
   },
   "meta": {
     "description": {
@@ -1208,7 +1271,7 @@ App 专用字段：
   },
   "pkg_list": {
     "aarch64_docker_image": {
-      "pkg_id": "e2e.pikg-docker-image#0.1.0",
+      "pkg_id": "root_pikg-docker-image#0.1.0",
       "pkg_objid": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
       "docker_image_name": "local/pikg-docker:0.1.0-arm64"
       // 可选: "docker_image_digest", "source_url",
@@ -1285,11 +1348,23 @@ pub struct SubPkgDesc {
 
 已知 `pkg_list` key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 `selector` 时按固定命名表派生；未知 key 无显式 selector 时不参与自动选择。
 
+`pkg_id` 不是一个仅由内容 hash 保护的自由字符串。对于外部 App，它同时声明了后续可能使用的 PackageEnv 名、宿主友好目录名、Static Web gateway server 名和运行入口名，因此必须通过 §2.2.1 的 App Package Namespace 校验。Installer 必须校验 `pkg_list` 的全部 entry，而不只是当前平台最终选中的 entry，避免攻击者把越权 Package ID 隐藏在另一平台或可选 package 中，待升级、迁移或重新调度时触发。
+
+以 `did:bns:app1.user1` 为例，推荐的各角色 package 为：
+
+```text
+user1_app1-web#1.0.0
+user1_app1-agent#1.0.0
+user1_app1-amd64-docker-image#1.0.0
+```
+
+点号前的合法 PackageEnv qualifier 不属于 `unique_name`，但必须由 Installer 根据目标环境识别；开发者不能通过任意 qualifier 改变或绕过 `user1_app1` 所有权前缀。
+
 #### 11.3.2 PackageMeta Named Object
 
 ```jsonc
 {
-  "name": "e2e.pikg-docker-image",
+  "name": "nightly-linux-aarch64.root_pikg-docker-image",
   "version": "0.1.0",
   "author": "did:bns:root",
   "owner": "did:bns:root",
@@ -1301,7 +1376,7 @@ pub struct SubPkgDesc {
 }
 ```
 
-`pkg_list` key（如 `aarch64_docker_image`）是 App 内逻辑名；`PackageMeta.name` 是包内容对象名（常与 `pkg_id` 的 name 段一致）。`.pikg` 内首选 payload 名为 `$sub_pkg_name.tar.gz`；Installer 对该文件最终压缩字节计算 SHA-256，并要求与 `PACKAGE_META.json.content_index` 及（可用时）Package Meta 内容引用一致。
+`pkg_list` key（如 `aarch64_docker_image`）是 App 内逻辑名；`PackageMeta.name` 是包内容对象名。对不带 env qualifier 的 `pkg_id`，PackageEnv 可以添加目标环境的合法 qualifier；去除该 qualifier 后，`PackageMeta.name` 必须与 `pkg_id` 的 `unique_name` 相同，并满足 §2.2.1 的 App Package Namespace。`.pikg` 内首选 payload 名为 `$sub_pkg_name.tar.gz`；Installer 对该文件最终压缩字节计算 SHA-256，并要求与 `PACKAGE_META.json.content_index` 及（可用时）Package Meta 内容引用一致。
 
 ### 11.4 InstallPlan
 
@@ -1397,7 +1472,7 @@ pub struct PlanReadiness {
   "selected_packages": [
     {
       "sub_pkg_name": "aarch64_docker_image",
-      "pkg_id": "e2e.pikg-docker-image#0.1.0",
+      "pkg_id": "root_pikg-docker-image#0.1.0",
       "package_meta_id": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
       "docker_image_name": "local/pikg-docker:0.1.0-arm64",
       "required": true
@@ -1548,6 +1623,16 @@ BuckyOS 不强制显示名称全局唯一，但 Source 内部应唯一；推荐�
 $author_$appname
 ```
 
+上述 `$author_$appname` 不是显示名规则，而是标准 BNS App DID 在平铺 package namespace 中的 owner-first 编码。对于经 AppInstaller 接受的外部 App，它是 `pkg_list` 自有 subpackage 的强制基础前缀：
+
+```text
+did:bns:$appname.$author
+    ↓ PackageId::from_did
+$author_$appname
+```
+
+subpackage 的 `unique_name` 必须等于该基础前缀，或使用 `-` 增加角色后缀，例如 `$author_$appname-web`。App 的展示名称仍可自由设置；第三方依赖也不要求使用当前 App 的前缀，但不能被注册为当前 App 的宿主目录、gateway server 或运行入口。
+
 ### 12.2 升级流程
 
 1. 客户端调用 `resolve_did(App DID, "app")` 获取当前可信 App Document 及 resolution metadata；
@@ -1601,9 +1686,9 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 ## 14. 待确定事项与 Roadmap
 
-### 14.0 已冻结事项（2026-07-16，v0.5 实现基线）
+### 14.0 已冻结事项（D1-D5：2026-07-16；D6：2026-08-04，v0.5 实现基线）
 
-以下 D1-D5 决策已冻结并进入实现。本节与 §14 其余小节及正文冲突时，以本节为准；§14.1-§14.4 中未被本节覆盖的条目仍是 Roadmap。
+以下 D1-D6 决策已冻结为实现基线。本节与 §14 其余小节及正文冲突时，以本节为准；§14.1-§14.4 中未被本节覆盖的条目仍是 Roadmap。
 
 #### D1. `pikg` 外层编码（冻结 §14.1 的容器部分）
 
@@ -1642,6 +1727,14 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 - `apps.install_package` 只接受经 Control Panel 上传通道换取的不可猜测 staging handle；服务端将 handle 解析到受控 staging root 下的 immutable 文件，canonical path 必须位于 staging root 内，否则拒绝。
 - 外部 RPC 一律不接受服务端文件路径；只有进程内调用（测试、系统内部）允许直接提供本地 Path。
+
+#### D6. App DID 与 Package Namespace 绑定
+
+- AppInstaller 必须在 Inspect Stage、任何 payload Acquisition 和目录副作用之前，对外部 App Document 的全部 `pkg_list` entry 执行 §2.2.1 的 namespace 归属校验；Verify Stage 取得 Package Meta 后必须再次校验。
+- 标准 `did:bns:$app_name.$owner_name` 的 namespace 固定为 `$owner_name_$app_name`，与当前 `PackageId::from_did` 规则一致。subpackage `unique_name` 只能等于该 namespace，或以 `namespace-` 为边界添加角色后缀。
+- 该规则必须检查全部平台和可选 entry，而不是只检查当前 InstallPlan 选中的 package。Namespace 不匹配统一返回 `APP_PACKAGE_NAMESPACE_MISMATCH` / `INVALID_PACKAGE`，不得创建 PackageEnv 目录、友好链接或 gateway 配置。
+- App DID/owner 签名、App Document Object ID、Package Meta Object ID 和内容 Digest 均不能替代 namespace 授权；它们证明身份或内容，不证明该身份有权占用任意包名。
+- `LOCAL_DEVELOPER`、好友分享和自有 App 不能跳过安全名字语法及 namespace 归属检查；`SYSTEM_INTERNAL` 只能通过系统 allowlist 使用例外 namespace。
 
 ### 14.1 pikg 文件编码
 

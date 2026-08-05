@@ -8,6 +8,7 @@
 //!   Source 只作为 missing 的获取途径）；
 //! - Inspect 不写系统目录，不触发下载。
 
+use crate::app_package_namespace::validate_app_package_namespace;
 use crate::pikg::PikgInspection;
 use async_trait::async_trait;
 use buckyos_api::{
@@ -66,6 +67,8 @@ pub async fn build_install_plan(
 ) -> Result<InstallPlan, InstallError> {
     let app_doc = input.app_doc;
     let snapshot = input.snapshot;
+
+    validate_app_package_namespace(app_doc, snapshot, InstallStage::Inspect)?;
 
     // Document Syntax Validity：did/doc_type 由类型系统保证，这里复查 did 绑定。
     let document_syntax = if app_doc.app_did() == &snapshot.app_did {
@@ -370,23 +373,25 @@ mod tests {
         let owner = DID::from_str("did:bns:tester").unwrap();
         let payload_digest = format!("sha256:{}", "ab".repeat(32));
 
-        let mut amd_meta = PackageMeta::new("demo-img-amd64", "1.0.0", "tester", &owner, None);
+        let mut amd_meta =
+            PackageMeta::new("tester_demo-img-amd64", "1.0.0", "tester", &owner, None);
         amd_meta.size = 1000;
         amd_meta.content = payload_digest.clone();
         let amd_meta_value = serde_json::to_value(&amd_meta).unwrap();
         let (amd_meta_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &amd_meta_value);
 
-        let mut arm_meta = PackageMeta::new("demo-img-arm64", "1.0.0", "tester", &owner, None);
+        let mut arm_meta =
+            PackageMeta::new("tester_demo-img-arm64", "1.0.0", "tester", &owner, None);
         arm_meta.size = 2000;
         arm_meta.content = format!("sha256:{}", "cd".repeat(32));
         let arm_meta_value = serde_json::to_value(&arm_meta).unwrap();
         let (arm_meta_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &arm_meta_value);
 
-        let mut amd_desc =
-            SubPkgDesc::new("demo-img-amd64#1.0.0").docker_image_name("demo:1.0.0-amd64");
+        let mut amd_desc = SubPkgDesc::new("tester_demo-img-amd64#1.0.0")
+            .docker_image_name("demo:1.0.0-amd64");
         amd_desc.pkg_objid = Some(amd_meta_id.clone());
-        let mut arm_desc =
-            SubPkgDesc::new("demo-img-arm64#1.0.0").docker_image_name("demo:1.0.0-arm64");
+        let mut arm_desc = SubPkgDesc::new("tester_demo-img-arm64#1.0.0")
+            .docker_image_name("demo:1.0.0-arm64");
         arm_desc.pkg_objid = Some(arm_meta_id);
 
         let app_doc = AppDoc::builder(AppType::AppService, "demo", "1.0.0", "tester", &owner)
@@ -478,6 +483,41 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(plan.readiness.install, InstallReadiness::UnsupportedTarget);
+    }
+
+    #[tokio::test]
+    async fn planner_rejects_hidden_namespace_escape_before_content_lookup() {
+        let app = build_dual_platform_app();
+        let mut app_doc = app.app_doc.clone();
+        app_doc
+            .pkg_list
+            .aarch64_docker_image
+            .as_mut()
+            .unwrap()
+            .pkg_id = "control-panel#1.0.0".to_string();
+        let doc_value = serde_json::to_value(&app_doc).unwrap();
+        let resolved = fake::active_answer(app_doc.app_did(), doc_value, 1);
+        let locator = MapLocator::new(HashMap::new());
+
+        let error = build_install_plan(
+            PlannerInput {
+                app_doc: &app_doc,
+                app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
+                snapshot: &resolved.snapshot,
+                policy: InstallPolicy::Normal,
+                target: linux_target("amd64"),
+                install_params: serde_json::json!({}),
+                pikg: None,
+            },
+            &locator,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.stage, InstallStage::Inspect);
+        assert_eq!(error.code, InstallErrorCode::InvalidPackage);
+        assert!(error.message.contains("APP_PACKAGE_NAMESPACE_MISMATCH"));
+        assert_eq!(locator.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -689,11 +729,11 @@ mod tests {
     #[tokio::test]
     async fn unknown_key_without_selector_and_explicit_selector_override() {
         let owner = DID::from_str("did:bns:tester").unwrap();
-        let mut model_desc = SubPkgDesc::new("demo-model#1.0.0");
+        let mut model_desc = SubPkgDesc::new("tester_demo-web-model#1.0.0");
         model_desc.required = Some(false);
         // 未知 key 无 selector：不参与选择。
-        let app_doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        let app_doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
+            .web_pkg(SubPkgDesc::new("tester_demo-web-web#0.1.0"))
             .other_pkg("big_model", model_desc.clone())
             .build()
             .unwrap();
@@ -725,8 +765,8 @@ mod tests {
         // 显式 selector 后参与选择。
         let mut model_desc = model_desc;
         model_desc.selector = Some(PackageSelector::for_platform("linux", "amd64"));
-        let app_doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner)
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        let app_doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
+            .web_pkg(SubPkgDesc::new("tester_demo-web-web#0.1.0"))
             .other_pkg("big_model", model_desc)
             .build()
             .unwrap();
