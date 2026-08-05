@@ -186,17 +186,12 @@ export function CloudUpdateCard() {
               </p>
             )}
             {settings.sourceConfigured && settings.sourceUrl && (
-              <div className="mt-5">
-                <div className="text-sm" style={{ color: 'var(--cp-text)' }}>
-                  {t('aiCenter.cloudUpdate.currentSource', 'Current metadata source')}
-                </div>
-                <code
-                  className="mt-2 block break-all rounded-lg px-3 py-2.5 text-xs"
-                  style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', color: 'var(--cp-muted)' }}
-                >
-                  {settings.sourceUrl}
-                </code>
-              </div>
+              <p className="mt-4 break-all text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+                <span style={{ color: 'var(--cp-text)' }}>
+                  {t('aiCenter.cloudUpdate.currentSource', 'Current metadata source')}:{' '}
+                </span>
+                {settings.sourceUrl}
+              </p>
             )}
             <label className="mt-5 block text-sm" style={{ color: 'var(--cp-text)' }}>
               {t('aiCenter.cloudUpdate.source', 'Metadata source URL')}
