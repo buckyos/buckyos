@@ -1954,6 +1954,7 @@ impl AIAgent {
             auto_start,
             bind_task,
         } = params;
+        let task_id = normalize_task_id(task_id);
         if let Some(task_id) = task_id {
             let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
                 return Err(anyhow!(
@@ -2440,6 +2441,10 @@ pub struct CreateWorkSessionOutcome {
     pub behavior: String,
     pub auto_started: bool,
     pub task_id: Option<i64>,
+}
+
+fn normalize_task_id(task_id: Option<i64>) -> Option<i64> {
+    task_id.filter(|task_id| *task_id > 0)
 }
 
 struct WorkSessionTaskDefaults {
@@ -2935,6 +2940,14 @@ mod tests {
     use kRPC::{RPCContext, RPCErrors};
     use std::ops::Range;
     use std::sync::atomic::{AtomicI64, Ordering};
+
+    #[test]
+    fn normalize_task_id_omits_non_positive_values() {
+        assert_eq!(normalize_task_id(None), None);
+        assert_eq!(normalize_task_id(Some(-1)), None);
+        assert_eq!(normalize_task_id(Some(0)), None);
+        assert_eq!(normalize_task_id(Some(1)), Some(1));
+    }
 
     #[test]
     fn sanitizes_session_segment() {
