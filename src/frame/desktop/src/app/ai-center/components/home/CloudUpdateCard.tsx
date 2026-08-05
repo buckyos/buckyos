@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowDown, CloudDownload, Settings2, X } from 'lucide-react'
+import { CloudDownload, Copy, Settings2, X } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import type { CloudUpdateSettings } from '../../../../api/aicc_mgr'
 import { useAICCStore } from '../../hooks/use-aicc-store'
@@ -23,6 +23,8 @@ export function CloudUpdateCard() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingSource, setEditingSource] = useState(false)
+  const [sourceCopied, setSourceCopied] = useState(false)
   const [sourceUrl, setSourceUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [refreshError, setRefreshError] = useState<string | null>(null)
@@ -97,6 +99,8 @@ export function CloudUpdateCard() {
 
   const openDialog = () => {
     setSourceUrl('')
+    setEditingSource(false)
+    setSourceCopied(false)
     setError(null)
     setLoading(true)
     setDialogOpen(true)
@@ -104,7 +108,7 @@ export function CloudUpdateCard() {
 
   const saveEnabled = async () => {
     const nextSource = sourceUrl.trim()
-    if (!settings.sourceConfigured && !nextSource) {
+    if ((!settings.sourceConfigured || editingSource) && !nextSource) {
       setError(t('aiCenter.cloudUpdate.sourceRequired', 'Enter a metadata source URL.'))
       return
     }
@@ -138,6 +142,16 @@ export function CloudUpdateCard() {
       setError(errorMessage(cause))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const copyCurrentSource = async () => {
+    if (!settings.sourceUrl) return
+    try {
+      await navigator.clipboard.writeText(settings.sourceUrl)
+      setSourceCopied(true)
+    } catch (cause) {
+      setError(errorMessage(cause))
     }
   }
 
@@ -186,45 +200,112 @@ export function CloudUpdateCard() {
               </p>
             )}
             <div className="mt-5">
-              <label htmlFor="cloud-update-source-url" className="block text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+              <div className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
                 {t('aiCenter.cloudUpdate.source', 'Metadata source URL')}
-              </label>
-              <div
-                className={`mt-2 break-all text-sm leading-5 ${settings.sourceConfigured && settings.sourceUrl ? 'font-mono' : ''}`}
-                style={{ color: settings.sourceConfigured && settings.sourceUrl ? 'var(--cp-text)' : 'var(--cp-muted)' }}
-              >
-                {settings.sourceConfigured && settings.sourceUrl
-                  ? settings.sourceUrl
-                  : t('aiCenter.cloudUpdate.notConfigured', 'Not configured')}
               </div>
-              <div className="my-2 flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
-                <ArrowDown size={14} aria-hidden="true" />
-                {settings.sourceConfigured
-                  ? t('aiCenter.cloudUpdate.replaceWith', 'Replace with')
-                  : t('aiCenter.cloudUpdate.setSource', 'Set source')}
-              </div>
-              <input
-                id="cloud-update-source-url"
-                type="url"
-                value={sourceUrl}
-                disabled={loading || saving}
-                onChange={(event) => setSourceUrl(event.target.value)}
-                placeholder={settings.sourceConfigured
-                  ? t('aiCenter.cloudUpdate.newSourcePlaceholder', 'Enter a new source URL')
-                  : t('aiCenter.cloudUpdate.sourcePlaceholder', 'Enter a source URL')}
-                className="h-11 w-full rounded-lg px-3 text-sm outline-none"
-                style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}
-              />
+              {settings.sourceConfigured && settings.sourceUrl ? (
+                <>
+                  <div className="mt-2 text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--cp-muted)' }}>
+                    {t('aiCenter.cloudUpdate.currentSource', 'Current source')}
+                  </div>
+                  <div className="mt-1 flex min-w-0 items-center gap-2">
+                    <div
+                      className="min-w-0 flex-1 truncate font-mono text-sm"
+                      title={settings.sourceUrl}
+                      style={{ color: 'var(--cp-text)' }}
+                    >
+                      {settings.sourceUrl}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void copyCurrentSource()}
+                      className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs"
+                      style={{ color: 'var(--cp-muted)' }}
+                    >
+                      <Copy size={13} aria-hidden="true" />
+                      {sourceCopied
+                        ? t('aiCenter.cloudUpdate.copied', 'Copied')
+                        : t('aiCenter.cloudUpdate.copy', 'Copy')}
+                    </button>
+                  </div>
+                  {!editingSource && (
+                    <button
+                      type="button"
+                      disabled={loading || saving}
+                      onClick={() => {
+                        setSourceUrl('')
+                        setError(null)
+                        setEditingSource(true)
+                      }}
+                      className="mt-3 text-sm font-medium disabled:opacity-60"
+                      style={{ color: 'var(--cp-accent)' }}
+                    >
+                      {t('aiCenter.cloudUpdate.changeSource', 'Change source')}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="mt-2 text-sm" style={{ color: 'var(--cp-muted)' }}>
+                    {t('aiCenter.cloudUpdate.notConfigured', 'No source configured')}
+                  </p>
+                  {!editingSource && (
+                    <button
+                      type="button"
+                      disabled={loading || saving}
+                      onClick={() => {
+                        setSourceUrl('')
+                        setError(null)
+                        setEditingSource(true)
+                      }}
+                      className="mt-3 text-sm font-medium disabled:opacity-60"
+                      style={{ color: 'var(--cp-accent)' }}
+                    >
+                      {t('aiCenter.cloudUpdate.setSource', 'Set source')}
+                    </button>
+                  )}
+                </>
+              )}
+              {editingSource && (
+                <div className="mt-4">
+                  <label htmlFor="cloud-update-source-url" className="block text-[11px] font-medium uppercase tracking-wide" style={{ color: 'var(--cp-muted)' }}>
+                    {settings.sourceConfigured
+                      ? t('aiCenter.cloudUpdate.newSource', 'New source URL')
+                      : t('aiCenter.cloudUpdate.source', 'Metadata source URL')}
+                  </label>
+                  <input
+                    id="cloud-update-source-url"
+                    type="url"
+                    value={sourceUrl}
+                    disabled={loading || saving}
+                    onChange={(event) => setSourceUrl(event.target.value)}
+                    placeholder={settings.sourceConfigured
+                      ? t('aiCenter.cloudUpdate.newSourcePlaceholder', 'Enter a new source URL')
+                      : t('aiCenter.cloudUpdate.sourcePlaceholder', 'Enter a source URL')}
+                    className="mt-2 h-11 w-full rounded-lg px-3 text-sm outline-none"
+                    style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}
+                  />
+                  <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+                    {settings.sourceConfigured
+                      ? t('aiCenter.cloudUpdate.replacementHint', 'This will replace the current source after saving.')
+                      : t('aiCenter.cloudUpdate.sourceRequiredHint', 'A source URL is required to enable cloud updates.')}
+                  </p>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => {
+                      setSourceUrl('')
+                      setError(null)
+                      setEditingSource(false)
+                    }}
+                    className="mt-2 text-xs disabled:opacity-60"
+                    style={{ color: 'var(--cp-muted)' }}
+                  >
+                    {t('aiCenter.cloudUpdate.cancelChange', 'Cancel change')}
+                  </button>
+                </div>
+              )}
             </div>
-            {settings.sourceConfigured ? (
-              <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {t('aiCenter.cloudUpdate.keepSource', 'Leave blank to keep the configured source.')}
-              </p>
-            ) : (
-              <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
-                {t('aiCenter.cloudUpdate.sourceRequiredHint', 'A source URL is required to enable cloud updates.')}
-              </p>
-            )}
             <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button type="button" disabled={saving} onClick={() => setDialogOpen(false)} className="min-h-11 rounded-lg px-4 text-sm" style={{ color: 'var(--cp-muted)' }}>
                 {t('common.cancel', 'Cancel')}
@@ -234,13 +315,21 @@ export function CloudUpdateCard() {
                   {t('aiCenter.cloudUpdate.disable', 'Disable')}
                 </button>
               )}
-              <button type="button" disabled={loading || saving} onClick={() => void saveEnabled()} className="min-h-11 rounded-lg px-4 text-sm font-medium disabled:opacity-60" style={{ background: 'var(--cp-accent)', color: '#fff' }}>
-                {saving
-                  ? t('common.saving', 'Saving...')
-                  : settings.enabled
-                    ? t('common.save', 'Save')
-                    : t('aiCenter.cloudUpdate.enable', 'Enable cloud updates')}
-              </button>
+              {(editingSource || (!settings.enabled && settings.sourceConfigured)) && (
+                <button
+                  type="button"
+                  disabled={loading || saving || (editingSource && !isValidSourceUrl(sourceUrl.trim()))}
+                  onClick={() => void saveEnabled()}
+                  className="min-h-11 rounded-lg px-4 text-sm font-medium disabled:opacity-60"
+                  style={{ background: 'var(--cp-accent)', color: '#fff' }}
+                >
+                  {saving
+                    ? t('common.saving', 'Saving...')
+                    : settings.enabled
+                      ? t('common.save', 'Save')
+                      : t('aiCenter.cloudUpdate.enable', 'Enable cloud updates')}
+                </button>
+              )}
             </div>
           </div>
         </div>
