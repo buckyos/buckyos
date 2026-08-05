@@ -185,6 +185,19 @@ export function CloudUpdateCard() {
                 {t('aiCenter.cloudUpdate.activeRevision', 'Active revision')}: {settings.activeRevision}
               </p>
             )}
+            {settings.sourceConfigured && settings.sourceUrl && (
+              <div className="mt-5">
+                <div className="text-sm" style={{ color: 'var(--cp-text)' }}>
+                  {t('aiCenter.cloudUpdate.currentSource', 'Current metadata source')}
+                </div>
+                <code
+                  className="mt-2 block break-all rounded-lg px-3 py-2.5 text-xs"
+                  style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', color: 'var(--cp-muted)' }}
+                >
+                  {settings.sourceUrl}
+                </code>
+              </div>
+            )}
             <label className="mt-5 block text-sm" style={{ color: 'var(--cp-text)' }}>
               {t('aiCenter.cloudUpdate.source', 'Metadata source URL')}
               <input
