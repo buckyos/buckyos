@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { CloudDownload, Settings2, X } from 'lucide-react'
+import { ArrowDown, CloudDownload, Settings2, X } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import type { CloudUpdateSettings } from '../../../../api/aicc_mgr'
 import { useAICCStore } from '../../hooks/use-aicc-store'
@@ -185,29 +185,44 @@ export function CloudUpdateCard() {
                 {t('aiCenter.cloudUpdate.activeRevision', 'Active revision')}: {settings.activeRevision}
               </p>
             )}
-            {settings.sourceConfigured && settings.sourceUrl && (
-              <p className="mt-4 break-all text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
-                <span style={{ color: 'var(--cp-text)' }}>
-                  {t('aiCenter.cloudUpdate.currentSource', 'Current metadata source')}:{' '}
-                </span>
-                {settings.sourceUrl}
-              </p>
-            )}
-            <label className="mt-5 block text-sm" style={{ color: 'var(--cp-text)' }}>
-              {t('aiCenter.cloudUpdate.source', 'Metadata source URL')}
+            <div className="mt-5">
+              <label htmlFor="cloud-update-source-url" className="block text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
+                {t('aiCenter.cloudUpdate.source', 'Metadata source URL')}
+              </label>
+              <div
+                className={`mt-2 break-all text-sm leading-5 ${settings.sourceConfigured && settings.sourceUrl ? 'font-mono' : ''}`}
+                style={{ color: settings.sourceConfigured && settings.sourceUrl ? 'var(--cp-text)' : 'var(--cp-muted)' }}
+              >
+                {settings.sourceConfigured && settings.sourceUrl
+                  ? settings.sourceUrl
+                  : t('aiCenter.cloudUpdate.notConfigured', 'Not configured')}
+              </div>
+              <div className="my-2 flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>
+                <ArrowDown size={14} aria-hidden="true" />
+                {settings.sourceConfigured
+                  ? t('aiCenter.cloudUpdate.replaceWith', 'Replace with')
+                  : t('aiCenter.cloudUpdate.setSource', 'Set source')}
+              </div>
               <input
+                id="cloud-update-source-url"
                 type="url"
                 value={sourceUrl}
                 disabled={loading || saving}
                 onChange={(event) => setSourceUrl(event.target.value)}
-                placeholder="https://publisher.example/aicc/driver-metadata/index.json"
-                className="mt-2 h-11 w-full rounded-lg px-3 text-sm outline-none"
+                placeholder={settings.sourceConfigured
+                  ? t('aiCenter.cloudUpdate.newSourcePlaceholder', 'Enter a new source URL')
+                  : t('aiCenter.cloudUpdate.sourcePlaceholder', 'Enter a source URL')}
+                className="h-11 w-full rounded-lg px-3 text-sm outline-none"
                 style={{ background: 'var(--cp-bg)', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }}
               />
-            </label>
-            {settings.sourceConfigured && (
+            </div>
+            {settings.sourceConfigured ? (
               <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
                 {t('aiCenter.cloudUpdate.keepSource', 'Leave blank to keep the configured source.')}
+              </p>
+            ) : (
+              <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>
+                {t('aiCenter.cloudUpdate.sourceRequiredHint', 'A source URL is required to enable cloud updates.')}
               </p>
             )}
             <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
