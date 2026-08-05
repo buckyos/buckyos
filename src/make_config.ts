@@ -63,6 +63,16 @@ import {
   type OODGroupParams,
 } from "./devenv_config.ts";
 
+export interface ProvisionKeyPair {
+  privateKeyPem: string;
+  publicKeyX: string;
+}
+
+export interface BuildUserEnvKeyPairs {
+  ownerKeyPair?: ProvisionKeyPair;
+  deviceKeyPair?: ProvisionKeyPair;
+}
+
 // ============================================================================
 // shared paths & helpers (mirror buckyos_devkit get_buckyos_root / BUCKYCLI_DIR)
 // ============================================================================
@@ -298,6 +308,7 @@ function makeGlobalEnvConfig(
 export async function buildUserEnv(
   params: OODGroupParams,
   envRoot: string,
+  keyPairs: BuildUserEnvKeyPairs = {},
 ): Promise<string> {
   const userDir = ensureDir(path.join(envRoot, params.zone_id));
   const oodNameForZone = params.netid !== "lan"
@@ -311,11 +322,15 @@ export async function buildUserEnv(
     snBaseHost: params.sn_base_host,
     rtcpPort: params.rtcp_port,
     outputDir: userDir,
+    ownerKeyPair: keyPairs.ownerKeyPair,
+    deviceKeyPair: keyPairs.deviceKeyPair,
   });
   await createNodeConfigs({
     deviceName: params.node_name,
     netId: params.netid,
     envDir: userDir,
+    ownerKeyPair: keyPairs.ownerKeyPair,
+    deviceKeyPair: keyPairs.deviceKeyPair,
   });
   return userDir;
 }
@@ -330,7 +345,7 @@ const DEVICE_MINI_DOC_JWT_FILE_NAME = "device_mini_doc.jwt";
 const ZONE_DOCUMENT_JWT_FILE_NAME = "zone_document.jwt";
 const MAX_INLINE_DOCUMENT_BYTES = 4096;
 
-interface LocalDeviceIdentityFiles {
+export interface LocalDeviceIdentityFiles {
   ownerDocument: Record<string, unknown>;
   bootDocumentJwt: string;
   deviceDocJwt: string;
@@ -431,6 +446,7 @@ function makeDeviceMiniDocument(
     n: requireString(deviceDocument, "name", source),
     x: requireString(deviceJwk, "x", source),
     p: requireNumber(deviceDocument, "rtcp_port", source),
+    iat: requireNumber(deviceDocument, "iat", source),
     exp: requireNumber(deviceDocument, "exp", source),
   };
   return result;
@@ -635,12 +651,12 @@ function writeLocalDeviceIdentityFiles(
   };
 }
 
-function copyIdentityOutputs(
+export function copyIdentityOutputs(
   userDir: string,
   nodeDir: string,
   targetDir: string,
   params: OODGroupParams,
-): void {
+): LocalDeviceIdentityFiles {
   const etcDir = ensureDir(path.join(targetDir, "etc"));
 
   const localIdentity = writeLocalDeviceIdentityFiles(
@@ -691,6 +707,7 @@ function copyIdentityOutputs(
   console.log(
     `device identity ${localIdentity.deviceDid} copied to local identity roots`,
   );
+  return localIdentity;
 }
 
 function makeUnactivatedIdentityConfig(targetDir: string): void {

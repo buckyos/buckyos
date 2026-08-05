@@ -285,7 +285,7 @@ impl SystemConfigBuilder {
             zone_did.method.as_str(),
             format!("jarvis.{}", zone_did.id.as_str()).as_str(),
         );
-        let owner_did = DID::new("bns", &config.user_name);
+        let owner_did = config.owner_document.id.clone();
 
         let (jarvis_private_key_pem, jarvis_public_key_jwk) = generate_ed25519_key_pair();
         let jarvis_public_key_jwk: Jwk = serde_json::from_value(jarvis_public_key_jwk)
@@ -813,7 +813,7 @@ fn build_zone_user_contact_settings(
     }
 
     Ok(Some(UserContactSettings {
-        did: Some(DID::new("bns", &config.user_name).to_string()),
+        did: Some(config.owner_document.id.to_string()),
         note: None,
         groups: vec!["users".to_string()],
         tags: vec!["zone_user".to_string()],
@@ -1711,10 +1711,13 @@ mod tests {
 
     #[test]
     fn build_zone_user_contact_settings_maps_telegram_user_binding() {
+        let mut owner_document = sample_owner_document();
+        owner_document["id"] = json!("did:web:alice.example.com");
+        owner_document["verificationMethod"][0]["controller"] = json!("did:web:alice.example.com");
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
+            "owner_document": owner_document,
             "zone_name": "did:web:alice.example.com",
             "jarvis_msg_tunnel_config": {
                 "telegram_bot_api_token": "123:bot",
@@ -1727,7 +1730,7 @@ mod tests {
             build_zone_user_contact_settings(&summary).expect("build zone user contact settings");
         let contact = contact.expect("contact should exist");
 
-        assert_eq!(contact.did.as_deref(), Some("did:bns:alice"));
+        assert_eq!(contact.did.as_deref(), Some("did:web:alice.example.com"));
         assert_eq!(contact.bindings.len(), 1);
         assert_eq!(contact.bindings[0].platform, "telegram");
         assert_eq!(contact.bindings[0].account_id, "user:5397330802");
@@ -1775,10 +1778,13 @@ mod tests {
 
     #[test]
     fn add_default_agents_writes_user_scoped_agent_spec() {
+        let mut owner_document = sample_owner_document();
+        owner_document["id"] = json!("did:web:alice.example.com");
+        owner_document["verificationMethod"][0]["controller"] = json!("did:web:alice.example.com");
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
-            "owner_document": sample_owner_document(),
+            "owner_document": owner_document,
             "zone_name": "did:web:alice.example.com"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
@@ -1797,6 +1803,13 @@ mod tests {
 
         assert_eq!(spec.user_id, "alice");
         assert_eq!(spec.app_doc.name, "buckyos_jarvis");
+        let jarvis_doc: Value = serde_json::from_str(
+            entries
+                .get("agents/buckyos_jarvis/doc")
+                .expect("jarvis doc should exist"),
+        )
+        .expect("parse jarvis doc");
+        assert_eq!(jarvis_doc["owner"], "did:web:alice.example.com");
         assert_eq!(
             spec.app_doc
                 .service_config_tips
