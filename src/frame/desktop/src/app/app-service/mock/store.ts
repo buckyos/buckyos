@@ -471,8 +471,14 @@ export class AppServiceMockStore {
     const defaultOptions: InstallOptions = {
       targetNode: launchRequest?.targetNode ?? 'ood-primary',
       components: [...app.availableComponents],
-      dataDir: app.defaultSettings.dataDir ?? '/data/nextcloud',
-      networkMode: 'zone',
+      shortcutDomain: '',
+      serviceSettings: structuredClone(app.serviceSettings),
+      mounts: structuredClone(app.mountSettings),
+      envVars: structuredClone(app.environmentSettings),
+      permissionGrants: app.permissions.map((permission) => ({
+        scope: permission.scope,
+        grant: 'default',
+      })),
       autoStart: true,
     }
     const taskId = `${Date.now()}${Math.floor(Math.random() * 1_000).toString().padStart(3, '0')}`
@@ -524,8 +530,11 @@ export class AppServiceMockStore {
     const options: InstallOptions = {
       targetNode: approval.targetNode,
       components: approval.components,
-      dataDir: approval.dataDir,
-      networkMode: approval.networkMode,
+      shortcutDomain: approval.shortcutDomain,
+      serviceSettings: approval.serviceSettings,
+      mounts: approval.mounts,
+      envVars: approval.envVars,
+      permissionGrants: approval.permissionGrants,
       autoStart: approval.autoStart,
     }
     task.plan = this.previewInstallPlan(task.app, options)
@@ -668,13 +677,84 @@ export class AppServiceMockStore {
         availableSource: offlineReady ? 'Controlled staging area' : 'registry.buckyos.ai + repo-service',
       },
       permissions: [
-        { kind: 'files', scope: '/data/nextcloud · read/write' },
-        { kind: 'network', scope: 'Zone HTTPS route · inbound' },
-        { kind: 'database', scope: 'Managed PostgreSQL database' },
-        { kind: 'system', scope: 'Docker container runtime' },
+        {
+          kind: 'system',
+          scope: 'container/runtime',
+          detail: 'Create and run an isolated Docker container.',
+          required: true,
+          risk: 'high',
+          grantOptions: ['default', 'allow', 'deny'],
+        },
+        {
+          kind: 'network',
+          scope: 'wan + default/app/nextcloud',
+          detail: 'Accept inbound Zone traffic and connect to approved internet services.',
+          required: true,
+          risk: 'high',
+          grantOptions: ['default', 'zone-only', 'full-network', 'deny'],
+        },
+        {
+          kind: 'files',
+          scope: 'user/home/nextcloud',
+          detail: 'Read and write the selected application data directory.',
+          required: true,
+          risk: 'normal',
+          grantOptions: ['default', 'read-only', 'read-write', 'deny'],
+        },
+        {
+          kind: 'database',
+          scope: 'rdb/nextcloud',
+          detail: 'Use a managed PostgreSQL database dedicated to this application.',
+          required: true,
+          risk: 'normal',
+          grantOptions: ['default', 'allow', 'deny'],
+        },
       ],
       availableComponents: ['web', 'worker'],
-      defaultSettings: { dataDir: '/data/nextcloud' },
+      appHost: 'nextcloud.test.buckyos.io',
+      shortcutDomains: ['www', 'home', 'files'],
+      serviceSettings: [
+        {
+          serviceName: 'www',
+          label: 'Web service',
+          protocol: 'http',
+          innerPort: 80,
+          enabled: true,
+          expose: {
+            route: { type: 'web', subHostname: [] },
+            scope: '',
+            allowGuest: false,
+          },
+        },
+      ],
+      mountSettings: [
+        {
+          name: 'Data directory',
+          containerPath: '/var/www/html',
+          targetPath: '/data/nextcloud',
+          access: 'read_write',
+          enabled: true,
+          declared: true,
+        },
+      ],
+      environmentSettings: [
+        {
+          name: 'NEXTCLOUD_TRUSTED_DOMAINS',
+          value: 'nextcloud.test.buckyos.io',
+          description: 'Host names accepted by Nextcloud.',
+          required: true,
+          declared: true,
+        },
+        {
+          name: 'PHP_MEMORY_LIMIT',
+          value: '512M',
+          description: 'PHP memory available to the application.',
+          required: false,
+          declared: true,
+        },
+      ],
+      startParam: 'apache2-foreground',
+      containerParam: '--init',
       installReady,
       blockingReason,
     }
@@ -808,6 +888,8 @@ export class AppServiceMockStore {
 
     const completed = task.status === 'completed'
     const activationFailed = task.result?.autoStart === 'failed'
+    const primaryMount = task.plan.options.mounts.find((mount) => mount.enabled)
+    const primaryService = task.plan.options.serviceSettings.find((service) => service.enabled)
     this.services.unshift({
       id: task.app.id,
       name: task.app.name,
@@ -823,8 +905,14 @@ export class AppServiceMockStore {
         container: completed ? (activationFailed ? 'error' : task.result?.autoStart === 'running' ? 'running' : 'stopped') : 'not_created',
       },
       diagnostics: task.status === 'failed' ? [task.failure?.message ?? 'Installation failed.'] : [],
-      spec: { dataDir: task.plan.options.dataDir, networkMode: task.plan.options.networkMode },
-      settings: { dataDir: task.plan.options.dataDir },
+      spec: {
+        dataDir: primaryMount?.targetPath ?? 'Not mounted',
+        exposure: primaryService?.expose.route.type ?? 'disabled',
+      },
+      settings: {
+        dataDir: primaryMount?.targetPath ?? 'Not mounted',
+        shortcutDomain: task.plan.options.shortcutDomain || 'None',
+      },
       serviceInfo: { node: task.plan.options.targetNode, taskId: task.taskId },
       logs: [`Installation task ${task.taskId} created`],
       installProgress: task.progress ?? undefined,

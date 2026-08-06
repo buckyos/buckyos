@@ -29,6 +29,14 @@ async function openAppService(page: Page) {
   await expect(page.getByTestId('app-service-root')).toBeVisible()
 }
 
+async function authorizeInstallation(page: Page) {
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  const sudoDialog = page.getByTestId('app-installer-sudo-dialog')
+  await expect(sudoDialog).toBeVisible()
+  await sudoDialog.getByLabel('Administrator password').fill('prototype-admin')
+  await sudoDialog.getByRole('button', { name: 'Authorize and install' }).click()
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript((storageKey) => {
     window.localStorage.removeItem(storageKey)
@@ -106,8 +114,7 @@ test('App Service normalizes a URL and completes the shared Installer task flow'
   await expect(installer.getByTestId('app-installer-install-readiness')).toContainText('Ready to install')
   await installer.getByRole('button', { name: 'Review installation plan' }).click()
 
-  await page.getByLabel('Administrator password').fill('prototype-admin')
-  await page.getByRole('button', { name: 'Authorize and install' }).click()
+  await authorizeInstallation(page)
   await expect(page.getByRole('heading', { name: 'Installing Nextcloud' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Installation complete' })).toBeVisible({ timeout: 10_000 })
 
@@ -125,8 +132,7 @@ test('Installer explains a download failure and retries the same task', async ({
   await expect(page.getByTestId('app-service-source-result')).toBeVisible()
   await page.getByTestId('app-service-source-next').click()
   await page.getByRole('button', { name: 'Review installation plan' }).click()
-  await page.getByLabel('Administrator password').fill('prototype-admin')
-  await page.getByRole('button', { name: 'Authorize and install' }).click()
+  await authorizeInstallation(page)
 
   await expect(page.getByRole('heading', { name: 'Installation stopped' })).toBeVisible({ timeout: 5_000 })
   await expect(page.getByText('DOWNLOAD_FAILED')).toBeVisible()
@@ -180,8 +186,7 @@ test('Installer preserves success when automatic activation fails', async ({ pag
   await expect(page.getByTestId('app-service-source-result')).toBeVisible()
   await page.getByTestId('app-service-source-next').click()
   await page.getByRole('button', { name: 'Review installation plan' }).click()
-  await page.getByLabel('Administrator password').fill('prototype-admin')
-  await page.getByRole('button', { name: 'Authorize and install' }).click()
+  await authorizeInstallation(page)
 
   await expect(page.getByRole('heading', { name: 'Installed, but startup failed' })).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText('28.0.2', { exact: true })).toBeVisible()

@@ -117,7 +117,13 @@ interface InstallAppInfo {
   content: ContentReadiness
   permissions: InstallPermission[]
   availableComponents: string[]
-  defaultSettings: Record<string, string>
+  appHost: string
+  shortcutDomains: string[]
+  serviceSettings: InstallServiceSetting[]
+  mountSettings: InstallMountSetting[]
+  environmentSettings: InstallEnvironmentSetting[]
+  startParam?: string
+  containerParam?: string
   installReady: boolean
   blockingReason?:
     | 'TRUST_RESOLUTION_REQUIRED'
@@ -133,11 +139,63 @@ Document format, signature, owner constraint, and authoritative publication are 
 
 ```ts
 interface InstallOptions {
+  // Selected automatically and intentionally hidden from Step 2.
   targetNode: 'ood-primary' | 'ood-backup'
   components: string[]
-  dataDir: string
-  networkMode: 'private' | 'zone'
+  shortcutDomain: string
+  serviceSettings: InstallServiceSetting[]
+  mounts: InstallMountSetting[]
+  envVars: InstallEnvironmentSetting[]
+  permissionGrants: Array<{
+    scope: string
+    grant: 'default' | 'allow' | 'deny' | 'read-only' | 'read-write' | 'zone-only' | 'full-network'
+  }>
   autoStart: boolean
+}
+
+type ServiceExposeRouteConfig =
+  | { type: 'web'; subHostname: string[]; exposeUri?: string }
+  | { type: 'port'; exposePort: number }
+
+interface ServiceExposeSetting {
+  route: ServiceExposeRouteConfig
+  scope: string
+  allowGuest: boolean
+}
+
+interface InstallServiceSetting {
+  serviceName: string
+  label: string
+  protocol: 'http' | 'https' | 'tcp' | 'udp'
+  innerPort: number
+  enabled: boolean
+  expose: ServiceExposeSetting
+}
+
+interface InstallPermission {
+  kind: 'files' | 'network' | 'database' | 'system'
+  scope: string
+  detail: string
+  required: boolean
+  risk: 'high' | 'normal'
+  grantOptions: Array<'default' | 'allow' | 'deny' | 'read-only' | 'read-write' | 'zone-only' | 'full-network'>
+}
+
+interface InstallMountSetting {
+  name: string
+  containerPath: string
+  targetPath: string
+  access: 'read_only' | 'read_write' | 'read_write_append'
+  enabled: boolean
+  declared: boolean
+}
+
+interface InstallEnvironmentSetting {
+  name: string
+  value: string
+  description: string
+  required: boolean
+  declared: boolean
 }
 
 interface InstallPlan {
@@ -157,7 +215,7 @@ interface ContentReadiness {
 }
 ```
 
-The plan is recalculated whenever the target node or installation options change. The administrator password is intentionally absent from `InstallPlan` and `InstallTask`.
+Step 2 is one column in this order: access settings, directory mounts, environment variables, high-risk runtime parameters, and permission requests. Target node and components remain automatic inputs and are not rendered. Permission requests are open by default and high-risk entries sort first. The administrator password appears only in the sudo dialog opened by Next and is intentionally absent from `InstallPlan` and `InstallTask`.
 
 ### Install task
 
@@ -228,9 +286,15 @@ const settingsInputSchema = z.record(
 const installerApprovalSchema = z.object({
   targetNode: z.enum(['ood-primary', 'ood-backup']),
   components: z.array(z.string()).min(1),
-  dataDir: z.string().trim().min(1).max(256).regex(/^\//),
-  networkMode: z.enum(['private', 'zone']),
+  shortcutDomain: z.string().trim().max(63),
+  serviceSettings: z.array(serviceSettingSchema),
+  mounts: z.array(mountSettingSchema),
+  envVars: z.array(environmentSettingSchema),
+  permissionGrants: z.array(permissionGrantSchema),
   autoStart: z.boolean(),
+})
+
+const installerSudoSchema = z.object({
   password: z.string().min(1).max(128),
 })
 ```
@@ -257,8 +321,11 @@ Valid examples:
 
 - Source: `https://apps.buckyos.ai/nextcloud/app-meta.jwt`
 - Source: `did:cyfs:app-nextcloud-7w4k2n`
-- Data directory: `/data/nextcloud`
-- Approval: at least one component and a non-empty password
+- Declared data mount: `/var/www/html` → `/data/nextcloud`
+- Custom data mount: `/container/path` → `/data/path`
+- Environment variable: `PHP_MEMORY_LIMIT=512M`
+- Direct port exposure: integer `1..65535`
+- Sudo approval: a non-empty password entered after clicking Next
 
 Invalid examples:
 
@@ -267,8 +334,9 @@ Invalid examples:
 - Invalid or out-of-range task ID: visible launch error, no lookup performed
 - JSON without a DID or supported `doc_type`: `INVALID_APP_META`
 - File without a `.pikg` suffix: `INVALID_PIKG`
-- Relative data directory: visible `dataDirectoryError`
-- Empty component list or password: visible localized form errors
+- Relative container or mapped directory: visible `mountPathError`
+- Invalid environment variable name: visible `environmentError`
+- Empty sudo password: visible localized form error inside the sudo dialog
 
 ## State definitions
 
@@ -313,7 +381,7 @@ Mock URL scenarios are `?appServiceScenario=empty` and `?appServiceScenario=erro
 | Task missing | Recoverable task-not-found state; no replacement task is created |
 | Inspect/waiting | App identity, source, trust, platform, and content readiness |
 | Blocked | Named blocking reason and disabled plan action |
-| Approval | Recomputed plan, permissions, impact, and administrator authorization |
+| Approval | Single-column configuration, high-risk warning, permission grants, and transient sudo authorization |
 | Running | Stage history, progress, current resource, and background action |
 | Failure | Human-readable category, safe details, retry, modify, and source actions |
 | Completed | Installed result and independent automatic-start result |

@@ -10,6 +10,7 @@ import { MessageHubAppPanel } from './messagehub/MessageHubAppPanel'
 import { MyNetworkAppPanel } from './my-network/MyNetworkAppPanel'
 import { SettingsAppPanel } from './settings/SettingsAppPanel'
 import { StudioAppPanel } from './studio/StudioAppPanel'
+import { SystestAppPanel } from './systest/SystestAppPanel'
 import { TaskCenterAppPanel } from './task-center/TaskCenterAppPanel'
 import { UsersAgentsAppPanel } from './users-agents/UsersAgentsAppPanel'
 import { WorkflowAppPanel } from './workflow/WorkflowAppPanel'
@@ -34,6 +35,7 @@ const appLoaders = {
   messagehub: MessageHubAppPanel,
   'my-network': MyNetworkAppPanel,
   homestation: HomeStationAppPanel,
+  systest: SystestAppPanel,
   'task-center': TaskCenterAppPanel,
   'users-agents': UsersAgentsAppPanel,
   workflow: WorkflowAppPanel,

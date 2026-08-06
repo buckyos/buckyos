@@ -104,10 +104,71 @@ export interface AppPrice {
 }
 
 export type InstallPermissionKind = 'files' | 'network' | 'database' | 'system'
+export type InstallPermissionRisk = 'high' | 'normal'
+export type InstallPermissionGrant =
+  | 'default'
+  | 'allow'
+  | 'deny'
+  | 'read-only'
+  | 'read-write'
+  | 'zone-only'
+  | 'full-network'
 
 export interface InstallPermission {
   kind: InstallPermissionKind
   scope: string
+  detail: string
+  required: boolean
+  risk: InstallPermissionRisk
+  grantOptions: InstallPermissionGrant[]
+}
+
+export type ServiceExposeRouteConfig =
+  | {
+      type: 'web'
+      subHostname: string[]
+      exposeUri?: string
+    }
+  | {
+      type: 'port'
+      exposePort: number
+    }
+
+export interface ServiceExposeSetting {
+  route: ServiceExposeRouteConfig
+  scope: string
+  allowGuest: boolean
+}
+
+export interface InstallServiceSetting {
+  serviceName: string
+  label: string
+  protocol: 'http' | 'https' | 'tcp' | 'udp'
+  innerPort: number
+  enabled: boolean
+  expose: ServiceExposeSetting
+}
+
+export interface InstallMountSetting {
+  name: string
+  containerPath: string
+  targetPath: string
+  access: 'read_only' | 'read_write' | 'read_write_append'
+  enabled: boolean
+  declared: boolean
+}
+
+export interface InstallEnvironmentSetting {
+  name: string
+  value: string
+  description: string
+  required: boolean
+  declared: boolean
+}
+
+export interface InstallPermissionGrantSetting {
+  scope: string
+  grant: InstallPermissionGrant
 }
 
 export interface InstallAppInfo {
@@ -132,7 +193,13 @@ export interface InstallAppInfo {
   content: ContentReadiness
   permissions: InstallPermission[]
   availableComponents: string[]
-  defaultSettings: Record<string, string>
+  appHost: string
+  shortcutDomains: string[]
+  serviceSettings: InstallServiceSetting[]
+  mountSettings: InstallMountSetting[]
+  environmentSettings: InstallEnvironmentSetting[]
+  startParam?: string
+  containerParam?: string
   installReady: boolean
   blockingReason?:
     | 'TRUST_RESOLUTION_REQUIRED'
@@ -142,13 +209,15 @@ export interface InstallAppInfo {
 }
 
 export type InstallTargetNode = 'ood-primary' | 'ood-backup'
-export type InstallNetworkMode = 'private' | 'zone'
 
 export interface InstallOptions {
   targetNode: InstallTargetNode
   components: string[]
-  dataDir: string
-  networkMode: InstallNetworkMode
+  shortcutDomain: string
+  serviceSettings: InstallServiceSetting[]
+  mounts: InstallMountSetting[]
+  envVars: InstallEnvironmentSetting[]
+  permissionGrants: InstallPermissionGrantSetting[]
   autoStart: boolean
 }
 

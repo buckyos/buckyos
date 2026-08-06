@@ -64,7 +64,7 @@ https://sys.<zoneHostname>/login?client_id=<appId>&redirect_url=<encoded redirec
 用户在登录页完成认证后，control panel 走 `/sso_callback?nonce=...&redirect_url=...`：
 
 - 校验 `redirect_url` **必须是本 Zone 内的目标**（host 等于 zone host，或形如 `<app>.<zonehost>`），并据此解析出真正的 appid——防止把 token 发给 Zone 外的站点。
-- 把**长期 refresh token** 写入 `HttpOnly` Cookie `buckyos_session_token`（Domain 设为 Zone 域，使同 Zone 子域共享），然后 302 回 `redirect_url`。
+- 回调由目标 App origin 承载，把**长期 refresh token** 写入 host-only、`HttpOnly` Cookie `buckyos_refresh_token`，然后 302 回 `redirect_url`。cookie 不设置 `Domain`，因此不会与父域或其它 App 子域共享。
 
 ### 3. 用 refresh cookie 换 session_token
 
@@ -76,7 +76,7 @@ POST /sso_refresh
 ```
 
 - 返回**短期 session_token**（放在响应体里，供 JS 读取并用于后续请求）。
-- 同时轮换 refresh cookie（旧的立即失效）。
+- 同时轮换 `buckyos_refresh_token`（旧的立即失效），并把短期 token 写入独立的 host-only `buckyos_session_token`。
 - session 快过期时再调一次 `/sso_refresh` 续期即可，无需重新登录。
 
 ### 4. 带着 session_token 调 kRPC
@@ -94,7 +94,7 @@ kRPC:    请求体的 token 字段
 
 ### 5. 退出
 
-POST `/sso_logout`：吊销 refresh token 并清掉 cookie。
+POST `/sso_logout`：吊销 refresh token，并清掉当前 App host 下的 `buckyos_refresh_token` 与 `buckyos_session_token`。
 
 ---
 

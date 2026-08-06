@@ -5,6 +5,7 @@
     "build": "pnpm build"
   },
   "imports": {
-    "@std/http": "jsr:@std/http@^1"
+    "@std/http": "jsr:@std/http@^1",
+    "@sys-test/websdk-node-types": "./node_modules/buckyos/dist/node.d.ts"
   }
 }

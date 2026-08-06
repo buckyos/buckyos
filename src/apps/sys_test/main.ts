@@ -20,8 +20,14 @@
  */
 import { serveDir } from "jsr:@std/http/file-server";
 
-const APP_ID = "sys-test";
-const TASK_STATUS_COMPLETED = "Completed"; // mirrors src/task_mgr_client.ts
+type NodeSdkModule = typeof import("@sys-test/websdk-node-types");
+type NdmModule = NodeSdkModule["ndm"];
+type QueryObjectByIdResponse = Awaited<
+  ReturnType<NdmModule["queryObjectById"]>
+>;
+type QueryChunkStateResponse = Awaited<
+  ReturnType<NdmModule["queryChunkState"]>
+>;
 
 type AppInstanceIdentity = {
   appId: string;
@@ -37,63 +43,15 @@ type SelftestCaseResult = {
 };
 
 type GroupId =
+  | "runtime"
   | "system_config"
   | "app_settings"
   | "task_manager"
   | "verify_hub"
-  | "kevent";
-
-type SystemConfigClientLike = {
-  get: (
-    key: string,
-  ) => Promise<{ value: string; version: number; is_changed: boolean }>;
-  set: (key: string, value: string) => Promise<void>;
-};
-
-type TaskLike = { id: number; status: string };
-
-type TaskManagerClientLike = {
-  createTask: (params: {
-    name: string;
-    taskType: string;
-    data: unknown;
-    userId: string;
-    appId: string;
-  }) => Promise<TaskLike>;
-  updateTaskProgress: (
-    id: number,
-    completedItems: number,
-    totalItems: number,
-  ) => Promise<void>;
-  updateTaskStatus: (id: number, status: string) => Promise<void>;
-  getTask: (id: number) => Promise<TaskLike>;
-  listTasks: (
-    params: { filter?: Record<string, unknown> },
-  ) => Promise<TaskLike[]>;
-  deleteTask: (id: number) => Promise<void>;
-};
-
-// ndm store API types (mirrors ndm_client.ts exports)
-type NdmStoreRequestOptions = {
-  endpoint?: string;
-  sessionToken?: string | null;
-};
-
-type QueryObjectByIdResponse =
-  | { state: "not_exist" }
-  | { state: "object"; obj_data: string };
-
-type QueryChunkStateResponse =
-  | { state: "new"; chunk_size: number }
-  | { state: "completed"; chunk_size: number }
-  | { state: "disabled"; chunk_size: number }
-  | { state: "not_exist"; chunk_size: number }
-  | {
-    state: "local_link";
-    chunk_size: number;
-    local_info: { qcid: string; last_modify_time: number };
-  }
-  | { state: "same_as"; chunk_size: number; same_as: string };
+  | "kevent"
+  | "service_clients"
+  | "sdk_utilities"
+  | "ndm_proxy";
 
 type ContentAvailabilityState =
   | {
@@ -104,74 +62,6 @@ type ContentAvailabilityState =
     kind: "object";
     state: QueryObjectByIdResponse | { state: "error"; error: string };
   };
-
-type NdmModule = {
-  putObject: (
-    req: { obj_id: string; obj_data: string },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<void>;
-  isObjectStored: (
-    req: { obj_id: string; inner_path?: string },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<{ stored: boolean }>;
-  queryObjectById: (
-    req: { obj_id: string },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<QueryObjectByIdResponse>;
-  queryChunkState: (
-    req: { chunk_id: string },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<QueryChunkStateResponse>;
-  isObjectExist: (
-    req: { obj_id: string },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<{ exists: boolean }>;
-  haveChunk: (
-    req: { chunk_id: string },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<{ exists: boolean }>;
-  addChunkBySameAs: (
-    req: {
-      big_chunk_id: string;
-      chunk_list_id: string;
-      big_chunk_size: number;
-    },
-    opts?: NdmStoreRequestOptions,
-  ) => Promise<void>;
-};
-
-type NodeSdkModule = {
-  buckyos: {
-    initBuckyOS: (
-      appid: string,
-      config: Record<string, unknown>,
-    ) => Promise<void>;
-    login: () => Promise<unknown>;
-    logout: (cleanAccountInfo?: boolean) => void;
-    getAccountInfo: () => Promise<
-      {
-        user_id?: string;
-        user_name?: string;
-        user_type?: string;
-        session_token?: string | null;
-      } | null
-    >;
-    getZoneHostName: () => string | null;
-    getZoneServiceURL: (serviceName: string) => string;
-    getAppSetting: (settingName?: string | null) => Promise<unknown>;
-    setAppSetting: (
-      settingName: string | null,
-      settingValue: string,
-    ) => Promise<void>;
-    getSystemConfigClient: () => SystemConfigClientLike;
-    getTaskManagerClient: () => TaskManagerClientLike;
-  };
-  ndm: NdmModule;
-  RuntimeType: { AppService: string };
-  parseSessionTokenClaims: (
-    token: string | null | undefined,
-  ) => Record<string, unknown> | null;
-};
 
 type BootstrapState =
   | { kind: "ready"; identity: AppInstanceIdentity; sdk: NodeSdkModule }
@@ -201,6 +91,7 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function resolveStaticRoot(): Promise<string> {
   const candidates = [
+    new URL("./web/dist", import.meta.url).pathname,
     new URL("./web", import.meta.url).pathname,
     new URL("./dist/web", import.meta.url).pathname,
     new URL("./dist", import.meta.url).pathname,
@@ -252,10 +143,8 @@ async function resolveWebSdkRoot(): Promise<string> {
   const explicit = getEnv("BUCKYOS_WEBSDK_ROOT");
   const candidates = [
     explicit,
-    new URL("./buckyos-websdk", import.meta.url).pathname,
-    new URL("./dist/buckyos-websdk", import.meta.url).pathname,
-    new URL("../../../../../buckyos-websdk", import.meta.url).pathname,
-    "/Users/liuzhicong/project/buckyos-websdk",
+    new URL("./node_modules/buckyos", import.meta.url).pathname,
+    new URL("./dist/node_modules/buckyos", import.meta.url).pathname,
   ].filter((value): value is string =>
     typeof value === "string" && value.trim().length > 0
   );
@@ -374,60 +263,6 @@ async function runSelftestCase(
   }
 }
 
-type KEventStreamAckFrame = {
-  type: "ack";
-  connection_id: string;
-  keepalive_ms: number;
-};
-
-type KEventStreamEventFrame = {
-  type: "event";
-  event: {
-    eventid: string;
-    source_node: string;
-    ingress_node?: string | null;
-    data?: Record<string, unknown>;
-  };
-};
-
-type KEventStreamKeepaliveFrame = {
-  type: "keepalive";
-  at_ms: number;
-};
-
-type KEventStreamErrorFrame = {
-  type: "error";
-  error: string;
-};
-
-type KEventStreamFrame =
-  | KEventStreamAckFrame
-  | KEventStreamEventFrame
-  | KEventStreamKeepaliveFrame
-  | KEventStreamErrorFrame;
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
 function getKEventBaseUrl(sdk: NodeSdkModule): string {
   const baseUrl = sdk.buckyos.getZoneServiceURL("kevent");
   return baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
@@ -473,75 +308,6 @@ async function publishKEvent(
   }
 }
 
-async function openKEventStream(
-  sdk: NodeSdkModule,
-  patterns: string[],
-): Promise<{
-  next: (timeoutMs: number) => Promise<KEventStreamFrame>;
-  close: () => Promise<void>;
-}> {
-  const controller = new AbortController();
-  const response = await fetch(getKEventRequestUrl(sdk, "stream"), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    signal: controller.signal,
-    body: JSON.stringify({ patterns, keepalive_ms: 1_000 }),
-  });
-  if (!response.ok) {
-    const payload = await readJsonResponse(response);
-    throw new Error(
-      String(
-        payload.error ?? `kevent stream failed with status ${response.status}`,
-      ),
-    );
-  }
-  if (!response.body) {
-    throw new Error("kevent stream response has no body");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  const readLine = async (timeoutMs: number): Promise<string> => {
-    while (true) {
-      const newlineIndex = buffer.indexOf("\n");
-      if (newlineIndex >= 0) {
-        const line = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        if (line.length > 0) {
-          return line;
-        }
-        continue;
-      }
-
-      const chunk = await withTimeout(
-        reader.read(),
-        timeoutMs,
-        "waiting for kevent stream frame",
-      );
-      if (chunk.done) {
-        throw new Error("kevent stream closed unexpectedly");
-      }
-      buffer += decoder.decode(chunk.value, { stream: true });
-    }
-  };
-
-  return {
-    next: async (timeoutMs: number) => {
-      const line = await readLine(timeoutMs);
-      return JSON.parse(line) as KEventStreamFrame;
-    },
-    close: async () => {
-      try {
-        await reader.cancel();
-      } catch {
-      }
-      controller.abort();
-    },
-  };
-}
-
 // Mirrors the cases in tests/helpers/service_client_suite.ts and the browser
 // test_groups.ts, but runs them inside this AppService process so that the
 // frontend can trigger the suite per-group with a single HTTP call.
@@ -549,6 +315,47 @@ function buildGroupRunners(
   state: Extract<BootstrapState, { kind: "ready" }>,
 ): Record<GroupId, () => Promise<SelftestCaseResult[]>> {
   const { sdk, identity } = state;
+
+  const runtimeGroup = async (): Promise<SelftestCaseResult[]> => {
+    return [
+      await runSelftestCase(
+        "Runtime identity and service URL resolution",
+        async () => {
+          const actualAppId = sdk.buckyos.getAppId();
+          const zoneHost = sdk.buckyos.getZoneHostName();
+          if (actualAppId !== identity.appId) {
+            throw new Error(
+              `expected appId ${identity.appId}, got ${actualAppId ?? "null"}`,
+            );
+          }
+          if (!zoneHost) {
+            throw new Error("getZoneHostName() returned an empty value");
+          }
+          const services = [
+            "system-config",
+            "task-manager",
+            "workflow",
+            "aicc",
+            "kmsg",
+            "msg-center",
+            "repo-service",
+          ];
+          const serviceUrls = Object.fromEntries(
+            services.map((name) => [
+              name,
+              sdk.buckyos.getZoneServiceURL(name),
+            ]),
+          );
+          return {
+            runtimeType: sdk.buckyos.getRuntimeType(),
+            appId: actualAppId,
+            zoneHost,
+            serviceUrls,
+          };
+        },
+      ),
+    ];
+  };
 
   const systemConfigGroup = async (): Promise<SelftestCaseResult[]> => {
     const results: SelftestCaseResult[] = [];
@@ -642,9 +449,9 @@ function buildGroupRunners(
           });
           try {
             await client.updateTaskProgress(created.id, 1, 2);
-            await client.updateTaskStatus(created.id, TASK_STATUS_COMPLETED);
+            await client.completeTask(created.id);
             const fetched = await client.getTask(created.id);
-            if (fetched.status !== TASK_STATUS_COMPLETED) {
+            if (fetched.status !== "Completed") {
               throw new Error(
                 `expected task ${created.id} to be Completed, got ${fetched.status}`,
               );
@@ -704,13 +511,10 @@ function buildGroupRunners(
               crypto.randomUUID().replaceAll("-", "").slice(0, 8)
             }`;
           const marker = `app_service_${Date.now()}`;
-          const stream = await openKEventStream(sdk, [eventid]);
+          const reader = await sdk.buckyos.createEventReader(eventid, {
+            keepaliveMs: 1_000,
+          });
           try {
-            const ack = await stream.next(2_000);
-            if (ack.type !== "ack") {
-              throw new Error(`expected kevent ack frame, got ${ack.type}`);
-            }
-
             await publishKEvent(sdk, eventid, {
               marker,
               origin: "sys_test_app_service",
@@ -718,51 +522,156 @@ function buildGroupRunners(
               appId: identity.appId,
             });
 
-            while (true) {
-              const frame = await stream.next(5_000);
-              if (frame.type === "keepalive") {
-                continue;
-              }
-              if (frame.type === "error") {
-                throw new Error(frame.error);
-              }
-              if (frame.type !== "event") {
-                throw new Error(`unexpected kevent frame type: ${frame.type}`);
-              }
-
-              const eventData = frame.event.data ?? {};
-              if (frame.event.eventid !== eventid) {
-                throw new Error(
-                  `received mismatched eventid: ${frame.event.eventid}`,
-                );
-              }
-              if (eventData.marker !== marker) {
-                throw new Error(
-                  `received mismatched marker: ${JSON.stringify(eventData)}`,
-                );
-              }
-
-              return {
-                eventid,
-                connectionId: ack.connection_id,
-                sourceNode: frame.event.source_node,
-                ingressNode: frame.event.ingress_node ?? null,
-              };
+            const event = await reader.pullEvent(5_000);
+            if (!event) {
+              throw new Error("timed out waiting for the published kevent");
             }
+            const eventData = event.data && typeof event.data === "object"
+              ? event.data as Record<string, unknown>
+              : {};
+            if (event.eventid !== eventid) {
+              throw new Error(`received mismatched eventid: ${event.eventid}`);
+            }
+            if (eventData.marker !== marker) {
+              throw new Error(
+                `received mismatched marker: ${JSON.stringify(eventData)}`,
+              );
+            }
+
+            return {
+              eventid,
+              sourceNode: event.source_node,
+              sourcePid: event.source_pid,
+              ingressNode: event.ingress_node ?? null,
+              timestamp: event.timestamp,
+            };
           } finally {
-            await stream.close();
+            await reader.close();
           }
         },
       ),
     ];
   };
 
+  const serviceClientsGroup = async (): Promise<SelftestCaseResult[]> => {
+    const owner = sdk.bns.didBnsFromName(identity.ownerUserId);
+    return [
+      await runSelftestCase("WorkflowClient.listDefinitions", async () => {
+        const definitions = await sdk.buckyos
+          .getWorkflowClient()
+          .listDefinitions({
+            owner: {
+              user_id: identity.ownerUserId,
+              app_id: identity.appId,
+            },
+          });
+        return { definitions: definitions.length };
+      }),
+      await runSelftestCase("AiccClient.queryQuota", async () => {
+        const { quota } = await sdk.buckyos.getAiccClient().queryQuota({});
+        if (typeof quota.state !== "string" || quota.state.length === 0) {
+          throw new Error("quota.query returned an invalid state");
+        }
+        return { quota };
+      }),
+      await runSelftestCase("MsgCenterClient.peekBox", async () => {
+        const records = await sdk.buckyos.getMsgCenterClient().peekBox({
+          owner,
+          box_kind: "INBOX",
+          limit: 1,
+          with_object: false,
+        });
+        return { owner, records: records.length };
+      }),
+      await runSelftestCase("RepoClient.stat", async () => {
+        const stat = await sdk.buckyos.getRepoClient().stat();
+        return { stat };
+      }),
+      await runSelftestCase(
+        "MsgQueueClient create/post/stat/delete lifecycle",
+        async () => {
+          const client = sdk.buckyos.getMsgQueueClient();
+          const queueName = [
+            "sys-test",
+            String(Date.now()),
+            crypto.randomUUID().replaceAll("-", "").slice(0, 8),
+          ].join("-");
+          const queueUrn = await client.createQueue(
+            queueName,
+            identity.appId,
+            owner,
+          );
+          try {
+            const msgIndex = await client.postMessage(queueUrn, {
+              index: 0,
+              created_at: Date.now(),
+              payload: Array.from(new TextEncoder().encode("sys_test")),
+              headers: { source: "sys_test_app_service" },
+            });
+            const stats = await client.getQueueStats(queueUrn);
+            if (stats.message_count < 1) {
+              throw new Error(
+                `expected at least one queued message, got ${stats.message_count}`,
+              );
+            }
+            return { queueUrn, msgIndex, stats };
+          } finally {
+            await client.deleteQueue(queueUrn);
+          }
+        },
+      ),
+    ];
+  };
+
+  const sdkUtilitiesGroup = async (): Promise<SelftestCaseResult[]> => {
+    return [
+      await runSelftestCase("BNS name/DID canonical round trip", async () => {
+        const canonicalName = sdk.bns.canonicalBnsName(identity.ownerUserId);
+        const did = sdk.bns.didBnsFromName(canonicalName);
+        const roundTripName = sdk.bns.nameFromDidBns(did);
+        if (roundTripName !== canonicalName) {
+          throw new Error(`BNS round trip mismatch: ${roundTripName}`);
+        }
+        return { canonicalName, did };
+      }),
+      await runSelftestCase("SN URL and region normalization", async () => {
+        const authUrl = sdk.sn.normalizeSnUrl("https://sn.example", "auth");
+        const region = sdk.sn.normalizeSnRegionIdHint("  US__West / 2  ");
+        if (
+          authUrl !== "https://sn.example/kapi/sn/auth" ||
+          region !== "us-west-2"
+        ) {
+          throw new Error(
+            `unexpected SN normalization: ${authUrl}, ${region}`,
+          );
+        }
+        return { authUrl, region };
+      }),
+    ];
+  };
+
+  const ndmProxyGroup = async (): Promise<SelftestCaseResult[]> => {
+    return [
+      await runSelftestCase("ndm_proxy.outboxCount", async () => {
+        const result = await sdk.ndm_proxy.outboxCount();
+        if (!Number.isInteger(result.count) || result.count < 0) {
+          throw new Error(`invalid outbox count: ${result.count}`);
+        }
+        return { count: result.count };
+      }),
+    ];
+  };
+
   return {
+    runtime: runtimeGroup,
     system_config: systemConfigGroup,
     app_settings: appSettingsGroup,
     task_manager: taskManagerGroup,
     verify_hub: verifyHubGroup,
     kevent: keventGroup,
+    service_clients: serviceClientsGroup,
+    sdk_utilities: sdkUtilitiesGroup,
+    ndm_proxy: ndmProxyGroup,
   };
 }
 
@@ -888,11 +797,15 @@ Deno.serve({
     console.log(
       `  POST ${sdkRoutePrefix}/selftest             (run all groups)`,
     );
+    console.log(`  POST ${sdkRoutePrefix}/selftest/runtime`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/system_config`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/app_settings`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/task_manager`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/verify_hub`);
     console.log(`  POST ${sdkRoutePrefix}/selftest/kevent`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/service_clients`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/sdk_utilities`);
+    console.log(`  POST ${sdkRoutePrefix}/selftest/ndm_proxy`);
     console.log(
       `  POST ${sdkRoutePrefix}/ndm_query             (query FileObjId status)`,
     );
@@ -939,7 +852,9 @@ Deno.serve({
         "healthz",
         jsonResponse({
           ok: bootstrapState.kind === "ready",
-          appId: APP_ID,
+          appId: bootstrapState.kind === "ready"
+            ? bootstrapState.identity.appId
+            : null,
           bootstrap: bootstrapState.kind,
         }),
       );
@@ -966,6 +881,11 @@ Deno.serve({
             taskManager: sdk.buckyos.getZoneServiceURL("task-manager"),
             systemConfig: sdk.buckyos.getZoneServiceURL("system-config"),
             kevent: sdk.buckyos.getZoneServiceURL("kevent"),
+            workflow: sdk.buckyos.getZoneServiceURL("workflow"),
+            aicc: sdk.buckyos.getZoneServiceURL("aicc"),
+            msgQueue: sdk.buckyos.getZoneServiceURL("kmsg"),
+            msgCenter: sdk.buckyos.getZoneServiceURL("msg-center"),
+            repo: sdk.buckyos.getZoneServiceURL("repo-service"),
           },
           accountInfo: accountInfo
             ? {

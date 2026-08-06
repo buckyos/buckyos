@@ -131,7 +131,6 @@ async function refreshAuthFromSdk(): Promise<void> {
 
 async function ensureLoggedInContext(): Promise<TestContext> {
   if (authState.kind !== 'logged-in') {
-    // Try to refresh once in case the cookie just landed.
     await refreshAuthFromSdk()
   }
   if (authState.kind !== 'logged-in') {
@@ -552,6 +551,22 @@ async function handleNdmUpload(btn: HTMLButtonElement) {
       snapshot = await ndm.pickupAndImport({
         mode: 'single_file',
         autoStartUpload: false,
+        onProgress: progress => {
+          const phaseLabel = progress.phase === 'qcid_lookup'
+            ? '正在查询 QCID 秒传状态'
+            : progress.phase === 'thumbnail'
+              ? '正在生成缩略图'
+              : '正在计算文件对象'
+          const byteProgress = progress.bytesProcessed != null && progress.fileTotalBytes != null
+            ? ` (${formatBytes(progress.bytesProcessed)} / ${formatBytes(progress.fileTotalBytes)})`
+            : ''
+          entries[entries.length - 1] = {
+            icon: '⏳',
+            label: `${phaseLabel}: ${progress.fileName}${byteProgress}`,
+            status: 'run',
+          }
+          renderNdmLog(resultsContainer, entries)
+        },
       })
     } catch (e: any) {
       if (e?.code === 'USER_CANCELLED') {
@@ -740,12 +755,6 @@ async function main() {
 
   ;($('btn-login') as HTMLButtonElement).addEventListener('click', async () => {
     try {
-      // Pass autoLogin=false: when the user explicitly clicks Login we want
-      // the SDK to skip its localStorage account_info cache and force a real
-      // SSO redirect. With the default (autoLogin=true), a stale cached
-      // entry under `buckyos.account_info.${appId}` makes loginByBrowserSSO
-      // return early without ever calling AuthClient.login(), so the page
-      // never redirects. See sdk_core.ts:loginByBrowserSSO.
       await buckyos.login()
       // The line above may navigate away (window.location.assign in
       // AuthClient.login). If the SDK returns synchronously, refresh state.

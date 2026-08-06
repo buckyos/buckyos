@@ -1,14 +1,13 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useEffect, useMemo, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useForm, useWatch } from 'react-hook-form'
+import { useFieldArray, useForm, useWatch } from 'react-hook-form'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 import {
   AlertOctagon,
   AlertTriangle,
   ArrowLeft,
-  Check,
   CheckCircle2,
   ChevronDown,
   CircleDashed,
@@ -18,16 +17,17 @@ import {
   Database,
   FileArchive,
   FolderOpen,
-  HardDriveDownload,
   KeyRound,
   Loader2,
   Minus,
   Network,
   PackageCheck,
   Play,
+  Plus,
   Server,
   ShieldAlert,
   ShieldCheck,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useI18n } from '../i18n/provider'
@@ -35,13 +35,14 @@ import { AppIcon } from '../components/DesktopVisuals'
 import { useSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
 import {
   installerApprovalSchema,
+  installerSudoSchema,
   type InstallerApprovalInput,
+  type InstallerSudoInput,
 } from '../app/app-service/schemas'
 import type {
   InstallAppInfo,
   AppPrice,
   InstallLaunchRequest,
-  InstallOptions,
   InstallPermission,
   InstallTargetNode,
   InstallTask,
@@ -297,7 +298,7 @@ function InstallerFrame({
 
   return (
     <div
-      className="mx-auto overflow-hidden rounded-[24px]"
+      className="relative mx-auto overflow-hidden rounded-[24px]"
       data-testid="app-installer-dialog"
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
     >
@@ -637,236 +638,682 @@ function PermissionIcon({ kind }: { kind: InstallPermission['kind'] }) {
   }
 }
 
+function SudoPasswordDialog({
+  appName,
+  onCancel,
+  onConfirm,
+}: {
+  appName: string
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const { t } = useI18n()
+  const form = useForm<InstallerSudoInput>({
+    resolver: zodResolver(installerSudoSchema),
+    defaultValues: { password: '' },
+  })
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      data-testid="app-installer-sudo-dialog"
+    >
+      <div
+        className="absolute inset-0"
+        aria-hidden="true"
+        style={{ background: 'color-mix(in srgb, var(--cp-shadow) 30%, transparent)', backdropFilter: 'blur(2px)' }}
+      />
+      <section
+        aria-label={t('appService.install.sudoTitle', 'sudo authorization')}
+        aria-modal="true"
+        role="dialog"
+        className="relative w-full max-w-md overflow-hidden rounded-[22px]"
+        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
+      >
+        <header className="border-b px-5 py-4" style={{ borderColor: 'var(--cp-border)' }}>
+          <div className="flex items-center gap-3">
+            <span
+              className="flex size-10 shrink-0 items-center justify-center rounded-full"
+              style={{ color: 'var(--cp-accent)', background: 'color-mix(in srgb, var(--cp-accent) 10%, var(--cp-surface))' }}
+            >
+              <KeyRound size={18} aria-hidden="true" />
+            </span>
+            <div>
+              <h2 className="font-display text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
+                {t('appService.install.sudoTitle', 'sudo authorization')}
+              </h2>
+              <p className="mt-0.5 text-xs" style={{ color: 'var(--cp-muted)' }}>
+                {t('appService.install.sudoDescription', 'Enter the administrator password to install {{name}}.', { name: appName })}
+              </p>
+            </div>
+          </div>
+        </header>
+        <form
+          className="space-y-4 p-5"
+          onSubmit={form.handleSubmit(() => onConfirm())}
+          noValidate
+        >
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+              {t('appService.install.adminPassword', 'Administrator password')}
+            </span>
+            <input
+              autoComplete="current-password"
+              autoFocus
+              type="password"
+              {...form.register('password')}
+              className="aicc-password-input min-h-11 w-full rounded-xl px-3 text-sm outline-none"
+              aria-invalid={Boolean(form.formState.errors.password)}
+              style={{
+                color: 'var(--cp-text)',
+                background: 'var(--cp-surface-2)',
+                border: form.formState.errors.password
+                  ? '1px solid var(--cp-danger)'
+                  : '1px solid var(--cp-border)',
+              }}
+            />
+            <span className="mt-1.5 block text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
+              {t('appService.install.adminPasswordHint', 'Used only for this sudo authorization and never stored in task history.')}
+            </span>
+            {form.formState.errors.password ? (
+              <span className="mt-1.5 block text-xs" style={{ color: 'var(--cp-danger)' }}>
+                {t('appService.install.passwordRequired', 'Enter the administrator password to continue.')}
+              </span>
+            ) : null}
+          </label>
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="min-h-11 rounded-xl px-4 text-sm font-semibold"
+              style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+            >
+              {t('common.cancel', 'Cancel')}
+            </button>
+            <button
+              type="submit"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold"
+              style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
+            >
+              <ShieldCheck size={15} aria-hidden="true" />
+              {t('appService.install.confirmInstall', 'Authorize and install')}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  )
+}
+
 function ApprovalStep({ task, onBack }: { task: InstallTask; onBack: () => void }) {
   const store = useSharedAppServiceStore()
   const { t } = useI18n()
+  const [pendingApproval, setPendingApproval] = useState<InstallerApprovalInput | null>(null)
   const form = useForm<InstallerApprovalInput>({
     resolver: zodResolver(installerApprovalSchema),
     mode: 'onBlur',
-    defaultValues: {
-      ...task.plan.options,
-      password: '',
-    },
+    defaultValues: structuredClone(task.plan.options),
   })
-  const watched = useWatch({ control: form.control })
-  const options: InstallOptions = {
-    targetNode: watched.targetNode ?? task.plan.options.targetNode,
-    components: watched.components ?? task.plan.options.components,
-    dataDir: watched.dataDir ?? task.plan.options.dataDir,
-    networkMode: watched.networkMode ?? task.plan.options.networkMode,
-    autoStart: watched.autoStart ?? task.plan.options.autoStart,
-  }
-  const preview = store.previewInstallPlan(task.app, options)
+  const {
+    fields: mountFields,
+    append: appendMount,
+    remove: removeMount,
+  } = useFieldArray({ control: form.control, name: 'mounts' })
+  const {
+    fields: envFields,
+    append: appendEnv,
+    remove: removeEnv,
+  } = useFieldArray({ control: form.control, name: 'envVars' })
+  const serviceSettings = useWatch({ control: form.control, name: 'serviceSettings' })
+  const permissionGrants = useWatch({ control: form.control, name: 'permissionGrants' })
   const launchRequest = task.launchRequest
+  const permissions = [...task.app.permissions].sort((left, right) => {
+    if (left.risk === right.risk) return left.kind.localeCompare(right.kind)
+    return left.risk === 'high' ? -1 : 1
+  })
+  const riskyParams = [
+    { name: 'start_param', value: task.app.startParam },
+    { name: 'container_param', value: task.app.containerParam },
+  ].filter((item): item is { name: string; value: string } => Boolean(item.value))
+
+  const registerPath = (path: string) => form.register(path as never)
+  const setValue = (path: string, value: unknown) => {
+    form.setValue(path as never, value as never, { shouldDirty: true, shouldValidate: true })
+  }
 
   return (
-    <form className="space-y-6 p-5 sm:p-6" onSubmit={form.handleSubmit((values) => store.approveTask(task.taskId, values))} noValidate>
-      <div>
-        <h2 className="font-display text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
-          {t('appService.install.optionsTitle', 'Installation plan')}
-        </h2>
-        <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.optionsBody', 'Changing the target or settings recalculates content readiness and technical impact before approval.')}
-        </p>
-      </div>
-
-      {(launchRequest?.offline || launchRequest?.installParams) && (
-        <section
-          className="rounded-[16px] p-4"
-          style={{ background: 'color-mix(in srgb, var(--cp-accent) 6%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-accent) 22%, var(--cp-border))' }}
-        >
-          <h3 className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-            {t('appService.install.callerSuggestions', 'Caller-provided suggestions')}
-          </h3>
-          <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--cp-muted)' }}>
-            {t('appService.install.callerSuggestionsHint', 'Review these values before authorizing. They are not treated as prior user approval.')}
+    <>
+      <form
+        className="space-y-6 p-5 sm:p-6"
+        onSubmit={form.handleSubmit((values) => setPendingApproval(values))}
+        noValidate
+      >
+        <div>
+          <h2 className="font-display text-base font-semibold" style={{ color: 'var(--cp-text)' }}>
+            {t('appService.install.optionsTitle', 'Configure application')}
+          </h2>
+          <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-muted)' }}>
+            {t('appService.install.optionsBody', 'Review the important access, storage, environment, and permission settings. Defaults are ready to use.')}
           </p>
-          {launchRequest.offline && (
-            <div className="mt-3 inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-warning)', background: 'color-mix(in srgb, var(--cp-warning) 12%, transparent)' }}>
-              {t('appService.install.offlineOnly', 'Offline acquisition only')}
-            </div>
-          )}
-          {launchRequest.installParams && (
-            <div className="mt-3">
-              <div className="text-[11px] font-semibold" style={{ color: 'var(--cp-text)' }}>
-                {t('appService.install.installParams', 'Application install parameters')}
-              </div>
-              <pre className="desktop-scrollbar mt-2 max-h-36 overflow-auto rounded-xl p-3 text-[11px] leading-5" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
-                {JSON.stringify(launchRequest.installParams, null, 2)}
-              </pre>
-            </div>
-          )}
-        </section>
-      )}
+        </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <section className="space-y-4 rounded-[18px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.targetNode', 'Target node')}
-            </span>
-            <select
-              {...form.register('targetNode')}
-              className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-              style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
-            >
-              <option value="ood-primary">{t('appService.install.target.oodPrimary', 'OOD Primary · aarch64')}</option>
-              <option value="ood-backup">{t('appService.install.target.oodBackup', 'OOD Backup · aarch64')}</option>
-            </select>
-          </label>
-
-          <fieldset>
-            <legend className="mb-2 text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.components', 'Components')}
-            </legend>
-            <div className="space-y-2">
-              {task.app.availableComponents.map((component) => (
-                <label key={component} className="flex min-h-11 items-center gap-3 rounded-xl px-3" style={{ background: 'var(--cp-surface)' }}>
-                  <input type="checkbox" value={component} {...form.register('components')} className="size-4 accent-[var(--cp-accent)]" />
-                  <span className="text-sm font-medium capitalize" style={{ color: 'var(--cp-text)' }}>{component}</span>
-                </label>
-              ))}
-            </div>
-            {form.formState.errors.components && (
-              <p className="mt-1.5 text-xs" style={{ color: 'var(--cp-danger)' }}>
-                {t('appService.install.componentsRequired', 'Choose at least one component.')}
-              </p>
-            )}
-          </fieldset>
+        <section
+          className="space-y-4 rounded-[18px] p-4"
+          data-testid="app-installer-access-settings"
+          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+        >
+          <div>
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+              {t('appService.install.accessSettings', 'Access settings')}
+            </h3>
+            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
+              {t('appService.install.accessSettingsHint', 'Choose how people and services reach this application.')}
+            </p>
+          </div>
 
           <label className="block">
             <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.dataDirectory', 'Data directory')}
+              {t('appService.install.fullAppHost', 'Full application host')}
             </span>
             <input
-              {...form.register('dataDir')}
-              className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-              aria-invalid={Boolean(form.formState.errors.dataDir)}
-              style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: `1px solid ${form.formState.errors.dataDir ? 'var(--cp-danger)' : 'var(--cp-border)'}` }}
+              readOnly
+              value={task.app.appHost}
+              className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
+              style={{ color: 'var(--cp-muted)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
             />
-            {form.formState.errors.dataDir && (
-              <p className="mt-1.5 text-xs" style={{ color: 'var(--cp-danger)' }}>
-                {t('appService.install.dataDirectoryError', 'Enter an absolute data directory beginning with /.')}
-              </p>
-            )}
           </label>
 
           <label className="block">
             <span className="mb-1.5 block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              {t('appService.install.networkMode', 'Network access')}
+              {t('appService.install.shortcutDomain', 'Shortcut domain')}
             </span>
             <select
-              {...form.register('networkMode')}
+              {...form.register('shortcutDomain')}
               className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
               style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
             >
-              <option value="zone">{t('appService.install.networkZone', 'Zone HTTPS route')}</option>
-              <option value="private">{t('appService.install.networkPrivate', 'Private node access only')}</option>
+              <option value="">{t('appService.install.noShortcutDomain', 'No shortcut')}</option>
+              {task.app.shortcutDomains.map((domain) => (
+                <option key={domain} value={domain}>{domain}</option>
+              ))}
             </select>
           </label>
 
-          <label className="flex min-h-11 items-center justify-between gap-4 rounded-xl px-3" style={{ background: 'var(--cp-surface)' }}>
-            <span>
-              <span className="block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.autoStart', 'Start after installation')}</span>
-              <span className="mt-0.5 block text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('appService.install.autoStartHint', 'Installation success remains separate from startup success.')}</span>
-            </span>
-            <input type="checkbox" {...form.register('autoStart')} className="size-4 shrink-0 accent-[var(--cp-accent)]" />
-          </label>
+          <fieldset className="space-y-3">
+            <legend className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+              {t('appService.install.portExposure', 'Port exposure')}
+            </legend>
+            {task.plan.options.serviceSettings.map((service, index) => {
+              const current = serviceSettings[index] ?? service
+              const route = current.expose.route
+              return (
+                <div
+                  key={service.serviceName}
+                  className="space-y-3 rounded-[14px] p-3"
+                  style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+                >
+                  <label className="flex min-h-11 items-center justify-between gap-4">
+                    <span className="min-w-0">
+                      <span className="block text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>{service.label}</span>
+                      <span className="mt-0.5 block text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+                        {service.serviceName} · {service.protocol.toUpperCase()} · {t('appService.install.containerPort', 'container port')} {service.innerPort}
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      {...registerPath('serviceSettings.' + index + '.enabled')}
+                      className="size-4 shrink-0 accent-[var(--cp-accent)]"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                      {t('appService.install.exposureRoute', 'Exposure route')}
+                    </span>
+                    <select
+                      value={route.type}
+                      onChange={(event) => {
+                        setValue(
+                          'serviceSettings.' + index + '.expose.route',
+                          event.target.value === 'port'
+                            ? { type: 'port', exposePort: service.innerPort }
+                            : { type: 'web', subHostname: [] },
+                        )
+                      }}
+                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
+                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                    >
+                      <option value="web">{t('appService.install.webRoute', 'Application HTTPS host')}</option>
+                      <option value="port">{t('appService.install.directPort', 'Direct Zone port')}</option>
+                    </select>
+                  </label>
+                  {route.type === 'port' ? (
+                    <label className="block">
+                      <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                        {t('appService.install.exposedPort', 'Exposed port')}
+                      </span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={route.exposePort}
+                        onChange={(event) => {
+                          setValue(
+                            'serviceSettings.' + index + '.expose.route',
+                            { type: 'port', exposePort: Number(event.target.value) },
+                          )
+                        }}
+                        className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
+                        style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                      />
+                    </label>
+                  ) : null}
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                      {t('appService.install.exposureScope', 'Scope')}
+                    </span>
+                    <input
+                      {...registerPath('serviceSettings.' + index + '.expose.scope')}
+                      placeholder={t('appService.install.zoneScope', 'Zone users')}
+                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
+                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                    />
+                  </label>
+                  <label className="flex min-h-11 items-center justify-between gap-4">
+                    <span className="text-xs font-medium" style={{ color: 'var(--cp-text)' }}>
+                      {t('appService.install.allowGuest', 'Allow guest access')}
+                    </span>
+                    <input
+                      type="checkbox"
+                      {...registerPath('serviceSettings.' + index + '.expose.allowGuest')}
+                      className="size-4 shrink-0 accent-[var(--cp-accent)]"
+                    />
+                  </label>
+                </div>
+              )
+            })}
+          </fieldset>
         </section>
 
-        <div className="space-y-5">
-          <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.requiredPermissions', 'Required permissions')}
+        <section
+          className="space-y-4 rounded-[18px] p-4"
+          data-testid="app-installer-mount-settings"
+          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+        >
+          <div>
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+              {t('appService.install.directoryMounts', 'Directory mounts')}
             </h3>
-            <div className="overflow-hidden rounded-[16px]" style={{ border: '1px solid var(--cp-border)' }}>
-              {preview.permissions.map((permission, index) => {
-                return (
-                  <div key={`${permission.kind}-${permission.scope}`} className="flex items-center gap-3 px-4 py-3" style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}>
-                    <PermissionIcon kind={permission.kind} />
-                    <div className="min-w-0">
-                      <div className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                        {t(`appService.install.permission.${permission.kind}`, permission.kind)}
-                      </div>
-                      <div className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{permission.scope}</div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </section>
-
-          <section className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-            <h3 className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.technicalImpact', 'Technical impact')}</h3>
-            <ul className="mt-3 space-y-2">
-              {preview.impacts.map((impact) => (
-                <li key={impact} className="flex items-start gap-2 text-[11px] leading-5" style={{ color: 'var(--cp-muted)' }}>
-                  <Check size={13} className="mt-1 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-accent)' }} />
-                  {t(`appService.install.impact.${impact}`, impact)}
-                </li>
-              ))}
-            </ul>
-            <div className="mt-4 flex items-center justify-between gap-3 border-t pt-3" style={{ borderColor: 'var(--cp-border)' }}>
-              <span className="inline-flex items-center gap-2 text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                <HardDriveDownload size={15} aria-hidden="true" />
-                {t('appService.install.downloadSize', 'Download')}
-              </span>
-              <span className="text-xs font-semibold tabular-nums" style={{ color: preview.content.missingBytes > 0 ? 'var(--cp-warning)' : 'var(--cp-success)' }}>
-                {preview.content.missingBytes > 0 ? formatBytes(preview.content.missingBytes) : t('appService.install.notRequired', 'Not required')}
-              </span>
-            </div>
-          </section>
-
-          <section className="rounded-[16px] p-4" style={{ background: 'color-mix(in srgb, var(--cp-accent) 6%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-accent) 22%, var(--cp-border))' }}>
-            <div className="flex items-start gap-3">
-              <KeyRound size={17} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-accent)' }} />
-              <div className="min-w-0 flex-1">
-                <label htmlFor="app-installer-password" className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                  {t('appService.install.adminPassword', 'Administrator password')}
+            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
+              {t('appService.install.directoryMountsHint', 'Choose declared data directories or add an explicit container mapping.')}
+            </p>
+          </div>
+          <div className="space-y-3">
+            {mountFields.map((field, index) => (
+              <div
+                key={field.id}
+                className="space-y-3 rounded-[14px] p-3"
+                style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+              >
+                <div className="flex min-h-8 items-start justify-between gap-3">
+                  {field.declared ? (
+                    <label className="flex min-w-0 items-start gap-3">
+                      <input
+                        type="checkbox"
+                        {...registerPath('mounts.' + index + '.enabled')}
+                        className="mt-0.5 size-4 shrink-0 accent-[var(--cp-accent)]"
+                      />
+                      <span className="min-w-0 text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+                        {field.name}
+                        <span className="ml-1 font-normal" style={{ color: 'var(--cp-muted)' }}>({field.containerPath})</span>
+                      </span>
+                    </label>
+                  ) : (
+                    <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+                      {t('appService.install.customMapping', 'Custom mapping')}
+                    </span>
+                  )}
+                  {!field.declared ? (
+                    <button
+                      type="button"
+                      onClick={() => removeMount(index)}
+                      className="flex size-10 shrink-0 items-center justify-center rounded-xl"
+                      aria-label={t('appService.install.removeMapping', 'Remove mapping')}
+                      style={{ color: 'var(--cp-danger)', border: '1px solid var(--cp-border)' }}
+                    >
+                      <Trash2 size={15} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+                {!field.declared ? (
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                      {t('appService.install.containerPath', 'Container path')}
+                    </span>
+                    <input
+                      {...registerPath('mounts.' + index + '.containerPath')}
+                      className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
+                      aria-invalid={Boolean(form.formState.errors.mounts?.[index]?.containerPath)}
+                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                    />
+                  </label>
+                ) : null}
+                <label className="block">
+                  <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                    {t('appService.install.targetDirectory', 'Mapped directory')}
+                  </span>
+                  <input
+                    {...registerPath('mounts.' + index + '.targetPath')}
+                    className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
+                    aria-invalid={Boolean(form.formState.errors.mounts?.[index]?.targetPath)}
+                    style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                  />
                 </label>
-                <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-                  {t('appService.install.adminPasswordHint', 'Required for this system-level installation. The password is never stored in task history.')}
-                </p>
-                <input
-                  id="app-installer-password"
-                  type="password"
-                  autoComplete="current-password"
-                  {...form.register('password')}
-                  className="aicc-password-input mt-3 min-h-11 w-full rounded-xl px-3 text-sm outline-none"
-                  aria-invalid={Boolean(form.formState.errors.password)}
-                  style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: `1px solid ${form.formState.errors.password ? 'var(--cp-danger)' : 'var(--cp-border)'}` }}
-                />
-                {form.formState.errors.password && (
-                  <p className="mt-1.5 text-xs" style={{ color: 'var(--cp-danger)' }}>
-                    {t('appService.install.passwordRequired', 'Enter the administrator password to continue.')}
+                {!field.declared ? (
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                      {t('appService.install.mountAccess', 'Access')}
+                    </span>
+                    <select
+                      {...registerPath('mounts.' + index + '.access')}
+                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
+                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                    >
+                      <option value="read_only">{t('appService.install.readOnly', 'Read only')}</option>
+                      <option value="read_write">{t('appService.install.readWrite', 'Read and write')}</option>
+                      <option value="read_write_append">{t('appService.install.readWriteAppend', 'Read, write, and append')}</option>
+                    </select>
+                  </label>
+                ) : null}
+                {form.formState.errors.mounts?.[index] ? (
+                  <p className="text-xs" style={{ color: 'var(--cp-danger)' }}>
+                    {t('appService.install.mountPathError', 'Both paths must be absolute and begin with /.')}
                   </p>
-                )}
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => appendMount({
+              name: 'Custom mapping',
+              containerPath: '/container/path',
+              targetPath: '/data/path',
+              access: 'read_write',
+              enabled: true,
+              declared: false,
+            })}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+          >
+            <Plus size={15} aria-hidden="true" />
+            {t('appService.install.addMapping', 'Add mapping')}
+          </button>
+        </section>
+
+        <section
+          className="space-y-4 rounded-[18px] p-4"
+          data-testid="app-installer-environment-settings"
+          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+        >
+          <div>
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+              {t('appService.install.environmentVariables', 'Environment variables')}
+            </h3>
+            <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
+              {t('appService.install.environmentVariablesHint', 'Configure values declared by the application or add another variable.')}
+            </p>
+          </div>
+          <div className="space-y-3">
+            {envFields.map((field, index) => (
+              <div
+                key={field.id}
+                className="space-y-3 rounded-[14px] p-3"
+                style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  {field.declared ? (
+                    <div className="min-w-0">
+                      <div className="break-all font-mono text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+                        {field.name}
+                        {field.required ? (
+                          <span className="ml-2 font-sans text-[10px] uppercase tracking-wide" style={{ color: 'var(--cp-warning)' }}>
+                            {t('appService.install.required', 'Required')}
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>{field.description}</p>
+                    </div>
+                  ) : (
+                    <label className="min-w-0 flex-1">
+                      <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                        {t('appService.install.variableName', 'Name')}
+                      </span>
+                      <input
+                        {...registerPath('envVars.' + index + '.name')}
+                        className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
+                        aria-invalid={Boolean(form.formState.errors.envVars?.[index]?.name)}
+                        style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                      />
+                    </label>
+                  )}
+                  {!field.declared ? (
+                    <button
+                      type="button"
+                      onClick={() => removeEnv(index)}
+                      className="mt-[22px] flex size-10 shrink-0 items-center justify-center rounded-xl"
+                      aria-label={t('appService.install.removeVariable', 'Remove variable')}
+                      style={{ color: 'var(--cp-danger)', border: '1px solid var(--cp-border)' }}
+                    >
+                      <Trash2 size={15} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+                <label className="block">
+                  <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                    {t('appService.install.variableValue', 'Value')}
+                  </span>
+                  <input
+                    {...registerPath('envVars.' + index + '.value')}
+                    className="min-h-11 w-full rounded-xl px-3 font-mono text-sm outline-none"
+                    style={{ color: 'var(--cp-text)', background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+                  />
+                </label>
+                {form.formState.errors.envVars?.[index] ? (
+                  <p className="text-xs" style={{ color: 'var(--cp-danger)' }}>
+                    {t('appService.install.environmentError', 'Use a valid environment variable name.')}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => appendEnv({
+              name: '',
+              value: '',
+              description: '',
+              required: false,
+              declared: false,
+            })}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
+            style={{ color: 'var(--cp-accent)', border: '1px solid var(--cp-border)' }}
+          >
+            <Plus size={15} aria-hidden="true" />
+            {t('appService.install.addVariable', 'Add variable')}
+          </button>
+        </section>
+
+        {riskyParams.length > 0 ? (
+          <section
+            className="space-y-3 rounded-[18px] p-4"
+            data-testid="app-installer-risky-params"
+            style={{
+              background: 'color-mix(in srgb, var(--cp-danger) 7%, var(--cp-surface))',
+              border: '1px solid color-mix(in srgb, var(--cp-danger) 28%, var(--cp-border))',
+            }}
+          >
+            <div className="flex items-start gap-3">
+              <AlertOctagon size={18} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-danger)' }} />
+              <div>
+                <h3 className="text-sm font-semibold" style={{ color: 'var(--cp-danger)' }}>
+                  {t('appService.install.otherParameters', 'Other parameters')}
+                </h3>
+                <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
+                  {t('appService.install.highRiskParametersWarning', 'High risk: these parameters can change the container process or runtime isolation. Continue only if you trust the application publisher.')}
+                </p>
               </div>
             </div>
+            <dl className="overflow-hidden rounded-[14px]" style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+              {riskyParams.map((item, index) => (
+                <div
+                  key={item.name}
+                  className="space-y-1 px-3 py-3"
+                  style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}
+                >
+                  <dt className="font-mono text-[11px] font-semibold" style={{ color: 'var(--cp-danger)' }}>{item.name}</dt>
+                  <dd className="break-all font-mono text-xs" style={{ color: 'var(--cp-text)' }}>{item.value}</dd>
+                </div>
+              ))}
+            </dl>
           </section>
-        </div>
-      </div>
+        ) : null}
 
-      <footer className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-between" style={{ borderColor: 'var(--cp-border)' }}>
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
-          style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+        {(launchRequest?.offline || launchRequest?.installParams) ? (
+          <details
+            className="group overflow-hidden rounded-[16px]"
+            style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+          >
+            <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+              <div className="min-w-0 flex-1">
+                <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+                  {t('appService.install.callerSuggestions', 'Caller-provided suggestions')}
+                </span>
+                <span className="ml-2 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+                  {t('appService.install.callerSuggestionsHint', 'Review before authorizing.')}
+                </span>
+              </div>
+              <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+            </summary>
+            <div className="space-y-3 px-4 py-3" style={{ borderTop: '1px solid var(--cp-border)' }}>
+              {launchRequest.offline ? (
+                <div className="inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-warning)', background: 'color-mix(in srgb, var(--cp-warning) 12%, transparent)' }}>
+                  {t('appService.install.offlineOnly', 'Offline acquisition only')}
+                </div>
+              ) : null}
+              {launchRequest.installParams ? (
+                <pre className="desktop-scrollbar max-h-36 overflow-auto rounded-xl p-3 text-[11px] leading-5" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+                  {JSON.stringify(launchRequest.installParams, null, 2)}
+                </pre>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
+
+        <details
+          open
+          className="group overflow-hidden rounded-[18px]"
+          data-testid="app-installer-permissions"
+          style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
         >
-          <ArrowLeft size={15} aria-hidden="true" />
-          {t('appService.install.backToVerify', 'Back to verification')}
-        </button>
-        <button
-          type="submit"
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold"
-          style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
-        >
-          <ShieldCheck size={15} aria-hidden="true" />
-          {t('appService.install.confirmInstall', 'Authorize and install')}
-        </button>
-      </footer>
-    </form>
+          <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+            <ShieldAlert size={17} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
+            <div className="min-w-0 flex-1">
+              <span className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+                {t('appService.install.permissionRequests', 'Permission requests')}
+              </span>
+              <span className="ml-2 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+                {t('appService.install.permissionCount', '{{count}} requested', { count: permissions.length })}
+              </span>
+            </div>
+            <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+          </summary>
+          <div style={{ borderTop: '1px solid var(--cp-border)' }}>
+            {permissions.map((permission, index) => {
+              const grantIndex = permissionGrants.findIndex((item) => item.scope === permission.scope)
+              return (
+                <div
+                  key={permission.scope}
+                  className="space-y-3 px-4 py-4"
+                  style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}
+                >
+                  <div className="flex items-start gap-3">
+                    <PermissionIcon kind={permission.kind} />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+                          {t('appService.install.permission.' + permission.kind, permission.kind)}
+                        </span>
+                        {permission.risk === 'high' ? (
+                          <span
+                            className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                            style={{ color: 'var(--cp-danger)', background: 'color-mix(in srgb, var(--cp-danger) 10%, transparent)' }}
+                          >
+                            {t('appService.install.highRisk', 'High risk')}
+                          </span>
+                        ) : null}
+                        {permission.required ? (
+                          <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-muted)' }}>
+                            {t('appService.install.required', 'Required')}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="mt-1 break-all font-mono text-[11px]" style={{ color: 'var(--cp-muted)' }}>{permission.scope}</div>
+                      <p className="mt-2 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>{permission.detail}</p>
+                    </div>
+                  </div>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11px] font-semibold" style={{ color: 'var(--cp-muted)' }}>
+                      {t('appService.install.permissionGrant', 'Permission granted by you')}
+                    </span>
+                    <select
+                      {...registerPath('permissionGrants.' + Math.max(0, grantIndex) + '.grant')}
+                      className="min-h-11 w-full rounded-xl px-3 text-sm outline-none"
+                      style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+                    >
+                      {permission.grantOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {t('appService.install.permissionGrant.' + option, option)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )
+            })}
+          </div>
+        </details>
+
+        <footer className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-between" style={{ borderColor: 'var(--cp-border)' }}>
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold"
+            style={{ color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+          >
+            <ArrowLeft size={15} aria-hidden="true" />
+            {t('appService.install.backToVerify', 'Back to verification')}
+          </button>
+          <button
+            type="submit"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold"
+            style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
+          >
+            {t('appService.install.next', 'Next')}
+          </button>
+        </footer>
+      </form>
+
+      {pendingApproval ? (
+        <SudoPasswordDialog
+          appName={task.app.name}
+          onCancel={() => setPendingApproval(null)}
+          onConfirm={() => {
+            store.approveTask(task.taskId, pendingApproval)
+            setPendingApproval(null)
+          }}
+        />
+      ) : null}
+    </>
   )
 }
 

@@ -15,11 +15,10 @@ use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 const CONTROL_PANEL_AUTH_APPID: &str = "control-panel";
 const GATEWAY_SSO_SESSION_COOKIE: &str = "buckyos_session_token";
-const GATEWAY_SSO_REFRESH_COOKIE: &str = "buckyos_session_token";
+const GATEWAY_SSO_REFRESH_COOKIE: &str = "buckyos_refresh_token";
 const PENDING_SSO_LOGIN_TTL_SECS: u64 = 60;
 const MAX_SAFE_JSON_INTEGER_U64: u64 = (1u64 << 53) - 1;
 
@@ -203,25 +202,11 @@ impl ControlPanelServer {
                     "refresh token is missing expiration"
                 )
             })?;
-        let refresh_cookie_domain = Self::cookie_domain(&req);
-        let refresh_cookie_secure = Self::request_is_secure(&req);
-        let mut refresh_cookie_parts = vec![format!(
-            "{}={}",
-            GATEWAY_SSO_REFRESH_COOKIE,
-            pending.refresh_token.as_str()
-        )];
-        refresh_cookie_parts.push("Path=/".to_string());
-        refresh_cookie_parts.push("SameSite=Lax".to_string());
-        if let Some(domain) = refresh_cookie_domain {
-            info!("cookie_domain: {}", domain);
-            refresh_cookie_parts.push(format!("Domain={}", domain));
-        }
-        refresh_cookie_parts.push(format!("Max-Age={}", refresh_max_age));
-        refresh_cookie_parts.push("HttpOnly".to_string());
-        if refresh_cookie_secure {
-            refresh_cookie_parts.push("Secure".to_string());
-        }
-        let refresh_cookie = refresh_cookie_parts.join("; ");
+        let refresh_cookie = Self::build_refresh_cookie_header(
+            &req,
+            Some(pending.refresh_token.as_str()),
+            Some(refresh_max_age),
+        );
         let mut response = http::Response::builder()
             .status(http::StatusCode::FOUND)
             .header(LOCATION, redirect_url.as_str());
@@ -284,25 +269,14 @@ impl ControlPanelServer {
                             "refresh token is missing expiration"
                         )
                     })?;
-                let refresh_cookie_domain = Self::cookie_domain(&req);
-                let refresh_cookie_secure = Self::request_is_secure(&req);
-                let mut refresh_cookie_parts = vec![format!(
-                    "{}={}",
-                    GATEWAY_SSO_REFRESH_COOKIE,
-                    token_pair.refresh_token.as_str()
-                )];
-                refresh_cookie_parts.push("Path=/".to_string());
-                refresh_cookie_parts.push("SameSite=Lax".to_string());
-                if let Some(domain) = refresh_cookie_domain {
-                    info!("cookie_domain: {}", domain);
-                    refresh_cookie_parts.push(format!("Domain={}", domain));
-                }
-                refresh_cookie_parts.push(format!("Max-Age={}", refresh_max_age));
-                refresh_cookie_parts.push("HttpOnly".to_string());
-                if refresh_cookie_secure {
-                    refresh_cookie_parts.push("Secure".to_string());
-                }
-                response = response.header(SET_COOKIE, refresh_cookie_parts.join("; "));
+                response = response.header(
+                    SET_COOKIE,
+                    Self::build_refresh_cookie_header(
+                        &req,
+                        Some(token_pair.refresh_token.as_str()),
+                        Some(refresh_max_age),
+                    ),
+                );
 
                 let body = serde_json::to_vec(&json!({
                     "session_token": token_pair.session_token,
@@ -589,51 +563,6 @@ impl ControlPanelServer {
             .and_then(|value| Self::normalize_session_token(Some(value)))
     }
 
-    fn request_host(req: &http::Request<BoxBody<Bytes, ServerError>>) -> Option<String> {
-        req.headers()
-            .get(HOST)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.trim().to_ascii_lowercase())
-            .and_then(|value| {
-                let host = value.rsplit_once(':').map(|(host, port)| {
-                    if port.chars().all(|ch| ch.is_ascii_digit()) {
-                        host.to_string()
-                    } else {
-                        value.clone()
-                    }
-                });
-                host.or(Some(value))
-            })
-            .and_then(|value| {
-                let trimmed = value
-                    .trim()
-                    .trim_matches('.')
-                    .trim_matches('[')
-                    .trim_matches(']');
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            })
-    }
-
-    fn cookie_domain(req: &http::Request<BoxBody<Bytes, ServerError>>) -> Option<String> {
-        let host = Self::request_host(req)?;
-        if host == "localhost" || host.parse::<IpAddr>().is_ok() || host.contains(':') {
-            return None;
-        }
-
-        // if let Some(rest) = host.strip_prefix("sys.") {
-        //     let rest = rest.trim_matches('.');
-        //     if !rest.is_empty() {
-        //         return Some(rest.to_string());
-        //     }
-        // }
-
-        Some(host)
-    }
-
     fn request_is_secure(req: &http::Request<BoxBody<Bytes, ServerError>>) -> bool {
         if let Some(value) = req.headers().get("X-Forwarded-Proto") {
             if let Ok(proto) = value.to_str() {
@@ -665,7 +594,7 @@ impl ControlPanelServer {
         Some(exp.saturating_sub(buckyos_get_unix_timestamp()))
     }
 
-    fn build_cookie_header(
+    fn build_host_cookie_header(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         name: &str,
         value: Option<&str>,
@@ -678,10 +607,6 @@ impl ControlPanelServer {
         }];
         parts.push("Path=/".to_string());
         parts.push("SameSite=Lax".to_string());
-        if let Some(domain) = Self::cookie_domain(req) {
-            info!("cookie_domain: {}", domain);
-            parts.push(format!("Domain={}", domain));
-        }
         if let Some(max_age) = max_age {
             parts.push(format!("Max-Age={}", max_age));
         } else {
@@ -697,6 +622,14 @@ impl ControlPanelServer {
         parts.join("; ")
     }
 
+    fn build_refresh_cookie_header(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+        value: Option<&str>,
+        max_age: Option<u64>,
+    ) -> String {
+        Self::build_host_cookie_header(req, GATEWAY_SSO_REFRESH_COOKIE, value, true, max_age)
+    }
+
     fn build_session_cookie_headers(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
         session_token: &str,
@@ -707,7 +640,7 @@ impl ControlPanelServer {
                 "session token is missing expiration"
             )
         })?;
-        Ok(vec![Self::build_cookie_header(
+        Ok(vec![Self::build_host_cookie_header(
             req,
             GATEWAY_SSO_SESSION_COOKIE,
             Some(session_token),
@@ -720,8 +653,8 @@ impl ControlPanelServer {
         req: &http::Request<BoxBody<Bytes, ServerError>>,
     ) -> Vec<String> {
         vec![
-            //Self::build_cookie_header(req, GATEWAY_SSO_SESSION_COOKIE, None, false, None),
-            Self::build_cookie_header(req, GATEWAY_SSO_REFRESH_COOKIE, None, true, None),
+            Self::build_host_cookie_header(req, GATEWAY_SSO_SESSION_COOKIE, None, false, None),
+            Self::build_refresh_cookie_header(req, None, None),
         ]
     }
 
@@ -960,5 +893,74 @@ impl ControlPanelServer {
             Self::extract_rpc_session_token(req),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(cookie: Option<&str>, secure: bool) -> http::Request<BoxBody<Bytes, ServerError>> {
+        let mut builder = http::Request::builder()
+            .uri("/sso_refresh")
+            .header(HOST, "files.example.test");
+        if let Some(cookie) = cookie {
+            builder = builder.header(http::header::COOKIE, cookie);
+        }
+        if secure {
+            builder = builder.header("X-Forwarded-Proto", "https");
+        }
+        builder
+            .body(ControlPanelServer::boxed_http_body(Vec::new()))
+            .unwrap()
+    }
+
+    #[test]
+    fn refresh_cookie_is_distinct_and_host_only() {
+        let req = request(None, true);
+        let header = ControlPanelServer::build_refresh_cookie_header(
+            &req,
+            Some("current-refresh-token"),
+            Some(300),
+        );
+
+        assert_eq!(
+            header,
+            "buckyos_refresh_token=current-refresh-token; Path=/; SameSite=Lax; Max-Age=300; HttpOnly; Secure"
+        );
+        assert!(!header.contains(GATEWAY_SSO_SESSION_COOKIE));
+        assert!(!header.contains("Domain="));
+    }
+
+    #[test]
+    fn refresh_cookie_extraction_ignores_duplicate_session_cookies() {
+        let req = request(
+            Some(
+                "buckyos_session_token=stale-parent-refresh; buckyos_session_token=current-app-session; buckyos_refresh_token=current-app-refresh",
+            ),
+            true,
+        );
+
+        assert_eq!(
+            ControlPanelServer::extract_http_cookie(&req, GATEWAY_SSO_REFRESH_COOKIE).as_deref(),
+            Some("current-app-refresh")
+        );
+    }
+
+    #[test]
+    fn clear_auth_cookies_clears_both_host_only_cookies() {
+        let req = request(None, true);
+        let headers = ControlPanelServer::build_clear_auth_cookie_headers(&req);
+
+        assert_eq!(headers.len(), 2);
+        assert_eq!(
+            headers[0],
+            "buckyos_session_token=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure"
+        );
+        assert_eq!(
+            headers[1],
+            "buckyos_refresh_token=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure"
+        );
+        assert!(headers.iter().all(|header| !header.contains("Domain=")));
     }
 }

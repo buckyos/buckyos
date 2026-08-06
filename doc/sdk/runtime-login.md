@@ -159,11 +159,11 @@ Web SSO 是面向浏览器页面的封装：
 
 1. 页面跳到 `https://sys.<zone>/login?client_id=<appid>&redirect_url=<url>`。
 2. control-panel 调 `login_by_password`。
-3. `/sso_callback` 把 refresh token 写入 HttpOnly cookie。
+3. 目标 App origin 上的 `/sso_callback` 把 refresh token 写入 host-only、HttpOnly cookie `buckyos_refresh_token`。
 4. 页面调用 `/sso_refresh`，拿到 JS 可读的 `session_token`。
 5. 页面后续请求用 `X-Auth`、`Authorization: Bearer`、query 或 kRPC `token` 字段携带 `session_token`。
 
-当前 control-panel 里 refresh cookie 和部分历史 session cookie 使用同一个 cookie 名 `buckyos_session_token`。对接时按语义区分：HttpOnly cookie 里的值用于 `/sso_refresh`，业务请求应使用 `/sso_refresh` 返回体里的短期 `session_token`。
+control-panel 使用两个互相隔离的 host-only cookie：`buckyos_refresh_token` 仅保存 HttpOnly refresh token，`buckyos_session_token` 保存短期 session token。两者都不设置 `Domain`，自身不会共享到父域或其它 App 子域。`/sso_refresh` 只读取 `buckyos_refresh_token`，因此不会再把遗留的父域 `buckyos_session_token` 误当成 refresh token；业务请求应使用其返回体里的短期 `session_token`。
 
 ## 服务端怎么验证 token
 

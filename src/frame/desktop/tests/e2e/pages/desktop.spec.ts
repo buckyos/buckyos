@@ -277,6 +277,37 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
   expect(consoleErrors).toEqual([])
 })
 
+test('systest opens its zone subdomain inside a desktop window', async ({ page }) => {
+  const consoleErrors: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') {
+      consoleErrors.push(message.text())
+    }
+  })
+
+  await page.route('http://systest.localhost:4173/**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<main data-testid="systest-fixture">Systest fixture</main>',
+    })
+  })
+
+  await page.goto('/?scenario=normal')
+
+  await page.getByTestId('desktop-app-systest').click()
+  await expect(page.getByTestId('window-systest')).toBeVisible()
+  await expect(page.getByTestId('systest-frame')).toHaveAttribute(
+    'src',
+    'http://systest.localhost:4173/',
+  )
+  await expect(
+    page.frameLocator('[data-testid="systest-frame"]').getByTestId('systest-fixture'),
+  ).toHaveText('Systest fixture')
+
+  expect(consoleErrors).toEqual([])
+})
+
 test('large window can move offscreen while keeping title bar reachable', async ({
   page,
 }) => {

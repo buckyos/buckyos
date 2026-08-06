@@ -5,14 +5,9 @@
  * `/sdk/appservice/selftest` (see ../../main.ts), so the user can compare
  * "in page" vs "in background service" results side by side.
  */
-import { buckyos, parseSessionTokenClaims } from 'buckyos'
+import { bns, buckyos, ndm_proxy, parseSessionTokenClaims, sn } from 'buckyos'
 
 type Sdk = typeof buckyos
-
-// TaskStatus enum is not re-exported from the SDK barrel; mirror the
-// Completed value here. Keep in sync with src/task_mgr_client.ts in
-// buckyos-websdk and the systest backend's TASK_STATUS_COMPLETED.
-const TASK_STATUS_COMPLETED = 'Completed'
 
 export interface TestContext {
   sdk: Sdk
@@ -30,56 +25,6 @@ export interface TestGroup {
   title: string
   description: string
   cases: TestCase[]
-}
-
-type KEventStreamAckFrame = {
-  type: 'ack'
-  connection_id: string
-  keepalive_ms: number
-}
-
-type KEventStreamEventFrame = {
-  type: 'event'
-  event: {
-    eventid: string
-    source_node: string
-    ingress_node?: string | null
-    data?: Record<string, unknown>
-  }
-}
-
-type KEventStreamKeepaliveFrame = {
-  type: 'keepalive'
-  at_ms: number
-}
-
-type KEventStreamErrorFrame = {
-  type: 'error'
-  error: string
-}
-
-type KEventStreamFrame =
-  | KEventStreamAckFrame
-  | KEventStreamEventFrame
-  | KEventStreamKeepaliveFrame
-  | KEventStreamErrorFrame
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      reject(new Error(`${label} timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-    promise.then(
-      value => {
-        window.clearTimeout(timer)
-        resolve(value)
-      },
-      error => {
-        window.clearTimeout(timer)
-        reject(error)
-      },
-    )
-  })
 }
 
 function getKEventBaseUrl(sdk: Sdk): string {
@@ -113,74 +58,30 @@ async function publishKEvent(sdk: Sdk, eventid: string, data: Record<string, unk
   }
 }
 
-async function openKEventStream(
-  sdk: Sdk,
-  patterns: string[],
-): Promise<{
-  next: (timeoutMs: number) => Promise<KEventStreamFrame>
-  close: () => Promise<void>
-}> {
-  const controller = new AbortController()
-  const response = await fetch(getKEventRequestUrl(sdk, 'stream'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'include',
-    signal: controller.signal,
-    body: JSON.stringify({ patterns, keepalive_ms: 1_000 }),
-  })
-  if (!response.ok) {
-    const payload = await readJsonResponse(response)
-    throw new Error(String(payload.error ?? `kevent stream failed with status ${response.status}`))
-  }
-  if (!response.body) {
-    throw new Error('kevent stream response has no body')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  const readLine = async (timeoutMs: number): Promise<string> => {
-    while (true) {
-      const newlineIndex = buffer.indexOf('\n')
-      if (newlineIndex >= 0) {
-        const line = buffer.slice(0, newlineIndex).trim()
-        buffer = buffer.slice(newlineIndex + 1)
-        if (line.length > 0) {
-          return line
-        }
-        continue
-      }
-
-      const chunk = await withTimeout(
-        reader.read(),
-        timeoutMs,
-        'waiting for kevent stream frame',
-      )
-      if (chunk.done) {
-        throw new Error('kevent stream closed unexpectedly')
-      }
-      buffer += decoder.decode(chunk.value, { stream: true })
-    }
-  }
-
-  return {
-    next: async (timeoutMs: number) => {
-      const line = await readLine(timeoutMs)
-      return JSON.parse(line) as KEventStreamFrame
-    },
-    close: async () => {
-      try {
-        await reader.cancel()
-      } catch {
-        // ignore close failures
-      }
-      controller.abort()
-    },
-  }
-}
-
 export const TEST_GROUPS: TestGroup[] = [
+  {
+    id: 'runtime',
+    title: 'SDK Runtime',
+    description: '运行时检测：确认 WebSDK 初始化后的 runtime、appId、Zone 与服务地址均可用。',
+    cases: [
+      {
+        name: 'Runtime identity and service URL resolution',
+        run: async ({ sdk, appId }) => {
+          const actualAppId = sdk.getAppId()
+          const zoneHost = sdk.getZoneHostName()
+          if (actualAppId !== appId) {
+            throw new Error(`expected appId ${appId}, got ${actualAppId ?? 'null'}`)
+          }
+          if (!zoneHost) {
+            throw new Error('getZoneHostName() returned an empty value')
+          }
+          const services = ['system-config', 'task-manager', 'workflow', 'aicc', 'kmsg', 'msg-center', 'repo-service']
+          const serviceUrls = Object.fromEntries(services.map(name => [name, sdk.getZoneServiceURL(name)]))
+          return { runtimeType: sdk.getRuntimeType(), appId: actualAppId, zoneHost, serviceUrls }
+        },
+      },
+    ],
+  },
   {
     id: 'system_config',
     title: 'SystemConfigClient',
@@ -255,11 +156,9 @@ export const TEST_GROUPS: TestGroup[] = [
           })
           try {
             await client.updateTaskProgress(created.id, 1, 2)
-            // The TaskStatus enum is not in the SDK barrel; pass the string
-            // value directly. The runtime check below verifies the round trip.
-            await client.updateTaskStatus(created.id, TASK_STATUS_COMPLETED as any)
+            await client.completeTask(created.id)
             const fetched = await client.getTask(created.id)
-            if (fetched.status !== TASK_STATUS_COMPLETED) {
+            if (fetched.status !== 'Completed') {
               throw new Error(
                 `expected task ${created.id} to be Completed, got ${fetched.status}`,
               )
@@ -311,7 +210,7 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'kevent',
     title: 'KEvent',
-    description: '事件检测：通过 kevent HTTP stream 订阅唯一事件，再通过 publish 发布并确认页面端收到回环事件。',
+    description: '事件检测：通过 WebSDK createEventReader 订阅唯一事件，再通过 publish 发布并确认页面端收到回环事件。',
     cases: [
       {
         name: 'KEvent stream/publish round trip on a unique eventid',
@@ -320,13 +219,8 @@ export const TEST_GROUPS: TestGroup[] = [
             .toString(36)
             .slice(2, 8)}`
           const marker = `page_${Date.now()}`
-          const stream = await openKEventStream(sdk, [eventid])
+          const reader = await sdk.createEventReader(eventid, { keepaliveMs: 1_000 })
           try {
-            const ack = await stream.next(2_000)
-            if (ack.type !== 'ack') {
-              throw new Error(`expected kevent ack frame, got ${ack.type}`)
-            }
-
             await publishKEvent(sdk, eventid, {
               marker,
               origin: 'sys_test_web',
@@ -334,36 +228,155 @@ export const TEST_GROUPS: TestGroup[] = [
               appId,
             })
 
-            while (true) {
-              const frame = await stream.next(5_000)
-              if (frame.type === 'keepalive') {
-                continue
-              }
-              if (frame.type === 'error') {
-                throw new Error(frame.error)
-              }
-              if (frame.type !== 'event') {
-                throw new Error(`unexpected kevent frame type: ${frame.type}`)
-              }
+            const event = await reader.pullEvent(5_000)
+            if (!event) {
+              throw new Error('timed out waiting for the published kevent')
+            }
+            const eventData = event.data && typeof event.data === 'object'
+              ? event.data as Record<string, unknown>
+              : {}
+            if (event.eventid !== eventid) {
+              throw new Error(`received mismatched eventid: ${event.eventid}`)
+            }
+            if (eventData.marker !== marker) {
+              throw new Error(`received mismatched marker: ${JSON.stringify(eventData)}`)
+            }
 
-              const eventData = frame.event.data ?? {}
-              if (frame.event.eventid !== eventid) {
-                throw new Error(`received mismatched eventid: ${frame.event.eventid}`)
-              }
-              if (eventData.marker !== marker) {
-                throw new Error(`received mismatched marker: ${JSON.stringify(eventData)}`)
-              }
-
-              return {
-                eventid,
-                connectionId: ack.connection_id,
-                sourceNode: frame.event.source_node,
-                ingressNode: frame.event.ingress_node ?? null,
-              }
+            return {
+              eventid,
+              sourceNode: event.source_node,
+              sourcePid: event.source_pid,
+              ingressNode: event.ingress_node ?? null,
+              timestamp: event.timestamp,
             }
           } finally {
-            await stream.close()
+            await reader.close()
           }
+        },
+      },
+    ],
+  },
+  {
+    id: 'service_clients',
+    title: 'Service Clients',
+    description: '新版服务客户端检测：Workflow、AICC、MsgCenter、Repo 执行只读调用，MsgQueue 执行带清理的生命周期调用。',
+    cases: [
+      {
+        name: 'WorkflowClient.listDefinitions',
+        run: async ({ sdk, userId, appId }) => {
+          const definitions = await sdk.getWorkflowClient().listDefinitions({
+            owner: { user_id: userId, app_id: appId },
+          })
+          return { definitions: definitions.length }
+        },
+      },
+      {
+        name: 'AiccClient.queryQuota',
+        run: async ({ sdk }) => {
+          const { quota } = await sdk.getAiccClient().queryQuota({})
+          if (typeof quota.state !== 'string' || quota.state.length === 0) {
+            throw new Error('quota.query returned an invalid state')
+          }
+          return { quota }
+        },
+      },
+      {
+        name: 'MsgCenterClient.peekBox',
+        run: async ({ sdk, userId }) => {
+          const owner = bns.didBnsFromName(userId)
+          const records = await sdk.getMsgCenterClient().peekBox({
+            owner,
+            box_kind: 'INBOX',
+            limit: 1,
+            with_object: false,
+          })
+          return { owner, records: records.length }
+        },
+      },
+      {
+        name: 'RepoClient.stat',
+        run: async ({ sdk }) => {
+          const stat = await sdk.getRepoClient().stat()
+          return { stat }
+        },
+      },
+      {
+        name: 'MsgQueueClient create/post/stat/delete lifecycle',
+        run: async ({ sdk, userId, appId }) => {
+          const client = sdk.getMsgQueueClient()
+          const owner = bns.didBnsFromName(userId)
+          const queueName = `sys-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          const queueUrn = await client.createQueue(queueName, appId, owner)
+          try {
+            const msgIndex = await client.postMessage(queueUrn, {
+              index: 0,
+              created_at: Date.now(),
+              payload: Array.from(new TextEncoder().encode('sys_test')),
+              headers: { source: 'sys_test_web' },
+            })
+            const stats = await client.getQueueStats(queueUrn)
+            if (stats.message_count < 1) {
+              throw new Error(`expected at least one queued message, got ${stats.message_count}`)
+            }
+            return { queueUrn, msgIndex, stats }
+          } finally {
+            await client.deleteQueue(queueUrn)
+          }
+        },
+      },
+    ],
+  },
+  {
+    id: 'sdk_utilities',
+    title: 'BNS / SN Utilities',
+    description: '无副作用的工具 API 检测：BNS DID 往返与 SN URL/region 标准化。',
+    cases: [
+      {
+        name: 'BNS name/DID canonical round trip',
+        run: async ({ userId }) => {
+          const canonicalName = bns.canonicalBnsName(userId)
+          const did = bns.didBnsFromName(canonicalName)
+          const roundTripName = bns.nameFromDidBns(did)
+          if (roundTripName !== canonicalName) {
+            throw new Error(`BNS round trip mismatch: ${roundTripName}`)
+          }
+          return { canonicalName, did }
+        },
+      },
+      {
+        name: 'SN URL and region normalization',
+        run: async () => {
+          const authUrl = sn.normalizeSnUrl('https://sn.example', 'auth')
+          const region = sn.normalizeSnRegionIdHint('  US__West / 2  ')
+          if (authUrl !== 'https://sn.example/kapi/sn/auth' || region !== 'us-west-2') {
+            throw new Error(`unexpected SN normalization: ${authUrl}, ${region}`)
+          }
+          return { authUrl, region }
+        },
+      },
+    ],
+  },
+  {
+    id: 'ndm_proxy',
+    title: 'NDM Proxy',
+    description: '新版 NDM proxy 检测：Browser 验证受信运行时保护，AppService 通过 kRPC 读取 outbox 计数。',
+    cases: [
+      {
+        name: 'ndm_proxy.outboxCount',
+        run: async ({ sdk }) => {
+          try {
+            await ndm_proxy.outboxCount()
+          } catch (error) {
+            if (
+              sdk.getRuntimeType() === 'Browser'
+              && error instanceof ndm_proxy.NdmProxyError
+              && error.code === 'PROXY_API_NOT_SUPPORTED_IN_RUNTIME'
+            ) {
+              return { supported: false, errorCode: error.code }
+            }
+            throw error
+          }
+          throw new Error('ndm_proxy unexpectedly allowed access in Browser runtime')
         },
       },
     ],
