@@ -97,9 +97,13 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 
 ### 环境变量
 
-继承 `test/aicc_test` 的 BuckyOS 接入方式，所以本地需要私钥（默认搜索路径 `~/.buckyos`、`/opt/buckyos/etc` 等）。
+在 OpenDAN 中，工具使用运行时注入的受限 AppClient session token，并通过宿主机 NodeGateway 访问系统服务。本地独立运行时仍需私钥（默认搜索路径 `~/.buckyos`、`/opt/buckyos/etc` 等）。
 
 - `BUCKYOS_APP_ID`（默认 `buckyos-agent`，兼容 `BUCKYOS_TEST_APP_ID`）
+- `BUCKYOS_APPCLIENT_SESSION_TOKEN`：OpenDAN 注入的 AppClient session token；设置后启用容器内访问方式
+- `BUCKYOS_HOST_GATEWAY`：容器访问宿主机的地址（默认 `host.docker.internal`）
+- `BUCKYOS_NODE_GATEWAY_PORT`：NodeGateway 端口（默认 `3180`）
+- `BUCKYOS_OWNER_USER_ID`：当前 Zone owner 用户 ID（默认 `devtest`）
 - `BUCKYOS_ZONE_HOST`（默认 `test.buckyos.io`，兼容 `BUCKYOS_TEST_ZONE_HOST`）
 - `BUCKYOS_APP_CLIENT_DIR` / `BUCKYOS_TEST_APP_CLIENT_DIR`：额外私钥搜索目录
 - `AICC_DEFAULT_PROFILE`：`balanced|cheap|fast|quality`（默认 `balanced`）
