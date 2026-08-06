@@ -14,7 +14,7 @@
 - `aicc_router.md`：模型路由设计。
 - `aicc 逻辑模型目录.md`：逻辑模型目录设计。
 - `aicc_provider_plan.md`：Provider 实现方案。
-- `provider_protocol_and_model_catalog.md`：Provider API 协议、模型目录模板与实例配置的解耦设计。
+- `provider_protocol_and_model_catalog.md`：Provider API 协议、模型适配方案与实例配置的解耦设计。
 - `aicc-models-mgr.md`：模型管理与路由概念设计。
 - `aicc-models-todo.md`：模型管理后续设计任务。
 - `driver_metadata_update_protocol.md`：provider-driver metadata 的 NDN 增量更新、验证、LKGS 与生效协议。

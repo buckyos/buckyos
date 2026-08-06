@@ -1,4 +1,4 @@
-# AICC Provider 协议与模型目录设计
+# AICC Provider 协议与模型适配设计
 
 状态：设计草案，尚未实现
 基线：`beta2.2` / `e691cd84334f9d432ac21148a3b7f1a7c7e0e179`
@@ -11,7 +11,7 @@
 ```text
 ProviderInstance
   ├─ api_protocol_id       -> 程序实现的 API 访问协议
-  ├─ provider_driver       -> 模型目录模板 JSON 的现有唯一 ID
+  ├─ provider_driver       -> 模型适配方案 JSON 的现有唯一 ID
   └─ instance settings     -> 实例名、访问 URL、凭据等私有配置
 ```
 
@@ -40,17 +40,17 @@ OpenAI 和 OpenRouter 可以使用同一个 API 协议实现，但选择不同�
 
 UI 不直接展示 “Driver Metadata”。推荐名称：
 
-- 中文：**模型目录模板**
-- 英文：**Model Catalog Profile**
+- 中文：**模型适配方案**
+- 英文：**Model Adaptation Profile**
 
-“模型目录”对应 inventory，“模板”说明它描述的是模型名称映射和参数解析规则，而不是当前实例的真实模型列表。
+“模型适配”表示它负责把 provider 的渠道模型转换为 AICC 的统一模型描述，覆盖名称匹配、来源映射、准入、能力、API type、mount、价格、版本和 variant，而不只是生成模型目录。“方案”表示它是一份可以安装、更新并被多个 provider instance 复用的完整配置。
 
 metadata 文档增加面向 UI 的可选字段：
 
 ```json
 {
   "provider_driver": "openrouter",
-  "display_name": "OpenRouter 模型目录",
+  "display_name": "OpenRouter 模型适配方案",
   "description": "解析 OpenRouter 模型 ID、能力、价格和模型来源"
 }
 ```
@@ -58,10 +58,12 @@ metadata 文档增加面向 UI 的可选字段：
 自定义 provider 表单建议展示：
 
 1. 实例名称；
-2. API 协议；
+2. API 协议下拉框；
 3. 访问地址；
 4. API Key；
-5. 模型目录模板（高级选项，可选择已安装模板或输入 ID）。
+5. 模型适配方案下拉框。
+
+两个下拉框都不允许自由输入 ID。API 协议选项来自程序已经实现的 `XxxProvider` 对象列表；模型适配方案选项来自当前已安装并验证通过的 metadata catalog，选项展示 `display_name`，缺省时展示 `provider_driver`，提交值始终分别为 `api_protocol_id` 和 `provider_driver`。需要使用新的 metadata 时，必须先将其安装或发布到 catalog，不能在创建 instance 时临时输入一个未知 ID。
 
 内置 provider 不需要用户选择，由程序在构造内置实例时显式指定 `api_protocol_id` 和 `provider_driver`。
 
@@ -304,7 +306,7 @@ struct ProviderInstanceSettings {
 - `DriverMetadataDocument`：继续使用现有 `provider_driver` 唯一字段，增加面向 UI 的可选 `display_name` 和可选 `description`；展示名解析为 `display_name` 非空值，否则为 `provider_driver`；
 - provider instance settings：`api_protocol_id`、`provider_driver`、`base_url` 必填；
 - provider add/validate API：接收上述明确字段；
-- 管理 UI：提供“API 协议”和“模型目录模板”两个选择；
+- 管理 UI：为“API 协议”和“模型适配方案”提供两个禁止自由输入的下拉框，选项分别来自程序支持的协议对象列表和已验证的 metadata catalog；
 - metadata 云更新 manifest：继续以 `provider_driver` 为覆盖键；
 - usage/trace：分别记录 instance name、protocol ID 和 metadata ID；
 - `doc/aicc/driver_metadata_schema.md`、provider 添加指南和 API 文档同步更新。
@@ -326,12 +328,12 @@ struct ProviderInstanceSettings {
 1. provider instance 显式保存 protocol ID 和 metadata ID；
 2. 统一现有 `XxxProvider` 对象的协议选择入口；
 3. 内置实例在程序中显式指定二者；
-4. 自定义 provider API/UI 提供两个输入；
+4. 自定义 provider API 接收两个明确 ID，UI 通过两个下拉框选择，不提供自由输入；
 5. 删除 provider 名称、URL 和 protocol 的互相推断。
 
 ### Phase 3：管理面与观测统一
 
-1. UI 使用“模型目录模板”；
+1. UI 使用“模型适配方案”；
 2. 程序支持的协议对象列表和 metadata catalog 提供 UI 可选项；
 3. trace/usage 分别记录三个 identity。
 
@@ -349,8 +351,9 @@ metadata 继承不是当前方案的前置条件。如后续确实需要共享�
 8. metadata 声明了协议不支持的 API type 时明确失败；
 9. OpenRouter 的规则按其 `provider_model_id` 匹配，名称映射、模型语义、准入、价格和 variants 都由独立 `openrouter.json` 生效；
 10. metadata 的 `provider_driver` 与文件名均为全小写且严格一致；UI 优先显示保留大小写的 `display_name`，缺省或为空时显示 `provider_driver`；
-11. 代码中不再通过 provider 名称决定 inventory、协议、endpoint 或模型解析；
-12. `cargo test -p aicc`、workspace `cargo test` 与 `uv run buckyos-build.py` 通过。
+11. 自定义 provider 的 API 协议和模型适配方案均通过下拉框选择，不能输入 catalog 之外的 ID；
+12. 代码中不再通过 provider 名称决定 inventory、协议、endpoint 或模型解析；
+13. `cargo test -p aicc`、workspace `cargo test` 与 `uv run buckyos-build.py` 通过。
 
 ## 12. 风险与边界
 
@@ -374,6 +377,7 @@ metadata 继承不是当前方案的前置条件。如后续确实需要共享�
 - **远端动态信息不能丢失**：Gemini `supportedGenerationMethods`、deprecation 等属于 discovery 返回的动态事实。metadata 决定静态语义，但远端明确声明的不支持/弃用仍应合并为 health/availability，不能因为去硬编码而忽略。
 - **协议与 metadata 组合校验**：两者正交但不是任意组合都有效，必须校验 metadata 暴露的 API types 不超过 `XxxProvider` 实现能力。
 - **管理面 breaking change**：provider add/validate、control panel 和 settings 必须同批修改；固定 section 扫描与新 instance 模型并存会造成实例遗漏或重复展示。
+- **下拉选项依赖 catalog 可见性**：UI 不能临时输入尚未安装的协议或 metadata ID。catalog 加载失败、云更新尚未生效或管理 API 返回旧快照时，新模板不会出现在下拉框中；UI 应提示刷新或安装模板，不能偷偷降级为自由输入。
 
 ### 12.3 不应受到影响的边界
 
