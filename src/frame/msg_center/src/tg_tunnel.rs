@@ -4135,12 +4135,20 @@ impl TgTunnel {
                 }
                 continue;
             }
+            let status_message_id = if TgUiSessionTracker::nonce_matches(
+                status.nonce.as_deref(),
+                session.status_nonce.as_deref(),
+            ) {
+                session.status_message_id.clone()
+            } else {
+                None
+            };
             match gateway
                 .set_status_line(
                     session.owner_did.clone(),
                     session.bot_account_id.clone(),
                     session.chat_id.clone(),
-                    session.status_message_id.clone(),
+                    status_message_id,
                     status.line.clone(),
                 )
                 .await
@@ -4376,6 +4384,7 @@ mod tests {
         seq: AtomicU64,
         typing_count: AtomicU64,
         status_line_count: AtomicU64,
+        status_message_ids: Mutex<Vec<Option<String>>>,
     }
 
     #[async_trait]
@@ -4426,6 +4435,10 @@ mod tests {
             _status_line: String,
         ) -> AnyResult<Option<String>> {
             self.status_line_count.fetch_add(1, Ordering::SeqCst);
+            self.status_message_ids
+                .lock()
+                .await
+                .push(message_id.clone());
             Ok(message_id.or_else(|| Some("counting-status".to_string())))
         }
 
@@ -5065,6 +5078,64 @@ mod tests {
             assert_eq!(session.status_message_id.as_deref(), Some("status-1"));
             assert_eq!(session.status_nonce.as_deref(), Some("old-turn"));
         }
+
+        tunnel.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_turn_status_does_not_replace_previous_turn_status_message() {
+        let (center, _tmp) = new_msg_center().await;
+        let gateway = Arc::new(CountingTgGateway::default());
+        let mut cfg = TgTunnelConfig::new(DID::new("bns", "tg-new-turn-status-test"));
+        cfg.supports_ingress = false;
+        let tunnel = TgTunnel::with_gateway(cfg, gateway.clone());
+        let owner = DID::new("bns", "alice");
+        let session_id = "thread-a".to_string();
+
+        tunnel
+            .bind_msg_center_handler(Arc::new(center.clone()))
+            .unwrap();
+        tunnel.start().await.unwrap();
+        {
+            let mut guard = tunnel.ui_session_tracker.sessions.lock().await;
+            guard.insert(
+                session_id.clone(),
+                TgUiSessionRuntime {
+                    owner_did: owner,
+                    bot_account_id: "@alice_bot".to_string(),
+                    chat_id: "route-chat-1".to_string(),
+                    last_activity_ms: TgTunnel::now_ms(),
+                    status_message_id: Some("failed-status".to_string()),
+                    status_nonce: Some("failed-turn".to_string()),
+                    completed_status_nonce: None,
+                    last_status_line: "思考失败".to_string(),
+                },
+            );
+        }
+        center
+            .handle_update_ui_session_state(
+                session_id.clone(),
+                UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                json!({
+                    "value": "LLM thinking",
+                    "turn_nonce": "new-turn",
+                }),
+                RPCContext::default(),
+            )
+            .await
+            .unwrap();
+
+        TgTunnel::refresh_ui_sessions(tunnel.ui_session_tracker.as_ref(), gateway.as_ref()).await;
+
+        assert_eq!(gateway.status_message_ids.lock().await.as_slice(), &[None]);
+        let guard = tunnel.ui_session_tracker.sessions.lock().await;
+        let session = guard.get(&session_id).unwrap();
+        assert_eq!(
+            session.status_message_id.as_deref(),
+            Some("counting-status")
+        );
+        assert_eq!(session.status_nonce.as_deref(), Some("new-turn"));
+        drop(guard);
 
         tunnel.stop().await.unwrap();
     }
