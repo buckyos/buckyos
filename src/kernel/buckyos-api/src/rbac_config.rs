@@ -107,6 +107,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/settings,read|write,allow
 p, agent, obj://config/users/{user}/agents/{agent}/spec,read,allow
 p, agent, obj://config/users/{user}/agents/{agent}/info,read|write,allow
 p, agent, obj://config/services/{service}/info,read,allow
+p, agent, obj://config/services/{agent}/instances/{node},write,allow
 
 p, admin,obj://config/boot/*, read,allow
 p, admin,obj://config/system/*,read,allow
@@ -118,6 +119,7 @@ p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
+p, admin,obj://config/services/{service}/instances/{node},write,allow
 p, admin,obj://config/services/*,read,allow
 
 p, users,obj://config/boot/*, read,allow
@@ -128,6 +130,7 @@ p, users,obj://config/users/{users}/profile,read|write,allow
 p, users,obj://config/users/{users}/apps/{app}/{key},read|write,allow
 p, users,obj://config/users/{users}/agents/{agent}/{key},read|write,allow
 p, users,obj://config/services/{service}/info,read,allow
+p, users,obj://config/services/{service}/instances/{node},write,allow
 
 g, node-daemon, kernel
 g, scheduler, kernel
@@ -507,6 +510,59 @@ g, bob, users
                 "alice",
                 "control-panel",
                 "obj://config/services/msg-center/settings",
+                "write",
+                None,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_can_report_own_service_instance() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let config = build_current_rbac_config(Some(
+            "g, alice, admin\ng, bob, users\ng, buckyos_jarvis, agent",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        assert!(
+            rbac::enforce(
+                "alice",
+                "buckyos_jarvis",
+                "obj://config/services/buckyos_jarvis/instances/ood1",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "bob",
+                "buckyos_jarvis",
+                "obj://config/services/buckyos_jarvis/instances/ood1",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "alice",
+                "buckyos_jarvis",
+                "obj://config/services/other-agent/instances/ood1",
+                "write",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "alice",
+                "buckyos_jarvis",
+                "obj://config/services/buckyos_jarvis/settings",
                 "write",
                 None,
             )
