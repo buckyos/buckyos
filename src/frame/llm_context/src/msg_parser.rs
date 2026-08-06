@@ -1264,6 +1264,18 @@ mod tests {
     }
 
     #[test]
+    fn attachment_tag_keeps_path_and_display_title_separate() {
+        let tag = parse_attachment_tag(
+            "<attachment path=\"/tmp/wusong_fights_tiger.svg\" title=\"武松打虎.svg\" />",
+        )
+        .unwrap();
+
+        assert_eq!(tag.path.as_deref(), Some("/tmp/wusong_fights_tiger.svg"));
+        assert_eq!(tag.title.as_deref(), Some("武松打虎.svg"));
+        assert_eq!(tag.obj_id, None);
+    }
+
+    #[test]
     fn text_attachment_marker_can_be_preserved_by_option() {
         let msg = AiMessage::text(
             AiRole::Assistant,

@@ -32,7 +32,13 @@ Driver policy for this UI session:
 
 ## Returning Attachments
 
-Use `<attachment>$abs_filepath | $obj_id </attachment>` to send a file or artifact to the user in these cases:
+Use exactly one of these forms to send a file or artifact to the user:
+- Local file: `<attachment path="$abs_filepath" title="$display_name" />`
+- Existing object: `<attachment obj_id="$obj_id" title="$display_name" />`
+
+Do not combine a path and an object ID or use `|` as a separator. Before attaching a local file, create it and verify that the exact path exists.
+
+Send an attachment in these cases:
 - The text file is too long.
 - The file is not a text file.
 - The user explicitly asks for it.
