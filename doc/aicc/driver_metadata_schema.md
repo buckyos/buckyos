@@ -34,7 +34,7 @@ provider's complete mapping list.
 ```json
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_revision": 0,
   "provider_driver": "openai",
   "revision_seq": 1,
@@ -52,7 +52,7 @@ provider's complete mapping list.
 Fields:
 
  - `format`: fixed to `buckyos.aicc.provider-driver-metadata`.
- - `schema_version`: incompatible schema major, currently `2`.
+ - `schema_version`: incompatible schema major, currently `3`.
  - `schema_revision`: additive schema revision, currently `0`.
  - `provider_driver`: driver id such as `openai`, `openrouter`, `claude`,
   `google-gemini`, `fal`, or `minimax`.
@@ -96,9 +96,10 @@ Rules support these fields:
   The first pair identifies the physical origin; the second pair identifies the
   current delivery channel.
 - `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `max_context_tokens`, `max_output_tokens`.
-- `input_token_usd`, `output_token_usd`, `cache_input_token_usd`: optional
-  provider token prices in USD per token.
-- `estimated_cost_usd`, `estimated_latency_ms`: default scheduler estimates.
+- `pricing`: optional monetary data object. `currency` identifies the ISO 4217
+  currency; `input_token`, `output_token`, and `cache_input_token` are optional
+  per-token prices; `estimated_cost` is the default scheduler cost estimate.
+- `estimated_latency_ms`: default scheduler latency estimate.
 - `quality_score`, `latency_class`, `cost_class`: routing attributes.
 
 All exact ids and wildcard patterns, including

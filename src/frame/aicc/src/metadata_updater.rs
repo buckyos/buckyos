@@ -23,7 +23,7 @@ const INDEX_FORMAT: &str = "buckyos.aicc.driver-metadata-index";
 const MANIFEST_FORMAT: &str = "buckyos.aicc.driver-metadata-manifest";
 const ACTIVATION_FORMAT: &str = "buckyos.aicc.driver-metadata-activation";
 const PROTOCOL_VERSION: u32 = 1;
-const METADATA_SCHEMA_VERSION: u32 = 2;
+const METADATA_SCHEMA_VERSION: u32 = 3;
 const MAX_INDEX_BYTES: u64 = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024 * 1024;
@@ -1756,7 +1756,7 @@ mod tests {
         DriverMetadataManifestFile {
             provider_driver: driver.to_string(),
             path: format!("v1/providers/{}-{}.json", driver, revision),
-            schema_version: 2,
+            schema_version: METADATA_SCHEMA_VERSION,
             revision_seq: revision,
             obj_id: obj_id.to_string(),
         }
@@ -1777,7 +1777,7 @@ mod tests {
     fn document(driver: &str, revision: u64) -> DriverMetadataDocument {
         DriverMetadataDocument {
             format: "buckyos.aicc.provider-driver-metadata".to_string(),
-            schema_version: 2,
+            schema_version: METADATA_SCHEMA_VERSION,
             schema_revision: 0,
             provider_driver: driver.to_string(),
             revision_seq: revision,
@@ -2107,7 +2107,7 @@ mod tests {
         let entry = file("openai", 1, &object_id);
         let duplicate_rules = serde_json::json!({
             "format": "buckyos.aicc.provider-driver-metadata",
-            "schema_version": 2,
+            "schema_version": METADATA_SCHEMA_VERSION,
             "schema_revision": 0,
             "provider_driver": "openai",
             "revision_seq": 1,
@@ -2155,10 +2155,34 @@ mod tests {
         invalid_cost["variants"] = serde_json::json!([]);
         invalid_cost["models"] = serde_json::json!([{
             "id": "gpt-test",
-            "input_token_usd": -0.01
+            "pricing": {
+                "currency": "USD",
+                "input_token": -0.01
+            }
         }]);
         assert!(validate_metadata_bytes(
             serde_json::to_vec(&invalid_cost).unwrap().as_slice(),
+            &entry,
+        )
+        .is_err());
+
+        let mut missing_currency = invalid_cost.clone();
+        missing_currency["models"][0]["pricing"] = serde_json::json!({
+            "input_token": 0.01
+        });
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&missing_currency).unwrap().as_slice(),
+            &entry,
+        )
+        .is_err());
+
+        let mut legacy_flat_pricing = invalid_cost.clone();
+        legacy_flat_pricing["models"] = serde_json::json!([{
+            "id": "gpt-test",
+            "input_token_usd": 0.01
+        }]);
+        assert!(validate_metadata_bytes(
+            serde_json::to_vec(&legacy_flat_pricing).unwrap().as_slice(),
             &entry,
         )
         .is_err());

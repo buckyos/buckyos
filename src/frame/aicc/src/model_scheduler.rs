@@ -169,7 +169,7 @@ fn cost_value(candidate: &ModelCandidate) -> f64 {
     candidate
         .metadata
         .pricing
-        .estimated_cost_usd
+        .estimated_cost
         .unwrap_or_else(|| match candidate.metadata.attributes.cost_class {
             crate::model_types::CostClass::Low => 0.1,
             crate::model_types::CostClass::Medium => 0.5,
@@ -317,7 +317,7 @@ mod tests {
                 ..Default::default()
             },
             pricing: ModelPricing {
-                estimated_cost_usd: Some(cost),
+                estimated_cost: Some(cost),
                 ..Default::default()
             },
             health: ModelHealth {

@@ -1,6 +1,6 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_revision": 0,
   "provider_driver": "fal",
   "revision_seq": 1,
@@ -11,7 +11,10 @@
       "model_driver": "real-esrgan",
       "api_types": ["image.upscale"],
       "logical_mounts": ["image.upscale", "image.upscale.fal", "image.upscale.fal-ai.esrgan"],
-      "estimated_cost_usd": 0.05,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.05
+      },
       "estimated_latency_ms": 8000
     },
     {
@@ -19,7 +22,10 @@
       "model_driver": "rembg",
       "api_types": ["image.bg_remove"],
       "logical_mounts": ["image.bg_remove", "image.bg_remove.fal", "image.bg_remove.fal-ai.imageutils.rembg"],
-      "estimated_cost_usd": 0.01,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
       "estimated_latency_ms": 4000
     },
     {
@@ -27,7 +33,10 @@
       "model_driver": "deepfilternet",
       "api_types": ["audio.enhance"],
       "logical_mounts": ["audio.enhance", "audio.enhance.fal", "audio.enhance.fal-ai.deepfilternet3"],
-      "estimated_cost_usd": 0.02,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.02
+      },
       "estimated_latency_ms": 20000
     },
     {
@@ -35,7 +44,10 @@
       "model_driver": "real-esrgan",
       "api_types": ["video.upscale"],
       "logical_mounts": ["video.upscale", "video.upscale.fal", "video.upscale.fal-ai.video-upscaler"],
-      "estimated_cost_usd": 0.5,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
       "estimated_latency_ms": 120000
     }
   ],

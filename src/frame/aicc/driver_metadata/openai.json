@@ -1,6 +1,6 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_revision": 0,
   "provider_driver": "openai",
   "revision_seq": 1,
@@ -20,7 +20,10 @@
         "image.inpaint.{driver}",
         "image.inpaint.{model}"
       ],
-      "estimated_cost_usd": 0.04,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
       "estimated_latency_ms": 5000,
       "quality_score": 0.9
     },
@@ -28,56 +31,80 @@
       "id": "dall-e-3",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "estimated_cost_usd": 0.04,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
       "estimated_latency_ms": 5000
     },
     {
       "id": "dall-e-2",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "estimated_cost_usd": 0.02,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.02
+      },
       "estimated_latency_ms": 5000
     },
     {
       "id": "text-embedding-3-large",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
-      "estimated_cost_usd": 0.0001,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
       "estimated_latency_ms": 800
     },
     {
       "id": "text-embedding-3-small",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
-      "estimated_cost_usd": 0.0001,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
       "estimated_latency_ms": 800
     },
     {
       "id": "whisper-1",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
-      "estimated_cost_usd": 0.006,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.006
+      },
       "estimated_latency_ms": 5000
     },
     {
       "id": "gpt-4o-mini-transcribe",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
-      "estimated_cost_usd": 0.006,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.006
+      },
       "estimated_latency_ms": 5000
     },
     {
       "id": "tts-1",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
-      "estimated_cost_usd": 0.015,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
       "estimated_latency_ms": 3000
     },
     {
       "id": "gpt-4o-mini-tts",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
-      "estimated_cost_usd": 0.015,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
       "estimated_latency_ms": 3000
     }
   ],
@@ -86,14 +113,20 @@
       "pattern": "*transcribe*",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
-      "estimated_cost_usd": 0.006,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.006
+      },
       "estimated_latency_ms": 5000
     },
     {
       "pattern": "*-tts*",
       "api_types": ["audio.tts"],
       "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
-      "estimated_cost_usd": 0.015,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
       "estimated_latency_ms": 3000
     },
     {
@@ -108,7 +141,10 @@
       "pattern": "dall-e-*",
       "api_types": ["image.txt2img"],
       "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "estimated_cost_usd": 0.04,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
       "estimated_latency_ms": 5000
     },
     {
@@ -125,7 +161,10 @@
         "image.inpaint.{driver}",
         "image.inpaint.{model}"
       ],
-      "estimated_cost_usd": 0.04,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
       "estimated_latency_ms": 5000,
       "quality_score": 0.9
     },
@@ -133,7 +172,10 @@
       "pattern": "text-embedding-*",
       "api_types": ["embedding.text"],
       "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
-      "estimated_cost_usd": 0.0001,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
       "estimated_latency_ms": 800
     },
     {
@@ -154,7 +196,10 @@
         "max_context_tokens": 128000,
         "max_output_tokens": 8192
       },
-      "estimated_cost_usd": 0.01,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
       "estimated_latency_ms": 1200,
       "quality_score": 0.9,
       "latency_class": "normal",
@@ -173,7 +218,10 @@
         "max_context_tokens": 128000,
         "max_output_tokens": 8192
       },
-      "estimated_cost_usd": 0.01,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
       "estimated_latency_ms": 1200
     },
     {
@@ -187,7 +235,10 @@
         "max_context_tokens": 128000,
         "max_output_tokens": 8192
       },
-      "estimated_cost_usd": 0.01,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
       "estimated_latency_ms": 1200
     }
   ],
@@ -201,7 +252,10 @@
       "web_search": false,
       "vision": false
     },
-    "estimated_cost_usd": 0.01,
+    "pricing": {
+      "currency": "USD",
+      "estimated_cost": 0.01
+    },
     "estimated_latency_ms": 1200
   },
   "variants": [

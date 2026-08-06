@@ -1,6 +1,6 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_revision": 0,
   "provider_driver": "minimax",
   "revision_seq": 1,
@@ -20,7 +20,10 @@
         "max_context_tokens": 100000,
         "max_output_tokens": 8192
       },
-      "estimated_cost_usd": 0.01,
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
       "estimated_latency_ms": 1400
     }
   ],
@@ -34,7 +37,10 @@
       "web_search": false,
       "vision": false
     },
-    "estimated_cost_usd": 0.01,
+    "pricing": {
+      "currency": "USD",
+      "estimated_cost": 0.01
+    },
     "estimated_latency_ms": 1400
   },
   "variants": [

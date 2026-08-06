@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-const DRIVER_METADATA_SCHEMA_VERSION: u32 = 2;
+const DRIVER_METADATA_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Default)]
 pub struct DriverModelResolveRequest {
@@ -142,13 +142,7 @@ pub struct DriverModelRule {
     #[serde(default)]
     pub capabilities: DriverCapabilitiesPatch,
     #[serde(default)]
-    pub estimated_cost_usd: Option<f64>,
-    #[serde(default)]
-    pub input_token_usd: Option<f64>,
-    #[serde(default)]
-    pub output_token_usd: Option<f64>,
-    #[serde(default)]
-    pub cache_input_token_usd: Option<f64>,
+    pub pricing: Option<ModelPricing>,
     #[serde(default)]
     pub estimated_latency_ms: Option<u64>,
     #[serde(default)]
@@ -365,16 +359,15 @@ fn resolve_driver_model(
 
     let mut capabilities = conservative_capabilities();
     let mut parameter_scale = None;
-    let mut estimated_cost_usd = request.fallback_estimated_cost_usd;
+    let mut pricing = ModelPricing {
+        estimated_cost: request.fallback_estimated_cost_usd,
+        ..Default::default()
+    };
     let mut estimated_latency_ms = request.fallback_estimated_latency_ms;
     let mut quality_score = Some(0.75);
     let mut latency_class = LatencyClass::Normal;
     let mut cost_class = CostClass::Medium;
     let mut model_driver = origin.driver.clone();
-    let mut input_token_usd = None;
-    let mut output_token_usd = None;
-    let mut cache_input_token_usd = None;
-
     if let Some(rule) = rule {
         if let Some(next) = rule.model_driver.as_ref() {
             model_driver = next.clone();
@@ -394,12 +387,15 @@ fn resolve_driver_model(
         if rule.parameter_scale.is_some() {
             parameter_scale = rule.parameter_scale.clone();
         }
-        if rule.estimated_cost_usd.is_some() {
-            estimated_cost_usd = rule.estimated_cost_usd;
+        if let Some(rule_pricing) = rule.pricing.as_ref() {
+            pricing.currency.clone_from(&rule_pricing.currency);
+            if rule_pricing.estimated_cost.is_some() {
+                pricing.estimated_cost = rule_pricing.estimated_cost;
+            }
+            pricing.input_token = rule_pricing.input_token;
+            pricing.output_token = rule_pricing.output_token;
+            pricing.cache_input_token = rule_pricing.cache_input_token;
         }
-        input_token_usd = rule.input_token_usd;
-        output_token_usd = rule.output_token_usd;
-        cache_input_token_usd = rule.cache_input_token_usd;
         if rule.estimated_latency_ms.is_some() {
             estimated_latency_ms = rule.estimated_latency_ms;
         }
@@ -452,12 +448,7 @@ fn resolve_driver_model(
             latency_class,
             cost_class,
         },
-        pricing: ModelPricing {
-            input_token_usd,
-            output_token_usd,
-            cache_input_token_usd,
-            estimated_cost_usd,
-        },
+        pricing,
         health: ModelHealth {
             status: HealthStatus::Available,
             p95_latency_ms: estimated_latency_ms,
@@ -740,14 +731,32 @@ fn validate_driver_model_rule(rule: &DriverModelRule, location: &str) -> Result<
     if let Some(mounts) = rule.logical_mounts.as_ref() {
         validate_string_list(mounts.as_slice(), &format!("{}.logical_mounts", location))?;
     }
-    validate_non_negative_number(rule.estimated_cost_usd, "estimated_cost_usd", location)?;
-    validate_non_negative_number(rule.input_token_usd, "input_token_usd", location)?;
-    validate_non_negative_number(rule.output_token_usd, "output_token_usd", location)?;
-    validate_non_negative_number(
-        rule.cache_input_token_usd,
-        "cache_input_token_usd",
-        location,
-    )?;
+    if let Some(pricing) = rule.pricing.as_ref() {
+        let pricing_location = format!("{}.pricing", location);
+        if pricing.currency.trim().is_empty() {
+            return Err(format!("{}.currency cannot be empty", pricing_location));
+        }
+        validate_non_negative_number(
+            pricing.estimated_cost,
+            "estimated_cost",
+            pricing_location.as_str(),
+        )?;
+        validate_non_negative_number(
+            pricing.input_token,
+            "input_token",
+            pricing_location.as_str(),
+        )?;
+        validate_non_negative_number(
+            pricing.output_token,
+            "output_token",
+            pricing_location.as_str(),
+        )?;
+        validate_non_negative_number(
+            pricing.cache_input_token,
+            "cache_input_token",
+            pricing_location.as_str(),
+        )?;
+    }
     if rule
         .quality_score
         .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
@@ -986,7 +995,7 @@ fn find_default_rule(sources: &[DriverMetadataSource]) -> Option<&DriverModelRul
         if source.document.defaults.api_types.is_some()
             || source.document.defaults.logical_mounts.is_some()
             || source.document.defaults.capabilities.has_any()
-            || source.document.defaults.estimated_cost_usd.is_some()
+            || source.document.defaults.pricing.is_some()
             || source.document.defaults.estimated_latency_ms.is_some()
         {
             return Some(&source.document.defaults);
@@ -1637,7 +1646,7 @@ mod tests {
     fn override_metadata_rejects_schema_and_provider_identity_mismatch() {
         let valid = serde_json::json!({
             "format": "buckyos.aicc.provider-driver-metadata",
-            "schema_version": 2,
+            "schema_version": DRIVER_METADATA_SCHEMA_VERSION,
             "schema_revision": 0,
             "provider_driver": "openai",
             "revision_seq": 1,
@@ -1671,7 +1680,7 @@ mod tests {
     fn origin_mapping_validation_is_fail_closed() {
         let valid = serde_json::json!({
             "format": "buckyos.aicc.provider-driver-metadata",
-            "schema_version": 2,
+            "schema_version": DRIVER_METADATA_SCHEMA_VERSION,
             "schema_revision": 0,
             "provider_driver": "aggregator",
             "revision_seq": 1,
@@ -1766,9 +1775,10 @@ mod tests {
         assert!(openai.api_types.contains(&ApiType::Rerank));
         assert_eq!(openai.capabilities.max_context_tokens, Some(1_050_000));
         assert_eq!(openai.capabilities.max_output_tokens, Some(128_000));
-        assert_eq!(openai.pricing.input_token_usd, Some(0.000005));
-        assert_eq!(openai.pricing.output_token_usd, Some(0.00003));
-        assert_eq!(openai.pricing.cache_input_token_usd, Some(0.0000005));
+        assert_eq!(openai.pricing.currency, "USD");
+        assert_eq!(openai.pricing.input_token, Some(0.000005));
+        assert_eq!(openai.pricing.output_token, Some(0.00003));
+        assert_eq!(openai.pricing.cache_input_token, Some(0.0000005));
         assert!(openai
             .logical_mounts
             .iter()

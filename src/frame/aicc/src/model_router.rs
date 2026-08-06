@@ -437,7 +437,7 @@ impl<'a> ModelRouter<'a> {
                     if candidate
                         .metadata
                         .pricing
-                        .estimated_cost_usd
+                        .estimated_cost
                         .map(|cost| cost > max_cost)
                         .unwrap_or(false)
                     {
@@ -652,7 +652,7 @@ mod tests {
                 ..Default::default()
             },
             pricing: ModelPricing {
-                estimated_cost_usd: Some(0.01),
+                estimated_cost: Some(0.01),
                 ..Default::default()
             },
             health: ModelHealth {

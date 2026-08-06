@@ -938,28 +938,32 @@ impl OpenAIProvider {
                             .origin_model_id
                             .clone()
                             .unwrap_or_else(|| model.to_string()),
-                        metadata.pricing.input_token_usd,
-                        metadata.pricing.output_token_usd,
+                        metadata.pricing.currency.clone(),
+                        metadata.pricing.input_token,
+                        metadata.pricing.output_token,
                     )
                 })
             })
         });
-        let (origin_model_id, input_per_token, output_per_token) =
-            pricing.unwrap_or_else(|| (model.to_string(), None, None));
-        let amount = if let (Some(input_per_token), Some(output_per_token)) =
+        let (origin_model_id, currency, input_per_token, output_per_token) =
+            pricing.unwrap_or_else(|| (model.to_string(), "USD".to_string(), None, None));
+        let (amount, currency) = if let (Some(input_per_token), Some(output_per_token)) =
             (input_per_token, output_per_token)
         {
-            (input_tokens * input_per_token) + (output_tokens * output_per_token)
+            (
+                (input_tokens * input_per_token) + (output_tokens * output_per_token),
+                currency,
+            )
         } else {
             let (input_per_m, output_per_m) = Self::price_per_1m_tokens(origin_model_id.as_str());
-            ((input_tokens / 1_000_000.0) * input_per_m)
-                + ((output_tokens / 1_000_000.0) * output_per_m)
+            (
+                ((input_tokens / 1_000_000.0) * input_per_m)
+                    + ((output_tokens / 1_000_000.0) * output_per_m),
+                "USD".to_string(),
+            )
         };
 
-        Some(AiCost {
-            amount,
-            currency: "USD".to_string(),
-        })
+        Some(AiCost { amount, currency })
     }
 
     /// 把 `AiRole` 映射成 OpenAI Responses API 接受的 role 字符串。
@@ -3384,7 +3388,7 @@ fn remote_model_resolve_request(model: &ModelMetadata) -> Option<DriverModelReso
     }
     Some(
         DriverModelResolveRequest::new(provider_model_id, api_types)
-            .with_cost(model.pricing.estimated_cost_usd)
+            .with_cost(model.pricing.estimated_cost)
             .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms)),
     )
 }
@@ -3399,17 +3403,18 @@ fn remote_provider_model_id(model: &ModelMetadata) -> Option<String> {
 }
 
 fn merge_remote_dynamic_metadata(model: &mut ModelMetadata, remote_model: &ModelMetadata) {
-    if remote_model.pricing.input_token_usd.is_some() {
-        model.pricing.input_token_usd = remote_model.pricing.input_token_usd;
+    model.pricing.currency = remote_model.pricing.currency.clone();
+    if remote_model.pricing.input_token.is_some() {
+        model.pricing.input_token = remote_model.pricing.input_token;
     }
-    if remote_model.pricing.output_token_usd.is_some() {
-        model.pricing.output_token_usd = remote_model.pricing.output_token_usd;
+    if remote_model.pricing.output_token.is_some() {
+        model.pricing.output_token = remote_model.pricing.output_token;
     }
-    if remote_model.pricing.cache_input_token_usd.is_some() {
-        model.pricing.cache_input_token_usd = remote_model.pricing.cache_input_token_usd;
+    if remote_model.pricing.cache_input_token.is_some() {
+        model.pricing.cache_input_token = remote_model.pricing.cache_input_token;
     }
-    if remote_model.pricing.estimated_cost_usd.is_some() {
-        model.pricing.estimated_cost_usd = remote_model.pricing.estimated_cost_usd;
+    if remote_model.pricing.estimated_cost.is_some() {
+        model.pricing.estimated_cost = remote_model.pricing.estimated_cost;
     }
     if remote_model.health.p50_latency_ms.is_some() {
         model.health.p50_latency_ms = remote_model.health.p50_latency_ms;
@@ -4937,8 +4942,8 @@ data: [DONE]
             .find(|model| model.provider_model_id == "openai/gpt-5.4-pro")
             .expect("base model should resolve");
         assert_eq!(base.origin_model_id.as_deref(), Some("gpt-5.4-pro"));
-        base.pricing.input_token_usd = None;
-        base.pricing.output_token_usd = None;
+        base.pricing.input_token = None;
+        base.pricing.output_token = None;
         *provider.inventory.write().expect("inventory lock") = inventory;
 
         let cost = provider

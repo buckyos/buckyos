@@ -528,16 +528,18 @@ impl Default for ModelAttributes {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelPricing {
+    pub currency: String,
     #[serde(default)]
-    pub input_token_usd: Option<f64>,
+    pub input_token: Option<f64>,
     #[serde(default)]
-    pub output_token_usd: Option<f64>,
+    pub output_token: Option<f64>,
     #[serde(default)]
-    pub cache_input_token_usd: Option<f64>,
+    pub cache_input_token: Option<f64>,
     #[serde(default)]
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1207,50 +1209,66 @@ pub struct SessionOverlayTrace {
     pub selected_from_overlay: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoutePricingSnapshot {
+    pub currency: String,
     #[serde(default)]
-    pub input_token_usd: Option<f64>,
+    pub input_token: Option<f64>,
     #[serde(default)]
-    pub output_token_usd: Option<f64>,
+    pub output_token: Option<f64>,
     #[serde(default)]
-    pub cache_input_token_usd: Option<f64>,
+    pub cache_input_token: Option<f64>,
     #[serde(default)]
-    pub estimated_cost_usd: Option<f64>,
+    pub estimated_cost: Option<f64>,
+}
+
+impl Default for ModelPricing {
+    fn default() -> Self {
+        Self {
+            currency: "USD".to_string(),
+            input_token: None,
+            output_token: None,
+            cache_input_token: None,
+            estimated_cost: None,
+        }
+    }
 }
 
 impl RoutePricingSnapshot {
     pub fn from_candidate(candidate: &ModelCandidate) -> Option<Self> {
         Self::from_values(
-            candidate.metadata.pricing.input_token_usd,
-            candidate.metadata.pricing.output_token_usd,
-            candidate.metadata.pricing.cache_input_token_usd,
+            candidate.metadata.pricing.currency.clone(),
+            candidate.metadata.pricing.input_token,
+            candidate.metadata.pricing.output_token,
+            candidate.metadata.pricing.cache_input_token,
             candidate
                 .dynamic_cost_estimate
                 .as_ref()
                 .map(|estimate| estimate.estimated_cost_usd)
-                .or(candidate.metadata.pricing.estimated_cost_usd),
+                .or(candidate.metadata.pricing.estimated_cost),
         )
     }
 
     fn from_values(
-        input_token_usd: Option<f64>,
-        output_token_usd: Option<f64>,
-        cache_input_token_usd: Option<f64>,
-        estimated_cost_usd: Option<f64>,
+        currency: String,
+        input_token: Option<f64>,
+        output_token: Option<f64>,
+        cache_input_token: Option<f64>,
+        estimated_cost: Option<f64>,
     ) -> Option<Self> {
-        if input_token_usd.is_none()
-            && output_token_usd.is_none()
-            && cache_input_token_usd.is_none()
-            && estimated_cost_usd.is_none()
+        if input_token.is_none()
+            && output_token.is_none()
+            && cache_input_token.is_none()
+            && estimated_cost.is_none()
         {
             return None;
         }
         Some(Self {
-            input_token_usd,
-            output_token_usd,
-            cache_input_token_usd,
-            estimated_cost_usd,
+            currency,
+            input_token,
+            output_token,
+            cache_input_token,
+            estimated_cost,
         })
     }
 }
