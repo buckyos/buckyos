@@ -70,6 +70,7 @@ type BootstrapState =
 
 const port = Number.parseInt(Deno.env.get("PORT") ?? "3000", 10);
 const sdkRoutePrefix = "/sdk/appservice";
+const bootstrapRetryDelaysMs = [250, 500, 1_000, 2_000, 5_000, 10_000, 30_000];
 
 function getEnv(name: string): string | null {
   const value = Deno.env.get(name);
@@ -210,6 +211,16 @@ async function bootstrapSdk(): Promise<BootstrapState> {
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function isRetryableBootstrapFailure(state: BootstrapState): boolean {
+  return state.kind === "failed" &&
+    (state.reason.includes("RPC call failed: fetch failed") ||
+      /RPC call error: 50[234]/.test(state.reason));
+}
+
+function delay(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -675,11 +686,43 @@ function buildGroupRunners(
   };
 }
 
-const bootstrapState = await bootstrapSdk();
+let bootstrapState = await bootstrapSdk();
 const staticRoot = await resolveStaticRoot();
-const groupRunners = bootstrapState.kind === "ready"
+let groupRunners = bootstrapState.kind === "ready"
   ? buildGroupRunners(bootstrapState)
   : null;
+
+let bootstrapRetryAttempt = 0;
+
+async function retryBootstrapUntilReady(): Promise<void> {
+  if (!isRetryableBootstrapFailure(bootstrapState)) {
+    return;
+  }
+
+  const delayMs = bootstrapRetryDelaysMs[
+    Math.min(bootstrapRetryAttempt, bootstrapRetryDelaysMs.length - 1)
+  ];
+  bootstrapRetryAttempt += 1;
+  console.warn(
+    `[sys_test] AppService initialization retry ${bootstrapRetryAttempt} in ${delayMs}ms`,
+  );
+  await delay(delayMs);
+
+  const nextState = await bootstrapSdk();
+  bootstrapState = nextState;
+  if (nextState.kind === "ready") {
+    groupRunners = buildGroupRunners(nextState);
+    console.log(
+      `[sys_test] AppService initialized as ${nextState.identity.ownerUserId}/${nextState.identity.appId} after ${bootstrapRetryAttempt} retries`,
+    );
+    return;
+  }
+
+  console.warn(
+    `[sys_test] AppService initialization retry ${bootstrapRetryAttempt} failed (${nextState.kind}): ${nextState.reason}`,
+  );
+  void retryBootstrapUntilReady();
+}
 
 if (bootstrapState.kind === "ready") {
   console.log(
@@ -692,6 +735,7 @@ if (bootstrapState.kind === "ready") {
   console.warn(
     "[sys_test] static page will still work; /sdk/appservice/* endpoints will return an error",
   );
+  void retryBootstrapUntilReady();
 }
 
 console.log(`[sys_test] serving ${staticRoot} on http://0.0.0.0:${port}`);
