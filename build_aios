@@ -27,6 +27,11 @@ SELECTED_ARCHES=()
 PUSH=0
 INSTALL_WORKSPACE_TOOLS=1
 ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
+BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
+AICC_TOOL_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/aicc-tool"
+AICC_TOOL_IMPORT_MAP_SOURCE="$ROOT_DIR/publish/aios/aicc-tool.import-map.json"
+BUCKYOS_WEBSDK_REPO="https://github.com/buckyos/buckyos-websdk.git"
+BUCKYOS_WEBSDK_COMMIT="${BUCKYOS_WEBSDK_COMMIT:-6849d3a9edc6e0c6ac54883bdb7bd12531c76aae}"
 REUSE_CARGO_TARGET=0
 CARGO_TARGET_DIR_OVERRIDE="${AIOS_CARGO_TARGET_DIR:-}"
 
@@ -56,6 +61,10 @@ Options:
   --cargo-target-dir <dir>
                   Reuse a specific Cargo target dir; relative paths are resolved from repo root
   -h, --help      Show this help
+
+Env overrides:
+  BUCKYOS_WEBSDK_COMMIT
+                  Pinned buckyos-websdk commit packaged with buckyos-agent tools
 EOF
 }
 
@@ -280,6 +289,51 @@ package_list_to_string() {
   printf '%s' "$*"
 }
 
+prepare_buckyos_agent_package() {
+  local output_dir="$1"
+  local tmp_root="$2"
+  local sdk_dist=""
+  local sdk_checkout="$tmp_root/buckyos-websdk"
+  local fetched_commit
+
+  if [[ ! -f "$BUCKYOS_AGENT_TOOLS_SOURCE/aicc-tool.ts" ]]; then
+    echo "Missing buckyos-agent entrypoint: $BUCKYOS_AGENT_TOOLS_SOURCE/aicc-tool.ts" >&2
+    exit 1
+  fi
+  if [[ ! -f "$AICC_TOOL_LAUNCHER_SOURCE" ]]; then
+    echo "Missing AICC tool launcher: $AICC_TOOL_LAUNCHER_SOURCE" >&2
+    exit 1
+  fi
+  if [[ ! -f "$AICC_TOOL_IMPORT_MAP_SOURCE" ]]; then
+    echo "Missing AICC tool import map: $AICC_TOOL_IMPORT_MAP_SOURCE" >&2
+    exit 1
+  fi
+
+  mkdir -p "$output_dir"
+  cp -R "$BUCKYOS_AGENT_TOOLS_SOURCE/." "$output_dir/"
+  cp "$AICC_TOOL_IMPORT_MAP_SOURCE" "$output_dir/installed-import-map.json"
+
+  log "Fetching buckyos-websdk commit $BUCKYOS_WEBSDK_COMMIT for AICC tools"
+  git init -q "$sdk_checkout"
+  git -C "$sdk_checkout" remote add origin "$BUCKYOS_WEBSDK_REPO"
+  git -C "$sdk_checkout" fetch -q --depth 1 origin "$BUCKYOS_WEBSDK_COMMIT"
+  fetched_commit="$(git -C "$sdk_checkout" rev-parse FETCH_HEAD)"
+  if [[ "$fetched_commit" != "$BUCKYOS_WEBSDK_COMMIT" ]]; then
+    echo "Fetched buckyos-websdk commit $fetched_commit, expected $BUCKYOS_WEBSDK_COMMIT" >&2
+    exit 1
+  fi
+  git -C "$sdk_checkout" checkout -q --detach FETCH_HEAD
+  sdk_dist="$sdk_checkout/dist"
+
+  if [[ ! -f "$sdk_dist/node.mjs" ]]; then
+    echo "buckyos-websdk Node bundle not found in $sdk_dist" >&2
+    exit 1
+  fi
+
+  mkdir -p "$output_dir/vendor/buckyos-websdk"
+  cp -R "$sdk_dist/." "$output_dir/vendor/buckyos-websdk/"
+}
+
 render_dockerfile() {
   local output_path="$1"
   local -a apt_packages=("${RUNTIME_PACKAGES[@]}")
@@ -326,6 +380,26 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 ENV BUCKYOS_ROOT=/opt/buckyos
 WORKDIR /opt/buckyos
+
+# BuckyOS Agent AICC CLI tools. Keep these outside /opt/buckyos/tools because
+# that path is shadowed by the shared ExtTool volume at runtime.
+COPY buckyos-agent /opt/buckyos/bin/opendan/buckyos-agent
+COPY aicc-tool-launcher /usr/local/bin/aicc-tool
+RUN chmod 755 /usr/local/bin/aicc-tool && \
+    for command_path in /opt/buckyos/bin/opendan/buckyos-agent/commands/*.ts; do \
+      command_name="$(basename "$command_path" .ts)"; \
+      ln -sf aicc-tool "/usr/local/bin/$command_name"; \
+    done && \
+    deno check \
+      --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
+      --import-map /opt/buckyos/bin/opendan/buckyos-agent/installed-import-map.json \
+      /opt/buckyos/bin/opendan/buckyos-agent/aicc-tool.ts && \
+    command -v aicc-tool >/dev/null && \
+    command -v gen_image >/dev/null && \
+    command -v edit_image >/dev/null && \
+    aicc-tool --help >/dev/null 2>&1 && \
+    gen_image --help >/dev/null 2>&1 && \
+    edit_image --help >/dev/null 2>&1
 
 # ExtTool Volume mount point — kept empty in the Worker image. The real
 # payload (FreeCAD, pre-warmed uv/deno caches, tool packages) ships in the
@@ -992,6 +1066,7 @@ main() {
   local python_bin
   local cargo_target_dir
   local cargo_target_mode
+  local buckyos_agent_package_dir
   local -a target_arches=()
 
   if [[ ! -f "$PROJECT_CONFIG_PATH" ]]; then
@@ -1008,6 +1083,9 @@ main() {
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap "rm -rf '$tmp_root'" EXIT
+
+  buckyos_agent_package_dir="$tmp_root/buckyos-agent-package"
+  prepare_buckyos_agent_package "$buckyos_agent_package_dir" "$tmp_root"
 
   cargo_target_dir="$(resolve_cargo_target_dir "$tmp_root")"
   mkdir -p "$cargo_target_dir"
@@ -1050,6 +1128,8 @@ main() {
     mkdir -p "$context_dir"
 
     build_runtime_binaries "$arch" "$context_dir" "$cargo_target_dir" "$python_bin"
+    cp -R "$buckyos_agent_package_dir" "$context_dir/buckyos-agent"
+    cp "$AICC_TOOL_LAUNCHER_SOURCE" "$context_dir/aicc-tool-launcher"
     render_dockerfile "$dockerfile_path"
     build_image "$arch" "$context_dir" "$platform" "$dockerfile_path"
   done

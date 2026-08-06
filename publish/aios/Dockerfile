@@ -50,6 +50,26 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 ENV BUCKYOS_ROOT=/opt/buckyos
 WORKDIR /opt/buckyos
 
+# BuckyOS Agent AICC CLI tools. Keep these outside /opt/buckyos/tools because
+# that path is shadowed by the shared ExtTool volume at runtime.
+COPY buckyos-agent /opt/buckyos/bin/opendan/buckyos-agent
+COPY aicc-tool-launcher /usr/local/bin/aicc-tool
+RUN chmod 755 /usr/local/bin/aicc-tool && \
+    for command_path in /opt/buckyos/bin/opendan/buckyos-agent/commands/*.ts; do \
+      command_name="$(basename "$command_path" .ts)"; \
+      ln -sf aicc-tool "/usr/local/bin/$command_name"; \
+    done && \
+    deno check \
+      --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
+      --import-map /opt/buckyos/bin/opendan/buckyos-agent/installed-import-map.json \
+      /opt/buckyos/bin/opendan/buckyos-agent/aicc-tool.ts && \
+    command -v aicc-tool >/dev/null && \
+    command -v gen_image >/dev/null && \
+    command -v edit_image >/dev/null && \
+    aicc-tool --help >/dev/null 2>&1 && \
+    gen_image --help >/dev/null 2>&1 && \
+    edit_image --help >/dev/null 2>&1
+
 # ExtTool Volume mount point — kept empty in the Worker image. Real payload
 # ships in the separate paios/exttool image and lands in the buckyos-exttool
 # named volume, which node_daemon mounts here read-only at run time.

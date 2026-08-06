@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "buckyos": "./vendor/buckyos-websdk/node.mjs"
+  }
+}
