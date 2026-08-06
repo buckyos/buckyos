@@ -2912,7 +2912,7 @@ pub fn provider_model_metadata(
             cost_class: CostClass::Unknown,
         },
         pricing: ModelPricing {
-            estimated_cost_usd,
+            estimated_cost: estimated_cost_usd,
             ..Default::default()
         },
         health: ModelHealth {
@@ -3756,7 +3756,7 @@ impl AIComputeCenter {
                     estimate.estimated_cost_usd,
                 )
                 .unwrap_or(estimate.estimated_cost_usd);
-            candidate.metadata.pricing.estimated_cost_usd = Some(effective_cost.max(0.0));
+            candidate.metadata.pricing.estimated_cost = Some(effective_cost.max(0.0));
             candidate.dynamic_cost_estimate = Some(CostEstimateOutput {
                 estimated_cost_usd: effective_cost.max(0.0),
                 pricing_mode: estimate.pricing_mode,
@@ -3786,7 +3786,7 @@ impl AIComputeCenter {
                     .dynamic_cost_estimate
                     .as_ref()
                     .map(|estimate| estimate.estimated_cost_usd)
-                    .or(candidate.metadata.pricing.estimated_cost_usd);
+                    .or(candidate.metadata.pricing.estimated_cost);
                 if cost.map(|value| value > max_cost).unwrap_or(false) {
                     return false;
                 }

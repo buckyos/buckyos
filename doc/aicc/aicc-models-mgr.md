@@ -643,7 +643,7 @@ llm.reason 不随意 fallback
 
 Scheduler 不只看目录权重，还看候选的运行属性：
 
-- `estimated_cost_usd` 或动态成本估算；
+- `pricing.estimated_cost` 或动态成本估算；
 - `p95_latency_ms` 或 latency class；
 - `error_rate_5m`；
 - `quality_score`；
@@ -676,10 +676,12 @@ Scheduler 再在剩余候选中按 profile 打分。
 用户可以通过 provider 侧价格配置或 override 影响：
 
 ```text
-estimated_cost_usd
-input_token_usd
-output_token_usd
-cache_input_token_usd
+pricing:
+  currency: USD
+  estimated_cost: 0.01
+  input_token: 0.000001
+  output_token: 0.000002
+  cache_input_token: 0.0000005
 ```
 
 这适合表达“同一个模型，哪个 provider 更便宜就优先用哪个”。

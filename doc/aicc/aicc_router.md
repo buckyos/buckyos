@@ -433,9 +433,10 @@ models:
       latency_class: normal
       cost_class: high
     pricing:
-      input_token_usd: 0.0000000
-      output_token_usd: 0.0000000
-      cache_input_token_usd: 0.0000000
+      currency: USD
+      input_token: 0.0000000
+      output_token: 0.0000000
+      cache_input_token: 0.0000000
     health:
       status: available
       p95_latency_ms: 3000

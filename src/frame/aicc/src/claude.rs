@@ -443,7 +443,7 @@ impl ClaudeProvider {
                 };
                 Some(
                     DriverModelResolveRequest::new(provider_model_id, fallback_api_types)
-                        .with_cost(model.pricing.estimated_cost_usd)
+                        .with_cost(model.pricing.estimated_cost)
                         .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms)),
                 )
             })
@@ -481,17 +481,18 @@ impl ClaudeProvider {
     }
 
     fn merge_remote_pricing(normalized: &mut ModelMetadata, remote: &ModelMetadata) {
-        if remote.pricing.input_token_usd.is_some() {
-            normalized.pricing.input_token_usd = remote.pricing.input_token_usd;
+        normalized.pricing.currency = remote.pricing.currency.clone();
+        if remote.pricing.input_token.is_some() {
+            normalized.pricing.input_token = remote.pricing.input_token;
         }
-        if remote.pricing.output_token_usd.is_some() {
-            normalized.pricing.output_token_usd = remote.pricing.output_token_usd;
+        if remote.pricing.output_token.is_some() {
+            normalized.pricing.output_token = remote.pricing.output_token;
         }
-        if remote.pricing.cache_input_token_usd.is_some() {
-            normalized.pricing.cache_input_token_usd = remote.pricing.cache_input_token_usd;
+        if remote.pricing.cache_input_token.is_some() {
+            normalized.pricing.cache_input_token = remote.pricing.cache_input_token;
         }
-        if remote.pricing.estimated_cost_usd.is_some() {
-            normalized.pricing.estimated_cost_usd = remote.pricing.estimated_cost_usd;
+        if remote.pricing.estimated_cost.is_some() {
+            normalized.pricing.estimated_cost = remote.pricing.estimated_cost;
         }
     }
 
