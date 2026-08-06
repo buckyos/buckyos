@@ -113,8 +113,8 @@ API 协议不需要数据驱动的 registry。它就是程序已经实现的 `Xx
 | --- | --- |
 | URL path、HTTP method、auth header、请求/响应/stream 转换、错误解析 | API 协议实现 |
 | 协议可以执行哪些 AICC API types、协议字段如何序列化 | API 协议实现 |
-| 渠道模型准入、API type、capability、feature、context/output limit、mount、价格、版本、variant、参数约束 | 当前 instance 选择的 metadata |
-| 内置 endpoint、初始模型列表、凭据引用 | 内置 provider instance preset |
+| 默认模型列表、渠道模型准入、API type、capability、feature、context/output limit、mount、价格、版本、variant、参数约束 | 当前 instance 选择的 metadata |
+| 内置 endpoint、凭据引用 | 内置 provider instance preset |
 | 远端 discovery 明确返回的 methods、deprecated、availability | 协议读取的动态事实，与 metadata 结果做限制性交集 |
 
 协议实现不得包含按模型家族、厂商品牌或 `provider_driver` 选择语义的分支。它只消费 resolver 生成的 `ModelMetadata`，并按已经选择的 wire protocol 执行请求。metadata 只声明结构化语义，不允许携带脚本、HTTP header 模板或任意请求转换逻辑；若现有协议无法表达一个 provider 的 wire 行为，应实现新的 `XxxProvider`，而不是把 metadata 扩展成可执行 DSL。
@@ -163,7 +163,15 @@ driver_metadata/openrouter.json
 
 这样新增 metadata 文件不需要修改 `metadata_resolver.rs::load_builtin_driver_metadata` 的 `match`。
 
-### 6.3 模型名称映射
+### 6.3 默认模型列表
+
+Metadata 文档中的 `models` 同时是 exact rules 和默认模型列表。按 JSON 中的顺序读取所有带非空 `id` 且 `exclude != true` 的条目，得到该 `provider_driver` 的默认 `provider_model_id` 列表。`patterns`、`defaults`、`version_rules` 和 `variants` 只能解析或扩展已有模型 ID，不能凭空生成默认模型。
+
+协议 adapter 不再维护 `DEFAULT_OPENAI_MODELS`、`DEFAULT_CLAUDE_MODELS`、`DEFAULT_GEMINI_*`、`DEFAULT_MINIMAX_MODELS` 或 fal 默认模型常量，也不从 provider 产品名选择默认列表。Provider instance 第一次构造、尚未完成远端 discovery 时，直接用选中 metadata 的默认列表构造初始 inventory。
+
+远端 discovery 成功后，远端返回的模型 ID 列表替代默认候选列表，再由同一 metadata 解析；不能与默认列表做无条件 union，否则已经从 provider 下线的默认模型会继续被路由。后续 discovery 失败时保留最近一次成功 inventory；若从未成功，则继续使用 metadata 默认 inventory。云更新替换 metadata 后，新的 `models` 也同时成为所有引用实例的新默认列表，但不会改变实例 URL、凭据或协议。
+
+### 6.4 模型名称映射
 
 必须区分两个名称：
 
@@ -196,9 +204,9 @@ resolver 始终使用 instance 的 `provider_driver` 所选择的当前 metadata
 - `model_driver`：来自 `origin.driver`，表示原始模型定义来源；
 - `ProviderInventory.provider_driver`：当前 instance 选择的 metadata ID。
 
-### 6.4 Inventory 解析流程
+### 6.5 Inventory 解析流程
 
-OpenRouter 复用 `OpenAIProvider` 的通用 inventory 构造流程，但不复用 OpenAI 的渠道模型 ID。它通过 instance 的 `provider_driver = "openrouter"` 选择独立的 `openrouter.json`，并使用 instance 配置或 `/models` 返回的 OpenRouter 模型名。`openrouter.json` 直接用这些 `provider_model_id` 匹配 exact、pattern、defaults、version rules 和 variants，不进入 `openai.json`；origin mapping 只负责补充原始模型来源。
+OpenRouter 复用 `OpenAIProvider` 的通用 inventory 构造流程，但不复用 OpenAI 的渠道模型 ID。它通过 instance 的 `provider_driver = "openrouter"` 选择独立的 `openrouter.json`，初始使用该文档 `models` 定义的默认 OpenRouter 模型名，discovery 成功后改用 `/models` 返回的模型名。`openrouter.json` 直接用这些 `provider_model_id` 匹配 exact、pattern、defaults、version rules 和 variants，不进入 `openai.json`；origin mapping 只负责补充原始模型来源。
 
 远端发现的所有非空、去重渠道模型名都进入统一 resolver：
 
@@ -235,10 +243,11 @@ struct ProviderInstanceSettings {
 1. 按 `api_protocol_id` 从程序内置的 `XxxProvider` 对象列表选择实现；
 2. 按 `provider_driver` 从 metadata catalog 取得当前激活文档；
 3. 使用 instance 的 URL 和 auth 创建协议客户端；
-4. 由协议实现发现模型 ID；
-5. 由指定 metadata 按渠道模型名匹配规则、映射 `DriverOriginIdentity` 并构造 inventory；
-6. 校验 inventory 中的 API types 不超出协议实现支持范围；
-7. 以 `provider_instance_name` 注册实例。
+4. 读取 metadata `models` 中未排除的 ID，构造默认 inventory；
+5. 由协议实现异步发现模型 ID，成功后替换默认候选列表；
+6. 由指定 metadata 按渠道模型名匹配规则、映射 `DriverOriginIdentity` 并构造 inventory；
+7. 校验 inventory 中的 API types 不超出协议实现支持范围；
+8. 以 `provider_instance_name` 注册实例。
 
 若协议不存在、metadata 不存在或两者能力不兼容，实例构造必须失败并给出具体错误，不能猜测或回退到 OpenAI。
 
@@ -263,7 +272,7 @@ struct ProviderInstanceSettings {
 
 - 模型名称、类型、能力、价格、版本、mount 和准入属于 metadata，本方案应消除对应硬编码。
 - endpoint 路径、header、请求体、响应解析和 provider-native dialect 属于 `XxxProvider` API 协议实现，应保留。
-- 内置实例的默认 URL、默认模型列表属于内置实例配置，可以保留；自定义实例不能依赖这些默认值。
+- 内置实例的默认 URL 可以保留在 instance preset；默认模型列表统一来自所选 metadata 的 `models`，不能留在协议 adapter 或 instance 私有配置中。
 - 远端接口返回的动态状态可以由协议实现读取，但不能通过本地模型名称字符串重新推导 metadata 已定义的语义。
 
 #### OpenRouter 跨原厂模型
@@ -283,7 +292,7 @@ struct ProviderInstanceSettings {
 | `refresh_inventory_once` 只接受 `claude-*` | adapter 用模型名决定库存准入，属于 metadata 职责 | **解决**：协议返回的全部模型名进入现有 origin mapping 和 metadata rules |
 | `price_per_1m_tokens` 按 `opus` / `haiku` 字符串估价 | 与 metadata pricing 重复，新增系列仍需改代码 | **解决，但需要迁移数据**：在 `claude.json` 填写 token pricing，运行时 cost 从已解析 `ModelMetadata.pricing` 获取 |
 | provider 级 `capabilities` / `features` 默认值 | 把所有 Claude 模型视为同一能力，且无法被 OpenRouter 等其他协议复用 | **解决**：实例聚合能力从 resolved inventory 派生，逐模型语义由 metadata 定义 |
-| `DEFAULT_CLAUDE_MODELS`、默认 URL | 内置 Claude instance 的默认配置，不是通用模型分类 | **移出协议 adapter**：放入内置 instance preset；自定义 instance 显式提交模型、URL 和 `provider_driver` |
+| `DEFAULT_CLAUDE_MODELS`、默认 URL | 模型列表属于 metadata，URL 属于实例 preset，二者都不应固化在协议 adapter | **拆分**：删除模型常量，由 `claude.json.models` 提供默认列表；默认 URL 放入内置 instance preset |
 | `/messages`、`anthropic-version`、Claude content lowering | Anthropic API 协议本身 | **不解决，也不应删除** |
 
 `effective_features_for_claude_model` 等名称 classifier 当前只在 `#[cfg(test)]` 下使用，不是生产调用链；实现方案时应删除或改成 metadata resolver 的测试，避免测试继续固化第二套模型规则。
@@ -293,7 +302,7 @@ struct ProviderInstanceSettings {
 | 当前 Case | Review | 本方案结果 |
 | --- | --- | --- |
 | `classify_gemini_model` 按 `embedding`、`tts`、`lyria`、`veo`、`imagen` 等字符串分 bucket | 模型类型和 API type 属于 metadata | **解决**：所有 provider 返回名直接由 `gemini.json` 规则匹配，不再构造 adapter-side buckets |
-| embedding/TTS/music/video bucket 为空时补 `DEFAULT_GEMINI_*` | adapter 维护第二份库存规则 | **解决**：不再按 bucket 补模型；需要的初始模型由内置 instance preset 提供并统一进入 resolver |
+| embedding/TTS/music/video bucket 为空时补 `DEFAULT_GEMINI_*` | adapter 维护第二份默认模型列表 | **解决**：删除默认常量和 bucket fallback；`gemini.json.models` 统一提供各 API type 的默认模型 |
 | `prefer_alias_over_versioned`、`keep_only_max_gemini_version` | 按 Gemini 命名推断版本和 alias，属于 metadata version rules | **解决**：对 Gemini 返回的 `provider_model_id` 应用 metadata version rules |
 | `price_per_1m_tokens` 和 image price 名称判断 | 与 metadata pricing 重复 | **解决，但需要迁移数据**：token、image 和其他计价写入 metadata，cost 从 resolved model 读取 |
 | provider 级固定 capabilities/features | 把协议能力误当成所有 Gemini 模型的能力 | **解决**：协议只声明可执行 API type 上限，实例和模型能力从 resolved inventory 派生 |
@@ -307,7 +316,7 @@ struct ProviderInstanceSettings {
 | `price_per_1m_tokens` 按 `m1`、`coding`、`plan` 判断价格 | 模型价格属于 metadata | **解决，但需要迁移数据**：`minimax.json` 定义 token pricing |
 | `extra.provider = "minimax"` | 把协议对象名称误当成 instance/metadata identity | **解决**：使用当前 instance 的 `provider_instance_name` 和 `provider_driver` |
 | `ProtocolDialect::MiniMax` 对 tool result 的降级规则 | MiniMax 暴露的 Anthropic-compatible dialect 与 Claude 并不完全相同 | **不解决，也不应删除**：它是程序支持的 API 协议行为 |
-| `DEFAULT_MINIMAX_MODELS` 和默认 endpoint | 内置 MiniMax instance 配置 | **保留** |
+| `DEFAULT_MINIMAX_MODELS` 和默认 endpoint | 模型列表与连接配置所有者不同 | **拆分**：默认模型迁入 `minimax.json.models`，默认 endpoint 保留在内置 instance preset |
 
 #### fal
 
@@ -317,7 +326,7 @@ struct ProviderInstanceSettings {
 | 按四组 settings model list 手工传入 API type、cost、latency | inventory 参数与 `fal.json` 重复 | **解决**：模型名统一交给 metadata resolver，API type、价格和延迟从 metadata 获取 |
 | `run_method` 和 `estimate_cost` 再次硬编码每种 method 的价格 | 形成第三份价格真相源 | **解决，但需要改 cost 调用链**：按 resolved model pricing 计价 |
 | image/audio/video method 到输入字段、URL 和 artifact parsing 的映射 | fal API 协议本身 | **不解决，也不应删除** |
-| fal 内置的四个默认模型 | 内置 instance 配置 | **保留** |
+| fal 内置的四个默认模型 | 与 metadata 模型定义重复 | **解决**：由 `fal.json.models` 提供默认列表，协议 adapter 不再保存模型常量 |
 
 #### 管理面与公共代码
 
@@ -363,7 +372,8 @@ struct ProviderInstanceSettings {
 4. OpenRouter 复用 `OpenAIProvider` 通用 inventory 流程，但只使用自己的渠道模型 ID 和独立 `openrouter.json`；
 5. 删除 OpenAI adapter 中的 OpenRouter inventory 分支；
 6. 将 `openai.rs`、`claude.rs`、`gemini.rs`、`minimax.rs` 和 `fal.rs` 中的模型家族分类、能力、价格、版本、mount 和 variant 逻辑迁入各自 metadata；
-7. 协议 adapter 的 provider 级能力改为协议上限，实际 instance/model 能力从 resolved inventory 派生。
+7. 删除协议 adapter 中所有 `DEFAULT_*_MODELS` 和默认 bucket，统一从 metadata `models` 构造默认 inventory；
+8. 协议 adapter 的 provider 级能力改为协议上限，实际 instance/model 能力从 resolved inventory 派生。
 
 ### Phase 2：协议与实例解耦
 
@@ -395,9 +405,10 @@ metadata 继承不是当前方案的前置条件。如后续确实需要共享�
 10. metadata 的 `provider_driver` 与文件名均为全小写且严格一致；UI 优先显示保留大小写的 `display_name`，缺省或为空时显示 `provider_driver`；
 11. 自定义 provider 的 API 协议和模型适配方案均通过下拉框选择，不能输入 catalog 之外的 ID；
 12. OpenRouter 的 Claude/Gemini 模型只通过 `OpenAIProvider` 执行，能力和价格来自 `openrouter.json`，不调用 `claude.rs` / `gemini.rs` 的模型家族逻辑；
-13. 协议 adapter 中不再通过 provider、模型品牌或模型家族名称决定 inventory、能力、价格、版本、mount 或 variant；
-14. 代码中不再通过 provider 名称决定协议、endpoint 或模型解析；
-15. `cargo test -p aicc`、workspace `cargo test` 与 `uv run buckyos-build.py` 通过。
+13. 每份 metadata 的 `models` 中未排除条目构成默认模型列表；discovery 成功时替换默认候选，失败时使用默认 inventory 或最近成功的 LKGS；
+14. 协议 adapter 中不再保存默认模型常量，也不再通过 provider、模型品牌或模型家族名称决定 inventory、能力、价格、版本、mount 或 variant；
+15. 代码中不再通过 provider 名称决定协议、endpoint 或模型解析；
+16. `cargo test -p aicc`、workspace `cargo test` 与 `uv run buckyos-build.py` 通过。
 
 ## 12. 风险与边界
 
@@ -405,7 +416,7 @@ metadata 继承不是当前方案的前置条件。如后续确实需要共享�
 
 - **必须保持渠道名称匹配边界**：当前 `openrouter.json` 的 exact model、pattern、variants 和 version rules 都按 `openai/...` 等渠道名称匹配，现有 resolver 也以 `provider_model_id` 为输入。实现时必须为每类规则增加回归测试，防止误改为 origin 匹配而导致 inventory 变空、错误合并不同渠道变体或丢失价格。
 - **机器 ID 与展示名不能混用**：`provider_driver` 和文件名必须保持全小写且严格一致；`display_name` 可以区分大小写并用于 UI，缺省时仅由展示层回退到 `provider_driver`。查找、云覆盖、缓存键和 instance 引用不得使用展示名或展示 fallback，也不能在运行时对不合法 ID 静默转小写，否则可能把两个配置合并为同一文档。
-- **不能直接复用 OpenAI 的调用模型 ID**：`OpenAIProvider` 默认列表是 `gpt-*`，OpenRouter 通常调用 `openai/gpt-*`。可以复用构造流程，不能把 OpenAI channel ID 当成 OpenRouter channel ID。通用行为应是使用 instance 明确配置的渠道模型名，或在远端 discovery 完成前保持空 inventory。
+- **不能直接复用 OpenAI 的调用模型 ID**：`openai.json.models` 使用 `gpt-*`，`openrouter.json.models` 通常使用 `openai/gpt-*`。可以复用构造流程，不能跨 metadata 复用默认列表；远端 discovery 完成前应使用当前 metadata 自己的默认 inventory。
 - **variants 必须始终使用渠道调用名**：variant eligibility、`provider_actual_model_id` 和最终 API 调用都以 `provider_model_id` 为基础；`origin_model_id` 只表示来源，不能把 `gpt-*` 发给需要 `openai/gpt-*` 的 endpoint。
 - **ProviderState 必须按 instance 隔离**：当前 OpenAI-compatible history 只用 `provider_driver` 标记 opaque state。多个 instance 共享同一 metadata 时，一个 endpoint/account 的 response state 可能被另一个 instance 接受。应改用现有 `provider_instance_name` 作为 owner，或至少同时校验 instance；不能改用 `origin.driver`。
 - **metadata refresh 当前不是全局原子操作**：`refresh_all_provider_inventories` 在每个异步任务完成后立即逐个写入 registry，某些 instance 失败时会出现同一 metadata generation 下新旧 inventory 混用。若要求一致切换，需要先构造并验证全部受影响 inventory，再一次性提交；失败则继续使用 LKGS。
@@ -418,6 +429,7 @@ metadata 继承不是当前方案的前置条件。如后续确实需要共享�
 - **完整 `/models` 列表的资源开销**：删除 adapter 预过滤后，聚合 provider 的全部模型都会进入 mapping/resolver。需要对模型数量、ID 长度、解析时间设上限，并为 exact/pattern 建索引，避免 refresh 放大 CPU 和内存消耗。
 - **价格双真相源迁移**：Claude、Gemini、MiniMax 和 fal 仍在 adapter 中计算实际 cost。迁移期间 metadata pricing 与 adapter 价格可能不一致；必须一次性切换 usage cost、estimate cost 和路由估价，不能长期保留 fallback 表。
 - **跨协议模型的 metadata 覆盖完整性**：OpenRouter 新增 Claude、Gemini 或其他原厂模型时，origin mapping 成功不代表渠道语义已经完整。若 `openrouter.json` 没有匹配的 API type、capability、价格和参数约束，保守 fallback 可能导致模型不可路由或成本未知；发布检查必须覆盖所有已准入渠道模型，并对未知模型采用明确的保守 defaults/exclude。
+- **默认列表可能过期**：`models` 同时承担 exact rule 和 discovery 前默认列表，因此保留一个已下线 exact rule 会让它重新进入初始 inventory。下线但仍需保留解析信息的条目必须标记 `exclude = true`，metadata 发布检查还应验证默认 ID 可调用；discovery 成功后不能继续 union 默认模型。
 - **路由结果可能变化**：当前 `semantic_llm_family_mounts` 仍按 Qwen、DeepSeek、Kimi、GLM、Grok 名称硬编码 mount。若迁入 metadata，必须用 route snapshot 验证默认模型、版本选择、重复 mount 和候选权重没有意外变化。
 - **远端动态信息不能丢失**：Gemini `supportedGenerationMethods`、deprecation 等属于 discovery 返回的动态事实。metadata 决定静态语义，但远端明确声明的不支持/弃用仍应合并为 health/availability，不能因为去硬编码而忽略。
 - **协议与 metadata 组合校验**：两者正交但不是任意组合都有效，必须校验 metadata 暴露的 API types 不超过 `XxxProvider` 实现能力。
