@@ -614,9 +614,28 @@ mod tests {
     fn jarvis_work_behaviors_define_runtime_prompt_hooks() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../rootfs/bin/buckyos_jarvis/behaviors");
+        let image_cli_prompt = std::fs::read_to_string(root.join("aicc_image_cli.inc")).unwrap();
+        for required in [
+            "edit_image",
+            "gen_image",
+            "named_object:<obj_id>",
+            "<attachment path=",
+        ] {
+            assert!(
+                image_cli_prompt.contains(required),
+                "AICC image CLI prompt must document `{required}`"
+            );
+        }
         for name in ["plan", "do"] {
             let path = root.join(format!("{name}.toml"));
             let cfg = BehaviorCfg::load_from_file(&path).unwrap();
+            assert!(
+                cfg.prompt
+                    .on_init
+                    .contains("__INCLUDE(./aicc_image_cli.inc)__"),
+                "{} must include the AICC image CLI prompt",
+                path.display()
+            );
             assert!(
                 cfg.prompt
                     .on_behavior_switch
