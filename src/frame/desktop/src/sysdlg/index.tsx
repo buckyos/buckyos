@@ -1,12 +1,22 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useWindowDialog } from '../desktop/windows/dialogs'
 import { useI18n } from '../i18n/provider'
-import { AppInstaller } from './AppInstaller'
+import {
+  AppInstaller,
+  type AppInstallerLaunchParams,
+} from './AppInstaller'
+
+export {
+  AppInstallerRoute,
+  parseAppInstallerLaunchQuery,
+  type AppInstallerLaunchErrorCode,
+  type AppInstallerLaunchOptions,
+  type AppInstallerLaunchParams,
+} from './AppInstaller'
 
 export const APP_INSTALLER_DIALOG_PATH = 'sysdlg/app_installer' as const
 
-export interface AppInstallerDialogParams {
-  task_id: string
-}
+export type AppInstallerDialogParams = AppInstallerLaunchParams
 
 export type AppInstallerDialogResult =
   | { action: 'background' }
@@ -34,7 +44,7 @@ export function useSystemDialog() {
           closeOnBackdrop: false,
           renderBody: ({ close }) => (
             <AppInstaller
-              taskId={params.task_id}
+              launchParams={params}
               onBackground={() => close({ action: 'background' })}
               onChangeSource={() => close({ action: 'change-source' })}
               onClose={() => close({ action: 'close' })}

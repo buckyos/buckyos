@@ -3,6 +3,7 @@ import type {
   AppServiceItem,
   AppServiceViewStatus,
   InstallAppInfo,
+  InstallLaunchRequest,
   InstallOptions,
   InstallPlan,
   InstallSourceResolution,
@@ -381,18 +382,10 @@ export class AppServiceMockStore {
           source: createSource('url-pikg', value, value, 'identifier', value),
         }
       }
-      if (
-        lowerPath.endsWith('.json') ||
-        lowerPath.endsWith('.jwt') ||
-        lowerPath.includes('app-meta') ||
-        lowerPath.includes('appdoc')
-      ) {
-        return {
-          ok: true,
-          source: createSource('url-app-meta', value, value, 'identifier', value),
-        }
+      return {
+        ok: true,
+        source: createSource('url-app-meta', value, value, 'identifier', value),
       }
-      return { ok: false, code: 'UNSUPPORTED_URL_CONTENT' }
     }
 
     if (/^did:[a-z0-9]+:[^\s]+$/i.test(value)) {
@@ -413,6 +406,34 @@ export class AppServiceMockStore {
           'identifier',
           'obj_appdoc_nextcloud_signed_7m3k',
         ),
+      }
+    }
+
+    if (/^(?:buckyos|cyfs):\/\//i.test(value)) {
+      return {
+        ok: true,
+        source: createSource('share-object', value, value, 'identifier', value),
+      }
+    }
+
+    if (/^(?:pikg:|obj_pikg[_-])/i.test(value)) {
+      return {
+        ok: true,
+        source: createSource('pikg-object', value, value, 'identifier', value),
+      }
+    }
+
+    if (/^(?:obj_(?:appdoc|app)[_-]|[a-z0-9_-]{40,128}$)/i.test(value)) {
+      return {
+        ok: true,
+        source: createSource('app-document-object', value, value, 'identifier', value),
+      }
+    }
+
+    if (/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(value)) {
+      return {
+        ok: true,
+        source: createSource('app-name', value, value, 'identifier', value),
       }
     }
 
@@ -445,16 +466,16 @@ export class AppServiceMockStore {
     return { ok: false, code: 'UNRECOGNIZED_INPUT' }
   }
 
-  createInstallTask(source: InstallSourceResolution) {
-    const app = this.createInstallAppInfo(source)
+  createInstallTask(source: InstallSourceResolution, launchRequest?: InstallLaunchRequest) {
+    const app = this.createInstallAppInfo(source, launchRequest)
     const defaultOptions: InstallOptions = {
-      targetNode: 'ood-primary',
+      targetNode: launchRequest?.targetNode ?? 'ood-primary',
       components: [...app.availableComponents],
       dataDir: app.defaultSettings.dataDir ?? '/data/nextcloud',
       networkMode: 'zone',
       autoStart: true,
     }
-    const taskId = `install_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+    const taskId = `${Date.now()}${Math.floor(Math.random() * 1_000).toString().padStart(3, '0')}`
     this.activeTask = {
       taskId,
       app,
@@ -467,6 +488,7 @@ export class AppServiceMockStore {
         { stage: 'resolve', status: 'completed' },
         { stage: 'inspect', status: 'current' },
       ],
+      launchRequest: launchRequest ? structuredClone(launchRequest) : undefined,
     }
     this.persistTask()
     this.emit()
@@ -567,7 +589,10 @@ export class AppServiceMockStore {
     this.emit()
   }
 
-  private createInstallAppInfo(source: InstallSourceResolution): InstallAppInfo {
+  private createInstallAppInfo(
+    source: InstallSourceResolution,
+    launchRequest?: InstallLaunchRequest,
+  ): InstallAppInfo {
     const controlValue = source.originalInput.toLowerCase()
     const trustChecks: TrustCheck[] = [
       { code: 'document', status: 'verified', detail: 'App Document structure and object ID are valid.' },
@@ -609,6 +634,9 @@ export class AppServiceMockStore {
 
     const platformSupported = blockingReason !== 'TARGET_UNSUPPORTED'
     const offlineReady = ['local-pikg', 'personal-server-pikg'].includes(source.kind)
+    if (!blockingReason && launchRequest?.offline && !offlineReady) {
+      blockingReason = 'OFFLINE_CONTENT_UNAVAILABLE'
+    }
     const installReady = !blockingReason && trustChecks.every((check) => !['pending', 'failed'].includes(check.status))
 
     return {
@@ -623,7 +651,7 @@ export class AppServiceMockStore {
         ? source.normalizedValue
         : 'obj_appdoc_nextcloud_28_7m3k',
       publisher: 'Nextcloud Community Maintainers',
-      referrer: 'App Service manual install',
+      referrer: launchRequest?.referrer ?? 'App Service manual install',
       source,
       trustChecks,
       platformSupported,

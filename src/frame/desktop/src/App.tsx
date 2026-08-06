@@ -12,6 +12,7 @@ import { HomeStationRoute } from './app/homestation/HomeStationRoute'
 import { MessageHubRoute } from './app/messagehub/MessageHubRoute'
 import { TaskCenterRoute } from './app/task-center/TaskCenterRoute'
 import { UserProfileRoute } from './userprofile'
+import { AppInstallerRoute } from './sysdlg'
 
 const LoginPage = lazy(() => import('./auth/LoginPage'))
 
@@ -43,6 +44,10 @@ const router = createBrowserRouter([
   {
     path: '/userprofile',
     element: <UserProfileRoute />,
+  },
+  {
+    path: '/sysdlg/app_installer',
+    element: <AppInstallerRoute />,
   },
   {
     path: '*',

@@ -4,9 +4,9 @@
 
 This document records the UI-facing model proven by the mock-first App Service prototype.
 
-- Product source: `product/app_service/BuckyOS_App_Service_PRD.md` v0.3
-- Prototype entry: `AppServiceAppPanel.tsx`
-- Views: runtime home, application detail, Stage 1 source entry, shared App Installer Verify/Plan/Progress/Result views
+- Product sources: `product/app_service/BuckyOS_App_Service_PRD.md` v0.3 and `product/BuckyOS Sys Dlg.md`
+- Prototype entries: `AppServiceAppPanel.tsx` and `/sysdlg/app_installer`
+- Views: runtime home, application detail, Stage 1 source entry, shared/direct App Installer Verify/Plan/Progress/Result views
 - Data source: `mock/store.ts`; the prototype has no backend dependency
 - Input schemas: `schemas.ts`
 
@@ -62,6 +62,10 @@ type InstallSourceKind =
   | 'url-app-meta'
   | 'url-pikg'
   | 'app-did'
+  | 'app-name'
+  | 'app-document-object'
+  | 'pikg-object'
+  | 'share-object'
   | 'signed-jwt'
   | 'unsigned-json'
   | 'local-pikg'
@@ -114,10 +118,11 @@ interface InstallAppInfo {
     | 'TRUST_RESOLUTION_REQUIRED'
     | 'IDENTITY_REVOKED'
     | 'TARGET_UNSUPPORTED'
+    | 'OFFLINE_CONTENT_UNAVAILABLE'
 }
 ```
 
-Document format, signature, owner constraint, and authoritative publication are independent checks. A valid parse never implies trust. `TRUST_RESOLUTION_REQUIRED` is a trust-readiness state, not content download.
+Document format, signature, owner constraint, and authoritative publication are independent checks. A valid parse never implies trust. `TRUST_RESOLUTION_REQUIRED` is a trust-readiness state, not content download. `OFFLINE_CONTENT_UNAVAILABLE` prevents Acquisition when a caller explicitly forbids network access.
 
 ### Install plan
 
@@ -176,8 +181,17 @@ interface InstallTask {
   summary: string
   currentResource?: string
   history: InstallTaskHistoryItem[]
+  launchRequest?: InstallLaunchRequest
   failure?: InstallFailure
   result?: InstallResult
+}
+
+interface InstallLaunchRequest {
+  identifier: string
+  referrer?: string
+  targetNode?: 'ood-primary' | 'ood-backup'
+  offline: boolean
+  installParams?: Record<string, unknown>
 }
 
 interface InstallResult {
@@ -188,7 +202,7 @@ interface InstallResult {
 }
 ```
 
-One `taskId` identifies Resolve through Activate. Closing the Installer preserves the active task, and reopening from the home banner restores it. Retry keeps the same task ID.
+One positive i64 decimal `taskId` identifies Resolve through Activate. Closing the Installer preserves the active task, and reopening from the home banner or direct URL restores it. Retry keeps the same task ID. `launchRequest` is the normalized, reviewable snapshot of caller suggestions; it is not user approval.
 
 ## Input models and validation
 
@@ -214,6 +228,24 @@ const installerApprovalSchema = z.object({
 })
 ```
 
+The public dialog launch union is validated in `sysdlg/AppInstaller.tsx` before task lookup or creation:
+
+```ts
+type AppInstallerLaunchParams =
+  | { task_id: string }
+  | {
+      identifier: string
+      ref?: string
+      options?: {
+        target?: { node_did?: string; node_id?: string }
+        install_params?: Record<string, unknown>
+        offline?: boolean
+      }
+    }
+```
+
+The two forms are exclusive. URL parameters reject unknown keys and duplicates; `options` is parsed as once-decoded strict JSON with a 16 KiB UI limit. `identifier` is limited to 32 KiB and `ref` to 2 KiB. Target identifiers must resolve to the same known node.
+
 Valid examples:
 
 - Source: `https://apps.buckyos.ai/nextcloud/app-meta.jwt`
@@ -223,7 +255,9 @@ Valid examples:
 
 Invalid examples:
 
-- Ordinary webpage URL: classified as `UNSUPPORTED_URL_CONTENT`
+- Empty or unsupported identifier text: `source_unrecognized`
+- Repeated, unknown, or conflicting URL parameters: visible launch error, no task created
+- Invalid or out-of-range task ID: visible launch error, no lookup performed
 - JSON without a DID or supported `doc_type`: `INVALID_APP_META`
 - File without a `.pikg` suffix: `INVALID_PIKG`
 - Relative data directory: visible `dataDirectoryError`
@@ -267,6 +301,9 @@ Mock URL scenarios are `?appServiceScenario=empty` and `?appServiceScenario=erro
 
 | State | UI treatment |
 |---|---|
+| Launch resolving | Source-normalization spinner before task creation |
+| Invalid launch | Localized parameter/source error and Close action |
+| Task missing | Recoverable task-not-found state; no replacement task is created |
 | Inspect/waiting | App identity, source, trust, platform, and content readiness |
 | Blocked | Named blocking reason and disabled plan action |
 | Approval | Recomputed plan, permissions, impact, and administrator authorization |
@@ -298,6 +335,7 @@ Derived fields:
 | `InstallAppInfo.documentObjectId` | Frozen | Candidate/authority comparison |
 | `TrustCheck.code` | Frozen | Trust must remain decomposed |
 | `InstallTask.taskId` | Frozen | Recoverable transaction identity |
+| `InstallTask.launchRequest` | Frozen | Normalized public-launch suggestion snapshot |
 | `InstallTask.stage` | Frozen | Resolve-to-Activate progress mapping |
 | `InstallPlan.impacts` | Extensible | New technical-impact categories may be added |
 | `AppServiceItem.serviceInfo` | Extensible | Layer-specific runtime metadata |
@@ -310,11 +348,13 @@ The mock store provides:
 
 - Normal runtime apps: running, stopped, error, installing, and installed/start-failed
 - Docker boundaries: present, pulling, container error, and not-created
-- Valid inputs: App Meta URL, PIKG URL, App DID, signed JWT, unsigned JSON, local package, Personal Server package
+- Valid inputs: App Meta URL, PIKG URL, App DID, app name, App Document/PIKG Object ID, share object, signed JWT, unsigned JSON, local package, Personal Server package
 - Invalid inputs: unsupported URL content, invalid JSON, invalid PIKG, and unrecognized text
 - Trust boundary: include `trust-pending` in a recognized URL to produce `TRUST_RESOLUTION_REQUIRED`
 - Revocation boundary: include `revoked` to produce `IDENTITY_REVOKED`
 - Platform boundary: include `unsupported` to produce `TARGET_UNSUPPORTED`
+- Offline boundary: direct-launch a network source with `options.offline=true` to produce `OFFLINE_CONTENT_UNAVAILABLE`
+- Direct launch: `identifier` creates and persists a task, then normalizes browser history to `?task_id=<positive-i64>`
 - Download failure: include `fail-download`; Retry resumes the same task ID and succeeds
 - Activation failure: include `activation-fail`; installation completes with `autoStart: 'failed'`
 - Empty/error home states: `appServiceScenario=empty|error`
@@ -326,6 +366,7 @@ The mock store provides:
 | App list and service layers | `system-config` service/app records plus runtime `service_info` | Group by UI layer and map runtime status |
 | Docker dependency | Node/app runtime inspection | Normalize engine/image/container states |
 | Source resolution | App Service Stage 1 parser | Raw input to `identifier` or `staging_handle` |
+| Public launch request | `sysdlg/app_installer` URL or Dialog SDK | Strict validation to task lookup or normalized `InstallLaunchRequest` |
 | App identity and trust | Installer Resolve/Inspect | Preserve independent evidence checks |
 | Install plan | Installer Inspect plus user options | Recompute after every option change |
 | Task stage/progress | Task Manager by `task_id` | Protocol stage to localized product state |

@@ -38,6 +38,10 @@ function SourceKindIcon({ kind }: { kind: InstallSourceKind }) {
       return <Link2 size={16} aria-hidden="true" />
     case 'app-did':
       return <ShieldAlert size={16} aria-hidden="true" />
+    case 'app-name':
+    case 'app-document-object':
+    case 'pikg-object':
+    case 'share-object':
     case 'signed-jwt':
     case 'unsigned-json':
       return <FileJson2 size={16} aria-hidden="true" />

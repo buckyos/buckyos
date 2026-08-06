@@ -42,6 +42,10 @@ export type InstallSourceKind =
   | 'url-app-meta'
   | 'url-pikg'
   | 'app-did'
+  | 'app-name'
+  | 'app-document-object'
+  | 'pikg-object'
+  | 'share-object'
   | 'signed-jwt'
   | 'unsigned-json'
   | 'local-pikg'
@@ -118,7 +122,11 @@ export interface InstallAppInfo {
   availableComponents: string[]
   defaultSettings: Record<string, string>
   installReady: boolean
-  blockingReason?: 'TRUST_RESOLUTION_REQUIRED' | 'IDENTITY_REVOKED' | 'TARGET_UNSUPPORTED'
+  blockingReason?:
+    | 'TRUST_RESOLUTION_REQUIRED'
+    | 'IDENTITY_REVOKED'
+    | 'TARGET_UNSUPPORTED'
+    | 'OFFLINE_CONTENT_UNAVAILABLE'
 }
 
 export type InstallTargetNode = 'ood-primary' | 'ood-backup'
@@ -171,6 +179,14 @@ export interface InstallResult {
   autoStart: 'running' | 'failed' | 'skipped'
 }
 
+export interface InstallLaunchRequest {
+  identifier: string
+  referrer?: string
+  targetNode?: InstallTargetNode
+  offline: boolean
+  installParams?: Record<string, unknown>
+}
+
 export interface InstallTask {
   taskId: string
   app: InstallAppInfo
@@ -181,6 +197,7 @@ export interface InstallTask {
   summary: string
   currentResource?: string
   history: InstallTaskHistoryItem[]
+  launchRequest?: InstallLaunchRequest
   failure?: InstallFailure
   result?: InstallResult
 }

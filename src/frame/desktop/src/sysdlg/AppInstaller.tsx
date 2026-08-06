@@ -1,6 +1,9 @@
-import { useState } from 'react'
+/* eslint-disable react-refresh/only-export-components */
+import { useEffect, useMemo, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useForm, useWatch } from 'react-hook-form'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { z } from 'zod'
 import {
   AlertOctagon,
   AlertTriangle,
@@ -35,12 +38,155 @@ import {
 } from '../app/app-service/schemas'
 import type {
   InstallAppInfo,
+  InstallLaunchRequest,
   InstallOptions,
   InstallPermission,
+  InstallTargetNode,
   InstallTask,
   InstallTaskStage,
   TrustCheck,
 } from '../app/app-service/mock/types'
+
+export interface AppInstallerLaunchOptions {
+  target?: {
+    node_did?: string
+    node_id?: string
+  }
+  install_params?: Record<string, unknown>
+  offline?: boolean
+}
+
+export type AppInstallerLaunchParams =
+  | { task_id: string }
+  | {
+      identifier: string
+      ref?: string
+      options?: AppInstallerLaunchOptions
+    }
+
+export type AppInstallerLaunchErrorCode =
+  | 'duplicate_parameter'
+  | 'unknown_parameter'
+  | 'conflicting_parameters'
+  | 'invalid_task_id'
+  | 'invalid_identifier'
+  | 'invalid_options'
+  | 'invalid_target'
+  | 'source_unrecognized'
+
+export type AppInstallerLaunchQueryResult =
+  | { ok: true; params: AppInstallerLaunchParams }
+  | { ok: false; code: AppInstallerLaunchErrorCode }
+
+const maxTaskId = BigInt('9223372036854775807')
+const launchTargetSchema = z.object({
+  node_did: z.string().trim().min(1).max(512).optional(),
+  node_id: z.string().trim().min(1).max(256).optional(),
+}).strict().refine((target) => Boolean(target.node_did || target.node_id))
+const launchOptionsSchema = z.object({
+  target: launchTargetSchema.optional(),
+  install_params: z.record(z.string(), z.unknown()).optional(),
+  offline: z.boolean().optional(),
+}).strict()
+const taskIdSchema = z.string().regex(/^[1-9]\d*$/).refine((value) => BigInt(value) <= maxTaskId)
+const appInstallerLaunchParamsSchema = z.union([
+  z.object({ task_id: taskIdSchema }).strict(),
+  z.object({
+    identifier: z.string().trim().min(1).max(32_768),
+    ref: z.string().trim().min(1).max(2_048).optional(),
+    options: launchOptionsSchema.optional(),
+  }).strict(),
+])
+
+function validateTarget(target: AppInstallerLaunchOptions['target']):
+  | { ok: true; targetNode?: InstallTargetNode }
+  | { ok: false } {
+  if (!target) return { ok: true }
+
+  const nodeId = target.node_id as InstallTargetNode | undefined
+  if (nodeId && nodeId !== 'ood-primary' && nodeId !== 'ood-backup') {
+    return { ok: false }
+  }
+
+  let didNode: InstallTargetNode | undefined
+  if (target.node_did) {
+    if (target.node_did.endsWith('ood-primary')) didNode = 'ood-primary'
+    if (target.node_did.endsWith('ood-backup')) didNode = 'ood-backup'
+    if (!didNode) return { ok: false }
+  }
+
+  if (nodeId && didNode && nodeId !== didNode) return { ok: false }
+  return { ok: true, targetNode: nodeId ?? didNode }
+}
+
+export function parseAppInstallerLaunchQuery(search: string): AppInstallerLaunchQueryResult {
+  const searchParams = new URLSearchParams(search)
+  const allowedKeys = new Set(['task_id', 'identifier', 'ref', 'options'])
+
+  for (const key of searchParams.keys()) {
+    if (!allowedKeys.has(key)) return { ok: false, code: 'unknown_parameter' }
+    if (searchParams.getAll(key).length !== 1) return { ok: false, code: 'duplicate_parameter' }
+  }
+
+  const taskId = searchParams.get('task_id')
+  const identifier = searchParams.get('identifier')
+  const ref = searchParams.get('ref')
+  const serializedOptions = searchParams.get('options')
+
+  if (taskId !== null) {
+    if (identifier !== null || ref !== null || serializedOptions !== null) {
+      return { ok: false, code: 'conflicting_parameters' }
+    }
+    if (!taskIdSchema.safeParse(taskId).success) {
+      return { ok: false, code: 'invalid_task_id' }
+    }
+    return { ok: true, params: { task_id: taskId } }
+  }
+
+  if (identifier === null || identifier.trim().length === 0) {
+    return { ok: false, code: 'invalid_identifier' }
+  }
+
+  let options: AppInstallerLaunchOptions | undefined
+  if (serializedOptions !== null) {
+    if (serializedOptions.length > 16_384) return { ok: false, code: 'invalid_options' }
+    try {
+      const result = launchOptionsSchema.safeParse(JSON.parse(serializedOptions))
+      if (!result.success) return { ok: false, code: 'invalid_options' }
+      options = result.data
+    } catch {
+      return { ok: false, code: 'invalid_options' }
+    }
+  }
+
+  const parsed = appInstallerLaunchParamsSchema.safeParse({
+    identifier,
+    ...(ref !== null ? { ref } : {}),
+    ...(options ? { options } : {}),
+  })
+  if (!parsed.success || 'task_id' in parsed.data) {
+    return { ok: false, code: 'invalid_identifier' }
+  }
+
+  if (!validateTarget(parsed.data.options?.target).ok) {
+    return { ok: false, code: 'invalid_target' }
+  }
+  return { ok: true, params: parsed.data }
+}
+
+function validateAppInstallerLaunchParams(value: unknown): AppInstallerLaunchQueryResult {
+  const parsed = appInstallerLaunchParamsSchema.safeParse(value)
+  if (!parsed.success) {
+    if (value && typeof value === 'object' && 'task_id' in value) {
+      return { ok: false, code: 'invalid_task_id' }
+    }
+    return { ok: false, code: 'invalid_identifier' }
+  }
+  if ('options' in parsed.data && !validateTarget(parsed.data.options?.target).ok) {
+    return { ok: false, code: 'invalid_target' }
+  }
+  return { ok: true, params: parsed.data }
+}
 
 function sourceKindLabel(kind: InstallAppInfo['source']['kind'], t: ReturnType<typeof useI18n>['t']) {
   return t(`appService.source.kind.${kind}`, kind)
@@ -202,6 +348,40 @@ function BlockingCallout({ reason }: { reason: NonNullable<InstallAppInfo['block
   )
 }
 
+function LaunchRequestEvidence({ request }: { request: InstallLaunchRequest }) {
+  const { t } = useI18n()
+  return (
+    <section className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
+      <h3 className="text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
+        {t('appService.install.launchRequest', 'Launch request')}
+      </h3>
+      <dl className="mt-3">
+        <InfoRow
+          label={t('appService.install.requestedTarget', 'Requested target')}
+          value={request.targetNode ?? t('appService.install.systemSelectedTarget', 'System-selected node')}
+          code={Boolean(request.targetNode)}
+        />
+        <InfoRow
+          label={t('appService.install.networkAcquisition', 'Network acquisition')}
+          value={request.offline
+            ? t('appService.install.forbidden', 'Forbidden')
+            : t('appService.install.allowedWhenNeeded', 'Allowed when needed')}
+        />
+      </dl>
+      {request.installParams && (
+        <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--cp-border)' }}>
+          <div className="text-[11px] font-semibold" style={{ color: 'var(--cp-text)' }}>
+            {t('appService.install.installParams', 'Application install parameters')}
+          </div>
+          <pre className="desktop-scrollbar mt-2 max-h-36 overflow-auto rounded-xl p-3 text-[11px] leading-5" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+            {JSON.stringify(request.installParams, null, 2)}
+          </pre>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function VerifyStep({
   task,
   onBack,
@@ -217,6 +397,7 @@ function VerifyStep({
   return (
     <div className="space-y-6 p-5 sm:p-6">
       <AppIdentity app={app} />
+      {task.launchRequest && <LaunchRequestEvidence request={task.launchRequest} />}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <section>
@@ -364,6 +545,7 @@ function ApprovalStep({ task, onBack }: { task: InstallTask; onBack: () => void 
     autoStart: watched.autoStart ?? task.plan.options.autoStart,
   }
   const preview = store.previewInstallPlan(task.app, options)
+  const launchRequest = task.launchRequest
 
   return (
     <form className="space-y-6 p-5 sm:p-6" onSubmit={form.handleSubmit((values) => store.approveTask(task.taskId, values))} noValidate>
@@ -375,6 +557,35 @@ function ApprovalStep({ task, onBack }: { task: InstallTask; onBack: () => void 
           {t('appService.install.optionsBody', 'Changing the target or settings recalculates content readiness and technical impact before approval.')}
         </p>
       </div>
+
+      {(launchRequest?.offline || launchRequest?.installParams) && (
+        <section
+          className="rounded-[16px] p-4"
+          style={{ background: 'color-mix(in srgb, var(--cp-accent) 6%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-accent) 22%, var(--cp-border))' }}
+        >
+          <h3 className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+            {t('appService.install.callerSuggestions', 'Caller-provided suggestions')}
+          </h3>
+          <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--cp-muted)' }}>
+            {t('appService.install.callerSuggestionsHint', 'Review these values before authorizing. They are not treated as prior user approval.')}
+          </p>
+          {launchRequest.offline && (
+            <div className="mt-3 inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide" style={{ color: 'var(--cp-warning)', background: 'color-mix(in srgb, var(--cp-warning) 12%, transparent)' }}>
+              {t('appService.install.offlineOnly', 'Offline acquisition only')}
+            </div>
+          )}
+          {launchRequest.installParams && (
+            <div className="mt-3">
+              <div className="text-[11px] font-semibold" style={{ color: 'var(--cp-text)' }}>
+                {t('appService.install.installParams', 'Application install parameters')}
+              </div>
+              <pre className="desktop-scrollbar mt-2 max-h-36 overflow-auto rounded-xl p-3 text-[11px] leading-5" style={{ color: 'var(--cp-text)', background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}>
+                {JSON.stringify(launchRequest.installParams, null, 2)}
+              </pre>
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <section className="space-y-4 rounded-[18px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
@@ -768,18 +979,133 @@ function ResultStep({ task, onClose, onViewApp }: { task: InstallTask; onClose: 
 }
 
 export interface AppInstallerProps {
-  taskId: string
+  launchParams: AppInstallerLaunchParams
   onBackground: () => void
   onChangeSource: () => void
   onClose: () => void
   onViewApp: (serviceId: string) => void
+  onTaskCreated?: (taskId: string) => void
 }
 
-export function AppInstaller({ taskId, onBackground, onChangeSource, onClose, onViewApp }: AppInstallerProps) {
+function LaunchStateCard({
+  error,
+  onClose,
+}: {
+  error?: AppInstallerLaunchErrorCode
+  onClose: () => void
+}) {
+  const { t } = useI18n()
+
+  return (
+    <div
+      className="mx-auto w-full max-w-xl rounded-[22px] p-6"
+      data-testid={error ? 'app-installer-launch-error' : 'app-installer-launch-loading'}
+      role={error ? 'alert' : 'status'}
+      style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
+    >
+      {error ? (
+        <AlertTriangle size={24} style={{ color: 'var(--cp-danger)' }} aria-hidden="true" />
+      ) : (
+        <Loader2 size={24} className="animate-spin" style={{ color: 'var(--cp-accent)' }} aria-hidden="true" />
+      )}
+      <h1 className="mt-4 font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
+        {error
+          ? t('appService.install.launchErrorTitle', 'Cannot open App Installer')
+          : t('appService.install.resolvingSource', 'Resolving installation source')}
+      </h1>
+      <p className="mt-2 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
+        {error
+          ? t(`appService.install.launchError.${error}`, 'The launch parameters are invalid or unsupported.')
+          : t('appService.install.resolvingSourceBody', 'The source is being normalized before an installation task is created.')}
+      </p>
+      {error && (
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-5 min-h-11 rounded-xl px-4 text-sm font-semibold"
+          style={{ background: 'var(--cp-accent)', color: 'var(--cp-surface)' }}
+        >
+          {t('common.close', 'Close')}
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function AppInstaller({
+  launchParams,
+  onBackground,
+  onChangeSource,
+  onClose,
+  onViewApp,
+  onTaskCreated,
+}: AppInstallerProps) {
   const store = useSharedAppServiceStore()
   const { t } = useI18n()
   const [approvalOpen, setApprovalOpen] = useState(false)
-  const task = store.getTask(taskId)
+  const validatedLaunch = useMemo(
+    () => validateAppInstallerLaunchParams(launchParams),
+    [launchParams],
+  )
+  const [launchState, setLaunchState] = useState<
+    | { status: 'loading' }
+    | { status: 'ready'; taskId: string }
+    | { status: 'error'; code: AppInstallerLaunchErrorCode }
+  >(() => {
+    if (!validatedLaunch.ok) {
+      return { status: 'error', code: validatedLaunch.code }
+    }
+    if ('task_id' in validatedLaunch.params) {
+      return { status: 'ready', taskId: validatedLaunch.params.task_id }
+    }
+    return { status: 'loading' }
+  })
+
+  useEffect(() => {
+    if (!validatedLaunch.ok || 'task_id' in validatedLaunch.params) return
+    const identifierParams = validatedLaunch.params
+
+    let cancelled = false
+    const createTask = async () => {
+      const source = await store.analyzeInstallSource(identifierParams.identifier)
+      if (cancelled) return
+      if (!source.ok) {
+        setLaunchState({ status: 'error', code: 'source_unrecognized' })
+        return
+      }
+
+      const target = validateTarget(identifierParams.options?.target)
+      if (!target.ok) {
+        setLaunchState({ status: 'error', code: 'invalid_target' })
+        return
+      }
+      const request: InstallLaunchRequest = {
+        identifier: identifierParams.identifier,
+        referrer: identifierParams.ref,
+        targetNode: target.targetNode,
+        offline: identifierParams.options?.offline ?? false,
+        installParams: identifierParams.options?.install_params,
+      }
+      const taskId = store.createInstallTask(source.source, request)
+      if (cancelled) return
+      setLaunchState({ status: 'ready', taskId })
+      onTaskCreated?.(taskId)
+    }
+
+    void createTask()
+    return () => {
+      cancelled = true
+    }
+  }, [onTaskCreated, store, validatedLaunch])
+
+  if (launchState.status === 'loading') {
+    return <LaunchStateCard onClose={onClose} />
+  }
+  if (launchState.status === 'error') {
+    return <LaunchStateCard error={launchState.code} onClose={onClose} />
+  }
+
+  const task = store.getTask(launchState.taskId)
 
   if (!task) {
     return (
@@ -834,5 +1160,52 @@ export function AppInstaller({ taskId, onBackground, onChangeSource, onClose, on
     <InstallerFrame task={task} step="verify" onClose={onBackground}>
       <VerifyStep task={task} onBack={onChangeSource} onContinue={() => setApprovalOpen(true)} />
     </InstallerFrame>
+  )
+}
+
+export function AppInstallerRoute() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const parsed = useMemo(
+    () => parseAppInstallerLaunchQuery(location.search),
+    [location.search],
+  )
+
+  const closeStandalone = () => {
+    if (window.opener && !window.opener.closed) {
+      window.close()
+      return
+    }
+    void navigate('/')
+  }
+
+  const normalizeTaskUrl = (taskId: string) => {
+    const url = new URL(window.location.href)
+    url.search = ''
+    url.searchParams.set('task_id', taskId)
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  }
+
+  return (
+    <main className="relative z-10 flex min-h-dvh items-center justify-center overflow-y-auto p-3 sm:p-6">
+      <div
+        className="fixed inset-0 bg-[color:color-mix(in_srgb,var(--cp-shadow)_24%,transparent)] backdrop-blur-[2px]"
+        aria-hidden="true"
+      />
+      <div className="relative z-10 w-full max-w-3xl">
+        {parsed.ok ? (
+          <AppInstaller
+            launchParams={parsed.params}
+            onBackground={closeStandalone}
+            onChangeSource={closeStandalone}
+            onClose={closeStandalone}
+            onTaskCreated={normalizeTaskUrl}
+            onViewApp={closeStandalone}
+          />
+        ) : (
+          <LaunchStateCard error={parsed.code} onClose={closeStandalone} />
+        )}
+      </div>
+    </main>
   )
 }

@@ -114,7 +114,7 @@ test('Installer explains a download failure and retries the same task', async ({
 
   await expect(page.getByRole('heading', { name: 'Installation stopped' })).toBeVisible({ timeout: 5_000 })
   await expect(page.getByText('DOWNLOAD_FAILED')).toBeVisible()
-  const taskId = await page.getByText(/^install_/).first().textContent()
+  const taskId = await page.getByText(/^\d+$/).first().textContent()
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Installation complete' })).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText(taskId ?? '', { exact: true }).first()).toBeVisible()
