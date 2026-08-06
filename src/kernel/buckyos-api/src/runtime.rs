@@ -27,7 +27,9 @@ use named_store::NamedDataMgr;
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
-use crate::kevent_client::{KEventClient, KEVENT_SERVICE_NATIVE_PORT};
+use crate::kevent_client::{
+    KEventClient, BUCKYOS_KEVENT_DAEMON_ADDR_ENV, KEVENT_SERVICE_NATIVE_PORT,
+};
 use crate::msg_center_client::*;
 use crate::msg_queue::*;
 use crate::opendan_client::*;
@@ -2016,7 +2018,7 @@ impl BuckyOSRuntime {
     ///
     /// This is the only supported way to obtain one: the transport depends on
     /// where the process runs, and business code has no business knowing about
-    /// `BUCKYOS_HOST_GATEWAY`, ports or ring-buffer paths.
+    /// `BUCKYOS_KEVENT_DAEMON_ADDR`, host gateways or ring-buffer paths.
     ///
     /// * `AppService` / `FrameService` run inside containers, cannot reach the
     ///   host's ring buffer, and therefore talk to node-daemon's native bridge.
@@ -2040,10 +2042,10 @@ impl BuckyOSRuntime {
         let source_node = self.app_id.as_str();
         match self.runtime_type {
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
-                let endpoint = format!(
-                    "{}:{}",
-                    self.resolve_local_service_host(),
-                    KEVENT_SERVICE_NATIVE_PORT
+                let configured_endpoint = env::var(BUCKYOS_KEVENT_DAEMON_ADDR_ENV).ok();
+                let endpoint = resolve_kevent_daemon_endpoint(
+                    configured_endpoint.as_deref(),
+                    &self.resolve_local_service_host(),
                 );
                 info!(
                     "kevent client for {} uses daemon bridge at {}",
@@ -2389,6 +2391,17 @@ fn resolve_container_gateway_host(configured_host: Option<&str>) -> String {
     resolve_host_to_ipv4_literal(host).unwrap_or_else(|| host.to_string())
 }
 
+fn resolve_kevent_daemon_endpoint(
+    configured_endpoint: Option<&str>,
+    fallback_host: &str,
+) -> String {
+    configured_endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}:{}", fallback_host, KEVENT_SERVICE_NATIVE_PORT))
+}
+
 fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
     let host = host.trim();
     if host.is_empty() {
@@ -2537,6 +2550,18 @@ mod tests {
         assert_eq!(
             resolve_container_gateway_host(Some("localhost")),
             "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn kevent_daemon_endpoint_prefers_explicit_deployment_value() {
+        assert_eq!(
+            resolve_kevent_daemon_endpoint(Some(" host.docker.internal:43183 "), "127.0.0.1"),
+            "host.docker.internal:43183"
+        );
+        assert_eq!(
+            resolve_kevent_daemon_endpoint(Some("  "), "127.0.0.1"),
+            "127.0.0.1:3183"
         );
     }
 }

@@ -584,12 +584,20 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
     // ring buffer nobody else was attached to — every global event silently
     // stayed inside the container. This is a hard failure now: without the
     // bridge, agent event subscriptions do not work at all.
-    let kevent_client = Arc::new(api_runtime.get_kevent_client().await.map_err(|err| {
-        anyhow!("opendan.bootstrap: kevent client unavailable: {err:?}")
-    })?);
+    let kevent_client = Arc::new(
+        api_runtime
+            .get_kevent_client()
+            .await
+            .map_err(|err| anyhow!("opendan.bootstrap: kevent client unavailable: {err:?}"))?,
+    );
+    let kevent_backend = kevent_client.transport_kind();
+    let kevent_endpoint = kevent_client
+        .transport_status()
+        .map(|status| status.endpoint)
+        .unwrap_or_else(|| "local".to_string());
 
     info!(
-        "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} task_mgr={} kevent=ready",
+        "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} task_mgr={} kevent_backend={:?} kevent_endpoint={}",
         worklog_db.display(),
         if msg_center.is_some() {
             "ready"
@@ -600,7 +608,9 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
             "ready"
         } else {
             "unavailable"
-        }
+        },
+        kevent_backend,
+        kevent_endpoint
     );
 
     let mut runtime =

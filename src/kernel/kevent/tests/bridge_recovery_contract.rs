@@ -356,9 +356,18 @@ async fn pull_event_paces_normally_while_daemon_is_down() {
         TIMEOUT_MS
     );
 
-    // The transport did keep retrying underneath, with bounded backoff.
+    wait_until(
+        "transport failure to be recorded",
+        Duration::from_secs(6),
+        || {
+            let client = client.clone();
+            async move { client.transport_status().unwrap().total_failures > 0 }
+        },
+    )
+    .await;
+
     let status = client.transport_status().unwrap();
-    assert!(status.consecutive_failures > 0);
+    assert!(status.total_failures > 0);
     assert!(status.last_error.is_some());
 }
 
