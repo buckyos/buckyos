@@ -675,6 +675,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![metadata(
                     "openai_primary",
                     "gpt-5.2",
@@ -693,6 +694,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![metadata(
                     "anthropic",
                     "claude-sonnet",
@@ -711,6 +713,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![metadata(
                     "local",
                     "qwen3",
@@ -978,6 +981,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![good, weak],
             })
             .unwrap();
@@ -1023,6 +1027,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![primary],
             })
             .unwrap();
@@ -1036,6 +1041,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![backup],
             })
             .unwrap();
@@ -1115,6 +1121,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![primary],
             })
             .unwrap();
@@ -1128,6 +1135,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![backup],
             })
             .unwrap();
@@ -1182,6 +1190,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![primary],
             })
             .unwrap();
@@ -1195,6 +1204,7 @@ mod tests {
                 provider_type_revision: None,
                 version: None,
                 inventory_revision: Some("r1".to_string()),
+                driver_metadata_generation: 0,
                 models: vec![backup],
             })
             .unwrap();

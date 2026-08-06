@@ -1,8 +1,9 @@
 use crate::aicc::{
     provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
+use crate::model_registry::DEFAULT_INVENTORY_REFRESH_INTERVAL;
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
     ProviderTypeTrustedSource, QuotaState,
@@ -19,8 +20,10 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::error::Error as _;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
+use tokio::sync::watch;
+use tokio::time;
 
 const FAL_PROVIDER_SETTINGS_KEY: &str = "fal";
 const DEFAULT_FAL_BASE_URL: &str = "https://fal.run";
@@ -48,7 +51,9 @@ pub struct FalInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct FalProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
+    inventory_requests: Vec<DriverModelResolveRequest>,
+    refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
     client: Client,
     api_token: String,
     base_url: String,
@@ -124,11 +129,128 @@ impl FalProvider {
 
         Ok(Self {
             instance,
-            inventory,
+            inventory: Arc::new(RwLock::new(inventory)),
+            inventory_requests: requests,
+            refresh_task: Arc::new(Mutex::new(None)),
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
         })
+    }
+
+    pub fn start_inventory_refresh(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        let existing = match self.refresh_task.lock() {
+            Ok(mut current) => current.replace(refresh_task.clone()),
+            Err(_) => {
+                warn!(
+                    "aicc.fal.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                    self.instance.provider_instance_name
+                );
+                return;
+            }
+        };
+        if let Some(existing) = existing {
+            existing.shutdown();
+        }
+        let provider = Arc::downgrade(&self);
+        let provider_instance_name = self.instance.provider_instance_name.clone();
+        tokio::spawn(async move {
+            Self::run_inventory_refresh(
+                provider,
+                provider_instance_name,
+                refresh_task,
+                shutdown_rx,
+            )
+            .await;
+        });
+    }
+
+    async fn run_inventory_refresh(
+        provider: Weak<Self>,
+        provider_instance_name: String,
+        refresh_task: Arc<ProviderRefreshTask>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) {
+        if !refresh_task.try_start_request() {
+            return;
+        }
+        let Some(current) = provider.upgrade() else {
+            refresh_task.shutdown();
+            return;
+        };
+        let initial_result = current.refresh_inventory_once().await;
+        refresh_task.finish_request();
+        drop(current);
+        if let Err(err) = initial_result {
+            warn!(
+                "aicc.fal.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                provider_instance_name, err
+            );
+        }
+
+        let mut interval = time::interval(DEFAULT_INVENTORY_REFRESH_INTERVAL);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                biased;
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+                _ = interval.tick() => {
+                    if !refresh_task.try_start_request() {
+                        return;
+                    }
+                    let Some(current) = provider.upgrade() else {
+                        refresh_task.shutdown();
+                        return;
+                    };
+                    let result = current.refresh_inventory_once().await;
+                    refresh_task.finish_request();
+                    drop(current);
+                    if let Err(err) = result {
+                        warn!(
+                            "aicc.fal.inventory.refresh_failed provider_instance_name={} err={}",
+                            provider_instance_name, err
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn stop_inventory_refresh(&self) {
+        match self.refresh_task.lock() {
+            Ok(mut current) => {
+                if let Some(task) = current.take() {
+                    task.shutdown();
+                }
+            }
+            Err(_) => warn!(
+                "aicc.fal.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                self.instance.provider_instance_name
+            ),
+        }
+    }
+
+    async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let inventory = resolve_driver_inventory(
+            self.instance.provider_instance_name.as_str(),
+            self.instance.provider_type.clone(),
+            self.instance.provider_driver.as_str(),
+            self.inventory_requests.as_slice(),
+            Some("settings-v1".to_string()),
+        );
+        *self
+            .inventory
+            .write()
+            .map_err(|_| anyhow!("fal inventory lock poisoned"))? = inventory.clone();
+        Ok(inventory)
     }
 
     fn format_error_chain(err: &reqwest::Error) -> String {
@@ -407,11 +529,26 @@ impl FalProvider {
 #[async_trait]
 impl Provider for FalProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                resolve_driver_inventory(
+                    self.instance.provider_instance_name.as_str(),
+                    self.instance.provider_type.clone(),
+                    self.instance.provider_driver.as_str(),
+                    self.inventory_requests.as_slice(),
+                    Some("settings-v1".to_string()),
+                )
+            })
     }
 
     fn legacy_instance(&self) -> Option<&ProviderInstance> {
         Some(&self.instance)
+    }
+
+    fn shutdown(&self) {
+        self.stop_inventory_refresh();
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -429,6 +566,12 @@ impl Provider for FalProvider {
             confidence: 0.5,
             estimated_latency_ms: Some(latency),
         }
+    }
+
+    async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
+        self.refresh_inventory_once()
+            .await
+            .map_err(|err| ProviderError::retryable(err.to_string()))
     }
 
     async fn start(
@@ -704,7 +847,7 @@ pub fn register_fal_providers(center: &AIComputeCenter, settings: &Value) -> Res
     let instances = build_fal_instances(&fal_settings)?;
     info!("aicc fal registering instances={}", instances.len());
 
-    let mut prepared = Vec::<(FalInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(FalInstanceConfig, Arc<FalProvider>)>::new();
     for config in instances.iter() {
         if config.api_token.trim().is_empty() {
             return Err(anyhow!(
@@ -712,11 +855,12 @@ pub fn register_fal_providers(center: &AIComputeCenter, settings: &Value) -> Res
                 config.provider_instance_name
             ));
         }
-        let provider = FalProvider::new(config.clone(), config.api_token.clone())?;
-        prepared.push((config.clone(), Arc::new(provider)));
+        let provider = Arc::new(FalProvider::new(config.clone(), config.api_token.clone())?);
+        prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
+        provider.clone().start_inventory_refresh();
         let inventory = center.registry().add_provider(provider);
         info!(
             "registered fal provider base_url={} models={}",
@@ -894,6 +1038,39 @@ mod tests {
         assert_eq!(driver_for("fal-ai/imageutils/rembg"), Some("rembg"));
         assert_eq!(driver_for("fal-ai/deepfilternet3"), Some("deepfilternet"));
         assert_eq!(driver_for("fal-ai/video-upscaler"), Some("real-esrgan"));
+    }
+
+    #[tokio::test]
+    async fn fal_inventory_refresh_lifecycle_matches_dynamic_providers() {
+        let provider = Arc::new(
+            FalProvider::new(
+                FalInstanceConfig {
+                    provider_instance_name: "fal-refresh".to_string(),
+                    provider_type: "cloud_api".to_string(),
+                    api_token: "test-token".to_string(),
+                    base_url: DEFAULT_FAL_BASE_URL.to_string(),
+                    timeout_ms: DEFAULT_FAL_TIMEOUT_MS,
+                    image_upscale_models: vec![DEFAULT_IMAGE_UPSCALE_MODEL.to_string()],
+                    image_bg_remove_models: vec![DEFAULT_IMAGE_BG_REMOVE_MODEL.to_string()],
+                    audio_enhance_models: vec![DEFAULT_AUDIO_ENHANCE_MODEL.to_string()],
+                    video_upscale_models: vec![DEFAULT_VIDEO_UPSCALE_MODEL.to_string()],
+                },
+                "test-token".to_string(),
+            )
+            .unwrap(),
+        );
+
+        provider.clone().start_inventory_refresh();
+        tokio::task::yield_now().await;
+        assert!(provider.refresh_task.lock().unwrap().is_some());
+        assert!(!provider
+            .refresh_inventory()
+            .await
+            .unwrap()
+            .models
+            .is_empty());
+        provider.shutdown();
+        assert!(provider.refresh_task.lock().unwrap().is_none());
     }
 
     #[test]

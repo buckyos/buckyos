@@ -15,7 +15,7 @@ use buckyos_api::{
     Feature, ResourceRef,
 };
 use log::{info, warn};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -31,6 +31,7 @@ const DEFAULT_CLAUDE_MODELS: &str = "claude-3-7-sonnet-20250219,claude-3-5-haiku
 const DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const CLAUDE_MODELS_PAGE_LIMIT: u32 = 1000;
+const CLAUDE_MODELS_MAX_PAGES: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct ClaudeInstanceConfig {
@@ -74,6 +75,24 @@ struct ClaudeModelsResponse {
 #[derive(Debug, Deserialize)]
 struct ClaudeModelEntry {
     id: String,
+}
+
+fn next_claude_models_cursor(
+    has_more: bool,
+    last_id: Option<String>,
+    seen_cursors: &mut HashSet<String>,
+) -> Result<Option<String>> {
+    if !has_more {
+        return Ok(None);
+    }
+    let cursor = last_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("claude models pagination omitted last_id"))?;
+    if !seen_cursors.insert(cursor.clone()) {
+        return Err(anyhow!("claude models pagination repeated last_id"));
+    }
+    Ok(Some(cursor))
 }
 
 impl ClaudeProvider {
@@ -278,21 +297,21 @@ impl ClaudeProvider {
     async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
         let mut model_ids = Vec::<String>::new();
         let mut seen = HashSet::<String>::new();
+        let mut seen_cursors = HashSet::<String>::new();
         let mut after_id: Option<String> = None;
 
-        loop {
-            let mut url = format!(
-                "{}/models?limit={}",
-                self.base_url, CLAUDE_MODELS_PAGE_LIMIT
-            );
+        for page in 0..CLAUDE_MODELS_MAX_PAGES {
+            let mut url = Url::parse(format!("{}/models", self.base_url).as_str())
+                .context("build claude models URL")?;
+            url.query_pairs_mut()
+                .append_pair("limit", CLAUDE_MODELS_PAGE_LIMIT.to_string().as_str());
             if let Some(cursor) = after_id.as_deref() {
-                url.push_str("&after_id=");
-                url.push_str(cursor);
+                url.query_pairs_mut().append_pair("after_id", cursor);
             }
 
             let response = self
                 .client
-                .get(url.as_str())
+                .get(url)
                 .header("x-api-key", self.api_token.as_str())
                 .header("anthropic-version", ANTHROPIC_API_VERSION)
                 .send()
@@ -358,14 +377,17 @@ impl ClaudeProvider {
                 }
             }
 
-            if !parsed.has_more {
+            let Some(cursor) =
+                next_claude_models_cursor(parsed.has_more, parsed.last_id, &mut seen_cursors)?
+            else {
                 break;
-            }
-            match parsed.last_id {
-                Some(cursor) if !cursor.is_empty() => {
-                    after_id = Some(cursor);
-                }
-                _ => break,
+            };
+            after_id = Some(cursor);
+            if page + 1 == CLAUDE_MODELS_MAX_PAGES {
+                return Err(anyhow!(
+                    "claude models pagination exceeded {} pages",
+                    CLAUDE_MODELS_MAX_PAGES
+                ));
             }
         }
 
@@ -405,53 +427,57 @@ impl ClaudeProvider {
         inventory: ProviderInventory,
     ) -> ProviderInventory {
         let version = inventory.version.clone();
-        let models = inventory
-            .models
-            .into_iter()
-            .filter_map(|model| self.normalize_remote_provider_model(model))
+        let inventory_revision = inventory.inventory_revision.clone();
+        let remote_models = inventory.models;
+        let requests = remote_models
+            .iter()
+            .filter_map(|model| {
+                let provider_model_id = model.provider_model_id.trim();
+                if provider_model_id.is_empty() {
+                    return None;
+                }
+                let fallback_api_types = if model.api_types.is_empty() {
+                    vec![ApiType::Llm]
+                } else {
+                    model.api_types.clone()
+                };
+                Some(
+                    DriverModelResolveRequest::new(provider_model_id, fallback_api_types)
+                        .with_cost(model.pricing.estimated_cost_usd)
+                        .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms)),
+                )
+            })
             .collect::<Vec<_>>();
-
-        ProviderInventory {
-            provider_instance_name: self.provider_instance_name.clone(),
-            provider_type: self.provider_type.clone(),
-            provider_driver: self.provider_driver.clone(),
-            provider_origin: ProviderOrigin::SystemConfig,
-            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
-            provider_type_revision: None,
-            version: version.clone(),
-            inventory_revision: inventory
-                .inventory_revision
-                .or_else(|| Some(claude_inventory_revision_from_metadata(models.as_slice()))),
-            models,
-        }
-    }
-
-    fn normalize_remote_provider_model(&self, model: ModelMetadata) -> Option<ModelMetadata> {
-        let provider_model_id = model.provider_model_id.trim();
-        if provider_model_id.is_empty() {
-            return None;
-        }
-
-        let fallback_api_types = if model.api_types.is_empty() {
-            vec![ApiType::Llm]
-        } else {
-            model.api_types.clone()
-        };
-        let request = DriverModelResolveRequest::new(provider_model_id, fallback_api_types)
-            .with_cost(model.pricing.estimated_cost_usd)
-            .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms));
-        let inventory = resolve_driver_inventory(
+        let remote_by_id = remote_models
+            .iter()
+            .filter(|model| !model.provider_model_id.trim().is_empty())
+            .map(|model| (model.provider_model_id.trim().to_string(), model))
+            .collect::<HashMap<_, _>>();
+        let mut normalized = resolve_driver_inventory(
             self.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
-            &[request],
-            None,
+            requests.as_slice(),
+            inventory_revision,
         );
-        let mut normalized = inventory.models.into_iter().next()?;
-        normalized.parameter_scale = model.parameter_scale.clone();
-        Self::merge_remote_pricing(&mut normalized, &model);
-        Self::merge_remote_health(&mut normalized, &model);
-        Some(normalized)
+        for model in normalized.models.iter_mut() {
+            let base_model_id = model
+                .provider_actual_model_id
+                .as_deref()
+                .unwrap_or(model.provider_model_id.as_str());
+            if let Some(remote) = remote_by_id.get(base_model_id) {
+                model.parameter_scale = remote.parameter_scale.clone();
+                Self::merge_remote_pricing(model, remote);
+                Self::merge_remote_health(model, remote);
+            }
+        }
+        normalized.version = version.clone();
+        if normalized.inventory_revision.is_none() {
+            normalized.inventory_revision = Some(claude_inventory_revision_from_metadata(
+                normalized.models.as_slice(),
+            ));
+        }
+        normalized
     }
 
     fn merge_remote_pricing(normalized: &mut ModelMetadata, remote: &ModelMetadata) {
@@ -1435,6 +1461,23 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_models_pagination_rejects_missing_and_repeated_cursors() {
+        let mut seen = HashSet::new();
+        assert_eq!(
+            next_claude_models_cursor(false, None, &mut seen).unwrap(),
+            None
+        );
+        assert!(next_claude_models_cursor(true, None, &mut seen).is_err());
+        assert_eq!(
+            next_claude_models_cursor(true, Some(" page/2 ".to_string()), &mut seen)
+                .unwrap()
+                .as_deref(),
+            Some("page/2")
+        );
+        assert!(next_claude_models_cursor(true, Some("page/2".to_string()), &mut seen).is_err());
+    }
 
     #[test]
     fn classifier_matches_anthropic_public_capabilities() {

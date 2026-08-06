@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/provider'
 import { useProviders, useGlobalRoutingView } from './hooks/use-aicc-store'
 import { ProviderList } from './components/providers/ProviderList'
 import { ProviderDetailPanel } from './components/providers/ProviderDetailPanel'
+import { CloudUpdateCard } from './components/home/CloudUpdateCard'
 import { EmptyState } from './components/shared/EmptyState'
 import { Plug } from 'lucide-react'
 import type { AICenterPage } from './components/layout/Sidebar'
@@ -37,14 +38,19 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
 
   if (providers.length === 0) {
     return (
-      <EmptyState
-        icon={<Plug size={48} />}
-        title={t('aiCenter.providers.noProviders', 'No providers configured')}
-        action={{
-          label: t('aiCenter.providers.addProvider', 'Add Provider'),
-          onClick: () => navigate('providers/add'),
-        }}
-      />
+      <div className="mx-auto max-w-3xl">
+        <EmptyState
+          icon={<Plug size={48} />}
+          title={t('aiCenter.providers.noProviders', 'No providers configured')}
+          action={{
+            label: t('aiCenter.providers.addProvider', 'Add Provider'),
+            onClick: () => navigate('providers/add'),
+          }}
+        />
+        <div data-testid="aicenter-provider-global-settings">
+          <CloudUpdateCard />
+        </div>
+      </div>
     )
   }
 
@@ -76,6 +82,11 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
             setShowMobileDetail(true)
           }}
           onAdd={() => navigate('providers/add')}
+          footer={(
+            <div data-testid="aicenter-provider-global-settings">
+              <CloudUpdateCard />
+            </div>
+          )}
         />
       </div>
     )
@@ -83,7 +94,7 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
 
   // Desktop: split view
   return (
-    <div className={`${isCompactDesktop ? 'flex flex-col' : 'flex'} gap-6 -mx-8 -my-6 h-full`}>
+    <div className={`${isCompactDesktop ? 'flex flex-col' : 'flex'} h-full gap-6 -mx-8 -my-6`}>
       <div
         className={isCompactDesktop ? 'max-h-72 shrink-0 overflow-y-auto px-4 py-4' : 'w-80 shrink-0 overflow-y-auto px-4 py-4'}
         style={isCompactDesktop ? { borderBottom: '1px solid var(--cp-border)' } : { borderRight: '1px solid var(--cp-border)' }}
@@ -93,9 +104,14 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onAdd={() => navigate('providers/add')}
+          footer={(
+            <div data-testid="aicenter-provider-global-settings">
+              <CloudUpdateCard />
+            </div>
+          )}
         />
       </div>
-      <div className="flex-1 py-6 px-6 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
         {selectedProvider ? (
           <ProviderDetailPanel
             provider={selectedProvider}
@@ -106,7 +122,7 @@ export function ProvidersPage({ navigate }: ProvidersPageProps) {
             }}
           />
         ) : (
-          <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--cp-muted)' }}>
+          <div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--cp-muted)' }}>
             {t('aiCenter.providers.detail', 'Provider Detail')}
           </div>
         )}

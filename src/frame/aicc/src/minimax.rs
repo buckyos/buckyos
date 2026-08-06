@@ -1,9 +1,10 @@
 use crate::aicc::{
     provider_type_from_settings, AIComputeCenter, Provider, ProviderError, ProviderInstance,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::claude_protocol::{convert_complete_request_with_dialect, ProtocolDialect};
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
+use crate::model_registry::DEFAULT_INVENTORY_REFRESH_INTERVAL;
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
     ProviderTypeTrustedSource, QuotaState,
@@ -19,8 +20,10 @@ use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
+use tokio::sync::watch;
+use tokio::time;
 
 const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimaxi.com/anthropic/v1";
 const DEFAULT_MINIMAX_TIMEOUT_MS: u64 = 60_000;
@@ -45,7 +48,9 @@ pub struct MiniMaxInstanceConfig {
 #[derive(Debug, Clone)]
 pub struct MiniMaxProvider {
     instance: ProviderInstance,
-    inventory: ProviderInventory,
+    inventory: Arc<RwLock<ProviderInventory>>,
+    inventory_requests: Vec<DriverModelResolveRequest>,
+    refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
     client: Client,
     api_token: String,
     base_url: String,
@@ -98,11 +103,128 @@ impl MiniMaxProvider {
 
         Ok(Self {
             instance,
-            inventory,
+            inventory: Arc::new(RwLock::new(inventory)),
+            inventory_requests: requests,
+            refresh_task: Arc::new(Mutex::new(None)),
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
         })
+    }
+
+    pub fn start_inventory_refresh(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        let existing = match self.refresh_task.lock() {
+            Ok(mut current) => current.replace(refresh_task.clone()),
+            Err(_) => {
+                warn!(
+                    "aicc.minimax.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                    self.instance.provider_instance_name
+                );
+                return;
+            }
+        };
+        if let Some(existing) = existing {
+            existing.shutdown();
+        }
+        let provider = Arc::downgrade(&self);
+        let provider_instance_name = self.instance.provider_instance_name.clone();
+        tokio::spawn(async move {
+            Self::run_inventory_refresh(
+                provider,
+                provider_instance_name,
+                refresh_task,
+                shutdown_rx,
+            )
+            .await;
+        });
+    }
+
+    async fn run_inventory_refresh(
+        provider: Weak<Self>,
+        provider_instance_name: String,
+        refresh_task: Arc<ProviderRefreshTask>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) {
+        if !refresh_task.try_start_request() {
+            return;
+        }
+        let Some(current) = provider.upgrade() else {
+            refresh_task.shutdown();
+            return;
+        };
+        let initial_result = current.refresh_inventory_once().await;
+        refresh_task.finish_request();
+        drop(current);
+        if let Err(err) = initial_result {
+            warn!(
+                "aicc.minimax.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                provider_instance_name, err
+            );
+        }
+
+        let mut interval = time::interval(DEFAULT_INVENTORY_REFRESH_INTERVAL);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                biased;
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        return;
+                    }
+                }
+                _ = interval.tick() => {
+                    if !refresh_task.try_start_request() {
+                        return;
+                    }
+                    let Some(current) = provider.upgrade() else {
+                        refresh_task.shutdown();
+                        return;
+                    };
+                    let result = current.refresh_inventory_once().await;
+                    refresh_task.finish_request();
+                    drop(current);
+                    if let Err(err) = result {
+                        warn!(
+                            "aicc.minimax.inventory.refresh_failed provider_instance_name={} err={}",
+                            provider_instance_name, err
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn stop_inventory_refresh(&self) {
+        match self.refresh_task.lock() {
+            Ok(mut current) => {
+                if let Some(task) = current.take() {
+                    task.shutdown();
+                }
+            }
+            Err(_) => warn!(
+                "aicc.minimax.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                self.instance.provider_instance_name
+            ),
+        }
+    }
+
+    async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let inventory = resolve_driver_inventory(
+            self.instance.provider_instance_name.as_str(),
+            self.instance.provider_type.clone(),
+            self.instance.provider_driver.as_str(),
+            self.inventory_requests.as_slice(),
+            Some("settings-v1".to_string()),
+        );
+        *self
+            .inventory
+            .write()
+            .map_err(|_| anyhow!("minimax inventory lock poisoned"))? = inventory.clone();
+        Ok(inventory)
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
@@ -313,7 +435,22 @@ impl MiniMaxProvider {
 #[async_trait]
 impl Provider for MiniMaxProvider {
     fn inventory(&self) -> ProviderInventory {
-        self.inventory.clone()
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                resolve_driver_inventory(
+                    self.instance.provider_instance_name.as_str(),
+                    self.instance.provider_type.clone(),
+                    self.instance.provider_driver.as_str(),
+                    self.inventory_requests.as_slice(),
+                    Some("settings-v1".to_string()),
+                )
+            })
+    }
+
+    fn shutdown(&self) {
+        self.stop_inventory_refresh();
     }
 
     fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
@@ -336,6 +473,12 @@ impl Provider for MiniMaxProvider {
             confidence: 0.7,
             estimated_latency_ms: Some(1400),
         }
+    }
+
+    async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
+        self.refresh_inventory_once()
+            .await
+            .map_err(|err| ProviderError::retryable(err.to_string()))
     }
 
     async fn start(
@@ -632,7 +775,7 @@ pub fn register_minimax_providers(center: &AIComputeCenter, settings: &Value) ->
             .map(|item| item.default_model.clone().unwrap_or_default())
             .collect::<Vec<_>>(),
     );
-    let mut prepared = Vec::<(MiniMaxInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(MiniMaxInstanceConfig, Arc<MiniMaxProvider>)>::new();
     for config in instances.iter() {
         if config.api_token.trim().is_empty() {
             return Err(anyhow!(
@@ -640,11 +783,15 @@ pub fn register_minimax_providers(center: &AIComputeCenter, settings: &Value) ->
                 config.provider_instance_name
             ));
         }
-        let provider = MiniMaxProvider::new(config.clone(), config.api_token.clone())?;
-        prepared.push((config.clone(), Arc::new(provider)));
+        let provider = Arc::new(MiniMaxProvider::new(
+            config.clone(),
+            config.api_token.clone(),
+        )?);
+        prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
+        provider.clone().start_inventory_refresh();
         let inventory = center.registry().add_provider(provider);
         info!(
             "registered minimax base_url={} inventory={:?}",
@@ -711,5 +858,39 @@ mod tests {
         assert!(items
             .values()
             .any(|item| item.target == "MiniMax-M2.5@minimax-main"));
+    }
+
+    #[tokio::test]
+    async fn minimax_inventory_refresh_lifecycle_matches_dynamic_providers() {
+        let provider = Arc::new(
+            MiniMaxProvider::new(
+                MiniMaxInstanceConfig {
+                    provider_instance_name: "minimax-refresh".to_string(),
+                    provider_type: "cloud_api".to_string(),
+                    provider_driver: "minimax".to_string(),
+                    api_token: "test-token".to_string(),
+                    base_url: DEFAULT_MINIMAX_BASE_URL.to_string(),
+                    timeout_ms: DEFAULT_MINIMAX_TIMEOUT_MS,
+                    models: vec!["MiniMax-M2.5".to_string()],
+                    default_model: Some("MiniMax-M2.5".to_string()),
+                    features: vec![],
+                    alias_map: HashMap::new(),
+                },
+                "test-token".to_string(),
+            )
+            .unwrap(),
+        );
+
+        provider.clone().start_inventory_refresh();
+        tokio::task::yield_now().await;
+        assert!(provider.refresh_task.lock().unwrap().is_some());
+        assert!(!provider
+            .refresh_inventory()
+            .await
+            .unwrap()
+            .models
+            .is_empty());
+        provider.shutdown();
+        assert!(provider.refresh_task.lock().unwrap().is_none());
     }
 }

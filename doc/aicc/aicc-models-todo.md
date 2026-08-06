@@ -244,17 +244,17 @@
 
 ## 7. P2：远程 driver metadata 更新
 
-- [ ] 实现 HTTPS 可信远程 metadata 更新通道。
+- [x] 实现 HTTPS/NDN 可信远程 metadata 更新通道。
   - 缓存路径：
-    - `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`
+    - `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`
   - 要求：
     - provider 自发现不能直接声明最终能力。
     - 远程 metadata 来源必须是 AICC 信任源。
-    - 失败时使用 builtin/local/system-config 或 conservative fallback。
+    - 下载或候选验证失败时保持最新有效 activation；activation 不可用时回退 builtin/local/system-config 或 conservative fallback。
 
-- [ ] 增加 metadata signature 验证。
-  - 当前 `DriverMetadataSignature` 类型存在，但未做完整验证。
-  - 验证失败时不能加载该 metadata source。
+- [ ] 评估 provider metadata 内嵌 signature。
+  - 当前下载信任由 NDN PathObject/FileObject 验证链提供；`DriverMetadataSignature` 类型存在，但不参与云更新验签。
+  - 如果未来启用内嵌 signature，必须先定义 signer scope、密钥轮换和失败语义。
 
 - [ ] 增加 metadata source trace。
   - 目标：能解释某模型 metadata 来自 builtin、remote_cache、local override 还是 system-config override。

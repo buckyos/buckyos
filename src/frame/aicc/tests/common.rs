@@ -300,6 +300,7 @@ fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderI
         provider_type_revision: instance.provider_type_revision.clone(),
         version: None,
         inventory_revision: Some("test".to_string()),
+        driver_metadata_generation: 0,
         models,
     }
 }

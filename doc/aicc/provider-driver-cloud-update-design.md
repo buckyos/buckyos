@@ -2,6 +2,8 @@
 
 状态：Draft  
 适用版本：beta 2.2 breaking change，不做向前兼容  
+
+客户端的 NDN 分发、增量下载、原子 activation、LKGS 和兼容边界以 `driver_metadata_update_protocol.md` 与 `driver_metadata_update_storage.md` 为准；本文其余内容主要描述云端编辑和发布服务，冲突处以前两份文档为准。
 相关文档：
 
 - `doc/aicc/driver_metadata_schema.md`
@@ -873,7 +875,8 @@ OpenRouter 示例：
 
 ```text
 remote publish JSON
--> $BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json 或等价缓存
+-> NDN index / manifest / immutable provider objects
+-> $BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/ activation
 -> metadata_resolver
 -> ProviderInventory
 -> ModelRegistry::apply_inventory()
@@ -939,7 +942,7 @@ remote publish JSON
 待确认：
 
 - `provider_driver = openai-compatible` 是否作为正式 driver id，还是继续使用 `openai` 表示 OpenAI-compatible 协议。
-- 发布 JSON 是否按 provider_driver 拆分落入现有 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`，还是新增聚合缓存文件后由 resolver 拆分。
+- 发布与缓存格式已确定为 index + manifest + 按 provider_driver 拆分的不可变对象，并由 activation 原子切换；不再读取旧的 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`。
 - B 服务运营字段的首版最小集合：价格覆盖、routing weight、禁用、展示优先级是否足够。
 - `defaults` 和 `variants` 当前不支持数组式匹配规则的问题，需要在 schema 和 resolver 中补齐。
 

@@ -16,6 +16,8 @@
 - `aicc_provider_plan.md`：Provider 实现方案。
 - `aicc-models-mgr.md`：模型管理与路由概念设计。
 - `aicc-models-todo.md`：模型管理后续设计任务。
+- `driver_metadata_update_protocol.md`：provider-driver metadata 的 NDN 增量更新、验证、LKGS 与生效协议。
+- `driver_metadata_update_storage.md`：更新水位、不可变对象和 activation 的持久化兼容格式。
 - `aicc-upgrade-todo.md`：新 API 与模型体系升级设计任务。
 - `aicc改进.md`：AICC 改进方案记录。
 - `provider-driver-cloud-update-design.md`：provider-driver metadata 云更新详细设计。

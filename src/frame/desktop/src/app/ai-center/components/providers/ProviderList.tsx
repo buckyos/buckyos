@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Plus } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { ProviderCard } from './ProviderCard'
@@ -8,9 +9,10 @@ interface ProviderListProps {
   selectedId: string | null
   onSelect: (id: string) => void
   onAdd: () => void
+  footer?: ReactNode
 }
 
-export function ProviderList({ providers, selectedId, onSelect, onAdd }: ProviderListProps) {
+export function ProviderList({ providers, selectedId, onSelect, onAdd, footer }: ProviderListProps) {
   const { t } = useI18n()
 
   return (
@@ -32,6 +34,11 @@ export function ProviderList({ providers, selectedId, onSelect, onAdd }: Provide
         <Plus size={16} />
         {t('aiCenter.providers.addProvider', 'Add Provider')}
       </button>
+      {footer && (
+        <div className="mt-2 border-t pt-2" style={{ borderColor: 'var(--cp-border)' }}>
+          {footer}
+        </div>
+      )}
     </div>
   )
 }

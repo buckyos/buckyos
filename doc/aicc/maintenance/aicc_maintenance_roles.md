@@ -33,7 +33,7 @@
 
 metadata 基线和运营策略都有两种分发形态：
 
-- **云端更新**：面向已经安装并运行的用户。理想效果是用户不升级 BuckyOS 版本，只拉取或接收新的模型事实配置和运营策略配置，就能使用新模型。当前已有 `remote_cache` / override 读取位置，但官方自动拉取、签名、回滚链路属于规划中 / 未完全实现。
+- **云端更新**：面向已经安装并运行的用户。AICC 从配置的 HTTPS 发布源通过 NDN 验证链拉取 index、manifest 和不可变 provider metadata 对象，提交完整 activation 后生效；失败时保持最新有效 activation 或回退 builtin metadata。
 - **随版本内置缓存更新**：面向新安装用户或离线安装场景。新版本应携带发布时最新的模型事实基线和默认运营策略基线，使新用户即使没有云端更新，也能直接体验发布时已知的新模型。
 
 ### 0.1 统一更新验收流程
@@ -69,7 +69,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 - **维护模型事实基线**：当已支持的厂商发布新模型时，项目方可以更新随版本携带的 driver metadata。应补充或修正模型 ID、`api_types`、`capabilities`、上下文长度、`logical_mounts`、是否弃用、替代模型建议等逻辑上较确定的信息。
 - **维护默认运营策略基线**：项目方可以维护默认价格估算、估算延迟、基础健康度、默认推荐权重和 fallback 建议。这些信息确定性弱于模型事实，应允许云端策略或服务商策略覆盖。
-- **维护本地缓存分发内容**：同一次更新，应该既能进入新版本的内置缓存，也能以运行时覆盖文件的形式落到 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json`。前者服务新安装用户，后者服务已安装用户；模型事实和运营策略应能分别更新、分别回滚。
+- **维护云端发布内容**：同一次更新应同时更新新版本携带的 builtin metadata，并按 index + manifest + 不可变 provider 对象发布到可信源。客户端只通过完整 activation 使用云端内容，不接受手工写入旧 `etc/.../remote_cache/<driver>.json`；人工覆盖仍使用 `local/` 或 `system-config/`。
 - **维护对应测试用例**：模型事实或运营策略更新都必须同步新增或更新验收用例，并明确会影响哪些旧用例。用例应覆盖新模型出现在 inventory、能力字段正确、逻辑目录挂载正确、成本/健康度/权重策略生效、fallback 行为正确。
 - **期望效果**：AICC 重新加载后，新模型出现在 `models.list` 的 inventory 中；如果 metadata 配置了 `logical_mounts`，模型还应出现在对应逻辑目录下，例如 `llm.chat`、`llm.code`、`llm.plan`。
 - **验收方法**：在测试环境更新模型事实配置和运营策略配置后触发 `reload_settings`，先跑本次新增和相关旧用例，再调用 `models.list` 检查模型 ID、能力字段、逻辑目录、成本/健康度字段和 route trace；相关用例通过后执行全量用例。发布环境上线后重复相关用例和全量用例。
@@ -140,7 +140,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **接收 BuckyOS 的模型事实和运营策略基线**：服务商可以直接使用 BuckyOS 发布的 builtin metadata 和默认策略，也可以把 BuckyOS 发布的模型事实更新投放到运行时 `remote_cache`，再叠加自己的运营策略。这适合只想跟随官方节奏、但仍希望控制产品默认路由的产品。
+- **接收 BuckyOS 的模型事实和运营策略基线**：服务商可以直接使用 BuckyOS 发布的 builtin metadata 和默认策略，也可以配置可信云更新源获取经过 NDN 验证并原子提交的 metadata activation，再叠加自己的运营策略。这适合只想跟随官方节奏、但仍希望控制产品默认路由的产品。
 - **维护产品默认 Provider settings**：服务商可以预置或引导用户配置 `services/aicc/settings`，包括 Provider instance、`provider_driver`、`provider_type`、`base_url`、是否启用、models 列表等。
 - **维护产品默认 routing_config**：服务商可以管理系统级 `services/aicc/settings.routing_config`，设置默认逻辑目录、Provider 权重、禁用列表、exact model 权重和 fallback 策略。
 - **维护服务商相关用例集合**：服务商跟随 BuckyOS 更新时，应把本产品启用的 Provider、模型、逻辑目录和路由策略映射到测试用例命名或 tags 上，确保能筛选出本次更新相关用例。
@@ -162,7 +162,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 #### 已实现
 
 - **提供自营 Provider 网关**：如果服务商希望统一接入多个上游模型，可以提供 OpenAI-compatible endpoint，然后在产品侧把它配置成一个 Provider instance，维护自己的 `base_url`、授权策略和 models 列表。
-- **发布服务商模型事实包**：服务商可以把自家确认过的模型能力、上下文长度、api type、逻辑挂载和弃用状态写入 metadata override，并投放到 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/remote_cache/<driver>.json` 或 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json`。
+- **发布服务商模型事实包**：服务商可以把自家确认过的模型能力、上下文长度、api type、逻辑挂载和弃用状态按云更新协议发布为 index、manifest 和不可变 provider 对象；仅供本 Zone 人工维护的覆盖可写入 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json`。
 - **发布服务商运营策略包**：服务商可以独立维护成本估算、额度策略、健康度、推荐权重、灰度和熔断策略。这类策略可以比模型事实更新更频繁，也应能单独回滚。
 - **发布服务商默认路由策略**：服务商可以更新 `services/aicc/settings.routing_config`，例如让 `llm.chat` 优先走新模型，让 `llm.code` 保持旧模型，或为不同 Provider 设置权重。路由策略应优先引用模型事实中的逻辑目录，再叠加运营策略中的权重和健康度判断。
 - **新增或更新服务商测试用例**：服务商自己的 Provider 网关、metadata 包和默认路由策略都应有对应测试用例。用例命名应能反映服务商网关、上游 Provider、模型族、逻辑目录、成本或 quota 场景。
@@ -171,7 +171,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 规划中 / 未完全实现
 
-- 基于 `remote_cache` / metadata override 的官方自动更新服务尚未完成；服务商可以自建分发流程，但 AICC 本身的自动同步、签名、灰度、回滚链路不能按完整可用理解。
+- 官方发布源、发布工具和灰度运营流程仍需独立交付；AICC 客户端的定时同步、NDN 验证、增量下载、原子 activation、LKGS 与回滚保护已经实现。
 - 租户级 quota、套餐、动态 cost estimate：AICC 文档已有 `CostEstimateOutput`、`quota_state`、P1 条目，但完整商业账务不是 AICC 当前完成项。
 - 应用侧合成 app / agent / conversation overlay：AICC 明确只接收最终 `session_overlay`，文档列为 P1 的应用侧 overlay 组合基础设施。
 - metadata 签名和可信分发链尚未完整实现。
