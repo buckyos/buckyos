@@ -227,7 +227,7 @@ fn namespace_mismatch(stage: InstallStage, message: String) -> InstallError {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppType, DidEvidenceLevel, DidVerificationStatus, DocumentStatus, SubPkgDesc,
+        AppDocType, AppType, DidEvidenceLevel, DidVerificationStatus, DocumentStatus, SubPkgDesc,
     };
     use name_lib::DID;
 
@@ -242,7 +242,7 @@ mod tests {
     fn snapshot(app_doc: &AppDoc) -> DidResolutionSnapshot {
         DidResolutionSnapshot {
             app_did: app_doc.app_did().clone(),
-            doc_type: "app".to_string(),
+            doc_type: AppDocType,
             app_doc_object_id: None,
             resolver_id: Some("test".to_string()),
             document_status: DocumentStatus::Active,

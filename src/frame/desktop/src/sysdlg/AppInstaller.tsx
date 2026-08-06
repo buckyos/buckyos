@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   Clipboard,
   CloudDownload,
@@ -38,6 +39,7 @@ import {
 } from '../app/app-service/schemas'
 import type {
   InstallAppInfo,
+  AppPrice,
   InstallLaunchRequest,
   InstallOptions,
   InstallPermission,
@@ -202,6 +204,67 @@ function formatBytes(bytes: number) {
   return `${Math.ceil(bytes / 1_048_576)} MB`
 }
 
+function formatPrice(
+  price: AppPrice | null,
+  locale: string,
+  t: ReturnType<typeof useI18n>['t'],
+) {
+  if (!price || price.amount === 0) return t('appService.install.free', 'Free')
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: price.currency,
+  }).format(price.amount)
+}
+
+function formatPublishedAt(
+  publishedAt: string,
+  locale: string,
+  t: ReturnType<typeof useI18n>['t'],
+) {
+  const date = new Date(publishedAt)
+  if (Number.isNaN(date.getTime())) return publishedAt
+
+  const dayMs = 86_400_000
+  const relativeDays = Math.round((date.getTime() - Date.now()) / dayMs)
+  if (Math.abs(relativeDays) >= 365) {
+    return t('appService.install.publishedOn', 'Published {{date}}', {
+      date: new Intl.DateTimeFormat(locale, { dateStyle: 'long' }).format(date),
+    })
+  }
+
+  let value = relativeDays
+  let unit: Intl.RelativeTimeFormatUnit = 'day'
+  if (Math.abs(relativeDays) >= 30) {
+    value = Math.round(relativeDays / 30)
+    unit = 'month'
+  } else if (Math.abs(relativeDays) >= 7) {
+    value = Math.round(relativeDays / 7)
+    unit = 'week'
+  }
+  const relative = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(value, unit)
+  return t('appService.install.released', 'Released {{time}}', { time: relative })
+}
+
+type TrustLevel = 'strongest' | 'trusted' | 'caution' | 'unresolved' | 'untrusted'
+
+function getTrustLevel(checks: TrustCheck[]): TrustLevel {
+  if (checks.some((check) => check.status === 'failed')) return 'untrusted'
+  if (checks.some((check) => check.status === 'pending')) return 'unresolved'
+  if (checks.some((check) => check.status === 'unknown')) return 'caution'
+  if (checks.some((check) => check.status === 'warning')) return 'trusted'
+  return 'strongest'
+}
+
+function trustLevelColor(level: TrustLevel) {
+  switch (level) {
+    case 'strongest': return 'light-dark(oklch(42% 0.13 155), oklch(76% 0.14 155))'
+    case 'trusted': return 'light-dark(oklch(52% 0.15 145), oklch(79% 0.14 145))'
+    case 'caution': return 'light-dark(oklch(59% 0.15 90), oklch(84% 0.15 90))'
+    case 'unresolved': return 'light-dark(oklch(58% 0.18 48), oklch(79% 0.17 55))'
+    case 'untrusted': return 'light-dark(oklch(50% 0.2 27), oklch(75% 0.18 27))'
+  }
+}
+
 function trustColor(status: TrustCheck['status']) {
   switch (status) {
     case 'verified':
@@ -224,24 +287,13 @@ function TrustStateIcon({ status }: { status: TrustCheck['status'] }) {
 }
 
 function InstallerFrame({
-  task,
-  step,
   onClose,
   children,
 }: {
-  task: InstallTask
-  step: 'verify' | 'approval' | 'install' | 'result'
   onClose: () => void
   children: React.ReactNode
 }) {
   const { t } = useI18n()
-  const steps = [
-    { key: 'verify', label: t('appService.install.step.verify', 'Verify') },
-    { key: 'approval', label: t('appService.install.step.plan', 'Plan') },
-    { key: 'install', label: t('appService.install.step.install', 'Install') },
-    { key: 'result', label: t('appService.install.step.result', 'Result') },
-  ] as const
-  const activeIndex = steps.findIndex((item) => item.key === step)
 
   return (
     <div
@@ -250,18 +302,10 @@ function InstallerFrame({
       style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)', boxShadow: 'var(--cp-window-shadow)' }}
     >
       <header className="border-b px-5 py-4 sm:px-6" style={{ borderColor: 'var(--cp-border)' }}>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.systemInstaller', 'System App Installer')}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-              <h1 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>
-                {t('appService.install.installApp', 'Install application')}
-              </h1>
-              <code className="text-[10px]" style={{ color: 'var(--cp-muted)' }}>{task.taskId}</code>
-            </div>
-          </div>
+        <div className="flex items-center justify-between gap-4">
+          <h1 className="font-display text-xl font-semibold sm:text-2xl" style={{ color: 'var(--cp-text)' }}>
+            {t('appService.install.installApp', 'Install application')}
+          </h1>
           <button
             type="button"
             onClick={onClose}
@@ -272,24 +316,6 @@ function InstallerFrame({
             <X size={18} aria-hidden="true" />
           </button>
         </div>
-
-        <ol className="mt-5 grid grid-cols-4 gap-1" aria-label={t('appService.install.progressSteps', 'Installation steps')}>
-          {steps.map((item, index) => {
-            const completed = index < activeIndex
-            const active = index === activeIndex
-            return (
-              <li key={item.key} className="min-w-0">
-                <div
-                  className="h-1 rounded-full"
-                  style={{ background: completed || active ? 'var(--cp-accent)' : 'var(--cp-surface-2)' }}
-                />
-                <div className="mt-1.5 truncate text-[10px] font-semibold" style={{ color: active ? 'var(--cp-text)' : 'var(--cp-muted)' }}>
-                  {item.label}
-                </div>
-              </li>
-            )
-          })}
-        </ol>
       </header>
       {children}
     </div>
@@ -297,7 +323,8 @@ function InstallerFrame({
 }
 
 function AppIdentity({ app }: { app: InstallAppInfo }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
+  const ownerProfileUrl = `/userprofile?user=${encodeURIComponent(app.ownerDid)}`
   return (
     <div className="flex items-start gap-4">
       <div
@@ -307,13 +334,40 @@ function AppIdentity({ app }: { app: InstallAppInfo }) {
         <AppIcon iconKey={app.iconKey} className="!size-7" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <h2 className="font-display text-lg font-semibold" style={{ color: 'var(--cp-text)' }}>{app.name}</h2>
-          <span className="text-xs tabular-nums" style={{ color: 'var(--cp-muted)' }}>v{app.version}</span>
+        <h2 className="font-display text-xl font-semibold" style={{ color: 'var(--cp-text)' }}>{app.name}</h2>
+        <div className="mt-2 flex flex-wrap items-start gap-x-6 gap-y-3">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold tabular-nums" style={{ color: 'var(--cp-text)' }}>v{app.version}</span>
+              {app.isLatest && (
+                <span
+                  className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                  style={{ color: 'var(--cp-accent)', background: 'color-mix(in srgb, var(--cp-accent) 10%, var(--cp-surface))' }}
+                >
+                  {t('appService.install.latest', 'Latest')}
+                </span>
+              )}
+            </div>
+            <div className="mt-1 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+              {formatPublishedAt(app.publishedAt, locale, t)}
+            </div>
+          </div>
+          <a
+            href={ownerProfileUrl}
+            className="group/author min-w-0 text-xs leading-5"
+            aria-label={t('appService.install.viewAuthorProfile', 'View {{author}} public profile', { author: app.publisher })}
+            title={app.ownerDid}
+            style={{ color: 'var(--cp-muted)' }}
+          >
+            <span>{t('appService.install.byAuthor', 'By')} </span>
+            <span className="font-semibold underline decoration-transparent underline-offset-4 transition-colors group-hover/author:decoration-current" style={{ color: 'var(--cp-text)' }}>
+              {app.publisher}
+            </span>
+          </a>
         </div>
-        <p className="mt-1 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>{app.description}</p>
-        <div className="mt-2 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-          {t('appService.install.release', 'Release')} {app.releaseVersion}
+        <p className="mt-3 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>{app.description}</p>
+        <div className="mt-2 text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+          {formatPrice(app.price, locale, t)}
         </div>
       </div>
     </div>
@@ -329,10 +383,35 @@ function InfoRow({ label, value, code }: { label: string; value: string; code?: 
   )
 }
 
-function BlockingCallout({ reason }: { reason: NonNullable<InstallAppInfo['blockingReason']> }) {
+function InstallReadiness({ app }: { app: InstallAppInfo }) {
   const { t } = useI18n()
-  const label = t(`appService.install.block.${reason}.title`, reason)
-  const body = t(`appService.install.block.${reason}.body`, 'Resolve this issue before continuing installation.')
+  if (app.installReady) {
+    return (
+      <div
+        className="flex items-start gap-3 rounded-[16px] p-4"
+        data-testid="app-installer-install-readiness"
+        style={{ background: 'color-mix(in srgb, var(--cp-success) 7%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-success) 24%, var(--cp-border))' }}
+      >
+        <CheckCircle2 size={18} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-success)' }} />
+        <div>
+          <div className="text-xs font-semibold" style={{ color: 'var(--cp-success)' }}>
+            {t('appService.install.readyToInstall', 'Ready to install')}
+          </div>
+          <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
+            {t('appService.install.readyToInstallBody', 'Trust, platform, and content checks allow this application to continue.')}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const reason = app.blockingReason
+  const label = reason
+    ? t(`appService.install.block.${reason}.title`, reason)
+    : t('appService.install.checksIncomplete', 'Required installation checks did not pass')
+  const body = reason
+    ? t(`appService.install.block.${reason}.body`, 'Resolve this issue before continuing installation.')
+    : t('appService.install.checksIncompleteBody', 'Review the application information or choose another source.')
   return (
     <div
       className="flex items-start gap-3 rounded-[16px] p-4"
@@ -341,8 +420,12 @@ function BlockingCallout({ reason }: { reason: NonNullable<InstallAppInfo['block
     >
       <ShieldAlert size={18} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-danger)' }} />
       <div>
-        <div className="text-xs font-semibold" style={{ color: 'var(--cp-danger)' }}>{label}</div>
-        <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>{body}</p>
+        <div className="text-xs font-semibold" style={{ color: 'var(--cp-danger)' }}>
+          {t('appService.install.cannotInstall', 'This application cannot be installed')}
+        </div>
+        <p className="mt-1 text-xs leading-5" style={{ color: 'var(--cp-text)' }}>
+          <span className="font-semibold">{label}.</span> {body}
+        </p>
       </div>
     </div>
   )
@@ -386,103 +469,120 @@ function VerifyStep({
   task,
   onBack,
   onContinue,
+  onEnd,
 }: {
   task: InstallTask
   onBack: () => void
   onContinue: () => void
+  onEnd: () => void
 }) {
   const { t } = useI18n()
   const { app } = task
+  const trustLevel = getTrustLevel(app.trustChecks)
 
   return (
     <div className="space-y-6 p-5 sm:p-6">
       <AppIdentity app={app} />
-      {task.launchRequest && <LaunchRequestEvidence request={task.launchRequest} />}
+      <section
+        className="rounded-[16px] px-4 py-3.5"
+        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+      >
+        <h3 className="text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
+          {t('appService.install.details', 'Details')}
+        </h3>
+        <p className="mt-2 text-sm leading-6" style={{ color: 'var(--cp-text)' }}>{app.details}</p>
+      </section>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <section>
-          <div className="mb-2 flex items-center gap-2">
-            <FileArchive size={15} aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.sourceAndIdentity', 'Source and identity')}
-            </h3>
-          </div>
-          <dl className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-            <InfoRow label={t('appService.install.inputType', 'Input type')} value={sourceKindLabel(app.source.kind, t)} />
-            <InfoRow label={t('appService.install.source', 'Source')} value={app.source.displaySource} />
-            <InfoRow label={t('appService.install.appDid', 'App DID')} value={app.appDid} code />
-            <InfoRow label={t('appService.install.objectId', 'Document Object ID')} value={app.documentObjectId} code />
-            <InfoRow label={t('appService.install.publisher', 'Publisher')} value={app.publisher} />
-            <InfoRow label={t('appService.install.referrer', 'Referrer')} value={app.referrer} />
-          </dl>
-        </section>
-
-        <section>
-          <div className="mb-2 flex items-center gap-2">
-            <ShieldCheck size={15} aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em]" style={{ color: 'var(--cp-muted)' }}>
-              {t('appService.install.trustEvidence', 'Trust evidence')}
-            </h3>
-          </div>
-          <div className="overflow-hidden rounded-[16px]" style={{ border: '1px solid var(--cp-border)' }}>
-            {app.trustChecks.map((check, index) => (
-              <div
-                key={check.code}
-                className="flex items-start gap-3 px-4 py-3"
-                style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)', background: 'var(--cp-surface-2)' }}
-              >
-                <TrustStateIcon status={check.status} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-                      {t(`appService.install.trust.${check.code}`, check.code)}
-                    </span>
-                    <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: trustColor(check.status) }}>
-                      {t(`appService.install.trustStatus.${check.status}`, check.status)}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>{check.detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <section className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-          <div className="flex items-center justify-between gap-3">
-            <span className="inline-flex items-center gap-2 text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              <Server size={15} aria-hidden="true" />
-              {t('appService.install.platform', 'Target platform')}
-            </span>
-            <span className="text-xs font-semibold" style={{ color: app.platformSupported ? 'var(--cp-success)' : 'var(--cp-danger)' }}>
-              {app.platformSupported ? t('appService.install.supported', 'Supported') : t('appService.install.unsupported', 'Unsupported')}
-            </span>
-          </div>
-          <p className="mt-2 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-            {t('appService.install.platformDetail', 'Linux · aarch64 · Docker 26+')}
-          </p>
+      <section
+        className="flex flex-col gap-2 rounded-[16px] px-4 py-3"
+        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+          <Server size={15} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+          <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.platform', 'Target platform')}</span>
+          <span style={{ color: 'var(--cp-muted)' }}>{t('appService.install.platformDetail', 'Linux · aarch64 · Docker 26+')}</span>
+          <span className="font-semibold" style={{ color: app.platformSupported ? 'var(--cp-success)' : 'var(--cp-danger)' }}>
+            {app.platformSupported ? t('appService.install.supported', 'Supported') : t('appService.install.unsupported', 'Unsupported')}
+          </span>
         </div>
-        <div className="rounded-[16px] p-4" style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}>
-          <div className="flex items-center justify-between gap-3">
-            <span className="inline-flex items-center gap-2 text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
-              <CloudDownload size={15} aria-hidden="true" />
-              {t('appService.install.contentReadiness', 'Content readiness')}
-            </span>
-            <span className="text-xs font-semibold" style={{ color: app.content.offlineReady ? 'var(--cp-success)' : 'var(--cp-warning)' }}>
-              {app.content.offlineReady ? t('appService.install.offlineReady', 'Offline ready') : t('appService.install.downloadRequired', 'Download required')}
-            </span>
-          </div>
-          <p className="mt-2 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>
-            {app.content.offlineReady
-              ? t('appService.install.noMissingContent', 'All required content is available in controlled staging.')
-              : t('appService.install.missingContent', '{{size}} missing · {{source}}', { size: formatBytes(app.content.missingBytes), source: app.content.availableSource })}
-          </p>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+          <CloudDownload size={15} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+          <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.contentReadiness', 'Content readiness')}</span>
+          <span className="font-semibold" style={{ color: app.content.offlineReady ? 'var(--cp-success)' : 'var(--cp-warning)' }}>
+            {app.content.offlineReady ? t('appService.install.offlineReady', 'Offline ready') : t('appService.install.downloadRequired', 'Download required')}
+          </span>
+          <span style={{ color: 'var(--cp-muted)' }}>
+            {t('appService.install.packageSize', 'Package')} {formatBytes(app.content.packageBytes)} · {t('appService.install.downloadSize', 'Download')} {app.content.missingBytes > 0 ? formatBytes(app.content.missingBytes) : t('appService.install.notRequired', 'Not required')} · {t('appService.install.expectedInstallSize', 'Installed')} ~{formatBytes(app.content.expectedInstallBytes)}
+          </span>
         </div>
       </section>
 
-      {app.blockingReason && <BlockingCallout reason={app.blockingReason} />}
+      <details
+        className="group overflow-hidden rounded-[16px]"
+        data-testid="app-installer-trust-evidence"
+        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+      >
+        <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+          <ShieldCheck size={16} className="shrink-0" aria-hidden="true" style={{ color: trustLevelColor(trustLevel) }} />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.trustEvidence', 'Trust evidence')}</span>
+            <span className="font-semibold" style={{ color: trustLevelColor(trustLevel) }}>
+              {t(`appService.install.trustLevel.${trustLevel}`, trustLevel)}
+            </span>
+            <span style={{ color: 'var(--cp-muted)' }}>{t(`appService.install.trustReason.${trustLevel}`, trustLevel)}</span>
+          </div>
+          <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+        </summary>
+        <div style={{ borderTop: '1px solid var(--cp-border)' }}>
+          {app.trustChecks.map((check, index) => (
+            <div
+              key={check.code}
+              className="flex items-start gap-3 px-4 py-3"
+              style={{ borderTop: index === 0 ? undefined : '1px solid var(--cp-border)' }}
+            >
+              <TrustStateIcon status={check.status} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold" style={{ color: 'var(--cp-text)' }}>
+                    {t(`appService.install.trust.${check.code}`, check.code)}
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: trustColor(check.status) }}>
+                    {t(`appService.install.trustStatus.${check.status}`, check.status)}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] leading-4" style={{ color: 'var(--cp-muted)' }}>{check.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      <details
+        className="group overflow-hidden rounded-[16px]"
+        data-testid="app-installer-source-identity"
+        style={{ background: 'var(--cp-surface-2)', border: '1px solid var(--cp-border)' }}
+      >
+        <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+          <FileArchive size={16} className="shrink-0" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span className="font-semibold" style={{ color: 'var(--cp-text)' }}>{t('appService.install.sourceAndIdentity', 'Source and identity')}</span>
+            <span className="truncate" style={{ color: 'var(--cp-muted)' }}>{sourceKindLabel(app.source.kind, t)} · {app.publisher}</span>
+          </div>
+          <ChevronDown size={15} className="shrink-0 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" style={{ color: 'var(--cp-muted)' }} />
+        </summary>
+        <dl className="px-4 py-3" style={{ borderTop: '1px solid var(--cp-border)' }}>
+          <InfoRow label={t('appService.install.inputType', 'Input type')} value={sourceKindLabel(app.source.kind, t)} />
+          <InfoRow label={t('appService.install.source', 'Source')} value={app.source.displaySource} />
+          <InfoRow label={t('appService.install.appDid', 'App DID')} value={app.appDid} code />
+          <InfoRow label={t('appService.install.objectId', 'Document Object ID')} value={app.documentObjectId} code />
+          <InfoRow label={t('appService.install.publisher', 'Publisher')} value={app.publisher} />
+          <InfoRow label={t('appService.install.ownerDid', 'Owner DID')} value={app.ownerDid} code />
+          <InfoRow label={t('appService.install.referrer', 'Referrer')} value={app.referrer} />
+        </dl>
+      </details>
+
+      {task.launchRequest && <LaunchRequestEvidence request={task.launchRequest} />}
+
       {app.source.warningCode === 'UNSIGNED_CANDIDATE' && !app.blockingReason && (
         <div className="flex items-start gap-3 rounded-[16px] p-4" style={{ background: 'color-mix(in srgb, var(--cp-warning) 8%, var(--cp-surface))', border: '1px solid color-mix(in srgb, var(--cp-warning) 25%, var(--cp-border))' }}>
           <AlertTriangle size={17} className="mt-0.5 shrink-0" aria-hidden="true" style={{ color: 'var(--cp-warning)' }} />
@@ -491,6 +591,8 @@ function VerifyStep({
           </p>
         </div>
       )}
+
+      <InstallReadiness app={app} />
 
       <footer className="flex flex-col-reverse gap-2 border-t pt-5 sm:flex-row sm:justify-between" style={{ borderColor: 'var(--cp-border)' }}>
         <button
@@ -502,15 +604,25 @@ function VerifyStep({
           <ArrowLeft size={15} aria-hidden="true" />
           {t('appService.install.changeSource', 'Change source')}
         </button>
-        <button
-          type="button"
-          onClick={onContinue}
-          disabled={!app.installReady}
-          className="min-h-11 rounded-xl px-5 text-sm font-semibold disabled:opacity-40"
-          style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
-        >
-          {t('appService.install.reviewPlan', 'Review installation plan')}
-        </button>
+        {app.installReady ? (
+          <button
+            type="button"
+            onClick={onContinue}
+            className="min-h-11 rounded-xl px-5 text-sm font-semibold"
+            style={{ color: 'var(--cp-surface)', background: 'var(--cp-accent)' }}
+          >
+            {t('appService.install.reviewPlan', 'Review installation plan')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onEnd}
+            className="min-h-11 rounded-xl px-5 text-sm font-semibold"
+            style={{ color: 'var(--cp-surface)', background: 'var(--cp-text)' }}
+          >
+            {t('appService.install.end', 'End')}
+          </button>
+        )}
       </footer>
     </div>
   )
@@ -1126,7 +1238,7 @@ export function AppInstaller({
 
   if (task.status === 'completed') {
     return (
-      <InstallerFrame task={task} step="result" onClose={onBackground}>
+      <InstallerFrame onClose={onBackground}>
         <ResultStep task={task} onClose={onClose} onViewApp={() => onViewApp(task.app.id)} />
       </InstallerFrame>
     )
@@ -1134,7 +1246,7 @@ export function AppInstaller({
 
   if (task.status === 'failed') {
     return (
-      <InstallerFrame task={task} step="install" onClose={onBackground}>
+      <InstallerFrame onClose={onBackground}>
         <FailureStep task={task} onChangeSource={onChangeSource} />
       </InstallerFrame>
     )
@@ -1142,7 +1254,7 @@ export function AppInstaller({
 
   if (task.status === 'running') {
     return (
-      <InstallerFrame task={task} step="install" onClose={onBackground}>
+      <InstallerFrame onClose={onBackground}>
         <ProgressStep task={task} onBackground={onBackground} />
       </InstallerFrame>
     )
@@ -1150,15 +1262,15 @@ export function AppInstaller({
 
   if (approvalOpen) {
     return (
-      <InstallerFrame task={task} step="approval" onClose={onBackground}>
+      <InstallerFrame onClose={onBackground}>
         <ApprovalStep task={task} onBack={() => setApprovalOpen(false)} />
       </InstallerFrame>
     )
   }
 
   return (
-    <InstallerFrame task={task} step="verify" onClose={onBackground}>
-      <VerifyStep task={task} onBack={onChangeSource} onContinue={() => setApprovalOpen(true)} />
+    <InstallerFrame onClose={onBackground}>
+      <VerifyStep task={task} onBack={onChangeSource} onContinue={() => setApprovalOpen(true)} onEnd={onClose} />
     </InstallerFrame>
   )
 }

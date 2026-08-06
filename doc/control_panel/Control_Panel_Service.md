@@ -167,7 +167,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 | `apps.details` / `app.details` | `{app_id, is_system, spec, ...}` | 应用详情 |
 | `apps.install` | `{task_id}` | v0.5：入参 `{identifier, referrer?, options?}`，identifier 为 App DID / 名称 / Object ID / 内嵌 ObjId 的 URL；旧 `app_id+version` 语义已删除，见 §5 |
 | `apps.install_package` | `{task_id}` | v0.5：本地 `.pikg` 安装，入参 `{staging_handle, options?}`；只接受 staging handle（`pikg:sha256:<hex>` 或 NDN chunk id），不接受服务端路径（D5） |
-| `apps.install.confirm` | `{task_id}` | 确认 `WaitingForApproval` 的安装：`{task_id, target?, install_params?, accepted_permissions?}`；target/params 变化会重算 plan 并重新绑定 fingerprint |
+| `apps.install.confirm` | `{task_id}` | 确认 `WaitingForApproval` 的安装：`{task_id, target?, install_params?}`；权限批准使用 `install_params.permissions: PermissionItem[]`，target/params 变化会重算 plan 并重新绑定 fingerprint |
 | `apps.install.retry` | `{task_id}` | 从失败/暂停 Stage 重试（不可重试错误会拒绝） |
 | `apps.install.cancel` | `{task_id}` | 取消：Prepare 前直接取消；spec 已写后先回滚再取消 |
 | `apps.update` | `{task_id}` | v0.5：`{app_id, options?}`，走与安装同一条 Stage 流水线（见 §5.3） |

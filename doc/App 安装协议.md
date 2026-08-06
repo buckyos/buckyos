@@ -547,7 +547,9 @@ App Document 声明：
 - **DID Trust Readiness**：本地是否已有可接受的发布状态、owner 绑定/结构约束、owner document 和验证证据；
 - **Package Integrity**：`.pikg` 中声明存在的对象是否完整且校验通过；
 - **Content Readiness**：针对当前设备、安装选项和目标 Node，全部必需内容是否已存在；
-- **Install Readiness**：DID Trust Readiness、Package Integrity、Content Readiness 和配置条件是否同时满足；
+- **Target Readiness**：目标 Node 的 OS、架构、Kernel、BuckyOS runtime/SDK 版本与数值能力是否满足 AppDoc 约束；
+- **Config Readiness**：安装参数能否与 `ServiceConfigTips` 确定性合成为合法的最终 `ServiceSpecConfig`；
+- **Install Readiness**：上述七个维度是否同时满足；
 - **Full Ecosystem Completeness**：是否包含 App Document 声明的所有平台和可选组件。该属性不是普通安装的必要条件。
 
 ### 4.6 Offline Ready 判定
@@ -555,7 +557,7 @@ App Document 声明：
 Installer 在不访问网络的情况下，基于以下信息生成当前目标的就绪结论：
 
 - 当前操作系统与 CPU 架构；
-- 目标 BuckyOS Node 和 Kernel 版本；
+- 目标 BuckyOS Node、Kernel、runtime/SDK 版本和能力快照；
 - 用户选择的功能、安装参数和可选组件；
 - 本地已安装内容；
 - Zone Resolver / 本机 DID cache 中 `(App DID, "app")` 与 owner document 的可用证据；
@@ -1245,6 +1247,8 @@ App 专用字段：
 | `service_config_tips` | 安装 UI 提示（端点、挂载、RDB、instance volume 等），不是最终运行配置 |
 | `sdk_version` / `req_capbilities` | SDK 与能力需求 |
 
+`sdk_version` 使用去掉可选 `v` 前缀后的 SemVer 下限语义（目标 runtime 必须 `>=` 该版本）；任一侧不是合法 SemVer 时只允许规范化前的字符串完全相等。`req_capbilities` 的每个值都是最小数值要求，目标缺少该 key 也视为不支持，而不是按 `0` 或“未知但允许”处理。
+
 示例（对齐当前样例包与实现字段名；非完整必填清单）：
 
 ```jsonc
@@ -1273,8 +1277,9 @@ App 专用字段：
     "aarch64_docker_image": {
       "pkg_id": "root_pikg-docker-image#0.1.0",
       "pkg_objid": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
-      "docker_image_name": "local/pikg-docker:0.1.0-arm64"
-      // 可选: "docker_image_digest", "source_url",
+      "docker_image_name": "local/pikg-docker:0.1.0-arm64",
+      "docker_image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      // 可选: "source_url",
       //       "selector": { "os": "linux", "arch": "aarch64" },
       //       "required": true
     }
@@ -1348,6 +1353,8 @@ pub struct SubPkgDesc {
 
 已知 `pkg_list` key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 `selector` 时按固定命名表派生；未知 key 无显式 selector 时不参与自动选择。
 
+本版本的 Docker 安装计划不接受只给 registry tag 的松散引用。任何被选中的 Docker package 必须同时提供 `pkg_objid` 与 `docker_image_digest = sha256:<64 hex>`：前者把镜像归档纳入标准 Package Meta/内容获取链，后者绑定最终加载或拉取后的 runtime image identity。两者都会写入 `InstallPlan` 并参与 fingerprint；缺失或格式非法直接返回 `INVALID_PACKAGE`，不得生成看似 `OFFLINE_READY`、实际到 Deploy 才隐式 pull 的计划。
+
 `pkg_id` 不是一个仅由内容 hash 保护的自由字符串。对于外部 App，它同时声明了后续可能使用的 PackageEnv 名、宿主友好目录名、Static Web gateway server 名和运行入口名，因此必须通过 §2.2.1 的 App Package Namespace 校验。Installer 必须校验 `pkg_list` 的全部 entry，而不只是当前平台最终选中的 entry，避免攻击者把越权 Package ID 隐藏在另一平台或可选 package 中，待升级、迁移或重新调度时触发。
 
 以 `did:bns:app1.user1` 为例，推荐的各角色 package 为：
@@ -1378,24 +1385,26 @@ user1_app1-amd64-docker-image#1.0.0
 
 `pkg_list` key（如 `aarch64_docker_image`）是 App 内逻辑名；`PackageMeta.name` 是包内容对象名。对不带 env qualifier 的 `pkg_id`，PackageEnv 可以添加目标环境的合法 qualifier；去除该 qualifier 后，`PackageMeta.name` 必须与 `pkg_id` 的 `unique_name` 相同，并满足 §2.2.1 的 App Package Namespace。`.pikg` 内首选 payload 名为 `$sub_pkg_name.tar.gz`；Installer 对该文件最终压缩字节计算 SHA-256，并要求与 `PACKAGE_META.json.content_index` 及（可用时）Package Meta 内容引用一致。
 
+Package Meta 对象“已存在”本身不等于该 package 内容就绪。Inspect/Acquire 必须读取其 body、校验 schema/namespace，并把 `content` 指向的 payload 展开进 `required_contents`；只有 meta 与全部展开后的 payload 都可用时，Content Readiness 才能为 `READY`。
+
 ### 11.4 InstallPlan
 
-`InstallPlan` 是 Inspect Stage 的输出，定义在 `buckyos_api::app_install`：
+`InstallPlan` 是 Inspect Stage 的输出，定义在 `buckyos_api::app_install`。当前持久化格式由 `APP_INSTALL_SCHEMA_VERSION = 2` 标识；这是 beta 2.2 breaking schema，缺少或不等于当前版本的 Task/Plan 必须拒绝，不做旧字段兼容。
 
 ```rust
 pub struct InstallPlan {
-    pub app_did: DID,
-    pub doc_type: String,                    // 固定 "app"
-    pub app_doc_object_id: ObjId,
-    pub app_name: String,
-    pub app_version: String,                 // App Document.version
-    pub did_resolution: DidResolutionSnapshot,
+    pub schema_version: u32,
+    pub app: AppDocumentRef,
+    pub resolution: DidResolutionSnapshot,
     pub target: InstallTarget,
     pub selected_packages: Vec<SelectedPackage>,
     pub required_contents: Vec<PlannedContent>,
     pub readiness: PlanReadiness,
-    pub permissions: Vec<PermissionItem>,
-    pub install_params: Value,
+    pub target_issues: Vec<String>,
+    pub config_issues: Vec<String>,
+    pub permission_options: Vec<PermissionItem>,
+    pub install_params: InstallParams,
+    pub service_spec_config: ServiceSpecConfig,
     pub estimated_download_bytes: u64,
     pub plan_fingerprint: String,
     pub created_at: u64,
@@ -1405,6 +1414,13 @@ pub struct InstallPlan {
 相关子结构：
 
 ```rust
+pub struct AppDocumentRef {
+    pub did: DID,
+    pub object_id: ObjId,
+    pub name: String,
+    pub version: String,                     // App Document.version
+}
+
 pub struct InstallTarget {
     pub node_did: Option<DID>,
     pub node_id: Option<String>,
@@ -1412,6 +1428,7 @@ pub struct InstallTarget {
     pub arch: String,
     pub kernel_version: Option<String>,
     pub runtime_version: Option<String>,
+    pub capabilities: BTreeMap<String, i64>,
 }
 
 pub struct SelectedPackage {
@@ -1419,6 +1436,7 @@ pub struct SelectedPackage {
     pub pkg_id: String,
     pub package_meta_id: Option<ObjId>,
     pub docker_image_name: Option<String>,
+    pub docker_image_digest: Option<String>,
     pub required: bool,
 }
 
@@ -1426,33 +1444,59 @@ pub struct PlannedContent {
     pub content_id: String,                  // ObjId 或 sha256:<hex>
     pub sub_pkg_name: Option<String>,
     pub package_meta_id: Option<ObjId>,
+    pub expected_docker_image_digest: Option<String>,
     pub format: Option<String>,
     pub size: Option<u64>,
     pub location: ContentLocation,           // installed | named_store | pikg | missing
     pub sources: Vec<String>,
 }
 
-/// 六维 readiness；install 为综合结论（§4.5 / §4.6）
+pub struct InstallParams {
+    pub selected_components: Vec<String>,
+    pub permissions: Vec<PermissionItem>,
+    pub data_mount_points: HashMap<PathBuf, MountPointConfig>,
+    pub local_cache_mount_points: HashMap<PathBuf, MountPointConfig>,
+    pub external_mount_points: HashMap<PathBuf, MountPointConfig>,
+    pub service_settings: ServiceSettings,
+    pub bash_envs: HashMap<String, String>,
+    pub res_pool_id: Option<String>,
+    pub auto_start: bool,                    // 缺省 true
+}
+
+/// 七维 readiness；install 为综合结论（§4.5 / §4.6）
 pub struct PlanReadiness {
     pub document_syntax: ReadinessState,     // READY | NOT_READY | UNKNOWN
     pub trust: ReadinessState,
     pub package_integrity: ReadinessState,
     pub content: ReadinessState,
+    pub target: ReadinessState,
     pub config: ReadinessState,
     pub install: InstallReadiness,           // OFFLINE_READY | CONTENT_DOWNLOAD_REQUIRED | ...
 }
 ```
 
-示例：
+`service_spec_config` 是 Inspect 阶段由 `AppDoc.service_config_tips + InstallParams` 唯一推导的最终运行配置，也是用户实际批准的配置。Prepare 必须原样使用它，禁止确认后再按另一套规则二次构造。无法满足的必需 endpoint/env、未知 service 或不安全 mount 写入 `config_issues`；SDK/runtime 或数值能力不满足写入 `target_issues`。
+
+`permission_options` 是 AppDoc 声明的完整权限候选；`InstallParams.permissions` 是本次实际批准并将写入 `AppServiceSpec.permission` 的完整 `PermissionItem` 条目。普通安装默认预选全部 `required=true` 条目，`SYSTEM_INTERNAL` 自动确认默认预选全部候选。批准项必须是候选项的子集，按 `scope_path` 唯一，且 `required/actions/exp` 必须与 AppDoc 声明完全一致；不得通过安装参数扩权或篡改权限语义，任何必需权限都不能漏选。
+
+数据与 external mount 的 tips 是可选范围，不是自动授权：只有用户在 `InstallParams` 中选择、且 container path 已由 AppDoc 声明的项才进入最终配置；AppDoc 声明为只读的 mount 不得被参数提升为可写。local-cache tips 位于应用私有缓存根下，可自动生成默认映射并允许用户在声明范围内覆盖。
+
+默认目标快照从 `devices/{node}/info` 读取：`DeviceDocument.capbilities` 是通用能力来源，DeviceInfo 的内存/GPU 实测字段覆盖同名标准能力；`kernel_version`、`runtime_version`（或 `buckyos_version`）从 Device Document 扩展字段读取。不得拿 Control Panel 自己的编译版本冒充目标 Node 版本；目标没有上报而 AppDoc 又声明要求时，必须进入 `UNSUPPORTED_TARGET`。
+
+`InstallParams` 使用 `deny_unknown_fields`。旧版的自由 JSON key（例如顶层 `sub_hostname` / `expose_ports`）不会被静默忽略，而是在 RPC 解析阶段直接报错；调用方必须提交上面的强类型结构。
+
+示例（省略未使用的空配置字段）：
 
 ```jsonc
 {
-  "app_did": "did:bns:pikg-docker.root",
-  "doc_type": "app",
-  "app_doc_object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
-  "app_name": "pikg-docker",
-  "app_version": "0.1.0",
-  "did_resolution": {
+  "schema_version": 2,
+  "app": {
+    "did": "did:bns:pikg-docker.root",
+    "object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
+    "name": "pikg-docker",
+    "version": "0.1.0"
+  },
+  "resolution": {
     "app_did": "did:bns:pikg-docker.root",
     "doc_type": "app",
     "app_doc_object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
@@ -1467,44 +1511,63 @@ pub struct PlanReadiness {
   "target": {
     "node_id": "node1",
     "os": "linux",
-    "arch": "aarch64"
+    "arch": "aarch64",
+    "runtime_version": "0.7.0",
+    "capabilities": { "memory": 8589934592 }
   },
-  "selected_packages": [
-    {
-      "sub_pkg_name": "aarch64_docker_image",
-      "pkg_id": "root_pikg-docker-image#0.1.0",
-      "package_meta_id": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
-      "docker_image_name": "local/pikg-docker:0.1.0-arm64",
-      "required": true
-    }
-  ],
-  "required_contents": [
-    {
-      "content_id": "sha256:a1d37ee65cbbdf3a27dfaee22d62ef01accb2721e8687c9af8bcaf45d2b69c98",
-      "sub_pkg_name": "aarch64_docker_image",
-      "format": "tar.gz",
-      "size": 1896103,
-      "location": "pikg",
-      "sources": []
-    }
-  ],
+  "selected_packages": [{
+    "sub_pkg_name": "aarch64_docker_image",
+    "pkg_id": "root_pikg-docker-image#0.1.0",
+    "package_meta_id": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
+    "docker_image_name": "local/pikg-docker:0.1.0-arm64",
+    "docker_image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "required": true
+  }],
+  "required_contents": [{
+    "content_id": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
+    "sub_pkg_name": "aarch64_docker_image",
+    "expected_docker_image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "format": "named_object",
+    "location": "pikg",
+    "sources": []
+  }],
   "readiness": {
     "document_syntax": "READY",
     "trust": "READY",
     "package_integrity": "READY",
     "content": "READY",
+    "target": "READY",
     "config": "READY",
     "install": "OFFLINE_READY"
   },
-  "permissions": [],
-  "install_params": {},
+  "target_issues": [],
+  "config_issues": [],
+  "permission_options": [{
+    "scope_path": "wan",
+    "required": false,
+    "actions": [],
+    "exp": null
+  }],
+  "install_params": {
+    "permissions": [{
+      "scope_path": "wan",
+      "required": false,
+      "actions": [],
+      "exp": null
+    }],
+    "service_settings": { "services": {} },
+    "auto_start": true
+  },
+  "service_spec_config": { "res_pool_id": "default" },
   "estimated_download_bytes": 0,
   "plan_fingerprint": "planfp:...",
   "created_at": 1785800800
 }
 ```
 
-`plan_fingerprint` 绑定 `app_doc_object_id`、resolver 状态/版本、`target`、影响 selector 的参数与 selected meta ids；任一变化必须重新 Inspect。若 resolver 后续返回 `Revoked` / `Tombstoned`，任何尚未 Deploy 的计划必须立即作废。`os`/`arch` 必须来自目标 Node 信息，禁止用 Control Panel 编译期 `cfg!(target_*)` 代替。
+`plan_fingerprint` 使用 JCS + SHA-256，绑定 schema version、`AppDocumentRef`、除 `resolved_at` 外的完整 resolver 信任结论、完整 target（含 runtime/capabilities）、强类型安装参数、最终 `ServiceSpecConfig` 与 selected packages（含 Docker digest）。任一变化必须重新 Inspect 和确认；Verify 必须现场重算 fingerprint，并同时核对 approval 中的 fingerprint、target 和参数。若 resolver 后续返回 `Revoked` / `Tombstoned`，任何尚未 Deploy 的计划必须立即作废。`os`/`arch` 必须来自目标 Node 信息，禁止用 Control Panel 编译期 `cfg!(target_*)` 代替。
+
+Resolver 没有返回可安装 App Document body 时，不得用零值 Object ID、空版本或固定 fingerprint 伪造占位 `InstallPlan`。事务保留 `DidResolutionSnapshot` 并以 `TRUST_RESOLUTION_REQUIRED` 暂停，待重新 Resolve 后再首次生成真实 Plan。
 
 ### 11.5 权限、解析快照与安装记录
 
@@ -1519,7 +1582,7 @@ pub struct PermissionItem {
 }
 ```
 
-安装确认接口的 `accepted_permissions` 使用 `scope_path` 字符串列表；最终批准的完整条目写入 `AppServiceSpec.permission`。
+安装确认接口不再接受独立的 `accepted_permissions` 字符串列表。调用方在 `install_params.permissions` 中提交完整 `PermissionItem`；Installer 校验其为 `permission_options` 的合法子集，并把 fingerprint 绑定的同一组条目原样写入 `AppServiceSpec.permission`。
 
 #### DidResolutionSnapshot
 
@@ -1528,7 +1591,7 @@ pub struct PermissionItem {
 ```rust
 pub struct DidResolutionSnapshot {
     pub app_did: DID,
-    pub doc_type: String,                          // 固定 "app"
+    pub doc_type: AppDocType,                      // 序列化固定 "app"
     pub app_doc_object_id: Option<ObjId>,
     pub resolver_id: Option<String>,
     pub document_status: DocumentStatus,           // Active|Missing|Expired|Revoked|Tombstoned|Migrated|Unknown
@@ -1548,18 +1611,15 @@ pub struct DidResolutionSnapshot {
 
 #### AppInstallTaskData / InstallRecord
 
-- in-flight 事务：`Task.data` → `AppInstallTaskData { request, state: InstallTransactionState }`（含 `plan` / `approval` / `verification` / `prepared` 等）。
+- in-flight 事务：`Task.data` → `AppInstallTaskData { schema_version, request, state: InstallTransactionState }`（含 `plan` / `approval` / `verification` / `prepared` 等）。`AppUpdateTaskData` 使用相同的 `schema_version` 和状态结构。
 - 长期记录：`users/{uid}/apps|agents/{app_name}/install_record` → `InstallRecord`。
 
 ```rust
 pub struct InstallRecord {
-    pub app_did: DID,
-    pub doc_type: String,
-    pub app_name: String,
+    pub schema_version: u32,
+    pub app: AppDocumentRef,
     pub user_id: String,
-    pub app_version: String,
-    pub app_doc_object_id: ObjId,
-    pub did_resolution: DidResolutionSnapshot,
+    pub resolution: DidResolutionSnapshot,
     pub package_meta_ids: Vec<ObjId>,
     pub pikg_digest: Option<String>,
     pub target: InstallTarget,
@@ -1707,7 +1767,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - `APPDOC.wt`（JWT 封装）的 Object ID 对 JWT claims（payload JSON）按同一规则计算；`APPDOC.wt` 与 `APPDOC.json` 的一致性判断 = 两者 canonical JSON 相等（等价于 App Document Object ID 相等）。
 - `version` 仅表示应用语义版本；`document_version / versionId` 仅存在于 resolver metadata 与 `DidResolutionSnapshot`，值等于发布文档的 revision `iat`，两者不得复用同一字段。
 - `pkg_list` 各 entry（SubPkgDesc）新增 `selector { os?, arch?, min_kernel_version? }` 与 `required`（省略视为 `true`）；已知 key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 selector 时按固定命名表派生，未知 key 无显式 selector 时不参与自动选择。`pkg_objid`（Package Meta Object ID）与 `source_url`（内容获取位置）保持独立字段。
-- `permissions` 是 `PermissionItem[]`，每项只包含 `scope_path`、`required`、`actions` 与可选有效期 `exp`；旧 `PermissionRequest.grant/items/constraints` 结构已删除。安装确认接口的 `accepted_permissions` 使用 `scope_path` 字符串列表，最终批准的完整条目写入 `AppServiceSpec.permission`。
+- `permissions` 是 `PermissionItem[]`，每项只包含 `scope_path`、`required`、`actions` 与可选有效期 `exp`；旧 `PermissionRequest.grant/items/constraints` 结构已删除。InstallPlan 用 `permission_options` 暴露 AppDoc 候选，安装确认通过 `install_params.permissions` 提交完整批准条目；旧 `accepted_permissions` 字符串通道已删除。
 - App DID 的建议命名沿用 §12.1：`did:bns:$app_name.$owner_name`；builder 必须显式接收 App DID 或按该规则显式构造，禁止把 candidate 自声明 owner 拼出的 DID 当权威身份。
 
 #### D3. 安装记录真相源

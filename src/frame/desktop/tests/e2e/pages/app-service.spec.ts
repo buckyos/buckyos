@@ -85,9 +85,25 @@ test('App Service normalizes a URL and completes the shared Installer task flow'
 
   await expect(page.getByTestId('window-dialog')).toBeVisible()
   const installer = page.getByTestId('app-installer-dialog')
-  await expect(installer).toContainText('System App Installer')
+  await expect(installer.getByRole('heading', { name: 'Install application' })).toBeVisible()
+  await expect(installer).not.toContainText('System App Installer')
   await expect(installer).toContainText('Nextcloud')
-  await expect(installer).toContainText('Authoritative publication')
+  await expect(installer.getByText('Latest', { exact: true })).toBeVisible()
+  await expect(installer.getByText('Free', { exact: true })).toBeVisible()
+  await expect(installer.getByRole('link', { name: 'View Nextcloud Community Maintainers public profile' }))
+    .toHaveAttribute('href', '/userprofile?user=did%3Abns%3Anextcloud-community')
+  await expect(installer).toContainText('Package 2.0 GB · Download 1.8 GB · Installed ~4.5 GB')
+
+  const trustEvidence = installer.getByTestId('app-installer-trust-evidence')
+  await expect(trustEvidence).not.toHaveAttribute('open', '')
+  await expect(trustEvidence).toContainText('Highly trusted')
+  await expect(trustEvidence.getByText('Authoritative publication')).not.toBeVisible()
+  await trustEvidence.locator('summary').click()
+  await expect(trustEvidence.getByText('Authoritative publication')).toBeVisible()
+
+  const sourceIdentity = installer.getByTestId('app-installer-source-identity')
+  await expect(sourceIdentity).not.toHaveAttribute('open', '')
+  await expect(installer.getByTestId('app-installer-install-readiness')).toContainText('Ready to install')
   await installer.getByRole('button', { name: 'Review installation plan' }).click()
 
   await page.getByLabel('Administrator password').fill('prototype-admin')
@@ -128,9 +144,12 @@ test('Installer blocks trust resolution without mislabeling it as a download', a
   await expect(page.getByTestId('app-service-source-result')).toBeVisible()
   await page.getByTestId('app-service-source-next').click()
 
-  await expect(page.getByTestId('app-installer-blocking-reason')).toContainText('TRUST_RESOLUTION_REQUIRED')
-  await expect(page.getByRole('button', { name: 'Review installation plan' })).toBeDisabled()
-  await expect(page.getByTestId('app-installer-blocking-reason')).not.toContainText('Download required')
+  const blockingReason = page.getByTestId('app-installer-blocking-reason')
+  await expect(blockingReason).toContainText('This application cannot be installed')
+  await expect(blockingReason).toContainText('TRUST_RESOLUTION_REQUIRED')
+  await expect(blockingReason).not.toContainText('Download required')
+  await expect(page.getByRole('button', { name: 'Review installation plan' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'End', exact: true })).toBeVisible()
 })
 
 test('source entry handles local and Personal Server PIKG references', async ({ page }) => {

@@ -471,7 +471,7 @@ impl TypedTaskData {
             TaskDataType::AiccCompute => parse_data(task_data_type, data.clone())
                 .map(Self::AiccCompute)
                 .or_else(|_| parse_aicc_compute_legacy(data).map(Self::AiccCompute)),
-            // v0.5 breaking change：app.install/app.update 不做旧 schema legacy parser。
+            // beta 2.2 schema v2：app.install/app.update 不做旧 schema legacy parser。
             TaskDataType::AppInstall => parse_data(task_data_type, data).map(Self::AppInstall),
             TaskDataType::AppUninstall => parse_data(task_data_type, data.clone())
                 .map(Self::AppUninstall)
@@ -1119,11 +1119,12 @@ pub struct AiccComputeTaskResult {
     pub provider_output: Option<Value>,
 }
 
-/// App 安装任务的可恢复 transaction 数据（v0.5，P0.3）。
+/// App 安装任务的可恢复 transaction 数据（beta 2.2 schema v2）。
 /// request 保存原始 source/options/policy；中间态全部在 `state` 中，
 /// 每个 Stage 成功后先完整写入 Task.data 再进入下一 Stage。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallTaskData {
+    pub schema_version: u32,
     pub request: AppInstallTaskRequest,
     #[serde(flatten)]
     pub state: crate::app_install::InstallTransactionState,
@@ -1145,6 +1146,10 @@ impl AppInstallTaskData {
     pub fn to_full_patch(&self) -> Value {
         let mut patch = self.state.to_full_patch();
         if let Some(map) = patch.as_object_mut() {
+            map.insert(
+                "schema_version".to_string(),
+                Value::from(self.schema_version),
+            );
             map.insert(
                 "request".to_string(),
                 serde_json::to_value(&self.request).unwrap_or(Value::Null),
@@ -1182,11 +1187,12 @@ pub struct AppStartTaskRequest {
     pub user_id: String,
 }
 
-/// App 升级任务的可恢复 transaction 数据（v0.5，P0.3）。
+/// App 升级任务的可恢复 transaction 数据（beta 2.2 schema v2）。
 /// 与安装共用同一 Stage 流水线与中间态；旧 spec 回滚材料保存在
 /// `state.prepared.previous_spec`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateTaskData {
+    pub schema_version: u32,
     pub request: AppUpdateTaskRequest,
     #[serde(flatten)]
     pub state: crate::app_install::InstallTransactionState,
@@ -1209,6 +1215,10 @@ impl AppUpdateTaskData {
     pub fn to_full_patch(&self) -> Value {
         let mut patch = self.state.to_full_patch();
         if let Some(map) = patch.as_object_mut() {
+            map.insert(
+                "schema_version".to_string(),
+                Value::from(self.schema_version),
+            );
             map.insert(
                 "request".to_string(),
                 serde_json::to_value(&self.request).unwrap_or(Value::Null),
@@ -1998,11 +2008,12 @@ mod tests {
     }
 
     #[test]
-    fn app_install_task_data_v05_roundtrip_and_no_legacy_parser() {
-        // v0.5 schema：request 保存原始 source/policy，事务中间态 flatten 在同级。
+    fn app_install_task_data_roundtrip_requires_schema_version() {
+        // 当前 schema：request 保存原始 source/policy，事务中间态 flatten 在同级。
         let typed = parse_typed_task_data(
             TASK_DATA_TYPE_APP_INSTALL,
             json!({
+                "schema_version": crate::app_install::APP_INSTALL_SCHEMA_VERSION,
                 "request": {
                     "source": { "kind": "identifier", "identifier": "did:bns:demo.tester" },
                     "user_id": "user",
@@ -2019,6 +2030,10 @@ mod tests {
         };
 
         assert_eq!(data.request.user_id, "user");
+        assert_eq!(
+            data.schema_version,
+            crate::app_install::APP_INSTALL_SCHEMA_VERSION
+        );
         assert!(matches!(
             data.request.source,
             crate::app_install::InstallSource::Identifier { .. }

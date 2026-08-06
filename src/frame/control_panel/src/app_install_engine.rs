@@ -10,13 +10,12 @@
 //! - TaskManager 是任务状态唯一真相源；MsgQueue/KEvent/启动扫描只是
 //!   dispatch 通道（kevent 只是加速，见 runner 模块）。
 
-use crate::app_install_planner::kernel_default_target;
 use async_trait::async_trait;
 use buckyos_api::{
-    AppInstallTaskData, InstallApproval, InstallError, InstallErrorCode, InstallPlan,
-    InstallReadiness, InstallStage, InstallTarget, InstallTaskResult, InstallTransactionState,
-    InstallUserAction, PreparedDeployment, TaskStatus, TASK_DATA_TYPE_APP_INSTALL,
-    TASK_DATA_TYPE_APP_UPDATE,
+    AppInstallTaskData, InstallApproval, InstallError, InstallErrorCode, InstallParams,
+    InstallPlan, InstallReadiness, InstallStage, InstallTarget, InstallTaskResult,
+    InstallTransactionState, InstallUserAction, PreparedDeployment, TaskStatus,
+    APP_INSTALL_SCHEMA_VERSION, TASK_DATA_TYPE_APP_INSTALL, TASK_DATA_TYPE_APP_UPDATE,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
@@ -92,7 +91,7 @@ pub trait InstallStageDriver: Send + Sync {
         &self,
         view: &InstallTaskView,
         data: &AppInstallTaskData,
-    ) -> Result<InstallPlan, InstallError>;
+    ) -> Result<Option<InstallPlan>, InstallError>;
 
     /// 补齐 plan.missing；返回内容位置已刷新、readiness 已重组的 plan。
     async fn acquire(
@@ -196,6 +195,49 @@ impl InstallEngine {
         &self.store
     }
 
+    fn initial_state_from_options(
+        options: Option<&Value>,
+    ) -> Result<InstallTransactionState, InstallError> {
+        let mut state = InstallTransactionState::default();
+        let Some(options) = options else {
+            return Ok(state);
+        };
+        let Some(options) = options.as_object() else {
+            return Err(InstallError::new(
+                InstallStage::Resolve,
+                InstallErrorCode::InvalidRequest,
+                false,
+                "install options must be an object",
+            ));
+        };
+        if let Some(value) = options.get("target").filter(|value| !value.is_null()) {
+            state.requested_target =
+                Some(serde_json::from_value(value.clone()).map_err(|err| {
+                    InstallError::new(
+                        InstallStage::Resolve,
+                        InstallErrorCode::InvalidRequest,
+                        false,
+                        format!("invalid options.target: {err}"),
+                    )
+                })?);
+        }
+        if let Some(value) = options
+            .get("install_params")
+            .filter(|value| !value.is_null())
+        {
+            state.requested_params =
+                Some(serde_json::from_value(value.clone()).map_err(|err| {
+                    InstallError::new(
+                        InstallStage::Resolve,
+                        InstallErrorCode::InvalidRequest,
+                        false,
+                        format!("invalid options.install_params: {err}"),
+                    )
+                })?);
+        }
+        Ok(state)
+    }
+
     // -------------------- 任务创建 --------------------
 
     /// 创建安装事务任务并返回 task_id。不在这里直接推进，由 runner 调度。
@@ -205,9 +247,11 @@ impl InstallEngine {
         app_hint: &str,
     ) -> Result<i64, InstallError> {
         let user_id = request.user_id.clone();
+        let state = Self::initial_state_from_options(request.options.as_ref())?;
         let data = AppInstallTaskData {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
             request,
-            state: InstallTransactionState::default(),
+            state,
         };
         let task_name = format!("Install app ({app_hint})");
         let task_id = self
@@ -231,9 +275,11 @@ impl InstallEngine {
         app_hint: &str,
     ) -> Result<i64, InstallError> {
         let user_id = request.user_id.clone();
+        let state = Self::initial_state_from_options(request.options.as_ref())?;
         let data = buckyos_api::AppUpdateTaskData {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
             request,
-            state: InstallTransactionState::default(),
+            state,
         };
         let task_name = format!("Update app ({app_hint})");
         let task_id = self
@@ -347,7 +393,27 @@ impl InstallEngine {
                     }
                 }
                 InstallStage::Inspect => {
-                    let plan = self.driver.inspect(&view, &data).await?;
+                    let Some(plan) = self.driver.inspect(&view, &data).await? else {
+                        let error = InstallError::new(
+                            InstallStage::Resolve,
+                            InstallErrorCode::TrustResolutionRequired,
+                            true,
+                            "DID resolution did not return an installable App Document",
+                        )
+                        .with_action(InstallUserAction::ConnectNetwork);
+                        data.state.last_error = Some(error);
+                        self.persist(task_id, &data).await?;
+                        let _ = self
+                            .store
+                            .set_status(
+                                task_id,
+                                TaskStatus::Paused,
+                                None,
+                                Some("waiting for trust resolution".to_string()),
+                            )
+                            .await;
+                        return Ok(RunOutcome::Waiting);
+                    };
                     data.state.plan = Some(plan);
                     data.state.mark_stage_completed(InstallStage::Inspect);
                     self.persist(task_id, &data).await?;
@@ -357,8 +423,8 @@ impl InstallEngine {
                         InstallReadiness::IdentityRevoked => {
                             return Err(InstallError::from_document_status(
                                 InstallStage::Inspect,
-                                plan.did_resolution.document_status,
-                                &plan.app_did,
+                                plan.resolution.document_status,
+                                &plan.app.did,
                             ));
                         }
                         InstallReadiness::UnsupportedTarget => {
@@ -529,8 +595,7 @@ impl InstallEngine {
         approved_by: &str,
         approver_is_admin: bool,
         target: Option<InstallTarget>,
-        install_params: Option<Value>,
-        accepted_permissions: Vec<String>,
+        install_params: Option<InstallParams>,
     ) -> Result<(), InstallError> {
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, approved_by, approver_is_admin)?;
@@ -568,7 +633,14 @@ impl InstallEngine {
                 data.state.requested_params = Some(params);
             }
             data.state.invalidate_from(InstallStage::Inspect);
-            let plan = self.driver.inspect(&view, &data).await?;
+            let plan = self.driver.inspect(&view, &data).await?.ok_or_else(|| {
+                InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::TrustResolutionRequired,
+                    true,
+                    "DID resolution did not return an installable App Document",
+                )
+            })?;
             data.state.plan = Some(plan.clone());
             data.state.mark_stage_completed(InstallStage::Inspect);
             plan
@@ -576,28 +648,35 @@ impl InstallEngine {
             current_plan
         };
 
-        // 必需权限必须全部被接受。
-        let accepted: HashSet<&str> = accepted_permissions.iter().map(|s| s.as_str()).collect();
-        for permission in plan.permissions.iter().filter(|p| p.required) {
-            if !accepted.contains(permission.scope_path.as_str()) {
-                return Err(InstallError::new(
-                    InstallStage::Inspect,
-                    InstallErrorCode::ConfigBlocked,
-                    false,
-                    format!(
-                        "required permission `{}` was not accepted",
-                        permission.scope_path
-                    ),
-                )
-                .with_action(InstallUserAction::Confirm));
-            }
+        if !plan.readiness.target.is_ready() {
+            data.state.plan = Some(plan.clone());
+            data.state.approval = None;
+            self.persist(task_id, &data).await?;
+            return Err(InstallError::new(
+                InstallStage::Inspect,
+                InstallErrorCode::UnsupportedTarget,
+                false,
+                plan.target_issues.join("; "),
+            )
+            .with_action(InstallUserAction::ChangeTarget));
+        }
+        if !plan.readiness.config.is_ready() {
+            data.state.plan = Some(plan.clone());
+            data.state.approval = None;
+            self.persist(task_id, &data).await?;
+            return Err(InstallError::new(
+                InstallStage::Inspect,
+                InstallErrorCode::ConfigBlocked,
+                false,
+                plan.config_issues.join("; "),
+            )
+            .with_action(InstallUserAction::Confirm));
         }
 
         data.state.approval = Some(InstallApproval {
             plan_fingerprint: plan.plan_fingerprint.clone(),
             target: plan.target.clone(),
             install_params: plan.install_params.clone(),
-            accepted_permissions,
             approved_by: approved_by.to_string(),
             approved_at: buckyos_get_unix_timestamp(),
             auto_confirmed: false,
@@ -732,15 +811,37 @@ impl InstallEngine {
                 ),
             ));
         }
-        serde_json::from_value(view.data.clone()).map_err(|err| {
-            internal_error(
+        let data: AppInstallTaskData =
+            serde_json::from_value(view.data.clone()).map_err(|err| {
+                internal_error(
+                    InstallStage::Resolve,
+                    format!(
+                        "task {} data is not a valid install transaction: {err}",
+                        view.id
+                    ),
+                )
+            })?;
+        if data.schema_version != APP_INSTALL_SCHEMA_VERSION {
+            return Err(internal_error(
                 InstallStage::Resolve,
                 format!(
-                    "task {} data is not a valid install transaction: {err}",
-                    view.id
+                    "task {} has unsupported app install schema_version {}, expected {}",
+                    view.id, data.schema_version, APP_INSTALL_SCHEMA_VERSION
                 ),
-            )
-        })
+            ));
+        }
+        if let Some(plan) = data.state.plan.as_ref() {
+            if plan.schema_version != APP_INSTALL_SCHEMA_VERSION {
+                return Err(internal_error(
+                    InstallStage::Inspect,
+                    format!(
+                        "task {} plan has unsupported schema_version {}, expected {}",
+                        view.id, plan.schema_version, APP_INSTALL_SCHEMA_VERSION
+                    ),
+                ));
+            }
+        }
+        Ok(data)
     }
 
     async fn persist(&self, task_id: i64, data: &AppInstallTaskData) -> Result<(), InstallError> {
@@ -863,15 +964,18 @@ impl InstallEngine {
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         if auto_requested && data.request.policy.allow_auto_confirm() {
+            if !plan.readiness.config.is_ready() {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::ConfigBlocked,
+                    false,
+                    plan.config_issues.join("; "),
+                ));
+            }
             data.state.approval = Some(InstallApproval {
                 plan_fingerprint: plan.plan_fingerprint.clone(),
                 target: plan.target.clone(),
                 install_params: plan.install_params.clone(),
-                accepted_permissions: plan
-                    .permissions
-                    .iter()
-                    .map(|permission| permission.scope_path.clone())
-                    .collect(),
                 approved_by: "system".to_string(),
                 approved_at: buckyos_get_unix_timestamp(),
                 auto_confirmed: true,
@@ -895,11 +999,6 @@ impl InstallEngine {
 enum ApprovalGate {
     Approved,
     Waiting,
-}
-
-// 供 driver 默认目标构造复用（避免 planner 依赖倒转）。
-pub fn default_install_target() -> InstallTarget {
-    kernel_default_target()
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,13 +1135,14 @@ mod tests {
     use crate::app_install_resolver::fake as resolver_fake;
     use crate::app_install_resolver::AppDidResolver;
     use buckyos_api::{
-        AppDoc, AppInstallTaskRequest, AppServiceSpec, AppType, ContentLocation, DocumentStatus,
-        InstallPolicy, InstallSource, PlanReadiness, ReadinessState, ServiceState, SubPkgDesc,
-        VerificationCheck, VerificationReport,
+        AppDoc, AppDocumentRef, AppInstallTaskRequest, AppServiceSpec, AppType, DocumentStatus,
+        InstallPolicy, InstallSource, PlanReadiness, ReadinessState, ServiceSpecConfig,
+        ServiceState, SubPkgDesc, VerificationCheck, VerificationReport,
+        APP_INSTALL_SCHEMA_VERSION,
     };
     use name_lib::DID;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Mutex as StdMutex;
 
@@ -1226,42 +1326,46 @@ mod tests {
                 arch: "x86_64".to_string(),
                 kernel_version: None,
                 runtime_version: None,
+                capabilities: BTreeMap::new(),
             });
-        let params = data
-            .state
-            .requested_params
-            .clone()
-            .unwrap_or_else(|| json!({}));
+        let params = data.state.requested_params.clone().unwrap_or_default();
         let readiness = PlanReadiness::compose(
             ReadinessState::Ready,
             ReadinessState::from_bool(snapshot.is_trust_ready(data.request.policy)),
             ReadinessState::Ready,
             ReadinessState::from_bool(content_ready),
             ReadinessState::Ready,
+            ReadinessState::Ready,
             snapshot.document_status,
-            true,
         );
+        let app = AppDocumentRef {
+            did: snapshot.app_did.clone(),
+            object_id: snapshot.app_doc_object_id.clone().unwrap(),
+            name: app_doc.name.clone(),
+            version: app_doc.version.clone(),
+        };
+        let service_spec_config = ServiceSpecConfig::default();
         let fingerprint = InstallPlan::compute_fingerprint(
-            snapshot.app_doc_object_id.as_ref().unwrap(),
-            snapshot.document_status,
-            snapshot.document_version,
+            &app,
+            &snapshot,
             &target,
             &params,
+            &service_spec_config,
             &[],
         );
         InstallPlan {
-            app_did: snapshot.app_did.clone(),
-            doc_type: "app".to_string(),
-            app_doc_object_id: snapshot.app_doc_object_id.clone().unwrap(),
-            app_name: app_doc.name.clone(),
-            app_version: app_doc.version.clone(),
-            did_resolution: snapshot,
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
+            app,
+            resolution: snapshot,
             target,
             selected_packages: vec![],
             required_contents: vec![],
             readiness,
-            permissions: app_doc.permissions.clone(),
+            target_issues: vec![],
+            config_issues: vec![],
+            permission_options: app_doc.permissions.clone(),
             install_params: params,
+            service_spec_config,
             estimated_download_bytes: 0,
             plan_fingerprint: fingerprint,
             created_at: 0,
@@ -1292,43 +1396,12 @@ mod tests {
             &self,
             _view: &InstallTaskView,
             data: &AppInstallTaskData,
-        ) -> Result<InstallPlan, InstallError> {
+        ) -> Result<Option<InstallPlan>, InstallError> {
             self.bump("inspect");
             if data.state.resolved_app_doc.is_none() {
-                // Unknown/Missing：没有 body，无法 Inspect —— 由 readiness 表达。
-                let snapshot = data.state.resolution.clone().unwrap();
-                let target = default_install_target();
-                let readiness = PlanReadiness::compose(
-                    ReadinessState::Unknown,
-                    ReadinessState::from_bool(snapshot.is_trust_ready(data.request.policy)),
-                    ReadinessState::Unknown,
-                    ReadinessState::Unknown,
-                    ReadinessState::Ready,
-                    snapshot.document_status,
-                    true,
-                );
-                return Ok(InstallPlan {
-                    app_did: snapshot.app_did.clone(),
-                    doc_type: "app".to_string(),
-                    app_doc_object_id: ndn_lib::ObjId::new_by_raw(
-                        "appdoc".to_string(),
-                        vec![0u8; 32],
-                    ),
-                    app_name: "unknown".to_string(),
-                    app_version: "0.0.0".to_string(),
-                    did_resolution: snapshot,
-                    target,
-                    selected_packages: vec![],
-                    required_contents: vec![],
-                    readiness,
-                    permissions: vec![],
-                    install_params: json!({}),
-                    estimated_download_bytes: 0,
-                    plan_fingerprint: "unknown".to_string(),
-                    created_at: 0,
-                });
+                return Ok(None);
             }
-            Ok(ready_plan_from(data, false))
+            Ok(Some(ready_plan_from(data, false)))
         }
 
         async fn acquire(
@@ -1494,6 +1567,29 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn initial_options_load_typed_install_params() {
+        let options = json!({
+            "install_params": {
+                "permissions": [{
+                    "scope_path": "user/home",
+                    "required": true,
+                    "actions": ["read"],
+                    "exp": null
+                }],
+                "auto_start": false
+            }
+        });
+        let state = InstallEngine::initial_state_from_options(Some(&options)).unwrap();
+        let params = state.requested_params.unwrap();
+        assert_eq!(params.permissions[0].scope_path, "user/home");
+        assert!(!params.auto_start);
+
+        let invalid = json!({"install_params": {"accepted_permissions": ["user/home"]}});
+        let error = InstallEngine::initial_state_from_options(Some(&invalid)).unwrap_err();
+        assert_eq!(error.code, InstallErrorCode::InvalidRequest);
+    }
+
     // ---------------- tests ----------------
 
     #[tokio::test]
@@ -1514,7 +1610,7 @@ mod tests {
 
         // 确认后继续到完成。
         engine
-            .confirm(task_id, "alice", false, None, None, vec![])
+            .confirm(task_id, "alice", false, None, None)
             .await
             .unwrap();
         let outcome = engine.run_task(task_id).await.unwrap();
@@ -1546,7 +1642,7 @@ mod tests {
         // "重启"：同一持久 store，新引擎实例。
         let engine2 = InstallEngine::new(store.clone(), driver.clone());
         engine2
-            .confirm(task_id, "alice", false, None, None, vec![])
+            .confirm(task_id, "alice", false, None, None)
             .await
             .unwrap();
         let outcome = engine2.run_task(task_id).await.unwrap();
@@ -1712,18 +1808,18 @@ mod tests {
 
         // 他人不能确认。
         let err = engine
-            .confirm(task_id, "mallory", false, None, None, vec![])
+            .confirm(task_id, "mallory", false, None, None)
             .await
             .unwrap_err();
         assert_eq!(err.code, InstallErrorCode::InvalidRequest);
 
         engine
-            .confirm(task_id, "alice", false, None, None, vec![])
+            .confirm(task_id, "alice", false, None, None)
             .await
             .unwrap();
         // 二次确认：任务已不在 WaitingForApproval。
         let err = engine
-            .confirm(task_id, "alice", false, None, None, vec![])
+            .confirm(task_id, "alice", false, None, None)
             .await
             .unwrap_err();
         assert_eq!(err.code, InstallErrorCode::Conflict);
@@ -1788,16 +1884,10 @@ mod tests {
             arch: "aarch64".to_string(),
             kernel_version: None,
             runtime_version: None,
+            capabilities: BTreeMap::new(),
         };
         engine
-            .confirm(
-                task_id,
-                "alice",
-                false,
-                Some(new_target.clone()),
-                None,
-                vec![],
-            )
+            .confirm(task_id, "alice", false, Some(new_target.clone()), None)
             .await
             .unwrap();
 

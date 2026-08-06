@@ -9,7 +9,9 @@
 use crate::app_install_engine::{
     ActivateOutcome, InstallStageDriver, InstallTaskView, ResolveOutcome,
 };
-use crate::app_install_planner::{build_install_plan, ContentLocator, PlannerInput};
+use crate::app_install_planner::{
+    build_install_plan, default_install_params, ContentLocator, PlannerInput,
+};
 use crate::app_install_resolver::{
     bind_candidate_document, normalize_identifier, AppDidResolver, NameClientAppResolver,
     NormalizedIdentifier,
@@ -20,16 +22,17 @@ use crate::app_package_namespace::{
 use crate::pikg::{PikgInspection, PikgReader};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, AppInstallTaskData, CandidateHandle, ContentLocation,
-    DidResolutionSnapshot, InstallError, InstallErrorCode, InstallPlan, InstallSource,
-    InstallStage, InstallTarget, PlanReadiness, PreparedDeployment, ReadinessState, StagingHandle,
-    VerificationReport, OBJ_TYPE_APP_DOC,
+    get_buckyos_api_runtime, AppInstallTaskData, CandidateHandle, ContentLocation, InstallError,
+    InstallErrorCode, InstallPlan, InstallSource, InstallStage, InstallTarget, PreparedDeployment,
+    StagingHandle, VerificationReport, APP_CAPABILITY_MINI_GPU_MEMORY,
+    APP_CAPABILITY_MINI_GPU_TFLOPS, APP_CAPABILITY_MINI_MEMORY, OBJ_TYPE_APP_DOC,
 };
 use log::warn;
 use name_lib::{DeviceInfo, DID};
 use ndn_lib::{build_named_object_by_json, ObjId};
-use serde_json::{json, Value};
-use std::path::PathBuf;
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 /// pikg staging root：Control Panel 数据目录下的受控子目录（D5）。
@@ -304,44 +307,6 @@ impl ProductionInstallDriver {
         }
     }
 
-    fn placeholder_plan(
-        snapshot: &DidResolutionSnapshot,
-        policy: buckyos_api::InstallPolicy,
-        target: InstallTarget,
-    ) -> InstallPlan {
-        // body 不可得（Unknown/Missing 无候选）：构造只读占位 plan，
-        // readiness 表达 TRUST_RESOLUTION_REQUIRED，引擎据此停靠。
-        let readiness = PlanReadiness::compose(
-            ReadinessState::Unknown,
-            ReadinessState::from_bool(snapshot.is_trust_ready(policy)),
-            ReadinessState::Unknown,
-            ReadinessState::Unknown,
-            ReadinessState::Ready,
-            snapshot.document_status,
-            true,
-        );
-        InstallPlan {
-            app_did: snapshot.app_did.clone(),
-            doc_type: snapshot.doc_type.clone(),
-            app_doc_object_id: snapshot
-                .app_doc_object_id
-                .clone()
-                .unwrap_or_else(|| ObjId::new_by_raw(OBJ_TYPE_APP_DOC.to_string(), vec![0u8; 32])),
-            app_name: snapshot.app_did.to_string(),
-            app_version: String::new(),
-            did_resolution: snapshot.clone(),
-            target,
-            selected_packages: vec![],
-            required_contents: vec![],
-            readiness,
-            permissions: vec![],
-            install_params: json!({}),
-            estimated_download_bytes: 0,
-            plan_fingerprint: "unresolved".to_string(),
-            created_at: buckyos_kit::buckyos_get_unix_timestamp(),
-        }
-    }
-
     /// NDN 上传的 pikg（chunk/fileobj）物化为 staging root 下的 immutable
     /// 文件，返回 (digest, staged_path)。
     async fn materialize_ndn_pikg(
@@ -480,7 +445,7 @@ impl ProductionInstallDriver {
             .plan
             .as_ref()
             .map(|plan| plan.install_params.clone())
-            .unwrap_or_else(|| json!({}));
+            .unwrap_or_default();
         let pikg_reader = self.open_candidate_pikg(data).await?;
         let pikg_inspection: Option<&PikgInspection> =
             pikg_reader.as_ref().map(|reader| reader.inspection());
@@ -532,7 +497,7 @@ impl InstallStageDriver for ProductionInstallDriver {
         &self,
         _view: &InstallTaskView,
         data: &AppInstallTaskData,
-    ) -> Result<InstallPlan, InstallError> {
+    ) -> Result<Option<InstallPlan>, InstallError> {
         let snapshot = data.state.resolution.clone().ok_or_else(|| {
             InstallError::new(
                 InstallStage::Inspect,
@@ -544,11 +509,7 @@ impl InstallStageDriver for ProductionInstallDriver {
         let target = self.resolve_target(data).await?;
 
         let Some(doc_value) = data.state.resolved_app_doc.clone() else {
-            return Ok(Self::placeholder_plan(
-                &snapshot,
-                data.request.policy,
-                target,
-            ));
+            return Ok(None);
         };
         let app_doc: buckyos_api::AppDoc =
             serde_json::from_value(doc_value.clone()).map_err(|err| {
@@ -569,7 +530,7 @@ impl InstallStageDriver for ProductionInstallDriver {
             .state
             .requested_params
             .clone()
-            .unwrap_or_else(|| json!({}));
+            .unwrap_or_else(|| default_install_params(&app_doc, data.request.policy));
 
         let locator = NamedStoreContentLocator;
         build_install_plan(
@@ -585,6 +546,7 @@ impl InstallStageDriver for ProductionInstallDriver {
             &locator,
         )
         .await
+        .map(Some)
     }
 
     async fn acquire(
@@ -680,34 +642,67 @@ impl InstallStageDriver for ProductionInstallDriver {
 
         let mut checks: Vec<VerificationCheck> = Vec::new();
 
+        let recomputed_fingerprint = InstallPlan::compute_fingerprint(
+            &plan.app,
+            &plan.resolution,
+            &plan.target,
+            &plan.install_params,
+            &plan.service_spec_config,
+            &plan.selected_packages,
+        );
+        checks.push(if recomputed_fingerprint == plan.plan_fingerprint {
+            VerificationCheck::pass("plan", "fingerprint")
+        } else {
+            VerificationCheck::fail(
+                "plan",
+                "fingerprint",
+                format!(
+                    "recomputed {recomputed_fingerprint} != persisted {}",
+                    plan.plan_fingerprint
+                ),
+            )
+        });
+        let approval_matches = data.state.approval.as_ref().is_some_and(|approval| {
+            approval.plan_fingerprint == recomputed_fingerprint
+                && approval.target == plan.target
+                && approval.install_params == plan.install_params
+        });
+        checks.push(if approval_matches {
+            VerificationCheck::pass("plan", "approval_binding")
+        } else {
+            VerificationCheck::fail(
+                "plan",
+                "approval_binding",
+                "approval does not bind the recomputed plan, target, and install params",
+            )
+        });
+
         // 1. App Document 身份复核：Resolve 结论不可被包签名覆盖，这里只
         //    重新计算内容身份并核对与快照绑定。
         let (doc_obj_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, &doc_value);
-        checks.push(if doc_obj_id == plan.app_doc_object_id {
+        checks.push(if doc_obj_id == plan.app.object_id {
             VerificationCheck::pass("appdoc", "obj_id")
         } else {
             VerificationCheck::fail(
                 "appdoc",
                 "obj_id",
-                format!("recomputed {doc_obj_id} != plan {}", plan.app_doc_object_id),
+                format!("recomputed {doc_obj_id} != plan {}", plan.app.object_id),
             )
         });
-        if let Some(published) = plan.did_resolution.app_doc_object_id.as_ref() {
-            checks.push(if *published == plan.app_doc_object_id {
+        if let Some(published) = plan.resolution.app_doc_object_id.as_ref() {
+            checks.push(if *published == plan.app.object_id {
                 VerificationCheck::pass("appdoc", "publication_binding")
             } else {
                 VerificationCheck::fail(
                     "appdoc",
                     "publication_binding",
-                    format!(
-                        "published {published} != installing {}",
-                        plan.app_doc_object_id
-                    ),
+                    format!("published {published} != installing {}", plan.app.object_id),
                 )
             });
         }
-        let doc_did_ok = doc_value.get("did").and_then(|v| v.as_str())
-            == Some(plan.app_did.to_string().as_str());
+        let plan_app_did = plan.app.did.to_string();
+        let doc_did_ok =
+            doc_value.get("did").and_then(|v| v.as_str()) == Some(plan_app_did.as_str());
         checks.push(if doc_did_ok {
             VerificationCheck::pass("appdoc", "doc_identity")
         } else {
@@ -726,7 +721,7 @@ impl InstallStageDriver for ProductionInstallDriver {
                 )
             })?;
         let namespace =
-            validate_app_package_namespace(&app_doc, &plan.did_resolution, InstallStage::Verify)?;
+            validate_app_package_namespace(&app_doc, &plan.resolution, InstallStage::Verify)?;
 
         // 2. 逐 selected Package Meta 重新读取并重算 ObjId（不信 Inspect 缓存）。
         for package in &plan.selected_packages {
@@ -830,22 +825,67 @@ impl InstallStageDriver for ProductionInstallDriver {
                     "selected package no longer matches target",
                 )
             });
+
+            if package.docker_image_name.is_some() {
+                let digest_matches = desc
+                    .and_then(|desc| desc.docker_image_digest.as_ref())
+                    .is_some_and(|digest| {
+                        package.docker_image_digest.as_ref() == Some(digest)
+                            && valid_sha256_digest(digest)
+                    });
+                checks.push(if digest_matches {
+                    VerificationCheck::pass(&package.sub_pkg_name, "docker_image_digest")
+                } else {
+                    VerificationCheck::fail(
+                        &package.sub_pkg_name,
+                        "docker_image_digest",
+                        "selected Docker image is not bound to the App Document by a valid sha256 digest",
+                    )
+                });
+            }
         }
 
-        // 5. 安装参数中的 mount 路径安全（绝对路径、无穿越）。
-        if let Some(mounts) = plan
-            .install_params
-            .get("data_mount_point")
-            .and_then(|value| value.as_array())
-        {
-            for mount in mounts {
-                let raw = mount.as_str().unwrap_or_default();
-                let safe = raw.starts_with('/') && !raw.contains("..");
-                checks.push(if safe {
-                    VerificationCheck::pass(raw, "mount_safety")
+        // 5. 最终运行配置中的 mount 路径安全（绝对路径、无穿越）。
+        for mounts in [
+            &plan.service_spec_config.data_mount_point,
+            &plan.service_spec_config.local_cache_mount_point,
+            &plan.service_spec_config.external_mount_point,
+        ] {
+            for (container_path, mount) in mounts {
+                let container_raw = container_path.display().to_string();
+                checks.push(if is_safe_absolute_path(container_path) {
+                    VerificationCheck::pass(&container_raw, "mount_container_path")
                 } else {
-                    VerificationCheck::fail(raw, "mount_safety", "mount path unsafe")
+                    VerificationCheck::fail(
+                        &container_raw,
+                        "mount_container_path",
+                        "container mount path must be absolute and contain no traversal",
+                    )
                 });
+                let target_raw = mount.target_path.display().to_string();
+                checks.push(if is_safe_mount_target_path(&mount.target_path) {
+                    VerificationCheck::pass(&target_raw, "mount_target_path")
+                } else {
+                    VerificationCheck::fail(
+                        &target_raw,
+                        "mount_target_path",
+                        "mount target path contains traversal or a platform prefix",
+                    )
+                });
+                checks.push(
+                    if matches!(
+                        mount.access.as_str(),
+                        "" | "read_only" | "ro" | "read_write" | "read_write_append" | "rw"
+                    ) {
+                        VerificationCheck::pass(&container_raw, "mount_access")
+                    } else {
+                        VerificationCheck::fail(
+                            &container_raw,
+                            "mount_access",
+                            format!("invalid mount access `{}`", mount.access),
+                        )
+                    },
+                );
             }
         }
 
@@ -888,6 +928,29 @@ impl InstallStageDriver for ProductionInstallDriver {
     }
 }
 
+fn valid_sha256_digest(raw: &str) -> bool {
+    let Some(hex) = raw.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_safe_absolute_path(path: &Path) -> bool {
+    path.is_absolute()
+        && path
+            .components()
+            .all(|component| !matches!(component, Component::ParentDir | Component::CurDir))
+}
+
+fn is_safe_mount_target_path(path: &Path) -> bool {
+    path.components().all(|component| {
+        !matches!(
+            component,
+            Component::ParentDir | Component::CurDir | Component::Prefix(_)
+        )
+    })
+}
+
 // ---------------------------------------------------------------------------
 // NamedStore content locator（Inspect 用的只读位置查询）
 // ---------------------------------------------------------------------------
@@ -917,6 +980,11 @@ impl ContentLocator for NamedStoreContentLocator {
             Ok(true) => ContentLocation::NamedStore,
             _ => ContentLocation::Missing,
         }
+    }
+
+    async fn load_json(&self, content_id: &str) -> Option<Value> {
+        let obj_id = ObjId::new(content_id).ok()?;
+        read_named_object_value(&obj_id).await.ok().flatten()
     }
 }
 
@@ -1132,13 +1200,51 @@ async fn default_node_target() -> Result<InstallTarget, String> {
             warn!("devices/{name}/info is not a DeviceInfo");
             continue;
         };
+        let mut capabilities: BTreeMap<String, i64> = info
+            .device_doc
+            .capbilities
+            .iter()
+            .map(|(name, value)| (name.clone(), *value))
+            .collect();
+        if let Some(total_mem) = info.total_mem {
+            capabilities.insert(
+                APP_CAPABILITY_MINI_MEMORY.to_string(),
+                i64::try_from(total_mem).unwrap_or(i64::MAX),
+            );
+        }
+        if let Some(gpu_total_mem) = info.gpu_total_mem {
+            capabilities.insert(
+                APP_CAPABILITY_MINI_GPU_MEMORY.to_string(),
+                i64::try_from(gpu_total_mem).unwrap_or(i64::MAX),
+            );
+        }
+        if let Some(gpu_tflops) = info.gpu_tflops {
+            capabilities.insert(
+                APP_CAPABILITY_MINI_GPU_TFLOPS.to_string(),
+                gpu_tflops.floor() as i64,
+            );
+        }
+        let runtime_version = info
+            .device_doc
+            .extra_info
+            .get("runtime_version")
+            .or_else(|| info.device_doc.extra_info.get("buckyos_version"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let kernel_version = info
+            .device_doc
+            .extra_info
+            .get("kernel_version")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         return Ok(InstallTarget {
-            node_did: None,
+            node_did: Some(info.device_doc.id.clone()),
             node_id: Some(name),
             os: buckyos_api::normalize_os(info.os.as_str()),
             arch: buckyos_api::normalize_arch(info.arch.as_str()),
-            kernel_version: None,
-            runtime_version: None,
+            kernel_version,
+            runtime_version,
+            capabilities,
         });
     }
     Err("no device info found under devices/".to_string())

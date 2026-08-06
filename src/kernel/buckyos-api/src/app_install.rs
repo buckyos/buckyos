@@ -1,4 +1,4 @@
-//! App Installer v0.5 共享协议类型（真相源：doc/App 安装协议.md）。
+//! App Installer beta 2.2 共享协议类型（真相源：doc/App 安装协议.md）。
 //!
 //! 本模块只定义跨进程共享的语义状态：安装来源/策略/Stage、DID 解析快照、
 //! InstallPlan/readiness、VerificationReport、结构化错误、安装记录与面向
@@ -6,16 +6,23 @@
 //! 或 system-config `install_record`，字段演进属于协议变更。
 
 use crate::taskdata::TaskDataProgress;
-use crate::{AppServiceSpec, PermissionItem, TaskStatus};
+use crate::{
+    AppDocType, AppServiceSpec, MountPointConfig, PermissionItem, ServiceSettings,
+    ServiceSpecConfig, TaskStatus,
+};
 use name_lib::DID;
 use ndn_lib::{build_named_object_by_json, ObjId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::path::PathBuf;
 
 /// 安装任务 runner 标识（Control Panel 进程内的 install runner）。
 pub const APP_INSTALL_RUNNER: &str = "app.control_panel";
+
+/// Task.data、InstallPlan 与 install_record 的当前持久格式版本。
+pub const APP_INSTALL_SCHEMA_VERSION: u32 = 2;
 
 /// `apps.install_package` staging handle 的 digest 形式前缀。
 /// 完整形式：`pikg:sha256:<hex>`，解析到 staging root 下的 immutable 文件。
@@ -187,8 +194,7 @@ pub enum DidCacheStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DidResolutionSnapshot {
     pub app_did: DID,
-    /// 固定 "app"。
-    pub doc_type: String,
+    pub doc_type: AppDocType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_doc_object_id: Option<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +290,56 @@ pub struct InstallTarget {
     pub kernel_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_version: Option<String>,
+    /// 目标 Node 可用于安装决策的数值能力快照。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub capabilities: BTreeMap<String, i64>,
+}
+
+/// 用户可确认的安装参数。最终运行配置由 AppDoc.service_config_tips 与本结构
+/// 确定性合成，调用方不能直接提交 ServiceSpecConfig。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallParams {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_components: Vec<String>,
+    /// 本次安装实际批准的权限条目；必须是 AppDoc.permissions 的子集，且条目
+    /// 内容必须与 AppDoc 声明完全一致。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permissions: Vec<PermissionItem>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub data_mount_points: HashMap<PathBuf, MountPointConfig>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub local_cache_mount_points: HashMap<PathBuf, MountPointConfig>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub external_mount_points: HashMap<PathBuf, MountPointConfig>,
+    #[serde(default)]
+    pub service_settings: ServiceSettings,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub bash_envs: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub res_pool_id: Option<String>,
+    #[serde(default = "default_auto_start")]
+    pub auto_start: bool,
+}
+
+fn default_auto_start() -> bool {
+    true
+}
+
+impl Default for InstallParams {
+    fn default() -> Self {
+        Self {
+            selected_components: Vec::new(),
+            permissions: Vec::new(),
+            data_mount_points: HashMap::new(),
+            local_cache_mount_points: HashMap::new(),
+            external_mount_points: HashMap::new(),
+            service_settings: ServiceSettings::default(),
+            bash_envs: HashMap::new(),
+            res_pool_id: None,
+            auto_start: true,
+        }
+    }
 }
 
 /// 单维就绪状态。
@@ -328,13 +384,14 @@ impl InstallReadiness {
     }
 }
 
-/// 六维 readiness（协议 §4.5）。"包内内容齐全"不等价于"可安全离线安装"。
+/// 七维 readiness（协议 §4.5）。"包内内容齐全"不等价于"可安全离线安装"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanReadiness {
     pub document_syntax: ReadinessState,
     pub trust: ReadinessState,
     pub package_integrity: ReadinessState,
     pub content: ReadinessState,
+    pub target: ReadinessState,
     pub config: ReadinessState,
     pub install: InstallReadiness,
 }
@@ -346,13 +403,13 @@ impl PlanReadiness {
         trust: ReadinessState,
         package_integrity: ReadinessState,
         content: ReadinessState,
+        target: ReadinessState,
         config: ReadinessState,
         document_status: DocumentStatus,
-        target_supported: bool,
     ) -> Self {
         let install = if document_status.is_terminal() {
             InstallReadiness::IdentityRevoked
-        } else if !target_supported {
+        } else if !target.is_ready() {
             InstallReadiness::UnsupportedTarget
         } else if matches!(document_syntax, ReadinessState::NotReady)
             || matches!(package_integrity, ReadinessState::NotReady)
@@ -377,6 +434,7 @@ impl PlanReadiness {
             trust,
             package_integrity,
             content,
+            target,
             config,
             install,
         }
@@ -403,6 +461,8 @@ pub struct SelectedPackage {
     pub package_meta_id: Option<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docker_image_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_image_digest: Option<String>,
     pub required: bool,
 }
 
@@ -415,6 +475,9 @@ pub struct PlannedContent {
     pub sub_pkg_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_meta_id: Option<ObjId>,
+    /// 该 package 物化后必须得到的 Docker image digest；仅 Docker package 存在。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_docker_image_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -428,57 +491,75 @@ pub struct PlannedContent {
 /// Inspect Stage 的输出（协议 §11.4）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstallPlan {
-    pub app_did: DID,
-    /// 固定 "app"。
-    pub doc_type: String,
-    pub app_doc_object_id: ObjId,
-    pub app_name: String,
-    /// 应用语义版本（App Document `version`）。
-    pub app_version: String,
-    pub did_resolution: DidResolutionSnapshot,
+    pub schema_version: u32,
+    pub app: AppDocumentRef,
+    pub resolution: DidResolutionSnapshot,
     pub target: InstallTarget,
     pub selected_packages: Vec<SelectedPackage>,
     pub required_contents: Vec<PlannedContent>,
     pub readiness: PlanReadiness,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permissions: Vec<PermissionItem>,
-    /// 影响部署与 selector 的安装参数（用户确认对象的一部分）。
-    #[serde(default)]
-    pub install_params: Value,
+    pub target_issues: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_issues: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_options: Vec<PermissionItem>,
+    pub install_params: InstallParams,
+    /// Inspect 阶段确定并由用户批准的最终运行配置；Prepare 必须原样使用。
+    pub service_spec_config: ServiceSpecConfig,
     #[serde(default)]
     pub estimated_download_bytes: u64,
-    /// 绑定 app_doc_object_id / resolver 状态与版本 / target /
-    /// 影响 selector 的参数 / selected meta ids；任一变化必须重新 Inspect。
+    /// 绑定 schema、App Document、resolver 信任状态、target、强类型参数、
+    /// 最终运行配置与 selected packages；任一变化必须重新 Inspect。
     pub plan_fingerprint: String,
     pub created_at: u64,
+}
+
+/// InstallPlan 对 App Document 的不可变引用。文档 body 仍由事务状态单独保存，
+/// Plan 不复制 AppDoc 的展示与发布字段。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppDocumentRef {
+    pub did: DID,
+    pub object_id: ObjId,
+    pub name: String,
+    /// App Document.version，仅表示应用语义版本。
+    pub version: String,
 }
 
 impl InstallPlan {
     /// 计算 plan fingerprint（JCS + sha256，复用 named-object 规范化路径）。
     pub fn compute_fingerprint(
-        app_doc_object_id: &ObjId,
-        document_status: DocumentStatus,
-        document_version: Option<u64>,
+        app: &AppDocumentRef,
+        resolution: &DidResolutionSnapshot,
         target: &InstallTarget,
-        selector_affecting_params: &Value,
-        selected_meta_ids: &[Option<ObjId>],
+        install_params: &InstallParams,
+        service_spec_config: &ServiceSpecConfig,
+        selected_packages: &[SelectedPackage],
     ) -> String {
         let material = json!({
-            "app_doc_object_id": app_doc_object_id.to_string(),
-            "document_status": document_status,
-            "document_version": document_version,
-            "target": {
-                "node_id": target.node_id,
-                "node_did": target.node_did.as_ref().map(|did| did.to_string()),
-                "os": target.os,
-                "arch": target.arch,
-                "kernel_version": target.kernel_version,
+            "schema_version": APP_INSTALL_SCHEMA_VERSION,
+            "app": app,
+            "resolution": {
+                "app_did": resolution.app_did,
+                "doc_type": resolution.doc_type,
+                "app_doc_object_id": resolution.app_doc_object_id,
+                "resolver_id": resolution.resolver_id,
+                "document_status": resolution.document_status,
+                "document_version": resolution.document_version,
+                "authority_seq": resolution.authority_seq,
+                "effective_owner": resolution.effective_owner,
+                "expected_owner": resolution.expected_owner,
+                "evidence": resolution.evidence,
+                "verification_status": resolution.verification_status,
+                "cache_status": resolution.cache_status,
+                "doc_hash": resolution.doc_hash,
+                "warnings": resolution.warnings,
+                "migration_target": resolution.migration_target,
             },
-            "selector_params": selector_affecting_params,
-            "selected_meta_ids": selected_meta_ids
-                .iter()
-                .map(|id| id.as_ref().map(|value| value.to_string()))
-                .collect::<Vec<_>>(),
+            "target": target,
+            "install_params": install_params,
+            "service_spec_config": service_spec_config,
+            "selected_packages": selected_packages,
         });
         let (obj_id, _) = build_named_object_by_json("planfp", &material);
         obj_id.to_string()
@@ -734,11 +815,7 @@ pub struct CandidateHandle {
 pub struct InstallApproval {
     pub plan_fingerprint: String,
     pub target: InstallTarget,
-    #[serde(default)]
-    pub install_params: Value,
-    /// 已接受的权限 scope_path 列表。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub accepted_permissions: Vec<String>,
+    pub install_params: InstallParams,
     pub approved_by: String,
     pub approved_at: u64,
     #[serde(default)]
@@ -809,7 +886,7 @@ pub struct InstallTransactionState {
     pub requested_target: Option<InstallTarget>,
     /// 用户期望的安装参数（同上）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_params: Option<Value>,
+    pub requested_params: Option<InstallParams>,
     /// stage 状态修订号：每次持久化 +1，runner 幂等去重使用。
     #[serde(default)]
     pub stage_revision: u64,
@@ -902,14 +979,10 @@ pub enum InstallRecordState {
 /// 长期安装记录，存 `users/{uid}/apps|agents/{app_name}/install_record`（D3）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstallRecord {
-    pub app_did: DID,
-    /// 固定 "app"。
-    pub doc_type: String,
-    pub app_name: String,
+    pub schema_version: u32,
+    pub app: AppDocumentRef,
     pub user_id: String,
-    pub app_version: String,
-    pub app_doc_object_id: ObjId,
-    pub did_resolution: DidResolutionSnapshot,
+    pub resolution: DidResolutionSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_meta_ids: Vec<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -952,10 +1025,10 @@ pub struct VerificationSummary {
 pub struct ApprovalRequest {
     pub plan_fingerprint: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permissions: Vec<PermissionItem>,
+    pub permission_options: Vec<PermissionItem>,
     pub target: InstallTarget,
-    #[serde(default)]
-    pub install_params: Value,
+    pub install_params: InstallParams,
+    pub service_spec_config: ServiceSpecConfig,
     pub estimated_download_bytes: u64,
     pub readiness: PlanReadiness,
 }
@@ -964,6 +1037,7 @@ pub struct ApprovalRequest {
 /// 消费方不得解析 TaskManager 自由文本 message 或依赖内部 Task.data 布局。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallStatusSnapshot {
+    pub schema_version: u32,
     pub task_id: i64,
     pub task_status: TaskStatus,
     pub user_id: String,
@@ -1108,9 +1182,10 @@ pub fn build_install_status_snapshot(
     let approval_request = if matches!(task_status, TaskStatus::WaitingForApproval) {
         plan.map(|plan| ApprovalRequest {
             plan_fingerprint: plan.plan_fingerprint.clone(),
-            permissions: plan.permissions.clone(),
+            permission_options: plan.permission_options.clone(),
             target: plan.target.clone(),
             install_params: plan.install_params.clone(),
+            service_spec_config: plan.service_spec_config.clone(),
             estimated_download_bytes: plan.estimated_download_bytes,
             readiness: plan.readiness.clone(),
         })
@@ -1142,16 +1217,17 @@ pub fn build_install_status_snapshot(
     }
 
     AppInstallStatusSnapshot {
+        schema_version: APP_INSTALL_SCHEMA_VERSION,
         task_id,
         task_status,
         user_id: user_id.to_string(),
         source: source.clone(),
         policy,
         app_did: plan
-            .map(|plan| plan.app_did.clone())
+            .map(|plan| plan.app.did.clone())
             .or_else(|| state.resolution.as_ref().map(|r| r.app_did.clone())),
-        app_name: plan.map(|plan| plan.app_name.clone()),
-        app_version: plan.map(|plan| plan.app_version.clone()),
+        app_name: plan.map(|plan| plan.app.name.clone()),
+        app_version: plan.map(|plan| plan.app.version.clone()),
         stage: state.stage,
         completed_stages: state.completed_stages.clone(),
         readiness: plan.map(|plan| plan.readiness.clone()),
@@ -1187,6 +1263,7 @@ mod tests {
             arch: "x86_64".to_string(),
             kernel_version: None,
             runtime_version: None,
+            capabilities: BTreeMap::new(),
         }
     }
 
@@ -1208,6 +1285,27 @@ mod tests {
             serde_json::to_string(&InstallPolicy::LocalDeveloper).unwrap(),
             "\"LOCAL_DEVELOPER\""
         );
+    }
+
+    #[test]
+    fn install_params_reject_unknown_fields_and_default_auto_start() {
+        let params: InstallParams = serde_json::from_value(json!({})).unwrap();
+        assert!(params.auto_start);
+        assert!(params.permissions.is_empty());
+        let params: InstallParams = serde_json::from_value(json!({
+            "permissions": [{
+                "scope_path": "user/home",
+                "required": true,
+                "actions": ["read"],
+                "exp": null
+            }]
+        }))
+        .unwrap();
+        assert_eq!(params.permissions[0].scope_path, "user/home");
+        assert!(serde_json::from_value::<InstallParams>(json!({
+            "sub_hostname": "legacy"
+        }))
+        .is_err());
     }
 
     #[test]
@@ -1263,8 +1361,8 @@ mod tests {
             ReadinessState::Ready,
             ReadinessState::NotReady,
             ReadinessState::Ready,
+            ReadinessState::Ready,
             DocumentStatus::Active,
-            true,
         );
         assert_eq!(readiness.install, InstallReadiness::ContentDownloadRequired);
 
@@ -1275,8 +1373,8 @@ mod tests {
             ReadinessState::Ready,
             ReadinessState::Ready,
             ReadinessState::Ready,
+            ReadinessState::Ready,
             DocumentStatus::Unknown,
-            true,
         );
         assert_eq!(readiness.install, InstallReadiness::TrustResolutionRequired);
 
@@ -1287,8 +1385,8 @@ mod tests {
             ReadinessState::Ready,
             ReadinessState::Ready,
             ReadinessState::Ready,
+            ReadinessState::Ready,
             DocumentStatus::Revoked,
-            true,
         );
         assert_eq!(readiness.install, InstallReadiness::IdentityRevoked);
 
@@ -1299,8 +1397,8 @@ mod tests {
             ReadinessState::Ready,
             ReadinessState::Ready,
             ReadinessState::Ready,
+            ReadinessState::Ready,
             DocumentStatus::Active,
-            true,
         );
         assert_eq!(readiness.install, InstallReadiness::OfflineReady);
 
@@ -1310,9 +1408,9 @@ mod tests {
             ReadinessState::Ready,
             ReadinessState::Ready,
             ReadinessState::Ready,
+            ReadinessState::NotReady,
             ReadinessState::Ready,
             DocumentStatus::Active,
-            false,
         );
         assert_eq!(readiness.install, InstallReadiness::UnsupportedTarget);
     }
@@ -1321,50 +1419,115 @@ mod tests {
     fn plan_fingerprint_is_stable_and_sensitive() {
         let obj_id = ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]);
         let target = sample_target();
-        let params = serde_json::json!({"component": "full"});
-        let metas = vec![Some(ObjId::new_by_raw("pkg".to_string(), vec![2u8; 32]))];
+        let app = AppDocumentRef {
+            did: DID::new("bns", "demo.tester"),
+            object_id: obj_id.clone(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        let mut resolution = DidResolutionSnapshot {
+            app_did: app.did.clone(),
+            doc_type: AppDocType,
+            app_doc_object_id: Some(obj_id),
+            resolver_id: Some("test".to_string()),
+            document_status: DocumentStatus::Active,
+            document_version: Some(3),
+            authority_seq: Some(3),
+            effective_owner: Some(DID::new("bns", "tester")),
+            expected_owner: Some(DID::new("bns", "tester")),
+            evidence: Some(DidEvidenceLevel::Anchored),
+            verification_status: Some(DidVerificationStatus::Passed),
+            cache_status: Some(DidCacheStatus::ZoneHit),
+            doc_hash: None,
+            warnings: vec![],
+            migration_target: None,
+            resolved_at: Some(1),
+        };
+        let params = InstallParams {
+            selected_components: vec!["full".to_string()],
+            ..Default::default()
+        };
+        let config = ServiceSpecConfig::default();
+        let packages = vec![SelectedPackage {
+            sub_pkg_name: "full".to_string(),
+            pkg_id: "demo#1.0.0".to_string(),
+            package_meta_id: Some(ObjId::new_by_raw("pkg".to_string(), vec![2u8; 32])),
+            docker_image_name: None,
+            docker_image_digest: None,
+            required: true,
+        }];
 
         let fp1 = InstallPlan::compute_fingerprint(
-            &obj_id,
-            DocumentStatus::Active,
-            Some(3),
+            &app,
+            &resolution,
             &target,
             &params,
-            &metas,
+            &config,
+            &packages,
         );
         let fp2 = InstallPlan::compute_fingerprint(
-            &obj_id,
-            DocumentStatus::Active,
-            Some(3),
+            &app,
+            &resolution,
             &target,
             &params,
-            &metas,
+            &config,
+            &packages,
         );
         assert_eq!(fp1, fp2, "同输入 fingerprint 必须稳定");
 
+        let mut permission_params = params.clone();
+        permission_params.permissions.push(PermissionItem {
+            scope_path: "wan".to_string(),
+            required: false,
+            actions: vec![],
+            exp: None,
+        });
+        let permission_fp = InstallPlan::compute_fingerprint(
+            &app,
+            &resolution,
+            &target,
+            &permission_params,
+            &config,
+            &packages,
+        );
+        assert_ne!(fp1, permission_fp, "权限选择必须进入 fingerprint");
+
         // document_version 变化 => fingerprint 变化。
+        resolution.document_version = Some(4);
         let fp3 = InstallPlan::compute_fingerprint(
-            &obj_id,
-            DocumentStatus::Active,
-            Some(4),
+            &app,
+            &resolution,
             &target,
             &params,
-            &metas,
+            &config,
+            &packages,
         );
         assert_ne!(fp1, fp3);
+        resolution.document_version = Some(3);
 
         // target 变化 => fingerprint 变化。
         let mut other_target = sample_target();
         other_target.arch = "aarch64".to_string();
         let fp4 = InstallPlan::compute_fingerprint(
-            &obj_id,
-            DocumentStatus::Active,
-            Some(3),
+            &app,
+            &resolution,
             &other_target,
             &params,
-            &metas,
+            &config,
+            &packages,
         );
         assert_ne!(fp1, fp4);
+
+        resolution.verification_status = Some(DidVerificationStatus::Failed);
+        let fp5 = InstallPlan::compute_fingerprint(
+            &app,
+            &resolution,
+            &target,
+            &params,
+            &config,
+            &packages,
+        );
+        assert_ne!(fp1, fp5, "trust evidence changes must invalidate approval");
     }
 
     #[test]
@@ -1410,7 +1573,7 @@ mod tests {
         let did = DID::new("bns", "demo.tester");
         let mut snapshot = DidResolutionSnapshot {
             app_did: did,
-            doc_type: "app".to_string(),
+            doc_type: AppDocType,
             app_doc_object_id: Some(ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32])),
             resolver_id: None,
             document_status: DocumentStatus::Active,

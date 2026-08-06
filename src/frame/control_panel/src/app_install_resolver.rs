@@ -7,9 +7,9 @@
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AppDoc, DidCacheStatus, DidEvidenceLevel, DidResolutionSnapshot, DidVerificationStatus,
-    DocumentStatus, InstallError, InstallErrorCode, InstallPolicy, InstallStage, InstallUserAction,
-    OBJ_TYPE_APP_DOC,
+    AppDoc, AppDocType, DidCacheStatus, DidEvidenceLevel, DidResolutionSnapshot,
+    DidVerificationStatus, DocumentStatus, InstallError, InstallErrorCode, InstallPolicy,
+    InstallStage, InstallUserAction, OBJ_TYPE_APP_DOC,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::warn;
@@ -128,8 +128,8 @@ pub trait AppDidResolver: Send + Sync {
 // 快照硬约束复查与 candidate 绑定
 // ---------------------------------------------------------------------------
 
-/// resolver 结果的硬约束复查：`document.did == app_did`、doc_type、终止状态。
-/// 这些约束 name-client 也会执行；此处复查是纵深防御 + fake 实现的契约测试面。
+/// resolver 结果的硬约束复查：`document.did == app_did` 与 Object ID 绑定。
+/// `doc_type` 由 `AppDocType` 在反序列化时强制；其余约束在此做纵深复查。
 pub fn enforce_resolution_invariants(
     app_did: &DID,
     resolved: &ResolvedApp,
@@ -147,18 +147,6 @@ pub fn enforce_resolution_invariants(
             ),
         ));
     }
-    if snapshot.doc_type != APP_DID_DOC_TYPE {
-        return Err(InstallError::new(
-            InstallStage::Resolve,
-            InstallErrorCode::Internal,
-            false,
-            format!(
-                "resolver snapshot doc_type `{}` != `app`",
-                snapshot.doc_type
-            ),
-        ));
-    }
-
     if let Some(value) = resolved.document_value.as_ref() {
         let body_did = value
             .get("did")
@@ -384,7 +372,7 @@ impl AppDidResolver for NameClientAppResolver {
                 return Ok(ResolvedApp {
                     snapshot: DidResolutionSnapshot {
                         app_did: app_did.clone(),
-                        doc_type: APP_DID_DOC_TYPE.to_string(),
+                        doc_type: AppDocType,
                         app_doc_object_id: None,
                         resolver_id: None,
                         document_status: DocumentStatus::Unknown,
@@ -461,7 +449,7 @@ impl AppDidResolver for NameClientAppResolver {
 
         let snapshot = DidResolutionSnapshot {
             app_did: app_did.clone(),
-            doc_type: APP_DID_DOC_TYPE.to_string(),
+            doc_type: AppDocType,
             app_doc_object_id,
             resolver_id: resolved.resolution_metadata.resolver_id.clone(),
             document_status,
@@ -540,7 +528,7 @@ pub mod fake {
             let resolved = answer.unwrap_or_else(|| ResolvedApp {
                 snapshot: DidResolutionSnapshot {
                     app_did: app_did.clone(),
-                    doc_type: APP_DID_DOC_TYPE.to_string(),
+                    doc_type: AppDocType,
                     app_doc_object_id: None,
                     resolver_id: Some("fake".to_string()),
                     document_status: DocumentStatus::Unknown,
@@ -569,7 +557,7 @@ pub mod fake {
         ResolvedApp {
             snapshot: DidResolutionSnapshot {
                 app_did: app_did.clone(),
-                doc_type: APP_DID_DOC_TYPE.to_string(),
+                doc_type: AppDocType,
                 app_doc_object_id: Some(obj_id),
                 resolver_id: Some("fake".to_string()),
                 document_status: DocumentStatus::Active,
@@ -597,7 +585,7 @@ pub mod fake {
         ResolvedApp {
             snapshot: DidResolutionSnapshot {
                 app_did: app_did.clone(),
-                doc_type: APP_DID_DOC_TYPE.to_string(),
+                doc_type: AppDocType,
                 app_doc_object_id: None,
                 resolver_id: Some("fake".to_string()),
                 document_status: status,

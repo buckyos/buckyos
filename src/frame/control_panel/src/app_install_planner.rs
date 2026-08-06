@@ -8,16 +8,20 @@
 //!   Source 只作为 missing 的获取途径）；
 //! - Inspect 不写系统目录，不触发下载。
 
-use crate::app_package_namespace::validate_app_package_namespace;
+use crate::app_install_deployer::build_install_config;
+use crate::app_package_namespace::{
+    validate_app_package_namespace, validate_package_meta_namespace,
+};
 use crate::pikg::PikgInspection;
 use async_trait::async_trait;
 use buckyos_api::{
-    AppDoc, ContentLocation, DidResolutionSnapshot, InstallError, InstallErrorCode, InstallPlan,
-    InstallPolicy, InstallStage, InstallTarget, PlanReadiness, PlannedContent, ReadinessState,
-    SelectedPackage, SubPkgList,
+    AppDoc, AppDocumentRef, ContentLocation, DidResolutionSnapshot, InstallError, InstallErrorCode,
+    InstallParams, InstallPlan, InstallPolicy, InstallStage, InstallTarget, PlanReadiness,
+    PlannedContent, ReadinessState, SelectedPackage, SubPkgList, APP_INSTALL_SCHEMA_VERSION,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use ndn_lib::ObjId;
+use package_lib::PackageMeta;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -29,6 +33,12 @@ use serde_json::Value;
 #[async_trait]
 pub trait ContentLocator: Send + Sync {
     async fn locate(&self, content_id: &str) -> ContentLocation;
+
+    /// 已存在的结构化对象 body。planner 用它展开 Package Meta 的 payload，
+    /// 防止“meta 已到、实体内容未知”被误判为离线就绪。
+    async fn load_json(&self, _content_id: &str) -> Option<Value> {
+        None
+    }
 }
 
 /// 一切都缺失的 locator（离线且无本地缓存的最坏情况，或 fake 基线）。
@@ -52,9 +62,84 @@ pub struct PlannerInput<'a> {
     pub policy: InstallPolicy,
     pub target: InstallTarget,
     /// 影响部署/selector 的安装参数（进 fingerprint）。
-    pub install_params: Value,
+    pub install_params: InstallParams,
     /// 本地 pikg（若本次事务有），作为内容与 Package Meta 的候选来源。
     pub pikg: Option<&'a PikgInspection>,
+}
+
+/// AppDoc 未被调用方参数覆盖时的建议安装参数。普通安装只预选必需权限；
+/// SYSTEM_INTERNAL 延续自动确认语义，预选 AppDoc 声明的全部权限。
+pub fn default_install_params(app_doc: &AppDoc, policy: InstallPolicy) -> InstallParams {
+    let mut params = InstallParams::default();
+    params.permissions = app_doc
+        .permissions
+        .iter()
+        .filter(|permission| permission.required || policy.allow_auto_confirm())
+        .cloned()
+        .collect();
+    params
+}
+
+fn validate_permission_selection(app_doc: &AppDoc, install_params: &InstallParams) -> Vec<String> {
+    let mut issues = Vec::new();
+
+    for (index, declared) in app_doc.permissions.iter().enumerate() {
+        if declared.scope_path.trim().is_empty() {
+            issues.push("AppDoc declares a permission with an empty scope_path".to_string());
+        }
+        if app_doc.permissions[..index]
+            .iter()
+            .any(|item| item.scope_path == declared.scope_path)
+        {
+            issues.push(format!(
+                "AppDoc declares duplicate permission `{}`",
+                declared.scope_path
+            ));
+        }
+    }
+
+    for (index, selected) in install_params.permissions.iter().enumerate() {
+        if install_params.permissions[..index]
+            .iter()
+            .any(|item| item.scope_path == selected.scope_path)
+        {
+            issues.push(format!(
+                "install params select duplicate permission `{}`",
+                selected.scope_path
+            ));
+            continue;
+        }
+        match app_doc
+            .permissions
+            .iter()
+            .find(|declared| declared.scope_path == selected.scope_path)
+        {
+            None => issues.push(format!(
+                "install params select undeclared permission `{}`",
+                selected.scope_path
+            )),
+            Some(declared) if declared != selected => issues.push(format!(
+                "install params permission `{}` does not exactly match AppDoc declaration",
+                selected.scope_path
+            )),
+            Some(_) => {}
+        }
+    }
+
+    for required in app_doc.permissions.iter().filter(|item| item.required) {
+        if !install_params
+            .permissions
+            .iter()
+            .any(|selected| selected == required)
+        {
+            issues.push(format!(
+                "required permission `{}` is not selected",
+                required.scope_path
+            ));
+        }
+    }
+
+    issues
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +153,13 @@ pub async fn build_install_plan(
     let app_doc = input.app_doc;
     let snapshot = input.snapshot;
 
-    validate_app_package_namespace(app_doc, snapshot, InstallStage::Inspect)?;
+    let namespace = validate_app_package_namespace(app_doc, snapshot, InstallStage::Inspect)?;
+    let (service_spec_config, mut config_issues) =
+        build_install_config(app_doc.name.as_str(), app_doc, &input.install_params);
+    config_issues.extend(validate_permission_selection(
+        app_doc,
+        &input.install_params,
+    ));
 
     // Document Syntax Validity：did/doc_type 由类型系统保证，这里复查 did 绑定。
     let document_syntax = if app_doc.app_did() == &snapshot.app_did {
@@ -100,6 +191,14 @@ pub async fn build_install_plan(
         if !selector.matches_platform(&input.target.os, &input.target.arch) {
             continue;
         }
+        let explicitly_selected = input
+            .install_params
+            .selected_components
+            .iter()
+            .any(|component| component == &key);
+        if !desc.is_required() && !explicitly_selected {
+            continue;
+        }
         if let Some(min_kernel) = selector.min_kernel_version.as_deref() {
             match input.target.kernel_version.as_deref() {
                 Some(actual) => {
@@ -114,16 +213,86 @@ pub async fn build_install_plan(
                 }
             }
         }
+        if desc.docker_image_name.is_some() {
+            if desc.pkg_objid.is_none() {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::InvalidPackage,
+                    false,
+                    format!(
+                        "docker package `{key}` must provide pkg_objid so its image archive is acquired before deploy"
+                    ),
+                ));
+            }
+            let digest = desc.docker_image_digest.as_deref().ok_or_else(|| {
+                InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::InvalidPackage,
+                    false,
+                    format!("docker package `{key}` must provide docker_image_digest"),
+                )
+            })?;
+            if !valid_sha256_digest(digest) {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::InvalidPackage,
+                    false,
+                    format!("docker package `{key}` has invalid digest `{digest}`"),
+                ));
+            }
+        }
         selected_packages.push(SelectedPackage {
             sub_pkg_name: key.clone(),
             pkg_id: desc.pkg_id.clone(),
             package_meta_id: desc.pkg_objid.clone(),
             docker_image_name: desc.docker_image_name.clone(),
+            docker_image_digest: desc.docker_image_digest.clone(),
             required: desc.is_required(),
         });
     }
 
-    let target_supported = !selected_packages.is_empty();
+    for component in &input.install_params.selected_components {
+        if !selected_packages
+            .iter()
+            .any(|package| &package.sub_pkg_name == component)
+        {
+            config_issues.push(format!(
+                "selected component `{component}` is unavailable for target {}/{}",
+                input.target.os, input.target.arch
+            ));
+        }
+    }
+
+    let mut target_issues = Vec::new();
+    if selected_packages.is_empty() {
+        target_issues.push(format!(
+            "no package matches target {}/{}",
+            input.target.os, input.target.arch
+        ));
+    }
+    for (capability, required) in &app_doc.req_capbilities {
+        match input.target.capabilities.get(capability) {
+            Some(actual) if actual >= required => {}
+            Some(actual) => target_issues.push(format!(
+                "capability `{capability}` requires {required}, target provides {actual}"
+            )),
+            None => target_issues.push(format!(
+                "capability `{capability}` requires {required}, target value is unknown"
+            )),
+        }
+    }
+    if let Some(required_runtime) = app_doc.sdk_version.as_deref() {
+        match input.target.runtime_version.as_deref() {
+            Some(actual) if runtime_version_satisfied(actual, required_runtime) => {}
+            Some(actual) => target_issues.push(format!(
+                "runtime version `{actual}` does not satisfy SDK version `{required_runtime}`"
+            )),
+            None => target_issues.push(format!(
+                "target runtime version is unknown; SDK version `{required_runtime}` is required"
+            )),
+        }
+    }
+    let target_readiness = ReadinessState::from_bool(target_issues.is_empty());
 
     // 逐 package 计算内容位置。
     let mut required_contents: Vec<PlannedContent> = Vec::new();
@@ -132,18 +301,12 @@ pub async fn build_install_plan(
 
     for package in &selected_packages {
         let Some(meta_id) = package.package_meta_id.as_ref() else {
-            if package.docker_image_name.is_some() {
-                // docker image 由 node-daemon 按镜像名拉取，无内容对象需求。
-                continue;
-            }
-            // 没有 Package Meta 也没有 docker 镜像：required 时内容无法就绪。
-            if package.required {
-                warnings.push(format!(
-                    "package `{}` has no package meta object id",
-                    package.sub_pkg_name
-                ));
-                required_content_missing = true;
-            }
+            // 所有选中的部署 package 都必须通过 Package Meta 进入内容获取链路。
+            warnings.push(format!(
+                "package `{}` has no package meta object id",
+                package.sub_pkg_name
+            ));
+            required_content_missing = true;
             continue;
         };
 
@@ -159,14 +322,28 @@ pub async fn build_install_plan(
                 meta_value = Some(raw.clone());
             }
         }
+        if meta_value.is_none() && !matches!(meta_location, ContentLocation::Missing) {
+            meta_value = locator.load_json(&meta_id_str).await;
+            if meta_value.is_none() {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::InvalidPackage,
+                    false,
+                    format!(
+                        "package meta `{meta_id_str}` is present but its JSON body is unavailable"
+                    ),
+                ));
+            }
+        }
         let meta_sources = source_candidates(app_doc, &package.sub_pkg_name);
-        if matches!(meta_location, ContentLocation::Missing) && package.required {
+        if matches!(meta_location, ContentLocation::Missing) {
             required_content_missing = true;
         }
         required_contents.push(PlannedContent {
             content_id: meta_id_str.clone(),
             sub_pkg_name: Some(package.sub_pkg_name.clone()),
             package_meta_id: Some(meta_id.clone()),
+            expected_docker_image_digest: package.docker_image_digest.clone(),
             format: Some("named_object".to_string()),
             size: None,
             location: meta_location,
@@ -175,7 +352,24 @@ pub async fn build_install_plan(
 
         // 2) 实体内容（payload）。只有 Package Meta 可读时才能展开。
         let payload = match meta_value {
-            Some(value) => payload_from_meta_value(&value),
+            Some(value) => {
+                let meta: PackageMeta = serde_json::from_value(value).map_err(|err| {
+                    InstallError::new(
+                        InstallStage::Inspect,
+                        InstallErrorCode::InvalidPackage,
+                        false,
+                        format!("package meta `{meta_id_str}` schema invalid: {err}"),
+                    )
+                })?;
+                validate_package_meta_namespace(
+                    &namespace,
+                    &package.sub_pkg_name,
+                    &package.pkg_id,
+                    meta.name.as_str(),
+                    InstallStage::Inspect,
+                )?;
+                payload_from_package_meta(&meta)
+            }
             None => None,
         };
         match payload {
@@ -189,9 +383,7 @@ pub async fn build_install_plan(
                     }
                 }
                 if matches!(location, ContentLocation::Missing) {
-                    if package.required {
-                        required_content_missing = true;
-                    }
+                    required_content_missing = true;
                     estimated_download_bytes =
                         estimated_download_bytes.saturating_add(size.unwrap_or(0));
                 }
@@ -199,6 +391,7 @@ pub async fn build_install_plan(
                     content_id,
                     sub_pkg_name: Some(package.sub_pkg_name.clone()),
                     package_meta_id: Some(meta_id.clone()),
+                    expected_docker_image_digest: None,
                     format: Some("archive".to_string()),
                     size,
                     location,
@@ -210,8 +403,7 @@ pub async fn build_install_plan(
                 if matches!(
                     required_contents.last().map(|c| c.location),
                     Some(ContentLocation::Missing)
-                ) && package.required
-                {
+                ) {
                     // 已计。payload 待 meta 取得后由重新 Inspect 展开。
                 }
             }
@@ -222,65 +414,59 @@ pub async fn build_install_plan(
     let package_integrity = ReadinessState::Ready;
     let content = ReadinessState::from_bool(!required_content_missing);
     let trust = ReadinessState::from_bool(snapshot.is_trust_ready(input.policy));
-    // Config Readiness：Inspect 时参数尚未确认冲突（端口/目录冲突在 Prepare
-    // 检查）；这里只要求参数是对象。
-    let config = if input.install_params.is_object() || input.install_params.is_null() {
-        ReadinessState::Ready
-    } else {
-        ReadinessState::NotReady
-    };
+    let config = ReadinessState::from_bool(config_issues.is_empty());
 
     let readiness = PlanReadiness::compose(
         document_syntax,
         trust,
         package_integrity,
         content,
+        target_readiness,
         config,
         snapshot.document_status,
-        target_supported,
     );
 
-    let selected_meta_ids: Vec<Option<ObjId>> = selected_packages
-        .iter()
-        .map(|package| package.package_meta_id.clone())
-        .collect();
+    let app = AppDocumentRef {
+        did: snapshot.app_did.clone(),
+        object_id: input.app_doc_object_id.clone(),
+        name: app_doc.name.clone(),
+        version: app_doc.version.clone(),
+    };
     let plan_fingerprint = InstallPlan::compute_fingerprint(
-        &input.app_doc_object_id,
-        snapshot.document_status,
-        snapshot.document_version,
+        &app,
+        snapshot,
         &input.target,
         &input.install_params,
-        &selected_meta_ids,
+        &service_spec_config,
+        &selected_packages,
     );
 
     Ok(InstallPlan {
-        app_did: snapshot.app_did.clone(),
-        doc_type: snapshot.doc_type.clone(),
-        app_doc_object_id: input.app_doc_object_id,
-        app_name: app_doc.name.clone(),
-        app_version: app_doc.version.clone(),
-        did_resolution: snapshot.clone(),
+        schema_version: APP_INSTALL_SCHEMA_VERSION,
+        app,
+        resolution: snapshot.clone(),
         target: input.target,
         selected_packages,
         required_contents,
         readiness,
-        permissions: app_doc.permissions.clone(),
+        target_issues,
+        config_issues,
+        permission_options: app_doc.permissions.clone(),
         install_params: input.install_params,
+        service_spec_config,
         estimated_download_bytes,
         plan_fingerprint,
         created_at: buckyos_get_unix_timestamp(),
     })
 }
 
-/// 从 Package Meta JSON 提取 (content_id, size)。content 为空视为无 payload
+/// 从 Package Meta 提取 (content_id, size)。content 为空视为无 payload
 /// （纯 meta 包）。
-fn payload_from_meta_value(value: &Value) -> Option<(String, Option<u64>)> {
-    let content = value.get("content").and_then(|v| v.as_str())?;
-    if content.trim().is_empty() {
+fn payload_from_package_meta(meta: &PackageMeta) -> Option<(String, Option<u64>)> {
+    if meta.content.trim().is_empty() {
         return None;
     }
-    let size = value.get("size").and_then(|v| v.as_u64());
-    Some((content.trim().to_string(), size))
+    Some((meta.content.trim().to_string(), Some(meta.size)))
 }
 
 /// pikg 是否携带某内容：chunk id 与 content_index 的 sha256 digest 对齐
@@ -323,19 +509,87 @@ fn kernel_version_satisfied(actual: &str, minimum: &str) -> bool {
     }
 }
 
+fn runtime_version_satisfied(actual: &str, required: &str) -> bool {
+    match (
+        semver::Version::parse(actual.trim().trim_start_matches('v')),
+        semver::Version::parse(required.trim().trim_start_matches('v')),
+    ) {
+        (Ok(actual), Ok(required)) => actual >= required,
+        _ => actual.trim() == required.trim(),
+    }
+}
+
+fn valid_sha256_digest(raw: &str) -> bool {
+    raw.strip_prefix("sha256:")
+        .map(|hex| hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app_install_resolver::fake;
-    use buckyos_api::{AppType, DocumentStatus, InstallReadiness, PackageSelector, SubPkgDesc};
+    use buckyos_api::{
+        AppType, DocumentStatus, InstallReadiness, PackageSelector, PermissionItem, SubPkgDesc,
+    };
     use name_lib::DID;
     use ndn_lib::build_named_object_by_json;
-    use package_lib::PackageMeta;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    fn declared_permissions() -> Vec<PermissionItem> {
+        vec![
+            PermissionItem {
+                scope_path: "user/home".to_string(),
+                required: true,
+                actions: vec!["read".to_string()],
+                exp: None,
+            },
+            PermissionItem {
+                scope_path: "wan".to_string(),
+                required: false,
+                actions: vec![],
+                exp: Some(3600),
+            },
+        ]
+    }
+
+    #[test]
+    fn permission_params_are_typed_selected_subset() {
+        let owner = DID::new("bns", "tester");
+        let mut app_doc =
+            AppDoc::builder(AppType::Web, "permission-demo", "0.1.0", "tester", &owner)
+                .web_pkg(SubPkgDesc::new("tester_permission-demo-web#0.1.0"))
+                .build()
+                .unwrap();
+        app_doc.permissions = declared_permissions();
+
+        let normal = default_install_params(&app_doc, InstallPolicy::Normal);
+        assert_eq!(normal.permissions, vec![app_doc.permissions[0].clone()]);
+        assert!(validate_permission_selection(&app_doc, &normal).is_empty());
+
+        let system = default_install_params(&app_doc, InstallPolicy::SystemInternal);
+        assert_eq!(system.permissions, app_doc.permissions);
+        assert!(validate_permission_selection(&app_doc, &system).is_empty());
+
+        let mut missing_required = InstallParams::default();
+        missing_required
+            .permissions
+            .push(app_doc.permissions[1].clone());
+        assert!(validate_permission_selection(&app_doc, &missing_required)
+            .iter()
+            .any(|issue| issue.contains("required permission")));
+
+        let mut altered = normal;
+        altered.permissions[0].actions.push("write".to_string());
+        assert!(validate_permission_selection(&app_doc, &altered)
+            .iter()
+            .any(|issue| issue.contains("does not exactly match")));
+    }
+
     struct MapLocator {
         map: HashMap<String, ContentLocation>,
+        objects: HashMap<String, Value>,
         pub calls: AtomicU32,
     }
 
@@ -343,8 +597,14 @@ mod tests {
         fn new(map: HashMap<String, ContentLocation>) -> Self {
             Self {
                 map,
+                objects: HashMap::new(),
                 calls: AtomicU32::new(0),
             }
+        }
+
+        fn with_json(mut self, content_id: impl Into<String>, value: Value) -> Self {
+            self.objects.insert(content_id.into(), value);
+            self
         }
     }
 
@@ -356,6 +616,10 @@ mod tests {
                 .get(content_id)
                 .copied()
                 .unwrap_or(ContentLocation::Missing)
+        }
+
+        async fn load_json(&self, content_id: &str) -> Option<Value> {
+            self.objects.get(content_id).cloned()
         }
     }
 
@@ -388,10 +652,12 @@ mod tests {
         let (arm_meta_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &arm_meta_value);
 
         let mut amd_desc = SubPkgDesc::new("tester_demo-img-amd64#1.0.0")
-            .docker_image_name("demo:1.0.0-amd64");
+            .docker_image_name("demo:1.0.0-amd64")
+            .docker_image_digest(format!("sha256:{}", "11".repeat(32)));
         amd_desc.pkg_objid = Some(amd_meta_id.clone());
         let mut arm_desc = SubPkgDesc::new("tester_demo-img-arm64#1.0.0")
-            .docker_image_name("demo:1.0.0-arm64");
+            .docker_image_name("demo:1.0.0-arm64")
+            .docker_image_digest(format!("sha256:{}", "22".repeat(32)));
         arm_desc.pkg_objid = Some(arm_meta_id);
 
         let app_doc = AppDoc::builder(AppType::AppService, "demo", "1.0.0", "tester", &owner)
@@ -418,6 +684,7 @@ mod tests {
             arch: arch.to_string(),
             kernel_version: None,
             runtime_version: None,
+            capabilities: Default::default(),
         }
     }
 
@@ -434,7 +701,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("aarch64"),
-                install_params: serde_json::json!({}),
+                install_params: InstallParams::default(),
                 pikg: None,
             },
             &NoLocalContentLocator,
@@ -456,7 +723,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: InstallParams::default(),
                 pikg: None,
             },
             &NoLocalContentLocator,
@@ -475,7 +742,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: win_target,
-                install_params: serde_json::json!({}),
+                install_params: InstallParams::default(),
                 pikg: None,
             },
             &NoLocalContentLocator,
@@ -483,6 +750,168 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(plan.readiness.install, InstallReadiness::UnsupportedTarget);
+    }
+
+    #[tokio::test]
+    async fn docker_plan_binds_image_digest_and_rejects_unbound_images() {
+        let app = build_dual_platform_app();
+        let resolved = fake::active_answer(&app.app_did, app.doc_value.clone(), 1);
+        let plan = build_install_plan(
+            PlannerInput {
+                app_doc: &app.app_doc,
+                app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
+                snapshot: &resolved.snapshot,
+                policy: InstallPolicy::Normal,
+                target: linux_target("amd64"),
+                install_params: InstallParams::default(),
+                pikg: None,
+            },
+            &NoLocalContentLocator,
+        )
+        .await
+        .unwrap();
+        let selected = &plan.selected_packages[0];
+        let expected_digest = format!("sha256:{}", "11".repeat(32));
+        assert_eq!(
+            selected.docker_image_digest.as_deref(),
+            Some(expected_digest.as_str())
+        );
+        assert!(plan.required_contents.iter().any(|content| {
+            content.expected_docker_image_digest == selected.docker_image_digest
+        }));
+
+        let mut unbound = app.app_doc.clone();
+        unbound
+            .pkg_list
+            .amd64_docker_image
+            .as_mut()
+            .unwrap()
+            .docker_image_digest = None;
+        let doc_value = serde_json::to_value(&unbound).unwrap();
+        let resolved = fake::active_answer(unbound.app_did(), doc_value, 1);
+        let error = build_install_plan(
+            PlannerInput {
+                app_doc: &unbound,
+                app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
+                snapshot: &resolved.snapshot,
+                policy: InstallPolicy::Normal,
+                target: linux_target("amd64"),
+                install_params: InstallParams::default(),
+                pikg: None,
+            },
+            &NoLocalContentLocator,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, InstallErrorCode::InvalidPackage);
+        assert!(error.message.contains("docker_image_digest"));
+    }
+
+    #[tokio::test]
+    async fn planner_checks_runtime_and_numeric_capabilities() {
+        let app = build_dual_platform_app();
+        let mut app_doc = app.app_doc.clone();
+        app_doc.sdk_version = Some("0.8.0".to_string());
+        app_doc.req_capbilities.insert("memory".to_string(), 1024);
+        let doc_value = serde_json::to_value(&app_doc).unwrap();
+        let resolved = fake::active_answer(app_doc.app_did(), doc_value, 1);
+        let mut target = linux_target("amd64");
+        target.runtime_version = Some("0.7.0".to_string());
+        target.capabilities.insert("memory".to_string(), 512);
+
+        let plan = build_install_plan(
+            PlannerInput {
+                app_doc: &app_doc,
+                app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
+                snapshot: &resolved.snapshot,
+                policy: InstallPolicy::Normal,
+                target,
+                install_params: InstallParams::default(),
+                pikg: None,
+            },
+            &NoLocalContentLocator,
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.readiness.install, InstallReadiness::UnsupportedTarget);
+        assert_eq!(plan.readiness.target, ReadinessState::NotReady);
+        assert_eq!(plan.target_issues.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn plan_contains_typed_final_service_config() {
+        let app = build_dual_platform_app();
+        let mut app_doc = app.app_doc.clone();
+        app_doc
+            .service_config_tips
+            .data_mount_points
+            .insert("/data".into(), None);
+        app_doc
+            .service_config_tips
+            .external_mount_points
+            .insert("/shared".into(), None);
+        app_doc
+            .service_config_tips
+            .runtime_caps
+            .insert("net".to_string(), "enabled".to_string());
+        app_doc.service_config_tips.container_param = Some("--init".to_string());
+        app_doc.service_config_tips.start_param = Some("serve".to_string());
+        let doc_value = serde_json::to_value(&app_doc).unwrap();
+        let resolved = fake::active_answer(app_doc.app_did(), doc_value, 1);
+        let mut install_params = default_install_params(&app_doc, InstallPolicy::Normal);
+        install_params.data_mount_points.insert(
+            "/data".into(),
+            buckyos_api::MountPointConfig {
+                target_path: "data".into(),
+                access: "read_write".to_string(),
+            },
+        );
+        install_params.external_mount_points.insert(
+            "/shared".into(),
+            buckyos_api::MountPointConfig {
+                target_path: "shared".into(),
+                access: "read_only".to_string(),
+            },
+        );
+        install_params
+            .bash_envs
+            .insert("MODE".to_string(), "prod".to_string());
+        install_params.res_pool_id = Some("large".to_string());
+
+        let plan = build_install_plan(
+            PlannerInput {
+                app_doc: &app_doc,
+                app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
+                snapshot: &resolved.snapshot,
+                policy: InstallPolicy::Normal,
+                target: linux_target("amd64"),
+                install_params,
+                pikg: None,
+            },
+            &NoLocalContentLocator,
+        )
+        .await
+        .unwrap();
+        assert!(plan
+            .service_spec_config
+            .data_mount_point
+            .contains_key(std::path::Path::new("/data")));
+        assert!(plan
+            .service_spec_config
+            .external_mount_point
+            .contains_key(std::path::Path::new("/shared")));
+        assert_eq!(plan.service_spec_config.bash_envs["MODE"], "prod");
+        assert_eq!(plan.service_spec_config.res_pool_id, "large");
+        assert_eq!(plan.service_spec_config.runtime_caps["net"], "enabled");
+        assert_eq!(
+            plan.service_spec_config.container_param.as_deref(),
+            Some("--init")
+        );
+        assert_eq!(
+            plan.service_spec_config.start_param.as_deref(),
+            Some("serve")
+        );
+        assert_eq!(plan.readiness.config, ReadinessState::Ready);
     }
 
     #[tokio::test]
@@ -506,7 +935,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
             },
             &locator,
@@ -533,7 +962,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
             },
             &NoLocalContentLocator,
@@ -557,7 +986,8 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(app.meta_id.to_string(), ContentLocation::NamedStore);
         map.insert(app.payload_digest.clone(), ContentLocation::NamedStore);
-        let locator = MapLocator::new(map);
+        let locator =
+            MapLocator::new(map).with_json(app.meta_id.to_string(), app.meta_value.clone());
         let plan = build_install_plan(
             PlannerInput {
                 app_doc: &app.app_doc,
@@ -565,7 +995,7 @@ mod tests {
                 snapshot: &unknown.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
             },
             &locator,
@@ -577,11 +1007,11 @@ mod tests {
             InstallReadiness::TrustResolutionRequired
         );
 
-        // 全 ready => OFFLINE_READY。
+        // 只有 Package Meta、缺少其 payload 时仍必须下载，不能提前离线就绪。
         let mut map = HashMap::new();
         map.insert(app.meta_id.to_string(), ContentLocation::NamedStore);
-        map.insert(app.payload_digest.clone(), ContentLocation::NamedStore);
-        let locator = MapLocator::new(map);
+        let locator =
+            MapLocator::new(map).with_json(app.meta_id.to_string(), app.meta_value.clone());
         let plan = build_install_plan(
             PlannerInput {
                 app_doc: &app.app_doc,
@@ -589,7 +1019,36 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
+                pikg: None,
+            },
+            &locator,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            plan.readiness.install,
+            InstallReadiness::ContentDownloadRequired
+        );
+        assert!(plan.required_contents.iter().any(|content| {
+            content.content_id == app.payload_digest
+                && matches!(content.location, ContentLocation::Missing)
+        }));
+
+        // 全 ready => OFFLINE_READY。
+        let mut map = HashMap::new();
+        map.insert(app.meta_id.to_string(), ContentLocation::NamedStore);
+        map.insert(app.payload_digest.clone(), ContentLocation::NamedStore);
+        let locator =
+            MapLocator::new(map).with_json(app.meta_id.to_string(), app.meta_value.clone());
+        let plan = build_install_plan(
+            PlannerInput {
+                app_doc: &app.app_doc,
+                app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
+                snapshot: &resolved.snapshot,
+                policy: InstallPolicy::Normal,
+                target: linux_target("amd64"),
+                install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
             },
             &locator,
@@ -608,7 +1067,7 @@ mod tests {
                 snapshot: &revoked.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: InstallParams::default(),
                 pikg: None,
             },
             &locator,
@@ -635,7 +1094,7 @@ mod tests {
                         snapshot: &snapshot,
                         policy: InstallPolicy::Normal,
                         target,
-                        install_params: serde_json::json!({}),
+                        install_params: default_install_params(&app_doc, InstallPolicy::Normal),
                         pikg: None,
                     },
                     &NoLocalContentLocator,
@@ -705,7 +1164,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: Some(&inspection),
             },
             &locator,
@@ -747,7 +1206,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params: InstallParams::default(),
                 pikg: None,
             },
             &NoLocalContentLocator,
@@ -762,7 +1221,7 @@ mod tests {
         assert!(names.contains(&"web"));
         assert!(!names.contains(&"big_model"));
 
-        // 显式 selector 后参与选择。
+        // 可选 package 需要同时有显式 selector 和用户选择才参与计划。
         let mut model_desc = model_desc;
         model_desc.selector = Some(PackageSelector::for_platform("linux", "amd64"));
         let app_doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
@@ -772,6 +1231,10 @@ mod tests {
             .unwrap();
         let doc_value = serde_json::to_value(&app_doc).unwrap();
         let resolved = fake::active_answer(app_doc.app_did(), doc_value, 1);
+        let install_params = InstallParams {
+            selected_components: vec!["big_model".to_string()],
+            ..Default::default()
+        };
         let plan = build_install_plan(
             PlannerInput {
                 app_doc: &app_doc,
@@ -779,7 +1242,7 @@ mod tests {
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
                 target: linux_target("amd64"),
-                install_params: serde_json::json!({}),
+                install_params,
                 pikg: None,
             },
             &NoLocalContentLocator,
@@ -792,19 +1255,5 @@ mod tests {
             .map(|p| p.sub_pkg_name.as_str())
             .collect();
         assert!(names.contains(&"big_model"));
-    }
-}
-
-/// 占位默认目标：仅用于 body 缺失（Unknown/Missing）时构造只读占位 plan。
-/// 真实安装目标必须由 driver 从目标 Node 信息（devices/{node}/info）填充，
-/// 不得用本函数（更不得用编译期 cfg!）替代真实选择。
-pub fn kernel_default_target() -> InstallTarget {
-    InstallTarget {
-        node_did: None,
-        node_id: None,
-        os: "linux".to_string(),
-        arch: "x86_64".to_string(),
-        kernel_version: None,
-        runtime_version: None,
     }
 }

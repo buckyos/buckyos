@@ -92,8 +92,15 @@ export interface TrustCheck {
 
 export interface ContentReadiness {
   offlineReady: boolean
+  packageBytes: number
   missingBytes: number
+  expectedInstallBytes: number
   availableSource: string
+}
+
+export interface AppPrice {
+  amount: number
+  currency: string
 }
 
 export type InstallPermissionKind = 'files' | 'network' | 'database' | 'system'
@@ -108,11 +115,16 @@ export interface InstallAppInfo {
   name: string
   version: string
   releaseVersion: string
+  publishedAt: string
+  isLatest: boolean
   description: string
+  details: string
   iconKey: string
   appDid: string
   documentObjectId: string
   publisher: string
+  ownerDid: string
+  price: AppPrice | null
   referrer: string
   source: InstallSourceResolution
   trustChecks: TrustCheck[]

@@ -100,11 +100,16 @@ interface InstallAppInfo {
   name: string
   version: string
   releaseVersion: string
+  publishedAt: string
+  isLatest: boolean
   description: string
+  details: string
   iconKey: string
   appDid: string
   documentObjectId: string
   publisher: string
+  ownerDid: string
+  price: { amount: number; currency: string } | null
   referrer: string
   source: InstallSourceResolution
   trustChecks: TrustCheck[]
@@ -145,7 +150,9 @@ interface InstallPlan {
 
 interface ContentReadiness {
   offlineReady: boolean
+  packageBytes: number
   missingBytes: number
+  expectedInstallBytes: number
   availableSource: string
 }
 ```

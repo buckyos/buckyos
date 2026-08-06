@@ -644,20 +644,27 @@ export class AppServiceMockStore {
       name: 'Nextcloud',
       version: '28.0.2',
       releaseVersion: '2026.07-stable',
+      publishedAt: '2026-07-12T16:00:00.000Z',
+      isLatest: true,
       description: 'Private file sync, calendar, and collaboration for your Zone.',
+      details: 'Keep files, calendars, contacts, and shared workspaces on infrastructure you control. This release is maintained for BuckyOS and includes the web service, background worker, managed database integration, and Zone HTTPS routing.',
       iconKey: 'files',
       appDid: 'did:cyfs:app-nextcloud-7w4k2n',
       documentObjectId: source.normalizedType === 'identifier' && source.normalizedValue.startsWith('obj_')
         ? source.normalizedValue
         : 'obj_appdoc_nextcloud_28_7m3k',
       publisher: 'Nextcloud Community Maintainers',
+      ownerDid: 'did:bns:nextcloud-community',
+      price: null,
       referrer: launchRequest?.referrer ?? 'App Service manual install',
       source,
       trustChecks,
       platformSupported,
       content: {
         offlineReady,
+        packageBytes: 2_147_483_648,
         missingBytes: offlineReady ? 0 : 1_879_048_192,
+        expectedInstallBytes: 4_831_838_208,
         availableSource: offlineReady ? 'Controlled staging area' : 'registry.buckyos.ai + repo-service',
       },
       permissions: [

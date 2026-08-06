@@ -1618,7 +1618,12 @@ impl ControlPanelServer {
         app_id: &str,
         app_doc: &AppDoc,
     ) -> buckyos_api::ServiceSpecConfig {
-        crate::app_install_deployer::build_install_config(app_id, app_doc, &json!({}))
+        crate::app_install_deployer::build_install_config(
+            app_id,
+            app_doc,
+            &buckyos_api::InstallParams::default(),
+        )
+        .0
     }
 
     fn parse_app_type(raw: &str) -> Result<AppType, RPCErrors> {
@@ -1832,7 +1837,7 @@ impl ControlPanelServer {
             .map_err(|_| RPCErrors::ParseRequestError(format!("invalid task_id `{raw}`")))
     }
 
-    /// apps.install.confirm { task_id, target?, install_params?, accepted_permissions? }
+    /// apps.install.confirm { task_id, target?, install_params? }
     pub(crate) async fn handle_apps_install_confirm(
         &self,
         req: RPCRequest,
@@ -1848,19 +1853,20 @@ impl ControlPanelServer {
             ),
             _ => None,
         };
-        let install_params = req
-            .params
-            .get("install_params")
-            .cloned()
-            .filter(|value| !value.is_null());
-        let accepted_permissions: Vec<String> = match req.params.get("accepted_permissions") {
-            Some(value) if !value.is_null() => {
-                serde_json::from_value(value.clone()).map_err(|err| {
-                    RPCErrors::ParseRequestError(format!("invalid accepted_permissions: {err}"))
-                })?
-            }
-            _ => Vec::new(),
+        let install_params = match req.params.get("install_params") {
+            Some(value) if !value.is_null() => Some(
+                serde_json::from_value::<buckyos_api::InstallParams>(value.clone()).map_err(
+                    |err| RPCErrors::ParseRequestError(format!("invalid install_params: {err}")),
+                )?,
+            ),
+            _ => None,
         };
+        if req.params.get("accepted_permissions").is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "accepted_permissions was removed; submit full PermissionItem entries in install_params.permissions"
+                    .to_string(),
+            ));
+        }
 
         self.install_engine
             .confirm(
@@ -1869,7 +1875,6 @@ impl ControlPanelServer {
                 Self::principal_is_admin(principal),
                 target,
                 install_params,
-                accepted_permissions,
             )
             .await
             .map_err(Self::install_error_to_rpc)?;

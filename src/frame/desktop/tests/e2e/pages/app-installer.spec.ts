@@ -31,6 +31,9 @@ test('direct identifier launch creates a task, normalizes the URL, and resumes a
 
   await expect(page.getByTestId('app-installer-dialog')).toBeVisible()
   await expect(page).toHaveURL(/\/sysdlg\/app_installer\?task_id=[1-9]\d*$/)
+  const sourceIdentity = page.getByTestId('app-installer-source-identity')
+  await expect(sourceIdentity).not.toHaveAttribute('open', '')
+  await sourceIdentity.locator('summary').click()
   await expect(page.getByText('did:bns:store.buckyos', { exact: true })).toBeVisible()
 
   const normalizedUrl = page.url()
@@ -63,8 +66,12 @@ test('offline direct launch blocks missing network content', async ({ page }) =>
   })
   await page.goto(`/sysdlg/app_installer?${search.toString()}`)
 
-  await expect(page.getByTestId('app-installer-blocking-reason')).toContainText('Content unavailable offline')
-  await expect(page.getByRole('button', { name: 'Review installation plan' })).toBeDisabled()
+  const blockingReason = page.getByTestId('app-installer-blocking-reason')
+  await expect(blockingReason).toContainText('This application cannot be installed')
+  await expect(blockingReason).toContainText('Content unavailable offline')
+  await expect(page.getByRole('button', { name: 'Review installation plan' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'End', exact: true }).click()
+  await expect(page).toHaveURL(/\/$/)
 })
 
 test.describe('mobile direct App Installer', () => {

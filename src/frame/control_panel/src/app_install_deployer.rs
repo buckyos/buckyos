@@ -15,16 +15,18 @@ use crate::app_install_driver::ProductionInstallDriver;
 use crate::app_install_engine::InstallTaskView;
 use buckyos_api::{
     get_buckyos_api_runtime, install_record_key, AppDoc, AppInstallTaskData, AppServiceSpec,
-    AppType, ContentLocation, InstallError, InstallErrorCode, InstallRecord, InstallRecordState,
-    InstallStage, InstallTaskResult, MountPointConfig, PreparedDeployment, ServiceEndpointConfig,
-    ServiceExposeConfig, ServiceExposeRouteTips, ServiceInstanceReportInfo, ServiceInstanceState,
-    ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError,
+    AppType, ContentLocation, InstallError, InstallErrorCode, InstallParams, InstallRecord,
+    InstallRecordState, InstallStage, InstallTaskResult, MountPointConfig, PreparedDeployment,
+    ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteTips, ServiceInstanceReportInfo,
+    ServiceInstanceState, ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError,
+    APP_INSTALL_SCHEMA_VERSION,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
 use ndn_lib::{build_obj_id, ActionObject, NamedObject, ObjId, ACTION_TYPE_INSTALLED};
-use serde_json::{json, Value};
-use std::collections::HashSet;
+use serde_json::json;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -178,8 +180,7 @@ impl ProductionInstallDriver {
         let materialized = self.materialize_for_deploy(data).await?;
 
         // 端口冲突检查（expose_port 与现有 spec 冲突即 CONFIG_BLOCKED）。
-        let install_config =
-            build_install_config(app_id.as_str(), &app_doc, &approval.install_params);
+        let install_config = plan.service_spec_config.clone();
         check_expose_conflicts(&client, &install_config, &spec_path).await?;
 
         // app_index：升级沿用旧值；新装用 CAS 序列 key 分配（修扫描竞态）。
@@ -187,24 +188,12 @@ impl ProductionInstallDriver {
             Some(previous) => previous.app_index,
             None => allocate_app_index(&client).await?,
         };
-        let accepted_permissions: HashSet<&str> = approval
-            .accepted_permissions
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let permission = app_doc
-            .permissions
-            .iter()
-            .filter(|item| accepted_permissions.contains(item.scope_path.as_str()))
-            .cloned()
-            .collect();
-
         let new_spec = AppServiceSpec {
             app_doc,
             app_index,
             user_id: user_id.clone(),
-            permission,
-            enable: true,
+            permission: plan.install_params.permissions.clone(),
+            enable: plan.install_params.auto_start,
             expected_instance_count: 1,
             state: ServiceState::New,
             spec_config: install_config,
@@ -221,8 +210,7 @@ impl ProductionInstallDriver {
         };
 
         // 先写 install_record(state=prepared)，成功后（Deploy）才写 spec。
-        let record =
-            build_install_record(view, data, &prepared, InstallRecordState::Prepared, None)?;
+        let record = build_install_record(view, data, InstallRecordState::Prepared, None)?;
         write_install_record(&client, &user_id, &record, is_agent).await?;
 
         Ok(prepared)
@@ -272,8 +260,7 @@ impl ProductionInstallDriver {
         );
 
         let is_agent = prepared.spec_path.contains("/agents/");
-        let record =
-            build_install_record(view, data, &prepared, InstallRecordState::Deploying, None)?;
+        let record = build_install_record(view, data, InstallRecordState::Deploying, None)?;
         write_install_record(&client, &data.request.user_id, &record, is_agent).await?;
         Ok(())
     }
@@ -308,8 +295,7 @@ impl ProductionInstallDriver {
         };
 
         // 健康检查通过：更新 install_record=installed -> 写 installed proof。
-        let record =
-            build_install_record(view, data, &prepared, InstallRecordState::Installed, None)?;
+        let record = build_install_record(view, data, InstallRecordState::Installed, None)?;
         write_install_record(&client, &data.request.user_id, &record, is_agent).await?;
 
         let proof_id = write_installed_proof(view, data, &prepared).await?;
@@ -397,7 +383,6 @@ impl ProductionInstallDriver {
         let record = build_install_record(
             view,
             data,
-            &prepared,
             InstallRecordState::RolledBack,
             data.state.last_error.clone(),
         )?;
@@ -560,11 +545,12 @@ impl ProductionInstallDriver {
 pub(crate) fn build_install_config(
     app_id: &str,
     app_doc: &AppDoc,
-    install_params: &Value,
-) -> ServiceSpecConfig {
+    install_params: &InstallParams,
+) -> (ServiceSpecConfig, Vec<String>) {
     let tips = &app_doc.service_config_tips;
+    let mut issues = Vec::new();
     let mut install_config = ServiceSpecConfig {
-        data_mount_point: Default::default(),
+        data_mount_point: HashMap::new(),
         local_cache_mount_point: tips
             .local_cache_mount_points
             .iter()
@@ -575,7 +561,7 @@ pub(crate) fn build_install_config(
                 )
             })
             .collect(),
-        external_mount_point: Default::default(),
+        external_mount_point: HashMap::new(),
         rdb_instances: tips.rdb_instances.clone(),
         instance_volume: tips.instance_volume.clone(),
         runtime_caps: tips.runtime_caps.clone(),
@@ -585,6 +571,15 @@ pub(crate) fn build_install_config(
     };
 
     for (service_name, endpoint) in &tips.service_endpoints {
+        let setting = install_params.service_settings.services.get(service_name);
+        if matches!(setting, Some(setting) if !setting.enabled) {
+            if endpoint.required {
+                issues.push(format!(
+                    "required service endpoint `{service_name}` is disabled"
+                ));
+            }
+            continue;
+        }
         install_config.service_config.insert(
             service_name.clone(),
             ServiceEndpointConfig {
@@ -592,7 +587,20 @@ pub(crate) fn build_install_config(
                 inner_port: endpoint.inner_port,
             },
         );
-        if let Some(expose) = &endpoint.expose {
+        if let Some(expose) = setting.and_then(|setting| setting.expose.as_ref()) {
+            install_config.expose_config.insert(
+                service_name.clone(),
+                ServiceExposeConfig {
+                    route: expose.route.clone(),
+                    scope: expose.scope.clone(),
+                    allow_guest: expose.allow_guest,
+                    bind_address: None,
+                },
+            );
+        } else if setting.is_none() {
+            let Some(expose) = &endpoint.expose else {
+                continue;
+            };
             let expose_config = match &expose.route {
                 ServiceExposeRouteTips::Web => ServiceExposeConfig::web(
                     vec![app_id.to_string()],
@@ -612,58 +620,139 @@ pub(crate) fn build_install_config(
         }
     }
 
-    if app_doc.get_app_type() == AppType::Web && !install_config.expose_config.contains_key("www") {
+    for service_name in install_params.service_settings.services.keys() {
+        if !tips.service_endpoints.contains_key(service_name) {
+            issues.push(format!("unknown service endpoint `{service_name}`"));
+        }
+    }
+
+    if app_doc.get_app_type() == AppType::Web
+        && !install_config.expose_config.contains_key("www")
+        && !install_params.service_settings.services.contains_key("www")
+    {
         install_config.expose_config.insert(
             "www".to_string(),
             ServiceExposeConfig::web(vec![app_id.to_string()], String::new(), true),
         );
     }
 
-    // 确认参数覆盖：data_mount_point / sub_hostname / expose_port。
-    if let Some(mounts) = install_params
-        .get("data_mount_point")
-        .and_then(|value| value.as_object())
-    {
-        for (mount_key, host_path) in mounts {
-            if let Some(host_path) = host_path.as_str() {
-                install_config.data_mount_point.insert(
-                    mount_key.into(),
-                    MountPointConfig {
-                        target_path: host_path.into(),
-                        access: "read_write".to_string(),
-                    },
-                );
+    apply_selected_mounts(
+        "data",
+        &tips.data_mount_points,
+        &install_params.data_mount_points,
+        &mut install_config.data_mount_point,
+        &mut issues,
+    );
+    apply_selected_mounts(
+        "local_cache",
+        &tips.local_cache_mount_points,
+        &install_params.local_cache_mount_points,
+        &mut install_config.local_cache_mount_point,
+        &mut issues,
+    );
+    apply_selected_mounts(
+        "external",
+        &tips.external_mount_points,
+        &install_params.external_mount_points,
+        &mut install_config.external_mount_point,
+        &mut issues,
+    );
+    install_config.bash_envs = install_params.bash_envs.clone();
+    if let Some(res_pool_id) = install_params.res_pool_id.as_ref() {
+        install_config.res_pool_id = res_pool_id.clone();
+    }
+
+    for (name, info) in &tips.bash_envs {
+        if info.required && !install_config.bash_envs.contains_key(name) {
+            issues.push(format!("required bash environment `{name}` is missing"));
+        }
+    }
+    for (kind, mounts) in [
+        ("data", &install_config.data_mount_point),
+        ("local_cache", &install_config.local_cache_mount_point),
+        ("external", &install_config.external_mount_point),
+    ] {
+        for (container_path, mount) in mounts {
+            if !is_safe_absolute_path(container_path) {
+                issues.push(format!(
+                    "{kind} mount container path `{}` is unsafe",
+                    container_path.display()
+                ));
             }
-        }
-    }
-    if let Some(hostname) = install_params
-        .get("sub_hostname")
-        .and_then(|value| value.as_str())
-    {
-        if let Some(expose) = install_config.expose_config.get_mut("www") {
-            expose.set_sub_hostname(vec![hostname.to_string()]);
-        }
-    }
-    if let Some(ports) = install_params
-        .get("expose_ports")
-        .and_then(|value| value.as_object())
-    {
-        for (service_name, port) in ports {
-            if let Some(port) = port.as_u64() {
-                let (scope, allow_guest) = install_config
-                    .expose_config
-                    .get(service_name)
-                    .map(|config| (config.scope.clone(), config.allow_guest))
-                    .unwrap_or_default();
-                install_config.expose_config.insert(
-                    service_name.clone(),
-                    ServiceExposeConfig::port(port as u16, scope, allow_guest),
-                );
+            if !is_safe_mount_target_path(&mount.target_path) {
+                issues.push(format!(
+                    "{kind} mount target path `{}` is unsafe",
+                    mount.target_path.display()
+                ));
+            }
+            if !matches!(
+                mount.access.as_str(),
+                "" | "read_only" | "ro" | "read_write" | "read_write_append" | "rw"
+            ) {
+                issues.push(format!(
+                    "{kind} mount `{}` has invalid access `{}`",
+                    container_path.display(),
+                    mount.access
+                ));
             }
         }
     }
 
-    install_config
+    (install_config, issues)
+}
+
+fn apply_selected_mounts(
+    kind: &str,
+    declared: &HashMap<PathBuf, Option<buckyos_api::MountPointInfo>>,
+    selected: &HashMap<PathBuf, MountPointConfig>,
+    output: &mut HashMap<PathBuf, MountPointConfig>,
+    issues: &mut Vec<String>,
+) {
+    for (container_path, config) in selected {
+        let Some(tip) = declared.get(container_path) else {
+            issues.push(format!(
+                "unknown {kind} mount point `{}`",
+                container_path.display()
+            ));
+            continue;
+        };
+        if let Some(tip) = tip {
+            if matches!(tip.access.as_str(), "read_only" | "ro")
+                && matches!(
+                    config.access.as_str(),
+                    "read_write" | "read_write_append" | "rw"
+                )
+            {
+                issues.push(format!(
+                    "{kind} mount `{}` can not exceed the App Document read-only access",
+                    container_path.display()
+                ));
+                continue;
+            }
+        }
+        output.insert(container_path.clone(), config.clone());
+    }
+}
+
+fn is_safe_absolute_path(path: &std::path::Path) -> bool {
+    path.is_absolute()
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+}
+
+fn is_safe_mount_target_path(path: &std::path::Path) -> bool {
+    !path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::CurDir
+                | std::path::Component::Prefix(_)
+        )
+    })
 }
 
 fn mount_config_from_tip(
@@ -838,7 +927,6 @@ async fn scan_max_app_index(client: &SystemConfigClient) -> Result<u16, InstallE
 fn build_install_record(
     view: &InstallTaskView,
     data: &AppInstallTaskData,
-    prepared: &PreparedDeployment,
     state: InstallRecordState,
     last_error: Option<InstallError>,
 ) -> Result<InstallRecord, InstallError> {
@@ -852,13 +940,10 @@ fn build_install_record(
     })?;
     let now = buckyos_get_unix_timestamp();
     Ok(InstallRecord {
-        app_did: plan.app_did.clone(),
-        doc_type: plan.doc_type.clone(),
-        app_name: prepared.new_spec.app_doc.name.clone(),
+        schema_version: APP_INSTALL_SCHEMA_VERSION,
+        app: plan.app.clone(),
         user_id: data.request.user_id.clone(),
-        app_version: prepared.new_spec.app_doc.version.clone(),
-        app_doc_object_id: plan.app_doc_object_id.clone(),
-        did_resolution: plan.did_resolution.clone(),
+        resolution: plan.resolution.clone(),
         package_meta_ids: plan
             .selected_packages
             .iter()
@@ -886,7 +971,7 @@ async fn write_install_record(
     record: &InstallRecord,
     is_agent: bool,
 ) -> Result<(), InstallError> {
-    let key = install_record_key(user_id, record.app_name.as_str(), is_agent);
+    let key = install_record_key(user_id, record.app.name.as_str(), is_agent);
     let raw = serde_json::to_string(record).map_err(|err| {
         stage_err(
             InstallStage::Prepare,
@@ -1028,15 +1113,15 @@ async fn write_installed_proof(
     let proof = ActionObject {
         subject: build_obj_id("actor", subject_did.as_str()),
         action: ACTION_TYPE_INSTALLED.to_string(),
-        target: plan.app_doc_object_id.clone(),
+        target: plan.app.object_id.clone(),
         base_on: None,
         details: Some(json!({
             "subject_did": subject_did,
-            "app_did": plan.app_did.to_string(),
-            "doc_type": plan.doc_type,
-            "app_doc_id": plan.app_doc_object_id.to_string(),
+            "app_did": plan.app.did.to_string(),
+            "doc_type": plan.resolution.doc_type,
+            "app_doc_id": plan.app.object_id.to_string(),
             "app_version": prepared.new_spec.app_doc.version,
-            "did_resolution": plan.did_resolution,
+            "did_resolution": plan.resolution,
             "package_meta_ids": plan
                 .selected_packages
                 .iter()

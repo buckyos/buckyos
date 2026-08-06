@@ -599,12 +599,15 @@ async function installPikgToCompletion({ stagingHandle, expectOfflineReady = tru
     )
   }
 
-  const requiredPermissions = (plan.permissions ?? [])
-    .filter((permission) => permission.required)
-    .map((permission) => permission.scope)
+  const requiredPermissions = (plan.permission_options ?? []).filter(
+    (permission) => permission.required,
+  )
   const confirmResult = await callControlPanel('apps.install.confirm', {
     task_id: `${taskId}`,
-    accepted_permissions: requiredPermissions,
+    install_params: {
+      ...(plan.install_params ?? {}),
+      permissions: requiredPermissions,
+    },
   })
   assert.ok(confirmResult.task_id, 'confirm should return task_id')
 
