@@ -98,7 +98,7 @@ pub mod attachment_policy;
 
 // §2.2.2 — local-path materialization at egress. Pairs with
 // attachment_policy: once a path is approved, this resolver registers
-// the file with NamedStore in LocalLink mode and surfaces a
+// the file and its payload in NamedStore and surfaces a
 // content-addressed ObjId for the standard RefItem::DataObj lane.
 pub mod attachment_resolver;
 

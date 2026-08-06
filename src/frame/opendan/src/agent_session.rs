@@ -5962,7 +5962,7 @@ impl AgentSession {
             self.agent_name.clone(),
             self.agent_config.toml.runtime.filesystem_policy,
         );
-        let resolver = crate::attachment_resolver::NamedStoreLocalLinkResolver::new(
+        let resolver = crate::attachment_resolver::NamedStoreAttachmentResolver::new(
             workspace_dir,
             self.agent_name.clone(),
         );
@@ -7142,7 +7142,7 @@ impl AgentSession {
             self.agent_name.clone(),
             self.agent_config.toml.runtime.filesystem_policy,
         );
-        let resolver = crate::attachment_resolver::NamedStoreLocalLinkResolver::new(
+        let resolver = crate::attachment_resolver::NamedStoreAttachmentResolver::new(
             workspace_dir,
             self.agent_name.clone(),
         );
