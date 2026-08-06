@@ -31,6 +31,7 @@ struct AuthLoginResponse {
 
 #[derive(Clone, Debug)]
 pub(super) struct PendingSsoLogin {
+    pub session_token: String,
     pub refresh_token: String,
     pub created_at: u64,
 }
@@ -91,6 +92,7 @@ impl ControlPanelServer {
             self.store_pending_sso_login(
                 nonce,
                 PendingSsoLogin {
+                    session_token: login_result.session_token.clone(),
                     refresh_token: login_result.refresh_token.clone(),
                     created_at: buckyos_get_unix_timestamp(),
                 },
@@ -195,22 +197,17 @@ impl ControlPanelServer {
             "sso_callback nonce: {},redirect_url: {}",
             nonce, redirect_url
         );
-        let refresh_max_age =
-            Self::token_max_age(pending.refresh_token.as_str()).ok_or_else(|| {
-                server_err!(
-                    ServerErrorCode::BadRequest,
-                    "refresh token is missing expiration"
-                )
-            })?;
-        let refresh_cookie = Self::build_refresh_cookie_header(
+        let cookies = Self::build_sso_cookie_headers(
             &req,
-            Some(pending.refresh_token.as_str()),
-            Some(refresh_max_age),
-        );
+            pending.session_token.as_str(),
+            pending.refresh_token.as_str(),
+        )?;
         let mut response = http::Response::builder()
             .status(http::StatusCode::FOUND)
             .header(LOCATION, redirect_url.as_str());
-        response = response.header(SET_COOKIE, refresh_cookie);
+        for cookie in cookies {
+            response = response.header(SET_COOKIE, cookie);
+        }
 
         response
             .body(Self::boxed_http_body(Vec::new()))
@@ -257,26 +254,13 @@ impl ControlPanelServer {
                     .status(http::StatusCode::OK)
                     .header(http::header::CONTENT_TYPE, "application/json")
                     .header(http::header::CACHE_CONTROL, "no-store");
-                for cookie in
-                    Self::build_session_cookie_headers(&req, token_pair.session_token.as_str())?
-                {
+                for cookie in Self::build_sso_cookie_headers(
+                    &req,
+                    token_pair.session_token.as_str(),
+                    token_pair.refresh_token.as_str(),
+                )? {
                     response = response.header(SET_COOKIE, cookie);
                 }
-                let refresh_max_age = Self::token_max_age(token_pair.refresh_token.as_str())
-                    .ok_or_else(|| {
-                        server_err!(
-                            ServerErrorCode::BadRequest,
-                            "refresh token is missing expiration"
-                        )
-                    })?;
-                response = response.header(
-                    SET_COOKIE,
-                    Self::build_refresh_cookie_header(
-                        &req,
-                        Some(token_pair.refresh_token.as_str()),
-                        Some(refresh_max_age),
-                    ),
-                );
 
                 let body = serde_json::to_vec(&json!({
                     "session_token": token_pair.session_token,
@@ -649,6 +633,26 @@ impl ControlPanelServer {
         )])
     }
 
+    fn build_sso_cookie_headers(
+        req: &http::Request<BoxBody<Bytes, ServerError>>,
+        session_token: &str,
+        refresh_token: &str,
+    ) -> ServerResult<Vec<String>> {
+        let mut headers = Self::build_session_cookie_headers(req, session_token)?;
+        let refresh_max_age = Self::token_max_age(refresh_token).ok_or_else(|| {
+            server_err!(
+                ServerErrorCode::BadRequest,
+                "refresh token is missing expiration"
+            )
+        })?;
+        headers.push(Self::build_refresh_cookie_header(
+            req,
+            Some(refresh_token),
+            Some(refresh_max_age),
+        ));
+        Ok(headers)
+    }
+
     fn build_clear_auth_cookie_headers(
         req: &http::Request<BoxBody<Bytes, ServerError>>,
     ) -> Vec<String> {
@@ -899,6 +903,7 @@ impl ControlPanelServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
     fn request(cookie: Option<&str>, secure: bool) -> http::Request<BoxBody<Bytes, ServerError>> {
         let mut builder = http::Request::builder()
@@ -913,6 +918,12 @@ mod tests {
         builder
             .body(ControlPanelServer::boxed_http_body(Vec::new()))
             .unwrap()
+    }
+
+    fn token_with_exp(exp: u64) -> String {
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(json!({ "exp": exp }).to_string());
+        format!("{}.{}.signature", header, payload)
     }
 
     #[test]
@@ -945,6 +956,30 @@ mod tests {
             ControlPanelServer::extract_http_cookie(&req, GATEWAY_SSO_REFRESH_COOKIE).as_deref(),
             Some("current-app-refresh")
         );
+    }
+
+    #[test]
+    fn sso_cookie_headers_include_gateway_session_and_isolated_refresh() {
+        let req = request(None, true);
+        let exp = buckyos_get_unix_timestamp() + 300;
+        let session_token = token_with_exp(exp);
+        let refresh_token = token_with_exp(exp);
+        let headers = ControlPanelServer::build_sso_cookie_headers(
+            &req,
+            session_token.as_str(),
+            refresh_token.as_str(),
+        )
+        .unwrap();
+
+        assert_eq!(headers.len(), 2);
+        assert!(
+            headers[0].starts_with(format!("buckyos_session_token={};", session_token).as_str())
+        );
+        assert!(
+            headers[1].starts_with(format!("buckyos_refresh_token={};", refresh_token).as_str())
+        );
+        assert!(headers[1].contains("HttpOnly"));
+        assert!(headers.iter().all(|header| !header.contains("Domain=")));
     }
 
     #[test]

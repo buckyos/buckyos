@@ -186,7 +186,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 
 * `auth.login`：取 `username` + `password`（+可选 `appid` / `redirect_url` / `login_nonce`），经 `verify_hub_client.login_by_password(...)` 校验，签发 token pair；若带 `redirect_url` 走 SSO（生成 pending nonce，经目标 App origin 的 `/sso_callback` 回跳并写 cookie）。
 * `auth.refresh` / `auth.verify` / `auth.logout` / `auth.issue_sso_token`：刷新 / 校验 / 注销 / 签发 SSO token。
-* HTTP 侧：`/sso_callback` 将 refresh token 写入 host-only、`HttpOnly` 的 `buckyos_refresh_token`；`/sso_refresh` 只读取并轮换该 cookie，返回 session token，并写入独立的 host-only `buckyos_session_token`；`/sso_logout` 吊销 refresh token 并清理两种 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散到父域或其它 App 子域。
+* HTTP 侧：`/sso_callback` 同时写入 host-only 的短期 `buckyos_session_token`（供 gateway 在 App 页面加载前鉴权）和 host-only、`HttpOnly` 的 `buckyos_refresh_token`；`/sso_refresh` 只读取并轮换 refresh cookie，同时更新 session cookie；`/sso_logout` 吊销 refresh token 并清理两种 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散到父域或其它 App 子域。
 * **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），从 `sub` 解出 username，加载 `users/{username}/settings` 校验状态为 `Active`，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
 
 **(b) 桌面 UI Session 状态层**（`ui_session_mgr`）—— 持久化每个用户的桌面会话（外观/窗口布局/图标布局/小组件布局）：

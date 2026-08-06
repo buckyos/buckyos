@@ -64,7 +64,7 @@ https://sys.<zoneHostname>/login?client_id=<appId>&redirect_url=<encoded redirec
 用户在登录页完成认证后，control panel 走 `/sso_callback?nonce=...&redirect_url=...`：
 
 - 校验 `redirect_url` **必须是本 Zone 内的目标**（host 等于 zone host，或形如 `<app>.<zonehost>`），并据此解析出真正的 appid——防止把 token 发给 Zone 外的站点。
-- 回调由目标 App origin 承载，把**长期 refresh token** 写入 host-only、`HttpOnly` Cookie `buckyos_refresh_token`，然后 302 回 `redirect_url`。cookie 不设置 `Domain`，因此不会与父域或其它 App 子域共享。
+- 回调由目标 App origin 承载，同时写入两枚 host-only Cookie：短期 `buckyos_session_token` 供 gateway 在 App 页面加载前完成鉴权，长期 `buckyos_refresh_token` 使用 `HttpOnly`、只供刷新。随后 302 回 `redirect_url`。两枚 cookie 都不设置 `Domain`，因此不会与父域或其它 App 子域共享。
 
 ### 3. 用 refresh cookie 换 session_token
 
