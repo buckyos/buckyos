@@ -626,7 +626,7 @@ mod tests {
                 "AICC image CLI prompt must document `{required}`"
             );
         }
-        for name in ["plan", "do"] {
+        for name in ["chat_route", "plan", "do"] {
             let path = root.join(format!("{name}.toml"));
             let cfg = BehaviorCfg::load_from_file(&path).unwrap();
             assert!(
@@ -636,6 +636,10 @@ mod tests {
                 "{} must include the AICC image CLI prompt",
                 path.display()
             );
+        }
+        for name in ["plan", "do"] {
+            let path = root.join(format!("{name}.toml"));
+            let cfg = BehaviorCfg::load_from_file(&path).unwrap();
             assert!(
                 cfg.prompt
                     .on_behavior_switch
