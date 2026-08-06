@@ -20,6 +20,21 @@ import { Eye, EyeOff, Lock, ExternalLink } from 'lucide-react'
 
 const APP_ID = 'control-panel'
 
+const resolveZoneDisplayName = (): string => {
+  let zoneHost: string | null = null
+  try {
+    zoneHost = buckyos.getZoneHostName()?.trim() ?? null
+  } catch {
+    zoneHost = null
+  }
+  if (zoneHost) return zoneHost
+
+  const currentHost = window.location.hostname.toLowerCase()
+  return currentHost.startsWith('sys.')
+    ? currentHost.slice(4)
+    : currentHost || 'BuckyOS'
+}
+
 type LoginError =
   | { kind: 'empty_fields' }
   | { kind: 'invalid_redirect' }
@@ -121,6 +136,7 @@ const LoginPage = () => {
     () => searchParams.get('appid') ?? APP_ID,
     [searchParams],
   )
+  const zoneDisplayName = useMemo(resolveZoneDisplayName, [])
 
   const sourceAppId = useMemo(() => {
     if (!redirectUrl) return null
@@ -284,7 +300,7 @@ const LoginPage = () => {
               variant="h5"
               sx={{ fontWeight: 700, fontFamily: '"Space Grotesk", sans-serif' }}
             >
-              Sign in to BuckyOS
+              Sign in to {zoneDisplayName}
             </Typography>
             <Typography
               variant="body2"
@@ -442,7 +458,19 @@ const LoginPage = () => {
               lineHeight: 1.6,
             }}
           >
-            By signing in, you agree to the BuckyOS terms of service.
+            Powered by{' '}
+            <Link
+              href="https://github.com/buckyos/buckyos/"
+              target="_blank"
+              rel="noreferrer noopener"
+              color="inherit"
+              underline="hover"
+              aria-label="BuckyOS on GitHub (opens in a new tab)"
+              sx={{ fontWeight: 600 }}
+            >
+              BuckyOS
+            </Link>
+            , an open-source AI operating system.
           </Typography>
         </Paper>
       </Container>
