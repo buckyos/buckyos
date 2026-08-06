@@ -37,7 +37,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, Duration};
 
 use crate::agent_bash::{build_session_tools, SessionBinLayout, SessionToolsBuild};
-use crate::agent_config::AgentConfig;
+use crate::agent_config::{AgentConfig, SessionIdStrategy};
 use crate::agent_session::{AgentSession, AgentSessionBuild, SessionReply};
 use crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE;
 use crate::ai_runtime::AgentRuntime;
@@ -130,8 +130,8 @@ pub enum Inbound {
         /// pending queue and as the ack handle back to msg-center. Locally
         /// injected items use a synthetic `local-...` id.
         record_id: String,
-        /// Originating tunnel / DID host name. Drives the
-        /// `tunnel_to_ui_session` lookup when `session_id` is `None`.
+        /// Originating tunnel / DID host name. Drives the active
+        /// `tunnel_to_ui_session` binding for per-peer UI sessions.
         from: String,
         /// Full DID of the sender, used as the reply target when the
         /// session emits an assistant message. `None` for locally-injected
@@ -148,7 +148,8 @@ pub enum Inbound {
         /// (`MsgObject.to`), which carries its own routing, so this is no longer
         /// forwarded to `post_send`.
         tunnel_did: Option<String>,
-        /// Optional explicit target. `None` ⇒ resolve via `from`.
+        /// Optional upstream target. Used when no active per-peer UI tunnel
+        /// binding exists; `/new`, `/switch`, and `/clean` bindings take priority.
         session_id: Option<String>,
         /// Group DID for group messages. `None` for one-to-one chat.
         group_id: Option<String>,
@@ -1243,6 +1244,29 @@ impl AIAgent {
             .compute(cfg.session_id_strategy, &input)
     }
 
+    async fn resolve_msg_session_id(
+        self: &Arc<Self>,
+        from: &str,
+        use_tunnel_binding: bool,
+        explicit_session_id: Option<String>,
+        evaluated_session_id: Option<String>,
+    ) -> Result<String> {
+        if use_tunnel_binding {
+            if let Some(session_id) = self.tunnel_to_ui_session.lock().await.get(from).cloned() {
+                return Ok(session_id);
+            }
+        }
+
+        if let Some(session_id) = explicit_session_id.or(evaluated_session_id) {
+            if use_tunnel_binding {
+                self.bind_tunnel_to_session(from, &session_id).await;
+            }
+            return Ok(session_id);
+        }
+
+        self.clone().resolve_ui_session(from).await
+    }
+
     async fn dispatch_inbound(self: Arc<Self>, item: Inbound) -> Result<()> {
         match item {
             Inbound::Msg {
@@ -1267,9 +1291,11 @@ impl AIAgent {
                     .session_class(&class)
                     .map(|c| c.kind)
                     .unwrap_or(SessionKind::Ui);
-                let resolved_id = if let Some(sid) = session_id {
-                    sid
-                } else {
+                let use_tunnel_binding = self.config.session_class(&class).is_some_and(|cfg| {
+                    matches!(kind, SessionKind::Ui)
+                        && matches!(cfg.session_id_strategy, SessionIdStrategy::PerPeer)
+                });
+                let evaluated_session_id = if session_id.is_none() {
                     // Build a tiny shim Inbound so the evaluator can read
                     // from/from_did without re-borrowing the moved fields.
                     let probe = Inbound::Msg {
@@ -1283,22 +1309,18 @@ impl AIAgent {
                         text: String::new(),
                         ai_message: ai_message.clone(),
                     };
-                    match self.evaluate_session_id(&class, &probe) {
-                        Some(id) => {
-                            // For UI-style classes we keep the tunnel binding
-                            // so /switch and follow-up messages route to the
-                            // same session.
-                            if matches!(kind, SessionKind::Ui) {
-                                self.tunnel_to_ui_session
-                                    .lock()
-                                    .await
-                                    .insert(from.clone(), id.clone());
-                            }
-                            id
-                        }
-                        None => self.clone().resolve_ui_session(&from).await?,
-                    }
+                    self.evaluate_session_id(&class, &probe)
+                } else {
+                    None
                 };
+                let resolved_id = self
+                    .resolve_msg_session_id(
+                        &from,
+                        use_tunnel_binding,
+                        session_id,
+                        evaluated_session_id,
+                    )
+                    .await?;
                 if !self.session_accepts_pending(&resolved_id).await? {
                     warn!(
                         "opendan.agent[{}]: reject msg record_id={} for ended session {}",
@@ -3608,6 +3630,68 @@ runner_id = "agent"
         assert!(msg.contains("followup_routing.target_worksession_id"));
         assert!(msg.contains("title `Old task`"));
         assert!(msg.contains("workspace `old-workspace`"));
+    }
+
+    #[tokio::test]
+    async fn explicit_ui_session_initializes_missing_tunnel_binding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+
+        let resolved = agent
+            .resolve_msg_session_id("did:dev:alice", true, Some("tg-explicit".to_string()), None)
+            .await
+            .expect("resolve explicit session");
+
+        assert_eq!(resolved, "tg-explicit");
+        assert_eq!(
+            agent
+                .resolve_session_for_command("did:dev:alice")
+                .await
+                .expect("tunnel binding"),
+            "tg-explicit"
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_command_bindings_override_stale_explicit_session_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let from = "did:dev:alice";
+
+        agent.bind_tunnel_to_session(from, "ui-new").await;
+        assert_eq!(
+            agent
+                .resolve_msg_session_id(from, true, Some("tg-stale".to_string()), None)
+                .await
+                .expect("route after new"),
+            "ui-new"
+        );
+        assert_eq!(
+            agent
+                .resolve_msg_session_id(from, true, None, Some("ui-derived".to_string()))
+                .await
+                .expect("route derived session after new"),
+            "ui-new"
+        );
+
+        agent.bind_tunnel_to_session(from, "ui-switched").await;
+        assert_eq!(
+            agent
+                .resolve_msg_session_id(from, true, Some("tg-stale".to_string()), None)
+                .await
+                .expect("route after switch"),
+            "ui-switched"
+        );
+
+        agent.unbind_tunnel_if_session(from, "ui-switched").await;
+        agent.bind_tunnel_to_session(from, "ui-clean").await;
+        assert_eq!(
+            agent
+                .resolve_msg_session_id(from, true, Some("tg-stale".to_string()), None)
+                .await
+                .expect("route after clean"),
+            "ui-clean"
+        );
     }
 
     #[tokio::test]
