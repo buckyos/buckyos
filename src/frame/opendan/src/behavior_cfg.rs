@@ -614,16 +614,34 @@ mod tests {
     fn jarvis_work_behaviors_define_runtime_prompt_hooks() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../rootfs/bin/buckyos_jarvis/behaviors");
-        let image_cli_prompt = std::fs::read_to_string(root.join("aicc_image_cli.inc")).unwrap();
+        let media_cli_prompt = std::fs::read_to_string(root.join("aicc_image_cli.inc")).unwrap();
         for required in [
-            "edit_image",
             "gen_image",
+            "edit_image",
+            "inpaint_image",
+            "upscale_image",
+            "remove_bg",
+            "ocr_image",
+            "caption_image",
+            "detect_image",
+            "segment_image",
+            "text_to_speech",
+            "speech_to_text",
+            "gen_music",
+            "enhance_audio",
+            "gen_video",
+            "img2video",
+            "video2video",
+            "extend_video",
+            "upscale_video",
+            "ai_provider",
+            "ai_quota",
             "named_object:<obj_id>",
             "<attachment path=",
         ] {
             assert!(
-                image_cli_prompt.contains(required),
-                "AICC image CLI prompt must document `{required}`"
+                media_cli_prompt.contains(required),
+                "AICC media CLI prompt must document `{required}`"
             );
         }
         for name in ["chat_route", "plan", "do"] {
