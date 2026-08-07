@@ -413,6 +413,9 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_HOST_GATEWAY=<value>".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_KEVENT_DAEMON_ADDR=<value>".to_string()));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Docker);
@@ -529,6 +532,9 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_HOST_GATEWAY=<value>".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"BUCKYOS_KEVENT_DAEMON_ADDR=<value>".to_string()));
     assert!(start.commands[1].args.contains(&"14060:14060".to_string()));
     assert!(start.commands[1]
         .args

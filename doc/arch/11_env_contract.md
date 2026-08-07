@@ -63,6 +63,7 @@ node-daemon 的 `AppLoader` 是 app/agent worker 环境变量的权威注入者�
 | `BUCKYOS_SAFE_MODE` | node-daemon/aios 默认值 | aios entrypoint | `1` 时重置 package 工作副本和 sync metadata；默认 `0`。 |
 | `BUCKYOS_SERVICE_PORT` | node-daemon | agent/service | app/agent 暴露服务端口。agent 未注入时 aios 入口默认 `4060`。 |
 | `BUCKYOS_HOST_GATEWAY` | node-daemon | `buckyos-api` runtime | 容器访问 host 本地服务的 host 名。runtime 会把 app/frame service 的本地 system service URL 解析到该 host。 |
+| `BUCKYOS_KEVENT_DAEMON_ADDR` | node-daemon | `buckyos-api` runtime（App/Agent Worker，包括 OpenDAN） | KEvent daemon bridge endpoint，格式为 `host:port`。node-daemon 默认注入 `host.docker.internal:3183`；未设置时 runtime 回退到 `BUCKYOS_HOST_GATEWAY` 指定的 host 和端口 `3183`。 |
 
 同时注入的内部变量：
 

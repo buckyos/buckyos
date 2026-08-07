@@ -335,6 +335,8 @@ let kevent_client = BuckyOSRuntime::get_kevent_client().await?;
 
 runtime 按 `runtime_type` 决定通道（容器类型走 bridge，其余走 SHM），并复用同一个进程级单例——每个 client 会带一条 ShmDispatch 线程或一组 TCP 连接，按调用次数新建会按次泄漏线程/连接。
 
+容器由 node-daemon 显式注入 `BUCKYOS_KEVENT_DAEMON_ADDR=host.docker.internal:3183`。runtime 优先使用该完整 endpoint；未注入时才使用 `BUCKYOS_HOST_GATEWAY`（默认 `host.docker.internal`）和 native port `3183` 组合兜底。业务进程不得自行硬编码 Docker 网桥地址。
+
 ```
 EventClient (Full Mode) {
     // 进程内

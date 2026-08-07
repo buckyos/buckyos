@@ -3,7 +3,8 @@ use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
     get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
     AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstanceState,
-    ServiceSpecConfig, SubPkgDesc, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    ServiceSpecConfig, SubPkgDesc, BUCKYOS_KEVENT_DAEMON_ADDR_ENV, KEVENT_SERVICE_NATIVE_PORT,
+    VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -1100,6 +1101,13 @@ impl AppLoader {
         env_vars.insert(
             "BUCKYOS_HOST_GATEWAY".to_string(),
             AGENT_RUNTIME_HOST_GATEWAY.to_string(),
+        );
+        env_vars.insert(
+            BUCKYOS_KEVENT_DAEMON_ADDR_ENV.to_string(),
+            format!(
+                "{}:{}",
+                AGENT_RUNTIME_HOST_GATEWAY, KEVENT_SERVICE_NATIVE_PORT
+            ),
         );
 
         if let Some(media_info) = self.package_media_info(role).await? {
@@ -2381,6 +2389,7 @@ impl AppLoader {
             "BUCKYOS_ZONE_CONFIG".to_string(),
             "BUCKYOS_THIS_DEVICE".to_string(),
             "BUCKYOS_HOST_GATEWAY".to_string(),
+            BUCKYOS_KEVENT_DAEMON_ADDR_ENV.to_string(),
         ];
         if self.media_pkg_id(role).is_some() {
             keys.push("app_media_info".to_string());
