@@ -1,3 +1,4 @@
+mod dispatcher;
 mod download_executor;
 mod server;
 mod task;

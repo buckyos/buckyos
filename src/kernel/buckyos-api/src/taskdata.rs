@@ -986,6 +986,14 @@ pub struct AgentDelegateTaskRequest {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Set when the task was created by accepting a Task Dispatch Center
+    /// handoff: the immutable cross-owner link back to the DispatchRecord.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<String>,
+    /// The logical agent this delegate task targets. Replaces the legacy
+    /// `progress.execution.runner` as the target-identity carrier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -997,11 +1005,40 @@ pub struct AgentDelegateTaskRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_refs: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_hints: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reason_messages: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<ScheduleTriggerContext>,
+}
+
+/// Operation string for the first Dispatch Target pilot.
+pub const AGENT_DELEGATE_OPERATION_V1: &str = "agent.delegate/v1";
+
+/// Wire input for the `agent.delegate/v1` dispatch operation. Deliberately
+/// the *widest* dispatchable shape (the core intent may be natural
+/// language); most operations should register closed, schema-checked
+/// inputs instead. Identity (requested-by / on-behalf-of / workflow_ref)
+/// never rides in here — it comes from the dispatcher's auth envelope.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentDelegateDispatchInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub purpose: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_refs: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_hints: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraints: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1681,12 +1718,16 @@ fn parse_agent_delegate_legacy(data: Value) -> Result<AgentDelegateTaskData, Tas
         request: AgentDelegateTaskRequest {
             version: legacy.agent_delegate.version,
             source: legacy.agent_delegate.source,
+            dispatch_id: None,
+            target_agent_id: None,
             title: legacy.agent_delegate.title,
             purpose: legacy.agent_delegate.purpose,
             requester_agent_id: legacy.agent_delegate.requester_agent_id,
             owner_session_id: legacy.agent_delegate.owner_session_id,
             input: legacy.agent_delegate.input,
+            context_refs: Vec::new(),
             workspace_hints: legacy.agent_delegate.workspace_hints,
+            constraints: None,
             reason_messages: legacy.agent_delegate.reason_messages,
             trigger: legacy.agent_delegate.trigger,
         },

@@ -7,9 +7,8 @@ use buckyos_api::{
     AiMessage, AiRole, CreateTaskOptions, HumanInputTaskData, HumanInputTaskRequest, Task,
     TaskFilter, TaskStatus, TypedTaskData,
 };
-use log::{error, info, warn};
+use log::{error, warn};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 
 use crate::agent::{AIAgent, CreateWorkSessionParams};
 use crate::session_model::{InterruptMode, PendingInput, SessionKind, SessionMeta, SessionStatus};
@@ -40,6 +39,12 @@ impl AIAgent {
         }
     }
 
+    /// Owner-task recovery loop (doc `Agent Task Executor.md` §8.2). This is
+    /// NOT a work inbox: it only sweeps tasks this OpenDAN owns
+    /// (`app_id = ours`) and never subscribes global TaskMgr events to
+    /// discover foreign work. External delegation arrives exclusively via
+    /// the Dispatch Target Adapter (`dispatch_adapter.rs`), which wakes the
+    /// executor directly after accept.
     pub fn spawn_task_inbox(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
         if !self.config.toml.runtime.task_executor.enabled {
             return None;
@@ -70,47 +75,11 @@ impl AIAgent {
             .task_executor
             .poll_interval_ms
             .max(1_000);
-        let (wake_tx, mut wake_rx) = mpsc::channel::<()>(16);
 
-        if let Some(kevent) = self.runtime.kevent_client.clone() {
-            let event_ids = task_executor_event_ids(&runner);
-            match kevent.create_event_reader(event_ids.clone()).await {
-                Ok(reader) => {
-                    let wake_tx = wake_tx.clone();
-                    let shutdown = self.pump_shutdown.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            tokio::select! {
-                                _ = shutdown.notified() => break,
-                                event = reader.pull_event(Some(poll_ms)) => {
-                                    match event {
-                                        Ok(Some(_)) => {
-                                            let _ = wake_tx.send(()).await;
-                                        }
-                                        Ok(None) => {}
-                                        Err(err) => {
-                                            warn!("opendan.task_inbox: task event reader failed: {err}");
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    info!(
-                        "opendan.task_inbox[{}]: subscribed {:?}",
-                        self.agent_name, event_ids
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        "opendan.task_inbox[{}]: subscribe task events failed: {err}",
-                        self.agent_name
-                    );
-                }
-            }
-        }
-
+        // Startup scan once, then a periodic owner-only sweep as the
+        // lost-wakeup backstop. Accepted dispatches and internal session
+        // paths wake the executor directly, so no event subscription is
+        // needed for discovery.
         self.clone().sweep_agent_delegate_tasks(&runner).await;
         let mut interval = tokio::time::interval(Duration::from_millis(poll_ms));
         loop {
@@ -119,21 +88,28 @@ impl AIAgent {
                 _ = interval.tick() => {
                     self.clone().sweep_agent_delegate_tasks(&runner).await;
                 }
-                wake = wake_rx.recv() => {
-                    if wake.is_none() {
-                        break;
-                    }
-                    self.clone().sweep_agent_delegate_tasks(&runner).await;
-                }
             }
         }
     }
 
-    /// Sweep this agent's own `agent.delegate` tasks. TaskMgr no longer has a
-    /// runner column: the executing agent is part of the task payload
-    /// (`progress.execution.runner`), so we list by task_type and filter the
-    /// target agent locally.
+    /// Entry point for the Dispatch Target Adapter: run the executor path
+    /// for a task this OpenDAN just created by accepting a dispatch.
+    pub async fn process_accepted_dispatch_task(self: Arc<Self>, task_id: i64) -> Result<()> {
+        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
+            return Err(anyhow!("task manager unavailable"));
+        };
+        let runner = self.task_executor_runner_id()?;
+        let task = task_mgr.get_task(task_id).await?;
+        self.process_agent_delegate_task(task, runner.as_str())
+            .await
+    }
+
+    /// Sweep this agent's OWN `agent.delegate` tasks (owner-only recovery).
+    /// Multiple agents share one app id, so ownership within the app is
+    /// decided per task by `task_targets_agent`.
     async fn sweep_agent_delegate_tasks(self: Arc<Self>, runner: &str) {
+        let own_app_id = self.own_task_app_id();
+        let target_agent_id = self.dispatch_target_id();
         for status in [
             TaskStatus::Pending,
             TaskStatus::WaitingForApproval,
@@ -145,6 +121,7 @@ impl AIAgent {
                 return;
             };
             let filter = TaskFilter {
+                app_id: Some(own_app_id.clone()),
                 task_type: Some(TASK_TYPE_AGENT_DELEGATE.to_string()),
                 status: Some(status),
                 ..Default::default()
@@ -160,7 +137,7 @@ impl AIAgent {
                 }
             };
             for task in tasks {
-                if !task_targets_runner(&task, runner) {
+                if !task_targets_agent(&task, runner, target_agent_id.as_str()) {
                     continue;
                 }
                 if let Err(err) = self.clone().process_agent_delegate_task(task, runner).await {
@@ -485,7 +462,7 @@ impl AIAgent {
         status: &'static str,
         mode: InterruptMode,
     ) -> Result<()> {
-        if !task_targets_runner(&task, runner) {
+        if !task_targets_agent(&task, runner, self.dispatch_target_id().as_str()) {
             return Ok(());
         }
         let delegate_data = agent_delegate_task_data(&task)?;
@@ -779,16 +756,26 @@ fn delegate_execution_runner(data: &AgentDelegateTaskData) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Ownership check for delegate tasks. The executing agent lives in the task
-/// payload (`progress.execution.runner`; schedule templates land there via
-/// the legacy `agent_delegate.execution` mapping). A task without a target
-/// agent belongs to no executor — same contract as the removed top-level
-/// runner column, where every producer set the field explicitly.
-fn task_targets_runner(task: &Task, runner: &str) -> bool {
-    agent_delegate_task_data(task)
-        .ok()
-        .as_ref()
-        .and_then(delegate_execution_runner)
+/// Per-agent ownership check within OpenDAN's own tasks (the sweep is
+/// already owner-only via `app_id`). The canonical target identity is
+/// `request.target_agent_id` (stamped by the Dispatch Target Adapter and new
+/// internal producers); `progress.execution.runner` remains accepted for
+/// tasks created by older internal paths / schedule templates. A task with
+/// neither belongs to no executor.
+fn task_targets_agent(task: &Task, runner: &str, target_agent_id: &str) -> bool {
+    let Ok(data) = agent_delegate_task_data(task) else {
+        return false;
+    };
+    if let Some(target) = data
+        .request
+        .target_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return target == target_agent_id;
+    }
+    delegate_execution_runner(&data)
         .map(|target| target == runner)
         .unwrap_or(false)
 }
@@ -961,13 +948,6 @@ fn find_bound_worksession(
     None
 }
 
-/// Wake-up topics for the task inbox. The runner-specific task_ready inbox is
-/// gone (beta2.2); task-changed events under `/task_mgr/**` remain the
-/// acceleration signal, with the periodic sweep as the authoritative path.
-fn task_executor_event_ids(_runner: &str) -> Vec<String> {
-    vec!["/task_mgr/**".to_string()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1030,32 +1010,37 @@ mod tests {
     }
 
     #[test]
-    fn task_executor_subscribes_task_changes_only() {
-        assert_eq!(
-            task_executor_event_ids("agent"),
-            vec!["/task_mgr/**".to_string()]
-        );
-    }
+    fn delegate_ownership_prefers_target_agent_id_with_runner_fallback() {
+        // Canonical: request.target_agent_id (dispatch adapter + new
+        // internal producers).
+        let dispatched = task(json!({
+            "request": {
+                "version": 1,
+                "purpose": "Do the task",
+                "dispatch_id": "dsp-1",
+                "target_agent_id": "did:agent:jarvis"
+            }
+        }));
+        assert!(task_targets_agent(&dispatched, "agent", "did:agent:jarvis"));
+        assert!(!task_targets_agent(&dispatched, "agent", "did:agent:other"));
 
-    #[test]
-    fn delegate_ownership_comes_from_execution_runner() {
-        // Target agent rides in the payload; a task without one belongs to
-        // no executor (same contract as the removed runner column).
-        let mine = task(json!({
+        // Legacy internal tasks still ride on progress.execution.runner.
+        let legacy = task(json!({
             "agent_delegate": {
                 "purpose": "Do the task",
                 "execution": {"runner": "agent"}
             }
         }));
-        assert!(task_targets_runner(&mine, "agent"));
-        assert!(!task_targets_runner(&mine, "other-agent"));
+        assert!(task_targets_agent(&legacy, "agent", "did:agent:jarvis"));
+        assert!(!task_targets_agent(&legacy, "other-agent", "did:agent:jarvis"));
 
+        // Neither identity: belongs to no executor.
         let unassigned = task(json!({
             "agent_delegate": {
                 "purpose": "Do the task"
             }
         }));
-        assert!(!task_targets_runner(&unassigned, "agent"));
+        assert!(!task_targets_agent(&unassigned, "agent", "did:agent:jarvis"));
     }
 
     #[test]

@@ -1,6 +1,11 @@
 # OpenDAN Agent Task Executor 设计（Dispatch Target 模式）
 
-- 状态：Draft（按 beta 2.2 TaskMgr 新边界重写）
+- 状态：Draft（按 beta 2.2 TaskMgr 新边界重写）；因 Dispatcher 提前实施，
+  §12.2「下一版本」的接收侧已于 2026-08-07 落地（`src/frame/opendan/src/dispatch_adapter.rs`：
+  Target 注册 / attach / claim / accept / 持久 `dispatch_id -> task_id` 幂等绑定；
+  `agent_task_executor.rs` 伪 inbox 删除，owner-only recovery 改按
+  `app_id + request.target_agent_id` 过滤；`--worksession-task-test` 直投入口删除）。
+  OpenDAN 侧 pause/resume/cancel 控制接口沿用既有能力，未新增。
 - 目标读者：OpenDAN Runtime / Agent Session / Workflow / Dispatcher / TaskMgr 集成开发者
 - 相关文档：
   - `doc/task_mgr/task_mgr.md`

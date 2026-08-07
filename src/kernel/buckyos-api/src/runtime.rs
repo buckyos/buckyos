@@ -36,6 +36,7 @@ use crate::opendan_client::*;
 use crate::repo_client::*;
 use crate::scheduler_client::*;
 use crate::system_config::*;
+use crate::task_dispatcher::{TaskDispatcherClient, TASK_DISPATCHER_SERVICE_NAME};
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::workflow_service::{WorkflowServiceClient, WORKFLOW_SERVICE_NAME};
@@ -2012,6 +2013,24 @@ impl BuckyOSRuntime {
         let krpc_client = self.get_zone_service_krpc_client("task-manager").await?;
         let client = TaskManagerClient::new(krpc_client);
         Ok(client)
+    }
+
+    /// Task Dispatch Center client. The dispatcher shares the task-manager
+    /// process/port (one deployment unit) but is a separate RPC surface, so
+    /// the URL is resolved through the task-manager service entry and only
+    /// the kapi path segment differs.
+    pub async fn get_task_dispatcher_client(&self) -> Result<TaskDispatcherClient> {
+        let url = self
+            .get_zone_service_url(TASK_MANAGER_SERVICE_NAME, self.force_https)
+            .await?;
+        let url = url.replace(
+            &format!("/kapi/{}", TASK_MANAGER_SERVICE_NAME),
+            &format!("/kapi/{}", TASK_DISPATCHER_SERVICE_NAME),
+        );
+        let session_token = self.session_token.read().await;
+        let krpc_client =
+            kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), DEFAULT_KRPC_TIMEOUT_SECS);
+        Ok(TaskDispatcherClient::new(krpc_client))
     }
 
     /// The process-wide KEvent client, bound to this runtime's `app_id`.

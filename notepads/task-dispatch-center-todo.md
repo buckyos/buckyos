@@ -4,6 +4,22 @@
 > 并因 OpenDAN 外部委托依赖决定提前实施（不再绑定 Workflow 版本）。本文 §10 的待决策项
 > 已全部在该文档 §12 决策记录中定案；§2～6 的设计草案以该文档为准。本文其余内容保留为
 > beta2.2 TaskMgr 边界收敛的执行记录。**
+>
+> **2026-08-07 实施记录：M1+M2 已落地。**
+> - M1：`buckyos-api/src/task_dispatcher.rs`（协议 + client + run_target_instance SDK）、
+>   `task_manager/src/dispatcher/`（独立 RDB `task-dispatcher-main`、指派式 evaluate_target、
+>   offer lease/expiry timer、启动恢复、kevent 双通道）、`/kapi/task-dispatcher` 挂载
+>   （task-manager 进程 3380 第二 path；boot_gateway.yaml 加了 task-dispatcher→task-manager
+>   路由别名）、scheduler `add_task_mgr` 追加第二个 rdb instance。23 个单测覆盖
+>   解析/黏着/幂等/epoch/Uncertain/重启恢复/授权矩阵。
+> - M2：OpenDAN `dispatch_adapter.rs`（register + attach/claim/accept 循环 + 文件化
+>   `dispatch_id -> task_id` 幂等绑定 + create-then-crash 自愈扫描）；
+>   `agent_task_executor` 伪 inbox 删除（owner-only sweep：app_id 过滤 +
+>   `request.target_agent_id` 归属，全局 `/task_mgr/**` 订阅删除）；
+>   `AgentDelegateTaskRequest` 增加 dispatch_id/target_agent_id/context_refs/constraints；
+>   `--worksession-task-test` 直投入口删除。
+> - 遗留：Control Panel 默认路由配置面 / WebUI Task Center dispatch 观察面 / websdk 封装 /
+>   DV 环境故障注入（M3 的进程级验收）未做。
 
 > 背景：TaskMgr 原本是长任务、可恢复任务的统一基础设施，但当前 `runner`、
 > `task_ready`、Pending 扫描等能力已经让它逐渐承担生产者消费者队列和跨服务调度职责。
@@ -84,11 +100,11 @@ Workflow
 0.2 的默认模式，不经过 Dispatcher。Dispatcher 不是 Service API gateway，也不是所有
 TaskMgr 用户的新入口。
 
-- [ ] Dispatch Center 放入 `task-manager` 的进程/部署单元，降低依赖和运维复杂度。
-- [ ] TaskMgr 不依赖 Workflow；Workflow 只作为 Dispatch Center 的调用者。
-- [ ] “同进程部署”不等于“同一个抽象”：Task Store 与 Dispatch Store 必须保持独立。
-- [ ] TaskMgr 权限不自动包含 Dispatch Center 权限，两者使用独立 RPC 路径和授权策略。
-- [ ] Dispatch Center 不执行业务，也不成为目标 Task 执行状态的第二真相源。
+- [x] Dispatch Center 放入 `task-manager` 的进程/部署单元，降低依赖和运维复杂度。（同进程 3380 第二 path，dispatcher 启动失败不影响 TaskMgr）
+- [x] TaskMgr 不依赖 Workflow；Workflow 只作为 Dispatch Center 的调用者。
+- [x] “同进程部署”不等于“同一个抽象”：Task Store 与 Dispatch Store 必须保持独立。（独立 RDB instance `task-dispatcher-main`，无共享表/schema/join）
+- [x] TaskMgr 权限不自动包含 Dispatch Center 权限，两者使用独立 RPC 路径和授权策略。（独立 path 上独立 fail-closed 验签 + owner/route/admin 分面授权）
+- [x] Dispatch Center 不执行业务，也不成为目标 Task 执行状态的第二真相源。（Accepted 终态，只保留 target_task_id link）
 
 建议部署关系：
 
@@ -351,9 +367,11 @@ Workflow-owned step/mirror task
 - [x] Control Panel 移除通用 runner inbox；已有业务 RPC 在鉴权后创建并执行 Control Panel 自己的 Task。
   （task_ready kevent 订阅删除；list_active 改按 task_type=app.install/app.update；MsgQueue+启动扫描+sweep 保留）
 - [x] Node Executor 移除跨 owner 的 TaskMgr runner 扫描。（node_executor.rs 为从未接入主流程且无生产者的死代码，整体删除；未来节点执行走 Node Daemon 显式接口再立项）
-- [ ] OpenDAN Agent Task Executor 移除通用 runner inbox；此前“按 `task_type=agent.delegate`
+- [x] OpenDAN Agent Task Executor 移除通用 runner inbox；此前“按 `task_type=agent.delegate`
   扫描并以 data 内 `progress.execution.runner` 判定归属”的实现仍是在 TaskMgr 上模拟 Dispatch，
   应在 beta 2.2 删除或禁用。当前版本只恢复 OpenDAN 自己创建的 Task，外部委托留待下一版本 Dispatcher。
+  （已删除：sweep 加 app_id owner 过滤 + `request.target_agent_id` 归属，全局 `/task_mgr/**`
+  订阅删除；外部委托已直接接入提前实施的 Dispatcher，见文首实施记录）
 - [x] Workflow 相关现存调用使用本地 adapter 或目标 Service 的业务接口；本版本不为它们引入 Dispatcher 依赖。
   （send_message executor 按自身 task_type 扫描 + schedule owner 一致性校验；schedule 模板删除 runner 通用投递参数；create_fire_subtask 删除身份降级重试）
 - [x] 调用方可以只读观察目标 Task；取消、重试、审批等写操作仍调用 Task owner 的业务接口。
@@ -371,19 +389,20 @@ Workflow-owned step/mirror task
 
 完成当前版本不以 Dispatcher 实现、Target 注册或 Workflow 迁移为前置条件。
 
-### 下一版本 F1：Dispatcher 共享协议与存储
+### 下一版本 F1：Dispatcher 共享协议与存储（已提前实施，2026-08-07）
 
-- [ ] 在 `buckyos-api` 增加 DispatchRequest、DispatchRecord、TargetRegistration、TargetInstance 和客户端类型。
-- [ ] 在 `task_manager` crate 内新增独立 dispatcher module、store、handler 和恢复循环。
-- [ ] 使用独立 RPC path、表、索引和权限配置；可以复用同一个进程/RDB 实例。
-- [ ] 完成 dispatch/claim/accept/reject/cancel/renew/heartbeat 的单元测试。
+- [x] 在 `buckyos-api` 增加 DispatchRequest、DispatchRecord、TargetRegistration、TargetInstance 和客户端类型。（task_dispatcher.rs）
+- [x] 在 `task_manager` crate 内新增独立 dispatcher module、store、handler 和恢复循环。（dispatcher/）
+- [x] 使用独立 RPC path、表、索引和权限配置；可以复用同一个进程/RDB 实例。（独立 RDB instance）
+- [x] 完成 dispatch/claim/accept/reject/cancel/renew/heartbeat 的单元测试。（dispatcher/tests.rs，23 项）
 
 ### 下一版本 F2：Workflow 试点与迁移
 
-- [ ] 以 OpenDAN Agent Task Executor 作为首个真正的 Dispatch Target：Agent 本身就是接收任务的
-  主力，并且天然需要离线等待、能力约束和幂等交接；App Install 不作为首个试点。
-- [ ] 落实注册来源、实例 lease、幂等接收和离线恢复。
-- [ ] 验证 Workflow 重启、Target 重启、ACK 丢失、offer 超时和重复投递。
+- [x] 以 OpenDAN Agent Task Executor 作为首个真正的 Dispatch Target：Agent 本身就是接收任务的
+  主力，并且天然需要离线等待、能力约束和幂等交接；App Install 不作为首个试点。（dispatch_adapter.rs）
+- [x] 落实注册来源、实例 lease、幂等接收和离线恢复。
+- [ ] 验证 Workflow 重启、Target 重启、ACK 丢失、offer 超时和重复投递。（协议级路径已有单测覆盖；
+  Workflow 调用方与 DV 环境级故障注入待 Workflow 版本）
 - [ ] Workflow scheduled task 不再通过 TaskMgr 创建任意 runner Task；改为 dispatch 或直接调用本地 adapter。
 - [ ] Workflow send-message executor 移除 TaskMgr Pending 轮询。
 - [ ] 仅当某项 Workflow operation 满足 2.0 的使用门槛时，才让对应 Service 额外注册为
@@ -398,20 +417,20 @@ Workflow-owned step/mirror task
 - [x] 调用者不能通过 TaskMgr 构造 `app.install` Task 触发 Control Panel 安装。
 - [x] 任何 Service 都不再跨进程轮询 TaskMgr 领取另一个模块创建的 Task。
 - [x] 除真正的 Dispatch Target 外，原 runner 消费者都有显式、可鉴权的业务功能接口，并由目标 Service 创建、执行和恢复自己的 Task。
-- [ ] OpenDAN 当前版本不再通过 TaskMgr 全局扫描接收外部 `agent.delegate`；下一版本再通过 Dispatcher 接收。
+- [x] OpenDAN 当前版本不再通过 TaskMgr 全局扫描接收外部 `agent.delegate`；外部委托已改经提前实施的 Dispatcher 接收。
 - [x] 异步业务接口可直接返回 `task_id`，不需要通过 Dispatcher 才能完成长任务。
 - [x] Dispatcher 完全不存在或未启动时，当前内核及上述业务接口仍能正常工作。
 - [x] TaskMgr 对 Workflow/Dispatcher 没有 crate、RPC 启动顺序或运行时强依赖。
 - [x] `cargo test`、BuckyOS Rust 构建通过；DV-07 已按新契约重写（待环境跑通）。
 
-### 8.2 下一版本 Dispatcher
+### 8.2 下一版本 Dispatcher（单测级验收已过，DV 环境级验收待跑）
 
-- [ ] 未注册 Target 的 dispatch 被明确拒绝。
-- [ ] Target 离线时记录持久等待，上线后能领取且不会生成重复业务 Task。
-- [ ] 相同 `dispatch_id` 重放返回同一个 `target_task_id`。
-- [ ] 低权限调用者不能经 Workflow/Dispatcher 触发高权限 operation。
-- [ ] Task Service 与 Dispatch Center 即使同进程，也有独立的数据模型、RPC 和授权规则。
-- [ ] delivery retry 和 business retry 有可测试的明确分界。
+- [x] 未注册 Target 的 dispatch 被明确拒绝。（dispatch_requires_registered_enabled_supporting_target）
+- [x] Target 离线时记录持久等待，上线后能领取且不会生成重复业务 Task。（restart_recovers_waiting_records_and_timers + 幂等绑定）
+- [x] 相同 `dispatch_id` 重放返回同一个 `target_task_id`。（accept 幂等重放 + OpenDAN 绑定存储）
+- [x] 低权限调用者不能经 Workflow/Dispatcher 触发高权限 operation。（ZoneTrustedOnly 策略 + on_behalf_of 反洗白测试）
+- [x] Task Service 与 Dispatch Center 即使同进程，也有独立的数据模型、RPC 和授权规则。
+- [x] delivery retry 和 business retry 有可测试的明确分界。（Accepted 终态后 maintenance 不再触碰；重投只发生在 Accepted 前且复用 dispatch_id）
 
 ## 9. 预计影响入口
 

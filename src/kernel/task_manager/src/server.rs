@@ -1171,6 +1171,31 @@ pub async fn start_task_manager_service() -> Result<()> {
     if let Err(err) = runner.add_http_server("/kapi/task-manager".to_string(), Arc::new(server)) {
         error!("failed to add task manager http server: {:?}", err);
     }
+
+    // Task Dispatch Center: same process/port, second kapi path, independent
+    // store and authorization. The task service must keep working when the
+    // dispatcher fails to start (missing rdb instance config on older
+    // zones), so this is strictly best-effort.
+    match crate::dispatcher::start_task_dispatcher(Arc::new(RuntimeSessionTokenVerifier)).await {
+        Ok(dispatcher_service) => {
+            let dispatcher_server =
+                crate::dispatcher::TaskDispatcherHttpServer::new(dispatcher_service);
+            if let Err(err) = runner
+                .add_http_server("/kapi/task-dispatcher".to_string(), Arc::new(dispatcher_server))
+            {
+                error!("failed to add task dispatcher http server: {:?}", err);
+            } else {
+                info!("task dispatch center mounted at /kapi/task-dispatcher");
+            }
+        }
+        Err(err) => {
+            warn!(
+                "task dispatch center not started (task manager keeps running): {:?}",
+                err
+            );
+        }
+    }
+
     if let Err(err) = runner.run().await {
         error!("task manager runner exited with error: {:?}", err);
     }

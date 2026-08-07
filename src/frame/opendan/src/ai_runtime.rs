@@ -23,8 +23,8 @@ use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
     AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
-    KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskFilter,
-    TaskManagerClient, TaskStatus, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
+    KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskDispatcherClient,
+    TaskFilter, TaskManagerClient, TaskStatus, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -908,6 +908,11 @@ pub struct AgentRuntime {
     /// + the session worker logs a warning when it can't park a long-running
     /// tool externally.
     pub task_mgr: Option<Arc<TaskManagerClient>>,
+    /// Optional Task Dispatch Center handle. When set (together with
+    /// `task_mgr`), each agent registers itself as a Dispatch Target for
+    /// `agent.delegate/v1` and receives external structured delegation
+    /// through the dispatcher instead of any TaskMgr inbox.
+    pub task_dispatcher: Option<Arc<TaskDispatcherClient>>,
 }
 
 impl AgentRuntime {
@@ -918,6 +923,7 @@ impl AgentRuntime {
             msg_center: None,
             kevent_client: None,
             task_mgr: None,
+            task_dispatcher: None,
         }
     }
 
@@ -933,6 +939,11 @@ impl AgentRuntime {
 
     pub fn with_task_mgr(mut self, client: Arc<TaskManagerClient>) -> Self {
         self.task_mgr = Some(client);
+        self
+    }
+
+    pub fn with_task_dispatcher(mut self, client: Arc<TaskDispatcherClient>) -> Self {
+        self.task_dispatcher = Some(client);
         self
     }
 }

@@ -42,7 +42,6 @@ struct StartupArgs {
     owner_id: Option<String>,
     agent_bin: Option<PathBuf>,
     worksession_test: Option<PathBuf>,
-    worksession_task_test: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -146,14 +145,12 @@ where
                         .ok_or_else(|| anyhow!("missing value for {arg}"))?,
                 ));
             }
-            "--worksession-task-test"
-            | "--work-session-task-test"
-            | "worksession-task-test"
-            | "work-session-task-test" => {
-                parsed.worksession_task_test = Some(PathBuf::from(
-                    args.next()
-                        .map(|value| value.as_ref().to_string())
-                        .ok_or_else(|| anyhow!("missing value for {arg}"))?,
+            // beta2.2: `--worksession-task-test` (direct agent.delegate task
+            // injection into TaskMgr) is gone — external delegation goes
+            // through the Task Dispatch Center only.
+            "--worksession-task-test" | "--work-session-task-test" => {
+                return Err(anyhow!(
+                    "{arg} was removed: external delegation must go through task-dispatcher (dispatch agent.delegate/v1)"
                 ));
             }
             other if other.starts_with("--appid=") => {
@@ -187,13 +184,13 @@ where
                 parsed.worksession_test =
                     Some(PathBuf::from(&other["--work-session-test=".len()..]));
             }
-            other if other.starts_with("--worksession-task-test=") => {
-                parsed.worksession_task_test =
-                    Some(PathBuf::from(&other["--worksession-task-test=".len()..]));
-            }
-            other if other.starts_with("--work-session-task-test=") => {
-                parsed.worksession_task_test =
-                    Some(PathBuf::from(&other["--work-session-task-test=".len()..]));
+            other
+                if other.starts_with("--worksession-task-test=")
+                    || other.starts_with("--work-session-task-test=") =>
+            {
+                return Err(anyhow!(
+                    "{other} was removed: external delegation must go through task-dispatcher (dispatch agent.delegate/v1)"
+                ));
             }
             other if !other.starts_with('-') && parsed.appid.is_none() => {
                 parsed.appid = Some(other.to_string());
@@ -613,6 +610,19 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
         kevent_endpoint
     );
 
+    // Optional as well: without the dispatcher the agent still runs, it just
+    // cannot receive external structured delegation (IM/session paths are
+    // unaffected).
+    let task_dispatcher = match api_runtime.get_task_dispatcher_client().await {
+        Ok(client) => Some(Arc::new(client)),
+        Err(err) => {
+            warn!(
+                "opendan.bootstrap: task-dispatcher unavailable — external delegation disabled: {err}"
+            );
+            None
+        }
+    };
+
     let mut runtime =
         AgentRuntime::new(Arc::new(aicc), Arc::new(worklog)).with_kevent_client(kevent_client);
     if let Some(client) = msg_center {
@@ -620,6 +630,9 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
     }
     if let Some(client) = task_mgr {
         runtime = runtime.with_task_mgr(client);
+    }
+    if let Some(client) = task_dispatcher {
+        runtime = runtime.with_task_dispatcher(client);
     }
     Ok(Arc::new(runtime))
 }
@@ -656,102 +669,6 @@ async fn run_worksession_quick_test(agent: Arc<AIAgent>, json_path: PathBuf) -> 
     result
 }
 
-async fn run_worksession_task_quick_test(agent: Arc<AIAgent>, json_path: PathBuf) -> Result<()> {
-    let result = async {
-        let raw = fs::read_to_string(&json_path)
-            .await
-            .with_context(|| format!("read worksession task test json {}", json_path.display()))?;
-        let spec = serde_json::from_str::<WorkSessionQuickTestSpec>(&raw)
-            .with_context(|| format!("parse worksession task test json {}", json_path.display()))?;
-        let task_mgr = agent
-            .runtime
-            .task_mgr
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow!("task manager unavailable"))?;
-        let api_runtime = get_buckyos_api_runtime()
-            .map_err(|err| anyhow!("load buckyos runtime failed: {err}"))?;
-        let user_id = api_runtime
-            .get_owner_user_id()
-            .or_else(|| api_runtime.user_id.clone())
-            .unwrap_or_else(|| agent.agent_id());
-        let app_id = api_runtime.get_app_id();
-        let task_name = if spec.title.trim().is_empty() {
-            "worksession task test".to_string()
-        } else {
-            spec.title.trim().to_string()
-        };
-        let objective = spec.objective.trim().to_string();
-        if objective.is_empty() {
-            return Err(anyhow!("worksession task test objective must not be empty"));
-        }
-        let runner = agent.task_executor_runner_id()?;
-        let mut workspace_hints = Vec::new();
-        if let Some(workspace_id) = spec
-            .workspace_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            workspace_hints.push(serde_json::json!({ "workspace_id": workspace_id }));
-        }
-        let task = task_mgr
-            .create_task(
-                &task_name,
-                TASK_TYPE_AGENT_DELEGATE,
-                Some(serde_json::json!({
-                    "agent_delegate": {
-                        "version": 1,
-                        "source": "worksession-task-test",
-                        "title": spec.title,
-                        "purpose": objective,
-                        "requester_agent_id": agent.agent_id(),
-                        "input": {
-                            "text": objective
-                        },
-                        "workspace_hints": workspace_hints,
-                        "reason_messages": spec.reason_messages,
-                        "execution": {
-                            "runner": runner.clone(),
-                            "behavior": spec.behavior,
-                            "status": "assigned"
-                        }
-                    }
-                })),
-                &user_id,
-                &app_id,
-                None,
-            )
-            .await
-            .map_err(|err| anyhow!("create worksession task test task failed: {err}"))?;
-        info!(
-            "opendan.worksession_task_test: created task_id={} runner={} user_id={} app_id={}",
-            task.id, runner, task.user_id, task.app_id
-        );
-        let final_task = wait_task_to_finish(agent.clone(), task.id).await?;
-        info!(
-            "opendan.worksession_task_test: finished task_id={} status={:?}",
-            final_task.id, final_task.status
-        );
-        match final_task.status {
-            TaskStatus::Completed => Ok(()),
-            other => Err(anyhow!(
-                "worksession task test task {} ended with status {:?}: {}",
-                final_task.id,
-                other,
-                final_task.message.unwrap_or_default()
-            )),
-        }
-    }
-    .await;
-
-    if let Err(err) = &result {
-        error!("opendan.worksession_task_test: failed: {err:#}");
-    }
-    agent.shutdown().await;
-    result
-}
-
 async fn wait_worksession_to_finish(
     agent: Arc<AIAgent>,
     session_id: &str,
@@ -777,33 +694,6 @@ async fn wait_worksession_to_finish(
             }
             _ => tokio::time::sleep(Duration::from_millis(500)).await,
         }
-    }
-}
-
-async fn wait_task_to_finish(agent: Arc<AIAgent>, task_id: i64) -> Result<buckyos_api::Task> {
-    let task_mgr = agent
-        .runtime
-        .task_mgr
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| anyhow!("task manager unavailable"))?;
-    let mut last_status = None;
-    loop {
-        let task = task_mgr
-            .get_task(task_id)
-            .await
-            .map_err(|err| anyhow!("load task {task_id}: {err}"))?;
-        if last_status != Some(task.status) {
-            info!(
-                "opendan.worksession_task_test: task_id={} status={:?} progress={}",
-                task.id, task.status, task.progress
-            );
-            last_status = Some(task.status);
-        }
-        if task.status.is_terminal() {
-            return Ok(task);
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -839,10 +729,6 @@ async fn run() -> Result<()> {
         .worksession_test
         .clone()
         .map(|path| tokio::spawn(run_worksession_quick_test(agent.clone(), path)));
-    let worksession_task_test_handle = startup
-        .worksession_task_test
-        .clone()
-        .map(|path| tokio::spawn(run_worksession_task_quick_test(agent.clone(), path)));
     let agent_for_signal = agent.clone();
     tokio::spawn(async move {
         if let Err(err) = tokio::signal::ctrl_c().await {
@@ -858,17 +744,6 @@ async fn run() -> Result<()> {
         match tokio::time::timeout(Duration::from_secs(1), &mut handle).await {
             Ok(joined) => {
                 joined.map_err(|err| anyhow!("worksession test task join failed: {err}"))??;
-            }
-            Err(_) => {
-                handle.abort();
-                let _ = handle.await;
-            }
-        }
-    }
-    if let Some(mut handle) = worksession_task_test_handle {
-        match tokio::time::timeout(Duration::from_secs(1), &mut handle).await {
-            Ok(joined) => {
-                joined.map_err(|err| anyhow!("worksession task test join failed: {err}"))??;
             }
             Err(_) => {
                 handle.abort();
@@ -946,31 +821,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_worksession_task_test_flag() {
-        let parsed = parse_startup_args_from_iter([
-            "--appid=buckyos_jarvis",
-            "--worksession-task-test",
-            "/tmp/ws-task.json",
-        ])
-        .expect("parse args");
-        assert_eq!(
-            parsed.worksession_task_test.unwrap(),
-            std::path::PathBuf::from("/tmp/ws-task.json")
-        );
-    }
-
-    #[test]
-    fn parses_worksession_task_test_separator_alias() {
-        let parsed = parse_startup_args_from_iter([
-            "--appid=buckyos_jarvis",
-            "worksession-task-test",
-            "/tmp/ws-task.json",
-        ])
-        .expect("parse args");
-        assert_eq!(
-            parsed.worksession_task_test.unwrap(),
-            std::path::PathBuf::from("/tmp/ws-task.json")
-        );
+    fn worksession_task_test_flag_is_removed() {
+        // beta2.2: direct agent.delegate injection into TaskMgr is gone;
+        // external delegation must go through the Task Dispatch Center.
+        for args in [
+            vec![
+                "--appid=buckyos_jarvis",
+                "--worksession-task-test",
+                "/tmp/ws-task.json",
+            ],
+            vec![
+                "--appid=buckyos_jarvis",
+                "--worksession-task-test=/tmp/ws-task.json",
+            ],
+        ] {
+            let err = parse_startup_args_from_iter(args).expect_err("flag must be refused");
+            assert!(err.to_string().contains("task-dispatcher"), "{}", err);
+        }
     }
 
     #[test]

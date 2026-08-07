@@ -434,6 +434,12 @@ impl SystemConfigBuilder {
             buckyos_api::TASK_MANAGER_RDB_INSTANCE_ID.to_string(),
             buckyos_api::task_manager_default_rdb_instance_config(),
         );
+        // Task Dispatch Center rides in the same process/deployment unit but
+        // owns an independent rdb instance (no shared tables/schema/joins).
+        config.spec_config.rdb_instances.insert(
+            buckyos_api::TASK_DISPATCHER_RDB_INSTANCE_ID.to_string(),
+            buckyos_api::task_dispatcher_default_rdb_instance_config(),
+        );
         self.insert_json("services/task-manager/spec", &config)?;
         Ok(self)
     }

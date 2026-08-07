@@ -510,6 +510,7 @@ impl AIAgent {
 
         let pump_handle = self.clone().spawn_msg_center_pump();
         let task_inbox_handle = self.clone().spawn_task_inbox();
+        let dispatch_target_handle = self.clone().spawn_dispatch_target();
         let self_improve_handle = self.clone().spawn_self_improve_scheduler();
         let event_pump_handle = self.event_pump.as_ref().map(|p| {
             let p = p.clone();
@@ -531,6 +532,9 @@ impl AIAgent {
             let _ = handle.await;
         }
         if let Some(handle) = task_inbox_handle {
+            let _ = handle.await;
+        }
+        if let Some(handle) = dispatch_target_handle {
             let _ = handle.await;
         }
         if let Some(handle) = self_improve_handle {

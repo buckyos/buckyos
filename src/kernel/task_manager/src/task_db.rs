@@ -527,7 +527,7 @@ impl TaskDb {
     }
 }
 
-fn rewrite_placeholders_to_dollar(sql: &str) -> String {
+pub(crate) fn rewrite_placeholders_to_dollar(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     let mut idx = 0u32;
     let mut in_single = false;
@@ -553,7 +553,7 @@ fn rewrite_placeholders_to_dollar(sql: &str) -> String {
     out
 }
 
-fn split_sql_statements(ddl: &str) -> Vec<String> {
+pub(crate) fn split_sql_statements(ddl: &str) -> Vec<String> {
     let mut stmts = Vec::new();
     let mut buf = String::new();
     let mut in_single = false;

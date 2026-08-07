@@ -185,6 +185,10 @@ servers:
                 global SERVICE_ID="control-panel";
               elif match $REQ.path "/ndm/*" then
                 global SERVICE_ID="control-panel";
+              elif match $REQ.path "/kapi/task-dispatcher*" then
+                # Task Dispatch Center 与 task-manager 同进程同端口，只是第二个
+                # kapi path；没有独立的 service info，按 task-manager 实例转发。
+                global SERVICE_ID="task-manager";
               else
                 map-create krpc_hp;
                 match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_-]+)(/.*)?" || return false;

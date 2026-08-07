@@ -11,7 +11,6 @@ Examples:
   ./debug_jarvis.sh devtest
   ./debug_jarvis.sh devtest --port 14060
   ./debug_jarvis.sh devtest --worksession-test ./case.json
-  ./debug_jarvis.sh devtest --worksession-task-test ./case.json
   ./debug_jarvis.sh --port 14060
 
 This script always runs the Jarvis OpenDAN runtime in the foreground.

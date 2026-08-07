@@ -1,6 +1,13 @@
 # Task Dispatch Center 设计
 
-- 状态：设计定稿（可实施）
+- 状态：设计定稿；M1+M2 已实施（2026-08-07，beta2.2）
+  - M1：`buckyos-api/src/task_dispatcher.rs` + `task_manager/src/dispatcher/`
+    （独立 RDB `task-dispatcher-main`、`/kapi/task-dispatcher` 同进程第二 path、
+    scheduler 追加 rdb instance、boot_gateway.yaml 路由别名）+ 23 项单元测试
+  - M2：OpenDAN `dispatch_adapter.rs`（`agent.delegate/v1` Target 注册 + 接收循环 +
+    持久幂等绑定）；`agent_task_executor` 伪 inbox 删除（owner-only recovery 保留）
+  - 未完：M3 的 DV 环境级故障注入验收；Control Panel 默认路由配置面 /
+    WebUI Task Center dispatch 观察面 / websdk 封装（见 §10「影响入口」尾项）
 - 目标读者：TaskMgr / OpenDAN / Workflow / buckyos-api 开发者
 - 相关文档：
   - `doc/task_mgr/task_mgr.md`（TaskMgr 边界与数据模型）

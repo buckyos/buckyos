@@ -56,6 +56,7 @@ pub mod tool_plan;
 // §9 step 6 — AIAgent::run, msg/event dispatch, session restoration, subscriptions.
 pub mod agent;
 pub mod agent_task_executor;
+pub mod dispatch_adapter;
 
 // §9 step 6 — msg-center / kevent inbound pump that feeds AIAgent::inbox().
 pub mod msg_center_pump;
