@@ -823,7 +823,7 @@ Service 收到经过认证和授权的业务请求
 
 任何调用者仅通过 `create_task` 构造 `task_type = app.install` 等高权限业务形态的数据，只会得到一条属于自己的普通任务记录：没有 runner 列、没有 runner 查询、没有 inbox 事件，任何执行器都不会因此被驱动。
 
-需要在 Target 离线时持久保留请求、异步领取、lease、幂等交接的场景，属于下一版本 Workflow 的 Task Dispatch Center（见 `notepads/task-dispatch-center-todo.md`），不属于 TaskMgr。
+需要在 Target 离线时持久保留请求、异步领取、lease、幂等交接的场景，属于 Task Dispatch Center（设计见 `doc/task_mgr/task_dispatch_center.md`，与 task-manager 同进程但独立 store/RPC/授权），不属于 TaskMgr。
 
 ### 7.1 内置下载执行器
 
@@ -954,7 +954,10 @@ TASK_EVENT_DATA_INLINE_LIMIT_BYTES = 1300
 - Control Panel app installer：`apps.*` 业务接口鉴权后创建并在进程内执行/恢复自己的安装任务。
 - AICC：把异步模型调用、流式输出、外部任务绑定到 TaskMgr 任务。
 - Workflow service：把 Run / Step / Schedule 映射为 TaskMgr 任务树，schedule fire 子任务（如 `workflow.send_message`）由 workflow 服务自己按 task_type 扫描执行，并订阅 `/task_mgr/{run_id}` 接收人类动作或执行结果变化。
-- OpenDAN：`agent.delegate` 任务由 opendan 创建并执行；目标 agent 记录在 `data.progress.execution.runner`，按 task_type + 本地归属过滤。
+- OpenDAN：内部 WorkSession 对应的 `agent.delegate` Task 由 opendan 创建、执行和恢复。当前
+  `agent_task_executor` 中“按 task_type 扫描全部 Task，再按 `data.progress.execution.runner`
+  过滤”的临时实现仍是在 TaskMgr 上模拟 Dispatch，已被新设计废弃；beta2.2 应删除或禁用
+  该外部 inbox，下一版本由 Task Dispatch Center 向 OpenDAN Agent Target 投递。
 
 对 Workflow 来说，TaskMgr 是运行期 UI 与状态总账。Workflow service 自身保留 DSL、拓扑、Reference、Amendment 等 workflow 语义；通用状态、进度、错误、等待人工处理等由 TaskMgr task tree 表达。
 
@@ -988,4 +991,4 @@ TaskMgr 不理解每种业务任务的完整 schema。业务模块应把结构�
 4. `list_tasks_by_time_range` 当前先按 app/type 查库，再在内存中过滤时间范围；数据量变大后应下推到 SQL。
 5. `delete_task` 依赖数据库外键级联删除子任务；当前不会发布删除事件。
 6. `update_task_data` 是整体替换，和 `update_task` 的 merge patch 语义不同，新代码需要明确选择。
-7. beta2.2 已删除 runner 派发语义（`runner` 字段、`idx_task_runner_status`、`/task_mgr/runner/{runner}/task_ready`、按 runner 的查询）。需要持久、异步、可离线交接工作的场景由下一版本 Workflow 的 Task Dispatch Center 承接，不会回到 TaskMgr。
+7. beta2.2 已删除 runner 派发语义（`runner` 字段、`idx_task_runner_status`、`/task_mgr/runner/{runner}/task_ready`、按 runner 的查询）。需要持久、异步、可离线交接工作的场景由 Task Dispatch Center 承接（设计见 `doc/task_mgr/task_dispatch_center.md`，实施已提前，不绑定 Workflow 版本），不会回到 TaskMgr。

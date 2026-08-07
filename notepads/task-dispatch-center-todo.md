@@ -1,5 +1,10 @@
 # 当前版本 TaskMgr 边界收敛与下一版本 Task Dispatch Center TODO
 
+> **2026-08 更新：Task Dispatch Center 设计已定稿于 `doc/task_mgr/task_dispatch_center.md`，
+> 并因 OpenDAN 外部委托依赖决定提前实施（不再绑定 Workflow 版本）。本文 §10 的待决策项
+> 已全部在该文档 §12 决策记录中定案；§2～6 的设计草案以该文档为准。本文其余内容保留为
+> beta2.2 TaskMgr 边界收敛的执行记录。**
+
 > 背景：TaskMgr 原本是长任务、可恢复任务的统一基础设施，但当前 `runner`、
 > `task_ready`、Pending 扫描等能力已经让它逐渐承担生产者消费者队列和跨服务调度职责。
 > 这既模糊了 TaskMgr 与 Workflow 的边界，也形成了“低权限调用者构造 Task，诱导高权限
@@ -46,7 +51,7 @@ Caller
 ```
 
 - [x] 跨 Service 调用必须使用明确的业务 operation，例如 `apps.install`、
-  `execute_thunk`、`agent.delegate`，不能继续暴露 `runner + task_type + data` 形式的通用投递入口。（runner 通用投递协议已删）
+  `execute_thunk`，不能继续暴露 `runner + task_type + data` 形式的通用投递入口。（runner 通用投递协议已删）
 - [x] 业务接口可以返回 `accepted + task_id` 后异步执行；“异步”本身不构成引入 Dispatcher 的理由。
 - [x] Target Service 可以在内部扫描和恢复**自己拥有的 Task**，但不能跨进程扫描其他 owner
   创建的 Task，也不能把这种内部恢复查询重新包装成公共队列接口。（各消费者改按自身 task_type + 本地归属过滤）
@@ -55,6 +60,11 @@ Caller
 - [x] Task 的取消、重试、审批等业务动作通过 Target Service 的功能接口完成；只有 Task owner
   可以直接更新对应 Task。（scope 检查收紧，空 ctx 放行已删除）
 - [x] 本版本不得要求 Service 注册 Dispatch Target，也不得依赖 Dispatcher 的启动或可用性。（Dispatcher 未实现，内核不依赖）
+
+OpenDAN Agent Task Executor 是少数例外：Agent 的核心职责就是接收外部委托，并且需要 Target
+离线等待、capacity、claim/lease、ACK 丢失恢复和幂等交接，因此它属于真正的 Dispatch
+Target。beta 2.2 只删除其基于 TaskMgr 的伪 inbox，不新增临时外部委托 RPC；下一版本通过
+Dispatcher 投递 `agent.delegate`，OpenDAN 接受后再创建并执行自己的 Task。
 
 ### 0.3 下一版本：Dispatch 是 Workflow 所需的独立语义
 
@@ -121,7 +131,8 @@ Pending Task。这已经等价于一个缺少严格队列边界的生产者消�
 
 - Control Panel App Installer：保留 `apps.*` 等已鉴权业务接口，由 Control Panel 内部创建并恢复安装 Task。
 - Node Daemon Node Executor：提供显式的 Node Daemon 功能接口，由 Node Daemon 创建并恢复自己的 Task。
-- OpenDAN Agent Task Executor：提供显式的 Agent 委托/执行接口，由 OpenDAN 创建并恢复自己的 Task。
+- OpenDAN Agent Task Executor：当前版本删除基于 TaskMgr 扫描的伪 Dispatch，只保留 OpenDAN
+  内部创建和恢复的 Task；下一版本作为真正的 Agent Dispatch Target 接收外部委托。
 - Workflow scheduled task / send-message：属于下一版本 Workflow 范围；现存代码如需保留，只能使用
   本地 adapter 或目标 Service 的显式业务接口，不能成为当前内核对 Dispatcher 的依赖。
 
@@ -340,8 +351,9 @@ Workflow-owned step/mirror task
 - [x] Control Panel 移除通用 runner inbox；已有业务 RPC 在鉴权后创建并执行 Control Panel 自己的 Task。
   （task_ready kevent 订阅删除；list_active 改按 task_type=app.install/app.update；MsgQueue+启动扫描+sweep 保留）
 - [x] Node Executor 移除跨 owner 的 TaskMgr runner 扫描。（node_executor.rs 为从未接入主流程且无生产者的死代码，整体删除；未来节点执行走 Node Daemon 显式接口再立项）
-- [x] OpenDAN Agent Task Executor 移除通用 runner inbox；按 task_type=agent.delegate 扫描并以 data 内
-  `progress.execution.runner` 判定归属（缺失即无人执行，与旧顶层 runner 契约一致）。
+- [ ] OpenDAN Agent Task Executor 移除通用 runner inbox；此前“按 `task_type=agent.delegate`
+  扫描并以 data 内 `progress.execution.runner` 判定归属”的实现仍是在 TaskMgr 上模拟 Dispatch，
+  应在 beta 2.2 删除或禁用。当前版本只恢复 OpenDAN 自己创建的 Task，外部委托留待下一版本 Dispatcher。
 - [x] Workflow 相关现存调用使用本地 adapter 或目标 Service 的业务接口；本版本不为它们引入 Dispatcher 依赖。
   （send_message executor 按自身 task_type 扫描 + schedule owner 一致性校验；schedule 模板删除 runner 通用投递参数；create_fire_subtask 删除身份降级重试）
 - [x] 调用方可以只读观察目标 Task；取消、重试、审批等写操作仍调用 Task owner 的业务接口。
@@ -368,7 +380,8 @@ Workflow-owned step/mirror task
 
 ### 下一版本 F2：Workflow 试点与迁移
 
-- [ ] 选择一个权限面较小、支持离线恢复的 Target 作为试点；优先 Workflow send-message/AICC 类能力，不以 App Install 作为首个试点。
+- [ ] 以 OpenDAN Agent Task Executor 作为首个真正的 Dispatch Target：Agent 本身就是接收任务的
+  主力，并且天然需要离线等待、能力约束和幂等交接；App Install 不作为首个试点。
 - [ ] 落实注册来源、实例 lease、幂等接收和离线恢复。
 - [ ] 验证 Workflow 重启、Target 重启、ACK 丢失、offer 超时和重复投递。
 - [ ] Workflow scheduled task 不再通过 TaskMgr 创建任意 runner Task；改为 dispatch 或直接调用本地 adapter。
@@ -384,7 +397,8 @@ Workflow-owned step/mirror task
 
 - [x] 调用者不能通过 TaskMgr 构造 `app.install` Task 触发 Control Panel 安装。
 - [x] 任何 Service 都不再跨进程轮询 TaskMgr 领取另一个模块创建的 Task。
-- [x] 原 runner 消费者都有显式、可鉴权的业务功能接口，并由目标 Service 创建、执行和恢复自己的 Task。
+- [x] 除真正的 Dispatch Target 外，原 runner 消费者都有显式、可鉴权的业务功能接口，并由目标 Service 创建、执行和恢复自己的 Task。
+- [ ] OpenDAN 当前版本不再通过 TaskMgr 全局扫描接收外部 `agent.delegate`；下一版本再通过 Dispatcher 接收。
 - [x] 异步业务接口可直接返回 `task_id`，不需要通过 Dispatcher 才能完成长任务。
 - [x] Dispatcher 完全不存在或未启动时，当前内核及上述业务接口仍能正常工作。
 - [x] TaskMgr 对 Workflow/Dispatcher 没有 crate、RPC 启动顺序或运行时强依赖。
@@ -442,7 +456,8 @@ Workflow-owned step/mirror task
 ## 11. 非目标
 
 - 不为旧 runner/task-ready 协议提供兼容层。
-- 当前版本不要求现有 TaskMgr 用户迁移到 Dispatcher 或注册 Dispatch Target。
+- 当前版本不要求普通 TaskMgr 用户迁移到 Dispatcher 或注册 Dispatch Target；OpenDAN 作为真
+  Dispatch Target 的接入属于下一版本。
 - 不用 Dispatcher 替代普通业务 RPC、Service 内部异步执行或 Service 自己的 Task 恢复机制。
 - 不把 Dispatcher 建设成通用 Service Bus 或所有长任务的统一入口。
 - 不在 Dispatch Center 中实现业务 Task 状态机。
@@ -469,7 +484,7 @@ Workflow-owned step/mirror task
 | 入口 | 原 runner | 原领取方式 | 收敛后 |
 | --- | --- | --- | --- |
 | Control Panel App Installer | `app.control_panel` | task_ready kevent + runner 扫描 + MsgQueue + sweep | 业务接口（apps.*）鉴权后创建；RPC 直接 dispatch + MsgQueue + 启动扫描 + 60s sweep；list 按 task_type=app.install/app.update |
-| OpenDAN Agent Task Executor | agent runner_id / full_appid | runner inbox kevent + 按 runner 5 态扫描 | 按 task_type=agent.delegate 扫描 + data `progress.execution.runner` 本地归属过滤；订阅 `/task_mgr/**` 只作加速 |
+| OpenDAN Agent Task Executor | agent runner_id / full_appid | runner inbox kevent + 按 runner 5 态扫描 | 临时收敛曾改为按 task_type + data runner 过滤，但仍属于伪 Dispatch；beta2.2 应删除/禁用外部 inbox，下一版本改接真正 Dispatcher |
 | Workflow send-message | `workflow` | 按 runner 10s 轮询 | 按自身 task_type=workflow.send_message 扫描 + schedule owner 一致性校验（task owner 必须等于所引用 schedule 的 owner） |
 | Workflow scheduled task | 模板 runner（任意字符串投递入口） | —（生产者） | 模板/ScheduleTarget/CLI 的 runner 字段删除；fire subtask 以 schedule owner 身份创建（zone 可信代填），身份降级重试删除 |
 | Node Daemon Node Executor | node_id | 按 runner 2s 轮询（从未接入主流程） | 死代码整体删除（无生产者：scheduler 不创建 dispatch_thunk task） |

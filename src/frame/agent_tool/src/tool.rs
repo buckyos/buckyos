@@ -350,8 +350,23 @@ pub trait TypedTool: Send + Sync + 'static {
 /// already conveyed by the absence of the field from the parent's
 /// `required` list, so the LLM just omits the field rather than sending
 /// JSON `null`. Also drops `"default": null` noise that some providers'
-/// strict validators flag.
+/// strict validators flag, and collapses whole-valued float bounds
+/// (`"minimum": 1.0`, how schemars 0.8 stores `range(min = 1)`) into
+/// integers to match the hand-written schema convention.
 fn normalize_args_schema_for_llm(schema: &mut Json) {
+    // Numeric-bound keywords schemars 0.8 models as `Option<f64>`. `range(min
+    // = 1)` therefore serializes as `1.0`, which strict provider validators
+    // flag on integer-typed fields and `as_i64`-style consumers read as None.
+    const NUMERIC_BOUND_KEYS: [&str; 5] = [
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+    ];
+    // Largest magnitude at which f64 still represents every integer exactly
+    // (2^53); beyond it the float→int cast would silently change the bound.
+    const MAX_EXACT_INT: f64 = 9_007_199_254_740_992.0;
     match schema {
         Json::Object(map) => {
             if let Some(Json::Array(types)) = map.get("type").cloned().as_ref() {
@@ -372,6 +387,15 @@ fn normalize_args_schema_for_llm(schema: &mut Json) {
             }
             if map.get("default").map_or(false, |v| v.is_null()) {
                 map.remove("default");
+            }
+            for key in NUMERIC_BOUND_KEYS {
+                if let Some(v) = map.get_mut(key) {
+                    if let Some(f) = v.as_f64() {
+                        if v.as_i64().is_none() && f.fract() == 0.0 && f.abs() <= MAX_EXACT_INT {
+                            *v = Json::from(f as i64);
+                        }
+                    }
+                }
             }
             for (_, v) in map.iter_mut() {
                 normalize_args_schema_for_llm(v);
@@ -544,6 +568,10 @@ mod tests {
         #[serde(default)]
         #[allow(dead_code)]
         suffix: Option<String>,
+        #[serde(default)]
+        #[schemars(range(min = 1))]
+        #[allow(dead_code)]
+        limit: Option<i64>,
     }
 
     #[derive(serde::Serialize, JsonSchema)]
@@ -623,6 +651,20 @@ mod tests {
             Some(&json!("string"))
         );
         assert!(schema.pointer("/properties/suffix/default").is_none());
+    }
+
+    #[test]
+    fn typed_tool_numeric_bounds_normalize_to_integers() {
+        let handle = TypedToolHandle::with_null_host(EchoTypedTool);
+        let schema = handle.spec().args_schema;
+        // schemars 0.8 emits `range(min = 1)` as the float `1.0`; the
+        // normalized schema must expose the integer form (strict `==` on
+        // `json!(1)` distinguishes the two) so `as_i64`-style consumers
+        // don't silently read the bound as None.
+        assert_eq!(
+            schema.pointer("/properties/limit/minimum"),
+            Some(&json!(1))
+        );
     }
 
     #[tokio::test]
