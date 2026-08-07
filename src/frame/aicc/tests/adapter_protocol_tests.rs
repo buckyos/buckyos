@@ -6,8 +6,18 @@ use aicc::openai::{OpenAIInstanceConfig, OpenAIProvider};
 use aicc::{InvokeCtx, Provider, ProviderStartResult, ResolvedRequest};
 use buckyos_api::{ai_methods, Capability, ResourceRef};
 use common::*;
+use image::{DynamicImage, ImageFormat};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::sync::Arc;
+
+fn png_image(width: u32, height: u32) -> Vec<u8> {
+    let mut output = Cursor::new(Vec::new());
+    DynamicImage::new_rgb8(width, height)
+        .write_to(&mut output, ImageFormat::Png)
+        .expect("encode test PNG");
+    output.into_inner()
+}
 
 fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
     OpenAIProvider::new(
@@ -141,7 +151,7 @@ async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
     let provider = openai_provider(base_url, 500);
     let request = request_with_resource(ResourceRef::Base64 {
         mime: "image/png".to_string(),
-        data_base64: openai_b64(b"image"),
+        data_base64: openai_b64(png_image(320, 640).as_slice()),
     });
     let result = provider
         .start(

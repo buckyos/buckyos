@@ -23,6 +23,8 @@ use buckyos_api::{
     AiUsage, Capability, ResourceRef,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
+use image::imageops::FilterType;
+use image::ImageFormat;
 use log::{error, info, warn};
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use reqwest::{Client, StatusCode};
@@ -31,6 +33,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as _;
 use std::hash::{Hash, Hasher};
+use std::io::Cursor;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -3353,6 +3356,51 @@ impl OpenAIProvider {
         }
     }
 
+    fn video_dimensions(size: &str) -> Option<(u32, u32)> {
+        match size {
+            "720x1280" => Some((720, 1280)),
+            "1280x720" => Some((1280, 720)),
+            "1024x1792" => Some((1024, 1792)),
+            "1792x1024" => Some((1792, 1024)),
+            "1080x1920" => Some((1080, 1920)),
+            "1920x1080" => Some((1920, 1080)),
+            _ => None,
+        }
+    }
+
+    fn normalize_video_reference_image(
+        bytes: &[u8],
+        requested_size: Option<&str>,
+    ) -> Result<(String, Vec<u8>), ProviderError> {
+        let image = image::load_from_memory(bytes).map_err(|err| {
+            ProviderError::fatal(format!(
+                "failed to decode video input_reference image: {}",
+                err
+            ))
+        })?;
+        let size = requested_size.map(ToString::to_string).unwrap_or_else(|| {
+            if image.width() > image.height() {
+                "1280x720".to_string()
+            } else {
+                "720x1280".to_string()
+            }
+        });
+        let (width, height) = Self::video_dimensions(size.as_str()).ok_or_else(|| {
+            ProviderError::fatal(format!("unsupported OpenAI video size '{}'", size))
+        })?;
+        let normalized = image.resize_to_fill(width, height, FilterType::Lanczos3);
+        let mut output = Cursor::new(Vec::new());
+        normalized
+            .write_to(&mut output, ImageFormat::Png)
+            .map_err(|err| {
+                ProviderError::fatal(format!(
+                    "failed to encode normalized video input_reference image: {}",
+                    err
+                ))
+            })?;
+        Ok((size, output.into_inner()))
+    }
+
     async fn start_video(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -3373,9 +3421,7 @@ impl OpenAIProvider {
         ) {
             fields.push(("seconds".to_string(), value_to_form_field(&seconds)));
         }
-        if let Some(size) = Self::video_size(req) {
-            fields.push(("size".to_string(), size));
-        }
+        let requested_size = Self::video_size(req);
 
         let mut files = vec![];
         if method == ai_methods::VIDEO_IMG2VIDEO {
@@ -3385,7 +3431,34 @@ impl OpenAIProvider {
             let (name, mime, bytes) = self
                 .resource_to_file_bytes(resource, "input_reference.png")
                 .await?;
-            files.push(("input_reference".to_string(), name, mime, bytes));
+            let normalize_size = requested_size.clone();
+            let (size, normalized_bytes) = tokio::task::spawn_blocking(move || {
+                Self::normalize_video_reference_image(bytes.as_slice(), normalize_size.as_deref())
+            })
+            .await
+            .map_err(|err| {
+                ProviderError::fatal(format!(
+                    "failed to normalize video input_reference image: {}",
+                    err
+                ))
+            })??;
+            info!(
+                "aicc.openai.video.input_reference_normalized provider_instance_name={} model={} source_name={} source_mime={} target_size={}",
+                self.instance.provider_instance_name,
+                provider_model,
+                name,
+                mime,
+                size
+            );
+            fields.push(("size".to_string(), size));
+            files.push((
+                "input_reference".to_string(),
+                "input_reference.png".to_string(),
+                "image/png".to_string(),
+                normalized_bytes,
+            ));
+        } else if let Some(size) = requested_size {
+            fields.push(("size".to_string(), size));
         }
 
         let started_at = std::time::Instant::now();
@@ -4365,6 +4438,42 @@ mod tests {
             OpenAIProvider::estimate_text2image_cost(&high_landscape, "gpt-image-1"),
             Some(0.5)
         );
+    }
+
+    #[test]
+    fn normalize_video_reference_uses_orientation_default_size() {
+        let mut source = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(640, 480)
+            .write_to(&mut source, ImageFormat::Png)
+            .expect("encode source image");
+
+        let (size, normalized) =
+            OpenAIProvider::normalize_video_reference_image(source.get_ref().as_slice(), None)
+                .expect("normalize video reference");
+        let normalized = image::load_from_memory(normalized.as_slice())
+            .expect("decode normalized video reference");
+
+        assert_eq!(size, "1280x720");
+        assert_eq!((normalized.width(), normalized.height()), (1280, 720));
+    }
+
+    #[test]
+    fn normalize_video_reference_honors_requested_size() {
+        let mut source = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(480, 640)
+            .write_to(&mut source, ImageFormat::Png)
+            .expect("encode source image");
+
+        let (size, normalized) = OpenAIProvider::normalize_video_reference_image(
+            source.get_ref().as_slice(),
+            Some("1024x1792"),
+        )
+        .expect("normalize video reference");
+        let normalized = image::load_from_memory(normalized.as_slice())
+            .expect("decode normalized video reference");
+
+        assert_eq!(size, "1024x1792");
+        assert_eq!((normalized.width(), normalized.height()), (1024, 1792));
     }
 
     #[test]
