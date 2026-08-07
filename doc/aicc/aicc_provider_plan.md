@@ -72,8 +72,8 @@ fal.ai 只用于通用大模型不擅长的专用媒体处理：ESRGAN 负责 im
 | `audio`     | `audio.tts`            | OpenAI / Google          | OpenAI speech 或 Gemini TTS                                 |
 | `audio`     | `audio.music`          | Google                   | Lyria 3                                                    |
 | `audio`     | `audio.enhance`        | fal.ai                   | `fal-ai/deepfilternet3`                                    |
-| `video`     | `video.txt2video`      | Google                   | Veo 3.1                                                    |
-| `video`     | `video.img2video`      | Google                   | Veo 3.1 image-to-video                                     |
+| `video`     | `video.txt2video`      | Google / OpenAI          | Veo 3.1；OpenAI Sora 2 fallback                            |
+| `video`     | `video.img2video`      | Google / OpenAI          | Veo 3.1 / Sora 2 image-to-video                            |
 | `video`     | `video.video2video`    | Google                   | Veo 3.1 支持 video-to-video 输入模式                             |
 | `video`     | `video.extend`         | Google                   | Veo 3.1 extend；需要保留 `continuation_handle`                  |
 | `video`     | `video.upscale`        | fal.ai                   | `fal-ai/video-upscaler`                                    |
@@ -96,6 +96,8 @@ image.img2img
 image.inpaint
 audio.asr
 audio.tts
+video.txt2video
+video.img2video
 ```
 
 说明：
@@ -103,7 +105,8 @@ audio.tts
 * `llm.completion` 不接旧 Completion API，统一转成 chat message。
 * `rerank` 是 MVP 实现，使用 LLM 对候选文档输出 structured scores；不是 native rerank model。
 * `image.inpaint` 使用 OpenAI image edit + mask。
-* 不要求 OpenAI 承担视频主路由。
+* OpenAI 视频使用 Sora 2 / Sora 2 Pro 的 `/v1/videos` 异步任务 API，仅作为 Veo 之外的候选。
+* Sora 2 和 Videos API 已由 OpenAI 标记废弃，计划于 2026-09-24 下线；后续替代模型必须通过 driver metadata 和 adapter 协议同步更新。
 
 ---
 

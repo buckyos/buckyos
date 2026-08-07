@@ -47,12 +47,16 @@
     },
     {
       "id": "veo-3.1-generate-preview",
-      "api_types": ["video.txt2video"],
+      "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": [
         "video.txt2video",
         "video.txt2video.google",
         "video.txt2video.gemini",
-        "video.txt2video.{model}"
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}"
       ],
       "pricing": {
         "currency": "USD",
@@ -103,12 +107,16 @@
     },
     {
       "pattern": "veo-*",
-      "api_types": ["video.txt2video"],
+      "api_types": ["video.txt2video", "video.img2video"],
       "logical_mounts": [
         "video.txt2video",
         "video.txt2video.google",
         "video.txt2video.gemini",
-        "video.txt2video.{model}"
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}"
       ],
       "pricing": {
         "currency": "USD",

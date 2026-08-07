@@ -43,6 +43,7 @@ const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
 const DEFAULT_OPENAI_EMBEDDING_MODELS: &str = "text-embedding-3-large,text-embedding-3-small";
 const DEFAULT_OPENAI_ASR_MODELS: &str = "gpt-4o-mini-transcribe,whisper-1";
 const DEFAULT_OPENAI_TTS_MODELS: &str = "gpt-4o-mini-tts,tts-1";
+const DEFAULT_OPENAI_VIDEO_MODELS: &str = "sora-2,sora-2-pro";
 const DEFAULT_SN_AI_PROVIDER_MODELS: &str = "gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-5.4-pro";
 const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
 const DEFAULT_OPENAI_PROVIDER_DRIVER: &str = "openai";
@@ -84,6 +85,8 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "size",
     "user",
 ];
+const OPENAI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const OPENAI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
@@ -376,7 +379,7 @@ impl OpenAIProvider {
         provider_type: crate::model_types::ProviderType,
         provider_driver: &str,
     ) -> ProviderInventory {
-        let (models, image_models, embedding_models, asr_models, tts_models) =
+        let (mut models, image_models, embedding_models, asr_models, tts_models) =
             if provider_driver == "openrouter" {
                 (vec![], vec![], vec![], vec![], vec![])
             } else if provider_driver == SN_AI_PROVIDER_DRIVER {
@@ -396,6 +399,10 @@ impl OpenAIProvider {
                     normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
                 )
             };
+        if provider_driver == DEFAULT_OPENAI_PROVIDER_DRIVER {
+            models.extend(parse_csv_list(DEFAULT_OPENAI_VIDEO_MODELS));
+            models = normalize_model_list(models);
+        }
 
         Self::build_inventory(
             provider_instance_name,
@@ -416,6 +423,11 @@ impl OpenAIProvider {
         image_models: &[String],
         revision: Option<String>,
     ) -> ProviderInventory {
+        let mut models = models.to_vec();
+        if self.provider_driver == DEFAULT_OPENAI_PROVIDER_DRIVER {
+            models.extend(parse_csv_list(DEFAULT_OPENAI_VIDEO_MODELS));
+            models = normalize_model_list(models);
+        }
         let (embedding_models, asr_models, tts_models) = if self.provider_driver == "openrouter" {
             (vec![], vec![], vec![])
         } else {
@@ -429,7 +441,7 @@ impl OpenAIProvider {
             self.instance.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
-            models,
+            models.as_slice(),
             image_models,
             embedding_models.as_slice(),
             asr_models.as_slice(),
@@ -2508,6 +2520,59 @@ impl OpenAIProvider {
         Ok((status, body, latency_ms))
     }
 
+    async fn get_json(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        url: &str,
+    ) -> Result<(StatusCode, Value), ProviderError> {
+        let auth_token = self.build_auth_token(ctx).await?;
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(auth_token.as_str())
+            .send()
+            .await
+            .map_err(|err| {
+                ProviderError::fatal(format!("openai video status request failed: {}", err))
+            })?;
+        let status = response.status();
+        let body = response.json::<Value>().await.map_err(|err| {
+            ProviderError::fatal(format!(
+                "failed to parse openai video status response: {}",
+                err
+            ))
+        })?;
+        Ok((status, body))
+    }
+
+    async fn get_binary(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        url: &str,
+    ) -> Result<(StatusCode, Vec<u8>, String), ProviderError> {
+        let auth_token = self.build_auth_token(ctx).await?;
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(auth_token.as_str())
+            .send()
+            .await
+            .map_err(|err| {
+                ProviderError::fatal(format!("openai video download failed: {}", err))
+            })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("video/mp4")
+            .to_string();
+        let bytes = response.bytes().await.map_err(|err| {
+            ProviderError::fatal(format!("failed to read openai video content: {}", err))
+        })?;
+        Ok((status, bytes.to_vec(), content_type))
+    }
+
     async fn start_llm(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -2540,7 +2605,10 @@ impl OpenAIProvider {
         if !stripped_options.is_empty() {
             info!(
                 "aicc.openai omitted incompatible llm options: provider_instance_name={} model={} trace_id={:?} omitted={:?}",
-                self.instance.provider_instance_name, provider_model, ctx.trace_id, stripped_options
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                stripped_options
             );
         }
         merge_requirements_response_format(&mut request_obj, req);
@@ -3157,6 +3225,176 @@ impl OpenAIProvider {
         }))
     }
 
+    fn video_option(req: &AiMethodRequest, keys: &[&str]) -> Option<Value> {
+        for source in [
+            req.payload.input_json.as_ref(),
+            req.payload.options.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for key in keys {
+                if let Some(value) = source.get(*key) {
+                    return Some(value.clone());
+                }
+            }
+        }
+        None
+    }
+
+    fn video_size(req: &AiMethodRequest) -> Option<String> {
+        let raw = Self::video_option(req, &["size", "resolution"])?;
+        let value = raw.as_str()?.trim();
+        if value.contains('x') {
+            return Some(value.to_string());
+        }
+        let aspect_ratio = Self::video_option(req, &["aspect_ratio", "aspectRatio"])
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "16:9".to_string());
+        match (value.to_ascii_lowercase().as_str(), aspect_ratio.as_str()) {
+            ("720p", "9:16") => Some("720x1280".to_string()),
+            ("720p", _) => Some("1280x720".to_string()),
+            ("1024p", "9:16") => Some("1024x1792".to_string()),
+            ("1024p", _) => Some("1792x1024".to_string()),
+            ("1080p", "9:16") => Some("1080x1920".to_string()),
+            ("1080p", _) => Some("1920x1080".to_string()),
+            _ => None,
+        }
+    }
+
+    async fn start_video(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal(format!("{} requires a non-empty prompt", method))
+        })?;
+        let mut fields = vec![
+            ("model".to_string(), provider_model.to_string()),
+            ("prompt".to_string(), prompt),
+        ];
+        if let Some(seconds) = Self::video_option(
+            req,
+            &["seconds", "duration", "duration_seconds", "durationSeconds"],
+        ) {
+            fields.push(("seconds".to_string(), value_to_form_field(&seconds)));
+        }
+        if let Some(size) = Self::video_size(req) {
+            fields.push(("size".to_string(), size));
+        }
+
+        let mut files = vec![];
+        if method == ai_methods::VIDEO_IMG2VIDEO {
+            let resource = req.payload.resources.first().ok_or_else(|| {
+                ProviderError::fatal("video.img2video requires resources[0] image input")
+            })?;
+            let (name, mime, bytes) = self
+                .resource_to_file_bytes(resource, "input_reference.png")
+                .await?;
+            files.push(("input_reference".to_string(), name, mime, bytes));
+        }
+
+        let started_at = std::time::Instant::now();
+        let url = format!("{}/videos", self.base_url);
+        let (status, mut job, _) = self
+            .post_multipart(ctx, url.as_str(), fields, files)
+            .await?;
+        if !status.is_success() {
+            let message = job
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("openai video create returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let video_id = job
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ProviderError::fatal("openai video create response is missing id"))?
+            .to_string();
+
+        loop {
+            let state = job
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("queued");
+            match state {
+                "completed" => break,
+                "queued" | "in_progress" => {}
+                "failed" => {
+                    let message = job
+                        .pointer("/error/message")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("openai video generation failed");
+                    return Err(ProviderError::fatal(message.to_string()));
+                }
+                other => {
+                    return Err(ProviderError::fatal(format!(
+                        "openai video generation returned unknown status '{}'",
+                        other
+                    )));
+                }
+            }
+            if started_at.elapsed() >= OPENAI_VIDEO_MAX_WAIT {
+                return Err(ProviderError::fatal(format!(
+                    "openai video generation timed out after {} seconds",
+                    OPENAI_VIDEO_MAX_WAIT.as_secs()
+                )));
+            }
+            time::sleep(OPENAI_VIDEO_POLL_INTERVAL).await;
+            let status_url = format!("{}/videos/{}", self.base_url, video_id);
+            let (poll_status, next_job) = self.get_json(ctx, status_url.as_str()).await?;
+            if !poll_status.is_success() {
+                let message = next_job
+                    .pointer("/error/message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("openai video status returned non-success status");
+                return Err(ProviderError::fatal(message.to_string()));
+            }
+            job = next_job;
+        }
+
+        let content_url = format!("{}/videos/{}/content", self.base_url, video_id);
+        let (download_status, bytes, content_type) =
+            self.get_binary(ctx, content_url.as_str()).await?;
+        if !download_status.is_success() {
+            return Err(ProviderError::fatal(format!(
+                "openai video download returned status {}",
+                download_status.as_u16()
+            )));
+        }
+        let mime = if content_type.contains("video/") {
+            content_type
+        } else {
+            "video/mp4".to_string()
+        };
+        let artifact = AiArtifact {
+            name: "video.mp4".to_string(),
+            resource: ResourceRef::Base64 {
+                mime: mime.clone(),
+                data_base64: general_purpose::STANDARD.encode(bytes),
+            },
+            mime: Some(mime),
+            metadata: None,
+        };
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            finish_reason: Some("stop".to_string()),
+            provider_task_ref: Some(video_id),
+            extra: Some(json!({
+                "provider": "openai",
+                "method": method,
+                "model": provider_model,
+                "latency_ms": started_at.elapsed().as_millis() as u64,
+                "provider_io": { "output": job }
+            })),
+            ..Default::default()
+        }))
+    }
+
     async fn start_image_edit(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -3268,6 +3506,22 @@ impl Provider for OpenAIProvider {
                 estimated_latency_ms: Some(5000),
             };
         }
+        if matches!(
+            input.api_type,
+            ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+        ) {
+            return CostEstimateOutput {
+                estimated_cost_usd: if provider_model.contains("pro") {
+                    1.2
+                } else {
+                    0.4
+                },
+                pricing_mode: PricingMode::Unknown,
+                quota_state: QuotaState::Normal,
+                confidence: 0.5,
+                estimated_latency_ms: Some(120_000),
+            };
+        }
 
         let input_tokens = input.input_tokens.max(1);
         let output_tokens = input.estimated_output_tokens.unwrap_or(1024).max(1);
@@ -3336,6 +3590,15 @@ impl Provider for OpenAIProvider {
             ai_methods::AUDIO_ASR => {
                 self.start_asr(&ctx, provider_model.as_str(), &req.request)
                     .await
+            }
+            ai_methods::VIDEO_TXT2VIDEO | ai_methods::VIDEO_IMG2VIDEO => {
+                self.start_video(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
             }
             method => Err(ProviderError::fatal(format!(
                 "openai provider does not support method '{}'",
@@ -3567,6 +3830,7 @@ fn is_supported_llm_model_name(model: &str) -> bool {
 
     normalized.starts_with("gpt-")
         || normalized.starts_with("chatgpt-")
+        || normalized.starts_with("sora-")
         || normalized.starts_with("o1")
         || normalized.starts_with("o3")
         || normalized.starts_with("o4")
@@ -4546,6 +4810,87 @@ data: [DONE]
             .models
             .iter()
             .any(|model| model.exact_model == "gpt-image-1@openai-primary"));
+        let sora = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "sora-2")
+            .expect("default inventory should include sora-2");
+        assert!(sora.api_types.contains(&ApiType::VideoTextToVideo));
+        assert!(sora.api_types.contains(&ApiType::VideoImageToVideo));
+        assert!(sora
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "video.img2video"));
+    }
+
+    #[test]
+    fn remote_inventory_keeps_sora_video_models() {
+        let (models, image_models) = normalize_remote_model_ids(
+            vec![
+                OpenAIModelEntry {
+                    id: "sora-2".to_string(),
+                },
+                OpenAIModelEntry {
+                    id: "sora-2-pro".to_string(),
+                },
+            ],
+            "openai",
+        );
+        assert_eq!(models, vec!["sora-2", "sora-2-pro"]);
+        assert!(image_models.is_empty());
+    }
+
+    #[test]
+    fn official_inventory_refresh_keeps_sora_fallback() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "data": [{ "id": "gpt-5" }]
+            }))
+            .expect("inventory should resolve");
+        assert!(inventory.models.iter().any(|model| {
+            model.provider_model_id == "sora-2"
+                && model.api_types.contains(&ApiType::VideoImageToVideo)
+        }));
+    }
+
+    #[test]
+    fn estimate_video_cost_uses_sora_render_pricing() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                auth_mode: "bearer".to_string(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+        let estimate = provider.estimate_cost(&CostEstimateInput {
+            api_type: ApiType::VideoImageToVideo,
+            exact_model: "sora-2-pro@openai-primary".to_string(),
+            input_tokens: 0,
+            estimated_output_tokens: None,
+            cached_input_tokens: None,
+            request_features: vec![],
+        });
+        assert_eq!(estimate.estimated_cost_usd, 1.2);
+        assert_eq!(estimate.estimated_latency_ms, Some(120_000));
     }
 
     #[test]

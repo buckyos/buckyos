@@ -2137,6 +2137,7 @@ fn method_for_route_api_type(api_type: &str) -> std::result::Result<&'static str
         "audio.asr" | "audio.transcriptions.create" => Ok(ai_methods::AUDIO_ASR),
         "audio.tts" | "audio.speech.create" => Ok(ai_methods::AUDIO_TTS),
         "video.txt2video" | "videos.generate" => Ok(ai_methods::VIDEO_TXT2VIDEO),
+        "video.img2video" => Ok(ai_methods::VIDEO_IMG2VIDEO),
         other => Err(reason_error(
             "invalid_request",
             format!("unsupported api_type '{}'", other),

@@ -7,6 +7,40 @@
   "required_features": [],
   "models": [
     {
+      "id": "sora-2",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.4
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "id": "sora-2-pro",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 1.2
+      },
+      "estimated_latency_ms": 180000
+    },
+    {
       "id": "gpt-image-1",
       "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
       "logical_mounts": [
@@ -109,6 +143,23 @@
     }
   ],
   "patterns": [
+    {
+      "pattern": "sora-*",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.4
+      },
+      "estimated_latency_ms": 120000
+    },
     {
       "pattern": "*transcribe*",
       "api_types": ["audio.asr"],

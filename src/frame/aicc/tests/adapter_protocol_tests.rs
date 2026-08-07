@@ -4,7 +4,7 @@ use aicc::claude::{ClaudeInstanceConfig, ClaudeProvider};
 use aicc::gemini::{GoogleGeminiInstanceConfig, GoogleGeminiProvider};
 use aicc::openai::{OpenAIInstanceConfig, OpenAIProvider};
 use aicc::{InvokeCtx, Provider, ProviderStartResult, ResolvedRequest};
-use buckyos_api::Capability;
+use buckyos_api::{ai_methods, Capability, ResourceRef};
 use common::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +23,115 @@ fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
         "token",
     )
     .expect("openai provider")
+}
+
+#[tokio::test]
+async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
+    let video_bytes = b"openai-video";
+    let base_url = spawn_fake_http_server(vec![
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"id":"video_1","status":"queued","model":"sora-2","progress":0}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"id":"video_1","status":"completed","model":"sora-2","progress":100}"#
+                .to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: String::from_utf8_lossy(video_bytes).to_string(),
+            content_type: "video/mp4",
+            delay_ms: 0,
+        },
+    ])
+    .await;
+    let provider = openai_provider(base_url, 500);
+    let request = request_with_resource(ResourceRef::Base64 {
+        mime: "image/png".to_string(),
+        data_base64: openai_b64(b"image"),
+    });
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "sora-2".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VIDEO_IMG2VIDEO, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("openai img2video should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            let artifacts = summary.artifacts();
+            assert_eq!(artifacts.len(), 1);
+            assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
+            match &artifacts[0].resource {
+                ResourceRef::Base64 { data_base64, .. } => {
+                    assert_eq!(data_base64, &openai_b64(video_bytes));
+                }
+                other => panic!("unexpected video artifact: {:?}", other),
+            }
+        }
+        other => panic!("expected immediate video artifact, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
+    let video_bytes = b"gemini-video";
+    let base_url = spawn_fake_http_server(vec![
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"name":"operations/op1","done":false}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"name":"operations/op1","done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"video.mp4"}}]}}}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: String::from_utf8_lossy(video_bytes).to_string(),
+            content_type: "video/mp4",
+            delay_ms: 0,
+        },
+    ])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let request = request_with_resource(ResourceRef::Base64 {
+        mime: "image/png".to_string(),
+        data_base64: openai_b64(b"image"),
+    });
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "veo-3.1-generate-preview".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VIDEO_IMG2VIDEO, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini img2video should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            let artifacts = summary.artifacts();
+            assert_eq!(artifacts.len(), 1);
+            assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
+            match &artifacts[0].resource {
+                ResourceRef::Base64 { data_base64, .. } => {
+                    assert_eq!(data_base64, &openai_b64(video_bytes));
+                }
+                other => panic!("unexpected video artifact: {:?}", other),
+            }
+        }
+        other => panic!("expected immediate video artifact, got {:?}", other),
+    }
 }
 
 fn gemini_provider(base_url: String, timeout_ms: u64) -> GoogleGeminiProvider {
