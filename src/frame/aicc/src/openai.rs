@@ -2782,6 +2782,97 @@ impl OpenAIProvider {
         Ok(ProviderStartResult::Immediate(summary))
     }
 
+    fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
+        let input = req.payload.input_json.as_ref()?;
+        for key in keys {
+            if let Some(value) = input.get(*key) {
+                if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
+                    return Some(resource);
+                }
+            }
+        }
+        None
+    }
+
+    fn vision_prompt(method: &str, req: &AiMethodRequest) -> String {
+        if let Some(prompt) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("prompt"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return prompt.to_string();
+        }
+
+        let mut prompt = if method == ai_methods::VISION_OCR {
+            "Extract all readable text from this image. Preserve reading order, line breaks, and layout as closely as possible. Return only the extracted text."
+                .to_string()
+        } else {
+            "Describe this image accurately and concisely.".to_string()
+        };
+        if let Some(options) = req.payload.input_json.as_ref().and_then(Value::as_object) {
+            let mut options = options.clone();
+            options.remove("image");
+            options.remove("document");
+            options.remove("prompt");
+            if !options.is_empty() {
+                prompt.push_str(" Follow these request options: ");
+                prompt.push_str(Value::Object(options).to_string().as_str());
+            }
+        }
+        prompt
+    }
+
+    async fn start_vision(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "document"]))
+            .ok_or_else(|| ProviderError::fatal("vision request requires an image resource"))?;
+        let prompt = Self::vision_prompt(method, req);
+        let mut vision_req = req.clone();
+        vision_req.payload.text = None;
+        vision_req.payload.messages = vec![AiMessage::new(
+            AiRole::User,
+            vec![AiContent::text(prompt), AiContent::image(resource)],
+        )];
+        vision_req.payload.tool_specs.clear();
+        vision_req.payload.resources.clear();
+        vision_req.payload.input_json = None;
+        vision_req.payload.options = None;
+
+        match self.start_llm(ctx, provider_model, &vision_req).await? {
+            ProviderStartResult::Immediate(mut response) => {
+                let text = response.text_content();
+                let key = if method == ai_methods::VISION_OCR {
+                    "ocr"
+                } else {
+                    "captions"
+                };
+                let extra = response.extra.get_or_insert_with(|| json!({}));
+                if !extra.is_object() {
+                    *extra = json!({});
+                }
+                if let Some(extra) = extra.as_object_mut() {
+                    extra.insert(key.to_string(), json!({ "text": text }));
+                }
+                Ok(ProviderStartResult::Immediate(response))
+            }
+            other => Ok(other),
+        }
+    }
+
     async fn start_text2image(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -3591,6 +3682,15 @@ impl Provider for OpenAIProvider {
                 self.start_asr(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
+            ai_methods::VISION_OCR | ai_methods::VISION_CAPTION => {
+                self.start_vision(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
+            }
             ai_methods::VIDEO_TXT2VIDEO | ai_methods::VIDEO_IMG2VIDEO => {
                 self.start_video(
                     &ctx,
@@ -3708,6 +3808,8 @@ fn is_supported_openai_api_type(api_type: &ApiType) -> bool {
         ApiType::Llm
             | ApiType::Embedding
             | ApiType::Rerank
+            | ApiType::VisionOcr
+            | ApiType::VisionCaption
             | ApiType::ImageTextToImage
             | ApiType::ImageToImage
             | ApiType::ImageInpaint
@@ -4802,10 +4904,18 @@ data: [DONE]
 
         let inventory = provider.inventory();
         assert_eq!(inventory.provider_driver, "openai");
-        assert!(inventory
+        let gpt = inventory
             .models
             .iter()
-            .any(|model| model.exact_model == "gpt-5@openai-primary"));
+            .find(|model| model.exact_model == "gpt-5@openai-primary")
+            .expect("default inventory should include gpt-5");
+        assert!(gpt.api_types.contains(&ApiType::VisionOcr));
+        assert!(gpt.api_types.contains(&ApiType::VisionCaption));
+        assert!(gpt.logical_mounts.iter().any(|mount| mount == "vision.ocr"));
+        assert!(gpt
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "vision.caption"));
         assert!(inventory
             .models
             .iter()

@@ -26,6 +26,94 @@ fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
 }
 
 #[tokio::test]
+async fn adapter_openai_vision_ocr_uses_multimodal_model() {
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: r#"{"id":"r1","status":"completed","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"first line\nsecond line","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = openai_provider(base_url, 500);
+    let mut request = request_with_resource(ResourceRef::Base64 {
+        mime: "image/png".to_string(),
+        data_base64: openai_b64(b"image"),
+    });
+    request.capability = Capability::Vision;
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({ "include_layout": true }));
+    request.payload.options = None;
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gpt-5".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VISION_OCR, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("openai vision OCR should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.text_content(), "first line\nsecond line");
+            assert_eq!(
+                summary
+                    .extra
+                    .as_ref()
+                    .and_then(|extra| extra.pointer("/ocr/text"))
+                    .and_then(|text| text.as_str()),
+                Some("first line\nsecond line")
+            );
+        }
+        other => panic!("expected immediate OCR response, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn adapter_openai_vision_caption_uses_multimodal_model() {
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: r#"{"id":"r1","status":"completed","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"A cat sitting by a window.","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":6,"total_tokens":16}}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = openai_provider(base_url, 500);
+    let mut request = request_with_resource(ResourceRef::Base64 {
+        mime: "image/png".to_string(),
+        data_base64: openai_b64(b"image"),
+    });
+    request.capability = Capability::Vision;
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({ "style": "short" }));
+    request.payload.options = None;
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gpt-5".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VISION_CAPTION, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("openai vision caption should succeed");
+    match result {
+        ProviderStartResult::Immediate(summary) => {
+            assert_eq!(summary.text_content(), "A cat sitting by a window.");
+            assert_eq!(
+                summary
+                    .extra
+                    .as_ref()
+                    .and_then(|extra| extra.pointer("/captions/text"))
+                    .and_then(|text| text.as_str()),
+                Some("A cat sitting by a window.")
+            );
+        }
+        other => panic!("expected immediate caption response, got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
     let video_bytes = b"openai-video";
     let base_url = spawn_fake_http_server(vec![

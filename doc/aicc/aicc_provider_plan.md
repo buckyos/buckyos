@@ -35,12 +35,12 @@ P1 optional:
 
 | Provider Adapter | Credential                    | 定位                                             | 必须支持的 ApiType                                                                                                                                                                                                                                      |
 | ---------------- | ----------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `openai.rs`      | `OPENAI_API_KEY`              | 文本、embedding、图像编辑、ASR/TTS、rerank MVP           | `llm.chat`、`llm.completion` wrapper、`embedding.text`、`rerank`、`image.txt2img`、`image.img2img`、`image.inpaint`、`audio.asr`、`audio.tts`                                                                                                              |
+| `openai.rs`      | `OPENAI_API_KEY`              | 文本、视觉理解、embedding、图像编辑、ASR/TTS、rerank MVP     | `llm.chat`、`llm.completion` wrapper、`vision.caption`、`vision.ocr`、`embedding.text`、`rerank`、`image.txt2img`、`image.img2img`、`image.inpaint`、`audio.asr`、`audio.tts`                                                                                  |
 | `claude.rs`      | `ANTHROPIC_API_KEY`           | 主流 LLM 与视觉理解 fallback                          | `llm.chat`、`vision.caption`、`vision.ocr`                                                                                                                                                                                                           |
 | `google.rs`      | `GOOGLE_API_KEY` / Gemini key | 多模态主力 provider，覆盖 embedding、vision、music、video | `llm.chat`、`embedding.text`、`embedding.multimodal`、`image.txt2img`、`image.img2img`、`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`、`audio.tts`、`audio.music`、`video.txt2video`、`video.img2video`、`video.video2video`、`video.extend` |
 | `fal.rs`         | `FAL_KEY`                     | 专用媒体处理工具 provider                              | `image.upscale`、`image.bg_remove`、`audio.enhance`、`video.upscale`                                                                                                                                                                                  |
 
-OpenAI 负责 `embedding.text`、图像生成/编辑、mask inpaint、ASR、TTS 等通用能力；OpenAI 文档中已有 `text-embedding-3-*` embedding 示例，GPT Image 支持生成和编辑图片，image edit 也支持 mask，Audio API 支持 speech-to-text 和 text-to-speech。([OpenAI开发者][1])
+OpenAI 负责 `vision.caption`、`vision.ocr`、`embedding.text`、图像生成/编辑、mask inpaint、ASR、TTS 等通用能力；支持图片输入的 GPT 模型通过现有多模态 LLM 请求完成 caption 和 OCR。OpenAI 文档中已有 `text-embedding-3-*` embedding 示例，GPT Image 支持生成和编辑图片，image edit 也支持 mask，Audio API 支持 speech-to-text 和 text-to-speech。([OpenAI开发者][1])
 
 Google 是本方案的多模态主力：Gemini Embedding 2 支持 text、image、video、audio、document 映射到同一 embedding space；Gemini 图像能力支持 text-to-image 和 text+image-to-image 编辑；Gemini image understanding 支持 bounding boxes 和 segmentation 示例；Gemini API 也支持 TTS、Lyria 3 音乐生成、Veo 3.1 视频生成、图生视频、video-to-video 和 extend。([Google AI for Developers][2])
 
@@ -65,7 +65,7 @@ fal.ai 只用于通用大模型不擅长的专用媒体处理：ESRGAN 负责 im
 | `image`     | `image.upscale`        | fal.ai                   | `fal-ai/esrgan`                                            |
 | `image`     | `image.bg_remove`      | fal.ai                   | `fal-ai/imageutils/rembg`                                  |
 | `vision`    | `vision.ocr`           | Google                   | Claude / OpenAI vision 可 fallback                          |
-| `vision`    | `vision.caption`       | Google / Claude          | Claude 适合通用视觉理解 fallback                                   |
+| `vision`    | `vision.caption`       | Google / Claude          | Claude / OpenAI 适合通用视觉理解 fallback                          |
 | `vision`    | `vision.detect`        | Google                   | 使用 bounding box / spatial understanding                    |
 | `vision`    | `vision.segment`       | Google                   | 使用 segmentation masks 能力                                   |
 | `audio`     | `audio.asr`            | OpenAI                   | `audio/transcriptions`                                     |
@@ -89,6 +89,8 @@ fal.ai 只用于通用大模型不擅长的专用媒体处理：ESRGAN 负责 im
 ```text
 llm.chat
 llm.completion        # system-level wrapper to chat
+vision.caption
+vision.ocr
 embedding.text
 rerank                # MVP: LLM structured rerank
 image.txt2img

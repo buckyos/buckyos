@@ -231,19 +231,26 @@
     },
     {
       "pattern": "gpt-*",
-      "api_types": ["llm", "rerank"],
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.openai.{model}",
         "rerank",
         "rerank.openai",
-        "rerank.{model}"
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
       ],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
+        "vision": true,
         "max_context_tokens": 128000,
         "max_output_tokens": 8192
       },
