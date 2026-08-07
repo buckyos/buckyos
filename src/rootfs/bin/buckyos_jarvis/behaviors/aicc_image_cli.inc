@@ -24,6 +24,17 @@ gen_image 'A precise product photo of a matte black desk lamp.' './desk-lamp.png
 
 Use `<command> --help` when non-default options are needed.
 
+### Reading and extending the tools
+
+- The read-only installed TypeScript sources are under `/opt/buckyos/bin/opendan/buckyos-agent/`.
+- Inspect `commands/*.ts` for complete AICC call examples and reuse helpers from `lib/*.ts` when a built-in command does not cover the task.
+- Write derived scripts only to the Agent or current Session `tools/` directory. Never modify the installed system copy.
+- Run a derived script with the installed configuration so the vendored SDK resolves correctly:
+
+```bash
+deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors './tools/my-aicc-tool.ts'
+```
+
 ### Completion and failure
 
 - Treat the command as successful only when its `AgentToolResult` reports success and the output file exists.

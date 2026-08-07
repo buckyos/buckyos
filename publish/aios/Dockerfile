@@ -61,8 +61,17 @@ RUN chmod 755 /usr/local/bin/aicc-tool && \
     done && \
     deno check \
       --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
-      --import-map /opt/buckyos/bin/opendan/buckyos-agent/installed-import-map.json \
       /opt/buckyos/bin/opendan/buckyos-agent/aicc-tool.ts && \
+    (cd /opt/buckyos/bin/opendan/buckyos-agent && deno task gen_image --help >/dev/null 2>&1) && \
+    printf '%s\n' \
+      'import { teardown } from "/opt/buckyos/bin/opendan/buckyos-agent/lib/runtime.ts";' \
+      'teardown();' > /tmp/buckyos-agent-compose-smoke.ts && \
+    deno run \
+      --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
+      --allow-env \
+      --allow-read \
+      /tmp/buckyos-agent-compose-smoke.ts && \
+    rm -f /tmp/buckyos-agent-compose-smoke.ts && \
     command -v aicc-tool >/dev/null && \
     command -v gen_image >/dev/null && \
     command -v edit_image >/dev/null && \

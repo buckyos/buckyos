@@ -7,7 +7,6 @@ launcher="$(basename "$0")"
 if [ "$launcher" = "aicc-tool" ]; then
   exec deno run \
     --config "$tool_root/deno.json" \
-    --import-map "$tool_root/installed-import-map.json" \
     --allow-net \
     --allow-read \
     --allow-write \
@@ -18,7 +17,6 @@ fi
 
 exec deno run \
   --config "$tool_root/deno.json" \
-  --import-map "$tool_root/installed-import-map.json" \
   --allow-net \
   --allow-read \
   --allow-write \
