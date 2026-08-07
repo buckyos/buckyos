@@ -132,7 +132,6 @@ function toScheduleView(task: Task): ScheduleView {
   const status = request?.status ?? statusFromTask(task)
   const schedule = request?.schedule
   const target = request?.target
-  const runner = target?.runner ? ` · ${target.runner}` : ''
   const lastError = result?.last_error == null ? null : String(result.last_error)
 
   return {
@@ -142,7 +141,7 @@ function toScheduleView(task: Task): ScheduleView {
     status,
     scheduleText: formatSchedule(schedule) || task.summary,
     timezone: schedule && 'timezone' in schedule && schedule.timezone ? schedule.timezone : 'UTC',
-    targetText: target ? `${target.task_type}${runner}` : task.type,
+    targetText: target ? target.task_type : task.type,
     nextFireAt: formatTimestamp(result?.next_fire_at),
     lastFireAt: formatTimestamp(result?.last_fire_at),
     lastTaskId: result?.last_task_id == null ? null : String(result.last_task_id),

@@ -26,7 +26,9 @@ pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
 pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 /// Version of the task table schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent, so the scheduler can detect drift.
-pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 5;
+/// v6: dropped the `runner` column + `idx_task_runner_status` (beta2.2 removed
+/// the runner dispatch semantics from TaskMgr).
+pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 6;
 
 /// Sqlite DDL for the task-manager database. `CREATE TABLE IF NOT EXISTS` so
 /// the migration is safe to re-run on every process start.
@@ -35,7 +37,6 @@ CREATE TABLE IF NOT EXISTS task (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     name            TEXT NOT NULL,
     task_type       TEXT NOT NULL,
-    runner          TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL,
     progress        REAL NOT NULL,
     total_items     INTEGER NOT NULL DEFAULT 0,
@@ -59,7 +60,6 @@ CREATE INDEX IF NOT EXISTS idx_task_app_created ON task(app_id, created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_task_session_created ON task(session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_status_created ON task(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_type_created ON task(task_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_task_runner_status ON task(runner, status);
 
 CREATE TABLE IF NOT EXISTS task_note (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +84,6 @@ CREATE TABLE IF NOT EXISTS task (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT NOT NULL,
     task_type       TEXT NOT NULL,
-    runner          TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL,
     progress        REAL NOT NULL,
     total_items     BIGINT NOT NULL DEFAULT 0,
@@ -107,7 +106,6 @@ CREATE INDEX IF NOT EXISTS idx_task_app_created ON task(app_id, created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_task_session_created ON task(session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_status_created ON task(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_type_created ON task(task_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_task_runner_status ON task(runner, status);
 
 CREATE TABLE IF NOT EXISTS task_note (
     id              BIGSERIAL PRIMARY KEY,
@@ -247,7 +245,6 @@ pub struct Task {
     pub root_id: String,
     pub name: String,
     pub task_type: String,
-    pub runner: String,
     pub status: TaskStatus,
     pub progress: f32,
     pub message: Option<String>,
@@ -276,7 +273,6 @@ pub struct CreateTaskOptions {
     pub parent_id: Option<i64>,
     pub root_id: Option<String>,
     pub session_id: Option<String>,
-    pub runner: Option<String>,
     pub priority: Option<u8>,
 }
 
@@ -294,7 +290,6 @@ pub struct TaskFilter {
     pub app_id: Option<String>,
     pub session_id: Option<String>,
     pub task_type: Option<String>,
-    pub runner: Option<String>,
     pub status: Option<TaskStatus>,
     pub parent_id: Option<i64>,
     pub root_id: Option<String>,
@@ -345,12 +340,16 @@ pub struct ListTaskNotesResult {
     pub notes: Vec<TaskNote>,
 }
 
+/// `user_id` / `app_id` request the owner identity recorded on the task.
+/// The server resolves the caller's real identity from the verified session
+/// token: zone-trusted callers (owner/device signed tokens) may fill these on
+/// behalf of an already-authenticated business user; everyone else must leave
+/// them empty or matching their own token identity, otherwise the request is
+/// rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManagerCreateTaskReq {
     pub name: String,
     pub task_type: String,
-    #[serde(default)]
-    pub runner: String,
     #[serde(default)]
     pub data: Option<Value>,
     #[serde(default)]
@@ -367,15 +366,12 @@ pub struct TaskManagerCreateTaskReq {
     pub app_id: String,
     #[serde(default)]
     pub session_id: Option<String>,
-    #[serde(default)]
-    pub app_name: Option<String>,
 }
 
 impl TaskManagerCreateTaskReq {
     pub fn new(
         name: String,
         task_type: String,
-        runner: String,
         data: Option<Value>,
         permissions: Option<TaskPermissions>,
         parent_id: Option<i64>,
@@ -385,15 +381,9 @@ impl TaskManagerCreateTaskReq {
         app_id: String,
         session_id: Option<String>,
     ) -> Self {
-        let app_name = if app_id.is_empty() {
-            None
-        } else {
-            Some(app_id.clone())
-        };
         Self {
             name,
             task_type,
-            runner,
             data,
             permissions,
             parent_id,
@@ -402,7 +392,6 @@ impl TaskManagerCreateTaskReq {
             user_id,
             app_id,
             session_id,
-            app_name,
         }
     }
 
@@ -427,8 +416,6 @@ pub struct TaskManagerCreateDownloadTaskReq {
     #[serde(default)]
     pub root_id: Option<String>,
     #[serde(default)]
-    pub runner: Option<String>,
-    #[serde(default)]
     pub priority: Option<u8>,
     #[serde(default)]
     pub user_id: String,
@@ -436,8 +423,6 @@ pub struct TaskManagerCreateDownloadTaskReq {
     pub app_id: String,
     #[serde(default)]
     pub session_id: Option<String>,
-    #[serde(default)]
-    pub app_name: Option<String>,
 }
 
 impl TaskManagerCreateDownloadTaskReq {
@@ -448,17 +433,11 @@ impl TaskManagerCreateDownloadTaskReq {
         parent_id: Option<i64>,
         permissions: Option<TaskPermissions>,
         root_id: Option<String>,
-        runner: Option<String>,
         priority: Option<u8>,
         user_id: String,
         app_id: String,
         session_id: Option<String>,
     ) -> Self {
-        let app_name = if app_id.is_empty() {
-            None
-        } else {
-            Some(app_id.clone())
-        };
         Self {
             download_url,
             objid,
@@ -466,12 +445,10 @@ impl TaskManagerCreateDownloadTaskReq {
             parent_id,
             permissions,
             root_id,
-            runner,
             priority,
             user_id,
             app_id,
             session_id,
-            app_name,
         }
     }
 
@@ -510,28 +487,15 @@ pub struct TaskManagerAddTaskNoteReq {
     pub content: String,
     #[serde(default)]
     pub data: Option<Value>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
 }
 
 impl TaskManagerAddTaskNoteReq {
-    pub fn new(
-        task_id: i64,
-        note_type: Option<String>,
-        content: String,
-        data: Option<Value>,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-    ) -> Self {
+    pub fn new(task_id: i64, note_type: Option<String>, content: String, data: Option<Value>) -> Self {
         Self {
             task_id,
             note_type,
             content,
             data,
-            source_user_id,
-            source_app_id,
         }
     }
 
@@ -548,23 +512,11 @@ impl TaskManagerAddTaskNoteReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManagerListTaskNotesReq {
     pub task_id: i64,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
 }
 
 impl TaskManagerListTaskNotesReq {
-    pub fn new(
-        task_id: i64,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-    ) -> Self {
-        Self {
-            task_id,
-            source_user_id,
-            source_app_id,
-        }
+    pub fn new(task_id: i64) -> Self {
+        Self { task_id }
     }
 
     pub fn from_json(value: Value) -> Result<Self> {
@@ -586,35 +538,22 @@ pub struct TaskManagerListTasksReq {
     #[serde(default)]
     pub task_type: Option<String>,
     #[serde(default)]
-    pub runner: Option<String>,
-    #[serde(default)]
     pub status: Option<TaskStatus>,
     #[serde(default)]
     pub parent_id: Option<i64>,
     #[serde(default)]
     pub root_id: Option<String>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
 }
 
 impl TaskManagerListTasksReq {
-    pub fn new(
-        filter: TaskFilter,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-    ) -> Self {
+    pub fn new(filter: TaskFilter) -> Self {
         Self {
             app_id: filter.app_id,
             session_id: filter.session_id,
             task_type: filter.task_type,
-            runner: filter.runner,
             status: filter.status,
             parent_id: filter.parent_id,
             root_id: filter.root_id,
-            source_user_id,
-            source_app_id,
         }
     }
 
@@ -633,10 +572,6 @@ pub struct TaskManagerListTasksByTimeRangeReq {
     pub session_id: Option<String>,
     #[serde(default)]
     pub task_type: Option<String>,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
     pub start_time: u64,
     pub end_time: u64,
 }
@@ -646,16 +581,12 @@ impl TaskManagerListTasksByTimeRangeReq {
         app_id: Option<String>,
         session_id: Option<String>,
         task_type: Option<String>,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
         time_range: Range<u64>,
     ) -> Self {
         Self {
             app_id,
             session_id,
             task_type,
-            source_user_id,
-            source_app_id,
             start_time: time_range.start,
             end_time: time_range.end,
         }
@@ -850,23 +781,11 @@ impl TaskManagerDeleteTaskReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManagerDeleteTasksBySessionReq {
     pub session_id: String,
-    #[serde(default)]
-    pub source_user_id: Option<String>,
-    #[serde(default)]
-    pub source_app_id: Option<String>,
 }
 
 impl TaskManagerDeleteTasksBySessionReq {
-    pub fn new(
-        session_id: String,
-        source_user_id: Option<String>,
-        source_app_id: Option<String>,
-    ) -> Self {
-        Self {
-            session_id,
-            source_user_id,
-            source_app_id,
-        }
+    pub fn new(session_id: String) -> Self {
+        Self { session_id }
     }
 
     pub fn from_json(value: Value) -> Result<Self> {
@@ -884,6 +803,11 @@ pub struct DeleteTasksResult {
     pub deleted_count: u64,
 }
 
+/// Client for the task-manager service.
+///
+/// `InProcess` exists for tests that inject a fake `TaskManagerHandler`;
+/// production code always goes through `KRPC` (and therefore through the
+/// server-side token authentication).
 pub enum TaskManagerClient {
     InProcess(Box<dyn TaskManagerHandler>),
     KRPC(Box<kRPC>),
@@ -909,7 +833,9 @@ impl TaskManagerClient {
         }
     }
 
-    //reivew:
+    /// `user_id` / `app_id` request the recorded owner identity. Pass empty
+    /// strings to use the caller's own (verified) token identity; only
+    /// zone-trusted callers may pass values that differ from their token.
     pub async fn create_task(
         &self,
         name: &str,
@@ -922,17 +848,22 @@ impl TaskManagerClient {
         let opts = opts.unwrap_or_default();
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                let result = handler
-                    .handle_create_task(name, task_type, data, opts, user_id, app_id, ctx)
-                    .await?;
-                Ok(result)
+                handler
+                    .handle_create_task(
+                        name,
+                        task_type,
+                        data,
+                        opts,
+                        user_id,
+                        app_id,
+                        RPCContext::default(),
+                    )
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerCreateTaskReq::new(
                     name.to_string(),
                     task_type.to_string(),
-                    opts.runner.unwrap_or_default(),
                     data,
                     opts.permissions,
                     opts.parent_id,
@@ -975,7 +906,6 @@ impl TaskManagerClient {
         let opts = opts.unwrap_or_default();
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
                     .handle_create_download_task(
                         download_url,
@@ -985,7 +915,7 @@ impl TaskManagerClient {
                         opts,
                         user_id,
                         app_id,
-                        ctx,
+                        RPCContext::default(),
                     )
                     .await
             }
@@ -997,7 +927,6 @@ impl TaskManagerClient {
                     opts.parent_id,
                     opts.permissions,
                     opts.root_id,
-                    opts.runner,
                     opts.priority,
                     user_id.to_string(),
                     app_id.to_string(),
@@ -1021,11 +950,7 @@ impl TaskManagerClient {
 
     pub async fn get_task(&self, id: i64) -> Result<Task> {
         match self {
-            Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                let result = handler.handle_get_task(id, ctx).await?;
-                Ok(result)
-            }
+            Self::InProcess(handler) => handler.handle_get_task(id, RPCContext::default()).await,
             Self::KRPC(client) => {
                 let req = TaskManagerGetTaskReq::new(id);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -1053,22 +978,11 @@ impl TaskManagerClient {
         note_type: Option<&str>,
         content: &str,
         data: Option<Value>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
     ) -> Result<TaskNote> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
-                    .handle_add_task_note(
-                        task_id,
-                        note_type,
-                        content,
-                        data,
-                        source_user_id,
-                        source_app_id,
-                        ctx,
-                    )
+                    .handle_add_task_note(task_id, note_type, content, data, RPCContext::default())
                     .await
             }
             Self::KRPC(client) => {
@@ -1077,8 +991,6 @@ impl TaskManagerClient {
                     note_type.map(|value| value.to_string()),
                     content.to_string(),
                     data,
-                    source_user_id.map(|value| value.to_string()),
-                    source_app_id.map(|value| value.to_string()),
                 );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
@@ -1096,25 +1008,15 @@ impl TaskManagerClient {
         }
     }
 
-    pub async fn list_task_notes(
-        &self,
-        task_id: i64,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-    ) -> Result<Vec<TaskNote>> {
+    pub async fn list_task_notes(&self, task_id: i64) -> Result<Vec<TaskNote>> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
-                    .handle_list_task_notes(task_id, source_user_id, source_app_id, ctx)
+                    .handle_list_task_notes(task_id, RPCContext::default())
                     .await
             }
             Self::KRPC(client) => {
-                let req = TaskManagerListTaskNotesReq::new(
-                    task_id,
-                    source_user_id.map(|value| value.to_string()),
-                    source_app_id.map(|value| value.to_string()),
-                );
+                let req = TaskManagerListTaskNotesReq::new(task_id);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
@@ -1250,31 +1152,15 @@ impl TaskManagerClient {
         }
     }
 
-    pub async fn list_tasks(
-        &self,
-        filter: Option<TaskFilter>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-    ) -> Result<Vec<Task>> {
+    pub async fn list_tasks(&self, filter: Option<TaskFilter>) -> Result<Vec<Task>> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                let result = handler
-                    .handle_list_tasks(
-                        filter.unwrap_or_default(),
-                        source_user_id,
-                        source_app_id,
-                        ctx,
-                    )
-                    .await?;
-                Ok(result)
+                handler
+                    .handle_list_tasks(filter.unwrap_or_default(), RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
-                let req = TaskManagerListTasksReq::new(
-                    filter.unwrap_or_default(),
-                    source_user_id.map(|value| value.to_string()),
-                    source_app_id.map(|value| value.to_string()),
-                );
+                let req = TaskManagerListTasksReq::new(filter.unwrap_or_default());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
@@ -1302,33 +1188,25 @@ impl TaskManagerClient {
         app_id: Option<&str>,
         session_id: Option<&str>,
         task_type: Option<&str>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
         time_range: Range<u64>,
     ) -> Result<Vec<Task>> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                let result = handler
+                handler
                     .handle_list_tasks_by_time_range(
                         app_id,
                         session_id,
                         task_type,
-                        source_user_id,
-                        source_app_id,
                         time_range,
-                        ctx,
+                        RPCContext::default(),
                     )
-                    .await?;
-                Ok(result)
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerListTasksByTimeRangeReq::new(
                     app_id.map(|value| value.to_string()),
                     session_id.map(|value| value.to_string()),
                     task_type.map(|value| value.to_string()),
-                    source_user_id.map(|value| value.to_string()),
-                    source_app_id.map(|value| value.to_string()),
                     time_range,
                 );
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -1363,9 +1241,15 @@ impl TaskManagerClient {
     ) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
-                    .handle_update_task(id, status, progress, message, data_patch, ctx)
+                    .handle_update_task(
+                        id,
+                        status,
+                        progress,
+                        message,
+                        data_patch,
+                        RPCContext::default(),
+                    )
                     .await
             }
             Self::KRPC(client) => {
@@ -1389,8 +1273,9 @@ impl TaskManagerClient {
     pub async fn cancel_task(&self, id: i64, recursive: bool) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                handler.handle_cancel_task(id, recursive, ctx).await
+                handler
+                    .handle_cancel_task(id, recursive, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerCancelTaskReq::new(id, recursive);
@@ -1406,9 +1291,9 @@ impl TaskManagerClient {
     pub async fn get_subtasks(&self, parent_id: i64) -> Result<Vec<Task>> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                let result = handler.handle_get_subtasks(parent_id, ctx).await?;
-                Ok(result)
+                handler
+                    .handle_get_subtasks(parent_id, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerGetSubtasksReq::new(parent_id);
@@ -1434,8 +1319,9 @@ impl TaskManagerClient {
     pub async fn update_task_status(&self, id: i64, status: TaskStatus) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                handler.handle_update_task_status(id, status, ctx).await
+                handler
+                    .handle_update_task_status(id, status, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerUpdateTaskStatusReq::new(id, status);
@@ -1456,9 +1342,13 @@ impl TaskManagerClient {
     ) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
-                    .handle_update_task_progress(id, completed_items, total_items, ctx)
+                    .handle_update_task_progress(
+                        id,
+                        completed_items,
+                        total_items,
+                        RPCContext::default(),
+                    )
                     .await
             }
             Self::KRPC(client) => {
@@ -1475,9 +1365,8 @@ impl TaskManagerClient {
     pub async fn update_task_error(&self, id: i64, error_message: &str) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
-                    .handle_update_task_error(id, error_message, ctx)
+                    .handle_update_task_error(id, error_message, RPCContext::default())
                     .await
             }
             Self::KRPC(client) => {
@@ -1494,8 +1383,9 @@ impl TaskManagerClient {
     pub async fn update_task_data(&self, id: i64, data: Value) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                handler.handle_update_task_data(id, data, ctx).await
+                handler
+                    .handle_update_task_data(id, data, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let req = TaskManagerUpdateTaskDataReq::new(id, data);
@@ -1510,10 +1400,7 @@ impl TaskManagerClient {
 
     pub async fn delete_task(&self, id: i64) -> Result<()> {
         match self {
-            Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                handler.handle_delete_task(id, ctx).await
-            }
+            Self::InProcess(handler) => handler.handle_delete_task(id, RPCContext::default()).await,
             Self::KRPC(client) => {
                 let req = TaskManagerDeleteTaskReq::new(id);
                 let req_json = serde_json::to_value(&req).map_err(|e| {
@@ -1525,25 +1412,15 @@ impl TaskManagerClient {
         }
     }
 
-    pub async fn delete_tasks_by_session(
-        &self,
-        session_id: &str,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-    ) -> Result<u64> {
+    pub async fn delete_tasks_by_session(&self, session_id: &str) -> Result<u64> {
         match self {
             Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
                 handler
-                    .handle_delete_tasks_by_session(session_id, source_user_id, source_app_id, ctx)
+                    .handle_delete_tasks_by_session(session_id, RPCContext::default())
                     .await
             }
             Self::KRPC(client) => {
-                let req = TaskManagerDeleteTasksBySessionReq::new(
-                    session_id.to_string(),
-                    source_user_id.map(|value| value.to_string()),
-                    source_app_id.map(|value| value.to_string()),
-                );
+                let req = TaskManagerDeleteTasksBySessionReq::new(session_id.to_string());
                 let req_json = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
@@ -1582,19 +1459,13 @@ impl TaskManagerClient {
         self.update_task_status(id, TaskStatus::Failed).await
     }
 
-    pub async fn pause_all_running_tasks(
-        &self,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-    ) -> Result<()> {
+    pub async fn pause_all_running_tasks(&self) -> Result<()> {
         let filter = TaskFilter {
             status: Some(TaskStatus::Running),
             ..Default::default()
         };
 
-        let running_tasks = self
-            .list_tasks(Some(filter), source_user_id, source_app_id)
-            .await?;
+        let running_tasks = self.list_tasks(Some(filter)).await?;
 
         for task in running_tasks {
             self.pause_task(task.id).await?;
@@ -1603,19 +1474,13 @@ impl TaskManagerClient {
         Ok(())
     }
 
-    pub async fn resume_last_paused_task(
-        &self,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-    ) -> Result<()> {
+    pub async fn resume_last_paused_task(&self) -> Result<()> {
         let filter = TaskFilter {
             status: Some(TaskStatus::Paused),
             ..Default::default()
         };
 
-        let paused_tasks = self
-            .list_tasks(Some(filter), source_user_id, source_app_id)
-            .await?;
+        let paused_tasks = self.list_tasks(Some(filter)).await?;
 
         if let Some(last_paused) = paused_tasks.last() {
             self.resume_task(last_paused.id).await?;
@@ -1664,26 +1529,12 @@ pub trait TaskManagerHandler: Send + Sync {
         note_type: Option<&str>,
         content: &str,
         data: Option<Value>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
         ctx: RPCContext,
     ) -> Result<TaskNote>;
 
-    async fn handle_list_task_notes(
-        &self,
-        task_id: i64,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        ctx: RPCContext,
-    ) -> Result<Vec<TaskNote>>;
+    async fn handle_list_task_notes(&self, task_id: i64, ctx: RPCContext) -> Result<Vec<TaskNote>>;
 
-    async fn handle_list_tasks(
-        &self,
-        filter: TaskFilter,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        ctx: RPCContext,
-    ) -> Result<Vec<Task>>;
+    async fn handle_list_tasks(&self, filter: TaskFilter, ctx: RPCContext) -> Result<Vec<Task>>;
 
     //得到从一个时间范围内的所有任务
     async fn handle_list_tasks_by_time_range(
@@ -1691,8 +1542,6 @@ pub trait TaskManagerHandler: Send + Sync {
         app_id: Option<&str>,
         session_id: Option<&str>,
         task_type: Option<&str>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
         time_range: Range<u64>,
         ctx: RPCContext,
     ) -> Result<Vec<Task>>;
@@ -1740,11 +1589,9 @@ pub trait TaskManagerHandler: Send + Sync {
     async fn handle_delete_tasks_by_session(
         &self,
         session_id: &str,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
         ctx: RPCContext,
     ) -> Result<u64> {
-        let _ = (session_id, source_user_id, source_app_id, ctx);
+        let _ = (session_id, ctx);
         Err(RPCErrors::ReasonError(
             "delete_tasks_by_session not implemented".to_string(),
         ))
@@ -1776,24 +1623,16 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     permissions,
                     parent_id,
                     root_id,
-                    runner,
                     priority,
                     user_id,
                     app_id,
                     session_id,
-                    app_name,
                 } = create_req;
-                let resolved_app_id = if app_id.is_empty() {
-                    app_name.unwrap_or_default()
-                } else {
-                    app_id
-                };
                 let opts = CreateTaskOptions {
                     permissions,
                     parent_id,
                     root_id,
                     session_id,
-                    runner: Some(runner),
                     priority,
                 };
                 let task = self
@@ -1804,7 +1643,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                         data,
                         opts,
                         user_id.as_str(),
-                        resolved_app_id.as_str(),
+                        app_id.as_str(),
                         ctx,
                     )
                     .await?;
@@ -1820,7 +1659,6 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     parent_id: create_req.parent_id,
                     root_id: create_req.root_id,
                     session_id: create_req.session_id,
-                    runner: create_req.runner,
                     priority: create_req.priority,
                 };
                 let task_id = self
@@ -1852,8 +1690,6 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                         note_req.note_type.as_deref(),
                         note_req.content.as_str(),
                         note_req.data,
-                        note_req.source_user_id.as_deref(),
-                        note_req.source_app_id.as_deref(),
                         ctx,
                     )
                     .await?;
@@ -1864,15 +1700,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             }
             "list_task_notes" => {
                 let note_req = TaskManagerListTaskNotesReq::from_json(req.params)?;
-                let notes = self
-                    .0
-                    .handle_list_task_notes(
-                        note_req.task_id,
-                        note_req.source_user_id.as_deref(),
-                        note_req.source_app_id.as_deref(),
-                        ctx,
-                    )
-                    .await?;
+                let notes = self.0.handle_list_task_notes(note_req.task_id, ctx).await?;
                 RPCResult::Success(json!(ListTaskNotesResult { notes }))
             }
             "list_tasks" => {
@@ -1881,31 +1709,19 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     app_id,
                     session_id,
                     task_type,
-                    runner,
                     status,
                     parent_id,
                     root_id,
-                    source_user_id,
-                    source_app_id,
                 } = list_req;
                 let filter = TaskFilter {
                     app_id,
                     session_id,
                     task_type,
-                    runner,
                     status,
                     parent_id,
                     root_id,
                 };
-                let tasks = self
-                    .0
-                    .handle_list_tasks(
-                        filter,
-                        source_user_id.as_deref(),
-                        source_app_id.as_deref(),
-                        ctx,
-                    )
-                    .await?;
+                let tasks = self.0.handle_list_tasks(filter, ctx).await?;
                 RPCResult::Success(json!(ListTasksResult { tasks }))
             }
             "list_tasks_by_time_range" => {
@@ -1914,8 +1730,6 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                     app_id,
                     session_id,
                     task_type,
-                    source_user_id,
-                    source_app_id,
                     start_time,
                     end_time,
                 } = list_req;
@@ -1926,8 +1740,6 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                         app_id.as_deref(),
                         session_id.as_deref(),
                         task_type.as_deref(),
-                        source_user_id.as_deref(),
-                        source_app_id.as_deref(),
                         time_range,
                         ctx,
                     )
@@ -2008,12 +1820,7 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
                 let delete_req = TaskManagerDeleteTasksBySessionReq::from_json(req.params)?;
                 let deleted_count = self
                     .0
-                    .handle_delete_tasks_by_session(
-                        delete_req.session_id.as_str(),
-                        delete_req.source_user_id.as_deref(),
-                        delete_req.source_app_id.as_deref(),
-                        ctx,
-                    )
+                    .handle_delete_tasks_by_session(delete_req.session_id.as_str(), ctx)
                     .await?;
                 RPCResult::Success(json!(DeleteTasksResult { deleted_count }))
             }

@@ -6,7 +6,7 @@ kevent/kmsg test plan.
 Subdirectories:
 
 - `dv`: standard devtest gateway smoke for kmsg and kevent.
-- `task_mgr`: TaskMgr `task_ready` gateway smoke.
+- `task_mgr`: TaskMgr task-changed event gateway smoke (`/task_mgr/{task_id}`).
 - `restart`: standard devtest restart recovery smoke.
 - `peer_container`: two-node peer delivery harness in Docker containers.
 - `peer_vm`: two-node peer delivery harness in QEMU/KVM VMs.

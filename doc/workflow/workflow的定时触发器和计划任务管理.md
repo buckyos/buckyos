@@ -71,11 +71,10 @@ Workflow Service 新增 schedule/trigger 存储，作为计划任务定义的真
 workflow/schedule: scan-new-images daily 03:00
 └── fire subtask: 2026-05-27T03:00:00-07:00
     ├── task_type = workflow/run | agent.delegate | workflow.send_message | ...
-    ├── runner = template.runner
     └── data = render(template.data_template, fire context)
 ```
 
-TaskMgr 中的 schedule root task 是可观察面，不是调度真相源。Workflow 更新它的状态和 `data.schedule` 摘要。fire subtask 创建后，由 `task_type` / `runner` 对应的 executor 接管执行；schedule manager 不承担业务执行。
+TaskMgr 中的 schedule root task 是可观察面，不是调度真相源。Workflow 更新它的状态和 `data.schedule` 摘要。fire subtask 创建后，由拥有该 `task_type` 的 Service 接管执行（beta2.2 起没有 TaskMgr runner 路由，执行者信息在 data 业务字段里）；schedule manager 不承担业务执行。
 
 ### 4.3 AgentTool CLI
 
@@ -105,7 +104,6 @@ OpenDAN 的计划任务 CLI 只和 Workflow schedule API 交互。对 Agent 来�
   },
   "target": {
     "task_type": "workflow.run",
-    "runner": "workflow",
     "name_template": "workflow/run: ${schedule.name} [${fire.fire_id}]",
     "data_template": {
       "workflow_run": {
@@ -177,7 +175,6 @@ P1 可以扩展：
 | 字段 | 说明 |
 | --- | --- |
 | `task_type` | 触发时创建的 TaskMgr subtask 类型，例如 `workflow.run`、`agent.delegate`、`workflow.send_message` |
-| `runner` | 可选；交给 TaskMgr runner 机制路由的执行者。`agent.delegate` 通常是目标 agent runtime id |
 | `name_template` | fire subtask 名称模板，可引用 `${schedule.schedule_id}`、`${schedule.name}`、`${fire.fire_id}`、`${fire.fire_time}`、`${fire.manual}` |
 | `data_template` | fire subtask 的 TaskData 模板，按 fire context 渲染后写入 subtask |
 

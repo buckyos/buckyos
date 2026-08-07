@@ -89,7 +89,7 @@ impl AIAgent {
                                         }
                                         Ok(None) => {}
                                         Err(err) => {
-                                            warn!("opendan.task_inbox: task_ready reader failed: {err}");
+                                            warn!("opendan.task_inbox: task event reader failed: {err}");
                                             break;
                                         }
                                     }
@@ -104,7 +104,7 @@ impl AIAgent {
                 }
                 Err(err) => {
                     warn!(
-                        "opendan.task_inbox[{}]: subscribe runner inbox failed: {err}",
+                        "opendan.task_inbox[{}]: subscribe task events failed: {err}",
                         self.agent_name
                     );
                 }
@@ -129,6 +129,10 @@ impl AIAgent {
         }
     }
 
+    /// Sweep this agent's own `agent.delegate` tasks. TaskMgr no longer has a
+    /// runner column: the executing agent is part of the task payload
+    /// (`progress.execution.runner`), so we list by task_type and filter the
+    /// target agent locally.
     async fn sweep_agent_delegate_tasks(self: Arc<Self>, runner: &str) {
         for status in [
             TaskStatus::Pending,
@@ -142,11 +146,10 @@ impl AIAgent {
             };
             let filter = TaskFilter {
                 task_type: Some(TASK_TYPE_AGENT_DELEGATE.to_string()),
-                runner: Some(runner.to_string()),
                 status: Some(status),
                 ..Default::default()
             };
-            let tasks = match task_mgr.list_tasks(Some(filter), None, None).await {
+            let tasks = match task_mgr.list_tasks(Some(filter)).await {
                 Ok(tasks) => tasks,
                 Err(err) => {
                     warn!(
@@ -157,6 +160,9 @@ impl AIAgent {
                 }
             };
             for task in tasks {
+                if !task_targets_runner(&task, runner) {
+                    continue;
+                }
                 if let Err(err) = self.clone().process_agent_delegate_task(task, runner).await {
                     warn!(
                         "opendan.task_executor[{}]: process delegate task failed: {err:#}",
@@ -178,9 +184,6 @@ impl AIAgent {
                 .await;
         }
         if task.status.is_terminal() {
-            return Ok(());
-        }
-        if task.runner != runner {
             return Ok(());
         }
         if task.status == TaskStatus::Paused {
@@ -482,7 +485,7 @@ impl AIAgent {
         status: &'static str,
         mode: InterruptMode,
     ) -> Result<()> {
-        if task.runner != runner {
+        if !task_targets_runner(&task, runner) {
             return Ok(());
         }
         let delegate_data = agent_delegate_task_data(&task)?;
@@ -665,7 +668,6 @@ impl AIAgent {
                     parent_id: Some(parent.id),
                     root_id: Some(parent.root_id.clone()),
                     session_id: Some(parent.session_id.clone()),
-                    runner: None,
                     priority: None,
                     permissions: Some(parent.permissions.clone()),
                 }),
@@ -764,6 +766,31 @@ fn execution_session_id(data: &AgentDelegateTaskData) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn delegate_execution_runner(data: &AgentDelegateTaskData) -> Option<String> {
+    data.progress
+        .as_ref()
+        .and_then(|progress| progress.execution.as_ref())
+        .and_then(|execution| execution.get("runner"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Ownership check for delegate tasks. The executing agent lives in the task
+/// payload (`progress.execution.runner`; schedule templates land there via
+/// the legacy `agent_delegate.execution` mapping). A task without a target
+/// agent belongs to no executor — same contract as the removed top-level
+/// runner column, where every producer set the field explicitly.
+fn task_targets_runner(task: &Task, runner: &str) -> bool {
+    agent_delegate_task_data(task)
+        .ok()
+        .as_ref()
+        .and_then(delegate_execution_runner)
+        .map(|target| target == runner)
+        .unwrap_or(false)
 }
 
 fn route_session_id(data: &AgentDelegateTaskData) -> Option<String> {
@@ -876,7 +903,6 @@ fn task_route_input_text(task: &Task) -> String {
         "root_task_id": task.root_id.parse::<i64>().unwrap_or(task.id),
         "root_id": task.root_id.as_str(),
         "task_type": task.task_type.as_str(),
-        "runner": task.runner.as_str(),
         "task_name": task.name.as_str(),
         "user_id": task.user_id.as_str(),
         "app_id": task.app_id.as_str(),
@@ -935,15 +961,11 @@ fn find_bound_worksession(
     None
 }
 
-fn runner_task_ready_event_id(runner: &str) -> String {
-    format!("/task_mgr/runner/{}/task_ready", runner.trim())
-}
-
-fn task_executor_event_ids(runner: &str) -> Vec<String> {
-    vec![
-        runner_task_ready_event_id(runner),
-        "/task_mgr/**".to_string(),
-    ]
+/// Wake-up topics for the task inbox. The runner-specific task_ready inbox is
+/// gone (beta2.2); task-changed events under `/task_mgr/**` remain the
+/// acceleration signal, with the periodic sweep as the authoritative path.
+fn task_executor_event_ids(_runner: &str) -> Vec<String> {
+    vec!["/task_mgr/**".to_string()]
 }
 
 #[cfg(test)]
@@ -961,7 +983,6 @@ mod tests {
             root_id: "7".to_string(),
             name: "delegate".to_string(),
             task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
-            runner: "agent".to_string(),
             status: TaskStatus::Pending,
             progress: 0.0,
             message: None,
@@ -1009,14 +1030,32 @@ mod tests {
     }
 
     #[test]
-    fn task_executor_subscribes_runner_and_task_changes() {
+    fn task_executor_subscribes_task_changes_only() {
         assert_eq!(
             task_executor_event_ids("agent"),
-            vec![
-                "/task_mgr/runner/agent/task_ready".to_string(),
-                "/task_mgr/**".to_string()
-            ]
+            vec!["/task_mgr/**".to_string()]
         );
+    }
+
+    #[test]
+    fn delegate_ownership_comes_from_execution_runner() {
+        // Target agent rides in the payload; a task without one belongs to
+        // no executor (same contract as the removed runner column).
+        let mine = task(json!({
+            "agent_delegate": {
+                "purpose": "Do the task",
+                "execution": {"runner": "agent"}
+            }
+        }));
+        assert!(task_targets_runner(&mine, "agent"));
+        assert!(!task_targets_runner(&mine, "other-agent"));
+
+        let unassigned = task(json!({
+            "agent_delegate": {
+                "purpose": "Do the task"
+            }
+        }));
+        assert!(!task_targets_runner(&unassigned, "agent"));
     }
 
     #[test]

@@ -47,7 +47,7 @@ async fn task_01_immediate_persists_completed() {
 
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .expect("list tasks");
     let task = tasks
@@ -145,7 +145,7 @@ async fn task_03_queued_persists_pending_and_position() {
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .expect("list tasks");
     let task = tasks

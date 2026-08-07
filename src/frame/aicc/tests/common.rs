@@ -405,7 +405,6 @@ impl TaskManagerHandler for MockTaskMgrHandler {
             root_id: String::new(),
             name: name.to_string(),
             task_type: task_type.to_string(),
-            runner: opts.runner.unwrap_or_default(),
             status: TaskStatus::Pending,
             progress: 0.0,
             message: None,
@@ -440,8 +439,6 @@ impl TaskManagerHandler for MockTaskMgrHandler {
         note_type: Option<&str>,
         content: &str,
         data: Option<Value>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
         _ctx: RPCContext,
     ) -> std::result::Result<TaskNote, RPCErrors> {
         let task = self
@@ -463,8 +460,8 @@ impl TaskManagerHandler for MockTaskMgrHandler {
             note_type: note_type.unwrap_or("human").to_string(),
             content: content.to_string(),
             data: data.unwrap_or_else(|| json!({})),
-            author_user_id: source_user_id.unwrap_or(&task.user_id).to_string(),
-            author_app_id: source_app_id.unwrap_or(&task.app_id).to_string(),
+            author_user_id: task.user_id.clone(),
+            author_app_id: task.app_id.clone(),
             created_at: now,
             updated_at: now,
         };
@@ -480,8 +477,6 @@ impl TaskManagerHandler for MockTaskMgrHandler {
     async fn handle_list_task_notes(
         &self,
         task_id: i64,
-        _source_user_id: Option<&str>,
-        _source_app_id: Option<&str>,
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<TaskNote>, RPCErrors> {
         if !self
@@ -507,8 +502,6 @@ impl TaskManagerHandler for MockTaskMgrHandler {
     async fn handle_list_tasks(
         &self,
         _filter: TaskFilter,
-        _source_user_id: Option<&str>,
-        _source_app_id: Option<&str>,
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<Task>, RPCErrors> {
         Ok(self
@@ -525,8 +518,6 @@ impl TaskManagerHandler for MockTaskMgrHandler {
         _app_id: Option<&str>,
         _session_id: Option<&str>,
         _task_type: Option<&str>,
-        _source_user_id: Option<&str>,
-        _source_app_id: Option<&str>,
         _time_range: std::ops::Range<u64>,
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<Task>, RPCErrors> {

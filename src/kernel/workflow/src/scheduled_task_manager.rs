@@ -45,11 +45,12 @@ pub enum ScheduleSpec {
     },
 }
 
+/// beta2.2: the `runner` dispatch field is gone. A schedule target names a
+/// `task_type` in this service's own execution domain; there is no generic
+/// "deliver to arbitrary runner" parameter anymore.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScheduleSubtaskTemplate {
     pub task_type: String,
-    #[serde(default)]
-    pub runner: Option<String>,
     pub name_template: String,
     #[serde(default)]
     pub data_template: Value,
@@ -461,16 +462,12 @@ impl ScheduleTaskMirrorClient {
     ) -> Result<Option<i64>, String> {
         let tasks = self
             .client
-            .list_tasks(
-                Some(TaskFilter {
-                    app_id: Some(self.app_id.clone()),
-                    task_type: Some("workflow/schedule".to_string()),
-                    root_id: Some(schedule.schedule_id.clone()),
-                    ..Default::default()
-                }),
-                Some(self.user_id.as_str()),
-                Some(self.app_id.as_str()),
-            )
+            .list_tasks(Some(TaskFilter {
+                app_id: Some(self.app_id.clone()),
+                task_type: Some("workflow/schedule".to_string()),
+                root_id: Some(schedule.schedule_id.clone()),
+                ..Default::default()
+            }))
             .await
             .map_err(|err| err.to_string())?;
         Ok(tasks
@@ -493,6 +490,10 @@ impl ScheduleTaskMirrorClient {
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| schedule.schedule_id.clone());
+        // The workflow service is a zone-trusted caller: it records the fire
+        // subtask under the schedule owner it already authenticated at
+        // registration time. No identity-downgrade retry — a failure here is
+        // a real error, not a cue to silently switch identities.
         let task = self
             .client
             .create_task(
@@ -502,34 +503,13 @@ impl ScheduleTaskMirrorClient {
                 schedule.owner.user_id.as_str(),
                 schedule.owner.app_id.as_str(),
                 Some(CreateTaskOptions {
-                    runner: rendered.runner.clone(),
                     parent_id: Some(parent_id),
                     root_id: Some(root_id.clone()),
                     ..Default::default()
                 }),
             )
-            .await;
-        let task = match task {
-            Ok(task) => task,
-            Err(err) if is_create_subtask_permission_error(err.to_string().as_str()) => self
-                .client
-                .create_task(
-                    rendered.name.as_str(),
-                    rendered.task_type.as_str(),
-                    Some(rendered.data.clone()),
-                    self.user_id.as_str(),
-                    self.app_id.as_str(),
-                    Some(CreateTaskOptions {
-                        runner: rendered.runner.clone(),
-                        parent_id: Some(parent_id),
-                        root_id: Some(root_id),
-                        ..Default::default()
-                    }),
-                )
-                .await
-                .map_err(|err| err.to_string())?,
-            Err(err) => return Err(err.to_string()),
-        };
+            .await
+            .map_err(|err| err.to_string())?;
         Ok(task.id)
     }
 
@@ -539,15 +519,11 @@ impl ScheduleTaskMirrorClient {
         };
         let tasks = self
             .client
-            .list_tasks(
-                Some(TaskFilter {
-                    parent_id: Some(parent_id),
-                    root_id: schedule.task_mirror.root_id.clone(),
-                    ..Default::default()
-                }),
-                Some(schedule.owner.user_id.as_str()),
-                Some(schedule.owner.app_id.as_str()),
-            )
+            .list_tasks(Some(TaskFilter {
+                parent_id: Some(parent_id),
+                root_id: schedule.task_mirror.root_id.clone(),
+                ..Default::default()
+            }))
             .await
             .map_err(|err| err.to_string())?;
         Ok(tasks
@@ -566,16 +542,12 @@ impl ScheduleTaskMirrorClient {
         };
         let tasks = self
             .client
-            .list_tasks(
-                Some(TaskFilter {
-                    parent_id: Some(parent_id),
-                    root_id: schedule.task_mirror.root_id.clone(),
-                    task_type: Some("workflow/run".to_string()),
-                    ..Default::default()
-                }),
-                Some(schedule.owner.user_id.as_str()),
-                Some(schedule.owner.app_id.as_str()),
-            )
+            .list_tasks(Some(TaskFilter {
+                parent_id: Some(parent_id),
+                root_id: schedule.task_mirror.root_id.clone(),
+                task_type: Some("workflow/run".to_string()),
+                ..Default::default()
+            }))
             .await
             .map_err(|err| err.to_string())?;
         Ok(tasks
@@ -595,15 +567,11 @@ impl ScheduleTaskMirrorClient {
     pub async fn load_schedules(&self) -> Result<Vec<WorkflowSchedule>, String> {
         let tasks = self
             .client
-            .list_tasks(
-                Some(TaskFilter {
-                    app_id: Some(self.app_id.clone()),
-                    task_type: Some("workflow/schedule".to_string()),
-                    ..Default::default()
-                }),
-                Some(self.user_id.as_str()),
-                Some(self.app_id.as_str()),
-            )
+            .list_tasks(Some(TaskFilter {
+                app_id: Some(self.app_id.clone()),
+                task_type: Some("workflow/schedule".to_string()),
+                ..Default::default()
+            }))
             .await
             .map_err(|err| err.to_string())?;
         Ok(tasks.iter().filter_map(schedule_from_task).collect())
@@ -727,10 +695,6 @@ fn schedule_root_task_name(schedule: &WorkflowSchedule) -> String {
         "workflow/schedule/{} [{}]",
         schedule.name, schedule.schedule_id
     )
-}
-
-fn is_create_subtask_permission_error(message: &str) -> bool {
-    message.contains("No permission to create subtasks")
 }
 
 fn schedule_task_data(schedule: &WorkflowSchedule) -> Value {
@@ -884,7 +848,6 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .to_string();
             Ok(ScheduleSubtaskTemplate {
                 task_type: "workflow.send_message".to_string(),
-                runner: Some("workflow".to_string()),
                 name_template: "remind: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
                     "send_message": {
@@ -911,7 +874,10 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .and_then(Value::as_str)
                 .ok_or_else(|| "missing target.workspace_id".to_string())?
                 .to_string();
-            let runner = value
+            // The executing agent lives in the task payload
+            // (`execution.runner`, OpenDAN's business schema) — it is not a
+            // TaskMgr dispatch parameter anymore.
+            let agent = value
                 .get("agent")
                 .and_then(Value::as_str)
                 .filter(|value| !value.trim().is_empty())
@@ -919,7 +885,6 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .unwrap_or_else(|| "${schedule.owner.app_id}".to_string());
             Ok(ScheduleSubtaskTemplate {
                 task_type: "agent.delegate".to_string(),
-                runner: Some(runner.clone()),
                 name_template: title.clone(),
                 data_template: json!({
                     "agent_delegate": {
@@ -938,7 +903,7 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                         "execution": {
                             "workspace_id": workspace_id,
                             "behavior": value.get("behavior").cloned().unwrap_or(Value::Null),
-                            "runner": runner,
+                            "runner": agent,
                             "status": "pending"
                         }
                     }
@@ -953,7 +918,6 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .to_string();
             Ok(ScheduleSubtaskTemplate {
                 task_type: "workflow.run".to_string(),
-                runner: Some("workflow".to_string()),
                 name_template: "workflow/run: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
                     "workflow_run": {
@@ -972,7 +936,6 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .to_string();
             Ok(ScheduleSubtaskTemplate {
                 task_type: "opendan.command".to_string(),
-                runner: Some("opendan".to_string()),
                 name_template: "opendan.command: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
                     "opendan_command": {
@@ -996,7 +959,6 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .to_string();
             Ok(ScheduleSubtaskTemplate {
                 task_type: "service.rpc".to_string(),
-                runner: Some(service.clone()),
                 name_template: "service.rpc: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
                     "service_rpc": {
@@ -1031,12 +993,6 @@ pub fn schedule_subtask_template_from_value(
         .to_string();
     Ok(ScheduleSubtaskTemplate {
         task_type,
-        runner: value
-            .get("runner")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
         name_template,
         data_template: value.get("data_template").cloned().unwrap_or(Value::Null),
     })
@@ -1045,7 +1001,6 @@ pub fn schedule_subtask_template_from_value(
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderedScheduleSubtask {
     pub task_type: String,
-    pub runner: Option<String>,
     pub name: String,
     pub data: Value,
 }
@@ -1057,11 +1012,6 @@ pub fn render_subtask_template(
     let context = render_context(schedule, fire);
     RenderedScheduleSubtask {
         task_type: render_string(&schedule.target.task_type, &context),
-        runner: schedule
-            .target
-            .runner
-            .as_ref()
-            .map(|value| render_string(value, &context)),
         name: render_string(&schedule.target.name_template, &context),
         data: render_value(&schedule.target.data_template, &context),
     }
@@ -1083,11 +1033,6 @@ pub fn validate_subtask_template(target: &ScheduleSubtaskTemplate) -> Result<(),
     }
     if target.name_template.trim().is_empty() {
         return Err("target.name_template must not be empty".to_string());
-    }
-    if let Some(runner) = target.runner.as_deref() {
-        if runner.trim().is_empty() {
-            return Err("target.runner must not be empty".to_string());
-        }
     }
     match target.task_type.as_str() {
         "agent.delegate" => validate_agent_delegate_template(target),

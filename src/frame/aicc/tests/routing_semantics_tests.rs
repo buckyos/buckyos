@@ -396,7 +396,7 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .expect("list tasks");
     let task = tasks

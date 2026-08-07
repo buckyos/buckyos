@@ -1,6 +1,6 @@
 use buckyos_api::{
-    parse_typed_task_data, MsgCenterClient, SendMessageTaskData, TaskFilter, TaskManagerClient,
-    TaskStatus, TypedTaskData,
+    parse_typed_task_data, MsgCenterClient, SendMessageTaskData, Task, TaskFilter,
+    TaskManagerClient, TaskStatus, TypedTaskData,
 };
 use log::{info, warn};
 use serde_json::{json, Value};
@@ -12,7 +12,6 @@ use tokio::time::{sleep, Duration};
 use crate::scheduled_task_manager::ScheduleStore;
 
 const TASK_TYPE: &str = "workflow.send_message";
-const RUNNER: &str = "workflow";
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct SendMessageTaskExecutor {
@@ -46,14 +45,16 @@ impl SendMessageTaskExecutor {
         });
     }
 
+    /// Sweep this service's own task type. `workflow.send_message` tasks are
+    /// created by the scheduled-task manager in this process; there is no
+    /// cross-service runner inbox anymore.
     async fn sweep_pending(&self) {
         let filter = TaskFilter {
             task_type: Some(TASK_TYPE.to_string()),
-            runner: Some(RUNNER.to_string()),
             status: Some(TaskStatus::Pending),
             ..Default::default()
         };
-        let tasks = match self.task_mgr.list_tasks(Some(filter), None, None).await {
+        let tasks = match self.task_mgr.list_tasks(Some(filter)).await {
             Ok(tasks) => tasks,
             Err(err) => {
                 warn!("workflow.send_message executor list_tasks failed: {err:?}");
@@ -61,10 +62,7 @@ impl SendMessageTaskExecutor {
             }
         };
         for task in tasks {
-            if let Err(err) = self
-                .execute_task(task.id, task.data.clone(), task.root_id)
-                .await
-            {
+            if let Err(err) = self.execute_task(&task).await {
                 warn!("workflow.send_message task {} failed: {}", task.id, err);
                 if let Err(update_err) = self.task_mgr.mark_task_as_failed(task.id, &err).await {
                     warn!(
@@ -76,7 +74,8 @@ impl SendMessageTaskExecutor {
         }
     }
 
-    async fn execute_task(&self, task_id: i64, data: Value, root_id: String) -> Result<(), String> {
+    async fn execute_task(&self, task: &Task) -> Result<(), String> {
+        let task_id = task.id;
         self.task_mgr
             .update_task(
                 task_id,
@@ -88,19 +87,27 @@ impl SendMessageTaskExecutor {
             .await
             .map_err(|err| format!("mark running failed: {err:?}"))?;
 
-        let mut task_data = parse_send_message_data(data)?;
+        let mut task_data = parse_send_message_data(task.data.clone())?;
         let schedule_id = task_data
             .request
             .trigger
             .as_ref()
             .and_then(|trigger| trigger.schedule_id.clone())
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or(root_id);
+            .unwrap_or_else(|| task.root_id.clone());
         let schedule = self
             .schedules
             .get(&schedule_id)
             .await
             .ok_or_else(|| format!("schedule `{schedule_id}` not found"))?;
+        // The task must be owned by the schedule owner it references —
+        // otherwise a foreign task could ride on someone else's schedule.
+        if task.user_id != schedule.owner.user_id || task.app_id != schedule.owner.app_id {
+            return Err(format!(
+                "task owner {}/{} does not match schedule `{schedule_id}` owner {}/{}",
+                task.user_id, task.app_id, schedule.owner.user_id, schedule.owner.app_id
+            ));
+        }
         let sender = resolve_sender_did(
             &self.buckyos_root,
             &schedule.owner.user_id,

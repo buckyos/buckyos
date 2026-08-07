@@ -13,7 +13,6 @@ mod kernel_mgr; // support manager kernel service (run in native, run for system
 mod kevent_server;
 mod local_app_mgr;
 mod node_daemon;
-mod node_executor;
 mod region_probe;
 mod run_item;
 mod run_plist;

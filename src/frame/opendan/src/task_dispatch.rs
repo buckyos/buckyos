@@ -103,7 +103,6 @@ impl TaskDispatch {
             parent_id: None,
             root_id: None,
             session_id: Some(session_id.to_string()),
-            runner: None,
             priority: None,
             permissions: None,
         };

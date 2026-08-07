@@ -50,7 +50,6 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
         root_id: "sch-1".to_string(),
         name: "workflow/schedule/Daily email todo scan from note_123".to_string(),
         task_type: "workflow/schedule".to_string(),
-        runner: String::new(),
         status: TaskStatus::Failed,
         progress: 0.0,
         message: Some("smtp timeout".to_string()),
@@ -86,19 +85,6 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
     );
 }
 
-#[test]
-fn schedule_task_prompt_reader_uses_unfiltered_fallback_for_system_owner() {
-    let (user_id, app_id) = schedule_task_prompt_reader_identity("system", "buckyos_jarvis");
-    if user_id.is_none() {
-        assert_eq!(app_id, None);
-    } else {
-        assert!(app_id.is_some());
-    }
-
-    let (user_id, app_id) = schedule_task_prompt_reader_identity("alice", "buckyos_jarvis");
-    assert_eq!(user_id, Some("alice".to_string()));
-    assert!(app_id.as_deref().is_some_and(|value| !value.is_empty()));
-}
 
 #[test]
 fn self_check_behavior_end_keeps_session_idle() {

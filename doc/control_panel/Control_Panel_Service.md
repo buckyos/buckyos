@@ -244,7 +244,7 @@ identifier / staging handle
 
 ### 5.2 Runner 与恢复
 
-任务创建时 `runner = app.control_panel`。三条 dispatch 路径收敛到同一幂等入口：MsgQueue 持久投递（fetch 后处理完成才 ack）、`/task_mgr/runner/app.control_panel/task_ready` KEvent（仅低延迟加速）、启动扫描 + 60s sweep 兜底；每条路径都以 TaskManager 为真相源重新读取任务。
+安装任务只能由 Control Panel 已鉴权的 `apps.*` 业务接口创建（beta2.2 起 TaskMgr 无 runner 派发语义）。dispatch 路径收敛到同一幂等入口：RPC 侧创建后立即本地执行（低延迟正常路径）、MsgQueue 持久投递（fetch 后处理完成才 ack）、启动扫描 + 60s sweep 兜底；每条路径都以 TaskManager 为真相源重新读取任务（按 `task_type = app.install / app.update` 过滤自己的任务）。
 
 ### 5.3 升级 / 卸载
 

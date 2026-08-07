@@ -248,7 +248,7 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 
 - 一个 schedule 必须对应一个 TaskMgr root task，类型为 `workflow/schedule`。root task 创建失败时，enabled schedule 不应静默成功；fire 时 root task 不可用应返回明确错误或把 schedule 置为 `error`。
 - 每次 fire 必须创建一个 fire subtask，且固定 `parent_id = schedule.task_mirror.root_task_id`、`root_id = schedule.task_mirror.root_id`。模板不能覆盖这两个绑定。
-- schedule 内核不 hardcode `remind` / `agent_task` / RPC 业务逻辑。subtask 创建后由 `task_type` / `runner` 对应的 executor 接管执行，例如 `agent.delegate` 由 AgentTaskExecutor 处理，`workflow.run` 进入 workflow run 机制。
+- schedule 内核不 hardcode `remind` / `agent_task` / RPC 业务逻辑。subtask 创建后由拥有该 `task_type` 的 Service 接管执行（beta2.2 起没有 TaskMgr runner 路由），例如 `agent.delegate` 由 OpenDAN AgentTaskExecutor 按 task_type + data 内目标 agent 处理，`workflow.run` 进入 workflow run 机制。
 - fire record 只记录调度事实与 subtask 关联：`fire_id`、`fire_time`、`manual`、`status`、`task_id`、可选 `run_id`、`error`。业务结果写在 subtask 的 status / data / message 中。
 
 `WorkflowSchedule.target` 是 fire subtask template：
@@ -256,7 +256,6 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 ```json
 {
   "task_type": "agent.delegate",
-  "runner": "agent-runtime-id",
   "name_template": "scan photos",
   "data_template": {
     "agent_delegate": {
@@ -280,7 +279,6 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 | 字段 | 职责 |
 |------|------|
 | `task_type` | 定义 fire subtask 的执行语义与 TaskMgr 类型，如 `workflow.run`、`agent.delegate`、`workflow.send_message` |
-| `runner` | 可选路由信息，由 TaskMgr runner / executor 机制解释；schedule manager 只透传 |
 | `name_template` | 创建 subtask 时渲染为任务名称 |
 | `data_template` | 创建 subtask 时渲染为 TaskData，支持 `${schedule.*}` / `${fire.*}` 上下文 |
 

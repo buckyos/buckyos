@@ -30,3 +30,4 @@ url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+jsonwebtoken = { workspace = true }

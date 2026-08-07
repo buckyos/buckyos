@@ -63,7 +63,6 @@ pub struct Task {
     pub root_id: String,
     pub name: String,
     pub task_type: String,
-    pub runner: String,
     pub status: TaskStatus,
     pub progress: f32,
     pub message: Option<String>,
@@ -97,14 +96,13 @@ pub struct TaskNote {
 | 字段 | 语义 |
 | --- | --- |
 | `id` | 自增任务 ID，是单个 Task 的主键 |
-| `user_id` | 任务所属用户，创建时来自显式参数或 RPC session token |
-| `app_id` | 任务所属应用，创建时来自显式参数、`app_name` 兼容字段或 RPC session token |
+| `user_id` | 任务所属用户。服务端从验签后的 session token 得到调用者身份；zone 可信调用者（owner/device key 签名的 token，即 kernel/frame service）可以代已鉴权的业务用户填写，其它调用者必须与 token 身份一致，否则拒绝 |
+| `app_id` | 任务所属应用，规则同 `user_id` |
 | `session_id` | 会话 ID，用于跨 app 聚合同一 session 的任务 |
 | `parent_id` | 父任务 ID，空表示根任务 |
 | `root_id` | 任务树根 ID；根任务默认等于自身 `id` 的字符串形式 |
 | `name` | 任务展示/稳定名称，不作为唯一键；任务唯一身份使用自增 `id` |
 | `task_type` | 业务任务类型，如 `download`、`workflow/run`、`workflow/step` |
-| `runner` | 目标执行者 ID，当前只约定为 `node_id` 或 `app_id`；为空表示尚未分配 |
 | `status` | 当前任务状态 |
 | `progress` | 0 到 100 的进度百分比 |
 | `message` | 面向用户或 UI 的当前状态说明 |
@@ -212,7 +210,6 @@ Schema version 当前为：
 | `id` | 自增主键 |
 | `name` | 任务名称 |
 | `task_type` | 任务类型 |
-| `runner` | 目标执行者 ID，当前只约定为 `node_id` 或 `app_id` |
 | `status` | 字符串形式的 `TaskStatus` |
 | `progress` | 进度百分比 |
 | `total_items` | 旧进度 API 的总项数 |
@@ -237,7 +234,8 @@ Schema version 当前为：
 - `idx_task_session_created`：`(session_id, created_at DESC)`
 - `idx_task_status_created`：`(status, created_at DESC)`
 - `idx_task_type_created`：`(task_type, created_at DESC)`
-- `idx_task_runner_status`：`(runner, status)`
+
+beta2.2（schema v6）删除了 `runner` 列与 `idx_task_runner_status`；旧库在启动迁移中自动 drop。
 
 Notes 表为 `task_note`，逻辑字段包括：
 
@@ -559,7 +557,7 @@ submit_output
 }
 ```
 
-Workflow 只负责创建 `workflow/thunk` task 并写入描述性字段；scheduler / node executor 后续负责更新 status、progress、payload、error。面向 node executor 的可执行 task 必须在顶层 `Task.runner` 写入目标 node id，执行器通过 task_mgr filter 获取归属于自己的任务。node executor 要求 task data 中存在 `thunk`、`function_object` 等执行字段，并会写回 `executor` 与 `executor_result`。
+Workflow 只负责创建 `workflow/thunk` task 并写入描述性字段。beta2.2 起 TaskMgr 不再有 runner 派发语义：目标节点等执行归属信息只存在于 `data` 的业务 namespace（如 `dispatch.node_id`），由拥有该 task_type 的 Service 自己解释；不存在跨进程的 runner 扫描或领取。原 node executor（跨 owner 轮询 `scheduler.dispatch_thunk` 的消费者）从未接入主流程，已随 runner 协议一并删除。
 
 ### 5.4 `aicc.compute`
 
@@ -714,23 +712,13 @@ scheduler.dispatch_thunk
 | --- | --- |
 | 绑定 task_type | `scheduler.dispatch_thunk` |
 | data 主 namespace | 根字段 `thunk` / `function_object`，可选 `dispatch`、`executor`、`executor_result` |
-| 创建方 | Scheduler / node executor dispatch path |
-| 更新方 | node executor |
-| 消费方 | node executor、scheduler、TaskMgr UI |
+| 创建方 | 当前无生产者（保留 schema 供后续 scheduler 使用） |
+| 更新方 | — |
+| 消费方 | TaskMgr UI |
 
-node executor 消费该类 task 时要求：
+beta2.2 备注：该 task type 目前只有 data schema 定义。原设计中的跨进程 node executor（按顶层 runner 领取任务）从未接入主流程，已随 runner 派发协议一并删除；`data.runner` / `dispatch.runner` 是 data 内的 function runner hint（如 `script-runner:python`），`dispatch.node_id` 是调度回执字段，均由业务自行解释，不构成 TaskMgr 层的任务归属。
 
-该 task type 下，Task 顶层 `runner` 表示目标 node id。node executor 通过 `TaskFilter { task_type: "scheduler.dispatch_thunk", runner: self_node_id, status: Pending }` 拉取任务，不再从 `data.node_id` 或 `dispatch.node_id` 判断任务归属。`data.runner` / `dispatch.runner` 仍表示更具体的 function runner hint，例如 `script-runner:python`。
-
-Task 顶层字段：
-
-```json
-{
-  "task_type": "scheduler.dispatch_thunk",
-  "runner": "node-id",
-  "status": "Pending"
-}
-```
+data 字段示例：
 
 ```json
 {
@@ -759,12 +747,8 @@ Task 顶层字段：
 
 - `thunk` 必须存在，并能解析为 `ThunkObject`。
 - `function_object` 必须存在，并能解析为 `FunctionObject`。
-- 顶层 `Task.runner` 是执行归属字段，node executor 只消费与自身 node id 匹配的任务。
 - `data.node_id` / `dispatch.node_id` 是可选调度回执字段，只用于观察和调试。
-- `data.runner` 可来自根字段 `runner` 或 `dispatch.runner`，表示 function runner hint，不表示任务归属。
 - `thunk_obj_id` 可来自根字段 `thunk_obj_id` 或 `dispatch.details.thunk_obj_id`。
-
-node executor 开始执行时写入 `executor.status = "running"`、`work_dir`、`result_path`；终态时写入 `executor.status = "finished"` 和 `executor_result`，并同步更新 Task 状态。
 
 ## 6. RPC 协议
 
@@ -808,67 +792,42 @@ SDK 额外提供便捷方法：
 | `pause_all_running_tasks` | 查找 Running 任务并逐个暂停 |
 | `resume_last_paused_task` | 查找 Paused 任务并恢复最后一个 |
 
-## 7. 通用 Task Executor 范式
+## 7. 任务执行范式：谁创建，谁执行
 
-TaskMgr 的 executor 模型不是传统 Msg Queue 抢消费模型。TaskMgr 只提供任务状态、过滤查询、权限和事件；是否调度、如何选择执行者、执行进程如何启动，都由对应 `task_type` 的生产者、调度器和执行器约定。
+beta2.2 起 TaskMgr 不再包含任何调度语义：没有 `runner` 字段、没有 runner 维度的查询、也没有 `task_ready` 投递事件。TaskMgr 只负责任务的状态、进度、checkpoint/data、事件、恢复信息和可观测性。
 
-这里的基本架构纪律是：task executor 不主动抢占任务，只能等待任务被分配给自己。也就是说，executor 的职责是“执行已经归属于我的 task”，不是“从公共 Pending 池里挑一个我能做的 task”。
+默认范式（也是唯一范式）：
 
-通用约束：
+```text
+Service 收到经过认证和授权的业务请求
+    -> Service 创建自己的 Task
+    -> Service 执行、暂停、恢复自己的 Task
+    -> TaskMgr 持久化状态、进度、checkpoint、事件和任务关系
+```
 
-- `task_type` 决定任务协议和 `data` schema。
-- 顶层 `Task.runner` 是执行者 ID，当前只约定两类取值：`node_id` 或 `app_id`。当任务要由某个节点上的执行器处理时写 `node_id`；当任务要由某个应用/系统服务处理时写 `app_id`。
-- 更细的执行偏好、provider、shard、脚本 runner、资源 hint 等不放入顶层 `runner`，应放在 `Task.data` 的业务 namespace 或调度回执中。
-- `Task.data` 承载业务 payload 和执行回执，不应作为通用执行归属过滤字段。需要过滤的归属信息应放在顶层 `runner`。
-- executor 拉任务必须走 `list_tasks(TaskFilter { task_type, runner, status: Pending })`，不能先拉所有 Pending 再在本地解析 `data` 抢任务。
-- executor 可以订阅 `/task_mgr/runner/{runner}/task_ready` 作为新任务唤醒事件，但事件只用于减少轮询延迟，不能替代 `list_tasks` 回拉。
-- 同一个 `runner` 在同一个 `task_type` 下应只有一个权威执行进程；如果需要多个副本共享同一 runner，必须额外设计 lease / claim / compare-and-set 语义，否则会有重复启动风险。
+架构纪律：
 
-不采用抢占式消费的原因：
+- 跨 Service 调用必须使用目标 Service 的显式业务 operation（如 `apps.install`、agent 委托接口），不存在 "create_task 指定 runner 等待别人领取" 的通用投递入口。
+- 业务接口可以返回 `accepted + task_id` 后异步执行；"异步" 本身不构成引入分发组件的理由。
+- Target Service 可以在内部扫描和恢复**自己拥有的 Task**（按自己的 `task_type` / `app_id` 过滤），但不能跨进程扫描其他 owner 创建的 Task。
+- 执行者信息如果对业务有意义（例如 OpenDAN 的目标 agent），放在 `Task.data` 的业务 namespace（如 `progress.execution.runner`），由拥有该 task_type 的 Service 自己解释。
+- Task 的取消、重试、审批等写操作通过 Task owner 的业务接口完成；调用方对目标 Task 只做只读观察。
 
-1. 抢占式模型把调度决策分散到每个 executor，本质上会退化成一组消费者竞争同一批 Pending task，后续要增加时序控制、亲和性、资源配额、用户级隔离或灰度策略时，很难知道哪个消费者会先拿到任务。
-2. 分布式系统中，“能执行”和“应该执行”不是一件事。BuckyOS 需要让 scheduler 或生产者明确表达“这个任务应该交给谁”，executor 只验证并执行这个分配结果。
-3. 公共队列抢消费通常需要额外的 claim/lease/visibility-timeout 语义才能避免重复执行和半失败悬挂；当前 TaskMgr 的核心模型是状态总账，不把这套队列语义塞进 executor 默认路径。
-4. 明确分配可以把时序控制留在 scheduler 或生产者侧，便于复现、审计和调试。executor 默默等待自己的 `runner` 任务，系统行为更确定。
+安全边界（P0 收敛结论）：
 
-### 7.1 生产者直接指定执行者
+```text
+能够访问 TaskMgr
+!= 能够向任意 Service 投递工作
+!= 能够要求高权限 Service 代为执行
+```
 
-适用于生产者已经知道目标执行者的场景，例如目标节点明确，或目标应用/系统服务明确。
+任何调用者仅通过 `create_task` 构造 `task_type = app.install` 等高权限业务形态的数据，只会得到一条属于自己的普通任务记录：没有 runner 列、没有 runner 查询、没有 inbox 事件，任何执行器都不会因此被驱动。
 
-流程：
+需要在 Target 离线时持久保留请求、异步领取、lease、幂等交接的场景，属于下一版本 Workflow 的 Task Dispatch Center（见 `notepads/task-dispatch-center-todo.md`），不属于 TaskMgr。
 
-1. 生产者调用 `create_task`，写入 `task_type`、`runner`、初始 `data`，状态为 `Pending`。
-2. 目标 executor 订阅 `/task_mgr/runner/{runner}/task_ready`，并周期性调用 `list_tasks`，过滤 `task_type + runner + Pending`。
-3. executor 接到任务后把状态推进为 `Running`，同时写入 `data.executor` 或业务 namespace 下的运行信息。
-4. executor 完成后写入 `Completed` / `Failed` / `Canceled`，并把结果、错误、指标等写入 `data`。
-5. 观察方通过 `get_task` / `get_subtasks` / kevent 订阅读取状态，不直接参与执行归属判断。
+### 7.1 内置下载执行器
 
-该模式不经过 scheduler，适合明确点对点派发。它仍然不是“多个消费者抢同一个队列”，因为 executor 只查询自己 `runner` 名下的任务。
-
-### 7.2 调度器统一分配执行者
-
-适用于生产者只描述“要做什么”，但目标执行者需要根据系统状态、资源、亲和性、权限或时序规则统一决定的场景。BuckyOS 更推荐这种分布式调度指派模型，而不是让一组执行器在同一个 Pending 集合上抢消费。
-
-流程：
-
-1. 生产者创建描述性 task，写入 `task_type`、业务 `data` 和任务树关系；如果尚未分配执行者，`runner` 可以为空。
-2. scheduler 读取需要调度的任务，根据 system-config、资源状态、affinity、业务策略选择目标 runner。当前 runner 应落到具体 `node_id` 或 `app_id`。
-3. scheduler 在执行器可见的 task 上写入顶层 `runner`。当前实现中应保证 executor 轮询前，面向执行器的 task 已经带有 runner；可以由 scheduler 创建派生执行 task，也可以由创建路径直接带入调度结果。
-4. scheduler 创建或生成带 `runner` 的可执行 task 后，TaskMgr 发布 `/task_mgr/runner/{runner}/task_ready` 唤醒对应 executor。
-5. executor 只消费 `TaskFilter { task_type, runner: self_runner, status: Pending }` 返回的任务，不再自行解析 `data.node_id` 或其它业务字段判断是否属于自己。
-6. executor 写回执行状态和结果；scheduler 或上层 workflow 根据事件或回拉结果继续推进后续步骤。
-
-该模式的关键纪律是：分配权集中在 scheduler，执行权集中在具体 executor，TaskMgr 只保存分配结果和状态变化。这样可以保留时序控制能力，避免后续在“谁抢到了任务”这层语义上补复杂规则。
-
-### 7.3 内置执行器只是特例
-
-`download_executor` 是 TaskMgr 进程内的内置执行器，用于提供真实的系统用例和下载复用能力。它可以展示任务状态推进、进度更新、去重和结果写回，但不是分布式 executor 的完整范式：
-
-- 它运行在 TaskMgr 进程内，不代表“客户进程 -> task_mgr -> 独立执行器进程”的跨进程模型。
-- 它直接由 `create_download_task` 入队，不经过 scheduler。
-- 它通过 `objid` / `download_url` 查找已有任务，并用本地执行器内存队列避免重复执行。
-
-跨进程 executor 应优先采用 7.1 或 7.2 的 `runner + TaskFilter` 模型。
+`download_executor` 是 TaskMgr 进程内的内置执行器：`create_download_task` 在鉴权后直接入队执行，服务重启后由启动扫描恢复自己的下载任务。它是 "谁创建，谁执行" 范式在 TaskMgr 自身的实例，不是跨进程分发模型。
 
 ## 8. 任务变更事件
 
@@ -879,16 +838,16 @@ TaskMgr 在任务状态、错误、进度或数据变化后发布 kevent 事件�
 ```text
 /task_mgr/{task_id}
 /task_mgr/{root_id}
-/task_mgr/runner/{runner}/task_ready
 ```
 
 语义：
 
 - `/task_mgr/{task_id}`：订阅单个任务变化。
 - `/task_mgr/{root_id}`：订阅整棵任务树变化；子孙任务变化会 fanout 到 root channel。
-- `/task_mgr/runner/{runner}/task_ready`：订阅某个 runner 的新 Pending task 唤醒事件。`runner` 当前只约定为 `node_id` 或 `app_id`，且必须是合法 kevent path segment。
 - 根任务的 `root_id == task_id` 时不会重复发布同一事件到两个相同 channel。
 - `root_id` 中不能包含 `/`，且必须能通过 kevent event id 校验，否则不会发布 root fanout。
+
+beta2.2 删除了 `/task_mgr/runner/{runner}/task_ready` runner inbox 事件；kevent 只承担任务变化的加速通知，任务执行由拥有任务的 Service 自己驱动。
 
 ### 8.1 任务变更事件
 
@@ -904,7 +863,6 @@ TaskMgr 在任务状态、错误、进度或数据变化后发布 kevent 事件�
 | `user_id` | 任务所属用户 |
 | `app_id` | 任务所属应用 |
 | `task_type` | 任务类型 |
-| `runner` | 目标执行者 ID，当前只约定为 `node_id` 或 `app_id` |
 | `from_status` | 变化前状态 |
 | `to_status` | 变化后状态 |
 | `progress` | 变化后进度 |
@@ -928,45 +886,6 @@ TASK_EVENT_DATA_INLINE_LIMIT_BYTES = 1300
 
 - `status` 和 `error` 变化总是发布。
 - `data` 和 `progress` 变化按 task id 以 1 秒为间隔限流。
-
-### 8.2 Runner Task Ready 事件
-
-跨进程 executor 用 runner inbox 事件降低发现新任务的延迟：
-
-```text
-/task_mgr/runner/{runner}/task_ready
-```
-
-发布条件：
-
-- `create_task` 创建出 `Pending` task。
-- task 顶层 `runner` 非空。
-- `runner` 能组成合法 kevent event id。当前 runner 只约定为 `node_id` 或 `app_id`，应使用 ASCII 字母、数字、`_`、`-`、`.`。
-
-事件 payload：
-
-| 字段 | 说明 |
-| --- | --- |
-| `event_kind` | 固定为 `task_ready` |
-| `task_id` | 新创建的任务 ID |
-| `root_id` | 所属任务树根 ID |
-| `parent_id` | 父任务 ID |
-| `user_id` | 任务所属用户 |
-| `app_id` | 任务所属应用 |
-| `session_id` | 会话 ID |
-| `task_type` | 任务类型 |
-| `runner` | 目标执行者 ID |
-| `status` | 创建后的任务状态，当前应为 `Pending` |
-| `created_at` | 创建时间 |
-| `updated_at` | 更新时间 |
-| `source_method` | 触发事件的方法，当前为 `create_task` |
-
-消费规则：
-
-1. executor 启动时先订阅 `/task_mgr/runner/{runner}/task_ready`，随后立即执行一次 `list_tasks(TaskFilter { task_type, runner, status: Pending })`，覆盖订阅前已经创建的任务。
-2. 每次收到 `task_ready` 事件后，不直接相信事件 payload 执行任务，而是再次调用 `list_tasks` 回拉权威 Pending 集合。
-3. executor 仍应保留低频轮询兜底，避免 kevent 丢失、订阅失败或进程重启窗口导致任务长时间未被发现。
-4. 该事件不是抢占信号；它只通知“有 task 已经分配给这个 runner”。executor 不能订阅通配 runner 后跨 runner 抢任务。
 
 ## 9. 下载任务
 
@@ -1032,10 +951,10 @@ TASK_EVENT_DATA_INLINE_LIMIT_BYTES = 1300
 
 当前仓库中 TaskMgr 被多个模块作为基础能力使用：
 
-- Control Panel app installer：创建安装任务、下载 app package、等待任务终态。
+- Control Panel app installer：`apps.*` 业务接口鉴权后创建并在进程内执行/恢复自己的安装任务。
 - AICC：把异步模型调用、流式输出、外部任务绑定到 TaskMgr 任务。
-- Workflow service：把 Run / Step / Thunk / Map shard 映射为 TaskMgr 任务树，并订阅 `/task_mgr/{run_id}` 接收人类动作或执行结果变化。
-- node_daemon：通过 `/kapi/task-manager` 获取任务，用于 function execution 相关路径。
+- Workflow service：把 Run / Step / Schedule 映射为 TaskMgr 任务树，schedule fire 子任务（如 `workflow.send_message`）由 workflow 服务自己按 task_type 扫描执行，并订阅 `/task_mgr/{run_id}` 接收人类动作或执行结果变化。
+- OpenDAN：`agent.delegate` 任务由 opendan 创建并执行；目标 agent 记录在 `data.progress.execution.runner`，按 task_type + 本地归属过滤。
 
 对 Workflow 来说，TaskMgr 是运行期 UI 与状态总账。Workflow service 自身保留 DSL、拓扑、Reference、Amendment 等 workflow 语义；通用状态、进度、错误、等待人工处理等由 TaskMgr task tree 表达。
 
@@ -1065,9 +984,8 @@ TaskMgr 不理解每种业务任务的完整 schema。业务模块应把结构�
 
 1. `priority` 已在创建参数中保留，但当前服务端没有调度语义。
 2. `total_items`、`completed_items`、`error_message` 是数据库列，公开 `Task` 模型只暴露 `message`、`progress` 和 `data`；`update_task_progress` 会把 completed/total 同步写入 `data`。
-3. 权限模型已经存在，但部分 handler 当前没有完整使用 RPC session token，仍依赖显式 source 字段或空上下文兼容路径。
+3. 全部 handler 已强制验签 session token（fail closed）：身份只来自 token；`source_user_id` / `source_app_id` 等 payload 身份声明字段已删除。zone 可信判定依据签名者（owner/device key 自签 vs verify-hub 签发）。跨机 device 自签 token 依赖 runtime trust key 集合，目前只包含本机 device key，多节点场景待 runtime 层支持动态加载对端 device doc。
 4. `list_tasks_by_time_range` 当前先按 app/type 查库，再在内存中过滤时间范围；数据量变大后应下推到 SQL。
 5. `delete_task` 依赖数据库外键级联删除子任务；当前不会发布删除事件。
 6. `update_task_data` 是整体替换，和 `update_task` 的 merge patch 语义不同，新代码需要明确选择。
-7. `/task_mgr/runner/{runner}/task_ready` 当前只在创建带非空 runner 的 Pending task 时发布；已有 task 后续被分配 runner 的场景还没有对应事件。
-8. 当前 `create_task` / `list_tasks` 已支持顶层 `runner`，但还没有专门的 `assign_runner` 或原子 `claim` RPC；调度器后置分配场景需要在 executor 轮询前创建或生成已经带 `runner` 的可执行 task，或者补充对应接口并复用 `task_ready` 事件。
+7. beta2.2 已删除 runner 派发语义（`runner` 字段、`idx_task_runner_status`、`/task_mgr/runner/{runner}/task_ready`、按 runner 的查询）。需要持久、异步、可离线交接工作的场景由下一版本 Workflow 的 Task Dispatch Center 承接，不会回到 TaskMgr。

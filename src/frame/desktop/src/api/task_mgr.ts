@@ -40,7 +40,6 @@ export type WorkflowScheduleSpec =
 
 export interface WorkflowScheduleTarget {
   task_type: string
-  runner?: string | null
   name_template?: string
   data_template?: Record<string, unknown>
 }
@@ -167,7 +166,6 @@ interface RawTask {
   root_id?: string
   name?: string
   task_type?: string
-  runner?: string
   status?: RawTaskStatus
   progress?: number
   message?: string | null
@@ -265,10 +263,9 @@ function toTaskSource(task: RawTask, data: Record<string, unknown>): TaskSource 
     return dataSource
   }
 
-  const runner = (task.runner ?? '').toLowerCase()
   const appId = (task.app_id ?? '').toLowerCase()
   const taskType = (task.task_type ?? '').toLowerCase()
-  if (runner.includes('agent') || runner.includes('jarvis') || taskType.includes('agent.')) return 'agent'
+  if (appId.includes('agent') || appId.includes('jarvis') || taskType.includes('agent.')) return 'agent'
   if (appId && appId !== 'system' && appId !== 'task-manager') return 'app'
   if (task.user_id) return 'user'
   return 'system'

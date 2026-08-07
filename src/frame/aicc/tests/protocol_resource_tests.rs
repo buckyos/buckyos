@@ -196,7 +196,7 @@ async fn proto_sec_04_idempotency_key_preserved() {
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .expect("list tasks");
     let task = tasks
@@ -477,7 +477,7 @@ async fn proto_res_01_named_object_passthrough_preserved() {
     assert_eq!(resp.status, AiMethodStatus::Running);
     let taskmgr = center.task_manager_client().unwrap();
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .unwrap();
     let task = tasks
@@ -680,7 +680,7 @@ async fn proto_res_08_named_object_and_url_mixed_order_stable() {
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .unwrap();
     let task = tasks
@@ -718,7 +718,7 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
     let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
+        .list_tasks(None::<TaskFilter>)
         .await
         .unwrap();
     let task = tasks

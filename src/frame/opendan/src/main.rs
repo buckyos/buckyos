@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    set_buckyos_api_runtime, BuckyOSRuntimeType, CreateTaskOptions, TaskStatus,
+    set_buckyos_api_runtime, BuckyOSRuntimeType, TaskStatus,
 };
 use buckyos_kit::{get_buckyos_app_data_dir, init_logging};
 use log::{error, info, warn};
@@ -720,16 +720,13 @@ async fn run_worksession_task_quick_test(agent: Arc<AIAgent>, json_path: PathBuf
                 })),
                 &user_id,
                 &app_id,
-                Some(CreateTaskOptions {
-                    runner: Some(runner),
-                    ..Default::default()
-                }),
+                None,
             )
             .await
             .map_err(|err| anyhow!("create worksession task test task failed: {err}"))?;
         info!(
             "opendan.worksession_task_test: created task_id={} runner={} user_id={} app_id={}",
-            task.id, task.runner, task.user_id, task.app_id
+            task.id, runner, task.user_id, task.app_id
         );
         let final_task = wait_task_to_finish(agent.clone(), task.id).await?;
         info!(

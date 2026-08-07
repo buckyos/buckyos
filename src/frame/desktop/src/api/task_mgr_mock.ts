@@ -184,7 +184,6 @@ const seedTasks: Task[] = [
         },
         target: {
           task_type: 'workflow.run',
-          runner: 'workflow',
           name_template: 'workflow/run: weekly-full-backup [${fire.fire_id}]',
           data_template: {
             workflow_run: {
@@ -271,7 +270,6 @@ const seedTasks: Task[] = [
         },
         target: {
           task_type: 'workflow.run',
-          runner: 'workflow',
           name_template: 'workflow/run: scan-new-images [${fire.fire_id}]',
           data_template: {
             workflow_run: {
@@ -332,7 +330,6 @@ const seedTasks: Task[] = [
         },
         target: {
           task_type: 'agent.delegate',
-          runner: 'jarvis',
           name_template: 'agent/delegate: monthly-agent-report [${fire.fire_id}]',
           data_template: {
             agent_task: {
@@ -390,7 +387,6 @@ const seedTasks: Task[] = [
         },
         target: {
           task_type: 'service.rpc',
-          runner: 'storage.cleaner',
           name_template: 'service/rpc: cleanup-temp-files [${fire.fire_id}]',
           data_template: { service: 'storage.cleaner', method: 'cleanup_temp' },
         },
@@ -400,7 +396,7 @@ const seedTasks: Task[] = [
         last_fire_at: '2026-05-28T06:00:00Z',
         last_task_id: 'task-011-1',
         consecutive_failures: 3,
-        last_error: 'runner storage.cleaner is unavailable',
+        last_error: 'target executor storage.cleaner is unavailable',
       },
     } satisfies WorkflowScheduleTaskPayload,
     children: [
@@ -412,7 +408,7 @@ const seedTasks: Task[] = [
         type: 'one-time',
         status: 'failed',
         progress: null,
-        summary: 'runner storage.cleaner is unavailable',
+        summary: 'target executor storage.cleaner is unavailable',
         createdAt: '2026-05-28T06:00:00Z',
         updatedAt: '2026-05-28T06:00:05Z',
         startedAt: '2026-05-28T06:00:00Z',

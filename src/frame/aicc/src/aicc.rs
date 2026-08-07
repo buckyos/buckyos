@@ -5673,7 +5673,6 @@ mod tests {
                 root_id: opts.root_id.unwrap_or_else(|| (*guard).to_string()),
                 name: name.to_string(),
                 task_type: task_type.to_string(),
-                runner: opts.runner.unwrap_or_default(),
                 status: TaskStatus::Pending,
                 progress: 0.0,
                 message: None,
@@ -5708,8 +5707,6 @@ mod tests {
             note_type: Option<&str>,
             content: &str,
             data: Option<serde_json::Value>,
-            source_user_id: Option<&str>,
-            source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> std::result::Result<TaskNote, RPCErrors> {
             let task = self
@@ -5733,8 +5730,8 @@ mod tests {
                 note_type: note_type.unwrap_or("human").to_string(),
                 content: content.to_string(),
                 data: data.unwrap_or_else(|| json!({})),
-                author_user_id: source_user_id.unwrap_or(&task.user_id).to_string(),
-                author_app_id: source_app_id.unwrap_or(&task.app_id).to_string(),
+                author_user_id: task.user_id.clone(),
+                author_app_id: task.app_id.clone(),
                 created_at: now,
                 updated_at: now,
             };
@@ -5750,8 +5747,6 @@ mod tests {
         async fn handle_list_task_notes(
             &self,
             task_id: i64,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<TaskNote>, RPCErrors> {
             if !self
@@ -5777,8 +5772,6 @@ mod tests {
         async fn handle_list_tasks(
             &self,
             _filter: TaskFilter,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<Task>, RPCErrors> {
             let tasks = self
@@ -5796,8 +5789,6 @@ mod tests {
             _app_id: Option<&str>,
             _session_id: Option<&str>,
             _task_type: Option<&str>,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _time_range: std::ops::Range<u64>,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<Task>, RPCErrors> {
@@ -6595,7 +6586,7 @@ mod tests {
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
-            .list_tasks(None, None, None)
+            .list_tasks(None)
             .await
             .expect("list tasks");
         let task = tasks
@@ -6652,7 +6643,7 @@ mod tests {
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
-            .list_tasks(None, None, None)
+            .list_tasks(None)
             .await
             .expect("list tasks");
         let task = tasks
@@ -6696,7 +6687,7 @@ mod tests {
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
-            .list_tasks(None, None, None)
+            .list_tasks(None)
             .await
             .expect("list tasks");
         let task = tasks
@@ -6750,7 +6741,7 @@ mod tests {
         assert_eq!(response.status, AiMethodStatus::Running);
 
         let tasks = taskmgr
-            .list_tasks(None, None, None)
+            .list_tasks(None)
             .await
             .expect("list tasks");
         let task = tasks
@@ -6794,7 +6785,7 @@ mod tests {
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
-            .list_tasks(None, None, None)
+            .list_tasks(None)
             .await
             .expect("list tasks");
         let task = tasks
@@ -6955,7 +6946,7 @@ mod tests {
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = taskmgr
-            .list_tasks(None, None, None)
+            .list_tasks(None)
             .await
             .expect("list tasks");
         assert!(tasks.is_empty(), "routing failure should not persist task");

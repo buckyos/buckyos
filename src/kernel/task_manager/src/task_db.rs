@@ -103,36 +103,38 @@ impl TaskDb {
 
     async fn cleanup_removed_task_schema(&self) -> DbResult<()> {
         self.drop_task_name_scope_index().await?;
-        self.drop_task_title_column().await
+        self.drop_task_column("title").await?;
+        // beta2.2: runner dispatch semantics removed from TaskMgr.
+        self.drop_task_index("idx_task_runner_status").await?;
+        self.drop_task_column("runner").await
     }
 
     async fn drop_task_name_scope_index(&self) -> DbResult<()> {
-        let sql = match self.backend {
-            RdbBackend::Sqlite => "DROP INDEX IF EXISTS idx_task_name_scope",
-            RdbBackend::Postgres => "DROP INDEX IF EXISTS idx_task_name_scope",
-        };
-        self.pool.execute(sql).await?;
+        self.drop_task_index("idx_task_name_scope").await
+    }
+
+    async fn drop_task_index(&self, index_name: &str) -> DbResult<()> {
+        let sql = format!("DROP INDEX IF EXISTS {}", index_name);
+        self.pool.execute(sql.as_str()).await?;
         Ok(())
     }
 
-    async fn drop_task_title_column(&self) -> DbResult<()> {
+    async fn drop_task_column(&self, column: &str) -> DbResult<()> {
         match self.backend {
             RdbBackend::Sqlite => {
                 let exists = sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = ?")
-                    .bind("title")
+                    .bind(column)
                     .fetch_optional(self.pool())
                     .await?
                     .is_some();
                 if exists {
-                    self.pool
-                        .execute("ALTER TABLE task DROP COLUMN title")
-                        .await?;
+                    let sql = format!("ALTER TABLE task DROP COLUMN {}", column);
+                    self.pool.execute(sql.as_str()).await?;
                 }
             }
             RdbBackend::Postgres => {
-                self.pool
-                    .execute("ALTER TABLE task DROP COLUMN IF EXISTS title")
-                    .await?;
+                let sql = format!("ALTER TABLE task DROP COLUMN IF EXISTS {}", column);
+                self.pool.execute(sql.as_str()).await?;
             }
         }
         Ok(())
@@ -151,18 +153,17 @@ impl TaskDb {
 
         let sql = self.render_sql(
             "INSERT INTO task (
-                name, task_type, runner, status, progress,
+                name, task_type, status, progress,
                 total_items, completed_items, error_message, data,
                 created_at, updated_at, user_id, app_id, session_id, parent_id,
                 root_id, permissions, message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id",
         );
 
         let row = sqlx::query(&sql)
             .bind(task.name.clone())
             .bind(task.task_type.clone())
-            .bind(task.runner.clone())
             .bind(task.status.to_string())
             .bind(task.progress as f64)
             .bind(0_i64)
@@ -268,7 +269,6 @@ impl TaskDb {
         app_id: Option<&str>,
         session_id: Option<&str>,
         task_type: Option<&str>,
-        runner: Option<&str>,
         status: Option<TaskStatus>,
         parent_id: Option<i64>,
         root_id: Option<&str>,
@@ -297,10 +297,6 @@ impl TaskDb {
         if let Some(task_type) = task_type {
             conditions.push("task_type = ?".to_string());
             params.push(Param::Text(task_type.to_string()));
-        }
-        if let Some(runner) = runner {
-            conditions.push("runner = ?".to_string());
-            params.push(Param::Text(runner.to_string()));
         }
         if let Some(status) = status {
             conditions.push("status = ?".to_string());
@@ -613,7 +609,6 @@ fn task_from_row(row: AnyRow) -> DbResult<Task> {
     let id: i64 = row.try_get("id")?;
     let name: String = row.try_get("name")?;
     let task_type: String = row.try_get("task_type")?;
-    let runner: String = row.try_get("runner")?;
     let status: String = row.try_get("status")?;
     let progress: f64 = row.try_get("progress")?;
     let message: Option<String> = row.try_get("message")?;
@@ -641,7 +636,6 @@ fn task_from_row(row: AnyRow) -> DbResult<Task> {
         root_id: resolved_root_id,
         name,
         task_type,
-        runner,
         // `data` / `permissions` are opaque JSON payloads written by callers
         // with different serde versions over time — tolerate parse failures
         // with an empty default since the column itself decoded fine.
@@ -713,7 +707,6 @@ mod tests {
             id: 0,
             name: name.to_string(),
             task_type: "test_type".to_string(),
-            runner: String::new(),
             user_id: "user1".to_string(),
             app_id: "app1".to_string(),
             session_id: "session1".to_string(),
@@ -809,26 +802,30 @@ CREATE TABLE IF NOT EXISTS task (
     message         TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, name);
+CREATE INDEX IF NOT EXISTS idx_task_runner_status ON task(runner, status);
 "#;
 
         let db = TaskDb::open(&conn, RdbBackend::Sqlite, Some(old_schema))
             .await
             .unwrap();
 
-        let title_column = sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = ?")
-            .bind("title")
-            .fetch_optional(db.pool())
-            .await
-            .unwrap();
-        assert!(title_column.is_none());
-
-        let name_scope_index =
-            sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
-                .bind("idx_task_name_scope")
+        for removed_column in ["title", "runner"] {
+            let column = sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = ?")
+                .bind(removed_column)
                 .fetch_optional(db.pool())
                 .await
                 .unwrap();
-        assert!(name_scope_index.is_none());
+            assert!(column.is_none(), "column {} should be dropped", removed_column);
+        }
+
+        for removed_index in ["idx_task_name_scope", "idx_task_runner_status"] {
+            let index = sqlx::query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
+                .bind(removed_index)
+                .fetch_optional(db.pool())
+                .await
+                .unwrap();
+            assert!(index.is_none(), "index {} should be dropped", removed_index);
+        }
 
         let id1 = db.create_task(&create_test_task("task1")).await.unwrap();
         let id2 = db.create_task(&create_test_task("task1")).await.unwrap();
@@ -872,7 +869,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         db.create_task(&create_test_task("task3")).await.unwrap();
 
         let tasks = db
-            .list_tasks_filtered(None, None, None, None, None, None, None, None)
+            .list_tasks_filtered(None, None, None, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(tasks.len(), 3);
@@ -891,11 +888,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         db.create_task(&task2).await.unwrap();
 
         let app1_tasks = db
-            .list_tasks_filtered(Some("app1"), None, None, None, None, None, None, None)
+            .list_tasks_filtered(Some("app1"), None, None, None, None, None, None)
             .await
             .unwrap();
         let app2_tasks = db
-            .list_tasks_filtered(Some("app2"), None, None, None, None, None, None, None)
+            .list_tasks_filtered(Some("app2"), None, None, None, None, None, None)
             .await
             .unwrap();
 
@@ -923,16 +920,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         db.create_task(&task3).await.unwrap();
 
         let session_tasks = db
-            .list_tasks_filtered(
-                None,
-                Some("session-alpha"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
+            .list_tasks_filtered(None, Some("session-alpha"), None, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(session_tasks.len(), 2);
@@ -944,7 +932,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         assert_eq!(deleted_count, 2);
 
         let remaining = db
-            .list_tasks_filtered(None, None, None, None, None, None, None, None)
+            .list_tasks_filtered(None, None, None, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(remaining.len(), 1);
@@ -964,11 +952,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         db.create_task(&task2).await.unwrap();
 
         let type1_tasks = db
-            .list_tasks_filtered(None, None, Some("type1"), None, None, None, None, None)
+            .list_tasks_filtered(None, None, Some("type1"), None, None, None, None)
             .await
             .unwrap();
         let type2_tasks = db
-            .list_tasks_filtered(None, None, Some("type2"), None, None, None, None, None)
+            .list_tasks_filtered(None, None, Some("type2"), None, None, None, None)
             .await
             .unwrap();
 
@@ -976,28 +964,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         assert_eq!(type2_tasks.len(), 1);
         assert_eq!(type1_tasks[0].name, "task1");
         assert_eq!(type2_tasks[0].name, "task2");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_list_tasks_by_runner() {
-        let (db, _temp_dir) = setup_test_db().await;
-
-        let mut task1 = create_test_task("task1");
-        let mut task2 = create_test_task("task2");
-        task1.runner = "node-a".to_string();
-        task2.runner = "node-b".to_string();
-
-        db.create_task(&task1).await.unwrap();
-        db.create_task(&task2).await.unwrap();
-
-        let node_a_tasks = db
-            .list_tasks_filtered(None, None, None, Some("node-a"), None, None, None, None)
-            .await
-            .unwrap();
-
-        assert_eq!(node_a_tasks.len(), 1);
-        assert_eq!(node_a_tasks[0].name, "task1");
-        assert_eq!(node_a_tasks[0].runner, "node-a");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1013,21 +979,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_task_name_scope ON task(app_id, user_id, n
         db.create_task(&task2).await.unwrap();
 
         let running_tasks = db
-            .list_tasks_filtered(
-                None,
-                None,
-                None,
-                None,
-                Some(TaskStatus::Running),
-                None,
-                None,
-                None,
-            )
+            .list_tasks_filtered(None, None, None, Some(TaskStatus::Running), None, None, None)
             .await
             .unwrap();
         let completed_tasks = db
             .list_tasks_filtered(
-                None,
                 None,
                 None,
                 None,

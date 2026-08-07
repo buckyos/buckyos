@@ -1556,7 +1556,7 @@ mod tests {
     use crate::{ExecutorRegistry, InMemoryObjectStore, InMemoryThunkDispatcher};
     use buckyos_api::{
         CreateTaskOptions, Task, TaskFilter, TaskManagerClient, TaskManagerHandler, TaskNote,
-        TaskPermissions, TaskScope, TaskStatus,
+        TaskPermissions, TaskStatus,
     };
     use std::collections::HashMap;
     use std::ops::Range;
@@ -1605,29 +1605,12 @@ mod tests {
             app_id: &str,
             _ctx: RPCContext,
         ) -> RpcResult<Task> {
+            // In-process callers model the workflow service itself, which is
+            // a zone-trusted caller in the real TaskMgr: it may create tasks
+            // (and subtasks) on behalf of already-authenticated owners.
             let mut inner = self.inner.lock().await;
             let id = inner.next_id;
             inner.next_id += 1;
-            if let Some(parent_id) = opts.parent_id {
-                if let Some(parent) = inner.tasks.get(&parent_id) {
-                    let allowed = if parent.user_id.is_empty() {
-                        parent.app_id.is_empty() || parent.app_id == app_id
-                    } else {
-                        match parent.permissions.write {
-                            TaskScope::Private => {
-                                parent.user_id == user_id && parent.app_id == app_id
-                            }
-                            TaskScope::User => parent.user_id == user_id,
-                            TaskScope::System => app_id == "kernel" || app_id == "system",
-                        }
-                    };
-                    if !allowed {
-                        return Err(RPCErrors::NoPermission(
-                            "No permission to create subtasks".to_string(),
-                        ));
-                    }
-                }
-            }
             let root_id = if let Some(parent_id) = opts.parent_id {
                 inner
                     .tasks
@@ -1646,7 +1629,6 @@ mod tests {
                 root_id,
                 name: name.to_string(),
                 task_type: task_type.to_string(),
-                runner: opts.runner.unwrap_or_default(),
                 status: TaskStatus::Pending,
                 progress: 0.0,
                 message: None,
@@ -1675,8 +1657,6 @@ mod tests {
             note_type: Option<&str>,
             content: &str,
             data: Option<Value>,
-            source_user_id: Option<&str>,
-            source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> RpcResult<TaskNote> {
             let task = self
@@ -1697,8 +1677,8 @@ mod tests {
                 note_type: note_type.unwrap_or("human").to_string(),
                 content: content.to_string(),
                 data: data.unwrap_or(Value::Null),
-                author_user_id: source_user_id.unwrap_or(&task.user_id).to_string(),
-                author_app_id: source_app_id.unwrap_or(&task.app_id).to_string(),
+                author_user_id: task.user_id.clone(),
+                author_app_id: task.app_id.clone(),
                 created_at: now,
                 updated_at: now,
             };
@@ -1709,8 +1689,6 @@ mod tests {
         async fn handle_list_task_notes(
             &self,
             task_id: i64,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> RpcResult<Vec<TaskNote>> {
             let inner = self.inner.lock().await;
@@ -1723,8 +1701,6 @@ mod tests {
         async fn handle_list_tasks(
             &self,
             filter: TaskFilter,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> RpcResult<Vec<Task>> {
             Ok(self
@@ -1754,13 +1730,6 @@ mod tests {
                         .map(|v| task.task_type == v)
                         .unwrap_or(true)
                 })
-                .filter(|task| {
-                    filter
-                        .runner
-                        .as_deref()
-                        .map(|v| task.runner == v)
-                        .unwrap_or(true)
-                })
                 .filter(|task| filter.status.map(|v| task.status == v).unwrap_or(true))
                 .filter(|task| {
                     filter
@@ -1784,8 +1753,6 @@ mod tests {
             _app_id: Option<&str>,
             _session_id: Option<&str>,
             _task_type: Option<&str>,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _time_range: Range<u64>,
             _ctx: RPCContext,
         ) -> RpcResult<Vec<Task>> {
@@ -1802,8 +1769,6 @@ mod tests {
                     parent_id: Some(parent_id),
                     ..Default::default()
                 },
-                None,
-                None,
                 ctx,
             )
             .await
@@ -2431,7 +2396,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fire_remind_handles_legacy_private_schedule_root() {
+    async fn fire_remind_records_subtask_under_schedule_owner() {
+        // beta2.2: the workflow service creates fire subtasks under the
+        // schedule owner it authenticated at registration time — there is no
+        // identity-downgrade retry anymore.
         let (handler, tasks) = make_handler_with_tasks();
         let run_at = Utc::now().timestamp() + 3600;
         let create = handler
@@ -2440,7 +2408,7 @@ mod tests {
                     "create_scheduled_task",
                     json!({
                         "owner": {"user_id": "u", "app_id": "agent-a"},
-                        "name": "legacy-remind-once",
+                        "name": "owner-remind-once",
                         "schedule": {"kind": "once", "run_at": run_at},
                         "target": {"kind": "remind", "text": "drink water", "to": "self"},
                     }),
@@ -2457,11 +2425,6 @@ mod tests {
         let root_task_id = created["schedule"]["task_mirror"]["root_task_id"]
             .as_i64()
             .unwrap();
-        {
-            let mut inner = tasks.inner.lock().await;
-            let root = inner.tasks.get_mut(&root_task_id).unwrap();
-            root.permissions = TaskPermissions::default();
-        }
 
         let fire = handler
             .handle_rpc_call(
@@ -2481,7 +2444,8 @@ mod tests {
         let task = tasks.get(task_id).await.unwrap();
         assert_eq!(task.task_type, "workflow.send_message");
         assert_eq!(task.parent_id, Some(root_task_id));
-        assert_eq!(task.app_id, "workflow");
+        assert_eq!(task.user_id, "u");
+        assert_eq!(task.app_id, "agent-a");
     }
 
     #[tokio::test]

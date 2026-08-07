@@ -397,7 +397,7 @@ impl RunSubscriptionManager {
             ..Default::default()
         };
         let tasks = client
-            .list_tasks(Some(filter), None, None)
+            .list_tasks(Some(filter))
             .await
             .map_err(|err| format!("list_tasks: {:?}", err))?;
 

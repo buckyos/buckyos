@@ -1045,18 +1045,10 @@ impl InstallTaskStore for TaskMgrInstallStore {
         app_id: &str,
     ) -> Result<i64, InstallError> {
         let client = Self::client().await?;
+        // control_panel is a zone-trusted service: the task is recorded under
+        // the business user it already authenticated at the RPC entry.
         let task = client
-            .create_task(
-                name,
-                task_type,
-                Some(data),
-                user_id,
-                app_id,
-                Some(buckyos_api::CreateTaskOptions {
-                    runner: Some(buckyos_api::APP_INSTALL_RUNNER.to_string()),
-                    ..Default::default()
-                }),
-            )
+            .create_task(name, task_type, Some(data), user_id, app_id, None)
             .await
             .map_err(|err| Self::map_err("create task", err))?;
         Ok(task.id)
@@ -1098,28 +1090,23 @@ impl InstallTaskStore for TaskMgrInstallStore {
     async fn list_active(&self) -> Result<Vec<InstallTaskView>, InstallError> {
         let client = Self::client().await?;
         let mut views = Vec::new();
-        // TaskFilter 一次只能过滤一个 status；按 runner 过滤后本地筛非终态。
-        let tasks = client
-            .list_tasks(
-                Some(buckyos_api::TaskFilter {
-                    runner: Some(buckyos_api::APP_INSTALL_RUNNER.to_string()),
+        // 只扫本 Service 职责域内的 task_type（app.install / app.update）。
+        // 这些 Task 都由 control_panel 自己的业务接口创建；TaskFilter 一次
+        // 只能过滤一个 task_type，本地合并非终态。
+        for task_type in [TASK_DATA_TYPE_APP_INSTALL, TASK_DATA_TYPE_APP_UPDATE] {
+            let tasks = client
+                .list_tasks(Some(buckyos_api::TaskFilter {
+                    task_type: Some(task_type.to_string()),
                     ..Default::default()
-                }),
-                None,
-                None,
-            )
-            .await
-            .map_err(|err| Self::map_err("list tasks", err))?;
-        for task in tasks {
-            if task.status.is_terminal() {
-                continue;
+                }))
+                .await
+                .map_err(|err| Self::map_err("list tasks", err))?;
+            for task in tasks {
+                if task.status.is_terminal() {
+                    continue;
+                }
+                views.push(Self::view_from_task(task));
             }
-            if task.task_type != TASK_DATA_TYPE_APP_INSTALL
-                && task.task_type != TASK_DATA_TYPE_APP_UPDATE
-            {
-                continue;
-            }
-            views.push(Self::view_from_task(task));
         }
         Ok(views)
     }

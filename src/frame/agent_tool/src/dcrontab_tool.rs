@@ -1045,7 +1045,6 @@ fn to_workflow_target(target: &TargetArgs) -> WorkflowScheduledTaskTarget {
     match target {
         TargetArgs::Remind { text, to } => WorkflowScheduledTaskTarget {
             task_type: "workflow.send_message".to_string(),
-            runner: Some("workflow".to_string()),
             name_template: "remind: ${schedule.name} [${fire.fire_id}]".to_string(),
             data_template: json!({
                 "send_message": {
@@ -1062,13 +1061,15 @@ fn to_workflow_target(target: &TargetArgs) -> WorkflowScheduledTaskTarget {
             behavior,
             agent,
         } => {
-            let runner = agent
+            // The executing agent rides inside the task payload
+            // (`execution.runner`, OpenDAN's business schema); TaskMgr no
+            // longer has a dispatch-level runner field.
+            let agent = agent
                 .clone()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "${schedule.owner.app_id}".to_string());
             WorkflowScheduledTaskTarget {
                 task_type: "agent.delegate".to_string(),
-                runner: Some(runner.clone()),
                 name_template: title.clone(),
                 data_template: json!({
                     "agent_delegate": {
@@ -1087,7 +1088,7 @@ fn to_workflow_target(target: &TargetArgs) -> WorkflowScheduledTaskTarget {
                         "execution": {
                             "workspace_id": workspace_id,
                             "behavior": behavior,
-                            "runner": runner,
+                            "runner": agent,
                             "status": "pending"
                         }
                     }
@@ -1260,7 +1261,6 @@ fn target_detail(target: &WorkflowScheduledTaskTarget) -> Json {
             json!({
                 "kind": "remind",
                 "task_type": target.task_type,
-                "runner": target.runner.clone(),
                 "to": send_message.and_then(|value| value.get("to")).and_then(Json::as_str).unwrap_or("self"),
                 "text": send_message.and_then(|value| value.get("text")).and_then(Json::as_str).unwrap_or_default()
             })
@@ -1276,7 +1276,7 @@ fn target_detail(target: &WorkflowScheduledTaskTarget) -> Json {
             json!({
                 "kind": "task",
                 "task_type": target.task_type,
-                "runner": target.runner.clone(),
+                "agent": delegate.and_then(|value| value.pointer("/execution/runner")).cloned().unwrap_or(Json::Null),
                 "title": delegate.and_then(|value| value.get("title")).and_then(Json::as_str).unwrap_or_default(),
                 "objective": delegate.and_then(|value| value.get("purpose")).and_then(Json::as_str).unwrap_or_default(),
                 "workspace_id": workspace_id,
@@ -1526,7 +1526,6 @@ mod tests {
     fn list_summary_omits_show_level_target_fields() {
         let record = test_record(WorkflowScheduledTaskTarget {
             task_type: "agent.delegate".to_string(),
-            runner: Some("buckyos_jarvis".to_string()),
             name_template: "scheduled task".to_string(),
             data_template: json!({
                 "agent_delegate": {

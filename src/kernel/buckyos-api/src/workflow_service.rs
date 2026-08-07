@@ -75,11 +75,11 @@ pub enum WorkflowScheduledTaskSchedule {
     },
 }
 
+/// beta2.2: the `runner` dispatch field was removed — a schedule target only
+/// names a task_type in the workflow service's own execution domain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowScheduledTaskTarget {
     pub task_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runner: Option<String>,
     pub name_template: String,
     #[serde(default)]
     pub data_template: Value,

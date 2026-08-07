@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
+    match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
     AiRole, MsgCenterClient, Task, TaskFilter, TaskManagerClient, TaskNote, TaskStatus,
     TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
 };
@@ -4032,23 +4032,12 @@ impl AgentSession {
             return "Recent schedule tasks: unavailable (task-manager not configured).".to_string();
         };
         let now_secs = now_ms() / 1000;
-        let (owner, since_secs) = {
+        let since_secs = {
             let meta = self.meta.lock().await;
-            (
-                meta.owner.trim().to_string(),
-                meta.last_schedule_task_list_access_at,
-            )
+            meta.last_schedule_task_list_access_at
         };
-        let (source_user_id, source_app_id) =
-            schedule_task_prompt_reader_identity(&owner, &self.agent_name);
-        let text = match render_last_schedule_task_list_text(
-            task_mgr.as_ref(),
-            source_user_id.as_deref(),
-            source_app_id.as_deref(),
-            since_secs,
-            now_secs,
-        )
-        .await
+        let text = match render_last_schedule_task_list_text(task_mgr.as_ref(), since_secs, now_secs)
+            .await
         {
             Ok(text) => text,
             Err(err) => {
@@ -6282,20 +6271,14 @@ struct ScheduleTaskPromptLine {
 
 async fn render_last_schedule_task_list_text(
     task_mgr: &TaskManagerClient,
-    source_user_id: Option<&str>,
-    source_app_id: Option<&str>,
     since_secs: u64,
     now_secs: u64,
 ) -> std::result::Result<String, String> {
     let mut tasks = task_mgr
-        .list_tasks(
-            Some(TaskFilter {
-                task_type: Some("workflow/schedule".to_string()),
-                ..Default::default()
-            }),
-            source_user_id,
-            source_app_id,
-        )
+        .list_tasks(Some(TaskFilter {
+            task_type: Some("workflow/schedule".to_string()),
+            ..Default::default()
+        }))
         .await
         .map_err(|err| err.to_string())?;
     tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
@@ -6324,10 +6307,7 @@ async fn render_last_schedule_task_list_text(
             });
         }
 
-        match task_mgr
-            .list_task_notes(task.id, source_user_id, source_app_id)
-            .await
-        {
+        match task_mgr.list_task_notes(task.id).await {
             Ok(notes) => {
                 for note in notes.into_iter().filter(is_user_manual_task_note) {
                     if is_prompt_time_window(note.created_at, since_secs, now_secs) {
@@ -6415,43 +6395,6 @@ fn schedule_task_created_note(task: &Task) -> String {
             truncate_prompt_text(&sources.join("; "), 240)
         )
     }
-}
-
-fn schedule_task_prompt_reader_identity(
-    session_owner: &str,
-    agent_name: &str,
-) -> (Option<String>, Option<String>) {
-    let trimmed_owner = session_owner.trim();
-    let runtime = get_buckyos_api_runtime().ok();
-    let runtime_user_id = runtime
-        .as_ref()
-        .and_then(|runtime| {
-            runtime
-                .get_owner_user_id()
-                .or_else(|| runtime.user_id.clone())
-        })
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let runtime_app_id = runtime
-        .as_ref()
-        .map(|runtime| runtime.get_app_id())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let user_id = if trimmed_owner.is_empty() || trimmed_owner == "system" {
-        runtime_user_id
-    } else {
-        Some(trimmed_owner.to_string())
-    };
-    let app_id = runtime_app_id.or_else(|| {
-        let fallback = agent_name.trim();
-        if fallback.is_empty() {
-            None
-        } else {
-            Some(fallback.to_string())
-        }
-    });
-    let app_id = if user_id.is_some() { app_id } else { None };
-    (user_id, app_id)
 }
 
 fn schedule_task_failure_note(task: &Task) -> String {

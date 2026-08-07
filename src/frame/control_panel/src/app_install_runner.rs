@@ -1,17 +1,18 @@
 //! 安装任务 runner：dispatch 与恢复（P5.2）。
 //!
-//! 三条路径职责分明，全部收敛到同一个 `InstallEngine::run_task`（幂等 +
-//! 进程内去重），且每次执行前都重新读取 TaskManager 真相，不信任何消息 /
-//! 事件 payload 的完整性：
-//! - MsgQueue：持久 dispatch 记录（不丢）。RPC 创建任务后 post `task_id`
-//!   调度引用；consumer fetch(auto_commit=false) -> run -> 到达安全边界
-//!   （任务离开 Pending/Running 空转态）后 commit_ack；
-//! - task-ready KEvent：低延迟唤醒（只是加速通道，事件丢了也不影响正确性）；
-//! - 启动扫描 + 低频 sweep：修复 queue/event 的一切遗漏。
+//! beta2.2 起没有 TaskMgr runner inbox / task_ready 事件：安装 Task 只能由
+//! control_panel 自己的已鉴权业务接口创建，本模块只是同进程的执行调度。
+//! 各路径全部收敛到同一个 `InstallEngine::run_task`（幂等 + 进程内去重），
+//! 且每次执行前都重新读取 TaskManager 真相，不信任何消息 payload 的完整性：
+//! - RPC 侧 dispatch：创建任务后立即本地执行（正常低延迟路径）；
+//! - MsgQueue：持久 dispatch 记录（不丢）。consumer
+//!   fetch(auto_commit=false) -> run -> 到达安全边界（任务离开
+//!   Pending/Running 空转态）后 commit_ack；
+//! - 启动扫描 + 低频 sweep：修复一切遗漏。
 
 use crate::app_install_engine::InstallEngine;
 use buckyos_api::msg_queue::{Message, SubPosition};
-use buckyos_api::{get_buckyos_api_runtime, TaskStatus, APP_INSTALL_RUNNER};
+use buckyos_api::{get_buckyos_api_runtime, TaskStatus};
 use log::{info, warn};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +20,6 @@ use std::time::Duration;
 const DISPATCH_QUEUE_NAME: &str = "app_install_dispatch";
 const DISPATCH_SUB_ID: &str = "app_install_runner_main";
 const SWEEP_INTERVAL_SECS: u64 = 60;
-const KEVENT_PULL_TIMEOUT_MS: u64 = 30_000;
 
 pub struct InstallRunner {
     engine: Arc<InstallEngine>,
@@ -40,11 +40,6 @@ impl InstallRunner {
         let runner = self.clone();
         tokio::spawn(async move {
             runner.msg_queue_loop().await;
-        });
-
-        let runner = self.clone();
-        tokio::spawn(async move {
-            runner.kevent_loop().await;
         });
 
         let runner = self.clone();
@@ -189,62 +184,9 @@ impl InstallRunner {
         }
     }
 
-    /// task-ready KEvent：低延迟唤醒；唤醒后从权威源刷新（不解析 payload 细节）。
-    async fn kevent_loop(self: &Arc<Self>) {
-        loop {
-            match self.kevent_round().await {
-                Ok(()) => {}
-                Err(err) => {
-                    warn!("install runner kevent loop degraded: {err}");
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                }
-            }
-        }
-    }
-
-    async fn kevent_round(self: &Arc<Self>) -> Result<(), String> {
-        let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
-        let kevent = runtime
-            .get_kevent_client()
-            .await
-            .map_err(|err| err.to_string())?;
-        let topic = format!("/task_mgr/runner/{APP_INSTALL_RUNNER}/task_ready");
-        let reader = kevent
-            .create_event_reader(vec![topic])
-            .await
-            .map_err(|err| err.to_string())?;
-        // 订阅后立即扫一次，关闭订阅前事件已发布的竞态窗口。
-        self.scan_pending().await;
-        loop {
-            match reader.pull_event(Some(KEVENT_PULL_TIMEOUT_MS)).await {
-                Ok(Some(_event)) => {
-                    // 事件只当加速信号：回权威源取 Pending 列表。
-                    self.scan_pending().await;
-                }
-                Ok(None) => {
-                    // timeout sweep：kevent 只是加速通道，超时同样回源。
-                    self.scan_pending().await;
-                }
-                Err(err) => return Err(err.to_string()),
-            }
-        }
-    }
-
-    async fn scan_pending(self: &Arc<Self>) {
-        match self.engine.store().list_active().await {
-            Ok(tasks) => {
-                for task in tasks {
-                    if matches!(task.status, TaskStatus::Pending) {
-                        self.spawn_run(task.id);
-                    }
-                }
-            }
-            Err(err) => warn!("scan pending install tasks failed: {err}"),
-        }
-    }
-
     /// 低频 sweep：修复一切遗漏（含 Running 态僵尸——进程内守卫保证不会
     /// 与在跑的执行体打架；真正跑着的任务 run_task 会因守卫直接返回）。
+    /// 正常路径的低延迟由 RPC 侧 dispatch 直接执行保证。
     async fn sweep_loop(self: &Arc<Self>) {
         loop {
             tokio::time::sleep(Duration::from_secs(SWEEP_INTERVAL_SECS)).await;

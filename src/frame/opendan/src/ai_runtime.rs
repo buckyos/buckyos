@@ -260,13 +260,12 @@ async fn resolve_aicc_task_id(
         app_id: Some(AICC_SERVICE_SERVICE_NAME.to_string()),
         session_id: None,
         task_type: None,
-        runner: None,
         status: None,
         parent_id: None,
         root_id: None,
     };
     let tasks = taskmgr
-        .list_tasks(Some(filter), None, None)
+        .list_tasks(Some(filter))
         .await
         .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 

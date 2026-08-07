@@ -470,7 +470,7 @@ async fn proto_mix_04_resource_order_stable() {
     let task = center
         .task_manager_client()
         .unwrap()
-        .list_tasks(None::<buckyos_api::TaskFilter>, None, None)
+        .list_tasks(None::<buckyos_api::TaskFilter>)
         .await
         .unwrap()
         .into_iter()

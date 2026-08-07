@@ -227,7 +227,7 @@ agent_tool dcrontab "0 3 * * *" \
 | `--objective` | 是 | 给 agent 看的目标；最终对应 `CreateWorkSessionParams.objective` |
 | `--workspace` | 是 | 目标 workspace id；最终对应 `CreateWorkSessionParams.workspace_id` |
 | `--behavior` | 否 | 指定 behavior id；不填走 agent 默认 |
-| `--agent` | 否 | 指定执行 agent DID/runner；不填取当前 agent |
+| `--agent` | 否 | 指定执行 agent（写入 task data 的 `execution.runner` 业务字段）；不填取当前 agent |
 
 落地语义：
 
@@ -456,7 +456,6 @@ CLI 后端不再表达 `ScheduleTarget::{Remind, AgentTask}` 特殊语义，而�
 ```rust
 pub struct ScheduleSubtaskTemplate {
     pub task_type: String,          // workflow.send_message / agent.delegate
-    pub runner: Option<String>,     // workflow 或目标 agent runtime id
     pub name_template: String,
     pub data_template: serde_json::Value,
 }
@@ -505,7 +504,7 @@ src/kernel/workflow/src/scheduled_task_manager.rs  # ScheduleSubtaskTemplate / r
 
   目的是落到 `task_data_supports_direct_worksession` 命中分支：单一 workspace_id + 非空 purpose，直接 `create_worksession_by_task_id`，不再走 `task.data` 二次推断。
 
-`remind` 映射为 `workflow.send_message` subtask template。当前方案选择 Workflow service 内置该 task type 的 runner/executor 归属：schedule manager 只创建 subtask，具体 Message Center 调用和结果写回由 `workflow.send_message` executor 完成。CLI 端**不要落地为本地文件**形成第二套真相源。
+`remind` 映射为 `workflow.send_message` subtask template。该 task type 由 Workflow service 自己执行（按 task_type 扫描自己拥有的任务，beta2.2 起没有 TaskMgr runner 归属字段）：schedule manager 只创建 subtask，具体 Message Center 调用和结果写回由 `workflow.send_message` executor 完成。CLI 端**不要落地为本地文件**形成第二套真相源。
 
 ## 18. 典型用例
 

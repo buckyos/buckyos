@@ -263,10 +263,10 @@ Task Inbox 是 AgentRuntime 内部的任务输入源，负责监听和查询 Tas
 
 职责：
 
-1. 订阅 `/task_mgr/runner/{runner}/task_ready` 作为新任务唤醒源。
+1. 订阅 `/task_mgr/**` 任务变化事件作为唤醒源（beta2.2 起没有 runner task_ready inbox）。
 2. 订阅已知 task/root channel 作为执行中任务变化的加速唤醒源，例如当前正在执行的 root task。
 3. 启动时先订阅 runner inbox event，然后立即执行一次 `list_tasks(TaskFilter { task_type, runner, status: Pending })`，覆盖订阅前已经创建的任务。
-4. 每次收到 `task_ready` event 后都重新执行 `list_tasks`，event payload 只做唤醒 hint。
+4. 每次收到任务变化 event 后都重新执行 `list_tasks(task_type = agent.delegate)` 并按 data 内目标 agent（`progress.execution.runner`）本地过滤，event payload 只做唤醒 hint。
 5. 保留周期性兜底轮询，避免 event 丢失或订阅中断导致任务永久无人处理。
 6. 将候选任务交给 Task Executor。
 
@@ -385,7 +385,7 @@ Session Manager 是 OpenDAN 内部能力，任务创建者不应被要求直接�
    runner = target_agent_runtime_id
    status = Pending
 
-2. AgentRuntime Task Inbox 被 `/task_mgr/runner/{runner}/task_ready` event 或 timer 唤醒
+2. AgentRuntime Task Inbox 被 `/task_mgr/**` 任务变化 event 或 timer 唤醒
 
 3. Task Inbox list_tasks:
    task_type = "agent.delegate"
@@ -581,7 +581,7 @@ AgentRuntime 收到 task_mgr kevent 后必须重新读取 TaskMgr 状态。不�
 对于新任务发现，AgentRuntime 应订阅：
 
 ```text
-/task_mgr/runner/{runner}/task_ready
+/task_mgr/**
 ```
 
 收到该事件后仍必须调用 `list_tasks(TaskFilter { task_type, runner, status: Pending })`。该事件只表示“这个 runner 可能有新的 Pending task”，不表示某个 task 已被当前 executor 接手。

@@ -2171,7 +2171,6 @@ impl AIAgent {
                 &app_id,
                 Some(CreateTaskOptions {
                     session_id: Some(session_id.to_string()),
-                    runner: Some(runner),
                     ..Default::default()
                 }),
             )
@@ -2539,12 +2538,25 @@ fn workspace_id_from_task_hint(value: &serde_json::Value) -> Option<String> {
 }
 
 pub(crate) fn agent_task_binding_from_task(task: &Task) -> AgentTaskBinding {
+    // The executing agent now lives inside the task payload
+    // (progress.execution.runner); the binding keeps recording it under the
+    // same name so existing session meta stays readable.
+    let runner = agent_delegate_task_data(task)
+        .and_then(|data| {
+            data.progress
+                .as_ref()
+                .and_then(|progress| progress.execution.as_ref())
+                .and_then(|execution| execution.get("runner"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
     AgentTaskBinding {
         task_id: task.id,
         root_task_id: task.root_id.parse::<i64>().unwrap_or(task.id),
         root_id: task.root_id.clone(),
         task_type: task.task_type.clone(),
-        runner: task.runner.clone(),
+        runner,
         task_name: task.name.clone(),
         user_id: task.user_id.clone(),
         app_id: task.app_id.clone(),
@@ -3240,7 +3252,6 @@ runner_id = "agent"
                 root_id: opts.root_id.unwrap_or_else(|| id.to_string()),
                 name: name.to_string(),
                 task_type: task_type.to_string(),
-                runner: opts.runner.unwrap_or_default(),
                 status: TaskStatus::Pending,
                 progress: 0.0,
                 message: None,
@@ -3274,8 +3285,6 @@ runner_id = "agent"
             note_type: Option<&str>,
             content: &str,
             data: Option<serde_json::Value>,
-            source_user_id: Option<&str>,
-            source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> std::result::Result<TaskNote, RPCErrors> {
             let task = self
@@ -3294,8 +3303,8 @@ runner_id = "agent"
                 note_type: note_type.unwrap_or("human").to_string(),
                 content: content.to_string(),
                 data: data.unwrap_or_else(|| serde_json::json!({})),
-                author_user_id: source_user_id.unwrap_or(&task.user_id).to_string(),
-                author_app_id: source_app_id.unwrap_or(&task.app_id).to_string(),
+                author_user_id: task.user_id.clone(),
+                author_app_id: task.app_id.clone(),
                 created_at: 1,
                 updated_at: 1,
             };
@@ -3306,8 +3315,6 @@ runner_id = "agent"
         async fn handle_list_task_notes(
             &self,
             task_id: i64,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<TaskNote>, RPCErrors> {
             Ok(self
@@ -3324,8 +3331,6 @@ runner_id = "agent"
         async fn handle_list_tasks(
             &self,
             filter: TaskFilter,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<Task>, RPCErrors> {
             Ok(self
@@ -3341,11 +3346,6 @@ runner_id = "agent"
                         .map(|value| task.task_type == *value)
                         .unwrap_or(true)
                         && filter
-                            .runner
-                            .as_ref()
-                            .map(|value| task.runner == *value)
-                            .unwrap_or(true)
-                        && filter
                             .status
                             .map(|value| task.status == value)
                             .unwrap_or(true)
@@ -3359,8 +3359,6 @@ runner_id = "agent"
             _app_id: Option<&str>,
             _session_id: Option<&str>,
             _task_type: Option<&str>,
-            _source_user_id: Option<&str>,
-            _source_app_id: Option<&str>,
             _time_range: Range<u64>,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<Task>, RPCErrors> {
@@ -3518,7 +3516,6 @@ runner_id = "agent"
             root_id: id.to_string(),
             name: "delegate task".to_string(),
             task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
-            runner: "agent".to_string(),
             status: TaskStatus::Pending,
             progress: 0.0,
             message: None,

@@ -18,9 +18,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 
-/// 安装任务 runner 标识（Control Panel 进程内的 install runner）。
-pub const APP_INSTALL_RUNNER: &str = "app.control_panel";
-
 /// Task.data、InstallPlan 与 install_record 的当前持久格式版本。
 pub const APP_INSTALL_SCHEMA_VERSION: u32 = 2;
 
