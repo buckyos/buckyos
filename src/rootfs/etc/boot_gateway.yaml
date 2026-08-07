@@ -142,7 +142,7 @@ servers:
                 local expected_host=$(append $app_lookup_key ".${THIS_ZONE_HOST}");
                 eq $REQ.host $expected_host || return false;
                 map-create hp;
-                match-reg --capture hp $app_lookup_key "^([a-zA-Z0-9_]+)\$" || return false;
+                match-reg --capture hp $app_lookup_key "^([a-zA-Z0-9_-]+)\$" || return false;
                 eq $hp[1] $app_lookup_key || return false;
               elif ends-with $REQ.host "-${THIS_ZONE_HOST}" then
                 app_lookup_key=$REQ.host;
@@ -150,7 +150,7 @@ servers:
                 local expected_host=$(append $app_lookup_key "-${THIS_ZONE_HOST}");
                 eq $REQ.host $expected_host || return false;
                 map-create hp;
-                match-reg --capture hp $app_lookup_key "^([a-zA-Z0-9_]+)\$" || return false;
+                match-reg --capture hp $app_lookup_key "^([a-zA-Z0-9_-]+)\$" || return false;
                 eq $hp[1] $app_lookup_key || return false;
               else
                 return false;
