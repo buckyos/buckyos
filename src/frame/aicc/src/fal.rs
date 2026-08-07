@@ -1,6 +1,7 @@
 use crate::aicc::{
-    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    emit_background_provider_result, provider_type_from_settings, redacted_json_log,
+    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderRefreshTask,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 use crate::model_registry::DEFAULT_INVENTORY_REFRESH_INTERVAL;
@@ -579,13 +580,10 @@ impl Provider for FalProvider {
         ctx: crate::aicc::InvokeCtx,
         provider_model: String,
         req: ResolvedRequest,
-        _sink: Arc<dyn TaskEventSink>,
+        sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.method.as_str() {
-            ai_methods::IMAGE_UPSCALE
-            | ai_methods::IMAGE_BG_REMOVE
-            | ai_methods::AUDIO_ENHANCE
-            | ai_methods::VIDEO_UPSCALE => {
+            ai_methods::IMAGE_UPSCALE | ai_methods::IMAGE_BG_REMOVE | ai_methods::AUDIO_ENHANCE => {
                 self.run_method(
                     &ctx,
                     req.method.as_str(),
@@ -593,6 +591,34 @@ impl Provider for FalProvider {
                     &req.request,
                 )
                 .await
+            }
+            ai_methods::VIDEO_UPSCALE => {
+                let provider = self.clone();
+                let task_id = ctx
+                    .task_id
+                    .clone()
+                    .unwrap_or_else(|| "fal-video-upscale".to_string());
+                let request = req.request;
+                tokio::spawn(async move {
+                    let result = match provider
+                        .run_method(
+                            &ctx,
+                            ai_methods::VIDEO_UPSCALE,
+                            provider_model.as_str(),
+                            &request,
+                        )
+                        .await
+                    {
+                        Ok(ProviderStartResult::Immediate(summary)) => Ok(summary),
+                        Ok(other) => Err(ProviderError::fatal(format!(
+                            "fal video upscale returned unexpected start result: {:?}",
+                            other
+                        ))),
+                        Err(error) => Err(error),
+                    };
+                    emit_background_provider_result(sink, task_id.as_str(), &request, result).await;
+                });
+                Ok(ProviderStartResult::Started)
             }
             method => Err(ProviderError::fatal(format!(
                 "fal provider does not support method '{}'",

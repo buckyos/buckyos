@@ -130,6 +130,7 @@ pub struct InvokeCtx {
     pub caller_app_id: Option<String>,
     pub session_token: Option<String>,
     pub trace_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 impl InvokeCtx {
@@ -158,6 +159,7 @@ impl InvokeCtx {
             caller_app_id,
             session_token,
             trace_id: ctx.trace_id.clone(),
+            task_id: None,
         }
     }
 }
@@ -4176,7 +4178,7 @@ impl AIComputeCenter {
         mut request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let mut invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
         apply_default_features_for_method(method, &mut request);
         info!(
             "aicc.complete received: tenant={} caller_app={:?} method={} capability={:?} model_alias={} idempotency_key={:?}",
@@ -4188,6 +4190,7 @@ impl AIComputeCenter {
             request.idempotency_key
         );
         let external_task_id = self.generate_task_id();
+        invoke_ctx.task_id = Some(external_task_id.clone());
         let base_sink = self.sink_factory.build(&invoke_ctx, &external_task_id);
         let event_ref = base_sink.event_ref();
         let deferred_sink = Arc::new(DeferredTaskEventSink::new(base_sink));
@@ -5363,7 +5366,7 @@ struct StoredNamedArtifact {
     height: Option<u32>,
 }
 
-async fn materialize_response_artifacts_if_needed(
+pub(crate) async fn materialize_response_artifacts_if_needed(
     task_id: &str,
     req: &AiMethodRequest,
     summary: &mut AiResponse,
@@ -5440,6 +5443,61 @@ async fn materialize_response_artifacts_if_needed(
         append_materialized_artifact_extra(summary, materialized);
     }
     Ok(count)
+}
+
+pub(crate) async fn emit_background_provider_result(
+    sink: Arc<dyn TaskEventSink>,
+    task_id: &str,
+    request: &AiMethodRequest,
+    result: std::result::Result<AiResponse, ProviderError>,
+) {
+    let event = match result {
+        Ok(mut summary) => {
+            if let Err(error) =
+                materialize_response_artifacts_if_needed(task_id, request, &mut summary).await
+            {
+                TaskEvent {
+                    task_id: task_id.to_string(),
+                    kind: TaskEventKind::Error,
+                    timestamp_ms: now_ms(),
+                    data: Some(json!({
+                        "code": "artifact_materialize_failed",
+                        "message": format!("materialize artifact failed: {}", error)
+                    })),
+                }
+            } else {
+                let has_text = !summary.text_content().is_empty();
+                let artifact_count = summary.artifacts().len();
+                let finish_reason = summary.finish_reason.clone();
+                TaskEvent {
+                    task_id: task_id.to_string(),
+                    kind: TaskEventKind::Final,
+                    timestamp_ms: now_ms(),
+                    data: Some(json!({
+                        "summary": summary,
+                        "finish_reason": finish_reason,
+                        "has_text": has_text,
+                        "artifact_count": artifact_count
+                    })),
+                }
+            }
+        }
+        Err(error) => TaskEvent {
+            task_id: task_id.to_string(),
+            kind: TaskEventKind::Error,
+            timestamp_ms: now_ms(),
+            data: Some(json!({
+                "code": "provider_error",
+                "message": error.to_string()
+            })),
+        },
+    };
+    if let Err(error) = sink.emit(event).await {
+        error!(
+            "aicc.background_provider_event_failed task_id={} err={}",
+            task_id, error
+        );
+    }
 }
 
 async fn store_base64_artifact(

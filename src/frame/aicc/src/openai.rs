@@ -1,6 +1,7 @@
 use crate::aicc::{
-    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    emit_background_provider_result, provider_type_from_settings, redacted_json_log,
+    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderRefreshTask,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 #[cfg(test)]
@@ -102,7 +103,7 @@ pub struct OpenAIInstanceConfig {
     pub timeout_ms: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OpenAIProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
@@ -3407,6 +3408,7 @@ impl OpenAIProvider {
         provider_model: &str,
         method: &str,
         req: &AiMethodRequest,
+        sink: Arc<dyn TaskEventSink>,
     ) -> Result<ProviderStartResult, ProviderError> {
         let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
             ProviderError::fatal(format!("{} requires a non-empty prompt", method))
@@ -3463,7 +3465,7 @@ impl OpenAIProvider {
 
         let started_at = std::time::Instant::now();
         let url = format!("{}/videos", self.base_url);
-        let (status, mut job, _) = self
+        let (status, job, _) = self
             .post_multipart(ctx, url.as_str(), fields, files)
             .await?;
         if !status.is_success() {
@@ -3480,6 +3482,38 @@ impl OpenAIProvider {
             .ok_or_else(|| ProviderError::fatal("openai video create response is missing id"))?
             .to_string();
 
+        let provider = self.clone();
+        let task_id = ctx.task_id.clone().unwrap_or_else(|| video_id.clone());
+        let invoke_ctx = ctx.clone();
+        let provider_model = provider_model.to_string();
+        let method = method.to_string();
+        let request = req.clone();
+        tokio::spawn(async move {
+            let result = provider
+                .finish_video(
+                    &invoke_ctx,
+                    provider_model.as_str(),
+                    method.as_str(),
+                    video_id.as_str(),
+                    job,
+                    started_at,
+                )
+                .await;
+            emit_background_provider_result(sink, task_id.as_str(), &request, result).await;
+        });
+
+        Ok(ProviderStartResult::Started)
+    }
+
+    async fn finish_video(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        video_id: &str,
+        mut job: Value,
+        started_at: std::time::Instant,
+    ) -> Result<AiResponse, ProviderError> {
         loop {
             let state = job
                 .get("status")
@@ -3544,10 +3578,10 @@ impl OpenAIProvider {
             mime: Some(mime),
             metadata: None,
         };
-        Ok(ProviderStartResult::Immediate(AiResponse {
+        Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
             finish_reason: Some("stop".to_string()),
-            provider_task_ref: Some(video_id),
+            provider_task_ref: Some(video_id.to_string()),
             extra: Some(json!({
                 "provider": "openai",
                 "method": method,
@@ -3556,7 +3590,7 @@ impl OpenAIProvider {
                 "provider_io": { "output": job }
             })),
             ..Default::default()
-        }))
+        })
     }
 
     async fn start_image_edit(
@@ -3720,7 +3754,7 @@ impl Provider for OpenAIProvider {
         ctx: crate::aicc::InvokeCtx,
         provider_model: String,
         req: ResolvedRequest,
-        _sink: Arc<dyn TaskEventSink>,
+        sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.method.as_str() {
             ai_methods::LLM_CHAT => {
@@ -3770,6 +3804,7 @@ impl Provider for OpenAIProvider {
                     provider_model.as_str(),
                     req.method.as_str(),
                     &req.request,
+                    sink,
                 )
                 .await
             }

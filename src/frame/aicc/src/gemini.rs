@@ -1,6 +1,7 @@
 use crate::aicc::{
-    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    emit_background_provider_result, provider_type_from_settings, redacted_json_log,
+    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderRefreshTask,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 use crate::model_types::{
@@ -99,7 +100,7 @@ pub struct GoogleGeminiInstanceConfig {
     pub alias_map: HashMap<String, String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GoogleGeminiProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
@@ -2402,6 +2403,7 @@ impl GoogleGeminiProvider {
         provider_model: &str,
         method: &str,
         req: &AiMethodRequest,
+        sink: Arc<dyn TaskEventSink>,
     ) -> Result<ProviderStartResult, ProviderError> {
         if method == ai_methods::VIDEO_IMG2VIDEO
             && req.payload.resources.is_empty()
@@ -2483,7 +2485,43 @@ impl GoogleGeminiProvider {
                 ProviderError::fatal("google gemini video response is missing operation name")
             })?
             .to_string();
-        let mut operation = body;
+
+        let provider = self.clone();
+        let task_id = ctx
+            .task_id
+            .clone()
+            .unwrap_or_else(|| operation_name.clone());
+        let provider_model = provider_model.to_string();
+        let method = method.to_string();
+        let request = req.clone();
+        tokio::spawn(async move {
+            let result = provider
+                .finish_video(
+                    provider_model.as_str(),
+                    method.as_str(),
+                    operation_name,
+                    body,
+                    request_obj,
+                    started_at,
+                    latency_ms,
+                )
+                .await;
+            emit_background_provider_result(sink, task_id.as_str(), &request, result).await;
+        });
+
+        Ok(ProviderStartResult::Started)
+    }
+
+    async fn finish_video(
+        &self,
+        provider_model: &str,
+        method: &str,
+        operation_name: String,
+        mut operation: Value,
+        request_obj: Map<String, Value>,
+        started_at: std::time::Instant,
+        latency_ms: u64,
+    ) -> Result<AiResponse, ProviderError> {
         loop {
             if let Some(error) = operation.get("error") {
                 let message = error
@@ -2570,13 +2608,13 @@ impl GoogleGeminiProvider {
             "provider_io".to_string(),
             json!({ "input": request_obj, "output": operation }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponse {
+        Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
             provider_task_ref: Some(operation_name),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
-        }))
+        })
     }
 }
 
@@ -2662,7 +2700,7 @@ impl Provider for GoogleGeminiProvider {
         ctx: crate::aicc::InvokeCtx,
         provider_model: String,
         req: ResolvedRequest,
-        _sink: Arc<dyn TaskEventSink>,
+        sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.method.as_str() {
             ai_methods::LLM_CHAT => {
@@ -2715,6 +2753,7 @@ impl Provider for GoogleGeminiProvider {
                     provider_model.as_str(),
                     req.method.as_str(),
                     &req.request,
+                    sink,
                 )
                 .await
             }

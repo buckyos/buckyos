@@ -1,10 +1,13 @@
 mod common;
 
 use aicc::claude::{ClaudeInstanceConfig, ClaudeProvider};
+use aicc::fal::{FalInstanceConfig, FalProvider};
 use aicc::gemini::{GoogleGeminiInstanceConfig, GoogleGeminiProvider};
 use aicc::openai::{OpenAIInstanceConfig, OpenAIProvider};
-use aicc::{InvokeCtx, Provider, ProviderStartResult, ResolvedRequest};
-use buckyos_api::{ai_methods, Capability, ResourceRef};
+use aicc::{
+    InvokeCtx, Provider, ProviderStartResult, ResolvedRequest, TaskEventKind, TaskEventSinkFactory,
+};
+use buckyos_api::{ai_methods, AiResponse, Capability, ResourceRef};
 use common::*;
 use image::{DynamicImage, ImageFormat};
 use std::collections::HashMap;
@@ -17,6 +20,30 @@ fn png_image(width: u32, height: u32) -> Vec<u8> {
         .write_to(&mut output, ImageFormat::Png)
         .expect("encode test PNG");
     output.into_inner()
+}
+
+async fn wait_for_final_summary(sink_factory: &CollectingSinkFactory, task_id: &str) -> AiResponse {
+    let final_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(event) = sink_factory
+                .events_for(task_id)
+                .into_iter()
+                .find(|event| matches!(event.kind, TaskEventKind::Final))
+            {
+                break event;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background task should emit final event");
+    serde_json::from_value(
+        final_event
+            .data
+            .and_then(|data| data.get("summary").cloned())
+            .expect("final event should include summary"),
+    )
+    .expect("final event summary should be a valid AiResponse")
 }
 
 fn openai_provider(base_url: String, timeout_ms: u64) -> OpenAIProvider {
@@ -149,32 +176,37 @@ async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
     ])
     .await;
     let provider = openai_provider(base_url, 500);
-    let request = request_with_resource(ResourceRef::Base64 {
+    let mut request = request_with_resource(ResourceRef::Base64 {
         mime: "image/png".to_string(),
         data_base64: openai_b64(png_image(320, 640).as_slice()),
     });
+    request.payload.options = Some(serde_json::json!({ "response_format": "base64" }));
+    let task_id = "openai-video-task";
+    let sink_factory = Arc::new(CollectingSinkFactory::new());
+    let sink = sink_factory.build(&InvokeCtx::default(), task_id);
     let result = provider
         .start(
-            InvokeCtx::default(),
+            InvokeCtx {
+                task_id: Some(task_id.to_string()),
+                ..Default::default()
+            },
             "sora-2".to_string(),
             ResolvedRequest::new_with_method(ai_methods::VIDEO_IMG2VIDEO, request),
-            Arc::new(NoopSink),
+            sink,
         )
         .await
         .expect("openai img2video should succeed");
-    match result {
-        ProviderStartResult::Immediate(summary) => {
-            let artifacts = summary.artifacts();
-            assert_eq!(artifacts.len(), 1);
-            assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
-            match &artifacts[0].resource {
-                ResourceRef::Base64 { data_base64, .. } => {
-                    assert_eq!(data_base64, &openai_b64(video_bytes));
-                }
-                other => panic!("unexpected video artifact: {:?}", other),
-            }
+    assert!(matches!(result, ProviderStartResult::Started));
+
+    let summary = wait_for_final_summary(sink_factory.as_ref(), task_id).await;
+    let artifacts = summary.artifacts();
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
+    match &artifacts[0].resource {
+        ResourceRef::Base64 { data_base64, .. } => {
+            assert_eq!(data_base64, &openai_b64(video_bytes));
         }
-        other => panic!("expected immediate video artifact, got {:?}", other),
+        other => panic!("unexpected video artifact: {:?}", other),
     }
 }
 
@@ -203,32 +235,93 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
     ])
     .await;
     let provider = gemini_provider(base_url, 500);
-    let request = request_with_resource(ResourceRef::Base64 {
+    let mut request = request_with_resource(ResourceRef::Base64 {
         mime: "image/png".to_string(),
         data_base64: openai_b64(b"image"),
     });
+    request.payload.options = Some(serde_json::json!({ "response_format": "base64" }));
+    let task_id = "gemini-video-task";
+    let sink_factory = Arc::new(CollectingSinkFactory::new());
+    let sink = sink_factory.build(&InvokeCtx::default(), task_id);
     let result = provider
         .start(
-            InvokeCtx::default(),
+            InvokeCtx {
+                task_id: Some(task_id.to_string()),
+                ..Default::default()
+            },
             "veo-3.1-generate-preview".to_string(),
             ResolvedRequest::new_with_method(ai_methods::VIDEO_IMG2VIDEO, request),
-            Arc::new(NoopSink),
+            sink,
         )
         .await
         .expect("gemini img2video should succeed");
-    match result {
-        ProviderStartResult::Immediate(summary) => {
-            let artifacts = summary.artifacts();
-            assert_eq!(artifacts.len(), 1);
-            assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
-            match &artifacts[0].resource {
-                ResourceRef::Base64 { data_base64, .. } => {
-                    assert_eq!(data_base64, &openai_b64(video_bytes));
-                }
-                other => panic!("unexpected video artifact: {:?}", other),
-            }
+    assert!(matches!(result, ProviderStartResult::Started));
+
+    let summary = wait_for_final_summary(sink_factory.as_ref(), task_id).await;
+    let artifacts = summary.artifacts();
+    assert_eq!(artifacts.len(), 1);
+    assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
+    match &artifacts[0].resource {
+        ResourceRef::Base64 { data_base64, .. } => {
+            assert_eq!(data_base64, &openai_b64(video_bytes));
         }
-        other => panic!("expected immediate video artifact, got {:?}", other),
+        other => panic!("unexpected video artifact: {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn adapter_fal_video_upscale_runs_in_background() {
+    let base_url = spawn_fake_http_server(vec![MockHttpReply {
+        status_code: 200,
+        body: r#"{"request_id":"fal-1","video":{"url":"https://example.com/upscaled.mp4","content_type":"video/mp4"}}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 100,
+    }])
+    .await;
+    let provider = FalProvider::new(
+        FalInstanceConfig {
+            provider_instance_name: "fal-test".to_string(),
+            provider_type: "cloud_api".to_string(),
+            api_token: "token".to_string(),
+            base_url,
+            timeout_ms: 500,
+            image_upscale_models: vec![],
+            image_bg_remove_models: vec![],
+            audio_enhance_models: vec![],
+            video_upscale_models: vec!["fal-ai/video-upscaler".to_string()],
+        },
+        "token".to_string(),
+    )
+    .expect("fal provider");
+    let request = request_with_resource(ResourceRef::Url {
+        url: "https://example.com/input.mp4".to_string(),
+        mime_hint: Some("video/mp4".to_string()),
+    });
+    let task_id = "fal-video-task";
+    let sink_factory = Arc::new(CollectingSinkFactory::new());
+    let sink = sink_factory.build(&InvokeCtx::default(), task_id);
+    let result = provider
+        .start(
+            InvokeCtx {
+                task_id: Some(task_id.to_string()),
+                ..Default::default()
+            },
+            "fal-ai/video-upscaler".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VIDEO_UPSCALE, request),
+            sink,
+        )
+        .await
+        .expect("fal video upscale should start");
+    assert!(matches!(result, ProviderStartResult::Started));
+
+    let summary = wait_for_final_summary(sink_factory.as_ref(), task_id).await;
+    let artifacts = summary.artifacts();
+    assert_eq!(artifacts.len(), 1);
+    match &artifacts[0].resource {
+        ResourceRef::Url { url, .. } => {
+            assert_eq!(url, "https://example.com/upscaled.mp4");
+        }
+        other => panic!("unexpected video artifact: {:?}", other),
     }
 }
 
