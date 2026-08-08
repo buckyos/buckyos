@@ -42,9 +42,7 @@ use buckyos_api::{AiMessage, AiRole};
 use llm_context::{ContextOutput, LLMContextOutcome, LlmClient, ModelPolicy, ToolMode, ToolPolicy};
 use serde_json::{json, Value};
 
-use crate::run_local_llm::{
-    acquire_aicc_client, ensure_buckyos_runtime, AiccLlmClient, KeepTailCompressor,
-};
+use crate::run_local_llm::{ensure_buckyos_runtime, AiccLlmClient, KeepTailCompressor};
 use crate::{
     cli_error_result, render_cli_output, AgentToolError, AgentToolPendingReason, AgentToolResult,
     AgentToolStatus, LocalLLMContext, OneShotRequest, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR,
@@ -129,20 +127,7 @@ async fn run(opts: CliOpts) -> (AgentToolResult, i32) {
             CLI_EXIT_ERROR,
         );
     }
-    let aicc = match acquire_aicc_client().await {
-        Ok(c) => c,
-        Err(err) => {
-            return (
-                build_error_result(
-                    Some(&work_dir),
-                    &opts,
-                    &format!("acquire aicc client failed: {err}"),
-                ),
-                CLI_EXIT_ERROR,
-            );
-        }
-    };
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new(aicc));
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
 
     // 2) OneShotRequest:system prompt + 用户 prompt + model + tools=All。
     let request = build_request(&opts);

@@ -14,10 +14,10 @@ use crate::error::{WorkflowError, WorkflowResult};
 use crate::runtime::{NodeRunState, RunStatus, WorkflowRun};
 use async_trait::async_trait;
 use buckyos_api::{
-    CreateTaskOptions, TaskDataErrorInfo, TaskDataProgress, TaskManagerClient, TaskStatus,
-    ThunkTaskData, ThunkTaskRequest, WorkflowMapShardTaskData, WorkflowMapShardTaskRequest,
-    WorkflowRunTaskData, WorkflowRunTaskRequest, WorkflowRunTaskResult, WorkflowStepTaskData,
-    WorkflowStepTaskRequest,
+    get_buckyos_api_runtime, CreateTaskOptions, TaskDataErrorInfo, TaskDataProgress,
+    TaskManagerClient, TaskStatus, ThunkTaskData, ThunkTaskRequest, WorkflowMapShardTaskData,
+    WorkflowMapShardTaskRequest, WorkflowRunTaskData, WorkflowRunTaskRequest,
+    WorkflowRunTaskResult, WorkflowStepTaskData, WorkflowStepTaskRequest,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -256,7 +256,7 @@ impl WorkflowTaskTracker for RecordingTaskTracker {
 
 /// 把执行单元真实落到 buckyos task_manager 的实现。
 pub struct TaskManagerTaskTracker {
-    client: Arc<TaskManagerClient>,
+    client: Option<Arc<TaskManagerClient>>,
     user_id: String,
     app_id: String,
     state: Mutex<TaskTrackerState>,
@@ -281,11 +281,32 @@ impl TaskManagerTaskTracker {
         app_id: impl Into<String>,
     ) -> Self {
         Self {
-            client,
+            client: Some(client),
             user_id: user_id.into(),
             app_id: app_id.into(),
             state: Mutex::new(TaskTrackerState::default()),
         }
+    }
+
+    pub fn from_runtime(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
+        Self {
+            client: None,
+            user_id: user_id.into(),
+            app_id: app_id.into(),
+            state: Mutex::new(TaskTrackerState::default()),
+        }
+    }
+
+    async fn client(&self) -> WorkflowResult<Arc<TaskManagerClient>> {
+        if let Some(client) = self.client.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime =
+            get_buckyos_api_runtime().map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+        Box::pin(runtime.get_task_mgr_client())
+            .await
+            .map(Arc::new)
+            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))
     }
 
     async fn ensure_run_task(&self, run: &WorkflowRun) -> WorkflowResult<i64> {
@@ -297,8 +318,8 @@ impl TaskManagerTaskTracker {
         // workflow share workflow_name, so include run_id to disambiguate.
         let task_name = format!("{} [{}]", run.workflow_name, run.run_id);
         let opts = run_task_options(run);
-        let task = self
-            .client
+        let client = self.client().await?;
+        let task = client
             .create_task(
                 task_name.as_str(),
                 "workflow/run",
@@ -329,8 +350,8 @@ impl TaskManagerTaskTracker {
         let parent_id = self.ensure_run_task(run).await?;
 
         let task_name = format!("{} [{}/{}]", step.name, run.run_id, step.node_id);
-        let task = self
-            .client
+        let client = self.client().await?;
+        let task = client
             .create_task(
                 task_name.as_str(),
                 "workflow/step",
@@ -374,8 +395,8 @@ impl TaskManagerTaskTracker {
             None => self.ensure_run_task(run).await?,
         };
 
-        let task = self
-            .client
+        let client = self.client().await?;
+        let task = client
             .create_task(
                 &format!(
                     "{}[{}] [{}]",
@@ -428,8 +449,8 @@ impl TaskManagerTaskTracker {
             None => self.ensure_run_task(run).await?,
         };
 
-        let task = self
-            .client
+        let client = self.client().await?;
+        let task = client
             .create_task(
                 &format!("thunk:{} [{}]", thunk.thunk_obj_id, run.run_id),
                 "workflow/thunk",
@@ -453,7 +474,8 @@ impl TaskManagerTaskTracker {
 impl WorkflowTaskTracker for TaskManagerTaskTracker {
     async fn sync_run(&self, run: &WorkflowRun) -> WorkflowResult<()> {
         let task_id = self.ensure_run_task(run).await?;
-        self.client
+        self.client()
+            .await?
             .update_task(
                 task_id,
                 Some(map_run_status(run.status)),
@@ -472,7 +494,8 @@ impl WorkflowTaskTracker for TaskManagerTaskTracker {
             .clone()
             .or_else(|| step.error.clone())
             .unwrap_or_else(|| node_state_label(step.state));
-        self.client
+        self.client()
+            .await?
             .update_task(
                 task_id,
                 Some(map_node_status(step.state)),
@@ -494,7 +517,8 @@ impl WorkflowTaskTracker for TaskManagerTaskTracker {
             .error
             .clone()
             .unwrap_or_else(|| node_state_label(shard.state));
-        self.client
+        self.client()
+            .await?
             .update_task(
                 task_id,
                 Some(map_node_status(shard.state)),
@@ -529,7 +553,8 @@ impl WorkflowTaskTracker for TaskManagerTaskTracker {
         let Some(task_id) = task_id else {
             return Ok(());
         };
-        self.client
+        self.client()
+            .await?
             .update_task_data(
                 task_id,
                 task_data_value(WorkflowStepTaskData {

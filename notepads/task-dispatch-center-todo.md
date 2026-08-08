@@ -5,10 +5,10 @@
 > 已全部在该文档 §12 决策记录中定案；§2～6 的设计草案以该文档为准。本文其余内容保留为
 > beta2.2 TaskMgr 边界收敛的执行记录。**
 >
-> **2026-08-07 实施记录：M1+M2 已落地。**
+> **2026-08-07 实施记录：M1+M2+M4 已落地。**
 > - M1：`buckyos-api/src/task_dispatcher.rs`（协议 + client + run_target_instance SDK）、
 >   `task_manager/src/dispatcher/`（独立 RDB `task-dispatcher-main`、指派式 evaluate_target、
->   offer lease/expiry timer、启动恢复、kevent 双通道）、`/kapi/task-dispatcher` 挂载
+>   offer lease/expiry timer、启动恢复、kevent 通知）、`/kapi/task-dispatcher` 挂载
 >   （task-manager 进程 3380 第二 path；boot_gateway.yaml 加了 task-dispatcher→task-manager
 >   路由别名）、scheduler `add_task_mgr` 追加第二个 rdb instance。当前有 25 个
 >   task-manager Dispatcher 单测及 5 个 buckyos-api 协议模型单测，覆盖
@@ -19,7 +19,7 @@
 >   `request.target_agent_id` 归属，全局 `/task_mgr/**` 订阅删除）；
 >   `AgentDelegateTaskRequest` 增加 dispatch_id/target_agent_id/context_refs/constraints；
 >   `--worksession-task-test` 直投入口删除。
-> - 遗留：Control Panel 默认路由配置面 / WebUI Task Center dispatch 观察面 / websdk 封装 /
+> - 遗留：Control Panel 默认路由配置面与人工放行审批面 / WebUI Task Center dispatch 观察面 / websdk 封装 /
 >   DV 环境故障注入（M3 的进程级验收）未做。
 > - 同日增量：人工放行审批门（`PendingApproval` +
 >   per-target `DispatchApprovalPolicy::{Never,InteractiveCallers,AllCallers}` +
@@ -62,8 +62,8 @@
 
 ## 当前实现进度核查（2026-08-07）
 
-核查基线：当前仓库 `5862bc6e`（`impl task dispatch center`）+ 工作区中同日实施的
-M4 审批门代码。进度口径以代码、测试和部署接线为准；“里程碑代码已合入”
+核查基线：当前仓库 `8ca8e55d`（`imporve task-dispatcher`，已包含同日实施的 M4
+审批门）。进度口径以代码、测试和部署接线为准；“里程碑代码已合入”
 不等于该里程碑的全部设计验收条件已经满足。
 
 | 范围 | 当前状态 | 已核实实现 | 尚未闭环 |
@@ -71,7 +71,7 @@ M4 审批门代码。进度口径以代码、测试和部署接线为准；“�
 | M1 Dispatcher 内核 | **主体已实现，验收部分完成** | 协议/client/Target SDK、独立 RDB、第二 RPC path、默认路由与 Target 黏着、集中指派、lease/expiry/Uncertain、启动恢复、kevent 加速 + sweep、scheduler/gateway 接线 | 管理权限仍只有粗粒度 `zone_trusted`；幂等重放未比较完整不可变信封；状态迁移与审计事件未原子提交；late accept/reject 的实例归属与状态守卫需收紧 |
 | M2 OpenDAN Target | **接入主链已实现，幂等与业务鉴权部分完成** | `agent.delegate/v1` 注册、attach/renew/claim/accept 循环、owner-only recovery、旧 TaskMgr 伪 inbox 与直投测试入口删除 | 文件绑定不是与 Task 创建原子提交，且当前写法没有 fsync、损坏时从空状态继续；接收侧只校验 envelope 非空与 input schema，尚无可验证的原始授权证据/per-agent 业务策略；无 Adapter 直接单测和进程级故障注入 |
 | M3 故障注入 | **未执行** | 协议级单测覆盖了部分状态迁移和重启恢复 | OpenDAN/Dispatcher/kevent/TaskMgr 多进程组合的离线、重启、ACK 丢失、崩溃窗口和暂停恢复尚未在 DV 环境验收 |
-| M4 人工放行 | **已实现（除管理 UI）** | 协议类型、schema v1→v2 就地迁移、hold/approve/deny/cancel/expire 服务逻辑、接收侧 `PendingApproval` 守卫、approvals 提示通道、sudo 审批权判定、6 项单测（含迁移测试） | Control Panel 审批面 UI；per-operation `approval_policy` 覆盖（设计列为后续扩展） |
+| M4 高权限实体人工放行 | **内核已实现（除管理 UI）** | 协议类型、schema v1→v2 就地迁移、hold/approve/deny/cancel/expire 服务逻辑、接收侧 `PendingApproval` 守卫、approvals 提示通道、sudo 审批权判定、6 项单测（含迁移测试） | Control Panel 审批面 UI；生产环境的细粒度 dispatcher 管理 capability 仍需从通用 `zone_trusted` 拆出。per-operation `approval_policy` 是后续扩展，不计入 v1 验收 |
 | 调用方与观察面 | **未开始/未迁移** | Rust client 可供调用 | Workflow 尚未调用 Dispatcher，send-message 仍有 TaskMgr `list_tasks` 扫描；Control Panel 默认路由/审批面、WebUI Task Center dispatch 观察面和 websdk 均不存在 |
 
 本轮实际验证：
@@ -97,10 +97,11 @@ P0（生产环境启用高权限 operation 前必须解决；M4 已于 2026-08-0
   业务鉴权，但当前 envelope 只有 Dispatcher 写入的身份快照，没有原 token、可验证授权
   引用或 Dispatcher 签名 attestation；OpenDAN 当前只检查 `on_behalf_of` 非空。需要明确
   Target 到底验证什么、信任谁，以及证据的过期/撤销语义。
-- [ ] **把管理能力从 `zone_trusted` 中拆出。** 当前 `set/disable_operation_route`、
-  `list/get_target`、`resolve_uncertain` 都只要求 `zone_trusted`，因此任意 Target owner
-  也是路由管理员，与“Target owner 不能把自己设为默认后端”的设计不一致。应接 RBAC/
-  zone-owner/system-config-admin capability，并补“Target owner 无管理权”的回归测试。
+- [ ] **把管理能力从 `zone_trusted` 中拆出。** 当前 `approve_dispatch`/`deny_dispatch`、
+  `set/disable_operation_route`、`list/get_target`、`resolve_uncertain` 的管理档位仍过粗；
+  zone 可信 Target owner 可能同时获得自我放行或修改默认路由的能力，与设计中的
+  “Target owner 身份本身不含审批/路由管理权”不一致。应接 zone-owner/dispatcher-admin/
+  system-config-admin capability，并补“Target owner 不能自批、不能改路由”的回归测试。
 - [x] **重新定义 M4 的可见性边界。**（2026-08-07 定案并随 M4 实施）审批门只封
   **接收通道**：评估/offer/target 通知/claim/accept/reject 对未放行记录全部不可达；
   zone 可信调用者 get/list 的只读可见性遵循既有查询授权，不因审批门收窄——
@@ -274,13 +275,16 @@ Workflow/OpenDAN/RBAC 的端到端条件仍保持未勾选，并在条目后注�
 - [x] Target 的一个或多个实例异步 claim，并受 lease、capacity、instance epoch 约束。
 - [x] Dispatcher 内核处理 offer/accept ACK 丢失、交接重放和 `dispatch_id` 级幂等。
   （同 `dispatch_id` late/replayed accept、offer lease redelivery、`IdempotencyContract::None`
-  进入 `Uncertain` 已实现；Target 端“最多一个业务 Task”仍见 §4.3 未完成项）
+  进入 `Uncertain` 已实现；Target 端“最多一个业务 Task”仍见 §4.4 未完成项）
 - [ ] Workflow 需要独立审计“谁把什么工作交给了哪个 Target”，且该交接生命周期独立于业务 Task。
   （Dispatcher 已持久化 auth/workflow_ref 与 dispatch_event；Workflow 尚未接入，且状态迁移与
   audit event 尚未原子提交）
+- [x] 低权限主体可以提交、但不能自动触发高权限 executor 时，由高权限管理实体在分发前
+  人工放行或拒绝。（`PendingApproval` + `approve_dispatch`/`deny_dispatch` 已实现）
 
 以下情况不使用 Dispatcher：在线 Target 的普通业务调用、Service 自己的后台任务、Service
-内部 Task 恢复、Task 状态查询，以及通过 owner 业务 API 完成的取消/重试/审批。
+内部 Task 恢复、Task 状态查询，以及通过 owner 业务 API 完成的取消/重试/执行中审批。
+这里的“执行中审批”与 Dispatcher 在 offer 前的人工放行门是两层语义，不能互相替代。
 
 ### 2.1 应负责
 
@@ -293,6 +297,8 @@ Workflow/OpenDAN/RBAC 的端到端条件仍保持未勾选，并在条目后注�
 - [x] 管理“接收前”的 delivery retry，并用 Target 的 `IdempotencyContract` 决定自动重投或
   进入 `Uncertain`。（不重复业务 Task 仍依赖 Target 侧契约）
 - [x] 在 `Accepted` 后保存 `target_task_id`，供调用方建立关联和继续观察。
+- [x] 按 Target 的 `approval_policy` 把需要人工决策的记录停在 `PendingApproval`，只允许
+  高权限管理实体 approve/deny，并持久化审批人、决定、时间和备注。
 
 ### 2.2 不应负责
 
@@ -302,6 +308,8 @@ Workflow/OpenDAN/RBAC 的端到端条件仍保持未勾选，并在条目后注�
 - [x] 不实现 Workflow DSL、条件分支、补偿或 schedule 语义。
 - [x] 不承担通用节点资源放置；资源调度仍属于 Scheduler。
 - [x] 不承诺通用分布式事务或 exactly-once 业务执行。
+- [x] 不把人工放行扩展成多级审批工作流，也不允许审批人借 approve 改选 Target 或实例；
+  放行后仍由 `evaluate_target` 按集中策略指派。
 
 ### 2.3 Workflow 中保留的能力
 
@@ -325,6 +333,7 @@ pub struct TargetRegistration {
     pub owner_did: String,
     pub operations: Vec<OperationDescriptor>,
     pub auth_policy: AuthPolicyRef,
+    pub approval_policy: DispatchApprovalPolicy,
     pub idempotency_contract: IdempotencyContract,
     pub delivery_policy: DeliveryPolicy,
     pub max_concurrency: u32,
@@ -340,6 +349,9 @@ pub struct TargetRegistration {
   （operation 名称当前只强制包含 `/`，约定使用 `name/vN`，并注册为封闭清单；但
   schema_ref 仍可选、无 output schema，Dispatcher 不执行 schema 校验）
 - [x] 未注册、未启用或不支持 operation 的 target dispatch 立即失败，不落等待记录。
+- [x] `auth_policy` 先判断调用者能否提交，`approval_policy` 再决定已受理请求是否进入
+  `PendingApproval`；支持 `Never`、`InteractiveCallers`、`AllCallers`，默认 `Never`。
+  （v1 为 per-target；per-operation 覆盖是后续扩展，不属于当前验收缺口）
 
 ### 3.2 临时 TargetInstance
 
@@ -394,12 +406,23 @@ pub struct DispatchRequest {
 - [ ] 请求信封创建后不可修改；重试复用同一个 `dispatch_id` 和 idempotency key。
   （记录不可变与同 key 返回原 dispatch 已实现；replay conflict 尚未比较 `expires_at`、
   `workflow_ref`，因此完整信封验收未过）
+- [x] 人工 approve/deny 不能修改 `requested_by_*`、`on_behalf_of`、Target、operation 或 input；
+  审批结果独立写入 `approval` 和 `dispatch_event`，放行不等于提权或免除 Target 二次鉴权。
 
 ### 4.2 独立状态机
 
 Dispatch 状态不要复用 `TaskStatus`：
 
 ```text
+dispatch 落库
+  -> PendingApproval                    # approval_policy 命中
+  -> Queued                             # 无需人工放行
+
+PendingApproval
+  -> Queued                             # 高权限实体 approve，随后集中指派
+  -> Rejected(approval_denied)          # 高权限实体 deny
+  -> Expired | Canceled
+
 Queued
   -> WaitingForTarget
   -> Offered
@@ -415,8 +438,27 @@ Queued / WaitingForTarget / Offered
 - [x] `Rejected` 区分 schema/auth/policy/business-precondition 等稳定拒绝原因。
 - [x] `Uncertain` 表示 Target 可能已经创建 Task 但接收确认丢失，禁止自动重投；由
   `resolve_uncertain` 或受控 late accept 收敛。
+- [x] `PendingApproval` 是指派前状态：不进入 `evaluate_target`、不产生 Target 通知/offer、
+  不占 capacity；Target 的 claim/accept/reject 全部拒绝，提交者仍可 cancel，`expires_at`
+  仍可把记录转为 `Expired`。
 
-### 4.3 接收幂等契约
+### 4.3 高权限实体人工放行
+
+- [x] `DispatchApprovalPolicy::InteractiveCallers` 只 hold 非 sudo 交互会话；zone 可信调用者
+  和 sudo 会话直接通过。`AllCallers` 连 zone 可信/Agent 自主提交也 hold。
+- [x] `approve_dispatch`/`deny_dispatch` 只接受高权限管理身份；审批人身份来自验签 token，
+  不接受 payload 代填，普通提交者不会因为拥有记录而取得审批权。
+- [x] approve 幂等地执行 `PendingApproval -> Queued` 并触发 `evaluate_target`；deny 幂等地
+  执行 `PendingApproval -> Rejected(approval_denied)`，再次申请必须使用新 idempotency key。
+- [x] 审批决定和 note 写入 `DispatchApproval` 与 `dispatch_event`；原 auth envelope 保持不变。
+- [x] 该接口是“是否允许进入自动指派”的人工决策，不是手工挑选后端/实例：approve 不接受
+  `target_id`/`instance_id`，不破坏 Target 黏着；换后端必须结束原记录后创建新 Dispatch。
+- [ ] Control Panel 提供待审批列表、approve/deny 操作和审计展示；内核提供
+  `/task_dispatcher/approvals` 提示与 `list_dispatches(status=PendingApproval)` 真相查询，UI 未做。
+- [ ] 审批/路由管理权接入细粒度 dispatcher-admin capability；当前实现档位仍是 zone 可信或
+  sudo 会话，不能证明普通 Target owner 一定无自批权限。
+
+### 4.4 接收幂等契约
 
 Target 接收必须满足：
 
@@ -441,12 +483,14 @@ Target 离线时推荐流程：
 
 ```text
 1. Caller 创建持久 DispatchRecord
-2. 没有在线实例 -> WaitingForTarget
-3. TargetInstance register/renew
-4. Dispatch Center 唤醒该 target 的 due records
-5. Target 通过 stream/long-poll/KEvent 收到通知并 claim_next
-6. Target 鉴权并创建自己的 Task
-7. Target accept(dispatch_id, target_task_id)
+2. approval_policy 命中 -> PendingApproval
+3. 高权限管理实体 approve -> Queued；或 deny -> Rejected 终止
+4. 无需审批/审批通过后，没有在线实例 -> WaitingForTarget
+5. TargetInstance register/renew
+6. Dispatch Center 唤醒该 target 的 due records
+7. Target 通过 stream/long-poll/KEvent 收到通知并 claim_next
+8. Target 鉴权并创建自己的 Task
+9. Target accept(dispatch_id, target_task_id)
 ```
 
 - [x] “查询尚未 dispatch 的记录”只存在于 Dispatch Store 内部，不暴露为通用 TaskMgr 接口。
@@ -458,6 +502,8 @@ Target 离线时推荐流程：
 - [x] 保留最长 60s 的低频 maintenance sweep 作为丢通知和 timer 漂移兜底，未做高频全表扫描。
 - [x] Target 接收使用定向 KEvent + `claim_next(target_id, instance_id, lease_epoch)`，不再以
   `TaskMgr.list_tasks` 作为外部工作 inbox。（OpenDAN 仅为自身幂等崩溃恢复扫描 own tasks）
+- [x] 待人工放行记录只通知 `/task_dispatcher/approvals` 管理通道，且 payload 仅含 ids；
+  Target 通道不通知。审批队列以 `list_dispatches(status=PendingApproval)` 为真相源。
 
 ## 6. Task 树与跨所有者关联
 
@@ -521,8 +567,19 @@ Workflow-owned step/mirror task
 - [ ] 使用独立 RPC path、表、索引和权限配置；可以复用同一个进程/RDB 实例。
   （path/表/索引/独立 RDB instance 已完成；owner 权限已分面，但 route/admin 仍共用
   `zone_trusted` 粗粒度门，独立管理 capability 未完成）
-- [x] 完成 dispatch/claim/accept/reject/cancel/renew/heartbeat 的协议级单元测试。
-  （dispatcher/tests.rs，25 项；另有 buckyos-api 协议模型 5 项）
+- [x] 完成 dispatch/claim/accept/reject/cancel/renew/heartbeat/approve/deny 的协议级单元测试。
+  （dispatcher/tests.rs 当前 31 项：M1 25 + M4 6；另有 buckyos-api 协议模型 5 项）
+
+### M4：高权限实体人工放行（已提前实施，2026-08-07）
+
+- [x] 增加 `PendingApproval`、`DispatchApprovalPolicy`、`DispatchApproval`、
+  `ApprovalDenied` 以及 approve/deny RPC/client。
+- [x] Dispatcher schema v1→v2，持久化审批决定；旧库支持就地迁移并有迁移单测。
+- [x] policy 命中时在指派前 hold；approve 后进入集中指派，deny/cancel/expire 正确终结，
+  Target 无法通过 claim/accept/reject 绕过审批门。
+- [x] 审批身份来自验签 token，auth envelope 不变；审批记录与状态事件可查询。
+- [ ] Control Panel 实现审批队列、操作入口和审计展示。
+- [ ] 把 approve/deny 权限从通用 `zone_trusted` 收紧为明确的 dispatcher-admin capability。
 
 ### 下一版本 F2：Workflow 试点与迁移
 
@@ -565,6 +622,13 @@ Workflow-owned step/mirror task
   （`ZoneTrustedOnly` 与 `on_behalf_of` 反洗白已过单测；M4 审批门已实施并过单测——
   `ZoneUsers + InteractiveCallers/AllCallers` 可拦低权限直触；尚未定义证据链的
   Target 二次业务鉴权仍未闭环，故整条验收保持未勾）
+- [x] `approval_policy` 命中的记录停在 `PendingApproval`：不评估、不产生 Target 通知/offer、
+  不占并发，Target owner 不能经 claim/accept/reject 绕过；cancel/expiry 正常收敛。
+- [x] 高权限管理身份可以幂等 approve/deny，审批身份和备注可审计；普通交互调用者不能审批。
+- [x] approve 不改变 auth envelope、Target 或实例，只把记录放入既有集中指派路径；
+  `Rejected(approval_denied)` 不能复活，重新申请需要新 idempotency key。
+- [ ] 生产环境证明 Target owner 仅凭 owner 身份不能自批；当前 `zone_trusted` 管理档位尚未
+  接细粒度 dispatcher-admin capability，因此权限隔离的完整验收未过。
 - [ ] Task Service 与 Dispatch Center 即使同进程，也有独立的数据模型、RPC 和授权规则。
   （数据模型/RPC 已独立；route/admin capability 尚未与通用 `zone_trusted` 分离）
 - [x] delivery retry 和 business retry 有可测试的明确分界。（Accepted 终态后 maintenance 不再触碰；重投只发生在 Accepted 前且复用 dispatch_id）
@@ -614,6 +678,13 @@ Workflow-owned step/mirror task
 - [x] 跨 owner link 使用 `get_dispatch -> target_task_id` 与 Target Task
   `request.dispatch_id` 双向引用，写操作走 Target 业务接口。
 - [x] 首个试点 Target：OpenDAN `agent.delegate/v1`。
+- [x] 人工放行采用指派前 `PendingApproval` 门：高权限实体 approve/deny；approve 只放行，
+  不改 Target/实例，随后仍由 `evaluate_target` 集中指派。
+- [x] 审批策略为 per-target `Never` / `InteractiveCallers` / `AllCallers`，默认 `Never`；
+  per-operation 覆盖留作后续扩展，不属于 v1。
+- [x] 审批不修改身份信封、不提权、不免除 Target 业务鉴权；审批人和备注进入持久审计。
+- [x] 审批门封死接收通道，但不改变 zone 可信管理调用者既有 get/list 可见性；如需隐藏
+  input，另做读取面脱敏设计。
 
 ## 11. 非目标
 
@@ -626,6 +697,11 @@ Workflow-owned step/mirror task
 - 不提供通用分布式事务或 exactly-once 执行保证。
 - 不把 Workflow DSL、schedule 或补偿逻辑下沉到 TaskMgr/Dispatch Center。
 - 不允许任意服务通过注册动态获得系统级 capability。
+- 不把人工放行实现成多级审批工作流、审批委托或按 input 动态审批规则；v1 一条记录只有
+  一次 approve/deny 决策。
+- 不允许 `approve_dispatch` 手工选择/改写 Target 或实例，也不借审批破坏 Target 黏着；
+  换后端必须结束原记录并以新 idempotency key 创建新 Dispatch。
+- Dispatcher 的分发前人工放行不替代 Target 业务执行中的人工输入或审批状态。
 
 ## 12. beta2.2 收敛记录（P0/P1/P2 执行情况）
 

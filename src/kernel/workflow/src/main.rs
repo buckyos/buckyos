@@ -74,7 +74,7 @@ use buckyos_kit::init_logging;
 use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
-use log::{error, info, warn};
+use log::{error, info};
 use std::sync::Arc;
 
 use crate::scheduled_task_manager::{ScheduleStore, ScheduleTaskMirrorClient};
@@ -147,76 +147,37 @@ pub async fn start_workflow_service() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("workflow service login failed: {:?}", err))?;
     runtime.set_main_service_port(WORKFLOW_SERVICE_PORT).await;
     let buckyos_root = runtime.buckyos_root_dir.clone();
-
-    // §6.3：Run / Step / Map shard / Thunk 同步到 task_manager。客户端拿不到
-    // 时退化为 noop（参考 §1.2 的"task_manager 不可用时仍可推进 adapter 主路径"）。
     let user_id = runtime.user_id.clone().unwrap_or_default();
     let app_id = runtime.app_id.clone();
-    let task_mgr_client = match runtime.get_task_mgr_client().await {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            warn!(
-                "task_manager client unavailable, workflow runs will not be mirrored to task tree: {}",
-                err
-            );
-            None
-        }
-    };
-    let tracker = match task_mgr_client.clone() {
-        Some(client) => {
-            info!("workflow tracker bound to task_manager");
-            ServiceTracker::from_task_manager(client, user_id.clone(), app_id.clone())
-        }
-        None => ServiceTracker::noop(),
-    };
-    let msg_center_client = match runtime.get_msg_center_client().await {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            warn!(
-                "msg_center client unavailable, workflow.send_message tasks will stay pending: {}",
-                err
-            );
-            None
-        }
-    };
-
-    // §1.2 / §9：一期 P0 必须有的 service:: adapter。aicc 拿不到客户端时不算
-    // 致命错误——其他 adapter 仍然能跑，只是涉及 aicc 的 step 会落到通用错误
-    // 路径并按 retry / human fallback 处理。
-    let mut registry = ExecutorRegistry::new();
-    match runtime.get_aicc_client().await {
-        Ok(client) => {
-            registry.register(Arc::new(AiccAdapter::new(Arc::new(client))));
-            info!("workflow registered service::aicc.* adapter");
-        }
-        Err(err) => warn!(
-            "aicc client unavailable, service::aicc.* steps will fail until aicc is online: {}",
-            err
-        ),
-    }
-    let registry = Arc::new(registry);
 
     set_buckyos_api_runtime(runtime)
         .map_err(|err| anyhow::anyhow!("register workflow runtime failed: {}", err))?;
+
+    // §6.3：Run / Step / Map shard / Thunk 同步到 task_manager。每次操作从
+    // runtime 获取短 session client，task_manager 暂时不可用时由调用路径降级。
+    let tracker = ServiceTracker::from_runtime(user_id.clone(), app_id.clone());
+    info!("workflow tracker bound to task_manager runtime client");
+
+    // §1.2 / §9：一期 P0 必须有的 service:: adapter。aicc 暂时不可用不影响
+    // 其他 adapter；涉及 aicc 的 step 会落到通用错误路径。
+    let mut registry = ExecutorRegistry::new();
+    registry.register(Arc::new(AiccAdapter::from_runtime()));
+    info!("workflow registered service::aicc.* runtime adapter");
+    let registry = Arc::new(registry);
 
     let definitions = Arc::new(DefinitionStore::new());
     let runs = Arc::new(RunStore::new());
     // schedule 的唯一真相源是 Task DB（task_type=workflow/schedule 的 root task）。
     // 这里只持有内存运行投影，启动时从 Task DB 重建；自身不落盘。
-    let schedule_mirror = task_mgr_client.clone().map(|client| {
-        Arc::new(ScheduleTaskMirrorClient::new(
-            client,
-            user_id.clone(),
-            app_id.clone(),
-        ))
-    });
+    let schedule_mirror = Arc::new(ScheduleTaskMirrorClient::from_runtime(
+        user_id.clone(),
+        app_id.clone(),
+    ));
     // hydrate 不在 boot 时一次性做（task_mgr 可能尚未就绪）；交给 scan 循环
     // 首个 tick 起持续重试直到成功，见 WorkflowRpcHandler::ensure_schedules_hydrated。
     let schedules = Arc::new(ScheduleStore::new_memory());
-    if let (Some(task_mgr), Some(msg_center)) = (task_mgr_client.clone(), msg_center_client) {
-        SendMessageTaskExecutor::new(task_mgr, msg_center, schedules.clone(), buckyos_root).start();
-        info!("workflow.send_message executor started");
-    }
+    SendMessageTaskExecutor::from_runtime(schedules.clone(), buckyos_root).start();
+    info!("workflow.send_message executor started");
     // 一期使用进程内 dispatcher / object store；§5.1 提到的 sled / Named Object
     // Store 持久化是后续提交的工作。`func::*` 调度路径暂时不接 Scheduler，命中
     // 时会按 §6.2 落到 require_function_object 的明确错误。
@@ -241,16 +202,14 @@ pub async fn start_workflow_service() -> Result<()> {
         runs.clone(),
         definitions.clone(),
         orchestrator.clone(),
-        task_mgr_client.clone(),
+        None,
     );
     subscriptions.start().await;
 
     let mut rpc_handler = WorkflowRpcHandler::new(definitions, runs, orchestrator)
         .with_schedules(schedules)
         .with_subscriptions(subscriptions);
-    if let Some(mirror) = schedule_mirror {
-        rpc_handler = rpc_handler.with_schedule_mirror(mirror);
-    }
+    rpc_handler = rpc_handler.with_schedule_mirror(schedule_mirror);
     let rpc = Arc::new(rpc_handler);
     start_schedule_loop(rpc.clone());
     let server = Arc::new(WorkflowHttpServer::new(rpc));

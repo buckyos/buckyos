@@ -1,6 +1,6 @@
 use buckyos_api::{
-    parse_typed_task_data, MsgCenterClient, SendMessageTaskData, Task, TaskFilter,
-    TaskManagerClient, TaskStatus, TypedTaskData,
+    get_buckyos_api_runtime, parse_typed_task_data, MsgCenterClient, SendMessageTaskData, Task,
+    TaskFilter, TaskManagerClient, TaskStatus, TypedTaskData,
 };
 use log::{info, warn};
 use serde_json::{json, Value};
@@ -15,25 +15,32 @@ const TASK_TYPE: &str = "workflow.send_message";
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct SendMessageTaskExecutor {
-    task_mgr: Arc<TaskManagerClient>,
-    msg_center: Arc<MsgCenterClient>,
     schedules: Arc<ScheduleStore>,
     buckyos_root: PathBuf,
 }
 
 impl SendMessageTaskExecutor {
-    pub fn new(
-        task_mgr: Arc<TaskManagerClient>,
-        msg_center: Arc<MsgCenterClient>,
-        schedules: Arc<ScheduleStore>,
-        buckyos_root: PathBuf,
-    ) -> Arc<Self> {
+    pub fn from_runtime(schedules: Arc<ScheduleStore>, buckyos_root: PathBuf) -> Arc<Self> {
         Arc::new(Self {
-            task_mgr,
-            msg_center,
             schedules,
             buckyos_root,
         })
+    }
+
+    async fn task_mgr_client(&self) -> Result<Arc<TaskManagerClient>, String> {
+        let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
+        Box::pin(runtime.get_task_mgr_client())
+            .await
+            .map(Arc::new)
+            .map_err(|err| err.to_string())
+    }
+
+    async fn msg_center_client(&self) -> Result<Arc<MsgCenterClient>, String> {
+        let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
+        Box::pin(runtime.get_msg_center_client())
+            .await
+            .map(Arc::new)
+            .map_err(|err| err.to_string())
     }
 
     pub fn start(self: Arc<Self>) {
@@ -54,7 +61,14 @@ impl SendMessageTaskExecutor {
             status: Some(TaskStatus::Pending),
             ..Default::default()
         };
-        let tasks = match self.task_mgr.list_tasks(Some(filter)).await {
+        let task_mgr = match self.task_mgr_client().await {
+            Ok(client) => client,
+            Err(err) => {
+                warn!("workflow.send_message executor get task_manager client failed: {err}");
+                return;
+            }
+        };
+        let tasks = match task_mgr.list_tasks(Some(filter)).await {
             Ok(tasks) => tasks,
             Err(err) => {
                 warn!("workflow.send_message executor list_tasks failed: {err:?}");
@@ -64,7 +78,17 @@ impl SendMessageTaskExecutor {
         for task in tasks {
             if let Err(err) = self.execute_task(&task).await {
                 warn!("workflow.send_message task {} failed: {}", task.id, err);
-                if let Err(update_err) = self.task_mgr.mark_task_as_failed(task.id, &err).await {
+                let update_result = match self.task_mgr_client().await {
+                    Ok(client) => client.mark_task_as_failed(task.id, &err).await,
+                    Err(client_err) => {
+                        warn!(
+                            "workflow.send_message task {} get task_manager client failed: {}",
+                            task.id, client_err
+                        );
+                        continue;
+                    }
+                };
+                if let Err(update_err) = update_result {
                     warn!(
                         "workflow.send_message task {} mark failed failed: {update_err:?}",
                         task.id
@@ -76,7 +100,8 @@ impl SendMessageTaskExecutor {
 
     async fn execute_task(&self, task: &Task) -> Result<(), String> {
         let task_id = task.id;
-        self.task_mgr
+        self.task_mgr_client()
+            .await?
             .update_task(
                 task_id,
                 Some(TaskStatus::Running),
@@ -128,7 +153,8 @@ impl SendMessageTaskExecutor {
         let msg = build_text_message(sender.as_str(), recipient.as_str(), text)?;
         let idempotency_key = Some(format!("{TASK_TYPE}:{task_id}"));
         let result = self
-            .msg_center
+            .msg_center_client()
+            .await?
             .post_send(msg, idempotency_key)
             .await
             .map_err(|err| format!("msg_center.post_send failed: {err:?}"))?;
@@ -146,11 +172,13 @@ impl SendMessageTaskExecutor {
         }));
         let updated_data = serde_json::to_value(&task_data)
             .map_err(|err| format!("serialize send_message result failed: {err}"))?;
-        self.task_mgr
+        self.task_mgr_client()
+            .await?
             .update_task_data(task_id, updated_data)
             .await
             .map_err(|err| format!("update result data failed: {err:?}"))?;
-        self.task_mgr
+        self.task_mgr_client()
+            .await?
             .update_task(
                 task_id,
                 Some(TaskStatus::Completed),

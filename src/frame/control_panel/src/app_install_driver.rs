@@ -1089,7 +1089,7 @@ async fn download_object_by_id(
             )
         })?;
     // kevent 加速 + 权威回读（内部自带 timeout sweep 兜底）。
-    let task = task_mgr
+    let task = runtime
         .wait_for_task_end_kevent(download_task_id)
         .await
         .map_err(|err| {

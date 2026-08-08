@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    set_buckyos_api_runtime, BuckyOSRuntimeType, TaskStatus,
+    set_buckyos_api_runtime, BuckyOSRuntimeType,
 };
 use buckyos_kit::{get_buckyos_app_data_dir, init_logging};
 use log::{error, info, warn};
@@ -24,7 +24,6 @@ use tokio::fs;
 
 use opendan::agent::{AIAgent, CreateWorkSessionParams};
 use opendan::agent_config::AgentTomlFile;
-use opendan::agent_task_executor::TASK_TYPE_AGENT_DELEGATE;
 use opendan::ai_runtime::AgentRuntime;
 use opendan::session_model::{SessionStatus, SessionSummary};
 use opendan::worklog::{WorklogService, WorklogToolConfig};
@@ -545,35 +544,11 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
 
     let api_runtime =
         get_buckyos_api_runtime().map_err(|err| anyhow!("load buckyos runtime failed: {err}"))?;
-    let aicc = api_runtime
-        .get_aicc_client()
-        .await
-        .map_err(|err| anyhow!("init aicc client failed: {err}"))?;
-
     let worklog_db = std::env::var(WORKLOG_DB_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_WORKLOG_DB));
     let worklog = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db.clone()))
         .with_context(|| format!("open worklog db at {}", worklog_db.display()))?;
-
-    let msg_center = match api_runtime.get_msg_center_client().await {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            warn!("opendan.bootstrap: msg-center unavailable — inbox pump disabled: {err}");
-            None
-        }
-    };
-
-    // task_mgr is optional too — failing to reach the task-mgr daemon
-    // should degrade async-tool dispatch (PendingTool outcomes) to an
-    // inline warn, not block the agent from running.
-    let task_mgr = match api_runtime.get_task_mgr_client().await {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            warn!("opendan.bootstrap: task-mgr unavailable — async tool dispatch disabled: {err}");
-            None
-        }
-    };
 
     // The KEvent client must come from the runtime: opendan runs in a
     // container, so its only global-event channel is node-daemon's bridge.
@@ -594,47 +569,15 @@ async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRun
         .unwrap_or_else(|| "local".to_string());
 
     info!(
-        "opendan.bootstrap: aicc=ready worklog_db={} msg_center={} task_mgr={} kevent_backend={:?} kevent_endpoint={}",
+        "opendan.bootstrap: service_clients=runtime worklog_db={} kevent_backend={:?} kevent_endpoint={}",
         worklog_db.display(),
-        if msg_center.is_some() {
-            "ready"
-        } else {
-            "unavailable"
-        },
-        if task_mgr.is_some() {
-            "ready"
-        } else {
-            "unavailable"
-        },
         kevent_backend,
         kevent_endpoint
     );
 
-    // Optional as well: without the dispatcher the agent still runs, it just
-    // cannot receive external structured delegation (IM/session paths are
-    // unaffected).
-    let task_dispatcher = match api_runtime.get_task_dispatcher_client().await {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            warn!(
-                "opendan.bootstrap: task-dispatcher unavailable — external delegation disabled: {err}"
-            );
-            None
-        }
-    };
-
-    let mut runtime =
-        AgentRuntime::new(Arc::new(aicc), Arc::new(worklog)).with_kevent_client(kevent_client);
-    if let Some(client) = msg_center {
-        runtime = runtime.with_msg_center(client);
-    }
-    if let Some(client) = task_mgr {
-        runtime = runtime.with_task_mgr(client);
-    }
-    if let Some(client) = task_dispatcher {
-        runtime = runtime.with_task_dispatcher(client);
-    }
-    Ok(Arc::new(runtime))
+    Ok(Arc::new(
+        AgentRuntime::from_runtime(Arc::new(worklog)).with_kevent_client(kevent_client),
+    ))
 }
 
 async fn run_worksession_quick_test(agent: Arc<AIAgent>, json_path: PathBuf) -> Result<()> {

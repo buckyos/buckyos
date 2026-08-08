@@ -1066,11 +1066,7 @@ pub trait TaskDispatcherHandler: Send + Sync {
         req: AcceptDispatchReq,
         ctx: RPCContext,
     ) -> Result<AcceptDispatchResult>;
-    async fn handle_reject_dispatch(
-        &self,
-        req: RejectDispatchReq,
-        ctx: RPCContext,
-    ) -> Result<()>;
+    async fn handle_reject_dispatch(&self, req: RejectDispatchReq, ctx: RPCContext) -> Result<()>;
 
     // admin side
     async fn handle_approve_dispatch(
@@ -1228,7 +1224,9 @@ impl<T: TaskDispatcherHandler> RPCHandler for TaskDispatcherServerHandler<T> {
             }
             "disable_operation_route" => {
                 let route_req = DisableOperationRouteReq::from_json(req.params)?;
-                self.0.handle_disable_operation_route(route_req, ctx).await?;
+                self.0
+                    .handle_disable_operation_route(route_req, ctx)
+                    .await?;
                 RPCResult::Success(json!(()))
             }
             "get_operation_route" => {
@@ -1304,7 +1302,9 @@ impl TaskDispatcherClient {
         };
         match self {
             Self::InProcess(handler) => {
-                handler.handle_get_dispatch(req, RPCContext::default()).await
+                handler
+                    .handle_get_dispatch(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let result = krpc_call!(client, "get_dispatch", req)?;
@@ -1434,9 +1434,7 @@ impl TaskDispatcherClient {
 
     pub async fn claim_next(&self, req: ClaimNextReq) -> Result<Vec<DispatchRecord>> {
         match self {
-            Self::InProcess(handler) => {
-                handler.handle_claim_next(req, RPCContext::default()).await
-            }
+            Self::InProcess(handler) => handler.handle_claim_next(req, RPCContext::default()).await,
             Self::KRPC(client) => {
                 let result = krpc_call!(client, "claim_next", req)?;
                 let parsed: ClaimNextResult = parse_result(result, "ClaimNextResult")?;
@@ -1507,7 +1505,9 @@ impl TaskDispatcherClient {
         };
         match self {
             Self::InProcess(handler) => {
-                handler.handle_deny_dispatch(req, RPCContext::default()).await
+                handler
+                    .handle_deny_dispatch(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let result = krpc_call!(client, "deny_dispatch", req)?;
@@ -1548,9 +1548,7 @@ impl TaskDispatcherClient {
             target_id: target_id.to_string(),
         };
         match self {
-            Self::InProcess(handler) => {
-                handler.handle_get_target(req, RPCContext::default()).await
-            }
+            Self::InProcess(handler) => handler.handle_get_target(req, RPCContext::default()).await,
             Self::KRPC(client) => {
                 let result = krpc_call!(client, "get_target", req)?;
                 let parsed: GetTargetResult = parse_result(result, "GetTargetResult")?;
@@ -1697,22 +1695,34 @@ impl TargetInstanceConfig {
     }
 }
 
+async fn acquire_runtime_task_dispatcher_client() -> Result<TaskDispatcherClient> {
+    crate::get_buckyos_api_runtime()?
+        .get_task_dispatcher_client()
+        .await
+}
+
 /// Run one target instance until `shutdown` fires: attach, subscribe the
 /// target kevent channel, claim/accept in a loop, renew the lease, detach on
 /// the way out. Re-attaches (new epoch) if the dispatcher declares this
-/// instance stale. The business side only implements [`DispatchOfferHandler`].
+/// instance stale. Every dispatcher RPC acquires a short-session client from
+/// the registered runtime. The business side only implements
+/// [`DispatchOfferHandler`].
 pub async fn run_target_instance(
-    client: Arc<TaskDispatcherClient>,
     config: TargetInstanceConfig,
     kevent: Option<KEventClient>,
     shutdown: Arc<tokio::sync::Notify>,
     handler: Arc<dyn DispatchOfferHandler>,
 ) -> Result<()> {
     loop {
-        let attach = match client
-            .attach_instance(config.target_id.as_str(), config.capacity)
-            .await
-        {
+        let attach_result = match acquire_runtime_task_dispatcher_client().await {
+            Ok(client) => {
+                client
+                    .attach_instance(config.target_id.as_str(), config.capacity)
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        let attach = match attach_result {
             Ok(attach) => attach,
             Err(err) => {
                 warn!(
@@ -1735,7 +1745,10 @@ pub async fn run_target_instance(
         let reader = match kevent.as_ref() {
             Some(kevent_client) => {
                 let channel = task_dispatcher_target_event_id(attach.target_key.as_str());
-                match kevent_client.create_event_reader(vec![channel.clone()]).await {
+                match kevent_client
+                    .create_event_reader(vec![channel.clone()])
+                    .await
+                {
                     Ok(reader) => Some(reader),
                     Err(err) => {
                         warn!(
@@ -1749,17 +1762,17 @@ pub async fn run_target_instance(
             None => None,
         };
 
-        match run_attached_instance(&client, &config, &attach, reader.as_ref(), &shutdown, &handler)
-            .await
-        {
+        match run_attached_instance(&config, &attach, reader.as_ref(), &shutdown, &handler).await {
             InstanceLoopExit::Shutdown => {
-                let _ = client
-                    .detach_instance(DetachInstanceReq {
-                        target_id: config.target_id.clone(),
-                        instance_id: attach.instance_id.clone(),
-                        lease_epoch: attach.lease_epoch,
-                    })
-                    .await;
+                if let Ok(client) = acquire_runtime_task_dispatcher_client().await {
+                    let _ = client
+                        .detach_instance(DetachInstanceReq {
+                            target_id: config.target_id.clone(),
+                            instance_id: attach.instance_id.clone(),
+                            lease_epoch: attach.lease_epoch,
+                        })
+                        .await;
+                }
                 return Ok(());
             }
             InstanceLoopExit::Stale => {
@@ -1779,7 +1792,6 @@ enum InstanceLoopExit {
 }
 
 async fn run_attached_instance(
-    client: &TaskDispatcherClient,
     config: &TargetInstanceConfig,
     attach: &AttachInstanceResult,
     reader: Option<&crate::kevent_client::EventReader>,
@@ -1793,7 +1805,7 @@ async fn run_attached_instance(
     renew_interval.tick().await;
 
     // Initial drain covers records queued while we were offline.
-    if let DrainOutcome::Stale = drain_offers(client, config, attach, handler).await {
+    if let DrainOutcome::Stale = drain_offers(config, attach, handler).await {
         return InstanceLoopExit::Stale;
     }
 
@@ -1811,19 +1823,22 @@ async fn run_attached_instance(
         tokio::select! {
             _ = shutdown.notified() => return InstanceLoopExit::Shutdown,
             _ = renew_interval.tick() => {
-                let renew = client
-                    .renew_instance(RenewInstanceReq {
-                        target_id: config.target_id.clone(),
-                        instance_id: attach.instance_id.clone(),
-                        lease_epoch: attach.lease_epoch,
-                        available_capacity: config.capacity,
-                    })
-                    .await;
+                let renew = match acquire_runtime_task_dispatcher_client().await {
+                    Ok(client) => client
+                        .renew_instance(RenewInstanceReq {
+                            target_id: config.target_id.clone(),
+                            instance_id: attach.instance_id.clone(),
+                            lease_epoch: attach.lease_epoch,
+                            available_capacity: config.capacity,
+                        })
+                        .await,
+                    Err(err) => Err(err),
+                };
                 match renew {
                     Ok(result) => {
                         if result.has_due {
                             if let DrainOutcome::Stale =
-                                drain_offers(client, config, attach, handler).await
+                                drain_offers(config, attach, handler).await
                             {
                                 return InstanceLoopExit::Stale;
                             }
@@ -1839,7 +1854,7 @@ async fn run_attached_instance(
                 }
             }
             _ = wake => {
-                if let DrainOutcome::Stale = drain_offers(client, config, attach, handler).await {
+                if let DrainOutcome::Stale = drain_offers(config, attach, handler).await {
                     return InstanceLoopExit::Stale;
                 }
             }
@@ -1853,21 +1868,25 @@ enum DrainOutcome {
 }
 
 async fn drain_offers(
-    client: &TaskDispatcherClient,
     config: &TargetInstanceConfig,
     attach: &AttachInstanceResult,
     handler: &Arc<dyn DispatchOfferHandler>,
 ) -> DrainOutcome {
     loop {
-        let records = match client
-            .claim_next(ClaimNextReq {
-                target_id: config.target_id.clone(),
-                instance_id: attach.instance_id.clone(),
-                lease_epoch: attach.lease_epoch,
-                max: config.claim_batch,
-            })
-            .await
-        {
+        let records_result = match acquire_runtime_task_dispatcher_client().await {
+            Ok(client) => {
+                client
+                    .claim_next(ClaimNextReq {
+                        target_id: config.target_id.clone(),
+                        instance_id: attach.instance_id.clone(),
+                        lease_epoch: attach.lease_epoch,
+                        max: config.claim_batch,
+                    })
+                    .await
+            }
+            Err(err) => Err(err),
+        };
+        let records = match records_result {
             Ok(records) => records,
             Err(err) if is_stale_instance_err(&err) => return DrainOutcome::Stale,
             Err(err) => {
@@ -1887,14 +1906,19 @@ async fn drain_offers(
             match handler.handle_offer(record).await {
                 DispatchOfferDecision::Accept { target_task_id } => {
                     progressed = true;
-                    let accept = client
-                        .accept_dispatch(AcceptDispatchReq {
-                            dispatch_id: record.dispatch_id.clone(),
-                            instance_id: attach.instance_id.clone(),
-                            lease_epoch: attach.lease_epoch,
-                            target_task_id,
-                        })
-                        .await;
+                    let accept = match acquire_runtime_task_dispatcher_client().await {
+                        Ok(client) => {
+                            client
+                                .accept_dispatch(AcceptDispatchReq {
+                                    dispatch_id: record.dispatch_id.clone(),
+                                    instance_id: attach.instance_id.clone(),
+                                    lease_epoch: attach.lease_epoch,
+                                    target_task_id,
+                                })
+                                .await
+                        }
+                        Err(err) => Err(err),
+                    };
                     match accept {
                         Ok(result) if result.accepted => {
                             handler.on_accepted(record, target_task_id).await;
@@ -1917,15 +1941,20 @@ async fn drain_offers(
                 }
                 DispatchOfferDecision::Reject { reason, detail } => {
                     progressed = true;
-                    let reject = client
-                        .reject_dispatch(RejectDispatchReq {
-                            dispatch_id: record.dispatch_id.clone(),
-                            instance_id: attach.instance_id.clone(),
-                            lease_epoch: attach.lease_epoch,
-                            reason,
-                            detail,
-                        })
-                        .await;
+                    let reject = match acquire_runtime_task_dispatcher_client().await {
+                        Ok(client) => {
+                            client
+                                .reject_dispatch(RejectDispatchReq {
+                                    dispatch_id: record.dispatch_id.clone(),
+                                    instance_id: attach.instance_id.clone(),
+                                    lease_epoch: attach.lease_epoch,
+                                    reason,
+                                    detail,
+                                })
+                                .await
+                        }
+                        Err(err) => Err(err),
+                    };
                     match reject {
                         Err(err) if is_stale_instance_err(&err) => return DrainOutcome::Stale,
                         Err(err) => {

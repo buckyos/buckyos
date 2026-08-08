@@ -406,6 +406,12 @@ impl ServiceTracker {
         }
     }
 
+    pub fn from_runtime(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
+        Self {
+            inner: TrackerKind::TaskManager(TaskManagerTaskTracker::from_runtime(user_id, app_id)),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn is_task_manager_backed(&self) -> bool {
         matches!(self.inner, TrackerKind::TaskManager(_))

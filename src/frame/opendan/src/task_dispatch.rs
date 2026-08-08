@@ -41,7 +41,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use buckyos_api::{
-    CreateTaskOptions, OpenDanAsyncToolTaskData, Task, TaskManagerClient, TaskStatus,
+    get_buckyos_api_runtime, CreateTaskOptions, OpenDanAsyncToolTaskData, Task, TaskManagerClient,
+    TaskStatus,
 };
 use log::warn;
 use serde_json::Value;
@@ -57,12 +58,12 @@ pub const TASK_TYPE_OPENDAN_TOOL: &str = "opendan.async_tool";
 /// can route tasks correctly.
 const DEFAULT_APP_ID: &str = "opendan";
 
-/// Wrapper over `TaskManagerClient` carving out an opendan-specific
-/// surface. Cloning is cheap (Arc) so handing a clone to each
-/// AgentSession is fine.
+/// OpenDAN-specific TaskManager surface. Production instances acquire a
+/// short-session client from the runtime for each operation; fixed clients
+/// are reserved for tests or explicit token management.
 #[derive(Clone)]
 pub struct TaskDispatch {
-    client: Arc<TaskManagerClient>,
+    client: Option<Arc<TaskManagerClient>>,
     user_id: String,
     app_id: String,
 }
@@ -70,10 +71,33 @@ pub struct TaskDispatch {
 impl TaskDispatch {
     pub fn new(client: Arc<TaskManagerClient>, user_id: impl Into<String>) -> Self {
         Self {
-            client,
+            client: Some(client),
             user_id: user_id.into(),
             app_id: DEFAULT_APP_ID.to_string(),
         }
+    }
+
+    pub fn from_runtime(
+        client_override: Option<Arc<TaskManagerClient>>,
+        user_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            client: client_override,
+            user_id: user_id.into(),
+            app_id: DEFAULT_APP_ID.to_string(),
+        }
+    }
+
+    async fn client(&self) -> Result<Arc<TaskManagerClient>> {
+        if let Some(client) = self.client.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime().map_err(|err| anyhow!(err.to_string()))?;
+        runtime
+            .get_task_mgr_client()
+            .await
+            .map(Arc::new)
+            .map_err(|err| anyhow!(err.to_string()))
     }
 
     pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
@@ -107,7 +131,8 @@ impl TaskDispatch {
             permissions: None,
         };
         let task = self
-            .client
+            .client()
+            .await?
             .create_task(
                 &task_name,
                 TASK_TYPE_OPENDAN_TOOL,
@@ -139,7 +164,16 @@ impl TaskDispatch {
         } else {
             TaskStatus::Failed
         };
-        if let Err(err) = self.client.update_task_status(task_id, status).await {
+        let result = match self.client().await {
+            Ok(client) => client.update_task_status(task_id, status).await,
+            Err(err) => {
+                warn!(
+                    "opendan.task_dispatch: get task-manager client for task {task_id} failed: {err}"
+                );
+                return;
+            }
+        };
+        if let Err(err) = result {
             warn!("opendan.task_dispatch: update_task_status({task_id}, {status:?}) failed: {err}");
         }
     }

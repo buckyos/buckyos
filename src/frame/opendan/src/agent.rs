@@ -580,22 +580,20 @@ impl AIAgent {
         Ok(())
     }
 
-    /// Spawn the msg-center / kevent inbound pump if the runtime wired both
-    /// dependencies and the agent has a parseable owner DID. Returns `None`
-    /// when any of those is missing — the agent then runs in
-    /// inbox()-only mode, which is the right behavior for tests and CLI.
+    /// Spawn the msg-center / kevent inbound pump if the runtime wired kevent
+    /// and the agent has a parseable owner DID. Msg-center clients are acquired
+    /// from the runtime by the pump for each operation.
     fn spawn_msg_center_pump(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
-        let msg_center = self.runtime.msg_center.clone()?;
         let kevent_client = self.runtime.kevent_client.clone()?;
         let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.identity.agent_did)?;
         let contact_lookup = Some(Arc::new(ContactLookup::new(
-            msg_center.clone(),
+            self.runtime.msg_center.clone(),
             Some(owner_did.clone()),
         )));
         let cfg = PumpConfig {
             agent_name: self.agent_name.clone(),
             owner_did,
-            msg_center,
+            msg_center: self.runtime.msg_center.clone(),
             kevent_client,
             inbox_tx: self.inbox_tx.clone(),
             shutdown: self.pump_shutdown.clone(),
@@ -1479,7 +1477,7 @@ impl AIAgent {
         tunnel_did: Option<&str>,
         reply: &str,
     ) {
-        let Some(msg_center) = self.runtime.msg_center.as_ref().cloned() else {
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
             return;
         };
         let Some(peer_did_str) = from_did else { return };
@@ -1544,7 +1542,7 @@ impl AIAgent {
         if record_id.starts_with("local-") {
             return;
         }
-        let Some(msg_center) = self.runtime.msg_center.as_ref() else {
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
             return;
         };
         if let Err(err) = msg_center
@@ -1982,11 +1980,11 @@ impl AIAgent {
         } = params;
         let task_id = normalize_task_id(task_id);
         if let Some(task_id) = task_id {
-            let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
-                return Err(anyhow!(
-                    "create_work_session: task_id was specified but task manager is unavailable"
-                ));
-            };
+            let client = self.runtime.task_mgr_client().await.map_err(|err| {
+                anyhow!(
+                    "create_work_session: task_id was specified but task manager is unavailable: {err}"
+                )
+            })?;
             let task = client
                 .get_task(task_id)
                 .await
@@ -2148,9 +2146,11 @@ impl AIAgent {
         workspace_id: &str,
         created_by_session_id: &str,
     ) -> Result<AgentTaskBinding> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let (user_id, app_id) = self.default_task_identity(created_by_session_id);
         let task_name = if title.trim().is_empty() {
             meaningful_workspace_name(title, objective)
@@ -2214,7 +2214,7 @@ impl AIAgent {
         behavior: &str,
         auto_started: bool,
     ) {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(task_mgr) = self.runtime.task_mgr_client().await else {
             return;
         };
         let status = if auto_started {

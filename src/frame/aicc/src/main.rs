@@ -2014,11 +2014,6 @@ pub async fn start_aicc_service(mut center: AIComputeCenter) -> Result<()> {
         ));
     }
     runtime.set_main_service_port(AICC_SERVICE_MAIN_PORT).await;
-    let taskmgr = runtime
-        .get_task_mgr_client()
-        .await
-        .map_err(|err| anyhow::anyhow!("init task-manager client for aicc failed: {}", err))?;
-    center.set_task_manager_client(Arc::new(taskmgr));
     center.set_resource_resolver(Arc::new(NamedStoreResourceResolver));
 
     let settings = match runtime.get_my_settings().await {

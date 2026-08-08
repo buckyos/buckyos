@@ -30,8 +30,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, AgentDelegateDispatchInput, AgentDelegateProgress,
     AgentDelegateTaskData, AgentDelegateTaskRequest, DispatchOfferDecision, DispatchOfferHandler,
     DispatchRecord, DispatchRejectReason, OperationDescriptor, TargetInstanceConfig,
-    TargetRegistration, TaskDispatcherClient, TaskFilter, TaskManagerClient,
-    AGENT_DELEGATE_OPERATION_V1,
+    TargetRegistration, TaskFilter, TaskManagerClient, AGENT_DELEGATE_OPERATION_V1,
 };
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -97,10 +96,7 @@ impl DispatchBindingStore {
 
     async fn get(&self, dispatch_id: &str) -> Option<Option<i64>> {
         let state = self.state.lock().await;
-        state
-            .bindings
-            .get(dispatch_id)
-            .map(|entry| entry.task_id)
+        state.bindings.get(dispatch_id).map(|entry| entry.task_id)
     }
 
     async fn put(&self, dispatch_id: &str, task_id: Option<i64>) -> Result<()> {
@@ -137,20 +133,19 @@ struct AgentDispatchHandler {
 }
 
 impl AgentDispatchHandler {
-    fn task_mgr(&self) -> Result<Arc<TaskManagerClient>> {
+    async fn task_mgr(&self) -> Result<Arc<TaskManagerClient>> {
         self.agent
             .runtime
-            .task_mgr
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow!("task manager unavailable"))
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))
     }
 
     /// Own-task scan for the crash window between "task created" and
     /// "binding persisted". Owner-only (our app id), never a cross-owner
     /// inbox: it just recognizes tasks we created for this dispatch before.
     async fn find_own_task_for_dispatch(&self, dispatch_id: &str) -> Result<Option<i64>> {
-        let task_mgr = self.task_mgr()?;
+        let task_mgr = self.task_mgr().await?;
         let app_id = self.agent.own_task_app_id();
         let tasks = task_mgr
             .list_tasks(Some(TaskFilter {
@@ -199,8 +194,7 @@ impl AgentDispatchHandler {
                 detail: Some("auth envelope carries no business user".to_string()),
             });
         }
-        let input: AgentDelegateDispatchInput = match serde_json::from_value(record.input.clone())
-        {
+        let input: AgentDelegateDispatchInput = match serde_json::from_value(record.input.clone()) {
             Ok(input) => input,
             Err(err) => {
                 return Ok(DispatchOfferDecision::Reject {
@@ -241,7 +235,7 @@ impl AgentDispatchHandler {
         // 3. Create the OpenDAN-owned task. Owner = verified business user +
         //    our own app id; the requester never becomes the task owner.
         self.bindings.put(record.dispatch_id.as_str(), None).await?;
-        let task_mgr = self.task_mgr()?;
+        let task_mgr = self.task_mgr().await?;
         let task_name = input
             .title
             .as_deref()
@@ -346,7 +340,7 @@ impl DispatchOfferHandler for AgentDispatchHandler {
             "opendan.dispatch_adapter[{}]: dispatch {} gone, canceling local task {}",
             self.agent.agent_name, record.dispatch_id, target_task_id
         );
-        match self.task_mgr() {
+        match self.task_mgr().await {
             Ok(task_mgr) => {
                 if let Err(err) = task_mgr.cancel_task(target_task_id, false).await {
                     error!(
@@ -396,20 +390,6 @@ impl AIAgent {
         if !self.config.toml.runtime.task_executor.enabled {
             return None;
         }
-        let Some(dispatcher) = self.runtime.task_dispatcher.as_ref().cloned() else {
-            info!(
-                "opendan.dispatch_adapter[{}]: task-dispatcher not configured; external delegation disabled",
-                self.agent_name
-            );
-            return None;
-        };
-        if self.runtime.task_mgr.is_none() {
-            warn!(
-                "opendan.dispatch_adapter[{}]: task-mgr unavailable; not registering dispatch target",
-                self.agent_name
-            );
-            return None;
-        }
         let bindings = match DispatchBindingStore::open(self.config.layout.root.as_path()) {
             Ok(store) => Arc::new(store),
             Err(err) => {
@@ -421,15 +401,11 @@ impl AIAgent {
             }
         };
         Some(tokio::spawn(async move {
-            self.run_dispatch_target(dispatcher, bindings).await;
+            self.run_dispatch_target(bindings).await;
         }))
     }
 
-    async fn run_dispatch_target(
-        self: Arc<Self>,
-        dispatcher: Arc<TaskDispatcherClient>,
-        bindings: Arc<DispatchBindingStore>,
-    ) {
+    async fn run_dispatch_target(self: Arc<Self>, bindings: Arc<DispatchBindingStore>) {
         let target_id = self.dispatch_target_id();
         let registration = TargetRegistration {
             target_id: target_id.clone(),
@@ -453,7 +429,11 @@ impl AIAgent {
         // Registration must land before the instance loop; retry quietly —
         // the dispatcher may still be coming up.
         loop {
-            match dispatcher.register_target(registration.clone()).await {
+            let result = match self.runtime.task_dispatcher_client().await {
+                Ok(dispatcher) => dispatcher.register_target(registration.clone()).await,
+                Err(err) => Err(err),
+            };
+            match result {
                 Ok(_) => {
                     info!(
                         "opendan.dispatch_adapter[{}]: registered dispatch target {}",
@@ -486,7 +466,6 @@ impl AIAgent {
             .as_ref()
             .map(|client| client.as_ref().clone());
         let result = buckyos_api::run_target_instance(
-            dispatcher,
             TargetInstanceConfig::new(target_id.clone(), DISPATCH_CAPACITY),
             kevent,
             self.pump_shutdown.clone(),

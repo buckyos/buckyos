@@ -49,9 +49,6 @@ impl AIAgent {
         if !self.config.toml.runtime.task_executor.enabled {
             return None;
         }
-        if self.runtime.task_mgr.is_none() {
-            return None;
-        }
         let runner = match self.task_executor_runner_id() {
             Ok(runner) => runner,
             Err(err) => {
@@ -95,9 +92,11 @@ impl AIAgent {
     /// Entry point for the Dispatch Target Adapter: run the executor path
     /// for a task this OpenDAN just created by accepting a dispatch.
     pub async fn process_accepted_dispatch_task(self: Arc<Self>, task_id: i64) -> Result<()> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let runner = self.task_executor_runner_id()?;
         let task = task_mgr.get_task(task_id).await?;
         self.process_agent_delegate_task(task, runner.as_str())
@@ -117,8 +116,15 @@ impl AIAgent {
             TaskStatus::Paused,
             TaskStatus::Canceled,
         ] {
-            let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-                return;
+            let task_mgr = match self.runtime.task_mgr_client().await {
+                Ok(client) => client,
+                Err(err) => {
+                    warn!(
+                        "opendan.task_inbox[{}]: task manager unavailable: {err}",
+                        self.agent_name
+                    );
+                    return;
+                }
             };
             let filter = TaskFilter {
                 app_id: Some(own_app_id.clone()),
@@ -174,9 +180,11 @@ impl AIAgent {
             return Ok(());
         }
         if task.status == TaskStatus::WaitingForApproval {
-            let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-                return Err(anyhow!("task manager unavailable"));
-            };
+            let task_mgr = self
+                .runtime
+                .task_mgr_client()
+                .await
+                .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
             task = task_mgr.get_task(task.id).await?;
             if task.status.is_terminal() {
                 return Ok(());
@@ -231,9 +239,11 @@ impl AIAgent {
         let Some(bound) = find_bound_worksession(&self.config.layout.sessions_dir, task.id) else {
             return Ok(false);
         };
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
 
         if bound.ended {
             task_mgr
@@ -295,9 +305,11 @@ impl AIAgent {
         task: Task,
         data: AgentDelegateTaskData,
     ) -> Result<()> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         task_mgr
             .update_task(
                 task.id,
@@ -346,9 +358,11 @@ impl AIAgent {
     }
 
     async fn route_task_via_task_route(self: Arc<Self>, task: Task) -> Result<()> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let session_id = format!("task-route-{}", task.id);
         let session_dir = self.config.layout.session_dir(&session_id);
         let existing_meta = load_session_meta(&session_dir);
@@ -430,9 +444,11 @@ impl AIAgent {
         task: Task,
         route_session_id: Option<String>,
     ) -> Result<()> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let reason =
             "agent.delegate task requires task_route, but runtime.task_route.enabled is false";
         task_mgr
@@ -469,9 +485,11 @@ impl AIAgent {
         if task_control_already_reflected(&delegate_data, status) {
             return Ok(());
         }
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let Some(session_id) = execution_session_id(&delegate_data) else {
             task_mgr
                 .update_task(
@@ -525,8 +543,9 @@ impl AIAgent {
     }
 
     async fn resume_waiting_delegate_task(self: Arc<Self>, task: &Task) -> Result<bool> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Ok(false);
+        let task_mgr = match self.runtime.task_mgr_client().await {
+            Ok(client) => client,
+            Err(_) => return Ok(false),
         };
         let subtasks = task_mgr.get_subtasks(task.id).await?;
         let completed = subtasks
@@ -602,9 +621,11 @@ impl AIAgent {
         kind: &str,
         candidates: Vec<Value>,
     ) -> Result<Task> {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref().cloned() else {
-            return Err(anyhow!("task manager unavailable"));
-        };
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
+            .await
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let existing = task_mgr.get_subtasks(parent.id).await.unwrap_or_default();
         if let Some(open) = existing.iter().find(|child| {
             child.task_type == TASK_TYPE_HUMAN_INPUT
@@ -1032,7 +1053,11 @@ mod tests {
             }
         }));
         assert!(task_targets_agent(&legacy, "agent", "did:agent:jarvis"));
-        assert!(!task_targets_agent(&legacy, "other-agent", "did:agent:jarvis"));
+        assert!(!task_targets_agent(
+            &legacy,
+            "other-agent",
+            "did:agent:jarvis"
+        ));
 
         // Neither identity: belongs to no executor.
         let unassigned = task(json!({
@@ -1040,7 +1065,11 @@ mod tests {
                 "purpose": "Do the task"
             }
         }));
-        assert!(!task_targets_agent(&unassigned, "agent", "did:agent:jarvis"));
+        assert!(!task_targets_agent(
+            &unassigned,
+            "agent",
+            "did:agent:jarvis"
+        ));
     }
 
     #[test]

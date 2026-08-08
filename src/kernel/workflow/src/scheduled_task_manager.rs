@@ -1,7 +1,8 @@
 use buckyos_api::{
-    parse_typed_task_data, CreateTaskOptions, Task, TaskFilter, TaskManagerClient, TaskPermissions,
-    TaskScope, TaskStatus, TypedTaskData, WorkflowScheduleOwner, WorkflowSchedulePolicy,
-    WorkflowScheduleTaskData, WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult,
+    get_buckyos_api_runtime, parse_typed_task_data, CreateTaskOptions, Task, TaskFilter,
+    TaskManagerClient, TaskPermissions, TaskScope, TaskStatus, TypedTaskData,
+    WorkflowScheduleOwner, WorkflowSchedulePolicy, WorkflowScheduleTaskData,
+    WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult,
 };
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -373,7 +374,7 @@ impl ScheduleStore {
 }
 
 pub struct ScheduleTaskMirrorClient {
-    client: Arc<TaskManagerClient>,
+    client: Option<Arc<TaskManagerClient>>,
     user_id: String,
     app_id: String,
 }
@@ -385,10 +386,29 @@ impl ScheduleTaskMirrorClient {
         app_id: impl Into<String>,
     ) -> Self {
         Self {
-            client,
+            client: Some(client),
             user_id: user_id.into(),
             app_id: app_id.into(),
         }
+    }
+
+    pub fn from_runtime(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
+        Self {
+            client: None,
+            user_id: user_id.into(),
+            app_id: app_id.into(),
+        }
+    }
+
+    async fn client(&self) -> Result<Arc<TaskManagerClient>, String> {
+        if let Some(client) = self.client.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
+        Box::pin(runtime.get_task_mgr_client())
+            .await
+            .map(Arc::new)
+            .map_err(|err| err.to_string())
     }
 
     pub async fn ensure_root_task(
@@ -410,8 +430,8 @@ impl ScheduleTaskMirrorClient {
         }
 
         let task_name = schedule_root_task_name(schedule);
-        let task = self
-            .client
+        let client = self.client().await?;
+        let task = client
             .create_task(
                 task_name.as_str(),
                 "workflow/schedule",
@@ -444,7 +464,8 @@ impl ScheduleTaskMirrorClient {
         task_id: i64,
         schedule: &WorkflowSchedule,
     ) -> Result<(), String> {
-        self.client
+        self.client()
+            .await?
             .update_task(
                 task_id,
                 Some(schedule.status),
@@ -460,8 +481,8 @@ impl ScheduleTaskMirrorClient {
         &self,
         schedule: &WorkflowSchedule,
     ) -> Result<Option<i64>, String> {
-        let tasks = self
-            .client
+        let client = self.client().await?;
+        let tasks = client
             .list_tasks(Some(TaskFilter {
                 app_id: Some(self.app_id.clone()),
                 task_type: Some("workflow/schedule".to_string()),
@@ -494,8 +515,8 @@ impl ScheduleTaskMirrorClient {
         // subtask under the schedule owner it already authenticated at
         // registration time. No identity-downgrade retry — a failure here is
         // a real error, not a cue to silently switch identities.
-        let task = self
-            .client
+        let client = self.client().await?;
+        let task = client
             .create_task(
                 rendered.name.as_str(),
                 rendered.task_type.as_str(),
@@ -517,8 +538,8 @@ impl ScheduleTaskMirrorClient {
         let Some(parent_id) = schedule.task_mirror.root_task_id else {
             return Ok(0);
         };
-        let tasks = self
-            .client
+        let client = self.client().await?;
+        let tasks = client
             .list_tasks(Some(TaskFilter {
                 parent_id: Some(parent_id),
                 root_id: schedule.task_mirror.root_id.clone(),
@@ -540,8 +561,8 @@ impl ScheduleTaskMirrorClient {
         let Some(parent_id) = schedule.task_mirror.root_task_id else {
             return Ok(None);
         };
-        let tasks = self
-            .client
+        let client = self.client().await?;
+        let tasks = client
             .list_tasks(Some(TaskFilter {
                 parent_id: Some(parent_id),
                 root_id: schedule.task_mirror.root_id.clone(),
@@ -565,8 +586,8 @@ impl ScheduleTaskMirrorClient {
     /// WorkflowSchedule。这是「Task DB 是唯一真相源、内存只是投影」的入口：
     /// 解析失败的脏行被跳过（不让一条坏数据挡住整批 hydrate）。
     pub async fn load_schedules(&self) -> Result<Vec<WorkflowSchedule>, String> {
-        let tasks = self
-            .client
+        let client = self.client().await?;
+        let tasks = client
             .list_tasks(Some(TaskFilter {
                 app_id: Some(self.app_id.clone()),
                 task_type: Some("workflow/schedule".to_string()),

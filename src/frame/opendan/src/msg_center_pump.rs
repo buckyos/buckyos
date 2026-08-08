@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use buckyos_api::{
-    Event, EventReader, KEventClient, KEventError, MailboxKind, MailboxRecordWithObject,
-    MsgCenterClient, RecipientState,
+    get_buckyos_api_runtime, Event, EventReader, KEventClient, KEventError, MailboxKind,
+    MailboxRecordWithObject, MsgCenterClient, RecipientState,
 };
 use llm_context::{parse_msg_object_text_attachments, MsgParseOutput};
 use ndn_lib::MsgObjKind;
@@ -53,7 +53,7 @@ const MAX_MSG_PULL_PER_TICK: usize = 128;
 pub struct PumpConfig {
     pub agent_name: String,
     pub owner_did: DID,
-    pub msg_center: Arc<MsgCenterClient>,
+    pub msg_center: Option<Arc<MsgCenterClient>>,
     pub kevent_client: Arc<KEventClient>,
     pub inbox_tx: mpsc::Sender<Inbound>,
     pub shutdown: Arc<Notify>,
@@ -185,8 +185,29 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
     };
 
     for attempt in 0..MAX_MSG_PULL_PER_TICK {
-        match cfg
-            .msg_center
+        let msg_center = match cfg.msg_center.as_ref() {
+            Some(client) => client.clone(),
+            None => match get_buckyos_api_runtime() {
+                Ok(runtime) => match runtime.get_msg_center_client().await {
+                    Ok(client) => Arc::new(client),
+                    Err(err) => {
+                        warn!(
+                            "opendan.msg_pump[{}]: get msg-center client failed: {err}",
+                            cfg.agent_name
+                        );
+                        return;
+                    }
+                },
+                Err(err) => {
+                    warn!(
+                        "opendan.msg_pump[{}]: get runtime for msg-center failed: {err}",
+                        cfg.agent_name
+                    );
+                    return;
+                }
+            },
+        };
+        match msg_center
             .get_next(
                 cfg.owner_did.clone(),
                 box_kind.clone(),

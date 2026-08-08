@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 
-use crate::run_local_llm::{acquire_aicc_client, ensure_buckyos_runtime, AiccLlmClient};
+use crate::run_local_llm::{ensure_buckyos_runtime, AiccLlmClient};
 use crate::{
     cli_error_result, llm_compress, render_cli_output, AgentTool, AgentToolError,
     AgentToolPendingReason, AgentToolResult, AgentToolStatus, CallingConventions, LocalLLMContext,
@@ -283,16 +283,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         }
     };
 
-    let aicc = match acquire_aicc_client().await {
-        Ok(client) => client,
-        Err(err) => {
-            return (
-                build_error_result(&opts, format!("acquire aicc client failed: {err}")),
-                CLI_EXIT_ERROR,
-            );
-        }
-    };
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new(aicc));
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(NoopToolManager));
 
     let purified = purify_history(&opts.parent_history);

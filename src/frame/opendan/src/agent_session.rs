@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
+    get_buckyos_api_runtime, match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
     AiRole, MsgCenterClient, Task, TaskFilter, TaskManagerClient, TaskNote, TaskStatus,
     TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
 };
@@ -203,12 +203,12 @@ impl OneLineStatusSink for InMemoryStatus {
 
 #[derive(Clone)]
 pub struct UiSessionStateSync {
-    msg_center: Arc<MsgCenterClient>,
+    msg_center: Option<Arc<MsgCenterClient>>,
     session_id: String,
 }
 
 impl UiSessionStateSync {
-    fn new(msg_center: Arc<MsgCenterClient>, session_id: String) -> Self {
+    fn new(msg_center: Option<Arc<MsgCenterClient>>, session_id: String) -> Self {
         Self {
             msg_center,
             session_id,
@@ -221,6 +221,28 @@ impl UiSessionStateSync {
         let key = key.to_string();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
+                let msg_center = match msg_center {
+                    Some(client) => client,
+                    None => match get_buckyos_api_runtime() {
+                        Ok(runtime) => match runtime.get_msg_center_client().await {
+                            Ok(client) => Arc::new(client),
+                            Err(err) => {
+                                warn!(
+                                    "opendan.session[{}]: get msg-center client for ui state failed: {err}",
+                                    session_id
+                                );
+                                return;
+                            }
+                        },
+                        Err(err) => {
+                            warn!(
+                                "opendan.session[{}]: get runtime for ui state failed: {err}",
+                                session_id
+                            );
+                            return;
+                        }
+                    },
+                };
                 if let Err(err) = msg_center
                     .update_ui_session_state(session_id.clone(), key.clone(), value)
                     .await
@@ -707,10 +729,15 @@ impl AgentSession {
             b.session_id.clone(),
             session_dir.clone(),
         ));
-        let ui_session_sync =
-            b.runtime.msg_center.as_ref().map(|msg_center| {
-                UiSessionStateSync::new(msg_center.clone(), b.session_id.clone())
-            });
+        let ui_session_sync = if b.runtime.msg_center.is_some() || get_buckyos_api_runtime().is_ok()
+        {
+            Some(UiSessionStateSync::new(
+                b.runtime.msg_center.clone(),
+                b.session_id.clone(),
+            ))
+        } else {
+            None
+        };
         let session = Self {
             session_id: b.session_id,
             agent_name: b.agent_name,
@@ -2331,7 +2358,7 @@ impl AgentSession {
         // that honour cancel signals.
         let pending_task_entries: Vec<PendingTaskCall> =
             self.meta.lock().await.pending_task_calls.clone();
-        if let Some(client) = self.runtime.task_mgr.as_ref().cloned() {
+        if let Ok(client) = self.runtime.task_mgr_client().await {
             for entry in &pending_task_entries {
                 if let Err(err) = client.cancel_task(entry.task_id, true).await {
                     warn!(
@@ -2528,7 +2555,7 @@ impl AgentSession {
         if entries.is_empty() {
             return false;
         }
-        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(client) = self.runtime.task_mgr_client().await else {
             return false;
         };
         let mut synthesized = 0u32;
@@ -3691,7 +3718,17 @@ impl AgentSession {
         if let Some(tokens) = policy.context_window_tokens {
             return Some(tokens);
         }
-        let directory = match self.runtime.aicc.list_models().await {
+        let aicc = match self.runtime.aicc_client().await {
+            Ok(client) => client,
+            Err(err) => {
+                warn!(
+                    "opendan.session[{}]: get aicc client while resolving context window failed: {err}",
+                    self.session_id
+                );
+                return None;
+            }
+        };
+        let directory = match aicc.list_models().await {
             Ok(value) => value,
             Err(err) => {
                 warn!(
@@ -4028,16 +4065,21 @@ impl AgentSession {
     }
 
     async fn build_runtime_schedule_task_list_text(&self) -> String {
-        let Some(task_mgr) = self.runtime.task_mgr.as_ref() else {
-            return "Recent schedule tasks: unavailable (task-manager not configured).".to_string();
+        let task_mgr = match self.runtime.task_mgr_client().await {
+            Ok(client) => client,
+            Err(_) => return "Recent schedule tasks: unavailable.".to_string(),
         };
         let now_secs = now_ms() / 1000;
         let since_secs = {
             let meta = self.meta.lock().await;
             meta.last_schedule_task_list_access_at
         };
-        let text = match render_last_schedule_task_list_text(task_mgr.as_ref(), since_secs, now_secs)
-            .await
+        let text = match render_last_schedule_task_list_text(
+            task_mgr.as_ref(),
+            since_secs,
+            now_secs,
+        )
+        .await
         {
             Ok(text) => text,
             Err(err) => {
@@ -4399,13 +4441,6 @@ impl AgentSession {
                 // pre-inference write would have missed it.
                 self.persist_snapshot(&snapshot).await;
 
-                let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
-                    warn!(
-                        "opendan.session[{}]: PendingTool outcome — task_mgr unavailable, parking session",
-                        self.session_id
-                    );
-                    return Ok(NextAction::WaitForMsg);
-                };
                 // Owner key for the dispatched task — fall back to the
                 // session's owner / agent name so multi-tenant deployments
                 // can scope correctly.
@@ -4414,7 +4449,8 @@ impl AgentSession {
                 } else {
                     self.agent_name.clone()
                 };
-                let dispatcher = TaskDispatch::new(client, owner_for_task);
+                let dispatcher =
+                    TaskDispatch::from_runtime(self.runtime.task_mgr.clone(), owner_for_task);
                 // §4.7.2 — same runtime-injected `from_user_did` rule
                 // applies to async tools as to sync ones: the tool worker
                 // must see the real user DID, not whatever the LLM stuffed
@@ -4605,7 +4641,7 @@ impl AgentSession {
         let Some(binding) = self.task_binding().await else {
             return;
         };
-        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
         let report = final_snapshot.state.last_report.clone().unwrap_or_default();
@@ -4655,7 +4691,7 @@ impl AgentSession {
         let Some(agent) = self.parent_agent.upgrade() else {
             return;
         };
-        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
         let Ok(task) = client.get_task(binding.task_id).await else {
@@ -4695,7 +4731,7 @@ impl AgentSession {
         let Some(binding) = self.task_binding().await else {
             return;
         };
-        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
         if let Err(err) = client
@@ -4733,7 +4769,7 @@ impl AgentSession {
         let Some(binding) = self.task_binding().await else {
             return;
         };
-        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
         if let Err(err) = client
@@ -4875,7 +4911,7 @@ impl AgentSession {
     }
 
     async fn post_send_message_record(&self, record: &SendMessageRecord) {
-        let Some(msg_center) = self.runtime.msg_center.as_ref().cloned() else {
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
             return;
         };
         let target = record.target.trim();
@@ -5634,7 +5670,7 @@ impl AgentSession {
         let Some(binding) = self.task_binding().await else {
             return;
         };
-        let Some(client) = self.runtime.task_mgr.as_ref().cloned() else {
+        let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
         let Ok(task) = client.get_task(binding.task_id).await else {
@@ -5873,7 +5909,7 @@ impl AgentSession {
         if !matches!(self.kind, SessionKind::Ui) {
             return;
         }
-        let Some(msg_center) = self.runtime.msg_center.as_ref().cloned() else {
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
             return;
         };
         let peer_did_str = {
@@ -6077,7 +6113,7 @@ impl AgentSession {
             );
             return Ok(false);
         }
-        let Some(msg_center) = self.runtime.msg_center.as_ref().cloned() else {
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
             return Ok(false);
         };
         let peer_did_raw = target_meta.peer_did.clone();

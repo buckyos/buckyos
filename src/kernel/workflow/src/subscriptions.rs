@@ -33,8 +33,8 @@
 //! [`apply_task_data`]: crate::WorkflowOrchestrator::apply_task_data
 
 use buckyos_api::{
-    parse_typed_task_data, EventReader, KEventClient, NodeRunState, RunStatus, Task, TaskFilter,
-    TaskManagerClient, TypedTaskData, WorkflowStepTaskData,
+    get_buckyos_api_runtime, parse_typed_task_data, EventReader, KEventClient, NodeRunState,
+    RunStatus, Task, TaskFilter, TaskManagerClient, TypedTaskData, WorkflowStepTaskData,
 };
 use log::{debug, info, warn};
 use serde_json::Value;
@@ -72,9 +72,8 @@ pub struct RunSubscriptionManager {
     runs: Arc<RunStore>,
     definitions: Arc<DefinitionStore>,
     orchestrator: Arc<ServiceOrchestrator>,
-    /// 用来在事件 `data_omitted=true` 时按 task_id 回拉全量 task_data。
-    /// 服务启动时拿不到 task_manager 客户端则为 None——此时大 data 事件无法
-    /// 被回灌（与"task_manager 不可用整体降级"保持一致）。
+    /// 测试或显式 token 管理场景注入的固定客户端。生产环境为 None，并在
+    /// `data_omitted=true` 回拉时从 runtime 获取短 session client。
     task_mgr_client: Option<Arc<TaskManagerClient>>,
     state: Mutex<ManagerState>,
 }
@@ -104,6 +103,17 @@ impl RunSubscriptionManager {
                 watched_runs: HashSet::new(),
             }),
         })
+    }
+
+    async fn task_mgr_client(&self) -> Result<Arc<TaskManagerClient>, String> {
+        if let Some(client) = self.task_mgr_client.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
+        Box::pin(runtime.get_task_mgr_client())
+            .await
+            .map(Arc::new)
+            .map_err(|err| err.to_string())
     }
 
     /// 启动 reader + dispatch loop。失败说明 daemon bridge 没就绪——记 warn 但
@@ -249,10 +259,10 @@ impl RunSubscriptionManager {
                     .get("task_id")
                     .and_then(Value::as_i64)
                     .ok_or_else(|| "data_omitted event missing task_id".to_string())?;
-                let client = self.task_mgr_client.as_ref().ok_or_else(|| {
+                let client = self.task_mgr_client().await.map_err(|err| {
                     format!(
-                        "data_omitted event task_id={} dropped: task_mgr client unavailable",
-                        task_id
+                        "data_omitted event task_id={} dropped: task_mgr client unavailable: {}",
+                        task_id, err
                     )
                 })?;
                 let task = client
@@ -345,12 +355,8 @@ impl RunSubscriptionManager {
     }
 
     /// dispatch loop 超时兜底：对每个仍在 watched_runs 里的 run 跑一次手工 sweep。
-    /// task_mgr_client 不可用时直接 noop（与 §`data_omitted` 回拉对齐：
-    /// task_manager 不可用整体降级，单点不补偿）。
+    /// task_manager 暂时不可用时本轮 noop，下次 sweep 重新获取客户端。
     async fn sweep_watched_runs(self: &Arc<Self>) {
-        let Some(client) = self.task_mgr_client.clone() else {
-            return;
-        };
         let runs: Vec<String> = {
             let guard = self.state.lock().await;
             guard.watched_runs.iter().cloned().collect()
@@ -359,7 +365,7 @@ impl RunSubscriptionManager {
             return;
         }
         for run_id in runs {
-            if let Err(err) = self.sweep_run(client.as_ref(), &run_id).await {
+            if let Err(err) = self.sweep_run(&run_id).await {
                 debug!(
                     "workflow.subscriptions.sweep: run_id={} err={}",
                     run_id, err
@@ -372,7 +378,7 @@ impl RunSubscriptionManager {
     /// 的节点对应的 task，把 task.data 喂回 apply_run_data。其他 task（已经
     /// 通过 event 路径处理过的、还没到 waiting_human 的、根本没人写过
     /// human_action 的）都跳过，避免每个周期重复回放产生噪声。
-    async fn sweep_run(&self, client: &TaskManagerClient, run_id: &str) -> Result<(), String> {
+    async fn sweep_run(&self, run_id: &str) -> Result<(), String> {
         let waiting_nodes: HashSet<String> = {
             let handle = match self.runs.get(run_id).await {
                 Some(h) => h,
@@ -396,7 +402,9 @@ impl RunSubscriptionManager {
             task_type: Some(STEP_TASK_TYPE.to_string()),
             ..Default::default()
         };
-        let tasks = client
+        let tasks = self
+            .task_mgr_client()
+            .await?
             .list_tasks(Some(filter))
             .await
             .map_err(|err| format!("list_tasks: {:?}", err))?;

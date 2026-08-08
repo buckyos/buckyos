@@ -569,15 +569,15 @@ impl TaskEventSinkFactory for DefaultTaskEventSinkFactory {
 }
 
 struct TaskAuditSink {
-    taskmgr: Arc<TaskManagerClient>,
+    taskmgr_override: Option<Arc<TaskManagerClient>>,
     task_mgr_id: i64,
     lock: AsyncMutex<()>,
 }
 
 impl TaskAuditSink {
-    fn new(taskmgr: Arc<TaskManagerClient>, task_mgr_id: i64) -> Self {
+    fn new(taskmgr_override: Option<Arc<TaskManagerClient>>, task_mgr_id: i64) -> Self {
         Self {
-            taskmgr,
+            taskmgr_override,
             task_mgr_id,
             lock: AsyncMutex::new(()),
         }
@@ -817,7 +817,7 @@ impl TaskScope {
 }
 
 struct PreparedTask {
-    taskmgr: Arc<TaskManagerClient>,
+    taskmgr_override: Option<Arc<TaskManagerClient>>,
     task: buckyos_api::Task,
 }
 
@@ -843,6 +843,12 @@ impl InitialTaskState {
 }
 
 impl AIComputeCenter {
+    async fn acquire_task_manager_client(
+        &self,
+    ) -> std::result::Result<Arc<TaskManagerClient>, RPCErrors> {
+        acquire_task_manager_client(self.taskmgr.as_ref()).await
+    }
+
     async fn resolve_task_scope(
         &self,
         request: &AiMethodRequest,
@@ -855,12 +861,12 @@ impl AIComputeCenter {
         }
         create_task_opts.root_id = resolve_task_root_id(request, invoke_ctx);
 
-        let taskmgr = self.taskmgr.as_ref().cloned().ok_or_else(|| {
+        let taskmgr = self.acquire_task_manager_client().await.map_err(|err| {
             warn!(
-                "aicc.complete failed: task_manager_unavailable task_id={} tenant={}",
-                external_task_id, invoke_ctx.tenant_id
+                "aicc.complete failed: task_manager_unavailable task_id={} tenant={} err={}",
+                external_task_id, invoke_ctx.tenant_id, err
             );
-            reason_error("task_manager_unavailable", "task manager is not configured")
+            err
         })?;
 
         let parent_id = create_task_opts.parent_id;
@@ -909,9 +915,7 @@ impl AIComputeCenter {
             build_initial_aicc_task_data(request, external_task_id, event_ref, invoke_ctx);
         merge_route_decision_into_task_data(&mut task_data, decision, initial_state.as_status());
 
-        let taskmgr = self.taskmgr.as_ref().cloned().ok_or_else(|| {
-            reason_error("task_manager_unavailable", "task manager is not configured")
-        })?;
+        let taskmgr = self.acquire_task_manager_client().await?;
         let parent_id = scope.parent_id();
         let task = taskmgr
             .create_task(
@@ -931,8 +935,35 @@ impl AIComputeCenter {
                 err
             })?;
 
-        Ok(PreparedTask { taskmgr, task })
+        Ok(PreparedTask {
+            taskmgr_override: self.taskmgr.clone(),
+            task,
+        })
     }
+}
+
+async fn acquire_task_manager_client(
+    taskmgr_override: Option<&Arc<TaskManagerClient>>,
+) -> std::result::Result<Arc<TaskManagerClient>, RPCErrors> {
+    if let Some(taskmgr) = taskmgr_override {
+        return Ok(taskmgr.clone());
+    }
+    let runtime = get_buckyos_api_runtime().map_err(|err| {
+        reason_error(
+            "task_manager_unavailable",
+            format!("load runtime failed: {err}"),
+        )
+    })?;
+    runtime
+        .get_task_mgr_client()
+        .await
+        .map(Arc::new)
+        .map_err(|err| {
+            reason_error(
+                "task_manager_unavailable",
+                format!("get task manager client failed: {err}"),
+            )
+        })
 }
 
 #[async_trait]
@@ -943,8 +974,9 @@ impl TaskEventSink for TaskAuditSink {
 
     async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors> {
         let _guard = self.lock.lock().await;
+        let taskmgr = acquire_task_manager_client(self.taskmgr_override.as_ref()).await?;
 
-        let task = self.taskmgr.get_task(self.task_mgr_id).await?;
+        let task = taskmgr.get_task(self.task_mgr_id).await?;
         let mut data = task.data;
         merge_task_data_with_event(&mut data, &event);
 
@@ -957,7 +989,7 @@ impl TaskEventSink for TaskAuditSink {
                     .and_then(|value| value.as_str())
                     .unwrap_or(QUEUE_STATUS_QUEUED)
                     .to_string();
-                self.taskmgr
+                taskmgr
                     .update_task(
                         self.task_mgr_id,
                         Some(TaskStatus::Pending),
@@ -975,7 +1007,7 @@ impl TaskEventSink for TaskAuditSink {
                     .and_then(|value| value.as_str())
                     .unwrap_or("aicc provider started")
                     .to_string();
-                self.taskmgr
+                taskmgr
                     .update_task(
                         self.task_mgr_id,
                         Some(TaskStatus::Running),
@@ -986,7 +1018,7 @@ impl TaskEventSink for TaskAuditSink {
                     .await?;
             }
             TaskEventKind::Final => {
-                self.taskmgr
+                taskmgr
                     .update_task(
                         self.task_mgr_id,
                         Some(TaskStatus::Completed),
@@ -1004,7 +1036,7 @@ impl TaskEventSink for TaskAuditSink {
                     .and_then(|value| value.as_str())
                     .unwrap_or("aicc task failed")
                     .to_string();
-                self.taskmgr
+                taskmgr
                     .update_task(
                         self.task_mgr_id,
                         Some(TaskStatus::Failed),
@@ -1015,7 +1047,7 @@ impl TaskEventSink for TaskAuditSink {
                     .await?;
             }
             TaskEventKind::CancelRequested => {
-                self.taskmgr
+                taskmgr
                     .update_task(
                         self.task_mgr_id,
                         Some(TaskStatus::Canceled),
@@ -3442,6 +3474,8 @@ impl AIComputeCenter {
         self.sink_factory = factory;
     }
 
+    /// Installs a fixed client override for in-process tests or an explicitly
+    /// token-managed caller. Production uses the registered runtime per call.
     pub fn set_task_manager_client(&mut self, taskmgr: Arc<TaskManagerClient>) {
         self.taskmgr = Some(taskmgr);
     }
@@ -4277,7 +4311,7 @@ impl AIComputeCenter {
                     )
                     .await?;
                 let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
-                    prepared_task.taskmgr.clone(),
+                    prepared_task.taskmgr_override.clone(),
                     prepared_task.id(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
@@ -4348,7 +4382,7 @@ impl AIComputeCenter {
                     .await?;
                 let task_mgr_id = prepared_task.id();
                 let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
-                    prepared_task.taskmgr.clone(),
+                    prepared_task.taskmgr_override.clone(),
                     task_mgr_id,
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
@@ -4380,7 +4414,7 @@ impl AIComputeCenter {
                     .await?;
                 let task_mgr_id = prepared_task.id();
                 let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
-                    prepared_task.taskmgr.clone(),
+                    prepared_task.taskmgr_override.clone(),
                     task_mgr_id,
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
@@ -4451,7 +4485,7 @@ impl AIComputeCenter {
 
         let accepted = provider.cancel(invoke_ctx, task_id).await.is_ok();
         if accepted {
-            if let Some(taskmgr) = self.taskmgr.as_ref() {
+            if let Ok(taskmgr) = self.acquire_task_manager_client().await {
                 let event = TaskEvent {
                     task_id: task_id.to_string(),
                     kind: TaskEventKind::CancelRequested,
@@ -6585,10 +6619,7 @@ mod tests {
         );
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = taskmgr
-            .list_tasks(None)
-            .await
-            .expect("list tasks");
+        let tasks = taskmgr.list_tasks(None).await.expect("list tasks");
         let task = tasks
             .into_iter()
             .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
@@ -6642,10 +6673,7 @@ mod tests {
         assert!(!response.task_id.is_empty());
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = taskmgr
-            .list_tasks(None)
-            .await
-            .expect("list tasks");
+        let tasks = taskmgr.list_tasks(None).await.expect("list tasks");
         let task = tasks
             .into_iter()
             .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
@@ -6686,10 +6714,7 @@ mod tests {
         assert_eq!(response.status, AiMethodStatus::Running);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = taskmgr
-            .list_tasks(None)
-            .await
-            .expect("list tasks");
+        let tasks = taskmgr.list_tasks(None).await.expect("list tasks");
         let task = tasks
             .into_iter()
             .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
@@ -6740,10 +6765,7 @@ mod tests {
             .expect("complete should succeed");
         assert_eq!(response.status, AiMethodStatus::Running);
 
-        let tasks = taskmgr
-            .list_tasks(None)
-            .await
-            .expect("list tasks");
+        let tasks = taskmgr.list_tasks(None).await.expect("list tasks");
         let task = tasks
             .into_iter()
             .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
@@ -6784,10 +6806,7 @@ mod tests {
         assert_eq!(response.status, AiMethodStatus::Running);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = taskmgr
-            .list_tasks(None)
-            .await
-            .expect("list tasks");
+        let tasks = taskmgr.list_tasks(None).await.expect("list tasks");
         let task = tasks
             .into_iter()
             .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
@@ -6945,10 +6964,7 @@ mod tests {
         assert_eq!(response.status, AiMethodStatus::Failed);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = taskmgr
-            .list_tasks(None)
-            .await
-            .expect("list tasks");
+        let tasks = taskmgr.list_tasks(None).await.expect("list tasks");
         assert!(tasks.is_empty(), "routing failure should not persist task");
     }
 

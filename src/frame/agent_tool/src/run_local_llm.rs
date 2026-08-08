@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
     value_to_object_map, AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiResponse, AiRole,
-    AiToolSpec, AiccClient, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
+    AiToolSpec, BuckyOSRuntimeType, Capability, ModelSpec, Requirements, RespFormat,
 };
 use llm_context::{
     LLMComputeError, LLMContextOutcome, LlmClient, LlmInferenceRequest, ToolMode, ToolPolicy,
@@ -163,10 +163,9 @@ async fn run(opts: CliOpts) -> Result<(), Box<dyn std::error::Error>> {
         request.objective = obj.clone();
     }
 
-    // 3. 初始化运行时 → 取 AICC client → 包装成 LlmClient
+    // 3. 初始化运行时 → 包装成 LlmClient
     ensure_buckyos_runtime().await?;
-    let aicc = acquire_aicc_client().await?;
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new(aicc));
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new());
 
     // 4. 启动 LocalLLMContext
     //
@@ -436,23 +435,15 @@ pub(crate) async fn ensure_buckyos_runtime() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-pub(crate) async fn acquire_aicc_client() -> Result<Arc<AiccClient>, Box<dyn std::error::Error>> {
-    let runtime = get_buckyos_api_runtime()?;
-    let client = runtime.get_aicc_client().await?;
-    Ok(Arc::new(client))
-}
-
 // =========================================================================
 // AICC → LlmClient 适配
 // =========================================================================
 
-pub(crate) struct AiccLlmClient {
-    client: Arc<AiccClient>,
-}
+pub(crate) struct AiccLlmClient;
 
 impl AiccLlmClient {
-    pub(crate) fn new(client: Arc<AiccClient>) -> Self {
-        Self { client }
+    pub(crate) fn new() -> Self {
+        Self
     }
 }
 
@@ -564,8 +555,13 @@ impl LlmClient for AiccLlmClient {
             None,
         );
 
-        let response = self
-            .client
+        let runtime = get_buckyos_api_runtime()
+            .map_err(|e| LLMComputeError::Provider(format!("get buckyos runtime failed: {e}")))?;
+        let client = runtime
+            .get_aicc_client()
+            .await
+            .map_err(|e| LLMComputeError::Provider(format!("get aicc client failed: {e}")))?;
+        let response = client
             .call_method(ai_methods::LLM_CHAT, request)
             .await
             .map_err(|e| LLMComputeError::Provider(format!("aicc llm.chat failed: {e}")))?;

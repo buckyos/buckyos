@@ -371,12 +371,12 @@ impl AppInstaller {
         data: Value,
         user_id: &str,
         app_id: &str,
-    ) -> Result<(TaskManagerClient, i64, String), RPCErrors> {
+    ) -> Result<(i64, String), RPCErrors> {
         let task_mgr = self.task_mgr_client().await?;
         let task = task_mgr
             .create_task(name.as_str(), task_type, Some(data), user_id, app_id, None)
             .await?;
-        Ok((task_mgr, task.id, task.root_id))
+        Ok((task.id, task.root_id))
     }
 
     async fn run_start_task(
@@ -385,7 +385,6 @@ impl AppInstaller {
         user_id: Option<String>,
         task_id: i64,
     ) -> Result<(), RPCErrors> {
-        let task_mgr = self.task_mgr_client().await?;
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self
             .get_single_matching_spec(&app_id, user_id.as_deref())
@@ -399,15 +398,17 @@ impl AppInstaller {
             return Err(error);
         }
 
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Running),
-                Some(15.0),
-                Some("Updating app state to running".to_string()),
-                None,
-            )
-            .await;
+        if let Ok(task_mgr) = self.task_mgr_client().await {
+            let _ = task_mgr
+                .update_task(
+                    task_id,
+                    Some(TaskStatus::Running),
+                    Some(15.0),
+                    Some("Updating app state to running".to_string()),
+                    None,
+                )
+                .await;
+        }
 
         spec.state = ServiceState::Running;
         Self::set_spec_at(&client, &spec_key, &spec).await?;
@@ -429,7 +430,8 @@ impl AppInstaller {
             })?;
         }
 
-        task_mgr
+        self.task_mgr_client()
+            .await?
             .update_task(
                 task_id,
                 Some(TaskStatus::Completed),
@@ -454,33 +456,36 @@ impl AppInstaller {
         is_remove_data: bool,
         task_id: i64,
     ) -> Result<(), RPCErrors> {
-        let task_mgr = self.task_mgr_client().await?;
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self
             .get_single_matching_spec(&app_id, user_id.as_deref())
             .await?;
 
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                Some(TaskStatus::Running),
-                Some(15.0),
-                Some("Stopping app".to_string()),
-                None,
-            )
-            .await;
+        if let Ok(task_mgr) = self.task_mgr_client().await {
+            let _ = task_mgr
+                .update_task(
+                    task_id,
+                    Some(TaskStatus::Running),
+                    Some(15.0),
+                    Some("Stopping app".to_string()),
+                    None,
+                )
+                .await;
+        }
 
         self.stop_app(&app_id, user_id.as_deref()).await?;
 
-        let _ = task_mgr
-            .update_task(
-                task_id,
-                None,
-                Some(55.0),
-                Some("Marking app as deleted".to_string()),
-                None,
-            )
-            .await;
+        if let Ok(task_mgr) = self.task_mgr_client().await {
+            let _ = task_mgr
+                .update_task(
+                    task_id,
+                    None,
+                    Some(55.0),
+                    Some("Marking app as deleted".to_string()),
+                    None,
+                )
+                .await;
+        }
 
         spec.state = ServiceState::Deleted;
         Self::set_spec_at(&client, &spec_key, &spec).await?;
@@ -493,15 +498,17 @@ impl AppInstaller {
         self.wait_for_instances_removed(&spec).await?;
 
         if is_remove_data {
-            let _ = task_mgr
-                .update_task(
-                    task_id,
-                    None,
-                    Some(80.0),
-                    Some("Removing app data".to_string()),
-                    None,
-                )
-                .await;
+            if let Ok(task_mgr) = self.task_mgr_client().await {
+                let _ = task_mgr
+                    .update_task(
+                        task_id,
+                        None,
+                        Some(80.0),
+                        Some("Removing app data".to_string()),
+                        None,
+                    )
+                    .await;
+            }
             self.remove_app_data(&spec).await?;
         }
 
@@ -511,7 +518,8 @@ impl AppInstaller {
             "remove_data": is_remove_data,
         });
 
-        task_mgr
+        self.task_mgr_client()
+            .await?
             .update_task(
                 task_id,
                 Some(TaskStatus::Completed),
@@ -595,7 +603,7 @@ impl AppInstaller {
         is_remove_data: bool,
     ) -> Result<u64, RPCErrors> {
         let spec = self.get_app_service_spec(app_id, user_id).await?;
-        let (task_mgr, task_id, _root_id) = self
+        let (task_id, _root_id) = self
             .create_task(
                 format!("Uninstall app {app_id}"),
                 UNINSTALL_TASK_TYPE,
@@ -626,9 +634,11 @@ impl AppInstaller {
                 .await
             {
                 warn!("uninstall app task {} failed: {}", task_id, error);
-                let _ = task_mgr
-                    .mark_task_as_failed(task_id, &error.to_string())
-                    .await;
+                if let Ok(task_mgr) = installer.task_mgr_client().await {
+                    let _ = task_mgr
+                        .mark_task_as_failed(task_id, &error.to_string())
+                        .await;
+                }
             }
         });
 
@@ -686,7 +696,7 @@ impl AppInstaller {
     /// 5. 创建 task，返回 task_id
     pub async fn start_app(&self, app_id: &str, user_id: Option<&str>) -> Result<u64, RPCErrors> {
         let spec = self.get_app_service_spec(app_id, user_id).await?;
-        let (task_mgr, task_id, _root_id) = self
+        let (task_id, _root_id) = self
             .create_task(
                 format!("Start app {app_id}"),
                 START_TASK_TYPE,
@@ -712,9 +722,11 @@ impl AppInstaller {
         tokio::spawn(async move {
             if let Err(error) = installer.run_start_task(app_id, user_id, task_id).await {
                 warn!("start app task {} failed: {}", task_id, error);
-                let _ = task_mgr
-                    .mark_task_as_failed(task_id, &error.to_string())
-                    .await;
+                if let Ok(task_mgr) = installer.task_mgr_client().await {
+                    let _ = task_mgr
+                        .mark_task_as_failed(task_id, &error.to_string())
+                        .await;
+                }
             }
         });
 

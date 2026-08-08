@@ -2009,16 +2009,79 @@ impl BuckyOSRuntime {
         Ok(client.clone())
     }
 
+    /// Returns a short-session client bound to the runtime session token that is
+    /// valid at the time this method is called.
+    ///
+    /// Do not cache the returned client in long-lived services. Acquire a new
+    /// client from the runtime for each operation unless the caller explicitly
+    /// owns and refreshes the client's token.
     pub async fn get_task_mgr_client(&self) -> Result<TaskManagerClient> {
         let krpc_client = self.get_zone_service_krpc_client("task-manager").await?;
         let client = TaskManagerClient::new(krpc_client);
         Ok(client)
     }
 
-    /// Task Dispatch Center client. The dispatcher shares the task-manager
-    /// process/port (one deployment unit) but is a separate RPC surface, so
-    /// the URL is resolved through the task-manager service entry and only
-    /// the kapi path segment differs.
+    /// Waits for a task without retaining a short-session TaskManager client.
+    /// Every authoritative task read acquires a new client with the runtime's
+    /// current session token.
+    pub async fn wait_for_task_end_kevent(&self, id: i64) -> Result<Task> {
+        const FIRST_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
+        const STEADY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+        let kevent = match self.get_kevent_client().await {
+            Ok(client) => match client
+                .create_event_reader(vec![format!("/task_mgr/{}", id)])
+                .await
+            {
+                Ok(reader) => Some((client, reader)),
+                Err(err) => {
+                    warn!(
+                        "runtime.wait_for_task_end_kevent: subscribe failed (task_id={}): {}; polling only",
+                        id, err
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                warn!(
+                    "runtime.wait_for_task_end_kevent: get_kevent_client failed (task_id={}): {}; polling only",
+                    id, err
+                );
+                None
+            }
+        };
+
+        let task = self.get_task_mgr_client().await?.get_task(id).await?;
+        if task.status.is_terminal() {
+            return Ok(task);
+        }
+
+        let mut interval = FIRST_SWEEP_INTERVAL;
+        loop {
+            match kevent.as_ref() {
+                Some((_client, reader)) => {
+                    let _ = reader.pull_event(Some(interval.as_millis() as u64)).await;
+                }
+                None => tokio::time::sleep(interval).await,
+            }
+            let task = self.get_task_mgr_client().await?.get_task(id).await?;
+            if task.status.is_terminal() {
+                return Ok(task);
+            }
+            interval = if kevent.is_some() {
+                STEADY_SWEEP_INTERVAL
+            } else {
+                FIRST_SWEEP_INTERVAL
+            };
+        }
+    }
+
+    /// Returns a short-session Task Dispatch Center client. Acquire it again
+    /// from the runtime for each operation instead of keeping it in long-lived
+    /// state. The dispatcher shares the task-manager process/port (one
+    /// deployment unit) but is a separate RPC surface, so the URL is resolved
+    /// through the task-manager service entry and only the kapi path segment
+    /// differs.
     pub async fn get_task_dispatcher_client(&self) -> Result<TaskDispatcherClient> {
         let url = self
             .get_zone_service_url(TASK_MANAGER_SERVICE_NAME, self.force_https)
@@ -2028,8 +2091,11 @@ impl BuckyOSRuntime {
             &format!("/kapi/{}", TASK_DISPATCHER_SERVICE_NAME),
         );
         let session_token = self.session_token.read().await;
-        let krpc_client =
-            kRPC::new_with_timeout_secs(&url, Some(session_token.clone()), DEFAULT_KRPC_TIMEOUT_SECS);
+        let krpc_client = kRPC::new_with_timeout_secs(
+            &url,
+            Some(session_token.clone()),
+            DEFAULT_KRPC_TIMEOUT_SECS,
+        );
         Ok(TaskDispatcherClient::new(krpc_client))
     }
 
@@ -2082,6 +2148,8 @@ impl BuckyOSRuntime {
         }
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_aicc_client(&self) -> Result<AiccClient> {
         let krpc_client = self
             .get_zone_service_krpc_client_with_default_timeout(
@@ -2093,6 +2161,8 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_msg_center_client(&self) -> Result<MsgCenterClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(MSG_CENTER_SERVICE_NAME)
@@ -2101,17 +2171,23 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_msg_queue_client(&self) -> Result<MsgQueueClient> {
         let krpc_client = self.get_zone_service_krpc_client(KMSG_SERVICE_NAME).await?;
         Ok(MsgQueueClient::new_krpc(Box::new(krpc_client)))
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_scheduler_client(&self) -> Result<SchedulerClient> {
         let krpc_client = self.get_zone_service_krpc_client("scheduler").await?;
         let client = SchedulerClient::new(krpc_client);
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_workflow_service_client(&self) -> Result<WorkflowServiceClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(WORKFLOW_SERVICE_NAME)
@@ -2125,12 +2201,16 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_verify_hub_client(&self) -> Result<VerifyHubClient> {
         let krpc_client = self.get_zone_service_krpc_client("verify-hub").await?;
         let client = VerifyHubClient::new(krpc_client);
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_repo_client(&self) -> Result<RepoClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(REPO_SERVICE_SERVICE_NAME)
@@ -2138,6 +2218,8 @@ impl BuckyOSRuntime {
         Ok(RepoClient::new(krpc_client))
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_opendan_client(&self) -> Result<OpenDanClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(OPENDAN_SERVICE_NAME)
@@ -2312,11 +2394,20 @@ impl BuckyOSRuntime {
         }
     }
 
+    /// Creates a short-session kRPC client with a snapshot of the runtime's
+    /// current session token.
+    ///
+    /// Runtime token renewal does not update clients already returned by this
+    /// method. Long-lived code must call this method for each operation. A
+    /// caller may retain the client only when it explicitly manages the token
+    /// or intentionally preserves a forwarded identity.
     pub async fn get_zone_service_krpc_client(&self, service_name: &str) -> Result<kRPC> {
         self.get_zone_service_krpc_client_with_default_timeout(service_name, None)
             .await
     }
 
+    /// Creates a short-session kRPC client with the same token snapshot
+    /// semantics as [`Self::get_zone_service_krpc_client`].
     pub async fn get_zone_service_krpc_client_with_default_timeout(
         &self,
         service_name: &str,

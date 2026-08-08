@@ -490,7 +490,12 @@ pub struct TaskManagerAddTaskNoteReq {
 }
 
 impl TaskManagerAddTaskNoteReq {
-    pub fn new(task_id: i64, note_type: Option<String>, content: String, data: Option<Value>) -> Self {
+    pub fn new(
+        task_id: i64,
+        note_type: Option<String>,
+        content: String,
+        data: Option<Value>,
+    ) -> Self {
         Self {
             task_id,
             note_type,
@@ -1089,6 +1094,10 @@ impl TaskManagerClient {
     ///
     /// If we can't subscribe at all (no runtime / kevent unavailable), we
     /// fall back to the pure-polling variant — slower, but still correct.
+    /// Runtime-authenticated callers should use
+    /// [`crate::BuckyOSRuntime::wait_for_task_end_kevent`] so each sweep uses
+    /// the runtime's current short-session token. This client-bound variant
+    /// is intended for in-process or explicitly token-managed clients.
     pub async fn wait_for_task_end_kevent(&self, id: i64) -> Result<Task> {
         const FIRST_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
         const STEADY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);

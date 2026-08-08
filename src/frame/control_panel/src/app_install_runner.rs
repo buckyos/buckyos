@@ -137,14 +137,13 @@ impl InstallRunner {
 
     async fn msg_queue_round(self: &Arc<Self>) -> Result<(), String> {
         let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
-        let client = runtime
-            .get_msg_queue_client()
-            .await
-            .map_err(|err| err.to_string())?;
         let queue_urn = self.ensure_queue().await?;
         let (_appid, owner) = runner_identity(&runtime);
 
-        let sub_id = client
+        let sub_id = runtime
+            .get_msg_queue_client()
+            .await
+            .map_err(|err| err.to_string())?
             .subscribe(
                 queue_urn.as_str(),
                 owner.as_str(),
@@ -156,6 +155,10 @@ impl InstallRunner {
             .map_err(|err| err.to_string())?;
 
         loop {
+            let client = runtime
+                .get_msg_queue_client()
+                .await
+                .map_err(|err| err.to_string())?;
             let messages = client
                 .fetch_messages(sub_id.as_str(), 16, false)
                 .await
@@ -176,7 +179,10 @@ impl InstallRunner {
                 // 安全边界：run_task 返回时任务必然处于
                 // 终态 / WaitingForApproval / Paused / 其它执行体持有，
                 // 后续推进由 confirm/retry/sweep 负责，可以 ack。
-                client
+                runtime
+                    .get_msg_queue_client()
+                    .await
+                    .map_err(|err| err.to_string())?
                     .commit_ack(sub_id.as_str(), message.index)
                     .await
                     .map_err(|err| err.to_string())?;

@@ -36,9 +36,9 @@ use crate::executor_adapter::ExecutorAdapter;
 use crate::types::ExecutorRef;
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, AiCost, AiMessage, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload,
-    AiResponse, AiToolCall, AiToolSpec, AiUsage, AiccClient, Capability, ModelSpec, Requirements,
-    ResourceRef, RespFormat, RoutePolicy,
+    ai_methods, get_buckyos_api_runtime, AiCost, AiMessage, AiMethodRequest, AiMethodResponse,
+    AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiUsage, AiccClient, Capability,
+    ModelSpec, Requirements, ResourceRef, RespFormat, RoutePolicy,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -321,12 +321,30 @@ pub fn aicc_method_schema(method: &str) -> Option<AiccMethodSchema> {
 
 /// 调用 aicc 服务的编排器侧 adapter。匹配所有 `service::aicc.<method>` executor。
 pub struct AiccAdapter {
-    client: Arc<AiccClient>,
+    client: Option<Arc<AiccClient>>,
 }
 
 impl AiccAdapter {
     pub fn new(client: Arc<AiccClient>) -> Self {
-        Self { client }
+        Self {
+            client: Some(client),
+        }
+    }
+
+    pub fn from_runtime() -> Self {
+        Self { client: None }
+    }
+
+    async fn client(&self) -> WorkflowResult<Arc<AiccClient>> {
+        if let Some(client) = self.client.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime =
+            get_buckyos_api_runtime().map_err(|err| WorkflowError::Dispatcher(err.to_string()))?;
+        Box::pin(runtime.get_aicc_client())
+            .await
+            .map(Arc::new)
+            .map_err(|err| WorkflowError::Dispatcher(err.to_string()))
     }
 }
 
@@ -377,10 +395,11 @@ impl AiccAdapter {
         method: &str,
         request: AiMethodRequest,
     ) -> WorkflowResult<AiMethodResponse> {
+        let client = self.client().await?;
         let result = match method {
-            ai_methods::LLM_CHAT => self.client.helper_llm_chat(request).await,
-            ai_methods::IMAGE_TXT2IMG => self.client.helper_text_to_image(request).await,
-            _ => self.client.call_method(method, request).await,
+            ai_methods::LLM_CHAT => client.helper_llm_chat(request).await,
+            ai_methods::IMAGE_TXT2IMG => client.helper_text_to_image(request).await,
+            _ => client.call_method(method, request).await,
         };
         result.map_err(|err| WorkflowError::Dispatcher(format!("aicc {} failed: {}", method, err)))
     }
@@ -395,7 +414,8 @@ impl AiccAdapter {
                 )
             })?;
         let resp = self
-            .client
+            .client()
+            .await?
             .cancel(task_id)
             .await
             .map_err(|err| WorkflowError::Dispatcher(format!("aicc cancel failed: {}", err)))?;

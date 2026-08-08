@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use buckyos_api::{Contact, MsgCenterClient};
+use buckyos_api::{get_buckyos_api_runtime, Contact, MsgCenterClient};
 use log::debug;
 use name_lib::DID;
 use tokio::sync::Mutex;
@@ -51,7 +51,7 @@ impl CachedEntry {
 /// Per-agent contact lookup. Cheap to clone (just `Arc`s + a `Mutex`).
 #[derive(Clone)]
 pub struct ContactLookup {
-    msg_center: Arc<MsgCenterClient>,
+    msg_center: Option<Arc<MsgCenterClient>>,
     /// Owner DID under which we scope contact-manager queries — the
     /// contact set is per-account on the contact-mgr side.
     owner: Option<DID>,
@@ -59,7 +59,7 @@ pub struct ContactLookup {
 }
 
 impl ContactLookup {
-    pub fn new(msg_center: Arc<MsgCenterClient>, owner: Option<DID>) -> Self {
+    pub fn new(msg_center: Option<Arc<MsgCenterClient>>, owner: Option<DID>) -> Self {
         Self {
             msg_center,
             owner,
@@ -76,8 +76,14 @@ impl ContactLookup {
         if let Some(cached) = self.cache_get(&key).await {
             return cached;
         }
-        let result = self
-            .msg_center
+        let msg_center = match self.msg_center.as_ref() {
+            Some(client) => client.clone(),
+            None => {
+                let runtime = get_buckyos_api_runtime().ok()?;
+                Arc::new(runtime.get_msg_center_client().await.ok()?)
+            }
+        };
+        let result = msg_center
             .get_contact(did.clone(), self.owner.clone())
             .await;
         match result {

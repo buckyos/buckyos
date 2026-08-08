@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
+use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
@@ -49,15 +50,30 @@ use crate::worklog::{WorklogAppendCtx, WorklogService};
 // LlmClient — aicc adapter
 // =====================================================================
 
-/// `LlmClient` over `AiccClient`. One `infer()` ⇒ one `llm.chat` round-trip;
-/// adapter retry / fallback happens inside aicc, not here.
+/// `LlmClient` over `AiccClient`. One `infer()` acquires one short-session
+/// client and performs one `llm.chat` round-trip; adapter retry / fallback
+/// happens inside aicc, not here.
 pub struct AiccLlmClient {
-    aicc: Arc<AiccClient>,
+    aicc: Option<Arc<AiccClient>>,
 }
 
 impl AiccLlmClient {
     pub fn new(aicc: Arc<AiccClient>) -> Self {
-        Self { aicc }
+        Self { aicc: Some(aicc) }
+    }
+
+    pub fn from_runtime(aicc_override: Option<Arc<AiccClient>>) -> Self {
+        Self {
+            aicc: aicc_override,
+        }
+    }
+
+    async fn client(&self) -> std::result::Result<Arc<AiccClient>, RPCErrors> {
+        if let Some(client) = self.aicc.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_aicc_client().await?))
     }
 }
 
@@ -165,8 +181,11 @@ impl LlmClient for AiccLlmClient {
         // aicc adapter can pick them up when it adds fallback wiring.
         let _ = fallbacks;
 
-        let resp = self
-            .aicc
+        let aicc = self
+            .client()
+            .await
+            .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+        let resp = aicc
             .call_method(ai_methods::LLM_CHAT, request)
             .await
             .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
@@ -188,7 +207,7 @@ impl LlmClient for AiccLlmClient {
 /// Block until an AICC-side async task reaches a terminal state and return
 /// its `AiResponse`. Mirrors the polling path the legacy
 /// `behavior::do_inference_once` used, but reuses
-/// `TaskManagerClient::wait_for_task_end_kevent` so the wait is kevent-
+/// `BuckyOSRuntime::wait_for_task_end_kevent` so the wait is kevent-
 /// accelerated with a sweep fallback.
 async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse, LLMComputeError> {
     let external_task_id = external_task_id.trim();
@@ -206,7 +225,7 @@ async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse,
 
     let id = resolve_aicc_task_id(&taskmgr, external_task_id).await?;
 
-    let task = taskmgr
+    let task = runtime
         .wait_for_task_end_kevent(id)
         .await
         .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
@@ -891,40 +910,81 @@ impl TurnHook for SessionSnapshotHook {
 /// design doc). Future steps will extend this with `contact_mgr` and
 /// `task_mgr` once they have consumers.
 pub struct AgentRuntime {
-    pub aicc: Arc<AiccClient>,
+    /// Fixed AICC client override for in-process tests or callers that manage
+    /// their own token. None means acquire a short-session client per use.
+    pub aicc: Option<Arc<AiccClient>>,
     pub worklog: Arc<WorklogService>,
-    /// Optional msg-center handle. When set, [`AIAgent`] also pulls inbound
-    /// messages from msg-center inbox boxes and feeds them to the session
-    /// dispatcher; when `None` the agent only consumes whatever pushes into
-    /// `AIAgent::inbox()` (tests / CLI).
+    /// Fixed msg-center client override for in-process tests or callers that
+    /// manage their own token. None means acquire a short-session client per use.
     pub msg_center: Option<Arc<MsgCenterClient>>,
     /// Optional kevent handle. Paired with `msg_center` to drive the inbox
     /// pump — when both are set, the pump uses kevent as a poll accelerator
     /// and falls back to box sweeps on timeout / reader loss.
     pub kevent_client: Option<Arc<KEventClient>>,
-    /// Optional task-manager handle. Wired through to async-tool dispatch
-    /// (§9.4 `PendingTool` outcome) and cross-session task notifications.
-    /// `None` ⇒ async-tool dispatch falls back to inline blocking execution
-    /// + the session worker logs a warning when it can't park a long-running
-    /// tool externally.
+    /// Fixed task-manager client override for in-process tests or callers that
+    /// manage their own token. None means acquire a short-session client per use.
     pub task_mgr: Option<Arc<TaskManagerClient>>,
-    /// Optional Task Dispatch Center handle. When set (together with
-    /// `task_mgr`), each agent registers itself as a Dispatch Target for
-    /// `agent.delegate/v1` and receives external structured delegation
-    /// through the dispatcher instead of any TaskMgr inbox.
+    /// Fixed Task Dispatch Center client override for in-process tests or
+    /// callers that manage their own token. None means acquire a short-session
+    /// client per use.
     pub task_dispatcher: Option<Arc<TaskDispatcherClient>>,
 }
 
 impl AgentRuntime {
     pub fn new(aicc: Arc<AiccClient>, worklog: Arc<WorklogService>) -> Self {
         Self {
-            aicc,
+            aicc: Some(aicc),
             worklog,
             msg_center: None,
             kevent_client: None,
             task_mgr: None,
             task_dispatcher: None,
         }
+    }
+
+    pub fn from_runtime(worklog: Arc<WorklogService>) -> Self {
+        Self {
+            aicc: None,
+            worklog,
+            msg_center: None,
+            kevent_client: None,
+            task_mgr: None,
+            task_dispatcher: None,
+        }
+    }
+
+    pub async fn aicc_client(&self) -> std::result::Result<Arc<AiccClient>, RPCErrors> {
+        if let Some(client) = self.aicc.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_aicc_client().await?))
+    }
+
+    pub async fn msg_center_client(&self) -> std::result::Result<Arc<MsgCenterClient>, RPCErrors> {
+        if let Some(client) = self.msg_center.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_msg_center_client().await?))
+    }
+
+    pub async fn task_mgr_client(&self) -> std::result::Result<Arc<TaskManagerClient>, RPCErrors> {
+        if let Some(client) = self.task_mgr.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_task_mgr_client().await?))
+    }
+
+    pub async fn task_dispatcher_client(
+        &self,
+    ) -> std::result::Result<Arc<TaskDispatcherClient>, RPCErrors> {
+        if let Some(client) = self.task_dispatcher.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_task_dispatcher_client().await?))
     }
 
     pub fn with_msg_center(mut self, client: Arc<MsgCenterClient>) -> Self {
@@ -991,7 +1051,7 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         session_id: ctx.session_id.clone(),
     };
 
-    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::new(runtime.aicc.clone()));
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::from_runtime(runtime.aicc.clone()));
     let tools_adapter: Arc<dyn ToolManager> = Arc::new(OpendanToolAdapter::with_from_user_did(
         tools,
         ctx,

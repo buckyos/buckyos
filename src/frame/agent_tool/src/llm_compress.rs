@@ -1494,10 +1494,7 @@ mod tests {
         crate::run_local_llm::ensure_buckyos_runtime()
             .await
             .expect("init buckyos runtime");
-        let aicc = crate::run_local_llm::acquire_aicc_client()
-            .await
-            .expect("acquire aicc client");
-        let llm: Arc<dyn LlmClient> = Arc::new(crate::run_local_llm::AiccLlmClient::new(aicc));
+        let llm: Arc<dyn LlmClient> = Arc::new(crate::run_local_llm::AiccLlmClient::new());
         let tools: Arc<dyn llm_context::deps::ToolManager> = Arc::new(StubTools);
         let deps = LLMContextDeps::new(llm, tools);
 
