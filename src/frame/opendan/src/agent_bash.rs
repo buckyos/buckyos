@@ -38,6 +38,7 @@ use agent_tool::{
     LlmUnderstandMediaTool, NoopFileWriteAudit, SessionRuntimeContext, WriteFileTool,
 };
 use serde_json::json;
+use serde::Deserialize;
 
 use crate::agent_config::FilesystemPolicy;
 use crate::paths;
@@ -49,6 +50,8 @@ const TMUX_SESSION_PREFIX: &str = "od_";
 /// Polling interval while waiting for the per-run exit-code file. Short enough
 /// to feel snappy on small commands, large enough to avoid burning a core.
 const TMUX_POLL_MS: u64 = 120;
+const AGENT_TOOL_PROGRESS_PREFIX: &str = "__BUCKYOS_AGENT_PROGRESS__";
+const PROGRESS_HARD_TIMEOUT_MULTIPLIER: u32 = 5;
 /// How many lines of scrollback `capture-pane` should pull back when we read
 /// pane output for fallback / partial-output paths.
 const TMUX_CAPTURE_SCROLLBACK: &str = "-6000";
@@ -277,7 +280,21 @@ pub struct TmuxBashRunner {
     /// session restart. `None` in unit tests that don't need the layer.
     bin_renderer: Option<Arc<SessionBinRenderer>>,
     base_env: Vec<(String, String)>,
+    progress_sink: Option<BashProgressSink>,
 }
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct BashProgressUpdate {
+    pub agent_tool_progress: String,
+    pub kind: String,
+    pub method: String,
+    pub stage: String,
+    pub task_id: String,
+    pub elapsed_ms: u64,
+}
+
+pub type BashProgressSink =
+    Arc<dyn Fn(&SessionRuntimeContext, &BashProgressUpdate) + Send + Sync>;
 
 impl TmuxBashRunner {
     pub fn new(runtime_dir: impl Into<PathBuf>) -> Self {
@@ -285,6 +302,7 @@ impl TmuxBashRunner {
             runtime_dir: runtime_dir.into(),
             bin_renderer: None,
             base_env: Vec::new(),
+            progress_sink: None,
         }
     }
 
@@ -295,6 +313,11 @@ impl TmuxBashRunner {
 
     pub fn with_base_env(mut self, env: Vec<(String, String)>) -> Self {
         self.base_env = env;
+        self
+    }
+
+    pub fn with_progress_sink(mut self, sink: BashProgressSink) -> Self {
+        self.progress_sink = Some(sink);
         self
     }
 }
@@ -385,8 +408,16 @@ impl BashRunner for TmuxBashRunner {
         let invoke = format!(". {}", shell_quote(script_path.to_string_lossy().as_ref()));
         send_keys(&tmux_target, &invoke).await?;
 
-        let exit_code = match wait_exit_code(&exit_code_path, &tmux_target, &run_id, req.timeout_ms)
-            .await?
+        let exit_code = match wait_exit_code(
+            &exit_code_path,
+            &stderr_path,
+            &tmux_target,
+            &run_id,
+            req.timeout_ms,
+            self.progress_sink.as_ref(),
+            ctx,
+        )
+        .await?
         {
             Some(code) => code,
             None => {
@@ -406,9 +437,9 @@ impl BashRunner for TmuxBashRunner {
         cleanup_run_files(&script_path, &stdout_path, &stderr_path, &exit_code_path).await;
 
         let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-        let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let stderr = strip_progress_lines(&String::from_utf8_lossy(&stderr_bytes));
         let (output, output_truncated) =
-            assemble_output(&stdout_bytes, &stderr_bytes, req.max_output_bytes);
+            assemble_output(&stdout_bytes, stderr.as_bytes(), req.max_output_bytes);
 
         Ok(BashRunOutput {
             exit_code,
@@ -441,6 +472,7 @@ pub struct SessionToolsBuild {
     /// plan). `None` ⇒ no tombstones and no Agent tool sync — useful in
     /// tests that just want the file tools wired.
     pub bin_renderer: Option<Arc<SessionBinRenderer>>,
+    pub progress_sink: Option<BashProgressSink>,
 }
 
 /// Build a tool manager pre-populated with the §3 UI-session defaults.
@@ -453,6 +485,7 @@ pub fn build_default_tool_manager(
     bash_runtime_dir: &Path,
     bin_renderer: Option<Arc<SessionBinRenderer>>,
     bash_base_env: Vec<(String, String)>,
+    progress_sink: Option<BashProgressSink>,
 ) -> Arc<AgentToolManager> {
     let manager = AgentToolManager::new();
 
@@ -461,6 +494,9 @@ pub fn build_default_tool_manager(
     let mut runner = TmuxBashRunner::new(bash_runtime_dir).with_base_env(bash_base_env);
     if let Some(renderer) = bin_renderer {
         runner = runner.with_bin_renderer(renderer);
+    }
+    if let Some(progress_sink) = progress_sink {
+        runner = runner.with_progress_sink(progress_sink);
     }
     let runner: Arc<dyn BashRunner> = Arc::new(runner);
     let _ = manager.register_tool(ExecBashTool::with_runner(bash_cfg, runner));
@@ -520,6 +556,7 @@ pub fn build_session_tools(build: SessionToolsBuild) -> std::io::Result<Arc<Agen
             &build.session_id,
             &build.appclient_session_token,
         ),
+        build.progress_sink,
     );
     Ok(manager)
 }
@@ -871,19 +908,34 @@ async fn capture_pane(target: &str) -> Result<String, AgentToolError> {
 /// scrollback (fallback in case the file write races with our poll).
 async fn wait_exit_code(
     exit_code_path: &Path,
+    stderr_path: &Path,
     tmux_target: &str,
     run_id: &str,
     timeout_ms: u64,
+    progress_sink: Option<&BashProgressSink>,
+    ctx: &SessionRuntimeContext,
 ) -> Result<Option<i32>, AgentToolError> {
     let started = Instant::now();
-    let deadline = Duration::from_millis(timeout_ms);
+    let mut last_progress = Instant::now();
+    let idle_timeout = Duration::from_millis(timeout_ms);
+    let hard_timeout = idle_timeout.saturating_mul(PROGRESS_HARD_TIMEOUT_MULTIPLIER);
+    let mut progress_lines_seen = 0usize;
     let pane_marker = format!("__OD_EXIT__{run_id}:");
     loop {
-        if started.elapsed() >= deadline {
+        if started.elapsed() >= hard_timeout || last_progress.elapsed() >= idle_timeout {
             return Ok(None);
         }
         if let Some(code) = read_exit_code_file(exit_code_path).await? {
             return Ok(Some(code));
+        }
+        let updates = read_progress_updates(stderr_path, &mut progress_lines_seen).await;
+        if !updates.is_empty() {
+            last_progress = Instant::now();
+            if let Some(sink) = progress_sink {
+                for update in updates {
+                    sink(ctx, &update);
+                }
+            }
         }
         if let Ok(pane) = capture_pane(tmux_target).await {
             if let Some(code) = parse_exit_code_from_pane(&pane, &pane_marker)? {
@@ -892,6 +944,39 @@ async fn wait_exit_code(
         }
         sleep(Duration::from_millis(TMUX_POLL_MS)).await;
     }
+}
+
+async fn read_progress_updates(path: &Path, lines_seen: &mut usize) -> Vec<BashProgressUpdate> {
+    let raw = match fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return Vec::new(),
+    };
+    let lines = raw.lines().collect::<Vec<_>>();
+    let updates = lines
+        .iter()
+        .skip(*lines_seen)
+        .filter_map(|line| parse_progress_line(line))
+        .collect();
+    *lines_seen = lines.len();
+    updates
+}
+
+fn parse_progress_line(line: &str) -> Option<BashProgressUpdate> {
+    let payload = line.strip_prefix(AGENT_TOOL_PROGRESS_PREFIX)?;
+    let update = serde_json::from_str::<BashProgressUpdate>(payload).ok()?;
+    if update.agent_tool_progress != "1" || update.kind != "aicc" {
+        return None;
+    }
+    Some(update)
+}
+
+fn strip_progress_lines(stderr: &str) -> String {
+    stderr
+        .lines()
+        .filter(|line| parse_progress_line(line).is_none())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn read_exit_code_file(path: &Path) -> Result<Option<i32>, AgentToolError> {
@@ -1073,6 +1158,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_strips_agent_tool_progress_lines() {
+        let line = concat!(
+            "__BUCKYOS_AGENT_PROGRESS__",
+            r#"{"agent_tool_progress":"1","kind":"aicc","method":"video.img2video","stage":"running","task_id":"task-1","elapsed_ms":5000}"#
+        );
+        let update = parse_progress_line(line).expect("progress update");
+        assert_eq!(update.method, "video.img2video");
+        assert_eq!(update.elapsed_ms, 5000);
+        assert_eq!(strip_progress_lines(&format!("before\n{line}\nafter\n")), "before\nafter");
+    }
+
+    #[test]
+    fn ignores_unrecognized_progress_protocol() {
+        let line = concat!(
+            "__BUCKYOS_AGENT_PROGRESS__",
+            r#"{"agent_tool_progress":"2","kind":"aicc","method":"llm","stage":"running","task_id":"task-1","elapsed_ms":1}"#
+        );
+        assert!(parse_progress_line(line).is_none());
+        assert_eq!(strip_progress_lines(line), line);
+    }
+
+    #[test]
     fn registers_default_tools() {
         let dir = tempdir().unwrap();
         // BUCKYOS_ROOT is consulted at layout-compute time; pin it under the
@@ -1087,6 +1194,7 @@ mod tests {
             appclient_session_token: "test-token".to_string(),
             filesystem_policy: FilesystemPolicy::Workspace,
             bin_renderer: None,
+            progress_sink: None,
         })
         .expect("build tools");
         for name in ["exec_bash", "read"] {

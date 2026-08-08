@@ -89,6 +89,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const AGENT_TOOL_PROGRESS_PREFIX = "__BUCKYOS_AGENT_PROGRESS__";
+
+function emitAiccProgress(
+  method: string,
+  stage: "running" | "finalizing",
+  externalTaskId: string,
+  elapsedMs: number,
+): void {
+  console.error(`${AGENT_TOOL_PROGRESS_PREFIX}${JSON.stringify({
+    agent_tool_progress: "1",
+    kind: "aicc",
+    method,
+    stage,
+    task_id: externalTaskId,
+    elapsed_ms: elapsedMs,
+  })}`);
+}
+
 function envNumber(name: string, fallback: number): number {
   const raw = Deno.env.get(name);
   if (!raw) return fallback;
@@ -176,11 +194,22 @@ function asAiResponse(value: unknown): AiResponse | null {
 async function waitForFinalTask(
   taskMgr: RpcClient,
   externalTaskId: string,
+  method: string,
   appId: string,
   userId: string,
   deadlineMs: number,
 ): Promise<TaskRecord> {
+  const startedAt = Date.now();
+  let lastProgressAt = 0;
+  const reportRunning = () => {
+    const now = Date.now();
+    if (now - lastProgressAt >= 5_000) {
+      emitAiccProgress(method, "running", externalTaskId, now - startedAt);
+      lastProgressAt = now;
+    }
+  };
   while (Date.now() < deadlineMs) {
+    reportRunning();
     const raw = await taskMgr.call("list_tasks", {
       app_id: appId,
       task_type: "aicc.compute",
@@ -193,8 +222,12 @@ async function waitForFinalTask(
     const matched = tasks.find((t) => t.data?.aicc?.external_task_id === externalTaskId);
     if (matched) {
       while (Date.now() < deadlineMs) {
+        reportRunning();
         const next = normalizeTask(await taskMgr.call("get_task", { id: matched.id }));
-        if (["Completed", "Failed", "Canceled"].includes(next.status)) return next;
+        if (["Completed", "Failed", "Canceled"].includes(next.status)) {
+          emitAiccProgress(method, "finalizing", externalTaskId, Date.now() - startedAt);
+          return next;
+        }
         await sleep(1000);
       }
       throw new Error(`timed out while waiting for AICC task ${matched.id} to finish`);
@@ -246,6 +279,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
   const finalTask = await waitForFinalTask(
     taskMgr,
     response.task_id,
+    opts.method,
     runtime.appId,
     runtime.userId,
     deadline,

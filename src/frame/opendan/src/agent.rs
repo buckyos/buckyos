@@ -27,8 +27,8 @@ use agent_tool::{AgentAttentionSignalStore, AttentionSignalStoreConfig};
 use anyhow::{anyhow, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, AgentDelegateProgress, AgentDelegateTaskData,
-    AgentDelegateTaskRequest, AiMessage, AiRole, Task, TimerOptions,
-    TypedTaskData,
+    AgentDelegateTaskRequest, AiMessage, AiRole, Task, TimerOptions, TypedTaskData,
+    UI_SESSION_STATE_STATUS_LINE_KEY,
 };
 use chrono::{Datelike, Local, Timelike, Utc};
 use log::{info, warn};
@@ -36,7 +36,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, Duration};
 
-use crate::agent_bash::{build_session_tools, SessionBinLayout, SessionToolsBuild};
+use crate::agent_bash::{
+    build_session_tools, BashProgressSink, SessionBinLayout, SessionToolsBuild,
+};
 use crate::agent_config::{AgentConfig, SessionIdStrategy};
 use crate::agent_session::{AgentSession, AgentSessionBuild, SessionReply};
 use crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE;
@@ -1837,6 +1839,49 @@ impl AIAgent {
         let agent_id = self.agent_id();
         let bin_renderer = self.build_session_bin_renderer(&agent_id, &session_id, &behavior_name);
         let appclient_session_token = resolve_appclient_session_token().await?;
+        let progress_sink = self.runtime.msg_center.as_ref().map(|msg_center| {
+            let msg_center = msg_center.clone();
+            let progress_session_id = session_id.clone();
+            let i18n = self.config.i18n.clone();
+            Arc::new(move |ctx: &agent_tool::SessionRuntimeContext, progress: &crate::agent_bash::BashProgressUpdate| {
+                let line = if progress.stage == "finalizing" {
+                    i18n.render(
+                        "status.aicc_finalizing",
+                        &[("method", progress.method.clone())],
+                    )
+                } else {
+                    i18n.render(
+                        "status.aicc_running",
+                        &[
+                            ("method", progress.method.clone()),
+                            ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
+                        ],
+                    )
+                };
+                let msg_center = msg_center.clone();
+                let session_id = progress_session_id.clone();
+                let turn_nonce = ctx.trace_id.clone();
+                tokio::spawn(async move {
+                    let value = serde_json::json!({
+                        "value": line,
+                        "turn_nonce": turn_nonce,
+                    });
+                    if let Err(err) = msg_center
+                        .update_ui_session_state(
+                            session_id.clone(),
+                            UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                            value,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "opendan.agent: update AICC progress for session {} failed: {err}",
+                            session_id
+                        );
+                    }
+                });
+            }) as BashProgressSink
+        });
 
         let tools = build_session_tools(SessionToolsBuild {
             workspace_root: tool_root.clone(),
@@ -1847,6 +1892,7 @@ impl AIAgent {
             appclient_session_token,
             filesystem_policy: self.config.toml.runtime.filesystem_policy,
             bin_renderer,
+            progress_sink,
         })
         .map_err(|err| anyhow!("build session tools: {err}"))?;
         // Worksession control tools (create_worksession / forward_msg) are

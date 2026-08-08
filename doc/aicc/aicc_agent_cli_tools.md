@@ -128,6 +128,11 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 输出文件不存在时创建，存在时覆盖。CLI 不做交互确认，因为这些工具面向 Agent 自动化。
 
+异步任务返回 `running` 后，CLI 每 5 秒向 stderr 写一行结构化进度心跳：前缀为
+`__BUCKYOS_AGENT_PROGRESS__`，后面紧跟 JSON，包含协议版本、AICC method、stage、task_id
+和 elapsed_ms。stdout 仍只写最终 `AgentToolResult`。OpenDAN 消费心跳后更新会话状态，并在
+默认超时之外继续等待活跃任务；无心跳的普通命令仍使用原有超时规则。
+
 ### 2.5 退出码
 
 | code | 含义 |
