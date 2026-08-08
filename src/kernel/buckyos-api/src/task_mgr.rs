@@ -340,12 +340,9 @@ pub struct ListTaskNotesResult {
     pub notes: Vec<TaskNote>,
 }
 
-/// `user_id` / `app_id` request the owner identity recorded on the task.
-/// The server resolves the caller's real identity from the verified session
-/// token: zone-trusted callers (owner/device signed tokens) may fill these on
-/// behalf of an already-authenticated business user; everyone else must leave
-/// them empty or matching their own token identity, otherwise the request is
-/// rejected.
+/// `user_id` / `app_id` request the owner identity recorded on the task. The
+/// server resolves the caller's identity from the verified session token;
+/// these fields must be empty or match that token identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskManagerCreateTaskReq {
     pub name: String,
@@ -839,8 +836,8 @@ impl TaskManagerClient {
     }
 
     /// `user_id` / `app_id` request the recorded owner identity. Pass empty
-    /// strings to use the caller's own (verified) token identity; only
-    /// zone-trusted callers may pass values that differ from their token.
+    /// strings to use the caller's own verified token identity. Non-empty
+    /// values must match that identity.
     pub async fn create_task(
         &self,
         name: &str,

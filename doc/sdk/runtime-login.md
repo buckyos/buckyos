@@ -177,7 +177,7 @@ SDK 使用者通常不直接验签，而是使用 api-runtime 和 service client
 
 system-config 的 trust keys 来自 `boot/config` 里的 owner/root key、verify-hub key，以及当前设备 key；运行中也能按 issuer 加载受信用户或设备的公钥。Frame/Kernel service 的 api-runtime 会在 login 后加载 RBAC 和 trust keys，并在后台刷新 trust keys。
 
-对于普通业务服务，推荐只把 verify-hub 签发的 `session_token` 当作外部用户请求凭证。app-service 自己主动发起的后台任务可以使用自身 runtime token，但用户请求链路必须传递页面用户的 token。
+对于普通业务服务，推荐只把 verify-hub 签发的 `session_token` 当作外部用户请求凭证。app-service 自己主动发起的后台任务可以使用自身 runtime token，但用户请求链路必须传递页面用户的 token。当前 session token 表达的是调用链源头的 `sub + appid` 身份，不绑定某个下游 service-specific audience，因此服务把同一用户请求继续委托给 TaskMgr 等系统服务时应透传原 token；不能用 service runtime token 覆盖源头身份。
 
 ## sudo 不是普通登录
 

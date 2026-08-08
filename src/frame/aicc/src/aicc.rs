@@ -570,14 +570,20 @@ impl TaskEventSinkFactory for DefaultTaskEventSinkFactory {
 
 struct TaskAuditSink {
     taskmgr_override: Option<Arc<TaskManagerClient>>,
+    taskmgr_context: RPCContext,
     task_mgr_id: i64,
     lock: AsyncMutex<()>,
 }
 
 impl TaskAuditSink {
-    fn new(taskmgr_override: Option<Arc<TaskManagerClient>>, task_mgr_id: i64) -> Self {
+    fn new(
+        taskmgr_override: Option<Arc<TaskManagerClient>>,
+        taskmgr_context: RPCContext,
+        task_mgr_id: i64,
+    ) -> Self {
         Self {
             taskmgr_override,
+            taskmgr_context,
             task_mgr_id,
             lock: AsyncMutex::new(()),
         }
@@ -804,20 +810,9 @@ impl TaskEventSink for UsageLoggingSink {
     }
 }
 
-struct TaskScope {
-    create_opts: CreateTaskOptions,
-    user_id: String,
-    app_id: String,
-}
-
-impl TaskScope {
-    fn parent_id(&self) -> Option<i64> {
-        self.create_opts.parent_id
-    }
-}
-
 struct PreparedTask {
     taskmgr_override: Option<Arc<TaskManagerClient>>,
+    taskmgr_context: RPCContext,
     task: buckyos_api::Task,
 }
 
@@ -845,57 +840,22 @@ impl InitialTaskState {
 impl AIComputeCenter {
     async fn acquire_task_manager_client(
         &self,
+        invoke_ctx: &InvokeCtx,
     ) -> std::result::Result<Arc<TaskManagerClient>, RPCErrors> {
-        acquire_task_manager_client(self.taskmgr.as_ref()).await
+        let taskmgr_context = task_manager_rpc_context(invoke_ctx);
+        acquire_task_manager_client(self.taskmgr.as_ref(), &taskmgr_context).await
     }
 
-    async fn resolve_task_scope(
-        &self,
+    fn resolve_task_options(
         request: &AiMethodRequest,
         invoke_ctx: &InvokeCtx,
-        external_task_id: &str,
-    ) -> std::result::Result<TaskScope, RPCErrors> {
+    ) -> CreateTaskOptions {
         let mut create_task_opts = CreateTaskOptions::default();
         if let Some(task_options) = request.task_options.as_ref() {
             create_task_opts.parent_id = task_options.parent_id;
         }
         create_task_opts.root_id = resolve_task_root_id(request, invoke_ctx);
-
-        let taskmgr = self.acquire_task_manager_client().await.map_err(|err| {
-            warn!(
-                "aicc.complete failed: task_manager_unavailable task_id={} tenant={} err={}",
-                external_task_id, invoke_ctx.tenant_id, err
-            );
-            err
-        })?;
-
-        let parent_id = create_task_opts.parent_id;
-        let mut task_user_id = invoke_ctx.tenant_id.clone();
-        let mut task_app_id = AICC_SERVICE_SERVICE_NAME.to_string();
-        if let Some(pid) = parent_id {
-            let parent_task = match taskmgr.get_task(pid).await {
-                Ok(task) => task,
-                Err(err) => {
-                    warn!(
-                        "aicc.complete load_parent_task failed: task_id={} tenant={} parent_id={} err={}",
-                        external_task_id, invoke_ctx.tenant_id, pid, err
-                    );
-                    return Err(err);
-                }
-            };
-            task_user_id = parent_task.user_id;
-            task_app_id = parent_task.app_id;
-            info!(
-                "aicc.complete inherit_parent_scope: task_id={} parent_id={} user_id={} app_id={}",
-                external_task_id, pid, task_user_id, task_app_id
-            );
-        }
-
-        Ok(TaskScope {
-            create_opts: create_task_opts,
-            user_id: task_user_id,
-            app_id: task_app_id,
-        })
+        create_task_opts
     }
 
     async fn create_provider_task(
@@ -907,24 +867,23 @@ impl AIComputeCenter {
         decision: &RouteDecision,
         initial_state: InitialTaskState,
     ) -> std::result::Result<PreparedTask, RPCErrors> {
-        let scope = self
-            .resolve_task_scope(request, invoke_ctx, external_task_id)
-            .await?;
+        let create_task_opts = Self::resolve_task_options(request, invoke_ctx);
 
         let mut task_data =
             build_initial_aicc_task_data(request, external_task_id, event_ref, invoke_ctx);
         merge_route_decision_into_task_data(&mut task_data, decision, initial_state.as_status());
 
-        let taskmgr = self.acquire_task_manager_client().await?;
-        let parent_id = scope.parent_id();
+        let taskmgr_context = task_manager_rpc_context(invoke_ctx);
+        let taskmgr = acquire_task_manager_client(self.taskmgr.as_ref(), &taskmgr_context).await?;
+        let parent_id = create_task_opts.parent_id;
         let task = taskmgr
             .create_task(
                 &format!("aicc:{external_task_id}"),
                 AICC_TASK_TYPE,
                 Some(task_data.clone()),
-                scope.user_id.as_str(),
-                scope.app_id.as_str(),
-                Some(scope.create_opts),
+                "",
+                "",
+                Some(create_task_opts),
             )
             .await
             .map_err(|err| {
@@ -937,33 +896,42 @@ impl AIComputeCenter {
 
         Ok(PreparedTask {
             taskmgr_override: self.taskmgr.clone(),
+            taskmgr_context,
             task,
         })
     }
 }
 
+fn task_manager_rpc_context(invoke_ctx: &InvokeCtx) -> RPCContext {
+    RPCContext {
+        token: invoke_ctx.session_token.clone(),
+        trace_id: invoke_ctx.trace_id.clone(),
+        ..Default::default()
+    }
+}
+
 async fn acquire_task_manager_client(
     taskmgr_override: Option<&Arc<TaskManagerClient>>,
+    context: &RPCContext,
 ) -> std::result::Result<Arc<TaskManagerClient>, RPCErrors> {
-    if let Some(taskmgr) = taskmgr_override {
-        return Ok(taskmgr.clone());
-    }
-    let runtime = get_buckyos_api_runtime().map_err(|err| {
-        reason_error(
-            "task_manager_unavailable",
-            format!("load runtime failed: {err}"),
-        )
-    })?;
-    runtime
-        .get_task_mgr_client()
-        .await
-        .map(Arc::new)
-        .map_err(|err| {
+    let taskmgr = if let Some(taskmgr) = taskmgr_override {
+        taskmgr.clone()
+    } else {
+        let runtime = get_buckyos_api_runtime().map_err(|err| {
+            reason_error(
+                "task_manager_unavailable",
+                format!("load runtime failed: {err}"),
+            )
+        })?;
+        Arc::new(runtime.get_task_mgr_client().await.map_err(|err| {
             reason_error(
                 "task_manager_unavailable",
                 format!("get task manager client failed: {err}"),
             )
-        })
+        })?)
+    };
+    taskmgr.set_context(context.clone()).await;
+    Ok(taskmgr)
 }
 
 #[async_trait]
@@ -974,7 +942,9 @@ impl TaskEventSink for TaskAuditSink {
 
     async fn emit(&self, event: TaskEvent) -> std::result::Result<(), RPCErrors> {
         let _guard = self.lock.lock().await;
-        let taskmgr = acquire_task_manager_client(self.taskmgr_override.as_ref()).await?;
+        let taskmgr =
+            acquire_task_manager_client(self.taskmgr_override.as_ref(), &self.taskmgr_context)
+                .await?;
 
         let task = taskmgr.get_task(self.task_mgr_id).await?;
         let mut data = task.data;
@@ -4312,6 +4282,7 @@ impl AIComputeCenter {
                     .await?;
                 let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
                     prepared_task.taskmgr_override.clone(),
+                    prepared_task.taskmgr_context.clone(),
                     prepared_task.id(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
@@ -4383,6 +4354,7 @@ impl AIComputeCenter {
                 let task_mgr_id = prepared_task.id();
                 let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
                     prepared_task.taskmgr_override.clone(),
+                    prepared_task.taskmgr_context.clone(),
                     task_mgr_id,
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
@@ -4415,6 +4387,7 @@ impl AIComputeCenter {
                 let task_mgr_id = prepared_task.id();
                 let task_audit_sink: Arc<dyn TaskEventSink> = Arc::new(TaskAuditSink::new(
                     prepared_task.taskmgr_override.clone(),
+                    prepared_task.taskmgr_context.clone(),
                     task_mgr_id,
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
@@ -4483,9 +4456,9 @@ impl AIComputeCenter {
             return Ok(CancelResponse::new(task_id.to_string(), false));
         };
 
-        let accepted = provider.cancel(invoke_ctx, task_id).await.is_ok();
+        let accepted = provider.cancel(invoke_ctx.clone(), task_id).await.is_ok();
         if accepted {
-            if let Ok(taskmgr) = self.acquire_task_manager_client().await {
+            if let Ok(taskmgr) = self.acquire_task_manager_client(&invoke_ctx).await {
                 let event = TaskEvent {
                     task_id: task_id.to_string(),
                     kind: TaskEventKind::CancelRequested,
@@ -6496,6 +6469,35 @@ mod tests {
     }
 
     #[test]
+    fn task_manager_context_forwards_upstream_token_and_trace() {
+        let session_token = RPCSessionToken {
+            token_type: RPCSessionTokenType::Normal,
+            token: Some("test-user-session".to_string()),
+            aud: None,
+            exp: None,
+            iss: Some("verify-hub".to_string()),
+            jti: None,
+            sub: Some("alice".to_string()),
+            appid: Some("third-party-app".to_string()),
+            sudo: false,
+            extra: HashMap::new(),
+        };
+        let raw_token = serde_json::to_string(&session_token).unwrap();
+        let upstream = RPCContext {
+            token: Some(raw_token),
+            trace_id: Some("trace-aicc-task".to_string()),
+            ..Default::default()
+        };
+        let invoke_ctx = InvokeCtx::from_rpc(&upstream);
+        let downstream = task_manager_rpc_context(&invoke_ctx);
+
+        assert_eq!(invoke_ctx.tenant_id, "alice");
+        assert_eq!(invoke_ctx.caller_app_id.as_deref(), Some("third-party-app"));
+        assert_eq!(downstream.token, upstream.token);
+        assert_eq!(downstream.trace_id, upstream.trace_id);
+    }
+
+    #[test]
     fn system_routing_config_is_visible_in_models_list() {
         let center = AIComputeCenter::new(Registry::default(), ModelCatalog::default());
         center
@@ -6603,8 +6605,8 @@ mod tests {
                         method: "llm.chat".to_string(),
                         params: json!({}),
                         seq: 1,
-                        token: None,
-                        trace_id: None,
+                        token: Some("user-session-token".to_string()),
+                        trace_id: Some("trace-immediate-task".to_string()),
                     },
                     IpAddr::V4(Ipv4Addr::LOCALHOST),
                 ),
@@ -6627,6 +6629,11 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(aicc_status(&task).as_deref(), Some("succeeded"));
         assert_eq!(task.root_id, "aicc-default");
+        // The in-process mock preserves the owner fields sent by AICC. Empty
+        // values mean the real Task Manager must resolve both fields from the
+        // forwarded session token instead of AICC claiming the task itself.
+        assert!(task.user_id.is_empty());
+        assert!(task.app_id.is_empty());
         assert!(task.data.get("rootid").is_none());
         assert!(task.data.pointer("/aicc/rootid").is_none());
     }

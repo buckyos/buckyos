@@ -322,6 +322,9 @@ Response：
 4. `payload.resources` 保存跨字段复用或旧调用方需要的 `ResourceRef` 列表；文件类资源的 metadata 通过 `NamedObject` 指向的 `FileObject.meta` 获取。
 5. `payload.options` 只保存 AICC 层通用执行选项，不保存 method schema 字段。
 6. `sys` 三元组含义为 `[caller_id, session_token, trace_id]`。
+7. 对用户请求，`session_token` 表达调用链源头的用户和应用身份。AICC 调用 TaskMgr 创建、更新或取消内部 Task 时原样透传该 token，不改用 AICC runtime 的 service token。
+8. AICC 创建 Task 时不填写 `user_id` / `app_id`；TaskMgr 在标准验签后从 token 的 `sub` / `appid` 确定 owner。存在 `parent_id` 时，父任务写权限和 owner 一致性也由 TaskMgr 判断。
+9. 该透传链路不要求面向 AICC 或 TaskMgr 的 service-specific audience；`aud=verify-hub` 的 refresh token 仍然只能用于换取 session token，不能作为业务 session token 透传。
 
 `payload` 顶层固定为：
 
