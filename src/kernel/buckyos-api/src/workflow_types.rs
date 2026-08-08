@@ -76,7 +76,7 @@ pub enum JoinStrategy {
 /// DSL `executor` 字段的语义分类。
 ///
 /// - `Actual` 表示已经定位到具体执行入口的实际 executor 定义，使用 `namespace::name`
-///   的形式（例如 `service::aicc.complete`、`http::file-classifier.classify`、
+///   的形式（例如 `service::aicc.llm.chat`、`http::file-classifier.classify`、
 ///   `appservice::media-tools.extract_metadata`、`operator::json.pick`、
 ///   `func::<function_object_id>`）。这类引用可以直接交给对应的编排器侧 adapter
 ///   或调度器执行。

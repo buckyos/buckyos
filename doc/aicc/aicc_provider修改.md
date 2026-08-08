@@ -1,5 +1,7 @@
 # AICC Provider 修改需求整理
 
+> 本文是 provider 迁移阶段的设计记录，不是公开 kRPC 调用说明。公开接口没有 `complete` method；调用方式以 `aicc_api设计.md` 和 `maintenance/krpc_aicc_calling_guide.md` 为准。
+
 阶段：阶段 2，provider 修改需求整理，review 后再改。  
 范围：只整理 provider 接入层、registry 注册方式、成本估算接口的修改点；本文件不要求直接改代码。
 
@@ -59,8 +61,8 @@
 
 ```rust
 pub trait Provider: Send + Sync {
-    fn instance(&self) -> &ProviderInstance;
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate;
+    fn inventory(&self) -> ProviderInventory;
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput;
     async fn start(...);
     async fn cancel(...);
 }
@@ -202,7 +204,7 @@ pub struct ProviderInstance {
 - `AIComputeCenter` 直接持有新版 `ModelRegistry`。
 - 旧 `ModelCatalog` 从运行路径移除，不再生成 legacy alias。
 - provider settings 中的 `alias_map`、`default_model` 如果还需要表达默认模型，应迁移为 global `SessionConfig` 的 logical tree/items，而不是 provider 注册副作用。
-- `CompleteRequest.model.alias` 这类旧字段在本分支可直接迁移为新版 request model 字段；测试同步改，不做兼容解析。
+- `AiMethodRequest.model.alias` 这类 legacy all-in-one 字段在本分支可直接迁移为新版 request model 字段；测试同步改，不做兼容解析。
 
 ### P0. OpenAI 内部 clear 移到 apply_provider_settings 统一管理
 

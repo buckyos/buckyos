@@ -65,66 +65,74 @@ def call_rpc(method: str, params: dict, seq: int = 1) -> dict:
     return rpc_response["result"]
 
 
-def complete_once(prompt: str, must_features: list[str] | None = None, options: dict | None = None) -> dict:
+def llm_chat_once(prompt: str, must_features: list[str] | None = None, options: dict | None = None) -> dict:
+    features = must_features or []
     params = {
-        "capability": "llm_router",
+        "capability": "llm",
         "model": {
             "alias": AICC_MODEL_ALIAS,
         },
         "requirements": {
-            "must_features": must_features or [],
+            "must_features": features,
+            "max_latency_ms": None,
+            "max_cost_usd": None,
+            "resp_format": "json" if "json_output" in features else "text",
+            "extra": None,
         },
         "payload": {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "options": options or {"temperature": 0.2, "max_tokens": 96},
+            "input_json": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": prompt}],
+                    }
+                ],
+            },
+            "resources": [],
+            "options": options or {"temperature": 0.2, "max_output_tokens": 96},
         },
         "idempotency_key": f"test-{uuid.uuid4().hex}",
     }
-    return call_rpc("complete", params, seq=int(time.time()))
+    return call_rpc("helper.llm_chat", params, seq=int(time.time()))
+
+
+def response_text(result: dict) -> str | None:
+    response = result.get("result") or {}
+    message = response.get("message") or {}
+    content = message.get("content") or []
+    texts = [block.get("text", "") for block in content if block.get("type") == "text"]
+    text = "\n".join(part for part in texts if part).strip()
+    return text or None
 
 
 class TestAiccOpenAIProvider(unittest.TestCase):
-    def test_complete_basic(self) -> None:
-        result = complete_once("Reply with one short sentence: AICC OpenAI provider is working.")
+    def test_llm_chat_basic(self) -> None:
+        result = llm_chat_once("Reply with one short sentence: AICC OpenAI provider is working.")
 
         self.assertIn("task_id", result, msg=f"missing task_id in result: {result}")
         self.assertIn("status", result, msg=f"missing status in result: {result}")
         self.assertIn(result["status"], ["succeeded", "running"], msg=f"unexpected status: {result}")
 
         if result["status"] == "succeeded":
-            self.assertIsInstance(result.get("result"), dict, msg=f"invalid result payload: {result}")
-            summary = result.get("result") or {}
-            has_text = isinstance(summary.get("text"), str) and len(summary.get("text", "").strip()) > 0
-            has_json = summary.get("json") is not None
-            self.assertTrue(
-                has_text or has_json,
-                msg=f"succeeded response should include text/json summary: {summary}",
-            )
+            self.assertIsNotNone(response_text(result), msg=f"missing response text: {result}")
 
-    def test_complete_json_output(self) -> None:
-        result = complete_once(
+    def test_llm_chat_json_output(self) -> None:
+        result = llm_chat_once(
             prompt='Return JSON only with shape {"ok": true, "source": "aicc"}.',
             must_features=["json_output"],
             options={
                 "temperature": 0,
-                "max_tokens": 80,
+                "max_output_tokens": 80,
                 "response_format": {"type": "json_object"},
             },
         )
 
         self.assertIn(result["status"], ["succeeded", "running"], msg=f"unexpected status: {result}")
         if result["status"] == "succeeded":
-            summary = result.get("result") or {}
-            parsed = summary.get("json")
-            if parsed is None and isinstance(summary.get("text"), str):
-                parsed = json.loads(summary["text"])
-
-            self.assertIsInstance(parsed, dict, msg=f"json_output should return JSON object: {summary}")
+            text = response_text(result)
+            self.assertIsNotNone(text, msg=f"json_output should return text: {result}")
+            parsed = json.loads(text)
+            self.assertIsInstance(parsed, dict, msg=f"json_output should return JSON object: {text}")
             self.assertIn("ok", parsed, msg=f"json result missing 'ok': {parsed}")
 
     def test_cancel_endpoint_reachable(self) -> None:
@@ -139,17 +147,15 @@ class TestAiccOpenAIProvider(unittest.TestCase):
         self.assertIsInstance(cancel_result["accepted"], bool)
 
     def test_input_and_print_output(self) -> None:
-        result = complete_once(
+        result = llm_chat_once(
             prompt=AICC_TEST_INPUT,
-            options={"temperature": 0.2, "max_tokens": 256},
+            options={"temperature": 0.2, "max_output_tokens": 256},
         )
 
         status = result.get("status")
         self.assertIn(status, ["succeeded", "running"], msg=f"unexpected status: {result}")
 
-        summary = result.get("result") or {}
-        output_text = summary.get("text")
-        output_json = summary.get("json")
+        output_text = response_text(result)
 
         print("\n=== AICC Manual Input Test ===")
         print(f"Input: {AICC_TEST_INPUT}")
@@ -157,9 +163,6 @@ class TestAiccOpenAIProvider(unittest.TestCase):
         if isinstance(output_text, str) and output_text.strip():
             print("Output(text):")
             print(output_text.strip())
-        elif output_json is not None:
-            print("Output(json):")
-            print(json.dumps(output_json, ensure_ascii=False, indent=2))
         else:
             print("Output: <none yet, task may still be running>")
 

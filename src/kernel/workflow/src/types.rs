@@ -11,7 +11,7 @@ mod tests {
     #[test]
     fn parse_classifies_actual_namespaces() {
         for raw in [
-            "service::aicc.complete",
+            "service::aicc.llm.chat",
             "http::file-classifier.classify",
             "appservice::media-tools.extract_metadata",
             "operator::json.pick",

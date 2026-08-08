@@ -50,7 +50,7 @@ FunctionObject / ThunkObject / Node Daemon Runner 是后续阶段的执行基础
 
 `executor` 字段里有两种不同语义：
 
-- **实际 executor 定义**：用 `namespace::name` 表达，例如 `service::aicc.complete`、`http::file-classifier.classify`。这类名字已经能直接定位到一个 adapter 和调用协议。
+- **实际 executor 定义**：用 `namespace::name` 表达，例如 `service::aicc.llm.chat`、`http::file-classifier.classify`。这类名字已经能直接定位到一个 adapter 和调用协议。
 - **语义链接**：用路径表达，例如 `/agent/mia`、`/skill/fs-scanner`、`/tool/image-normalizer`。它们不是最终 executor 定义，而是一个可解析的语义入口。
 
 语义链接必须先通过 executor registry 展开为实际 executor 定义，例如：
@@ -78,7 +78,7 @@ FunctionObject / ThunkObject / Node Daemon Runner 是后续阶段的执行基础
 
 BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内访问语义一致的服务。命名为 `服务名.方法名`。典型例子：
 
-- `aicc.complete`
+- `aicc.llm.chat`
 - `msg_center.notify_user`
 - `system_config.get` / `system_config.set`
 - `task_manager.create_task`
@@ -86,7 +86,7 @@ BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内�
 
 ### 一期执行方式
 
-- DSL：`executor: "service::aicc.complete"`
+- DSL：`executor: "service::aicc.llm.chat"`
 - Expr：`Apply`
 - 编排器：识别 `service::` 前缀，直接通过 buckyos-api RPC client 调用对应服务。
 - 输出：RPC response 作为该 Step 的输出回填。
@@ -106,7 +106,7 @@ BuckyOS 的标准服务指系统内置、有稳定 RPC schema、整个 Zone 内�
 🟢 **直执行通道已就位**。`WorkflowOrchestrator::with_executor_registry` 接入
 `ExecutorRegistry`，命中的 `service::` executor 直接由编排器同步调用 adapter，
 跳过 Thunk 投递；缓存与重试 / Human fallback 路径与原有 Thunk 路径行为一致。
-具体 service adapter（buckyos-api RPC 桥接、`aicc.complete` 等）仍待按服务接入。
+具体 service adapter（buckyos-api RPC 桥接、`aicc.llm.chat` 等）仍待按服务接入。
 
 ## 3. AppService / HTTP Executor @ workflow
 

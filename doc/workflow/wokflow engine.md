@@ -189,7 +189,7 @@ Workflow 的执行结构是一个**有向图（Workflow Graph）**，图中有�
 |------|------|------|
 | `id` | 是 | 节点唯一标识（与 ControlNode 共享命名空间，全局唯一） |
 | `name` | 是 | 人类可读名称 |
-| `executor` | 条件 | 执行者引用。实际 executor 定义使用 `namespace::name`（如 `service::aicc.complete` / `http::file-classifier.classify`）；语义链接使用路径形式（如 `/agent/mia` / `/skill/fs-scanner` / `/tool/image-normalizer`），运行前需通过 registry 展开到实际 executor 定义。`type` 为 `human_required` 时不需要 |
+| `executor` | 条件 | 执行者引用。实际 executor 定义使用 `namespace::name`（如 `service::aicc.llm.chat` / `http::file-classifier.classify`）；语义链接使用路径形式（如 `/agent/mia` / `/skill/fs-scanner` / `/tool/image-normalizer`），运行前需通过 registry 展开到实际 executor 定义。`type` 为 `human_required` 时不需要 |
 | `type` | 是 | 执行类型（见 3.3） |
 | `input` | 否 | 输入数据，可包含 Reference（见 3.6） |
 | `input_schema` | 否 | 输入的 JSON Schema 约束。当提供时，引擎在静态分析阶段校验上游 output_schema 与本 step input_schema 的类型兼容性 |
@@ -634,7 +634,7 @@ Expr Tree 是 DSL JSON 经过静态分析后生成的内部执行表示。它是
 pub struct FunId(pub [u8; 32]);
 
 /// DSL 中的 executor 引用。
-/// Actual 指向实际 executor 定义，如 service::aicc.complete / http::x.y / func::<objid>。
+/// Actual 指向实际 executor 定义，如 service::aicc.llm.chat / http::x.y / func::<objid>。
 /// SemanticPath 是可展开的语义链接，如 /agent/mia / /skill/fs-scanner。
 pub enum ExecutorRef {
     Actual(String),
@@ -1743,7 +1743,7 @@ POST /agent/task
 | **Reference** | 节点间数据传递的只读指针（`${node_id.output.field}`） |
 | **Guard** | 附加在 Node 或 Workflow 上的约束条件 |
 | **Amendment** | Agent 在运行时提交的计划修改请求 |
-| **Executor 定义** | DSL 中 `namespace::name` 形式的实际执行定义，如 `service::aicc.complete`、`http::x.y`、`func::<objid>` |
+| **Executor 定义** | DSL 中 `namespace::name` 形式的实际执行定义，如 `service::aicc.llm.chat`、`http::x.y`、`func::<objid>` |
 | **Executor 语义链接** | DSL 中路径形式的能力引用，如 `/agent/mia`、`/skill/fs-scanner`、`/tool/image-normalizer`，运行前需通过 registry 展开为实际 executor 定义 |
 | **Executor Runtime** | 物理节点上实际执行 ThunkObject 的运行时。接收 ThunkObject，返回 result |
 | **FunId** | FunctionObject 的内容寻址标识。相同 FunctionObject 永远产生相同 FunId |

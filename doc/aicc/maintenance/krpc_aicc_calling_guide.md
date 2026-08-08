@@ -117,11 +117,25 @@ legacy all-in-one method（兼容保留，不再使用 `complete`）：
 {
   "method": "helper.llm_chat",
   "params": {
-    "model": "llm.plan",
-    "requirements": { "tool_call": true },
-    "messages": [
-      { "role": "user", "content": [{ "type": "text", "text": "请给我写一段发布说明" }] }
-    ]
+    "capability": "llm",
+    "model": { "alias": "llm.plan" },
+    "requirements": {
+      "tool_call": true,
+      "must_features": [],
+      "max_latency_ms": null,
+      "max_cost_usd": null,
+      "resp_format": "text",
+      "extra": null
+    },
+    "payload": {
+      "input_json": {
+        "messages": [
+          { "role": "user", "content": [{ "type": "text", "text": "请给我写一段发布说明" }] }
+        ]
+      },
+      "resources": [],
+      "options": {}
+    }
   },
   "sys": [1001, "<session_token>", "trace-aicc-helper"]
 }
