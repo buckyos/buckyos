@@ -454,7 +454,7 @@ workflow/run
     "run_id": "run-...",
     "node_id": "scan",
     "attempt": 2,
-    "executor": "service::aicc.complete",
+    "executor": "service::aicc.llm.chat",
     "prompt": "请检查扫描结果",
     "output_schema": {},
     "subject": {},

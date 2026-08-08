@@ -109,7 +109,7 @@ const kbImportPipeline: WorkflowDefinition = {
         executor: {
           raw: '/agent/aicc',
           resolvedNamespace: 'service',
-          resolvedTarget: 'service::aicc.complete',
+          resolvedTarget: 'service::aicc.llm.chat',
         },
         outputMode: 'single',
         idempotent: true,
@@ -347,7 +347,7 @@ const myImported: WorkflowDefinition = {
         executor: {
           raw: '/agent/normalize',
           resolvedNamespace: 'service',
-          resolvedTarget: 'service::aicc.complete',
+          resolvedTarget: 'service::aicc.llm.chat',
         },
         outputMode: 'single',
         idempotent: true,
@@ -454,7 +454,7 @@ const fileOrganizer: WorkflowDefinition = {
         executor: {
           raw: '/agent/aicc',
           resolvedNamespace: 'service',
-          resolvedTarget: 'service::aicc.complete',
+          resolvedTarget: 'service::aicc.llm.chat',
         },
         outputMode: 'single',
         idempotent: true,
@@ -682,7 +682,7 @@ const seedAmendments: AmendmentSummary[] = [
 
 const seedExecutors: ExecutorEntry[] = [
   {
-    id: 'service::aicc.complete',
+    id: 'service::aicc.llm.chat',
     namespace: 'service',
     description: 'AI completion via aicc service.',
     inputSummary: '{ prompt: string, model?: string }',

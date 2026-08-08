@@ -152,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn namespace_adapter_matches_actual_only() {
         let adapter = make_adapter();
-        assert!(adapter.supports(&ExecutorRef::parse("service::aicc.complete").unwrap()));
+        assert!(adapter.supports(&ExecutorRef::parse("service::aicc.llm.chat").unwrap()));
         assert!(!adapter.supports(&ExecutorRef::parse("http::endpoint.x").unwrap()));
         assert!(!adapter.supports(&ExecutorRef::parse("/skill/fs-scanner").unwrap()));
     }
@@ -161,13 +161,13 @@ mod tests {
     async fn registry_returns_first_match() {
         let mut registry = ExecutorRegistry::new();
         registry.register(Arc::new(make_adapter()));
-        let exec = ExecutorRef::parse("service::aicc.complete").unwrap();
+        let exec = ExecutorRef::parse("service::aicc.llm.chat").unwrap();
         let adapter = registry.find(&exec).expect("should find adapter");
         let out = adapter
             .invoke(&exec, &serde_json::json!({"q": 1}))
             .await
             .unwrap();
-        assert_eq!(out["executor"], "service::aicc.complete");
+        assert_eq!(out["executor"], "service::aicc.llm.chat");
         assert_eq!(out["input"]["q"], 1);
     }
 }

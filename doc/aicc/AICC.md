@@ -22,7 +22,7 @@
 > * AICC **不重新设计**系统已有的：RPC 框架（krpc）、任务生命周期管理（TaskMgr）、事件/日志队列（MsgQueue）。
 > * AICC 只需要：在长任务场景下**生成/关联 task_id**，并将进度与输出写入系统既有的任务事件通道（具体格式/存储/订阅语义以系统组件为准）。
 
-> **breaking change 基线（2026-05-30）**：AICC 对外接口已拆成控制面 / 数据面 / Helper 三层 —— `route.resolve`（逻辑模型名 → 确定精确模型 + provider options + trace）、typed inference（`chat.completions.create` / `images.generate`，只接受 `exact_model`、不隐式 fallback）、`helper.llm_chat` / `helper.text_to_image`（组合层）。本文中描述的 all-in-one `complete` 方法、`ModelSpec.alias` 等是 **legacy / helper 兼容层** 语义，最新协议以 `doc/aicc/aicc_api设计.md` 和 `doc/aicc/aicc_router.md` 为准。
+> **breaking change 基线（2026-05-30）**：AICC 对外接口已拆成控制面 / 数据面 / Helper 三层 —— `route.resolve`（逻辑模型名 → 确定精确模型 + provider options + trace）、typed inference（`chat.completions.create` / `images.generate`，只接受 `exact_model`、不隐式 fallback）、`helper.llm_chat` / `helper.text_to_image`（组合层）。公开 kRPC **没有 `complete` method**；源码中的 `AIComputeCenter::complete()` / `complete_with_method()` 只是内部执行函数，不可作为 RPC method 调用。最新协议以 `doc/aicc/aicc_api设计.md` 和 `doc/aicc/aicc_router.md` 为准。
 
 ---
 
@@ -172,47 +172,16 @@ pub struct ModelSpec {
 
 AICC 对外最核心的方法是控制面 `route.resolve` 与数据面 typed inference（`chat.completions.create` / `images.generate`），外加 `helper.*` 组合层；详见 `doc/aicc/aicc_api设计.md`。`cancel` 仍按下文语义工作。
 
-下面的 `complete` 请求/响应是 **legacy all-in-one** 形态（现以 `helper.llm_chat` 等 helper 方法承载），保留作为语义参考：
+公开调用必须使用以下入口之一：
 
-* `complete`：发起一次 AI 计算（短任务直接返回结果；长任务返回 task_id）
-* `cancel`：best-effort 取消指定 task（是否可取消由系统任务机制与 provider 能力决定）
+* 普通 LLM / 图片调用：`helper.llm_chat` / `helper.text_to_image`
+* 显式两阶段调用：`route.resolve` → `chat.completions.create` / `images.generate`
+* legacy all-in-one：`llm.chat` / `image.txt2img` 等具体能力 method
+* 取消任务：`cancel`
 
-### 4.1 complete 请求/响应（legacy 语义）
+### 4.1 请求/响应
 
-```rust
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CompleteRequest {
-    pub capability: Capability,
-    pub model: ModelSpec,
-    pub requirements: Requirements,
-    pub payload: AiPayload,
-
-    /// 业务侧可传；AICC 默认不做去重，仅可透传给 provider（可选）
-    pub idempotency_key: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CompleteResponse {
-    /// AICC 侧生成或关联的 compute task id
-    pub task_id: String,
-
-    /// 短任务：Succeeded + result != None
-    /// 长任务：Running + result == None
-    pub status: CompleteStatus,
-    pub result: Option<AiResponseSummary>,
-
-    /// 可选：事件通道引用（opaque string）
-    /// 由系统任务/事件组件定义其格式；AICC 仅透传/生成
-    pub event_ref: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum CompleteStatus {
-    Succeeded,
-    Running,
-    Failed, // 启动阶段失败（路由失败/参数不合法/资源不可用等）
-}
-```
+请求与响应结构以 `doc/aicc/aicc_api设计.md` 和 `doc/aicc/maintenance/krpc_aicc_calling_guide.md` 为准。不要发送 `method: "complete"`；该名称只存在于内部执行链路和历史资料中。
 
 **要点**：
 
@@ -262,18 +231,21 @@ pub struct ProviderInstance {
 ```rust
 pub enum ProviderStartResult {
     /// 短任务：直接完成
-    Immediate(AiResponseSummary),
+    Immediate(AiResponse),
 
     /// 长任务：已开始/已提交（后续通过系统任务事件通道输出）
     Started,
+
+    /// 请求已进入内部队列
+    Queued { position: usize },
 }
 
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    fn instance(&self) -> &ProviderInstance;
+    fn inventory(&self) -> ProviderInventory;
 
     /// 估算成本（供 Router 打分 / 预算/限额策略）
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate;
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput;
 
     /// 核心：启动执行，由 provider 自行判定长/短任务并返回 Started/Immediate
     async fn start(
@@ -387,53 +359,9 @@ pub struct RouteDecision {
 
 ---
 
-## 7. 核心执行流程（AICC 视角伪代码）
+## 7. 核心执行流程（AICC 视角）
 
-下面伪代码刻意避免展开 TaskMgr/MsgQueue 的内部语义，只保留 AICC 的决策与调用边界：
-
-```rust
-pub async fn complete(ctx: InvokeCtx, req: CompleteRequest, state: AppState) -> CompleteResponse {
-    // 1) 轻校验（字段存在性、base64 限制、url 语法等）
-    validate_req(&req)?;
-
-    // 2) 生成/关联 task_id（长短任务都可统一生成，便于观测与追踪）
-    let task_id = gen_task_id();
-
-    // 3) 路由：快照 + 过滤 + 打分 + 得到 decision
-    let snap = state.registry.snapshot(req.capability.clone());
-    let decision = state.router.route(&ctx.tenant_id, &req, &snap, &state.route_cfg, &state.model_catalog)?;
-
-    // 4) 解析资源引用（不在此定义 cyfs 权限细节）
-    let resolved = state.resource_resolver.resolve(&ctx, &req).await?;
-
-    // 5) 构造任务事件 sink（对接系统既有任务事件通道；不在 AICC 定义其细节）
-    let sink = state.task_event_sink_factory.build(&ctx, &task_id);
-
-    // 6) 启动 provider（启动失败才尝试 fallback）
-    let result = start_with_fallback(&ctx, &req, &resolved, &decision, &sink, &state).await;
-
-    match result {
-        Ok(ProviderStartResult::Immediate(r)) => CompleteResponse {
-            task_id,
-            status: CompleteStatus::Succeeded,
-            result: Some(r),
-            event_ref: sink.event_ref(), // 可选
-        },
-        Ok(ProviderStartResult::Started) => CompleteResponse {
-            task_id,
-            status: CompleteStatus::Running,
-            result: None,
-            event_ref: sink.event_ref(), // 可选
-        },
-        Err(_) => CompleteResponse {
-            task_id,
-            status: CompleteStatus::Failed,
-            result: None,
-            event_ref: sink.event_ref(), // 可选
-        }
-    }
-}
-```
+公开 kRPC method 由 `AiccServerHandler::handle_rpc_call` 分发；能力请求进入 `AIComputeCenter::complete_with_method()` 内部执行链路。内部函数名不是公开 method 名，调用方不得据此构造 RPC 请求。
 
 ---
 

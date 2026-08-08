@@ -90,7 +90,7 @@ Workflow WebUI 是 BuckyOS 中面向高级用户的 Workflow Definition 管理�
 | TaskNode（Step） | Workflow Graph 中的执行节点，对应一个 Step。具有 executor、input、output、type（`autonomous` / `human_confirm` / `human_required`）、`output_mode`、`idempotent`、`skippable`、`guards` 等字段。 | DSL §3.2，Expr Tree `Apply` / `Await` |
 | ControlNode | Workflow Graph 中的流转控制节点：`branch`（穷举枚举分支）、`parallel`（并行 + join 策略）、`for_each`（受 `output_mode` 约束的有界迭代）。 | DSL §3.4，Expr Tree `Match` / `Par` / `Map` |
 | Edge | Workflow Graph 中的有向连接。`branch.paths` / `parallel.branches` 是隐式边，不重复声明。 | DSL §3.5 |
-| Executor Reference | 节点的 executor 字段。实际定义形如 `service::aicc.complete` / `http::x.y` / `appservice::z` / `operator::json.pick` / `func::<objid>`；语义链接形如 `/agent/mia` / `/skill/fs-scanner` / `/tool/...`，运行前由 registry 展开。 | DSL §3.2，Service §6.1 |
+| Executor Reference | 节点的 executor 字段。实际定义形如 `service::aicc.llm.chat` / `http::x.y` / `appservice::z` / `operator::json.pick` / `func::<objid>`；语义链接形如 `/agent/mia` / `/skill/fs-scanner` / `/tool/...`，运行前由 registry 展开。 | DSL §3.2，Service §6.1 |
 | Output Mode | `single` / `finite_seekable` / `finite_sequential`，决定下游 for_each 是否可并行/重试粒度。 | DSL §3.2.1 |
 | Guards | 节点或 Workflow 级约束：`budget`（max_tokens / max_cost_usdb / max_duration）、`permissions`、`retry`（max_attempts / backoff / fallback）。 | DSL §3.7 |
 | Human Action | 用户对 Step / Run task 写入的 TaskData，含 `human_action.kind`：`approve` / `modify` / `reject` / `retry` / `skip` / `abort` / `rollback`。**入口在 TaskMgr UI，不在 Workflow WebUI。** | Service §3.3 |

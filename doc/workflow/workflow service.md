@@ -437,7 +437,7 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 |----|---------|
 | Definition CRUD + 静态分析 | 全量交付 |
 | Run 生命周期 + Step 级 human action | 全量交付 |
-| Executor Registry 接入 `service::` adapter | 全量交付（首批包括 `aicc.complete`、`msg_center.notify_user`、`system_config.*`、`task_manager.create_task`、`kb.*`） |
+| Executor Registry 接入 `service::` adapter | 全量交付（首批包括 `aicc.llm.chat`、`msg_center.notify_user`、`system_config.*`、`task_manager.create_task`、`kb.*`） |
 | `http::` / `appservice::` adapter | 框架就位 + 至少一个示例 endpoint 接入 |
 | `/agent/` / `/skill/` / `/tool/` | 通过 executor registry 展开到 P0 实际 executor，不要求展开到 FunctionObject |
 | `human_confirm` / `human_required` | 全量交付：写到 Step task 的 TaskData，由 TaskMgr UI 渲染交互、Msg Center 经 task_manager 推 URL；workflow 仅负责解释 TaskData 中的 `human_action` |
