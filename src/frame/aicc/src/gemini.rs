@@ -1131,13 +1131,13 @@ impl GoogleGeminiProvider {
             );
         }
         declaration.insert(
-            "parameters".to_string(),
+            "parametersJsonSchema".to_string(),
             Value::Object(spec.args_schema.clone().into_iter().collect()),
         );
         if !spec.output_schema.is_null()
             && !spec.output_schema.as_object().is_some_and(Map::is_empty)
         {
-            declaration.insert("response".to_string(), spec.output_schema.clone());
+            declaration.insert("responseJsonSchema".to_string(), spec.output_schema.clone());
         }
         Value::Object(declaration)
     }
@@ -3521,14 +3521,62 @@ mod tests {
             Some(&json!("get_weather"))
         );
         assert_eq!(
-            request_value
-                .pointer("/tools/0/functionDeclarations/0/parameters/properties/city/type"),
+            request_value.pointer(
+                "/tools/0/functionDeclarations/0/parametersJsonSchema/properties/city/type"
+            ),
             Some(&json!("string"))
+        );
+        assert_eq!(
+            request_value.pointer("/tools/0/functionDeclarations/0/responseJsonSchema/type"),
+            Some(&json!("object"))
         );
         assert_eq!(
             request_value.pointer("/tools/1/googleSearch"),
             Some(&json!({}))
         );
+    }
+
+    #[test]
+    fn gemini_tool_schema_is_passed_through_as_json_schema() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "definitions": {
+                "RecallMode": {
+                    "type": "string",
+                    "enum": ["auto", "mechanical", "llm"]
+                },
+                "TagInput": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    },
+                    "required": ["name"]
+                }
+            },
+            "properties": {
+                "mode": {
+                    "anyOf": [
+                        { "$ref": "#/definitions/RecallMode" },
+                        { "type": "null" }
+                    ]
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/TagInput" }
+                }
+            }
+        });
+
+        let declaration = GoogleGeminiProvider::function_declaration(&AiToolSpec {
+            name: "recall".to_string(),
+            description: String::new(),
+            args_schema: value_to_object_map(schema.clone()),
+            output_schema: Value::Null,
+        });
+
+        assert_eq!(declaration.get("parametersJsonSchema"), Some(&schema));
+        assert!(declaration.get("parameters").is_none());
     }
 
     #[test]
