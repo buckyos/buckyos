@@ -323,23 +323,31 @@ impl GoogleGeminiProvider {
                     .with_latency(Some(120_000)),
             );
         }
-        let mut inventory = resolve_driver_inventory(
+        resolve_driver_inventory(
             provider_instance_name,
             provider_type,
             provider_driver,
             requests.as_slice(),
             inventory_revision,
-        );
-        for model in inventory.models.iter_mut().filter(|model| {
-            model
-                .api_types
-                .iter()
-                .any(|api_type| matches!(api_type, ApiType::Llm))
-        }) {
-            model.capabilities.web_search_with_tool_call =
-                Some(gemini_supports_combined_tools(&model.provider_model_id));
-        }
-        inventory
+        )
+    }
+
+    fn model_supports_feature_combination(
+        &self,
+        provider_model: &str,
+        combination: &[&str],
+    ) -> bool {
+        self.inventory
+            .read()
+            .ok()
+            .and_then(|inventory| {
+                inventory
+                    .models
+                    .iter()
+                    .find(|model| model.provider_model_id == provider_model)
+                    .map(|model| model.capabilities.supports_feature_combination(combination))
+            })
+            .unwrap_or(false)
     }
 
     pub fn start_inventory_refresh(self: Arc<Self>) {
@@ -1146,12 +1154,10 @@ impl GoogleGeminiProvider {
         target: &mut Map<String, Value>,
         provider_model: &str,
         req: &AiMethodRequest,
+        combined_tools_supported: bool,
     ) -> Result<(), ProviderError> {
         let web_search_required = req.requirements.requires_feature(features::WEB_SEARCH);
-        if web_search_required
-            && !req.payload.tool_specs.is_empty()
-            && !gemini_supports_combined_tools(provider_model)
-        {
+        if web_search_required && !req.payload.tool_specs.is_empty() && !combined_tools_supported {
             return Err(ProviderError::fatal(format!(
                 "google gemini model {} does not support combining Google Search with function calling",
                 provider_model
@@ -1173,6 +1179,17 @@ impl GoogleGeminiProvider {
         }
         if !tools.is_empty() {
             target.insert("tools".to_string(), Value::Array(tools));
+        }
+        if web_search_required && !req.payload.tool_specs.is_empty() {
+            target.insert(
+                "toolConfig".to_string(),
+                json!({
+                    "functionCallingConfig": {
+                        "mode": "VALIDATED"
+                    },
+                    "includeServerSideToolInvocations": true
+                }),
+            );
         }
         Ok(())
     }
@@ -2031,7 +2048,16 @@ impl GoogleGeminiProvider {
                 Value::String("application/json".to_string()),
             );
         }
-        Self::merge_llm_tools(&mut request_obj, provider_model, req)?;
+        let combined_tools_supported = self.model_supports_feature_combination(
+            provider_model,
+            &[features::WEB_SEARCH, features::TOOL_CALLING],
+        );
+        Self::merge_llm_tools(
+            &mut request_obj,
+            provider_model,
+            req,
+            combined_tools_supported,
+        )?;
 
         if !ignored_options.is_empty() {
             warn!(
@@ -3088,12 +3114,6 @@ fn parse_gemini_major_minor(name: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
-fn gemini_supports_combined_tools(name: &str) -> bool {
-    parse_gemini_major_minor(name)
-        .map(|(major, _)| major >= 3)
-        .unwrap_or(false)
-}
-
 /// 若同一 bucket 里既有 alias `X` 又有它的数字后缀版本 `X-NNN`（NNN 是 2~4 位
 /// 数字），就只保留 alias、把版本快照剔除。Google `/v1beta/models` 同时返回这两
 /// 种命名，alias 通常生命周期更长，先停的是版本快照（`gemini-2.0-flash-001` /
@@ -3512,8 +3532,13 @@ mod tests {
         );
         let mut request_obj = Map::new();
 
-        GoogleGeminiProvider::merge_llm_tools(&mut request_obj, "gemini-3.1-pro-preview", &request)
-            .expect("Gemini 3 should support combined tools");
+        GoogleGeminiProvider::merge_llm_tools(
+            &mut request_obj,
+            "gemini-3.1-pro-preview",
+            &request,
+            true,
+        )
+        .expect("Gemini 3 should support combined tools");
         let request_value = Value::Object(request_obj);
 
         assert_eq!(
@@ -3532,6 +3557,34 @@ mod tests {
         );
         assert_eq!(
             request_value.pointer("/tools/1/googleSearch"),
+            Some(&json!({}))
+        );
+        assert_eq!(
+            request_value.pointer("/toolConfig/includeServerSideToolInvocations"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            request_value.pointer("/toolConfig/functionCallingConfig/mode"),
+            Some(&json!("VALIDATED"))
+        );
+    }
+
+    #[test]
+    fn gemini_builtin_tool_alone_does_not_enable_combination_config() {
+        let request = build_llm_request(vec![features::WEB_SEARCH.to_string()], vec![]);
+        let mut request_obj = Map::new();
+
+        GoogleGeminiProvider::merge_llm_tools(
+            &mut request_obj,
+            "gemini-3-flash-preview",
+            &request,
+            true,
+        )
+        .expect("Google Search should be enabled");
+
+        assert!(request_obj.get("toolConfig").is_none());
+        assert_eq!(
+            Value::Object(request_obj).pointer("/tools/0/googleSearch"),
             Some(&json!({}))
         );
     }
@@ -3594,9 +3647,13 @@ mod tests {
             }],
         );
 
-        let error =
-            GoogleGeminiProvider::merge_llm_tools(&mut Map::new(), "gemini-2.5-flash", &request)
-                .expect_err("Gemini 2.5 must reject combined tools");
+        let error = GoogleGeminiProvider::merge_llm_tools(
+            &mut Map::new(),
+            "gemini-2.5-flash",
+            &request,
+            false,
+        )
+        .expect_err("Gemini 2.5 must reject combined tools");
 
         assert!(error.to_string().contains("does not support combining"));
     }
@@ -3608,6 +3665,20 @@ mod tests {
                 "content": {
                     "parts": [
                         { "text": "checking" },
+                        {
+                            "toolCall": {
+                                "id": "server-call-1",
+                                "name": "google_search",
+                                "args": { "query": "Shanghai weather" }
+                            }
+                        },
+                        {
+                            "toolResponse": {
+                                "id": "server-call-1",
+                                "name": "google_search",
+                                "response": { "result": "search result" }
+                            }
+                        },
                         {
                             "functionCall": {
                                 "id": "call-1",
@@ -3635,10 +3706,18 @@ mod tests {
         let mut contents = Vec::new();
         GoogleGeminiProvider::lower_message_to_gemini(&message, &mut contents, &mut HashMap::new())
             .expect("Gemini provider state should lower");
-        assert_eq!(contents[0]["parts"].as_array().map(Vec::len), Some(1));
+        assert_eq!(contents[0]["parts"].as_array().map(Vec::len), Some(3));
         assert_eq!(
             contents[0].pointer("/parts/0/thoughtSignature"),
             Some(&json!("signed-state"))
+        );
+        assert_eq!(
+            contents[0].pointer("/parts/1/toolCall/id"),
+            Some(&json!("server-call-1"))
+        );
+        assert_eq!(
+            contents[0].pointer("/parts/2/toolResponse/id"),
+            Some(&json!("server-call-1"))
         );
     }
 
@@ -4158,14 +4237,23 @@ mod tests {
             .find(|model| model.provider_model_id == "gemini-2.5-flash")
             .expect("Gemini 2.5 Flash metadata");
         assert!(flash.capabilities.web_search);
-        assert_eq!(flash.capabilities.web_search_with_tool_call, Some(false));
+        assert_eq!(
+            flash.capabilities.unsupported_feature_combinations,
+            vec![vec![
+                features::TOOL_CALLING.to_string(),
+                features::WEB_SEARCH.to_string()
+            ]]
+        );
         let gemini_3 = inventory
             .models
             .iter()
             .find(|model| model.provider_model_id == "gemini-3.1-pro-preview")
             .expect("Gemini 3 metadata");
         assert!(gemini_3.capabilities.web_search);
-        assert_eq!(gemini_3.capabilities.web_search_with_tool_call, Some(true));
+        assert!(gemini_3
+            .capabilities
+            .unsupported_feature_combinations
+            .is_empty());
         let image_items = registry.default_items_for_path("image.txt2img.gemini");
         assert!(image_items
             .values()

@@ -641,7 +641,7 @@ mod tests {
                 tool_call: true,
                 json_schema: true,
                 web_search: true,
-                web_search_with_tool_call: None,
+                unsupported_feature_combinations: vec![],
                 vision: false,
                 max_context_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),

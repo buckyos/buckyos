@@ -43,6 +43,7 @@ provider's complete mapping list.
   "origin_mappings": [],
   "models": [],
   "patterns": [],
+  "capability_overrides": [],
   "defaults": {},
   "variants": [],
   "signature": null
@@ -64,6 +65,11 @@ Fields:
   `driver` and `model` from the provider-native model id.
 - `models`: exact rules keyed by `id`.
 - `patterns`: wildcard rules keyed by `pattern`; `*` is the only wildcard.
+- `capability_overrides`: ordered capability-only patches selected by model
+  `pattern` and, optionally, `api_types`. All matching rules are applied after
+  the model's exact/pattern/default rule. Documents are applied from lower to
+  higher source priority, and rules within a document are applied in array
+  order, so later patches take precedence.
 - `defaults`: default rule when no exact or pattern rule matches.
 - `variants`: optional provider option variants. The resolver expands each
   matching base model into additional AICC exact models whose provider model id
@@ -95,7 +101,7 @@ Rules support these fields:
   `{provider_driver}`, and `{provider_model_id}` are expanded by the resolver.
   The first pair identifies the physical origin; the second pair identifies the
   current delivery channel.
-- `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `web_search_with_tool_call`, `vision`, `max_context_tokens`, `max_output_tokens`. `web_search_with_tool_call` is only needed when a model's support for combining provider-hosted search with custom function calling differs from its individual `web_search` and `tool_call` capabilities; when omitted it defaults to the conjunction of those individual capabilities.
+- `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `max_context_tokens`, `max_output_tokens`, `unsupported_feature_combinations`. Each entry in `unsupported_feature_combinations` is a set of two or more otherwise-supported features that cannot be used in the same request, for example `[["tool_calling", "web_search"]]`. Supported feature names are `streaming`, `tool_calling`, `json_output`, `web_search`, and `vision`.
 - `pricing`: optional monetary data object. `currency` identifies the ISO 4217
   currency; `input_token`, `output_token`, and `cache_input_token` are optional
   per-token prices; `estimated_cost` is the default scheduler cost estimate.
