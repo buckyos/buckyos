@@ -96,8 +96,8 @@ pub struct TaskNote {
 | 字段 | 语义 |
 | --- | --- |
 | `id` | 自增任务 ID，是单个 Task 的主键 |
-| `user_id` | 任务所属用户。服务端从验签后的 session token 得到调用者身份；zone 可信调用者（owner/device key 签名的 token，即 kernel/frame service）可以代已鉴权的业务用户填写，其它调用者必须与 token 身份一致，否则拒绝 |
-| `app_id` | 任务所属应用，规则同 `user_id` |
+| `user_id` | 任务所属用户。服务端只从通过标准校验的 session token 的 `sub` 得到调用者身份；请求显式填写时必须与 token 一致 |
+| `app_id` | 任务所属应用。服务端从通过标准校验的 session token 的 `appid` 得到；请求显式填写时必须与 token 一致 |
 | `session_id` | 会话 ID，用于跨 app 聚合同一 session 的任务 |
 | `parent_id` | 父任务 ID，空表示根任务 |
 | `root_id` | 任务树根 ID；根任务默认等于自身 `id` 的字符串形式 |
@@ -157,14 +157,14 @@ write = TaskScope::Private
 | --- | --- |
 | `Private` | `task.user_id == ctx.user_id && task.app_id == ctx.app_id` |
 | `User` | `task.user_id == ctx.user_id` |
-| `System` | 请求方 `app_id` 必须是 `kernel` 或 `system` |
+| `System` | 当前阶段不允许；如何映射到系统 RBAC 是后续独立问题 |
 
-兼容规则：
+认证与身份提取规则：
 
-- 如果请求上下文的 `user_id` 和 `app_id` 都为空，当前实现视为允许访问，主要用于本地/in-process 或旧调用路径。
-- 如果任务自身 `user_id` 为空，则只按 `app_id` 做弱隔离：任务 `app_id` 为空或等于请求方 `app_id` 时允许访问。
-
-注意：当前 `create_task` / `create_download_task` 会从显式参数或 RPC session token 解析请求上下文；部分读写 handler 当前仍使用空 source context，因此真实权限收敛能力依赖调用方是否传入 `source_user_id` / `source_app_id` 或后续完善 RPC context 接入。
+- 所有 handler 都要求 session token，并通过 buckyos-api runtime 的标准 `verify_trusted_session_token` 流程校验签名、有效期和信任密钥；校验失败时 fail closed。
+- `iss` 只参与标准校验流程中的信任密钥选择，不是 TaskMgr 的授权属性；TaskMgr 不要求 `sub == iss`，也不会因为某种 `iss` 获得 owner 或 TaskScope 绕过权限。
+- 校验成功后，TaskMgr 只使用 token 中的 `sub`（用户 ID）和 `appid`（应用 ID）执行现有 owner、父任务和 `TaskScope` 判断，且两者都不能为空。
+- 跨 owner 创建任务、服务代表业务用户调用，以及 Task 资源路径如何映射到完整 RBAC，暂不在本阶段解决。
 
 ### 3.3 父子任务与 root_id
 
@@ -987,7 +987,7 @@ TaskMgr 不理解每种业务任务的完整 schema。业务模块应把结构�
 
 1. `priority` 已在创建参数中保留，但当前服务端没有调度语义。
 2. `total_items`、`completed_items`、`error_message` 是数据库列，公开 `Task` 模型只暴露 `message`、`progress` 和 `data`；`update_task_progress` 会把 completed/total 同步写入 `data`。
-3. 全部 handler 已强制验签 session token（fail closed）：身份只来自 token；`source_user_id` / `source_app_id` 等 payload 身份声明字段已删除。zone 可信判定依据签名者（owner/device key 自签 vs verify-hub 签发）。跨机 device 自签 token 依赖 runtime trust key 集合，目前只包含本机 device key，多节点场景待 runtime 层支持动态加载对端 device doc。
+3. 全部 handler 已强制通过 buckyos-api runtime 的标准流程校验 session token（fail closed），身份只来自验签后 token 的 `sub` / `appid`；`iss` 只和 token 的可信校验有关，不参与 TaskMgr 授权，也不要求 `sub == iss`。跨 owner/service-on-behalf-of-user 与完整 RBAC 映射仍待后续设计。
 4. `list_tasks_by_time_range` 当前先按 app/type 查库，再在内存中过滤时间范围；数据量变大后应下推到 SQL。
 5. `delete_task` 依赖数据库外键级联删除子任务；当前不会发布删除事件。
 6. `update_task_data` 是整体替换，和 `update_task` 的 merge patch 语义不同，新代码需要明确选择。

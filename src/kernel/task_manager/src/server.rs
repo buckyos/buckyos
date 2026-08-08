@@ -54,14 +54,13 @@ impl TaskChangeKind {
     }
 }
 
-/// The caller identity resolved from the *verified* session token.
+/// The dispatcher caller identity resolved from the *verified* session token.
 ///
-/// `zone_trusted` marks callers whose token was signed by the zone owner key
-/// or a device key (kernel/frame services and the owner themselves). Those
-/// callers form the zone's trusted computing base: they may create tasks on
-/// behalf of an already-authenticated business user and may read/write any
-/// task. Tokens issued by verify-hub (interactive user/app sessions) are
-/// never zone-trusted and are restricted to their own tasks via TaskScope.
+/// `zone_trusted` marks dispatcher callers whose token was signed by the zone
+/// owner key or a device key (kernel/frame services and the owner themselves).
+/// Those callers form the zone's trusted computing base for dispatcher
+/// administrative and target-side operations. Tokens issued by verify-hub
+/// (interactive user/app sessions) are never zone-trusted.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub user_id: String,
@@ -74,9 +73,19 @@ pub struct RequestContext {
     pub sudo: bool,
 }
 
-/// Verifies the raw session token of a request. Production uses the runtime's
-/// trust-key set; tests inject a verifier with a fixed key so the full
-/// signature path is still exercised without a global runtime.
+/// The Task Manager authorization identity extracted from a trusted session
+/// token. Token issuer is deliberately not part of this context: `iss` is used
+/// by buckyos-api to select a trust key, not as an authorization attribute.
+#[derive(Debug, Clone)]
+struct TaskManagerRequestContext {
+    user_id: String,
+    app_id: String,
+}
+
+/// Verifies the raw session token of a request. Production delegates to
+/// buckyos-api's standard trusted-session-token verifier; tests inject a
+/// verifier with a fixed key so the signature path is still exercised without
+/// a global runtime.
 #[async_trait]
 pub trait SessionTokenVerifier: Send + Sync {
     async fn verify(&self, token: &str) -> Result<RPCSessionToken>;
@@ -121,7 +130,7 @@ impl TaskManagerService {
     /// Resolve the caller identity from the request's session token.
     /// Fail closed: no token / bad signature => NoPermission. Identity is
     /// never taken from the request payload.
-    async fn authenticate(&self, ctx: &RPCContext) -> Result<RequestContext> {
+    async fn authenticate(&self, ctx: &RPCContext) -> Result<TaskManagerRequestContext> {
         let token = ctx
             .token
             .as_deref()
@@ -136,41 +145,23 @@ impl TaskManagerService {
                 "session token has an empty subject".to_string(),
             ));
         }
-        // verify-hub issued tokens are interactive user/app sessions; every
-        // other verifiable signer (owner key, device key) is zone-trusted.
-        let zone_trusted = verified.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID);
-        Ok(RequestContext {
-            user_id,
-            app_id,
-            zone_trusted,
-            sudo: verified.sudo,
-        })
+        if app_id.trim().is_empty() {
+            return Err(RPCErrors::InvalidToken(
+                "session token has an empty app id".to_string(),
+            ));
+        }
+        Ok(TaskManagerRequestContext { user_id, app_id })
     }
 
-    /// Resolve the owner identity recorded on a new task. Zone-trusted
-    /// callers may put an already-authenticated business identity into the
-    /// request; everyone else must match their own token identity exactly.
+    /// Resolve the owner identity recorded on a new task. Explicit owner
+    /// fields must match the identity in the verified session token.
     fn resolve_task_owner(
-        request_ctx: &RequestContext,
+        request_ctx: &TaskManagerRequestContext,
         requested_user_id: &str,
         requested_app_id: &str,
     ) -> Result<(String, String)> {
         let requested_user_id = requested_user_id.trim();
         let requested_app_id = requested_app_id.trim();
-
-        if request_ctx.zone_trusted {
-            let user_id = if requested_user_id.is_empty() {
-                request_ctx.user_id.clone()
-            } else {
-                requested_user_id.to_string()
-            };
-            let app_id = if requested_app_id.is_empty() {
-                request_ctx.app_id.clone()
-            } else {
-                requested_app_id.to_string()
-            };
-            return Ok((user_id, app_id));
-        }
 
         if !requested_user_id.is_empty() && requested_user_id != request_ctx.user_id {
             return Err(RPCErrors::NoPermission(format!(
@@ -328,13 +319,7 @@ impl TaskManagerService {
         None
     }
 
-    fn scope_allows(ctx: &RequestContext, task: &Task, scope: TaskScope) -> bool {
-        // Zone-trusted callers (owner/device signed tokens) are the trusted
-        // computing base and bypass scope checks; everyone else is bound to
-        // the task owner identity recorded at create time.
-        if ctx.zone_trusted {
-            return true;
-        }
+    fn scope_allows(ctx: &TaskManagerRequestContext, task: &Task, scope: TaskScope) -> bool {
         match scope {
             TaskScope::Private => task.user_id == ctx.user_id && task.app_id == ctx.app_id,
             TaskScope::User => task.user_id == ctx.user_id,
@@ -342,11 +327,11 @@ impl TaskManagerService {
         }
     }
 
-    fn can_read_task(&self, ctx: &RequestContext, task: &Task) -> bool {
+    fn can_read_task(&self, ctx: &TaskManagerRequestContext, task: &Task) -> bool {
         Self::scope_allows(ctx, task, task.permissions.read)
     }
 
-    fn can_write_task(&self, ctx: &RequestContext, task: &Task) -> bool {
+    fn can_write_task(&self, ctx: &TaskManagerRequestContext, task: &Task) -> bool {
         Self::scope_allows(ctx, task, task.permissions.write)
     }
 
@@ -1229,7 +1214,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     const TEST_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
 
     const ZONE_USER: &str = "ood1";
-    const ZONE_APP: &str = "task-manager-test";
+    const ZONE_APP: &str = "test_app";
 
     /// Verifies against the fixed test key: the real signature/exp path runs,
     /// only the trust-key lookup is replaced.
@@ -1250,32 +1235,37 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         EncodingKey::from_ed_pem(TEST_PRIVATE_KEY.as_bytes()).unwrap()
     }
 
-    /// Self-signed token (iss == sub): what kernel/frame services present.
-    /// Treated as zone-trusted by the server.
-    fn zone_token(user_id: &str, app_id: &str) -> String {
-        let (jwt, _) =
-            RPCSessionToken::generate_jwt_token(user_id, app_id, None, &test_encoding_key())
-                .unwrap();
-        jwt
-    }
-
-    /// verify-hub style token (iss == "verify-hub"): an interactive user/app
-    /// session. Never zone-trusted.
-    fn user_token(user_id: &str, app_id: &str) -> String {
+    fn signed_token(issuer: &str, user_id: &str, app_id: &str) -> String {
         let now = buckyos_kit::buckyos_get_unix_timestamp();
         let session_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
             token: None,
             aud: None,
             exp: Some(now + 3600),
-            iss: Some(VERIFY_HUB_UNIQUE_ID.to_string()),
+            iss: Some(issuer.to_string()),
             jti: None,
             sub: Some(user_id.to_string()),
             appid: Some(app_id.to_string()),
             sudo: false,
             extra: HashMap::new(),
         };
-        session_token.generate_jwt(None, &test_encoding_key()).unwrap()
+        session_token
+            .generate_jwt(None, &test_encoding_key())
+            .unwrap()
+    }
+
+    fn service_token(user_id: &str, app_id: &str) -> String {
+        signed_token(user_id, user_id, app_id)
+    }
+
+    fn user_token(user_id: &str, app_id: &str) -> String {
+        signed_token(VERIFY_HUB_UNIQUE_ID, user_id, app_id)
+    }
+
+    fn tamper_signature(token: &str) -> String {
+        let (header_and_payload, signature) = token.rsplit_once('.').unwrap();
+        let replacement = if signature.starts_with('A') { 'B' } else { 'A' };
+        format!("{}.{}{}", header_and_payload, replacement, &signature[1..])
     }
 
     fn rpc_request_with_token(method: &str, params: Value, token: Option<String>) -> RPCRequest {
@@ -1288,9 +1278,9 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         }
     }
 
-    /// Default request: a zone-trusted service caller.
+    /// Default request: a service token whose identity owns the test task.
     fn create_rpc_request(method: &str, params: Value) -> RPCRequest {
-        rpc_request_with_token(method, params, Some(zone_token(ZONE_USER, ZONE_APP)))
+        rpc_request_with_token(method, params, Some(service_token(ZONE_USER, ZONE_APP)))
     }
 
     async fn setup_test_environment() -> (
@@ -1352,8 +1342,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let result = expect_success(create_resp, "create_task");
         let task_id = result["task_id"].as_i64().unwrap();
         assert!(task_id > 0);
-        // Owner user comes from the (zone-trusted) token subject; app_id was
-        // delegated in the payload.
+        // Owner identity comes from the verified token; matching payload
+        // fields are accepted but do not override it.
         assert_eq!(result["task"]["user_id"], ZONE_USER);
         assert_eq!(result["task"]["app_id"], "test_app");
         // runner is gone from the task wire format.
@@ -1378,8 +1368,6 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             json!({
                 "name": "note_task",
                 "task_type": "test_type",
-                "app_id": "task-center",
-                "user_id": "user1",
                 "data": {"request": {"payload": "original"}}
             }),
         );
@@ -1452,23 +1440,41 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_user_token_cannot_forge_task_owner() {
+    async fn test_untrusted_or_incomplete_session_token_is_rejected() {
         let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
-        // A normal (verify-hub issued) app session tries to create a task
-        // owned by another user / app: rejected.
-        for params in [
-            json!({"name": "t", "task_type": "app.install", "user_id": "root"}),
-            json!({"name": "t", "task_type": "app.install", "app_id": "control-panel"}),
+        for token in [
+            tamper_signature(&service_token("alice", "some-app")),
+            signed_token(VERIFY_HUB_UNIQUE_ID, "", "some-app"),
+            signed_token(VERIFY_HUB_UNIQUE_ID, "alice", ""),
         ] {
             let req = rpc_request_with_token(
                 "create_task",
-                params,
-                Some(user_token("alice", "some-app")),
+                json!({"name": "t", "task_type": "test_type"}),
+                Some(token),
             );
-            let result = server.handle_rpc_call(req, ip).await;
-            assert!(result.is_err(), "forged owner should be rejected");
+            assert!(server.handle_rpc_call(req, ip).await.is_err());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_verified_token_cannot_forge_task_owner_regardless_of_issuer() {
+        let (server, _temp_dir) = setup_test_environment().await;
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+
+        for token in [
+            user_token("alice", "some-app"),
+            service_token("alice", "some-app"),
+        ] {
+            for params in [
+                json!({"name": "t", "task_type": "app.install", "user_id": "root"}),
+                json!({"name": "t", "task_type": "app.install", "app_id": "control-panel"}),
+            ] {
+                let req = rpc_request_with_token("create_task", params, Some(token.clone()));
+                let result = server.handle_rpc_call(req, ip).await;
+                assert!(result.is_err(), "forged owner should be rejected");
+            }
         }
 
         // Without forged fields the task is recorded under the token identity.
@@ -1484,23 +1490,19 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_zone_trusted_caller_can_create_on_behalf_of_user() {
+    async fn test_token_subject_does_not_need_to_match_issuer() {
         let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
-        // control-panel style flow: service token, business user in payload.
+        // The signature is already trusted by the verifier. Task Manager uses
+        // sub/appid as the caller identity and does not require sub == iss.
         let req = rpc_request_with_token(
             "create_task",
-            json!({
-                "name": "install foo",
-                "task_type": "app.install",
-                "user_id": "alice",
-                "app_id": "control-panel"
-            }),
-            Some(zone_token("ood1", "control-panel")),
+            json!({"name": "install foo", "task_type": "app.install"}),
+            Some(signed_token("ood1", "alice", "control-panel")),
         );
         let resp = server.handle_rpc_call(req, ip).await.unwrap();
-        let result = expect_success(resp, "create_task on behalf of user");
+        let result = expect_success(resp, "create_task with distinct issuer and subject");
         assert_eq!(result["task"]["user_id"], "alice");
         assert_eq!(result["task"]["app_id"], "control-panel");
     }
@@ -1537,11 +1539,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert!(server.handle_rpc_call(cancel_req, ip).await.is_err());
 
         // bob does not see it in list_tasks either.
-        let list_req = rpc_request_with_token(
-            "list_tasks",
-            json!({}),
-            Some(user_token("bob", "some-app")),
-        );
+        let list_req =
+            rpc_request_with_token("list_tasks", json!({}), Some(user_token("bob", "some-app")));
         let resp = server.handle_rpc_call(list_req, ip).await.unwrap();
         let result = expect_success(resp, "bob list_tasks");
         assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
@@ -1557,10 +1556,18 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let result = expect_success(resp, "alice get_task");
         assert_eq!(result["task"]["name"], "alice_task");
 
-        // Zone-trusted service can read it too.
+        // A self-signed token receives no issuer-based scope bypass.
         let get_req = create_rpc_request("get_task", json!({"id": task_id}));
+        assert!(server.handle_rpc_call(get_req, ip).await.is_err());
+
+        // User scope still permits the same subject from another app.
+        let get_req = rpc_request_with_token(
+            "get_task",
+            json!({"id": task_id}),
+            Some(signed_token("ood1", "alice", "other-app")),
+        );
         let resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-        expect_success(resp, "zone get_task");
+        expect_success(resp, "same user get_task");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1727,8 +1734,16 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             "app_id": "app2"
         });
 
-        let create_req1 = create_rpc_request("create_task", create_params1);
-        let create_req2 = create_rpc_request("create_task", create_params2);
+        let create_req1 = rpc_request_with_token(
+            "create_task",
+            create_params1,
+            Some(service_token(ZONE_USER, "app1")),
+        );
+        let create_req2 = rpc_request_with_token(
+            "create_task",
+            create_params2,
+            Some(service_token(ZONE_USER, "app2")),
+        );
         let _ = server.handle_rpc_call(create_req1, ip).await.unwrap();
         let _ = server.handle_rpc_call(create_req2, ip).await.unwrap();
 
@@ -1753,22 +1768,21 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let (server, _temp_dir) = setup_test_environment().await;
         let ip = IpAddr::from_str("127.0.0.1").unwrap();
 
-        for (name, app_id, session_id) in [
-            ("session_task_1", "app1", "session-alpha"),
-            ("session_task_2", "app2", "session-alpha"),
-            ("session_task_3", "app1", "session-beta"),
+        for (name, session_id) in [
+            ("session_task_1", "session-alpha"),
+            ("session_task_2", "session-alpha"),
+            ("session_task_3", "session-beta"),
         ] {
             let create_params = json!({
                 "name": name,
                 "task_type": "test_type",
-                "app_id": app_id,
                 "session_id": session_id
             });
             let create_req = create_rpc_request("create_task", create_params);
             let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
             if let RPCResult::Success(result) = create_resp.result {
                 assert_eq!(result["task"]["session_id"], session_id);
-                assert_eq!(result["task"]["app_id"], app_id);
+                assert_eq!(result["task"]["app_id"], ZONE_APP);
             } else {
                 panic!("Failed to create session task");
             }
