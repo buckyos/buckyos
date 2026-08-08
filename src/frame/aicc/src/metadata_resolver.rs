@@ -210,6 +210,8 @@ pub struct DriverCapabilitiesPatch {
     #[serde(default)]
     pub web_search: Option<bool>,
     #[serde(default)]
+    pub web_search_with_tool_call: Option<bool>,
+    #[serde(default)]
     pub vision: Option<bool>,
     #[serde(default)]
     pub max_context_tokens: Option<u64>,
@@ -1130,6 +1132,7 @@ fn conservative_capabilities() -> ModelCapabilities {
         tool_call: false,
         json_schema: false,
         web_search: false,
+        web_search_with_tool_call: None,
         vision: false,
         max_context_tokens: None,
         max_output_tokens: None,
@@ -1142,6 +1145,7 @@ impl DriverCapabilitiesPatch {
             || self.tool_call.is_some()
             || self.json_schema.is_some()
             || self.web_search.is_some()
+            || self.web_search_with_tool_call.is_some()
             || self.vision.is_some()
             || self.max_context_tokens.is_some()
             || self.max_output_tokens.is_some()
@@ -1160,6 +1164,9 @@ fn apply_capabilities_patch(capabilities: &mut ModelCapabilities, patch: &Driver
     }
     if let Some(value) = patch.web_search {
         capabilities.web_search = value;
+    }
+    if let Some(value) = patch.web_search_with_tool_call {
+        capabilities.web_search_with_tool_call = Some(value);
     }
     if let Some(value) = patch.vision {
         capabilities.vision = value;

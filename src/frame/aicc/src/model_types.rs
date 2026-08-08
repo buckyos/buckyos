@@ -337,6 +337,8 @@ pub struct ModelCapabilities {
     pub json_schema: bool,
     #[serde(default)]
     pub web_search: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_with_tool_call: Option<bool>,
     #[serde(default)]
     pub vision: bool,
     #[serde(default)]
@@ -351,6 +353,10 @@ impl ModelCapabilities {
             && (!required.tool_call || self.tool_call)
             && (!required.json_schema || self.json_schema)
             && (!required.web_search || self.web_search)
+            && (!(required.web_search && required.tool_call)
+                || self
+                    .web_search_with_tool_call
+                    .unwrap_or(self.web_search && self.tool_call))
             && (!required.vision || self.vision)
             && required
                 .min_context_tokens
@@ -371,6 +377,16 @@ impl ModelCapabilities {
         }
         if required.web_search && !self.web_search {
             missing.push("web_search".to_string());
+        }
+        if required.web_search
+            && required.tool_call
+            && self.web_search
+            && self.tool_call
+            && !self
+                .web_search_with_tool_call
+                .unwrap_or(self.web_search && self.tool_call)
+        {
+            missing.push("web_search_with_tool_call".to_string());
         }
         if required.vision && !self.vision {
             missing.push("vision".to_string());
@@ -1463,6 +1479,7 @@ mod tests {
                 tool_call: true,
                 json_schema: true,
                 web_search: true,
+                web_search_with_tool_call: None,
                 vision: false,
                 max_context_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),
@@ -1495,6 +1512,31 @@ mod tests {
             web_search: true,
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn combined_search_and_tool_call_requires_combination_capability() {
+        let required = RequiredModelFeatures {
+            web_search: true,
+            tool_call: true,
+            ..Default::default()
+        };
+        let capabilities = ModelCapabilities {
+            web_search: true,
+            tool_call: true,
+            web_search_with_tool_call: Some(false),
+            ..Default::default()
+        };
+
+        assert!(!capabilities.supports(&required));
+        assert_eq!(
+            capabilities.explain_missing_requirements(&ModelRequirement {
+                web_search: true,
+                tool_call: true,
+                ..Default::default()
+            }),
+            vec!["web_search_with_tool_call"]
+        );
     }
 
     #[test]

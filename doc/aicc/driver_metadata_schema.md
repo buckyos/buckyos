@@ -95,7 +95,7 @@ Rules support these fields:
   `{provider_driver}`, and `{provider_model_id}` are expanded by the resolver.
   The first pair identifies the physical origin; the second pair identifies the
   current delivery channel.
-- `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `max_context_tokens`, `max_output_tokens`.
+- `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `web_search_with_tool_call`, `vision`, `max_context_tokens`, `max_output_tokens`. `web_search_with_tool_call` is only needed when a model's support for combining provider-hosted search with custom function calling differs from its individual `web_search` and `tool_call` capabilities; when omitted it defaults to the conjunction of those individual capabilities.
 - `pricing`: optional monetary data object. `currency` identifies the ISO 4217
   currency; `input_token`, `output_token`, and `cache_input_token` are optional
   per-token prices; `estimated_cost` is the default scheduler cost estimate.

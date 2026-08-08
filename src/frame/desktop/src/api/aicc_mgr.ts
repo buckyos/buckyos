@@ -1599,6 +1599,10 @@ function toModelMetadata(
       tool_call: asBoolean(capabilities.tool_call, false),
       json_schema: asBoolean(capabilities.json_schema, false),
       web_search: asBoolean(capabilities.web_search, false),
+      web_search_with_tool_call:
+        typeof capabilities.web_search_with_tool_call === 'boolean'
+          ? capabilities.web_search_with_tool_call
+          : undefined,
       vision: asBoolean(capabilities.vision, apiTypes.some((type) => type.startsWith('vision.'))),
       max_context_tokens: asOptionalNumber(capabilities.max_context_tokens),
       max_output_tokens: asOptionalNumber(capabilities.max_output_tokens),
