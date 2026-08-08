@@ -1929,6 +1929,7 @@ impl AIAgent {
         let log_sid = session_id.clone();
         let agent_name = self.agent_name.clone();
         let owner_for_log = owner.clone();
+        let reply_session = Arc::downgrade(&session);
         tokio::spawn(async move {
             while let Some(reply) = reply_rx.recv().await {
                 match reply {
@@ -1940,6 +1941,9 @@ impl AIAgent {
                     }
                     SessionReply::Error { message } => {
                         warn!("opendan.agent[{agent_name}]: session={log_sid} error: {message}");
+                        if let Some(session) = reply_session.upgrade() {
+                            session.post_outbound_error(&message).await;
+                        }
                     }
                     SessionReply::Ended => {
                         info!("opendan.agent[{agent_name}]: session={log_sid} ended");
