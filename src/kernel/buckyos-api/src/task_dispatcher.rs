@@ -40,7 +40,9 @@ pub const TASK_DISPATCHER_SERVICE_PORT: u16 = 3380;
 /// None, TASK_DISPATCHER_RDB_INSTANCE_ID)`. No table/schema/join is shared
 /// with `task-mgr-main`.
 pub const TASK_DISPATCHER_RDB_INSTANCE_ID: &str = "task-dispatcher-main";
-pub const TASK_DISPATCHER_RDB_SCHEMA_VERSION: u64 = 1;
+/// v2 (M4 approval gate): `dispatch_record.approval` column + the
+/// `PendingApproval` status. v1 stores are migrated in place on open.
+pub const TASK_DISPATCHER_RDB_SCHEMA_VERSION: u64 = 2;
 
 pub const TASK_DISPATCHER_RDB_SCHEMA_SQLITE: &str = r#"
 CREATE TABLE IF NOT EXISTS dispatch_target (
@@ -95,6 +97,7 @@ CREATE TABLE IF NOT EXISTS dispatch_record (
     offer_delivery_count   INTEGER NOT NULL DEFAULT 0,
     target_task_id         INTEGER,
     reject_reason          TEXT,
+    approval               TEXT,
     message                TEXT,
     expires_at             INTEGER,
     created_at             INTEGER NOT NULL,
@@ -170,6 +173,7 @@ CREATE TABLE IF NOT EXISTS dispatch_record (
     offer_delivery_count   BIGINT NOT NULL DEFAULT 0,
     target_task_id         BIGINT,
     reject_reason          TEXT,
+    approval               TEXT,
     message                TEXT,
     expires_at             BIGINT,
     created_at             BIGINT NOT NULL,
@@ -226,6 +230,10 @@ pub const DISPATCH_ERR_UNSUPPORTED_OPERATION: &str = "unsupported_operation";
 pub const DISPATCH_ERR_STALE_INSTANCE: &str = "stale_instance";
 pub const DISPATCH_ERR_ALREADY_ACCEPTED: &str = "dispatch_already_accepted";
 pub const DISPATCH_ERR_UNCERTAIN_REQUIRES_RESOLVE: &str = "uncertain_requires_resolve";
+/// The record sits behind the approval gate: targets cannot claim, accept or
+/// reject it, and approve/deny is the only way forward.
+pub const DISPATCH_ERR_PENDING_APPROVAL: &str = "dispatch_pending_approval";
+pub const DISPATCH_ERR_NOT_PENDING_APPROVAL: &str = "dispatch_not_pending_approval";
 
 pub fn is_stale_instance_err(err: &RPCErrors) -> bool {
     err.to_string().contains(DISPATCH_ERR_STALE_INSTANCE)
@@ -246,6 +254,14 @@ pub fn task_dispatcher_target_event_id(target_key: &str) -> String {
 /// Per-record status-change channel for callers.
 pub fn task_dispatcher_record_event_id(dispatch_id: &str) -> String {
     format!("/task_dispatcher/{}", dispatch_id)
+}
+
+/// Admin-facing "new record awaits approval" hint channel. Acceleration
+/// only: the authoritative queue is always
+/// `list_dispatches(status=PendingApproval)`, and a lost hint degrades to
+/// admin-side polling without losing backlog. Payload carries ids only.
+pub fn task_dispatcher_approvals_event_id() -> String {
+    "/task_dispatcher/approvals".to_string()
 }
 
 /// Stable slug for a target id, usable as a kevent id segment
@@ -283,6 +299,11 @@ pub fn task_dispatcher_target_key(target_id: &str) -> String {
 /// Handoff lifecycle states. Independent from `TaskStatus` — never reuse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DispatchStatus {
+    /// Manual-release gate *before* assignment (doc §7.1): the record is
+    /// persisted but never evaluated, never offered, never claimable and
+    /// does not consume `max_concurrency` until an admin approves it.
+    /// Targets cannot act on it through any path.
+    PendingApproval,
     Queued,
     WaitingForTarget,
     Offered,
@@ -302,6 +323,7 @@ pub enum DispatchStatus {
 impl DispatchStatus {
     pub fn from_str(s: &str) -> Result<Self> {
         match s {
+            "PendingApproval" => Ok(Self::PendingApproval),
             "Queued" => Ok(Self::Queued),
             "WaitingForTarget" => Ok(Self::WaitingForTarget),
             "Offered" => Ok(Self::Offered),
@@ -325,6 +347,8 @@ impl DispatchStatus {
     }
 
     /// States a record may leave toward `Offered` during target evaluation.
+    /// `PendingApproval` is deliberately NOT assignable — the approval gate
+    /// sits before assignment, so unreleased records never produce offers.
     pub fn is_assignable(&self) -> bool {
         matches!(self, Self::Queued | Self::WaitingForTarget)
     }
@@ -355,6 +379,8 @@ pub enum DispatchRejectReason {
     UnsupportedOperation,
     TargetDisabled,
     InvalidInput,
+    /// Admin refused to release a `PendingApproval` record (deny_dispatch).
+    ApprovalDenied,
 }
 
 impl DispatchRejectReason {
@@ -367,6 +393,7 @@ impl DispatchRejectReason {
             Self::UnsupportedOperation => "unsupported_operation",
             Self::TargetDisabled => "target_disabled",
             Self::InvalidInput => "invalid_input",
+            Self::ApprovalDenied => "approval_denied",
         }
     }
 
@@ -379,6 +406,7 @@ impl DispatchRejectReason {
             "unsupported_operation" => Ok(Self::UnsupportedOperation),
             "target_disabled" => Ok(Self::TargetDisabled),
             "invalid_input" => Ok(Self::InvalidInput),
+            "approval_denied" => Ok(Self::ApprovalDenied),
             _ => Err(RPCErrors::ReasonError(format!(
                 "Invalid dispatch reject reason: {}",
                 s
@@ -464,6 +492,51 @@ impl Default for DispatchAuthPolicy {
     }
 }
 
+/// Whose submissions require a manual release before assignment (approval
+/// gate, doc §7.1). Judged strictly on the *direct* caller's token grade —
+/// the same principle as `on_behalf_of` delegation. `auth_policy` decides
+/// first whether a caller may submit at all; this decides whether the
+/// accepted submission is held in `PendingApproval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DispatchApprovalPolicy {
+    /// Default: no manual gate, submissions go straight to assignment.
+    Never,
+    /// Interactive sessions (verify-hub issued, non-sudo) are held;
+    /// zone-trusted callers and sudo sessions pass through.
+    InteractiveCallers,
+    /// Every submission is held — including zone-trusted services and
+    /// agent-initiated work ("even the agent's dangerous operations need a
+    /// human"). `InteractiveCallers` cannot express that.
+    AllCallers,
+}
+
+impl Default for DispatchApprovalPolicy {
+    fn default() -> Self {
+        Self::Never
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApprovalDecision {
+    Approved,
+    Denied,
+}
+
+/// Audit record of a manual release decision. The decider identity comes
+/// from the verified token — payload claims are never trusted — and the same
+/// decision is also written to `dispatch_event`. Approval never rewrites the
+/// auth envelope: release != privilege escalation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchApproval {
+    pub decision: ApprovalDecision,
+    pub decided_by_user: String,
+    pub decided_by_app: String,
+    pub decided_at: u64,
+    /// Audit/UI note, never interpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationDescriptor {
     /// Includes the major version, e.g. `"agent.delegate/v1"`.
@@ -493,6 +566,12 @@ pub struct TargetRegistration {
     pub operations: Vec<OperationDescriptor>,
     #[serde(default)]
     pub auth_policy: DispatchAuthPolicy,
+    /// Manual-release gate (doc §7.1). `auth_policy` is judged first ("may
+    /// this caller submit"), then this ("is the submission held for a
+    /// human"). `ZoneTrustedOnly + InteractiveCallers` never triggers —
+    /// untrusted callers cannot get through the door at all.
+    #[serde(default)]
+    pub approval_policy: DispatchApprovalPolicy,
     #[serde(default)]
     pub idempotency_contract: IdempotencyContract,
     #[serde(default)]
@@ -592,6 +671,11 @@ pub struct DispatchRecord {
     pub target_task_id: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reject_reason: Option<DispatchRejectReason>,
+    /// Manual-release decision — populated only on records that went through
+    /// the approval gate. Exempt submissions (zone-trusted / sudo under
+    /// `InteractiveCallers`) keep it empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<DispatchApproval>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     pub created_at: u64,
@@ -850,6 +934,29 @@ pub struct ResolveUncertainReq {
 }
 impl_from_json!(ResolveUncertainReq);
 
+/// Release a `PendingApproval` record into normal assignment. Idempotent on
+/// already-approved records. Never a manual-assignment hook: instance
+/// selection stays with `evaluate_target`, and neither the target nor the
+/// envelope can be changed here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApproveDispatchReq {
+    pub dispatch_id: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+impl_from_json!(ApproveDispatchReq);
+
+/// Refuse a `PendingApproval` record: terminal
+/// `Rejected(approval_denied)`. Re-submission needs a new idempotency key —
+/// a new dispatch, never a revival.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenyDispatchReq {
+    pub dispatch_id: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+impl_from_json!(DenyDispatchReq);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetTargetReq {
     pub target_id: String,
@@ -966,6 +1073,16 @@ pub trait TaskDispatcherHandler: Send + Sync {
     ) -> Result<()>;
 
     // admin side
+    async fn handle_approve_dispatch(
+        &self,
+        req: ApproveDispatchReq,
+        ctx: RPCContext,
+    ) -> Result<DispatchRecord>;
+    async fn handle_deny_dispatch(
+        &self,
+        req: DenyDispatchReq,
+        ctx: RPCContext,
+    ) -> Result<DispatchRecord>;
     async fn handle_resolve_uncertain(
         &self,
         req: ResolveUncertainReq,
@@ -1079,6 +1196,16 @@ impl<T: TaskDispatcherHandler> RPCHandler for TaskDispatcherServerHandler<T> {
                 let reject_req = RejectDispatchReq::from_json(req.params)?;
                 self.0.handle_reject_dispatch(reject_req, ctx).await?;
                 RPCResult::Success(json!(()))
+            }
+            "approve_dispatch" => {
+                let approve_req = ApproveDispatchReq::from_json(req.params)?;
+                let record = self.0.handle_approve_dispatch(approve_req, ctx).await?;
+                RPCResult::Success(json!(GetDispatchResult { record }))
+            }
+            "deny_dispatch" => {
+                let deny_req = DenyDispatchReq::from_json(req.params)?;
+                let record = self.0.handle_deny_dispatch(deny_req, ctx).await?;
+                RPCResult::Success(json!(GetDispatchResult { record }))
             }
             "resolve_uncertain" => {
                 let resolve_req = ResolveUncertainReq::from_json(req.params)?;
@@ -1342,6 +1469,50 @@ impl TaskDispatcherClient {
             Self::KRPC(client) => {
                 krpc_call!(client, "reject_dispatch", req)?;
                 Ok(())
+            }
+        }
+    }
+
+    pub async fn approve_dispatch(
+        &self,
+        dispatch_id: &str,
+        note: Option<String>,
+    ) -> Result<DispatchRecord> {
+        let req = ApproveDispatchReq {
+            dispatch_id: dispatch_id.to_string(),
+            note,
+        };
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_approve_dispatch(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let result = krpc_call!(client, "approve_dispatch", req)?;
+                let parsed: GetDispatchResult = parse_result(result, "GetDispatchResult")?;
+                Ok(parsed.record)
+            }
+        }
+    }
+
+    pub async fn deny_dispatch(
+        &self,
+        dispatch_id: &str,
+        note: Option<String>,
+    ) -> Result<DispatchRecord> {
+        let req = DenyDispatchReq {
+            dispatch_id: dispatch_id.to_string(),
+            note,
+        };
+        match self {
+            Self::InProcess(handler) => {
+                handler.handle_deny_dispatch(req, RPCContext::default()).await
+            }
+            Self::KRPC(client) => {
+                let result = krpc_call!(client, "deny_dispatch", req)?;
+                let parsed: GetDispatchResult = parse_result(result, "GetDispatchResult")?;
+                Ok(parsed.record)
             }
         }
     }
@@ -1795,6 +1966,7 @@ mod tests {
             task_dispatcher_target_key("did.agent.jarvis")
         );
         crate::kevent_client::validate_eventid(&task_dispatcher_target_event_id(&key)).unwrap();
+        crate::kevent_client::validate_eventid(&task_dispatcher_approvals_event_id()).unwrap();
     }
 
     #[test]
@@ -1811,6 +1983,7 @@ mod tests {
     #[test]
     fn dispatch_status_round_trip() {
         for status in [
+            DispatchStatus::PendingApproval,
             DispatchStatus::Queued,
             DispatchStatus::WaitingForTarget,
             DispatchStatus::Offered,
@@ -1827,6 +2000,14 @@ mod tests {
         }
         assert!(DispatchStatus::Accepted.is_terminal());
         assert!(!DispatchStatus::Uncertain.is_terminal());
+        // The approval gate sits before assignment: not terminal, and never
+        // eligible for evaluate_target.
+        assert!(!DispatchStatus::PendingApproval.is_terminal());
+        assert!(!DispatchStatus::PendingApproval.is_assignable());
+        assert_eq!(
+            DispatchRejectReason::from_str("approval_denied").unwrap(),
+            DispatchRejectReason::ApprovalDenied
+        );
     }
 
     #[test]
@@ -1849,6 +2030,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(registration.auth_policy, DispatchAuthPolicy::ZoneUsers);
+        // No manual gate unless the target opts in.
+        assert_eq!(registration.approval_policy, DispatchApprovalPolicy::Never);
         assert_eq!(
             registration.idempotency_contract,
             IdempotencyContract::IdempotentAccept

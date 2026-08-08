@@ -64,6 +64,16 @@ fn zone_token(user_id: &str, app_id: &str) -> String {
 
 /// verify-hub style token: interactive user/app session, never zone-trusted.
 fn user_token(user_id: &str, app_id: &str) -> String {
+    interactive_token(user_id, app_id, false)
+}
+
+/// verify-hub token with the sudo claim: an elevated interactive session.
+/// Exempt from `InteractiveCallers` holds and allowed to approve/deny.
+fn sudo_token(user_id: &str, app_id: &str) -> String {
+    interactive_token(user_id, app_id, true)
+}
+
+fn interactive_token(user_id: &str, app_id: &str, sudo: bool) -> String {
     let now = buckyos_kit::buckyos_get_unix_timestamp();
     let session_token = RPCSessionToken {
         token_type: RPCSessionTokenType::JWT,
@@ -74,7 +84,7 @@ fn user_token(user_id: &str, app_id: &str) -> String {
         jti: None,
         sub: Some(user_id.to_string()),
         appid: Some(app_id.to_string()),
-        sudo: false,
+        sudo,
         extra: HashMap::new(),
     };
     session_token.generate_jwt(None, &test_encoding_key()).unwrap()
@@ -180,6 +190,25 @@ impl Harness {
                         "instance_selection": "RoundRobin"
                     },
                     "max_concurrency": max_concurrency,
+                    "enabled": true
+                }
+            }),
+            &zone_token(OPENDAN_USER, OPENDAN_APP),
+        )
+        .await;
+    }
+
+    async fn register_jarvis_with_approval(&self, approval_policy: &str) {
+        self.call_ok(
+            "register_target",
+            json!({
+                "registration": {
+                    "target_id": TARGET_JARVIS,
+                    "operations": [{"operation": OP_DELEGATE}],
+                    "auth_policy": "ZoneUsers",
+                    "approval_policy": approval_policy,
+                    "idempotency_contract": "IdempotentAccept",
+                    "max_concurrency": 4,
                     "enabled": true
                 }
             }),
@@ -1488,4 +1517,429 @@ async fn instance_lease_expiry_recycles_offers() {
     h.service.run_maintenance_once(later).await;
     let record = h.record(&dispatch_id).await;
     assert_eq!(record.status, DispatchStatus::WaitingForTarget);
+}
+
+// ---------------------------------------------------------------------------
+// M4: manual release (approval gate)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_gate_holds_interactive_and_approve_releases() {
+    let h = setup().await;
+    h.register_jarvis_with_approval("InteractiveCallers").await;
+    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
+    let (instance_id, epoch) = h.attach().await;
+
+    // Interactive submission is held BEFORE assignment — even with a live
+    // instance and free capacity, nothing is evaluated or offered.
+    let submit = h
+        .dispatch_to_jarvis("appr-1", &user_token("alice", "some-app"))
+        .await;
+    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
+    assert_eq!(submit["status"], "PendingApproval");
+
+    // Idempotent replay reports the held state, same record.
+    let replay = h
+        .dispatch_to_jarvis("appr-1", &user_token("alice", "some-app"))
+        .await;
+    assert_eq!(replay["dispatch_id"].as_str().unwrap(), dispatch_id);
+    assert_eq!(replay["status"], "PendingApproval");
+
+    // The target cannot see or act on the held record through ANY path.
+    let claim_params = json!({
+        "target_id": TARGET_JARVIS,
+        "instance_id": instance_id,
+        "lease_epoch": epoch,
+        "max": 16
+    });
+    let claimed = h.call_ok("claim_next", claim_params.clone(), &owner).await;
+    assert_eq!(claimed["records"].as_array().unwrap().len(), 0);
+    let err = h
+        .call_err(
+            "accept_dispatch",
+            json!({
+                "dispatch_id": dispatch_id,
+                "instance_id": instance_id,
+                "lease_epoch": epoch,
+                "target_task_id": 42
+            }),
+            &owner,
+        )
+        .await;
+    assert!(err.contains(DISPATCH_ERR_PENDING_APPROVAL), "{}", err);
+    let err = h
+        .call_err(
+            "reject_dispatch",
+            json!({
+                "dispatch_id": dispatch_id,
+                "instance_id": instance_id,
+                "lease_epoch": epoch,
+                "reason": "policy_denied"
+            }),
+            &owner,
+        )
+        .await;
+    assert!(err.contains(DISPATCH_ERR_PENDING_APPROVAL), "{}", err);
+
+    // Maintenance never assigns a held record either.
+    h.service.run_maintenance_once(now_ms() + 45_000).await;
+    assert_eq!(
+        h.record(&dispatch_id).await.status,
+        DispatchStatus::PendingApproval
+    );
+
+    // Plain interactive sessions cannot approve — neither strangers nor the
+    // submitter themselves.
+    for token in [
+        user_token("mallory", "evil-app"),
+        user_token("alice", "some-app"),
+    ] {
+        let err = h
+            .call_err("approve_dispatch", json!({"dispatch_id": dispatch_id}), &token)
+            .await;
+        assert!(err.contains("sudo"), "{}", err);
+    }
+
+    // A sudo session releases the record; it flows into normal centralized
+    // assignment (Queued -> Offered on the attached instance).
+    let approved = h
+        .call_ok(
+            "approve_dispatch",
+            json!({"dispatch_id": dispatch_id, "note": "ok, install window friday"}),
+            &sudo_token("root", "control-panel"),
+        )
+        .await;
+    assert_eq!(approved["record"]["status"], "Offered");
+    let record = h.record(&dispatch_id).await;
+    let approval = record.approval.expect("approval decision must be recorded");
+    assert_eq!(approval.decision, ApprovalDecision::Approved);
+    assert_eq!(approval.decided_by_user, "root");
+    assert_eq!(approval.decided_by_app, "control-panel");
+    assert_eq!(approval.note.as_deref(), Some("ok, install window friday"));
+    // Release != privilege escalation: the envelope is byte-for-byte the
+    // original low-privilege submission.
+    assert_eq!(record.auth.requested_by_user, "alice");
+    assert_eq!(record.auth.on_behalf_of, "alice");
+    assert!(!record.auth.zone_trusted_caller);
+
+    // Approve replay on the released record is idempotent.
+    let again = h
+        .call_ok(
+            "approve_dispatch",
+            json!({"dispatch_id": dispatch_id}),
+            &sudo_token("root", "control-panel"),
+        )
+        .await;
+    assert_eq!(again["record"]["status"], "Offered");
+
+    // Now the target claims and accepts normally.
+    let claimed = h.call_ok("claim_next", claim_params, &owner).await;
+    assert_eq!(claimed["records"].as_array().unwrap().len(), 1);
+    let accepted = h
+        .call_ok(
+            "accept_dispatch",
+            json!({
+                "dispatch_id": dispatch_id,
+                "instance_id": instance_id,
+                "lease_epoch": epoch,
+                "target_task_id": 4242
+            }),
+            &owner,
+        )
+        .await;
+    assert_eq!(accepted["accepted"], true);
+
+    // Full audit trail: held -> released -> assigned -> accepted.
+    let events = h
+        .service
+        .db_for_tests()
+        .list_events(dispatch_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        events,
+        vec![
+            ("".to_string(), "PendingApproval".to_string()),
+            ("PendingApproval".to_string(), "Queued".to_string()),
+            ("Queued".to_string(), "Offered".to_string()),
+            ("Offered".to_string(), "Accepted".to_string()),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_policy_exemptions_and_all_callers() {
+    let h = setup().await;
+    h.register_jarvis_with_approval("InteractiveCallers").await;
+    let _ = h.attach().await;
+
+    // Zone-trusted callers and sudo sessions pass the InteractiveCallers
+    // gate without a hold; no approval record is written for them.
+    let trusted = h
+        .dispatch_to_jarvis("exempt-1", &zone_token(OPENDAN_USER, "workflow"))
+        .await;
+    assert_eq!(trusted["status"], "Offered");
+    assert!(h.record(trusted["dispatch_id"].as_str().unwrap())
+        .await
+        .approval
+        .is_none());
+
+    let sudo = h
+        .dispatch_to_jarvis("exempt-2", &sudo_token("alice", "some-app"))
+        .await;
+    assert_eq!(sudo["status"], "Offered");
+
+    // A held record must not consume the target's concurrency budget: with
+    // max_concurrency=4 and 2 offers in flight, an interactive hold plus two
+    // more trusted submissions still fit.
+    let held = h
+        .dispatch_to_jarvis("exempt-3", &user_token("bob", "some-app"))
+        .await;
+    assert_eq!(held["status"], "PendingApproval");
+    for key in ["exempt-4", "exempt-5"] {
+        let more = h
+            .dispatch_to_jarvis(key, &zone_token(OPENDAN_USER, "workflow"))
+            .await;
+        assert_eq!(more["status"], "Offered", "held record must not eat budget");
+    }
+
+    // AllCallers holds everyone — the "agent's dangerous operations need a
+    // human too" tier: even zone-trusted submissions stop at the gate.
+    h.register_jarvis_with_approval("AllCallers").await;
+    let trusted_held = h
+        .dispatch_to_jarvis("exempt-6", &zone_token(OPENDAN_USER, "workflow"))
+        .await;
+    assert_eq!(trusted_held["status"], "PendingApproval");
+    let sudo_held = h
+        .dispatch_to_jarvis("exempt-7", &sudo_token("alice", "some-app"))
+        .await;
+    assert_eq!(sudo_held["status"], "PendingApproval");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deny_dispatch_is_terminal_and_resubmit_needs_new_key() {
+    let h = setup().await;
+    h.register_jarvis_with_approval("InteractiveCallers").await;
+    let admin = sudo_token("root", "control-panel");
+
+    let submit = h
+        .dispatch_to_jarvis("deny-1", &user_token("bob", "some-app"))
+        .await;
+    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
+
+    let denied = h
+        .call_ok(
+            "deny_dispatch",
+            json!({"dispatch_id": dispatch_id, "note": "app failed security review"}),
+            &admin,
+        )
+        .await;
+    assert_eq!(denied["record"]["status"], "Rejected");
+    let record = h.record(&dispatch_id).await;
+    assert_eq!(record.status, DispatchStatus::Rejected);
+    assert_eq!(record.reject_reason, Some(DispatchRejectReason::ApprovalDenied));
+    let approval = record.approval.expect("denial must be recorded");
+    assert_eq!(approval.decision, ApprovalDecision::Denied);
+    assert_eq!(approval.decided_by_user, "root");
+    assert_eq!(record.message.as_deref(), Some("app failed security review"));
+
+    // Deny replay is idempotent; approve after deny is refused — terminal
+    // records are never revived.
+    let again = h
+        .call_ok("deny_dispatch", json!({"dispatch_id": dispatch_id}), &admin)
+        .await;
+    assert_eq!(again["record"]["status"], "Rejected");
+    let err = h
+        .call_err("approve_dispatch", json!({"dispatch_id": dispatch_id}), &admin)
+        .await;
+    assert!(err.contains(DISPATCH_ERR_NOT_PENDING_APPROVAL), "{}", err);
+
+    // The submitter's replay answers with the denied record; re-applying
+    // means a NEW idempotency key and a fresh gate pass.
+    let replay = h
+        .dispatch_to_jarvis("deny-1", &user_token("bob", "some-app"))
+        .await;
+    assert_eq!(replay["dispatch_id"].as_str().unwrap(), dispatch_id);
+    assert_eq!(replay["status"], "Rejected");
+    let fresh = h
+        .dispatch_to_jarvis("deny-2", &user_token("bob", "some-app"))
+        .await;
+    assert_ne!(fresh["dispatch_id"].as_str().unwrap(), dispatch_id);
+    assert_eq!(fresh["status"], "PendingApproval");
+
+    // Denied-by-note is audited in dispatch_event as well.
+    let events = h
+        .service
+        .db_for_tests()
+        .list_events(dispatch_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        events,
+        vec![
+            ("".to_string(), "PendingApproval".to_string()),
+            ("PendingApproval".to_string(), "Rejected".to_string()),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_approval_cancel_and_deadline() {
+    let h = setup().await;
+    h.register_jarvis_with_approval("InteractiveCallers").await;
+    let admin = sudo_token("root", "control-panel");
+
+    // The submitter may withdraw a record still waiting at the gate.
+    let submit = h
+        .dispatch_to_jarvis("hold-cancel", &user_token("bob", "some-app"))
+        .await;
+    let canceled_id = submit["dispatch_id"].as_str().unwrap().to_string();
+    let canceled = h
+        .call_ok(
+            "cancel_dispatch",
+            json!({"dispatch_id": canceled_id}),
+            &user_token("bob", "some-app"),
+        )
+        .await;
+    assert_eq!(canceled["status"], "Canceled");
+    let err = h
+        .call_err("approve_dispatch", json!({"dispatch_id": canceled_id}), &admin)
+        .await;
+    assert!(err.contains(DISPATCH_ERR_NOT_PENDING_APPROVAL), "{}", err);
+
+    // expires_at covers the approval wait: an unreleased record expires.
+    let expires_at = (now_ms() + 5_000) as u64;
+    let submit = h
+        .call_ok(
+            "dispatch",
+            json!({
+                "target_id": TARGET_JARVIS,
+                "operation": OP_DELEGATE,
+                "idempotency_key": "hold-expire",
+                "expires_at": expires_at,
+                "input": {}
+            }),
+            &user_token("bob", "some-app"),
+        )
+        .await;
+    let expired_id = submit["dispatch_id"].as_str().unwrap().to_string();
+    assert_eq!(submit["status"], "PendingApproval");
+    h.service.run_maintenance_once(now_ms() + 6_000).await;
+    let record = h.record(&expired_id).await;
+    assert_eq!(record.status, DispatchStatus::Expired);
+    assert_eq!(record.message.as_deref(), Some("request_expired"));
+    assert!(record.approval.is_none());
+    let err = h
+        .call_err("approve_dispatch", json!({"dispatch_id": expired_id}), &admin)
+        .await;
+    assert!(err.contains(DISPATCH_ERR_NOT_PENDING_APPROVAL), "{}", err);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approvals_channel_hints_and_queue_listing() {
+    let h = setup().await;
+    h.register_jarvis_with_approval("InteractiveCallers").await;
+
+    // Subscribe the admin hint channel before submitting.
+    let reader = h
+        .service
+        .kevent_client_for_tests()
+        .create_event_reader(vec![task_dispatcher_approvals_event_id()])
+        .await
+        .unwrap();
+
+    let submit = h
+        .dispatch_to_jarvis("queue-1", &user_token("alice", "some-app"))
+        .await;
+    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
+
+    let event = reader.pull_event(Some(1_000)).await.unwrap();
+    let event = event.expect("approvals hint should arrive");
+    assert_eq!(event.data["dispatch_id"].as_str().unwrap(), dispatch_id);
+    assert_eq!(event.data["to"], "PendingApproval");
+    // Ids only — the input never rides on the hint channel.
+    assert!(event.data.get("input").is_none());
+
+    // The authoritative queue is a plain status filter on list_dispatches.
+    let queue = h
+        .call_ok(
+            "list_dispatches",
+            json!({"status": "PendingApproval"}),
+            &zone_token(OPENDAN_USER, "control-panel"),
+        )
+        .await;
+    let records = queue["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["dispatch_id"].as_str().unwrap(), dispatch_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn schema_v1_store_migrates_approval_column_in_place() {
+    // Simulate a store created by the M1 (v1) schema — dispatch_record has
+    // no approval column — and prove open() migrates it in place.
+    const V1_RECORD_DDL: &str = "CREATE TABLE dispatch_record (
+        dispatch_id            TEXT PRIMARY KEY,
+        requested_target_id    TEXT,
+        target_id              TEXT NOT NULL,
+        target_selection       TEXT NOT NULL,
+        operation              TEXT NOT NULL,
+        status                 TEXT NOT NULL,
+        input                  TEXT NOT NULL,
+        auth                   TEXT NOT NULL,
+        idempotency_key        TEXT NOT NULL,
+        requested_by_user      TEXT NOT NULL,
+        requested_by_app       TEXT NOT NULL,
+        on_behalf_of           TEXT NOT NULL,
+        offer_instance_id      TEXT,
+        offer_lease_expires_at INTEGER,
+        offer_delivery_count   INTEGER NOT NULL DEFAULT 0,
+        target_task_id         INTEGER,
+        reject_reason          TEXT,
+        message                TEXT,
+        expires_at             INTEGER,
+        created_at             INTEGER NOT NULL,
+        updated_at             INTEGER NOT NULL
+    )";
+
+    let temp_dir = tempdir().unwrap();
+    let db_path = temp_dir.path().join("dispatch.db");
+    let db_conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    {
+        use sqlx::Executor;
+        sqlx::any::install_default_drivers();
+        let pool = sqlx::any::AnyPoolOptions::new()
+            .max_connections(1)
+            .connect(&db_conn)
+            .await
+            .unwrap();
+        pool.execute(V1_RECORD_DDL).await.unwrap();
+        pool.close().await;
+    }
+
+    // Opening the service applies the v2 DDL (other tables) and the in-place
+    // migration (approval column); the full approval flow then works on the
+    // migrated store.
+    let service = open_service(&db_conn).await;
+    let server = TaskDispatcherServerHandler::new(service.clone());
+    let h = Harness {
+        service,
+        server,
+        _temp_dir: temp_dir,
+        db_conn,
+    };
+    h.register_jarvis_with_approval("InteractiveCallers").await;
+    let submit = h
+        .dispatch_to_jarvis("migrate-1", &user_token("alice", "some-app"))
+        .await;
+    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
+    assert_eq!(submit["status"], "PendingApproval");
+    let approved = h
+        .call_ok(
+            "approve_dispatch",
+            json!({"dispatch_id": dispatch_id}),
+            &sudo_token("root", "control-panel"),
+        )
+        .await;
+    assert_eq!(approved["record"]["status"], "WaitingForTarget");
+    assert!(h.record(&dispatch_id).await.approval.is_some());
 }

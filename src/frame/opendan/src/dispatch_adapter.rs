@@ -441,6 +441,9 @@ impl AIAgent {
                 input_schema_ref: None,
             }],
             auth_policy: buckyos_api::DispatchAuthPolicy::ZoneUsers,
+            // agent.delegate/v1 carries no manual gate: delegation to an
+            // agent is the normal entry path, not a privileged operation.
+            approval_policy: buckyos_api::DispatchApprovalPolicy::Never,
             idempotency_contract: buckyos_api::IdempotencyContract::IdempotentAccept,
             delivery_policy: buckyos_api::DeliveryPolicy::default(),
             max_concurrency: DISPATCH_CAPACITY,

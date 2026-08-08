@@ -67,6 +67,11 @@ pub struct RequestContext {
     pub user_id: String,
     pub app_id: String,
     pub zone_trusted: bool,
+    /// The verified token's `sudo` claim, preserved as-is. Only meaningful
+    /// on verify-hub (interactive) tokens: an elevated session. TaskMgr
+    /// authorization ignores it; the dispatcher's approval gate treats
+    /// `zone_trusted || sudo` as the manual-release admin grade.
+    pub sudo: bool,
 }
 
 /// Verifies the raw session token of a request. Production uses the runtime's
@@ -138,6 +143,7 @@ impl TaskManagerService {
             user_id,
             app_id,
             zone_trusted,
+            sudo: verified.sudo,
         })
     }
 

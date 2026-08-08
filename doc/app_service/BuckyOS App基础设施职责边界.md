@@ -10,7 +10,7 @@ BuckyOS App 目前涉及 PKG、PIKG、AppDoc、NamedStore、Repo Service、BNS�
 
 本文把 App 基础设施划分为四个边界清晰的领域：
 
-1. **开发用工具**：从源码构造 App PKG、PackageMeta、AppDoc candidate 和 PIKG。
+1. **开发用工具**：从源码构造 App PKG、PackageMeta、AppDoc candidate 和 PIKG，并完成不依赖正式发行密钥的本地安装测试闭环。
 2. **运维用工具**：持有发行权限和相关密钥，完成内容部署、AppDoc 签名与权威发布。
 3. **安装协议**：把外部获得的 App 转换为可信、可执行的 InstallPlan，在一切准备完成后写入 AppSpec。
 4. **调度与运行收敛**：消费 AppSpec，分配 Instance，并由目标 Node 将 Instance 运行起来。
@@ -28,6 +28,8 @@ flowchart LR
     Artifact["可验证的发行候选\nBuild Output"]
     Ops["运维发布工具\n授权、签名、部署、BNS 发布"]
     Published["已部署内容 + 权威 AppDoc"]
+    LocalStage["本地 staging"]
+    DevAuthority["scoped dev authority\n不使用正式发布密钥"]
     Installer["安装协议\nResolve / Inspect / Acquire / Verify / Prepare"]
     Plan["InstallPlan + PreparedDeployment"]
     Spec["AppSpec\n唯一调度提交点"]
@@ -39,23 +41,29 @@ flowchart LR
     Source --> Dev --> Artifact --> Ops --> Published
     Published --> Installer --> Plan --> Spec
     Spec --> Scheduler --> NodeConfig --> Node --> Running
-    Artifact -. "本地开发或带外分享" .-> Installer
+    Artifact -. "本地开发" .-> LocalStage --> DevAuthority --> Installer
+    Artifact -. "带外分享" .-> Installer
 ```
 
 四个领域的核心约束如下：
 
 | 领域 | 是否持有发行密钥 | 是否可以访问外部网络 | 是否可以写 system-config | 核心输出 |
 |---|---:|---:|---:|---|
-| 开发工具 | 否 | 默认不需要 | 否 | PKG、PackageMeta、AppDoc candidate、PIKG |
+| 开发工具 | 否 | 纯构建不需要；集成测试只访问本地开发 Zone | 不直接写；通过受控开发/安装 API | Build Output、DevTestReport |
 | 运维发布工具 | 是 | 是 | 原则上否 | 已部署内容、已签名并权威发布的 AppDoc、PublicationReceipt |
 | 安装协议 | 否 | 按策略允许 | 仅能写安装记录和 AppSpec | InstallPlan、PreparedDeployment、AppSpec |
 | 调度与运行收敛 | 否 | 不访问 App 的外部发行源 | 写派生调度结果和运行信息 | InstanceReplica、NodeConfig、ServiceInfo、InstanceReport |
 
 ## 3. 开发用工具
 
-### 3.1 职责
+### 3.1 工具集范围
 
-开发工具只负责把开发者控制的输入转换为内容寻址、可独立验证的构建产物：
+开发工具集不只包含“打出一个 PIKG”，还必须覆盖从源码到本地运行验证的完整开发闭环。它由两类工具组成：
+
+1. **纯构建工具**：不依赖运行中的 BuckyOS，把开发者控制的输入转换为内容寻址、可独立验证的构建产物。
+2. **本地开发测试工具**：显式连接本地开发 Zone，通过受控 API 完成 staging、开发信任、InstallPlan、安装、观察、更新和清理。
+
+纯构建工具负责：
 
 1. 将一个目录或已有制品构造成最小粒度的 App subpackage。
 2. 生成与 subpackage 内容对应的 `PackageMeta` 和 Object ID。
@@ -64,19 +72,70 @@ flowchart LR
 5. 对产物执行与 Installer 相同的结构、Object ID、Digest、AppName 和 Package Namespace 验证。
 6. 输出机器可读的构建清单，供后续发布或本地安装使用。
 
+本地开发测试工具负责：
+
+1. 启动或连接本地开发 Zone，并确认 Installer、TaskManager、Scheduler 和 Node Daemon 可用。
+2. 把本地 PIKG 上传到受控 staging area，而不是向服务端传递本地路径。
+3. 为当前 candidate 建立带 scope 和过期时间的开发信任证据。
+4. 构造并展示 InstallPlan，供开发者检查目标包、权限、挂载、端口和 readiness。
+5. 调用标准 Installer 创建和确认安装 Task。
+6. 等待 Scheduler/Node Daemon 把 AppSpec 收敛为运行中的 Instance。
+7. 查询 Task、install record、AppSpec、InstanceReport、日志和健康检查结果。
+8. 支持重新构建、更新、覆盖安装、卸载和开发环境清理。
+9. 输出可用于本地调试和 CI 判定的 `DevTestReport`。
+
 开发工具的输出仍是 **candidate**。即使 AppDoc 带有开发者签名，或者 PIKG 完整通过校验，也不代表 AppDoc 已经在 BNS 上权威发布。
 
-### 3.2 非职责
+### 3.2 开发测试不得依赖正式发布密钥
+
+开发测试和正式发布使用不同的信任边界：
+
+| 凭证或信任能力 | 开发测试是否需要 | 用途与限制 |
+|---|---:|---|
+| 生产 Owner/BNS 发布私钥 | **禁止依赖** | 只允许运维发布工具使用；不得复制到开发机或 CI |
+| 本地 BuckyOS 登录会话 | 需要 | 只用于认证当前开发用户并调用本地 Control Panel/Installer API，不代表 App 发布权 |
+| 本地开发环境管理员/RBAC | 按需 | 允许创建和清理受限的开发信任、staging 和测试 App，不允许发布到 BNS |
+| `LocalAuthorityOverride` / Zone dev evidence | 需要执行未发布 candidate 时使用 | 只对指定 Zone、机器、测试环境或 CI job 有效，必须带 warning、scope 和过期时间 |
+| 临时测试签名 key | 可选 | 只用于测试 JWT/签名编码和错误分支；不能映射到生产 Owner，也不能成为正式发布凭证 |
+
+本地开发模式允许在没有生产 Owner 私钥、没有 BNS AppDoc、没有公共 Repo 收录的情况下安装 candidate。它不能简单地“跳过信任”，而应由开发环境建立明确的本地信任证据：
+
+```text
+candidate App DID + AppDoc Object ID
+        ↓ local dev authority
+LocalAuthorityOverride / Zone dev evidence
+        ↓ LOCAL_DEVELOPER policy
+Inspect / InstallPlan / local install
+```
+
+开发信任必须满足：
+
+- 只能由本地认证会话和受控开发权限创建；
+- 与准确的 App DID、AppDoc Object ID 和作用域绑定；
+- 默认短期有效，测试结束后可自动撤销；
+- 不写入或合并到普通权威 cache，不向其它 Zone 同步；
+- Resolver 结果必须标记 `LocalAuthorityOverride` warning；
+- 不得被 `STRICT_PUBLIC`、`NORMAL` 或运维发布流程接受；
+- 不调用 `repo.announce`、SN/BNS publish 或任何公开发布接口。
+
+如果本地开发信任尚未建立，Installer 应返回 `TRUST_RESOLUTION_REQUIRED`，而不是偷偷使用 AppDoc 自声明的 owner 或读取生产发布密钥。
+
+需要特别区分：**本地 API 登录凭证不是 App 发布密钥**。开发测试可以要求开发者登录自己的本地 Zone，但不能要求其持有某个正式 App Owner 的私钥。
+
+### 3.3 非职责
 
 开发工具不得：
 
-- 读取 Owner 或运维环境的长期发行密钥；
-- 默认连接运行中的 Control Panel、Repo Service 或 system-config；
+- 读取 Owner/BNS 或运维环境的正式发行密钥；
+- 为了构建产物而依赖运行中的 Control Panel、Repo Service 或 system-config；
 - 把构建产物直接标记为公开发布；
-- 写 NamedStore、Repo、BNS、AppSpec 或安装记录；
+- 调用 Repo/BNS 正式发布接口；
+- 绕过 Installer 直接写 AppSpec、安装记录、Gateway 或 RBAC；
 - 根据当前开发机的编译架构替目标 Node 选择运行包。
 
-### 3.3 建议输出
+本地开发测试工具可以调用 Installer、TaskManager、日志和运行状态 API，但这些副作用仍由各自的正式模块执行。开发工具只负责编排，不能另写一套安装或调度逻辑。
+
+### 3.4 建议构建输出
 
 建议一次 App 构建输出一个独立目录：
 
@@ -100,33 +159,118 @@ dist/
 - 验证结果摘要；
 - 不包含任何私钥、登录凭证或服务端本地路径。
 
-### 3.4 建议命令边界
+### 3.5 完整本地开发测试流程
+
+本地开发流程不经过正式发布。它从 Build Output 直接进入本地开发 Zone：
+
+```mermaid
+flowchart LR
+    Edit["编辑源码 / AppDoc 模板"]
+    Build["本地 build\nPKG + PIKG"]
+    Verify["离线 verify"]
+    Stage["上传本地 staging"]
+    Trust["创建 scoped dev authority\n不使用发布密钥"]
+    Inspect["Inspect / InstallPlan"]
+    Install["标准 Installer Task"]
+    Run["Scheduler + Node Daemon"]
+    Observe["状态 / 日志 / 健康测试"]
+    Clean["卸载并清理 dev authority"]
+
+    Edit --> Build --> Verify --> Stage --> Trust --> Inspect --> Install --> Run --> Observe
+    Observe -->|继续迭代| Edit
+    Observe -->|结束测试| Clean
+```
+
+推荐步骤如下：
+
+| 步骤 | 动作 | 关键输出 | 是否需要正式发布密钥 |
+|---|---|---|---:|
+| 0 | 启动/检查本地开发 Zone | Installer、TaskManager、Scheduler、Node Daemon ready | 否 |
+| 1 | lint AppDoc、AppName、Package Namespace 和输入目录 | ValidationReport | 否 |
+| 2 | 构造 subpackage、PackageMeta、AppDoc candidate 和 PIKG | Build Output | 否 |
+| 3 | 离线重开 PIKG 并验证全部 Object ID/Digest | VerificationReport | 否 |
+| 4 | 通过上传接口把 PIKG 放入受控 staging area | staging handle | 否，只需本地登录会话 |
+| 5 | 为准确的 candidate 建立 scoped dev authority | dev evidence/override handle | 否，只需本地开发权限 |
+| 6 | 调用 Preflight/Inspect 构造 InstallPlan | plan fingerprint、权限、readiness | 否 |
+| 7 | 开发者确认计划并创建标准安装 Task | task id | 否 |
+| 8 | 等待 Prepare、AppSpec commit、调度和运行收敛 | install record、InstanceReport | 否 |
+| 9 | 执行 HTTP/Service/Agent 行为测试并收集日志 | DevTestReport | 否 |
+| 10 | 修改源码后重新 build，通过 update/reinstall 验证升级 | 新 plan、升级结果、回滚结果 | 否 |
+| 11 | 卸载测试 App，撤销 dev authority，清理 staging/临时文件 | CleanupReport | 否 |
+
+开发流程不得调用当前语义混合的 `app.publish` 来替代 build、stage 和 dev trust。正式 Publisher 是否可用，不应影响本地 App 的开发和测试。
+
+CI 使用相同流程，但 dev authority 的 scope 必须绑定当前 CI job，默认在 job 结束时失效。CI 不应注入生产 Owner key，也不应拥有 BNS 发布权限。
+
+### 3.6 本地开发测试所需工具清单
+
+| 工具能力 | 作用 | 应复用的系统边界 |
+|---|---|---|
+| Dev environment control | 启动、停止、重装和检查本地 BuckyOS/DV 环境 | `start.py`、`check.py`、`stop.py` 等开发脚本 |
+| App initializer/template | 创建 AppDoc 模板、标准目录和示例入口 | 共享 App schema |
+| App lint | 在打包前检查 AppDoc、AppName、Package Namespace、selector、权限和输入布局 | 共享 validation core |
+| PKG packer | 构造单个 subpackage、PackageMeta 和内容 ID | 共享 packaging core |
+| PIKG packer | 构造完整或目标平台部分 PIKG | 共享 PIKG core |
+| Offline verifier | 重开产物并校验结构、Object ID、Digest 和内容索引 | 与 Installer 共用 verifier |
+| Local staging client | 上传本地 PIKG，获得不可猜测、不可越界的 staging handle | Control Panel staging API |
+| Dev authority manager | 创建、查询、续期和撤销 scoped dev evidence | Zone Resolver/local authority 管理 API |
+| Preflight client | 从 staging handle/identifier 构造并展示 InstallPlan | Installer Resolve/Inspect |
+| Install client | 创建、confirm、retry、cancel、update、uninstall 安装 Task | 标准 `apps.*` RPC |
+| Task watcher | 展示 stage、readiness、下载进度、错误和用户动作 | TaskManager + 安装 status snapshot |
+| Runtime observer | 查询 AppSpec、NodeConfig、InstanceReport、ServiceInfo 和 URL | Control Panel/system-config 只读 API |
+| Log and probe tool | tail 日志，执行 HTTP、端口、健康检查和 Agent 行为测试 | Control Panel logs + App 测试入口 |
+| Cleanup tool | 卸载 App、撤销 dev authority、清理 staging 和临时构建产物 | Installer、dev authority、staging API |
+| Test orchestrator | 按 Web、Script、Docker、Agent 和多架构矩阵执行完整流程 | 只编排以上工具，不复制业务逻辑 |
+
+“完整本地开发工具”是上述能力的统一入口，不要求每项都成为独立二进制。它们可以由一个 CLI 的多个子命令组合，但底层必须调用共享库和正式服务接口。
+
+### 3.7 建议命令边界
 
 命令名称可以后续确定，但能力上至少需要：
 
 ```text
-app pkg pack       # 构造一个最小 subpackage 和 PackageMeta
-app pikg pack      # 从 AppDoc candidate 和若干 subpackage 构造 PIKG
-app verify         # 验证 AppDoc、AppName、PackageMeta、PIKG 和内容完整性
-app build          # 编排以上纯本地步骤，生成完整 dist 目录
+app init                # 创建 AppDoc 模板和标准源码目录
+app lint                # 无副作用验证 AppDoc、名字、权限和输入布局
+app pkg pack            # 构造一个最小 subpackage 和 PackageMeta
+app pikg pack           # 从 candidate 和若干 subpackage 构造 PIKG
+app verify              # 离线验证 AppDoc、PackageMeta、PIKG 和内容
+app build               # 编排纯本地构建步骤，生成完整 dist 目录
+
+app dev env up          # 启动/连接本地开发 Zone
+app dev stage           # 上传 PIKG，换取 staging handle
+app dev trust           # 创建 scoped dev authority；不读取发布密钥
+app inspect             # 构造并展示 InstallPlan
+app install             # 通过标准 Installer 创建安装 Task
+app task watch          # 查看 stage、进度、错误和待确认动作
+app status              # 查看 AppSpec、Instance 和健康状态
+app logs                # tail App/Instance 日志
+app test                # 执行声明式 smoke/integration tests
+app dev update          # 重新 build 并测试升级/回滚
+app dev clean           # 卸载并撤销 dev authority、staging 和临时数据
 ```
 
-这些命令应能在未启动 BuckyOS 的开发机或 CI 中运行。相同输入和相同构建参数应尽量得到可复现的内容身份。
+`init/lint/pkg pack/pikg pack/verify/build` 应能在未启动 BuckyOS 的开发机或 CI 中运行。`dev stage` 之后的命令显式连接本地开发 Zone，只要求本地会话和开发权限，不要求生产发行密钥。相同输入和相同构建参数应尽量得到可复现的内容身份。
 
-### 3.5 当前实现与缺口
+### 3.8 当前实现与缺口
 
 当前可复用能力包括：
 
 - `buckycli pack_pkg` 可以构造最小 PKG，但属于旧 CLI 流程；
 - Control Panel 中的 `PikgBuilder` / `PikgReader` 已实现 PIKG 构造和严格验证；
-- `test/app_installer_test/generate_pikg_samples.mjs` 可以自动生成测试样例。
+- `test/app_installer_test` 已覆盖 build candidate、种入 Resolver 证据、`apps.install_package`、confirm、等待运行证据和可选卸载的主要闭环；
+- `start.py`、`check.py` 和 `stop.py` 已能管理本地开发环境；
+- Control Panel 已有安装 Task、系统日志和应用生命周期 RPC。
 
 主要缺口是：
 
 - `PikgBuilder` / `PikgReader` 位于 Control Panel 内部，不是开发工具可直接复用的库；
 - 样例生成器依赖运行中的 Control Panel、Repo Service 和认证环境；
+- 当前测试通过 `app.publish` 构建 PIKG，并尝试读取 zone owner 或 device 私钥换取登录 token；即使这些密钥没有用于发布 AppDoc，这仍让开发流程依赖敏感凭证和复合 Publisher；
+- Resolver 开发证据目前由测试以 root 权限直接写 `resolver/cache/*`，缺少带 scope、过期和自动清理的 dev authority 管理接口；
+- 协议要求的本地 PIKG 上传通道尚不完整，测试主要复用 `app.publish` 返回的内部 staging handle；
 - `buckycli` 与 Control Panel 各自实现了一套 tar.gz 打包；
 - AppDoc、AppName 和 Package Namespace 验证没有统一的无副作用入口；
+- Task、日志、运行状态、升级、卸载和清理能力分散，没有形成一个完整的 `app dev` 工作流；
 - 当前 `app.publish` 接收服务端 `local_dir` 并同时打包、写 NamedStore 和生成 PIKG，跨越了开发与运维两个边界。
 
 ## 4. 运维用工具
@@ -426,6 +570,14 @@ Scheduler 和 Node Daemon 不得：
 3. 让 Publisher 和 Installer 使用同一套验证函数。
 4. 清理 `buckycli pub_pkg/pub_app`、旧 Repo release 选择和重复 tar 打包代码。
 
+### P1：建立完整本地开发测试闭环
+
+1. 建立正式的 PIKG 本地上传/staging API，不再通过 `app.publish` 取得内部 handle。
+2. 建立 scoped dev authority 管理 API，支持创建、查询、续期、撤销和自动过期。
+3. 提供统一的 `app dev` CLI，编排 build、stage、trust、inspect、install、watch、logs、test、update 和 clean。
+4. 改造 `app_installer_test`，使用本地测试会话和 dev authority，不再读取生产 Owner 私钥或依赖正式 Publisher。
+5. 让本地开发和 CI 使用同一流程；CI job 结束时自动撤销 dev authority 并清理测试 App。
+
 ### P1：建立真正的运维发布工作流
 
 1. 把当前 `app.publish` 拆为本地 build、内容 deploy、AppDoc sign、BNS publish 四个显式步骤。
@@ -447,7 +599,11 @@ Scheduler 和 Node Daemon 不得：
 - 在未启动 BuckyOS、没有发行密钥的机器上可以构造和验证 PIKG；
 - 构建过程不写 NamedStore、Repo、BNS 或 system-config；
 - Builder 与 Installer 对同一个产物给出一致的验证结果；
-- 输出不包含服务端本地路径和凭证。
+- 输出不包含服务端本地路径和凭证；
+- 在没有生产 Owner/BNS 私钥的情况下，可以完成 staging、dev trust、InstallPlan、安装、运行测试、更新和清理；
+- 开发工具只使用本地登录会话和有 scope 的 dev authority，不能把 candidate 标记为公开 `Active`；
+- 测试结束后能够撤销 dev authority，并清理安装 Task、测试 App 和 staging 临时文件；
+- 相同的工具链可以在开发机和 CI 中运行，CI 不持有正式发布权限。
 
 ### 运维发布工具
 
@@ -497,4 +653,3 @@ Scheduler 和 Node Daemon 不得：
 - [BuckyOS App 安装流程](BuckyOS%20App安装流程.md)：Repo 内容原语、证明和 App 生命周期背景；其中旧安装接口描述应以 v0.5 协议为准。
 - [App PKG System](app-pkg-system.md)：PackageEnv、Repo、Node Daemon 和升级模型的历史设计背景。
 - [publish_app_to_repo local_dir 格式](../repo_service/publish_app_to_repo_local_dir格式说明.md)：当前复合 Publisher 的输入布局。
-

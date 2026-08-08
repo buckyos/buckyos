@@ -21,12 +21,32 @@
 >   `--worksession-task-test` 直投入口删除。
 > - 遗留：Control Panel 默认路由配置面 / WebUI Task Center dispatch 观察面 / websdk 封装 /
 >   DV 环境故障注入（M3 的进程级验收）未做。
-> - 同日增量设计（**未实施**）：人工放行审批门（`PendingApproval` +
+> - 同日增量：人工放行审批门（`PendingApproval` +
 >   per-target `DispatchApprovalPolicy::{Never,InteractiveCallers,AllCallers}` +
 >   `approve_dispatch`/`deny_dispatch`），解决低权限提交→高权限执行需显式人工决策；
->   设计已并入 `doc/task_mgr/task_dispatch_center.md`（§7.1 汇总，§10 M4 实施清单）。
->   落地时注意：accept/claim 状态守卫必须补排除 `PendingApproval`（现 late-accept
->   守卫允许 Queued/Uncertain，会被 Target owner 绕过审批门）。
+>   设计并入 `doc/task_mgr/task_dispatch_center.md`（§7.1 汇总，§10 M4 实施清单），
+>   **当日已实施（M4）**：
+>   - 协议：`DispatchStatus::PendingApproval`（不进 `is_assignable`）、
+>     `DispatchApprovalPolicy`（默认 `Never`）、`DispatchApproval`/`ApprovalDecision`、
+>     `DispatchRejectReason::ApprovalDenied`、approve/deny RPC + client、
+>     `/task_dispatcher/approvals` 通道 id。
+>   - 存储：schema v1→v2（`TASK_DISPATCHER_RDB_SCHEMA_VERSION=2`，
+>     `dispatch_record.approval` 列），旧库 open 时就地 `ALTER TABLE` 迁移
+>     （DDL override 过期也兜底）；cancel/expire/due-deadline SQL 全部覆盖
+>     `PendingApproval`；`approve_pending`/`deny_pending` 条件 UPDATE。
+>   - 服务：落库按 policy + 直接调用者分级定初始状态；held 记录不评估、不
+>     offer、不占并发、只发 approvals 提示（payload 仅 ids）；approve→Queued+
+>     evaluate（幂等）；deny→Rejected(approval_denied) 终态（幂等）；提交者可
+>     cancel 撤回；`expires_at` 覆盖审批等待；**accept/reject 服务层显式排除
+>     `PendingApproval`（原 late-accept 绕过审批门的缺口已封）**，store 层条件
+>     UPDATE 双重守卫；审批权 = `is_approval_admin`（zone 可信或 sudo 会话，
+>     与 `InteractiveCallers` 豁免同一判定），`RequestContext` 新增 `sudo` 位。
+>   - 可见性边界定案：门封死接收通道；zone 可信 get/list 只读可见性不收窄
+>     （文档 §7.1/§12 已写明，读取面脱敏列后续扩展）。
+>   - 测试：dispatcher 单测 25→31（hold/approve/deny/cancel/expire、豁免矩阵、
+>     不占并发、审计链、approvals 通道、v1 就地迁移），buckyos-api 协议 5 项
+>     扩展后全绿；OpenDAN `agent.delegate/v1` 注册显式 `approval_policy=Never`。
+>   - 未做：Control Panel 审批面 UI（与默认路由配置面同属管理面遗留）。
 
 > 背景：TaskMgr 原本是长任务、可恢复任务的统一基础设施，但当前 `runner`、
 > `task_ready`、Pending 扫描等能力已经让它逐渐承担生产者消费者队列和跨服务调度职责。
@@ -42,8 +62,8 @@
 
 ## 当前实现进度核查（2026-08-07）
 
-核查基线：当前仓库 `5862bc6e`（`impl task dispatch center`）及工作区中已并入设计文档、
-但尚未编码的 M4 审批门设计。进度口径以代码、测试和部署接线为准；“里程碑代码已合入”
+核查基线：当前仓库 `5862bc6e`（`impl task dispatch center`）+ 工作区中同日实施的
+M4 审批门代码。进度口径以代码、测试和部署接线为准；“里程碑代码已合入”
 不等于该里程碑的全部设计验收条件已经满足。
 
 | 范围 | 当前状态 | 已核实实现 | 尚未闭环 |
@@ -51,14 +71,17 @@
 | M1 Dispatcher 内核 | **主体已实现，验收部分完成** | 协议/client/Target SDK、独立 RDB、第二 RPC path、默认路由与 Target 黏着、集中指派、lease/expiry/Uncertain、启动恢复、kevent 加速 + sweep、scheduler/gateway 接线 | 管理权限仍只有粗粒度 `zone_trusted`；幂等重放未比较完整不可变信封；状态迁移与审计事件未原子提交；late accept/reject 的实例归属与状态守卫需收紧 |
 | M2 OpenDAN Target | **接入主链已实现，幂等与业务鉴权部分完成** | `agent.delegate/v1` 注册、attach/renew/claim/accept 循环、owner-only recovery、旧 TaskMgr 伪 inbox 与直投测试入口删除 | 文件绑定不是与 Task 创建原子提交，且当前写法没有 fsync、损坏时从空状态继续；接收侧只校验 envelope 非空与 input schema，尚无可验证的原始授权证据/per-agent 业务策略；无 Adapter 直接单测和进程级故障注入 |
 | M3 故障注入 | **未执行** | 协议级单测覆盖了部分状态迁移和重启恢复 | OpenDAN/Dispatcher/kevent/TaskMgr 多进程组合的离线、重启、ACK 丢失、崩溃窗口和暂停恢复尚未在 DV 环境验收 |
-| M4 人工放行 | **设计完成，未实现** | 状态机、策略、RPC、审计和 UI 需求已写入定稿设计 | 协议类型、schema migration、服务逻辑、管理 UI、通知和单测均不存在 |
+| M4 人工放行 | **已实现（除管理 UI）** | 协议类型、schema v1→v2 就地迁移、hold/approve/deny/cancel/expire 服务逻辑、接收侧 `PendingApproval` 守卫、approvals 提示通道、sudo 审批权判定、6 项单测（含迁移测试） | Control Panel 审批面 UI；per-operation `approval_policy` 覆盖（设计列为后续扩展） |
 | 调用方与观察面 | **未开始/未迁移** | Rust client 可供调用 | Workflow 尚未调用 Dispatcher，send-message 仍有 TaskMgr `list_tasks` 扫描；Control Panel 默认路由/审批面、WebUI Task Center dispatch 观察面和 websdk 均不存在 |
 
 本轮实际验证：
 
-- [x] `cargo test -p task_manager dispatcher:: -- --nocapture`：25 passed，0 failed，
-  40 filtered；有 2 个 `dispatcher/mod.rs` 未使用 re-export warning。
-- [x] `cargo test -p buckyos-api task_dispatcher::tests`：5 passed，0 failed，122 filtered。
+- [x] `cargo test -p task_manager dispatcher:: -- --nocapture`：M4 落地后 31 passed
+  （原 25 + 审批门 6），0 failed，40 filtered；有 2 个 `dispatcher/mod.rs` 未使用
+  re-export warning。全量 `cargo test -p task_manager` 71 passed，0 failed。
+- [x] `cargo test -p buckyos-api task_dispatcher::tests`：5 passed（已扩展覆盖
+  PendingApproval round-trip / approval_policy 默认值 / approvals 通道 id），0 failed，
+  122 filtered。
 - [x] `cargo test -p opendan dispatch`：构建通过；lib 10 passed、0 failed、242 filtered，
   bin 0 passed、10 filtered；有 2 个 `main.rs` 未使用 import warning。当前没有
   `dispatch_adapter.rs` 自身的单元测试。
@@ -67,7 +90,8 @@
 
 ### 设计与实现 review 后的闭环清单
 
-P0（进入高权限 operation 或实施 M4 前必须解决）：
+P0（生产环境启用高权限 operation 前必须解决；M4 已于 2026-08-07 实施，其中
+可见性边界项已随实施定案）：
 
 - [ ] **定义 Target 二次业务鉴权的证据链。** 定稿设计要求 Target 对 envelope 再做完整
   业务鉴权，但当前 envelope 只有 Dispatcher 写入的身份快照，没有原 token、可验证授权
@@ -77,10 +101,11 @@ P0（进入高权限 operation 或实施 M4 前必须解决）：
   `list/get_target`、`resolve_uncertain` 都只要求 `zone_trusted`，因此任意 Target owner
   也是路由管理员，与“Target owner 不能把自己设为默认后端”的设计不一致。应接 RBAC/
   zone-owner/system-config-admin capability，并补“Target owner 无管理权”的回归测试。
-- [ ] **重新定义 M4 的可见性边界。** 设计一处写“Target owner 可在 list 看到
-  PendingApproval”，另一处又要求“executor 全程不可见/请求不该到达 executor”；当前
-  所有 `zone_trusted` 调用者可读全部 DispatchRecord（含 input）。实施前必须决定审批门
-  只阻止执行，还是也阻止 Target 读取，并据此做权限分面或字段脱敏。
+- [x] **重新定义 M4 的可见性边界。**（2026-08-07 定案并随 M4 实施）审批门只封
+  **接收通道**：评估/offer/target 通知/claim/accept/reject 对未放行记录全部不可达；
+  zone 可信调用者 get/list 的只读可见性遵循既有查询授权，不因审批门收窄——
+  “executor 全程不可见”指接收循环，不指 list 查询。对 owner 隐藏未放行 input 属
+  读取面脱敏，列为后续扩展。文档 §7.1 边界口径与 §12 决策记录已同步。
 - [ ] **让 OpenDAN 的 `IdempotentAccept` 契约可证明。** 当前 JSON 文件 `write + rename`
   没有 fsync，解析失败会静默从空绑定开始，TaskMgr 建 Task 与落绑定也不在同一事务；
   owner-task 扫描只能缩小崩溃窗口，不能证明“最多一个 Task”。需要可原子声明
@@ -95,8 +120,11 @@ P1（M1 完整验收前应解决）：
 - [ ] 明确 late accept 的合法凭证并收紧状态守卫：当前任意有效同 Target instance 都可从
   `Queued`/`WaitingForTarget`/`Uncertain` accept，reject 也允许未 Offered 的记录；这会绕过
   集中指派、offer instance 和 capacity 约束。M4 不能只增加 `PendingApproval` 排除。
-- [ ] M4 新增状态、策略与 `approval` 列时提升 Dispatcher schema version 并写迁移；不能
-  继续把增加列后的结构称为 schema version 1。
+  （M4 已落地 `PendingApproval` 的服务层显式排除 + store 条件 UPDATE 双重守卫，
+  审批门缺口已封；Queued/WaitingForTarget/Uncertain 的 late-accept 收紧仍未做）
+- [x] M4 新增状态、策略与 `approval` 列时提升 Dispatcher schema version 并写迁移。
+  （已做：`TASK_DISPATCHER_RDB_SCHEMA_VERSION` 1→2，`dispatch_record.approval` 列，
+  open 时就地 `ALTER TABLE` 迁移并有 v1 库迁移单测；DDL override 过期时兜底）
 
 ## 0. 需要冻结的结论
 
@@ -233,38 +261,47 @@ Pending Task。这已经等价于一个缺少严格队列边界的生产者消�
 ## 2. 下一版本 Dispatch Center 的职责边界
 
 第 2～6 节描述下一版本 Workflow 所需的 Dispatch Center，不是 beta 2.2 的交付项或现有
-TaskMgr 用户的迁移清单。
+TaskMgr 用户的迁移清单。2026-08-07 Dispatcher 提前实现后，本节同时作为实现核对表：
+`[x]` 表示 `src/kernel/task_manager/src/dispatcher/` 或共享协议已有代码与单测依据；跨
+Workflow/OpenDAN/RBAC 的端到端条件仍保持未勾选，并在条目后注明已完成的内核部分。
 
 ### 2.0 使用门槛
 
 只有普通业务 RPC 无法覆盖，并且确实需要以下能力时，才应引入 Dispatcher：
 
-- [ ] Caller 提交后，即使 Target 当前离线，请求也必须由独立组件持久保留。
-- [ ] Target 的一个或多个实例需要异步 claim，并受 lease、capacity、instance epoch 约束。
-- [ ] 系统必须处理 offer/accept ACK 丢失、交接重放和 `dispatch_id` 级幂等。
+- [x] Caller 提交后，即使 Target 当前离线，请求也由 Dispatcher 独立持久保留。
+  （无实例时 `WaitingForTarget`，启动恢复与 Target 上线后重评估已有单测）
+- [x] Target 的一个或多个实例异步 claim，并受 lease、capacity、instance epoch 约束。
+- [x] Dispatcher 内核处理 offer/accept ACK 丢失、交接重放和 `dispatch_id` 级幂等。
+  （同 `dispatch_id` late/replayed accept、offer lease redelivery、`IdempotencyContract::None`
+  进入 `Uncertain` 已实现；Target 端“最多一个业务 Task”仍见 §4.3 未完成项）
 - [ ] Workflow 需要独立审计“谁把什么工作交给了哪个 Target”，且该交接生命周期独立于业务 Task。
+  （Dispatcher 已持久化 auth/workflow_ref 与 dispatch_event；Workflow 尚未接入，且状态迁移与
+  audit event 尚未原子提交）
 
 以下情况不使用 Dispatcher：在线 Target 的普通业务调用、Service 自己的后台任务、Service
 内部 Task 恢复、Task 状态查询，以及通过 owner 业务 API 完成的取消/重试/审批。
 
 ### 2.1 应负责
 
-- [ ] 持久化 Target/Capability 注册信息。
-- [ ] 管理 Target 在线实例、lease、capacity 和实例 epoch。
-- [ ] 持久化 DispatchRecord，并管理 offer/claim/accept/reject/cancel/expiry 状态机。
-- [ ] Target 离线时保留等待记录；Target 上线或恢复后唤醒对应记录。
-- [ ] 提供投递审计：谁、代表谁、通过哪个 Workflow/Run/Step、向哪个 Target 投递了什么操作。
-- [ ] 管理“接收前”的 delivery retry，防止重复接收造成重复业务 Task。
-- [ ] 在 `Accepted` 后保存 `target_task_id`，供调用方建立关联和继续观察。
+- [x] 持久化 Target/Capability 注册信息。（`dispatch_target.registration` JSON + owner/enabled 列）
+- [x] 管理 Target 在线实例、lease、capacity 和实例 epoch。
+- [x] 持久化 DispatchRecord，并管理 offer/claim/accept/reject/cancel/expiry 状态机。
+- [x] Target 离线时保留等待记录；Target 上线或恢复后唤醒对应记录。
+- [x] 提供最小投递审计：auth envelope 记录谁、代表谁、Workflow/Run/Step 和目标操作，
+  `dispatch_event` 记录状态迁移。（事件与状态变更非同一事务，完整可靠性仍见文首 P1）
+- [x] 管理“接收前”的 delivery retry，并用 Target 的 `IdempotencyContract` 决定自动重投或
+  进入 `Uncertain`。（不重复业务 Task 仍依赖 Target 侧契约）
+- [x] 在 `Accepted` 后保存 `target_task_id`，供调用方建立关联和继续观察。
 
 ### 2.2 不应负责
 
-- [ ] 不保存业务 Task 的完整进度、checkpoint 或输出。
-- [ ] 不代替 Target 做业务鉴权。
-- [ ] 不把业务执行失败自动解释成需要重新 dispatch。
-- [ ] 不实现 Workflow DSL、条件分支、补偿或 schedule 语义。
-- [ ] 不承担通用节点资源放置；资源调度仍属于 Scheduler。
-- [ ] 不承诺通用分布式事务或 exactly-once 业务执行。
+- [x] 不保存业务 Task 的完整进度、checkpoint 或输出。
+- [x] 不代替 Target 做业务鉴权。（只做 Dispatcher ACL；Target 二次鉴权证据链仍待定义）
+- [x] 不把业务执行失败自动解释成需要重新 dispatch。
+- [x] 不实现 Workflow DSL、条件分支、补偿或 schedule 语义。
+- [x] 不承担通用节点资源放置；资源调度仍属于 Scheduler。
+- [x] 不承诺通用分布式事务或 exactly-once 业务执行。
 
 ### 2.3 Workflow 中保留的能力
 
@@ -273,7 +310,7 @@ TaskMgr 用户的迁移清单。
 - [ ] `operator::`、人工等待和 Workflow 进程内 adapter 继续由 Workflow 自己管理。
 - [ ] 能同步完成的 `service::` / `http::` / `func::` adapter 可继续直接调用。
 - [ ] 需要离线等待、异步领取、跨进程恢复的 target 改为调用 Dispatch Center。
-- [ ] 共享 Dispatch 协议类型放到 `buckyos-api`，禁止让 TaskMgr 反向依赖 Workflow crate。
+- [x] 共享 Dispatch 协议类型放到 `buckyos-api`，TaskMgr/Dispatcher 未反向依赖 Workflow crate。
 
 ## 3. Target 注册模型
 
@@ -295,10 +332,14 @@ pub struct TargetRegistration {
 ```
 
 - [ ] 系统 Target 的 capability 以签名 ServiceDoc/system-config 等可信配置为真相源。
-- [ ] 动态实例不能自行声明超出 TargetRegistration 的 operation 或权限。
-- [ ] 注册和更新必须绑定调用者的已认证 Service 身份，禁止冒充其他 target。
+- [x] 动态实例不能自行声明超出 TargetRegistration 的 operation 或权限。
+  （attach 只接收 `target_id + capacity`，operation 清单只来自持久注册）
+- [x] 注册和更新绑定调用者的已认证 Service 身份，禁止更新其他 owner 已注册的 target。
+  （owner 字段由验签身份覆盖；首次注册 target_id 的外部可信来源仍是上一条未完成项）
 - [ ] operation 包含版本化 input/output schema，不再接受任意 `task_type + data`。
-- [ ] 未注册 target 的 dispatch 请求必须立即失败，不能落成无人负责的普通 Task。
+  （operation 名称当前只强制包含 `/`，约定使用 `name/vN`，并注册为封闭清单；但
+  schema_ref 仍可选、无 output schema，Dispatcher 不执行 schema 校验）
+- [x] 未注册、未启用或不支持 operation 的 target dispatch 立即失败，不落等待记录。
 
 ### 3.2 临时 TargetInstance
 
@@ -313,10 +354,11 @@ pub struct TargetInstance {
 }
 ```
 
-- [ ] Target 实例上线时 register/attach，在线期间 renew lease，下线或过期后不再接收 offer。
-- [ ] 同一 Target 多实例的挑选策略明确为 round-robin、least-loaded 或 operation 自定义策略之一。
-- [ ] instance epoch 防止旧连接或暂停后恢复的实例继续 claim 新记录。
-- [ ] Target 注册、实例上线、capacity 释放都能定向唤醒等待中的 DispatchRecord。
+- [x] Target 实例上线时 register/attach，在线期间 renew lease，下线或过期后不再接收 offer。
+- [x] 同一 Target 多实例支持 `RoundRobin`（默认）或 `LeastLoaded` 集中指派。
+- [x] instance epoch 防止旧连接或暂停后恢复的实例继续 claim/accept/reject 新记录。
+- [x] Target 注册、实例 attach/renew/detach、accept/reject 释放 capacity 都会触发
+  `evaluate_target(target_id)`，重评估该 Target 的等待记录。
 
 ## 4. Dispatch 协议与状态机
 
@@ -346,8 +388,12 @@ pub struct DispatchRequest {
 - input digest、schema version、创建时间和过期时间。
 
 - [ ] Workflow 只能传递已有身份和授权证据，不能把普通用户请求“洗”为 system 身份。
+  （Dispatcher 已拒绝普通调用者代填 `on_behalf_of`；原始授权证据/可验证引用尚未进入 envelope）
 - [ ] Dispatch Center 校验 target/operation ACL；Target 接收时再次执行完整业务鉴权。
+  （Dispatcher ACL 已完成；Target 二次业务鉴权的证据链和 OpenDAN policy 未完成）
 - [ ] 请求信封创建后不可修改；重试复用同一个 `dispatch_id` 和 idempotency key。
+  （记录不可变与同 key 返回原 dispatch 已实现；replay conflict 尚未比较 `expires_at`、
+  `workflow_ref`，因此完整信封验收未过）
 
 ### 4.2 独立状态机
 
@@ -363,11 +409,12 @@ Queued / WaitingForTarget / Offered
   -> Rejected | Expired | Canceled | Uncertain
 ```
 
-- [ ] `WaitingForTarget` 表示 target 已注册但当前没有可用实例/capacity。
-- [ ] `Offered` 带 offer lease；超时后可以按同一 dispatch 重新 offer。
-- [ ] `Accepted` 是 Dispatch Center 的正常终态，不继续复制目标 Task 的完整状态机。
-- [ ] `Rejected` 区分 schema/auth/policy/business-precondition 等稳定拒绝原因。
-- [ ] `Uncertain` 表示 Target 可能已经创建 Task 但接收确认丢失，禁止盲目创建第二个业务 Task。
+- [x] `WaitingForTarget` 表示 target 已注册但当前没有可用实例/capacity。
+- [x] `Offered` 带 offer lease；超时后按同一 dispatch 重新 offer，并受 delivery 次数上限约束。
+- [x] `Accepted` 是 Dispatch Center 的正常终态，不继续复制目标 Task 的完整状态机。
+- [x] `Rejected` 区分 schema/auth/policy/business-precondition 等稳定拒绝原因。
+- [x] `Uncertain` 表示 Target 可能已经创建 Task 但接收确认丢失，禁止自动重投；由
+  `resolve_uncertain` 或受控 late accept 收敛。
 
 ### 4.3 接收幂等契约
 
@@ -382,8 +429,11 @@ Target 接收必须满足：
 - [ ] Target 在自己的持久存储中原子保存 `dispatch_id -> target_task_id` 绑定。
 - [ ] Target 先重新鉴权，再幂等创建自己的 Task，然后返回 `accept`。
 - [ ] Task 已创建但 ACK 丢失时，重新投递返回原 `target_task_id`。
-- [ ] 无法满足幂等接收契约的 Target 不允许使用自动重新 offer；进入 `Uncertain` 后人工/业务恢复。
-- [ ] 区分 delivery retry 与 business retry：前者只发生在 `Accepted` 之前，后者由 Workflow 或 Target 的业务策略决定。
+  （Dispatcher 支持相同 task_id 的 accept replay；OpenDAN 绑定持久性的端到端验收未过）
+- [x] 无法满足幂等接收契约的 Target 声明 `IdempotencyContract::None` 后不自动重新 offer；
+  offer lease 过期进入 `Uncertain`，由管理/业务恢复。
+- [x] 区分 delivery retry 与 business retry：前者只发生在 `Accepted` 之前且复用
+  `dispatch_id`；Dispatcher 在 `Accepted` 后不观察或重启业务 Task。
 
 ## 5. 离线领取与内部扫描
 
@@ -399,12 +449,15 @@ Target 离线时推荐流程：
 7. Target accept(dispatch_id, target_task_id)
 ```
 
-- [ ] “查询尚未 dispatch 的记录”只作为 Dispatch Center 内部 Store 接口，不再暴露为通用 TaskMgr 接口。
-- [ ] Dispatch Center 可以内部轮询 DispatchRecord，因为这是单一权威组件内的恢复循环，不是多个服务跨进程扫 TaskMgr。
-- [ ] 正常路径优先使用数据库通知/内存唤醒：record insert、target register、lease/capacity 变化时触发。
-- [ ] 使用 timer/最小堆处理最近 due time、offer lease 和 expiry；启动时做一次恢复扫描。
-- [ ] 保留基于索引的低频 due scan 作为丢通知和进程恢复兜底，禁止无条件高频全表扫描。
-- [ ] Target 使用定向 stream、long-poll 或 KEvent 加 `claim_next(target_id, instance_id)`，不再调用 `TaskMgr.list_tasks`。
+- [x] “查询尚未 dispatch 的记录”只存在于 Dispatch Store 内部，不暴露为通用 TaskMgr 接口。
+- [x] Dispatch Center 在单一权威组件内扫描 DispatchRecord 做恢复，不让多个服务跨进程扫 TaskMgr。
+- [x] 正常路径由 record insert、target register、instance/capacity 变化直接触发定向
+  `evaluate_target`；KEvent 只负责加速 Target 拉取。
+- [x] 使用 earliest-deadline timer 处理 offer lease、请求 expiry 和 instance lease，并在
+  启动时恢复扫描。（当前通过索引 + SQL `MIN` 计算最近 deadline，不维护内存最小堆）
+- [x] 保留最长 60s 的低频 maintenance sweep 作为丢通知和 timer 漂移兜底，未做高频全表扫描。
+- [x] Target 接收使用定向 KEvent + `claim_next(target_id, instance_id, lease_epoch)`，不再以
+  `TaskMgr.list_tasks` 作为外部工作 inbox。（OpenDAN 仅为自身幂等崩溃恢复扫描 own tasks）
 
 ## 6. Task 树与跨所有者关联
 
@@ -417,9 +470,11 @@ Workflow-owned step/mirror task
 ```
 
 - [ ] Workflow 保留自己拥有的 step/mirror Task，用于流程树展示和恢复。
-- [ ] Target 接收后创建自己拥有的 execution Task。
-- [ ] 通过不可变 `dispatch_id + target_task_id` link 展开查询，不共享 Task 写权限。
-- [ ] 如确实需要跨所有者 parent/subtask，另行设计受限的 attach capability，不能靠伪造 owner/parent 建立。
+- [x] 首个 Target OpenDAN 接收后创建自己 app/业务用户名下的 execution Task。
+- [x] Dispatcher 通过不可变 `dispatch_id + target_task_id` link 建立关联，不共享 Task 写权限、
+  不复制目标 Task 状态。
+- [x] 当前实现未引入跨所有者 parent/subtask 或伪造 owner/parent；如未来需要仍须另行设计
+  受限 attach capability。
 
 ## 7. 实施阶段
 
@@ -507,8 +562,9 @@ Workflow-owned step/mirror task
 - [ ] 相同 `dispatch_id` 重放返回同一个 `target_task_id`。
   （Dispatcher accept replay 已过单测；OpenDAN 文件绑定的崩溃/损坏路径未达到可证明口径）
 - [ ] 低权限调用者不能经 Workflow/Dispatcher 触发高权限 operation。
-  （`ZoneTrustedOnly` 与 `on_behalf_of` 反洗白已过单测；`ZoneUsers` 高权限 operation 仍依赖
-  未实现的 M4，以及尚未定义证据链的 Target 二次业务鉴权）
+  （`ZoneTrustedOnly` 与 `on_behalf_of` 反洗白已过单测；M4 审批门已实施并过单测——
+  `ZoneUsers + InteractiveCallers/AllCallers` 可拦低权限直触；尚未定义证据链的
+  Target 二次业务鉴权仍未闭环，故整条验收保持未勾）
 - [ ] Task Service 与 Dispatch Center 即使同进程，也有独立的数据模型、RPC 和授权规则。
   （数据模型/RPC 已独立；route/admin capability 尚未与通用 `zone_trusted` 分离）
 - [x] delivery retry 和 business retry 有可测试的明确分界。（Accepted 终态后 maintenance 不再触碰；重投只发生在 Accepted 前且复用 dispatch_id）

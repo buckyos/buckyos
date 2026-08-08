@@ -5,10 +5,11 @@
 //! unix milliseconds.
 
 use buckyos_api::{
-    get_rdb_instance, DispatchAuthEnvelope, DispatchRecord, DispatchRejectReason, DispatchStatus,
-    OperationRoute, RdbBackend, TargetInstance, TargetRegistration, TargetSelection,
-    TASK_DISPATCHER_RDB_INSTANCE_ID, TASK_DISPATCHER_RDB_SCHEMA_POSTGRES,
-    TASK_DISPATCHER_RDB_SCHEMA_SQLITE, TASK_MANAGER_SERVICE_NAME,
+    get_rdb_instance, DispatchApproval, DispatchAuthEnvelope, DispatchRecord,
+    DispatchRejectReason, DispatchStatus, OperationRoute, RdbBackend, TargetInstance,
+    TargetRegistration, TargetSelection, TASK_DISPATCHER_RDB_INSTANCE_ID,
+    TASK_DISPATCHER_RDB_SCHEMA_POSTGRES, TASK_DISPATCHER_RDB_SCHEMA_SQLITE,
+    TASK_MANAGER_SERVICE_NAME,
 };
 use log::*;
 use serde_json::Value;
@@ -112,6 +113,41 @@ impl DispatchDb {
             });
         for statement in split_sql_statements(ddl) {
             self.pool.execute(statement.as_str()).await?;
+        }
+        self.migrate_schema().await?;
+        Ok(())
+    }
+
+    /// In-place migrations for stores created by an older schema (the DDL
+    /// above only creates missing tables). Runs unconditionally on open —
+    /// also when a stale DDL override still describes the old shape.
+    async fn migrate_schema(&self) -> DbResult<()> {
+        // v1 -> v2 (M4 approval gate): dispatch_record.approval column.
+        self.add_record_column_if_missing("approval", "TEXT").await
+    }
+
+    async fn add_record_column_if_missing(&self, column: &str, sql_type: &str) -> DbResult<()> {
+        match self.backend {
+            RdbBackend::Sqlite => {
+                let exists = sqlx::query(
+                    "SELECT 1 FROM pragma_table_info('dispatch_record') WHERE name = ?",
+                )
+                .bind(column.to_string())
+                .fetch_optional(self.pool())
+                .await?
+                .is_some();
+                if !exists {
+                    let sql = format!("ALTER TABLE dispatch_record ADD COLUMN {} {}", column, sql_type);
+                    self.pool.execute(sql.as_str()).await?;
+                }
+            }
+            RdbBackend::Postgres => {
+                let sql = format!(
+                    "ALTER TABLE dispatch_record ADD COLUMN IF NOT EXISTS {} {}",
+                    column, sql_type
+                );
+                self.pool.execute(sql.as_str()).await?;
+            }
         }
         Ok(())
     }
@@ -433,9 +469,9 @@ impl DispatchDb {
                 operation, status, input, auth, idempotency_key,
                 requested_by_user, requested_by_app, on_behalf_of,
                 offer_instance_id, offer_lease_expires_at, offer_delivery_count,
-                target_task_id, reject_reason, message, expires_at,
+                target_task_id, reject_reason, approval, message, expires_at,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         );
         sqlx::query(&sql)
             .bind(record.dispatch_id.clone())
@@ -455,6 +491,12 @@ impl DispatchDb {
             .bind(record.offer_delivery_count as i64)
             .bind(record.target_task_id)
             .bind(record.reject_reason.map(|r| r.to_string()))
+            .bind(
+                record
+                    .approval
+                    .as_ref()
+                    .and_then(|approval| serde_json::to_string(approval).ok()),
+            )
             .bind(record.message.clone())
             .bind(record.auth.expires_at.map(|v| v as i64))
             .bind(record.created_at as i64)
@@ -688,11 +730,14 @@ impl DispatchDb {
         Ok(result.rows_affected() > 0)
     }
 
+    /// `PendingApproval` is cancelable too: the submitter may withdraw a
+    /// record that is still waiting for a manual release.
     pub async fn mark_canceled(&self, dispatch_id: &str, now_ms: i64) -> DbResult<bool> {
         let sql = self.render_sql(
             "UPDATE dispatch_record
              SET status = 'Canceled', offer_lease_expires_at = NULL, updated_at = ?
-             WHERE dispatch_id = ? AND status IN ('Queued', 'WaitingForTarget', 'Offered')",
+             WHERE dispatch_id = ?
+               AND status IN ('PendingApproval', 'Queued', 'WaitingForTarget', 'Offered')",
         );
         let result = sqlx::query(&sql)
             .bind(now_ms)
@@ -702,6 +747,8 @@ impl DispatchDb {
         Ok(result.rows_affected() > 0)
     }
 
+    /// The request deadline also covers the approval wait: a record nobody
+    /// released in time expires like any other pre-accept record.
     pub async fn mark_expired(
         &self,
         dispatch_id: &str,
@@ -711,7 +758,8 @@ impl DispatchDb {
         let sql = self.render_sql(
             "UPDATE dispatch_record
              SET status = 'Expired', message = ?, offer_lease_expires_at = NULL, updated_at = ?
-             WHERE dispatch_id = ? AND status IN ('Queued', 'WaitingForTarget', 'Offered')",
+             WHERE dispatch_id = ?
+               AND status IN ('PendingApproval', 'Queued', 'WaitingForTarget', 'Offered')",
         );
         let result = sqlx::query(&sql)
             .bind(detail.to_string())
@@ -823,6 +871,54 @@ impl DispatchDb {
         rows.into_iter().map(record_from_row).collect()
     }
 
+    /// Manual release: PendingApproval -> Queued, recording the decision.
+    /// Conditional on the record still being held so approve can never race
+    /// past a concurrent cancel/expiry — and never touches the envelope.
+    pub async fn approve_pending(
+        &self,
+        dispatch_id: &str,
+        approval: &DispatchApproval,
+        now_ms: i64,
+    ) -> DbResult<bool> {
+        let approval_json = serde_json::to_string(approval).unwrap_or_else(|_| "{}".to_string());
+        let sql = self.render_sql(
+            "UPDATE dispatch_record
+             SET status = 'Queued', approval = ?, updated_at = ?
+             WHERE dispatch_id = ? AND status = 'PendingApproval'",
+        );
+        let result = sqlx::query(&sql)
+            .bind(approval_json)
+            .bind(now_ms)
+            .bind(dispatch_id.to_string())
+            .execute(self.pool())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Manual refusal: PendingApproval -> terminal Rejected(approval_denied).
+    pub async fn deny_pending(
+        &self,
+        dispatch_id: &str,
+        approval: &DispatchApproval,
+        now_ms: i64,
+    ) -> DbResult<bool> {
+        let approval_json = serde_json::to_string(approval).unwrap_or_else(|_| "{}".to_string());
+        let sql = self.render_sql(
+            "UPDATE dispatch_record
+             SET status = 'Rejected', reject_reason = ?, approval = ?, message = ?, updated_at = ?
+             WHERE dispatch_id = ? AND status = 'PendingApproval'",
+        );
+        let result = sqlx::query(&sql)
+            .bind(DispatchRejectReason::ApprovalDenied.to_string())
+            .bind(approval_json)
+            .bind(approval.note.clone())
+            .bind(now_ms)
+            .bind(dispatch_id.to_string())
+            .execute(self.pool())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn resolve_uncertain(
         &self,
         dispatch_id: &str,
@@ -865,10 +961,11 @@ impl DispatchDb {
     /// Pre-accept records whose request deadline has passed. `Uncertain` is
     /// deliberately excluded: the target may already own a task, so only
     /// `resolve_uncertain` (or a late target accept) may move it.
+    /// `PendingApproval` is included — the deadline covers the approval wait.
     pub async fn list_request_expired(&self, now_ms: i64) -> DbResult<Vec<DispatchRecord>> {
         let sql = self.render_sql(
             "SELECT * FROM dispatch_record
-             WHERE status IN ('Queued', 'WaitingForTarget', 'Offered')
+             WHERE status IN ('PendingApproval', 'Queued', 'WaitingForTarget', 'Offered')
                AND expires_at IS NOT NULL AND expires_at <= ?",
         );
         let rows = sqlx::query(&sql)
@@ -952,7 +1049,8 @@ impl DispatchDb {
         }
         let expires_sql = self.render_sql(
             "SELECT MIN(expires_at) AS deadline FROM dispatch_record
-             WHERE status IN ('Queued', 'WaitingForTarget', 'Offered') AND expires_at IS NOT NULL",
+             WHERE status IN ('PendingApproval', 'Queued', 'WaitingForTarget', 'Offered')
+               AND expires_at IS NOT NULL",
         );
         if let Some(deadline) = fetch_deadline(self.pool(), &expires_sql).await? {
             deadlines.push(deadline);
@@ -1083,6 +1181,7 @@ fn record_from_row(row: AnyRow) -> DbResult<DispatchRecord> {
     let offer_delivery_count: i64 = row.try_get("offer_delivery_count")?;
     let target_task_id: Option<i64> = row.try_get("target_task_id")?;
     let reject_reason: Option<String> = row.try_get("reject_reason")?;
+    let approval_str: Option<String> = row.try_get("approval")?;
     let message: Option<String> = row.try_get("message")?;
     let created_at: i64 = row.try_get("created_at")?;
     let updated_at: i64 = row.try_get("updated_at")?;
@@ -1109,6 +1208,15 @@ fn record_from_row(row: AnyRow) -> DbResult<DispatchRecord> {
     let reject_reason = reject_reason
         .as_deref()
         .and_then(|value| DispatchRejectReason::from_str(value).ok());
+    let approval: Option<DispatchApproval> = match approval_str.as_deref() {
+        Some(value) if !value.trim().is_empty() => {
+            Some(serde_json::from_str(value).map_err(|err| sqlx::Error::ColumnDecode {
+                index: "approval".to_string(),
+                source: Box::new(err),
+            })?)
+        }
+        _ => None,
+    };
 
     Ok(DispatchRecord {
         dispatch_id,
@@ -1124,6 +1232,7 @@ fn record_from_row(row: AnyRow) -> DbResult<DispatchRecord> {
         offer_delivery_count: offer_delivery_count.max(0) as u32,
         target_task_id,
         reject_reason,
+        approval,
         message,
         created_at: created_at.max(0) as u64,
         updated_at: updated_at.max(0) as u64,

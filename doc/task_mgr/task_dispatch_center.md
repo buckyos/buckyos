@@ -1,16 +1,21 @@
 # Task Dispatch Center 设计
 
-- 状态：设计定稿；M1+M2 已实施（2026-08-07，beta2.2）
+- 状态：设计定稿；M1+M2+M4 已实施（2026-08-07，beta2.2）
   - M1：`buckyos-api/src/task_dispatcher.rs` + `task_manager/src/dispatcher/`
     （独立 RDB `task-dispatcher-main`、`/kapi/task-dispatcher` 同进程第二 path、
     scheduler 追加 rdb instance、boot_gateway.yaml 路由别名）+ 23 项单元测试
   - M2：OpenDAN `dispatch_adapter.rs`（`agent.delegate/v1` Target 注册 + 接收循环 +
     持久幂等绑定）；`agent_task_executor` 伪 inbox 删除（owner-only recovery 保留）
-  - 未完：M3 的 DV 环境级故障注入验收；Control Panel 默认路由配置面 /
-    WebUI Task Center dispatch 观察面 / websdk 封装（见 §10「影响入口」尾项）
-  - 2026-08-07 增量设计（**未实施**，见 §10 M4）：人工放行（审批门，
-    `PendingApproval` / `DispatchApprovalPolicy`），解决"低权限提交、高权限执行"
-    需要显式人工决策的问题；已并入 §1/§3/§4/§5/§6/§7/§9.4/§11/§12/§13 正文
+  - M4（同日实施，见 §10 M4）：人工放行（审批门）——`PendingApproval` /
+    `DispatchApprovalPolicy` / `approve_dispatch` / `deny_dispatch` 全量落地；
+    Dispatcher schema v1→v2（`dispatch_record.approval` 列，旧库启动就地迁移）；
+    claim/accept/reject 状态守卫显式排除 `PendingApproval`；
+    `/task_dispatcher/approvals` 提示通道；审批权 = zone 可信或 sudo 会话
+    （与 `InteractiveCallers` 豁免共用同一判定）；+6 项单元测试
+    （task-manager Dispatcher 31 项 / buckyos-api 协议 5 项全绿）
+  - 未完：M3 的 DV 环境级故障注入验收；Control Panel 默认路由配置面与
+    审批面 / WebUI Task Center dispatch 观察面 / websdk 封装
+    （见 §10「影响入口」尾项）
 - 目标读者：TaskMgr / OpenDAN / Workflow / buckyos-api 开发者
 - 相关文档：
   - `doc/task_mgr/task_mgr.md`（TaskMgr 边界与数据模型）
@@ -722,7 +727,11 @@ bob（交互会话）
 2. **门在指派之前。** 未放行的记录不进入评估、不产生 offer、不占
    `max_concurrency`、不计 delivery；Target 侧对它的任何操作
    （claim/accept/reject）都被状态守卫拒绝。最小暴露：未放行的请求不该到达
-   executor。
+   executor。**边界口径（实施定案）：审批门封死的是接收通道**——评估、offer、
+   kevent target 通知、claim/accept/reject 全部不可达，executor 的接收循环
+   永远见不到该请求；zone 可信调用者经 get/list 的只读可见性遵循既有查询授权，
+   不因审批门收窄（§3.4"能看到但不能接收"即此义）。若未来要求对 Target owner
+   隐藏未放行请求的 input，属读取面脱敏扩展，另行设计，不改变本条接收边界。
 3. **审批 ≠ 提权。** envelope 不变；Target 接收后创建的业务 Task 仍以
    `on_behalf_of` 业务用户记账；Target 自己的业务鉴权照做（它看得到
    `approval` 字段，可以要求高危 operation 必须带审批记录，但审批不是免检凭证）。
@@ -1037,25 +1046,32 @@ accept ACK 丢失重放；cancel 与 accept 竞态；`Uncertain` 进入与 `reso
 （timer/记录恢复）；目标 Task 失败后不产生新 offer/Dispatch/Task；Executor 内部重试期间
 Task 始终保持 Running；kevent 全丢时兜底轮询仍收敛。
 
-### M4：人工放行（审批门）——2026-08-07 增量，未实施
+### M4：人工放行（审批门）——2026-08-07 增量，同日实施完成
 
 1. 协议（buckyos-api）：`DispatchApprovalPolicy` / `DispatchApproval` /
    `DispatchRejectReason::ApprovalDenied` / `approve_dispatch` / `deny_dispatch`
-   RPC 与 client 方法；`DispatchStatus::PendingApproval`。
+   RPC 与 client 方法；`DispatchStatus::PendingApproval`。均已落地；
+   `PendingApproval` 不进 `is_assignable()`，`ApproveDispatchReq` /
+   `DenyDispatchReq` 带可选 `note`，返回完整记录。
 2. 服务（task_manager/dispatcher）：resolve 落库时按 policy + 直接调用者 token 分级
    决定初始状态；approve -> Queued + evaluate_target；deny -> Rejected 终态；
    `expires_at` due scan 覆盖 `PendingApproval`；**accept/claim/reject 状态守卫显式
-   排除 `PendingApproval`**（现实现的 late-accept 守卫允许 Queued/WaitingForTarget/
-   Uncertain，落地时必须补该排除项）；`approval` 列 + `/task_dispatcher/approvals`
-   通道。
-3. 审批人判定：`authenticate()` 保留 verify-hub token 的 `sudo` 位；审批权与
-   `InteractiveCallers` 的豁免共用同一判定（zone 可信或 sudo 会话）。
-4. 管理 UI：Control Panel 审批面（与默认后端配置面同属管理面遗留项）。
-5. 单元测试：hold/approve/deny/cancel/expire 全迁移；放行后正常指派且 envelope
-   不变；PendingApproval 不可被 Target claim/accept；审批人身份与 note 落
-   `approval` + `dispatch_event`；zone 可信与 sudo 会话在 `InteractiveCallers`
-   下不被 hold、`AllCallers` 下被 hold；幂等重放返回 PendingApproval 状态；
-   非管理身份 approve/deny 被拒。
+   排除 `PendingApproval`**（服务层显式分支 + store 层条件 UPDATE 双重守卫；
+   原 late-accept 守卫仅收 Queued/WaitingForTarget/Uncertain 的语义保持不变）；
+   `approval` 列（schema v1→v2，`TASK_DISPATCHER_RDB_SCHEMA_VERSION=2`，
+   旧库 open 时就地 `ALTER TABLE` 迁移，含 DDL override 过期时的兜底）+
+   `/task_dispatcher/approvals` 通道（payload 仅 ids）。
+3. 审批人判定：`authenticate()` 保留 verify-hub token 的 `sudo` 位
+   （`RequestContext.sudo`）；审批权与 `InteractiveCallers` 的豁免共用同一判定
+   `is_approval_admin`（zone 可信或 sudo 会话）；Target owner / 提交者身份
+   本身不含审批权。
+4. 管理 UI：Control Panel 审批面（与默认后端配置面同属管理面遗留项，未做）。
+5. 单元测试（已全部落地，`dispatcher/tests.rs` +6 项）：hold/approve/deny/cancel/
+   expire 全迁移；放行后正常指派且 envelope 不变；PendingApproval 不可被 Target
+   claim/accept/reject 且不占并发额度；审批人身份与 note 落 `approval` +
+   `dispatch_event`；zone 可信与 sudo 会话在 `InteractiveCallers` 下不被 hold、
+   `AllCallers` 下被 hold；幂等重放返回 PendingApproval 状态；非管理身份
+   approve/deny 被拒；v1 库就地迁移后审批流可用；approvals 提示通道可订阅。
 
 ### 影响入口
 
@@ -1126,6 +1142,7 @@ Task 始终保持 Running；kevent 全丢时兜底轮询仍收敛。
 | 人工放行建模（2026-08-07 增量） | 分发前状态 `PendingApproval`（审批门），不是手工指派：approve 只放行，实例选择仍走集中指派，不能改 Target/实例（黏着不破）；换后端 = deny/cancel 后新 dispatch |
 | 审批策略 | per-target `DispatchApprovalPolicy::{Never, InteractiveCallers, AllCallers}`，默认 `Never`；判定只看直接调用者 token 分级（zone 可信 / sudo 会话豁免 `InteractiveCallers`）；per-operation 覆盖列为后续扩展 |
 | 审批与身份 | approve/deny 只推进状态机：envelope 不变、不提权、不豁免 Target 业务鉴权；审批人落 `approval` 字段与 `dispatch_event`；审批权与 Target owner 身份、提交者身份都不挂钩 |
+| 审批门可见性边界（2026-08-07 实施定案） | 门封死**接收通道**：未放行记录不评估、不 offer、不发 target 通知、claim/accept/reject 全拒；zone 可信调用者 get/list 只读可见性遵循既有查询授权不收窄；对 owner 隐藏未放行 input 属读取面脱敏，列后续扩展（§7.1） |
 
 ## 13. 非目标
 

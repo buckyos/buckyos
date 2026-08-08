@@ -130,6 +130,7 @@ impl TaskDispatcherService {
             user_id,
             app_id,
             zone_trusted,
+            sudo: verified.sudo,
         })
     }
 
@@ -137,6 +138,25 @@ impl TaskDispatcherService {
         if !request_ctx.zone_trusted {
             return Err(RPCErrors::NoPermission(format!(
                 "{} requires a zone-trusted caller",
+                what
+            )));
+        }
+        Ok(())
+    }
+
+    /// The manual-release admin grade (doc §7.1): zone-trusted callers and
+    /// sudo-elevated interactive sessions. Deliberately ONE predicate for
+    /// both uses — who is exempt from `InteractiveCallers` holds, and who
+    /// may approve/deny. Target ownership and being the submitter grant
+    /// nothing here (a registrant must not be able to release itself).
+    fn is_approval_admin(request_ctx: &RequestContext) -> bool {
+        request_ctx.zone_trusted || request_ctx.sudo
+    }
+
+    fn require_approval_admin(request_ctx: &RequestContext, what: &str) -> Result<()> {
+        if !Self::is_approval_admin(request_ctx) {
+            return Err(RPCErrors::NoPermission(format!(
+                "{} requires a zone-trusted caller or a sudo session",
                 what
             )));
         }
@@ -266,6 +286,30 @@ impl TaskDispatcherService {
         {
             warn!(
                 "task_dispatcher.emit_transition: kevent publish failed for {}: {}",
+                event_id, err
+            );
+        }
+    }
+
+    /// Admin-UI wake-up hint for a newly held record. Acceleration only:
+    /// the authoritative queue is `list_dispatches(status=PendingApproval)`,
+    /// and a lost hint degrades to polling without losing backlog.
+    async fn notify_approvals_channel(&self, target_id: &str, dispatch_id: &str, ts: i64) {
+        let event_id = task_dispatcher_approvals_event_id();
+        let payload = json!({
+            "dispatch_id": dispatch_id,
+            "target_id": target_id,
+            "to": "PendingApproval",
+            "ts": ts,
+        });
+        if let Err(err) = self
+            .inner
+            .kevent_client
+            .pub_event(event_id.as_str(), payload)
+            .await
+        {
+            warn!(
+                "task_dispatcher.notify_approvals_channel: publish {} failed: {}",
                 event_id, err
             );
         }
@@ -859,6 +903,22 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             }
         }
 
+        // Approval gate (doc §7.1): auth_policy answered "may this caller
+        // submit"; this answers "is the submission held for a human". Judged
+        // on the DIRECT caller's token grade only — same principle as
+        // on_behalf_of. The record is persisted either way; a held record is
+        // never evaluated and never reaches the target.
+        let held_for_approval = match target_row.registration.approval_policy {
+            DispatchApprovalPolicy::Never => false,
+            DispatchApprovalPolicy::InteractiveCallers => !Self::is_approval_admin(&request_ctx),
+            DispatchApprovalPolicy::AllCallers => true,
+        };
+        let initial_status = if held_for_approval {
+            DispatchStatus::PendingApproval
+        } else {
+            DispatchStatus::Queued
+        };
+
         let dispatch_id = format!("dsp-{}", Uuid::new_v4());
         let record = DispatchRecord {
             dispatch_id: dispatch_id.clone(),
@@ -866,7 +926,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             target_id: target_row.registration.target_id.clone(),
             target_selection: target_selection.clone(),
             operation: operation.clone(),
-            status: DispatchStatus::Queued,
+            status: initial_status,
             input: params.input.clone(),
             auth: DispatchAuthEnvelope {
                 requested_by_user: request_ctx.user_id.clone(),
@@ -883,6 +943,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             offer_delivery_count: 0,
             target_task_id: None,
             reject_reason: None,
+            approval: None,
             message: None,
             created_at: now as u64,
             updated_at: now as u64,
@@ -912,11 +973,12 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             return Err(reason(err.to_string()));
         }
         info!(
-            "task_dispatcher.dispatch: {} op={} target={} selection={:?} by={}/{} obo={}",
+            "task_dispatcher.dispatch: {} op={} target={} selection={:?} status={} by={}/{} obo={}",
             dispatch_id,
             operation,
             record.target_id,
             target_selection,
+            initial_status,
             request_ctx.user_id,
             request_ctx.app_id,
             record.auth.on_behalf_of
@@ -925,7 +987,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             dispatch_id.as_str(),
             record.target_id.as_str(),
             "",
-            "Queued",
+            initial_status.to_string().as_str(),
             None,
             None,
             None,
@@ -933,7 +995,14 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         )
         .await;
 
-        self.evaluate_target(record.target_id.as_str(), now).await;
+        if held_for_approval {
+            // The gate sits BEFORE assignment: no evaluation, no offer, no
+            // concurrency budget, no delivery count. Only the admin hint.
+            self.notify_approvals_channel(record.target_id.as_str(), dispatch_id.as_str(), now)
+                .await;
+        } else {
+            self.evaluate_target(record.target_id.as_str(), now).await;
+        }
         if record.auth.expires_at.is_some() {
             self.inner.maintenance_notify.notify_one();
         }
@@ -1025,7 +1094,12 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                     status: record.status,
                 });
             }
-            DispatchStatus::Queued | DispatchStatus::WaitingForTarget | DispatchStatus::Offered => {}
+            // PendingApproval: the submitter may withdraw a record that is
+            // still waiting for a manual release.
+            DispatchStatus::PendingApproval
+            | DispatchStatus::Queued
+            | DispatchStatus::WaitingForTarget
+            | DispatchStatus::Offered => {}
         }
 
         let now = now_ms();
@@ -1451,6 +1525,17 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                         message: current.message.clone(),
                     });
                 }
+                DispatchStatus::PendingApproval => {
+                    // The approval gate sits before assignment: an unreleased
+                    // record must never be receivable — not even by the
+                    // target owner, not through any late-accept path. (The
+                    // store-level guard excludes it too; this is the explicit
+                    // protocol answer.)
+                    return Err(reason(format!(
+                        "{}: dispatch {} awaits manual approval; targets cannot accept it",
+                        DISPATCH_ERR_PENDING_APPROVAL, current.dispatch_id
+                    )));
+                }
                 DispatchStatus::Offered
                 | DispatchStatus::Queued
                 | DispatchStatus::WaitingForTarget
@@ -1534,6 +1619,15 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                     DISPATCH_ERR_UNCERTAIN_REQUIRES_RESOLVE, record.dispatch_id
                 )));
             }
+            DispatchStatus::PendingApproval => {
+                // Unreleased records are invisible to the receive path;
+                // reject is a receive-path verb (deny_dispatch is the
+                // admin-side refusal).
+                return Err(reason(format!(
+                    "{}: dispatch {} awaits manual approval; targets cannot reject it",
+                    DISPATCH_ERR_PENDING_APPROVAL, record.dispatch_id
+                )));
+            }
             DispatchStatus::Queued | DispatchStatus::WaitingForTarget | DispatchStatus::Offered => {}
         }
 
@@ -1566,6 +1660,131 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             self.evaluate_target(record.target_id.as_str(), now).await;
         }
         Ok(())
+    }
+
+    async fn handle_approve_dispatch(
+        &self,
+        req: ApproveDispatchReq,
+        ctx: RPCContext,
+    ) -> Result<DispatchRecord> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        // Same predicate as the InteractiveCallers exemption — deliberately.
+        // Neither target ownership nor being the submitter grants approval
+        // rights (a registrant must not release its own gate).
+        Self::require_approval_admin(&request_ctx, "approve_dispatch")?;
+
+        let record = self.load_record(req.dispatch_id.as_str()).await?;
+        if record.status != DispatchStatus::PendingApproval {
+            // Idempotent on an already-released record; anything else is a
+            // hard error (approve never revives terminal records).
+            let already_approved = record
+                .approval
+                .as_ref()
+                .map(|approval| approval.decision == ApprovalDecision::Approved)
+                .unwrap_or(false);
+            if already_approved {
+                return Ok(record);
+            }
+            return Err(reason(format!(
+                "{}: dispatch {} is {} (approve requires PendingApproval)",
+                DISPATCH_ERR_NOT_PENDING_APPROVAL, record.dispatch_id, record.status
+            )));
+        }
+
+        let now = now_ms();
+        let approval = DispatchApproval {
+            decision: ApprovalDecision::Approved,
+            decided_by_user: request_ctx.user_id.clone(),
+            decided_by_app: request_ctx.app_id.clone(),
+            decided_at: now as u64,
+            note: req.note.clone(),
+        };
+        let changed = self
+            .db()
+            .approve_pending(req.dispatch_id.as_str(), &approval, now)
+            .await
+            .map_err(|e| reason(e.to_string()))?;
+        if changed {
+            info!(
+                "task_dispatcher.approve: {} released by {}/{}",
+                req.dispatch_id, request_ctx.user_id, request_ctx.app_id
+            );
+            self.emit_transition(
+                req.dispatch_id.as_str(),
+                record.target_id.as_str(),
+                "PendingApproval",
+                "Queued",
+                None,
+                Some("approval_granted"),
+                None,
+                now,
+            )
+            .await;
+            // Release means normal centralized assignment — nothing manual
+            // about instance selection, target or envelope.
+            self.evaluate_target(record.target_id.as_str(), now).await;
+        }
+        // !changed: lost a race against cancel/expiry — report the actual
+        // final state (an approved replay returns above on the next call).
+        self.load_record(req.dispatch_id.as_str()).await
+    }
+
+    async fn handle_deny_dispatch(
+        &self,
+        req: DenyDispatchReq,
+        ctx: RPCContext,
+    ) -> Result<DispatchRecord> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_approval_admin(&request_ctx, "deny_dispatch")?;
+
+        let record = self.load_record(req.dispatch_id.as_str()).await?;
+        if record.status != DispatchStatus::PendingApproval {
+            let already_denied = record.status == DispatchStatus::Rejected
+                && record
+                    .approval
+                    .as_ref()
+                    .map(|approval| approval.decision == ApprovalDecision::Denied)
+                    .unwrap_or(false);
+            if already_denied {
+                return Ok(record);
+            }
+            return Err(reason(format!(
+                "{}: dispatch {} is {} (deny requires PendingApproval)",
+                DISPATCH_ERR_NOT_PENDING_APPROVAL, record.dispatch_id, record.status
+            )));
+        }
+
+        let now = now_ms();
+        let approval = DispatchApproval {
+            decision: ApprovalDecision::Denied,
+            decided_by_user: request_ctx.user_id.clone(),
+            decided_by_app: request_ctx.app_id.clone(),
+            decided_at: now as u64,
+            note: req.note.clone(),
+        };
+        let changed = self
+            .db()
+            .deny_pending(req.dispatch_id.as_str(), &approval, now)
+            .await
+            .map_err(|e| reason(e.to_string()))?;
+        if changed {
+            info!(
+                "task_dispatcher.deny: {} refused by {}/{}",
+                req.dispatch_id, request_ctx.user_id, request_ctx.app_id
+            );
+            self.emit_transition(
+                req.dispatch_id.as_str(),
+                record.target_id.as_str(),
+                "PendingApproval",
+                "Rejected",
+                None,
+                Some(DispatchRejectReason::ApprovalDenied.as_str()),
+                None,
+                now,
+            )
+            .await;
+        }
+        self.load_record(req.dispatch_id.as_str()).await
     }
 
     async fn handle_resolve_uncertain(
