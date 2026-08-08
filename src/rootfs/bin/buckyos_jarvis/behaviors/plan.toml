@@ -79,6 +79,8 @@ __INCLUDE(./step_record_rule.inc)__
 
 Read global state only when it can change the plan. Do not repeat large state dumps in todos; copy only the facts needed for DO mode.
 
+__INCLUDE(./aicc_image_cli.inc)__
+
 <</SKILLS>>
 
 <<RESULT_PROTOCOL>>

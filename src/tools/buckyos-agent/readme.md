@@ -69,6 +69,25 @@ ln -s aicc-tool gen_image
 gen_image "prompt" out.png
 ```
 
+AIOS 镜像中的只读安装目录是 `/opt/buckyos/bin/opendan/buckyos-agent/`。安装态
+`deno.json` 已指向镜像内 vendored SDK，因此可以直接运行 task：
+
+```bash
+cd /opt/buckyos/bin/opendan/buckyos-agent
+deno task gen_image --help
+```
+
+Agent 组合新工具时，可以读取该目录下的 `commands/*.ts` 和 `lib/*.ts`，但应把派生
+脚本写入 Agent 或当前 Session 自己的 `tools/` 目录，不要修改只读安装副本。运行派生
+脚本时显式复用安装态配置：
+
+```bash
+deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
+  --allow-net --allow-read --allow-write --allow-env \
+  --unsafely-ignore-certificate-errors \
+  ./tools/my-aicc-tool.ts
+```
+
 ### 命令清单
 
 `gen_image` / `edit_image` / `inpaint_image` / `upscale_image` / `remove_bg`
@@ -97,9 +116,14 @@ CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 
 
 ### 环境变量
 
-继承 `test/aicc_test` 的 BuckyOS 接入方式，所以本地需要私钥（默认搜索路径 `~/.buckyos`、`/opt/buckyos/etc` 等）。
+在 OpenDAN 中，工具使用运行时注入的受限 AppClient session token，并通过宿主机 NodeGateway 访问系统服务。本地独立运行时仍需私钥（默认搜索路径 `~/.buckyos`、`/opt/buckyos/etc` 等）。
 
 - `BUCKYOS_APP_ID`（默认 `buckyos-agent`，兼容 `BUCKYOS_TEST_APP_ID`）
+- `BUCKYOS_APPCLIENT_SESSION_TOKEN`：OpenDAN 注入的 AppClient session token；设置后启用容器内访问方式
+- `BUCKYOS_HOST_GATEWAY`：容器访问宿主机的地址（默认 `host.docker.internal`）
+- `BUCKYOS_NODE_GATEWAY_PORT`：NodeGateway 端口（默认 `3180`）
+- `BUCKYOS_AICC_TOOL_ROOT`：仅供 AIOS launcher 调试覆盖安装目录（默认 `/opt/buckyos/bin/opendan/buckyos-agent`）
+- `BUCKYOS_OWNER_USER_ID`：当前 Zone owner 用户 ID（默认 `devtest`）
 - `BUCKYOS_ZONE_HOST`（默认 `test.buckyos.io`，兼容 `BUCKYOS_TEST_ZONE_HOST`）
 - `BUCKYOS_APP_CLIENT_DIR` / `BUCKYOS_TEST_APP_CLIENT_DIR`：额外私钥搜索目录
 - `AICC_DEFAULT_PROFILE`：`balanced|cheap|fast|quality`（默认 `balanced`）

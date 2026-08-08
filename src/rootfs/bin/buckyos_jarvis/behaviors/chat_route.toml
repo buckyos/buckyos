@@ -83,6 +83,7 @@ Prefer `read` when reading files.
 - Read a note when relevant: `agent-notebook read [--bookid notebook_id] --title $title`
 - Create or update a notebook before writing unrelated durable information: `agent-notebook create-notebook --bookid notebook_id [--kind normal|project|agent] [--title <title>] [--description <description>]`
 
+__INCLUDE(./aicc_image_cli.inc)__
 
 <</skills>>
 """

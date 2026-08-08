@@ -94,6 +94,8 @@ aios entrypoint 派生或兼容变量：
 | 变量 | 来源 | 消费方 | 语义 |
 | --- | --- | --- | --- |
 | `BUCKYOS_APPCLIENT_SESSION_TOKEN` | 外部客户端、AgentTool runner、调试脚本 | `buckyos-api` AppClient runtime、AgentTool | AppClient 调用 kRPC 的 session token。缺失时 AppClient runtime 会尝试从本地 user/device config 和私钥生成 token；AgentTool 需要访问 runtime 时要求该变量存在。 |
+| `BUCKYOS_NODE_GATEWAY_PORT` | 调用方或调试环境可选覆盖；node-daemon/aios 当前不显式注入 | `src/tools/buckyos-agent` | 使用注入的 AppClient session token 时，指定容器访问宿主机 NodeGateway 的端口，默认 `3180`；不适用于外部 Zone 登录模式。若 `BUCKYOS_HOST_GATEWAY` 已包含端口，则以其中的端口为准。 |
+| `BUCKYOS_AICC_TOOL_ROOT` | AIOS launcher 调试环境可选覆盖；node-daemon/aios 不注入 | `/usr/local/bin/aicc-tool` launcher | 覆盖只读 AICC TypeScript 工具安装目录，默认 `/opt/buckyos/bin/opendan/buckyos-agent`。仅用于镜像测试或非标准安装布局，不是 Agent 业务配置。 |
 | `OPENDAN_AGENT_ROOT` | AgentTool runner | AgentTool runtime context | Agent RootFS 根目录。新的 AgentTool 最小契约之一。 |
 | `OPENDAN_SESSION_ID` | AgentTool runner | AgentTool runtime context | 当前 agent session id。 |
 | `OPENDAN_TRACE_ID` | AgentTool runner | AgentTool runtime context | 可选 trace id。 |

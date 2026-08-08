@@ -2,6 +2,7 @@
 // but tailored for the CLI: env-var-driven, single-shot login.
 
 import { buckyos, parseSessionTokenClaims, RuntimeType } from "buckyos";
+import { resolveRuntimeConnection } from "./runtime_config.ts";
 
 export interface AiccRuntime {
   // deno-lint-ignore no-explicit-any
@@ -13,11 +14,6 @@ export interface AiccRuntime {
 }
 
 let cached: AiccRuntime | null = null;
-
-function envOr(name: string, fallback: string): string {
-  const v = Deno.env.get(name);
-  return typeof v === "string" && v.trim() ? v.trim() : fallback;
-}
 
 function envOpt(name: string): string | undefined {
   const v = Deno.env.get(name);
@@ -31,8 +27,8 @@ function sleep(ms: number): Promise<void> {
 export async function initRuntime(): Promise<AiccRuntime> {
   if (cached) return cached;
 
-  const appId = envOr("BUCKYOS_APP_ID", envOr("BUCKYOS_TEST_APP_ID", "buckyos-agent"));
-  const zoneHost = envOr("BUCKYOS_ZONE_HOST", envOr("BUCKYOS_TEST_ZONE_HOST", "test.buckyos.io"));
+  const connection = resolveRuntimeConnection(Deno.env.toObject());
+  const { appId, ownerUserId, zoneHost } = connection;
   const homeDir = Deno.env.get("HOME") ?? "";
   const privateKeySearchPaths = [
     envOpt("BUCKYOS_APP_CLIENT_DIR"),
@@ -46,16 +42,19 @@ export async function initRuntime(): Promise<AiccRuntime> {
   // deno-lint-ignore no-explicit-any
   await (buckyos as any).initBuckyOS(appId, {
     appId,
-    ownerUserId: "devtest",
+    ownerUserId,
     runtimeType: RuntimeType.AppClient,
     zoneHost,
-    defaultProtocol: "https://",
+    defaultProtocol: connection.defaultProtocol,
+    sessionToken: connection.sessionToken,
     privateKeySearchPaths,
     autoRenew: false,
   });
 
-  // Local JWT signature uses a not-before timestamp ~1s in the future.
-  await sleep(1100);
+  if (!connection.usesInjectedSession) {
+    // Local JWT signature uses a not-before timestamp ~1s in the future.
+    await sleep(1100);
+  }
   // deno-lint-ignore no-explicit-any
   const account = await (buckyos as any).login();
   if (!account?.session_token) {
@@ -65,11 +64,11 @@ export async function initRuntime(): Promise<AiccRuntime> {
     (parseSessionTokenClaims(account.session_token) as Record<string, unknown> | null) ?? null;
 
   const userId = account.user_id ?? (claims?.sub as string | undefined) ??
-    (claims?.userid as string | undefined) ?? "devtest";
+    (claims?.userid as string | undefined) ?? ownerUserId;
   // deno-lint-ignore no-explicit-any
-  const ownerUserId = (buckyos as any).getBuckyOSConfig?.()?.ownerUserId ?? userId;
+  const runtimeOwnerUserId = (buckyos as any).getBuckyOSConfig?.()?.ownerUserId ?? ownerUserId;
 
-  cached = { buckyos, userId, ownerUserId, zoneHost, appId };
+  cached = { buckyos, userId, ownerUserId: runtimeOwnerUserId, zoneHost, appId };
   return cached;
 }
 

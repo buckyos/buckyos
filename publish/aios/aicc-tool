@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -eu
+
+tool_root="${BUCKYOS_AICC_TOOL_ROOT:-/opt/buckyos/bin/opendan/buckyos-agent}"
+launcher="$(basename "$0")"
+
+if [ "$launcher" = "aicc-tool" ]; then
+  exec deno run \
+    --config "$tool_root/deno.json" \
+    --allow-net \
+    --allow-read \
+    --allow-write \
+    --allow-env \
+    --unsafely-ignore-certificate-errors \
+    "$tool_root/aicc-tool.ts" "$@"
+fi
+
+exec deno run \
+  --config "$tool_root/deno.json" \
+  --allow-net \
+  --allow-read \
+  --allow-write \
+  --allow-env \
+  --unsafely-ignore-certificate-errors \
+  "$tool_root/aicc-tool.ts" "$launcher" "$@"

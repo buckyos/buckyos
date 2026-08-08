@@ -82,6 +82,8 @@ __INCLUDE(./step_record_rule.inc)__
 
 Read global state only when it can change execution. Do not dump large state into the report; include only the facts needed to explain the result.
 
+__INCLUDE(./aicc_image_cli.inc)__
+
 <</SKILLS>>
 
 """
