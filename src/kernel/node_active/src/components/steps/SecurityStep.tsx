@@ -38,6 +38,7 @@ type Props = {
 };
 
 type NameStatus = "idle" | "checking" | "ok" | "taken" | "invalid";
+type ActiveCodeStatus = "idle" | "checking" | "valid" | "invalid";
 type Phase = "generate" | "backup" | "registering" | "complete";
 const REGION_PREFERENCE_STORAGE_KEY = "buckyos.node_active.region_preference";
 
@@ -118,7 +119,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [nameStatus, setNameStatus] = useState<NameStatus>("idle");
-  const [activeCodeValid, setActiveCodeValid] = useState<boolean | null>(null);
+  const [activeCodeStatus, setActiveCodeStatus] = useState<ActiveCodeStatus>("idle");
   const [error, setError] = useState("");
   const [regionPreference, setRegionPreference] = useState(
     wizardData.region_preference === "auto"
@@ -202,14 +203,15 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
   useEffect(() => {
     const code = activeCode.trim();
     if (code.length < 7) {
-      setActiveCodeValid(null);
+      setActiveCodeStatus("idle");
       return;
     }
     let cancelled = false;
+    setActiveCodeStatus("checking");
     const timer = window.setTimeout(() => {
       check_sn_active_code(code)
-        .then((valid) => !cancelled && setActiveCodeValid(valid))
-        .catch(() => !cancelled && setActiveCodeValid(false));
+        .then((valid) => !cancelled && setActiveCodeStatus(valid ? "valid" : "invalid"))
+        .catch(() => !cancelled && setActiveCodeStatus("invalid"));
     }, 350);
     return () => {
       cancelled = true;
@@ -262,8 +264,14 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return setError(t("error_email_invalid", "Enter a valid email address"));
     }
-    if (!activeCode.trim() || activeCodeValid === false) {
-      return setError(t("invite_code_placeholder", "Enter a valid invitation code"));
+    if (!activeCode.trim()) {
+      return setError(t("invite_code_placeholder", "Please enter invitation code"));
+    }
+    if (activeCodeStatus === "checking") {
+      return setError(t("invite_checking", "Checking invitation code…"));
+    }
+    if (activeCodeStatus !== "valid") {
+      return setError(t("error_invite_code_invalid", "Invitation code is incorrect"));
     }
     if (!password || password !== passwordConfirm) {
       return setError(t("error_password_mismatch", "Passwords do not match"));
@@ -441,9 +449,28 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
         required
         label={t("invite_code_placeholder")}
         value={activeCode}
-        onChange={(event) => setActiveCode(event.target.value)}
+        onChange={(event) => {
+          const nextCode = event.target.value;
+          setActiveCode(nextCode);
+          setActiveCodeStatus(nextCode.trim().length >= 7 ? "checking" : "idle");
+        }}
+        error={activeCodeStatus === "invalid"}
+        helperText={
+          activeCodeStatus === "checking"
+            ? t("invite_checking")
+            : activeCodeStatus === "invalid"
+              ? t("error_invite_code_invalid")
+              : activeCodeStatus === "valid"
+                ? t("invite_valid")
+                : ""
+        }
         InputProps={{
-          endAdornment: activeCodeValid ? <VerifiedRounded color="success" /> : undefined,
+          endAdornment:
+            activeCodeStatus === "checking" ? (
+              <CircularProgress size={18} />
+            ) : activeCodeStatus === "valid" ? (
+              <VerifiedRounded color="success" />
+            ) : undefined,
         }}
       />
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
