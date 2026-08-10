@@ -626,9 +626,31 @@ TaskMgr 运行。
 子 Task 的 Result；只有当前 Runner 或 Assignee 拥有 Commit。需要兄弟间共享完整 payload 的
 简单业务可以选择更开放的 policy preset；复杂 Workflow 应显式生成 grant。
 
-`RootCreator` 和 `Creator` 默认匹配创建时的精确 `{user_id, app_id}` principal；同一用户通过
-其它 App 访问需要显式的 User grant。系统安全审计或恢复角色通过 SystemRole grant 获权，不能
-依靠伪造 Creator 身份绕过 policy。
+`RootCreator` 和 `Creator` 默认匹配创建时的精确 `{user_id, app_id}` principal。系统安全审计或
+恢复角色通过 SystemRole grant 获权，不能依靠伪造 Creator 身份绕过 policy。
+
+#### 8.5.1 Owner 控制面
+
+上面所有 relation 都按精确 `{user_id, app_id}` 匹配，这意味着用户看不见自己的 Agent 和 App
+创建的 Task —— 而"看到与自己有关的全部 Task"恰恰是 Task Center 的核心目标。因此 preset 之外
+还有一条由 Zone RBAC 决定的关系：
+
+| 条件 | Actions | Scope | DataScope |
+| --- | --- | --- | --- |
+| RBAC 允许 principal 对 `obj://task/{owner}` 执行 `read` | ReadMeta、ReadInput、ReadResult | SelfOnly | Full |
+
+`owner` 是该 Task 的 `creator.user_id`。判定直接调用 Zone RBAC 的 `enforce(user_id, app_id, …)`，
+它是 **App 侧与 User 侧的合取**，两侧各自承担一个语义：
+
+- **App 侧**决定"哪个 App 可以充当用户的 Task 控制面"。`kernel`/`system` 组（`control-panel`
+  等）命中全局通配规则；`app`/`agent`/`frame` 组没有 `obj://task` 规则，因此普通 App 和 Agent
+  仍然只能看见自己创建的 Task，§8.5 的 per-app 隔离不变。
+- **User 侧**用 `{admin}` / `{users}` 占位符把可见范围绑定到请求者本人（`p, admin,
+  obj://task/{admin},read,allow`）。`root`/`su_admin`（含 sudo 会话）命中全局通配规则，
+  因此拥有跨用户视图；普通 admin 看不到别人的 Task。
+
+这条关系只给读权限，不含 `Control`：用户想暂停或取消自己 Agent 的 Task 仍然要走显式 grant 或
+Assignee 身份。实现上它在一次请求内按 owner 记忆化，因为 `rbac::enforce` 会取进程级锁。
 
 ### 8.6 没有独立 Controller 字段
 

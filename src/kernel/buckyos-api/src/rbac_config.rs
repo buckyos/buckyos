@@ -77,6 +77,13 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 
 ### agent 相关
 
+### task 相关
+- obj://task/{user} 该用户名下 Task 的集合视图。TaskMgr 用它回答“当前 principal 能否越过
+  Creator 的 app_id 看该用户的 Task”，从而让 control-panel 这类系统控制面成为用户的 Task
+  总览入口，而普通 app/agent（app/agent/frame 组没有 obj://task 规则）仍然只能看自己创建的
+  Task。注意 enforce 是 app 侧和 user 侧的合取：app 侧决定“哪个 App 可以充当控制面”，
+  user 侧的 {user} 占位符把可见范围绑定到请求者本人（root/su_admin 的全局通配规则除外）。
+
  */
 pub const DEFAULT_RBAC_POLICY: &str = r#"
 p, kernel, obj://*, all,allow
@@ -121,6 +128,7 @@ p, admin,obj://config/services/aicc/settings,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
 p, admin,obj://config/services/{service}/instances/{node},write,allow
 p, admin,obj://config/services/*,read,allow
+p, admin,obj://task/{admin},read,allow
 
 p, users,obj://config/boot/*, read,allow
 p, users,obj://config/agents/{agent}/doc,read,allow
@@ -131,6 +139,7 @@ p, users,obj://config/users/{users}/apps/{app}/{key},read|write,allow
 p, users,obj://config/users/{users}/agents/{agent}/{key},read|write,allow
 p, users,obj://config/services/{service}/info,read,allow
 p, users,obj://config/services/{service}/instances/{node},write,allow
+p, users,obj://task/{users},read,allow
 
 g, node-daemon, kernel
 g, scheduler, kernel
@@ -568,6 +577,61 @@ g, bob, users
             )
             .await
         );
+    }
+
+    /// `obj://task/{user}` is the collection view TaskMgr consults to decide
+    /// whether a principal may look past the creator's `app_id`. The bindings
+    /// here mirror a real zone's policy tail (control-panel promoted to
+    /// `kernel`, the owner bound to `admin`, agents left in `agent`).
+    #[tokio::test]
+    async fn task_collection_is_visible_to_control_surfaces_not_to_apps() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let policy_tail = r#"
+g, devtest, admin
+g, su_devtest, su_admin
+g, bob, users
+g, control-panel, kernel
+g, task-manager, kernel
+g, buckyos_jarvis, agent
+g, buckyos_filebrowser, app
+"#;
+        let config = build_current_rbac_config(Some(policy_tail));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        // The control surface sees its own user's tasks: this is the Task
+        // Center's whole reason to exist.
+        assert!(rbac::enforce("devtest", "control-panel", "obj://task/devtest", "read", None).await);
+        assert!(rbac::enforce("bob", "control-panel", "obj://task/bob", "read", None).await);
+
+        // ...but not another user's, even from the control surface.
+        assert!(!rbac::enforce("devtest", "control-panel", "obj://task/bob", "read", None).await);
+        assert!(!rbac::enforce("bob", "control-panel", "obj://task/devtest", "read", None).await);
+
+        // Ordinary apps and agents keep the doc §8.5 isolation: no cross-app
+        // view even of their own user's tasks.
+        assert!(!rbac::enforce("devtest", "buckyos_jarvis", "obj://task/devtest", "read", None).await);
+        assert!(
+            !rbac::enforce("devtest", "buckyos_filebrowser", "obj://task/devtest", "read", None)
+                .await
+        );
+
+        // A sudo session is the zone owner: global task view.
+        assert!(
+            rbac::enforce(
+                "devtest",
+                "control-panel",
+                "obj://task/bob",
+                "read",
+                Some(rbac::SudoMode::Sudo("su_devtest".to_string())),
+            )
+            .await
+        );
+
+        // The collection is a read view; it must not confer writes.
+        assert!(!rbac::enforce("devtest", "control-panel", "obj://task/devtest", "write", None).await);
     }
 
     #[tokio::test]

@@ -10,20 +10,67 @@
 
 use crate::task_store::TaskStore;
 use buckyos_api::*;
-use kRPC::Result;
+use kRPC::{RPCSessionToken, Result};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// System role implicitly held by zone-trusted callers (tokens signed by the
 /// zone owner or a device key). Explicit `SystemRole` grants may reference
 /// it; the trusted control-plane commands additionally require it directly.
 pub const SYSTEM_ROLE_ZONE_TRUSTED: &str = "zone-trusted";
 
+/// The zone RBAC resource naming a user's task collection. Reading it is the
+/// capability "may act as this user's task control surface"; see the `task`
+/// section of buckyos-api's `rbac_config`.
+fn task_collection_resource(owner_user_id: &str) -> String {
+    format!("obj://task/{}", owner_user_id)
+}
+
+/// Per-request memo for the `obj://task/{user}` RBAC check.
+///
+/// The check is what lets a system control surface (the Task Center, running
+/// as `control-panel`) look past a Task's creator `app_id` and show the user
+/// everything that belongs to them, while ordinary apps and agents keep the
+/// per-app isolation of §8.5. It is memoized per owner because a list page is
+/// almost always one or two distinct owners and `rbac::enforce` takes a
+/// process-wide lock.
+#[derive(Debug, Default)]
+pub struct TaskViewGate {
+    memo: Mutex<HashMap<String, bool>>,
+}
+
+impl TaskViewGate {
+    async fn may_view_user_tasks(&self, principal: &Principal, owner_user_id: &str) -> bool {
+        if let Some(cached) = self.memo.lock().await.get(owner_user_id) {
+            return *cached;
+        }
+        let allowed = rbac::enforce(
+            &principal.user_id,
+            &principal.app_id,
+            &task_collection_resource(owner_user_id),
+            "read",
+            principal.sudo_mode(),
+        )
+        .await;
+        self.memo
+            .lock()
+            .await
+            .insert(owner_user_id.to_string(), allowed);
+        allowed
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: String,
     pub app_id: String,
     pub roles: Vec<String>,
+    pub sudo: bool,
+    /// Shared with every clone so one request pays for one RBAC evaluation
+    /// per distinct task owner.
+    pub view_gate: Arc<TaskViewGate>,
 }
 
 impl Principal {
@@ -33,6 +80,12 @@ impl Principal {
             app_id: self.app_id.clone(),
             app_instance_id: None,
         }
+    }
+
+    fn sudo_mode(&self) -> Option<rbac::SudoMode> {
+        self.sudo.then(|| {
+            rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(&self.user_id))
+        })
     }
 }
 
@@ -131,6 +184,27 @@ pub async fn compute_permission(
         is_runner,
         is_assignee,
     );
+
+    // The owner's control surface. Every relation above matches on the exact
+    // `{user_id, app_id}` principal, so a user cannot see the tasks their own
+    // agents and apps created — which is precisely what the Task Center is
+    // for. An app the zone RBAC trusts to read `obj://task/{owner}` may look
+    // past the creator's `app_id`; apps without that grant keep the per-app
+    // isolation of §8.5.
+    if principal
+        .view_gate
+        .may_view_user_tasks(principal, &task.creator.user_id)
+        .await
+    {
+        permission.add(
+            &[
+                TaskAction::ReadMeta,
+                TaskAction::ReadInput,
+                TaskAction::ReadResult,
+            ],
+            TaskDataScope::Full,
+        );
+    }
 
     // Tree-wide MetaOnly row for participants of any task in the tree,
     // blocked for boundary-cut subtrees together with the rest of the

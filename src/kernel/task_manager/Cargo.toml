@@ -19,6 +19,7 @@ uuid = { workspace = true }
 
 buckyos-http-server = { workspace = true }
 kRPC = { workspace = true }
+rbac = { workspace = true }
 buckyos-kit = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }

@@ -57,6 +57,8 @@ impl RequestContext {
             user_id: self.user_id.clone(),
             app_id: self.app_id.clone(),
             roles,
+            sudo: self.sudo,
+            view_gate: Default::default(),
         }
     }
 
@@ -3032,6 +3034,88 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         };
         assert_eq!(task.phase, TaskPhase::Terminal);
         assert_eq!(task.outcome, Some(TaskOutcome::Canceled));
+    }
+
+    /// `rbac::SYS_ENFORCE` is process-wide, so the tests that install a policy
+    /// must not overlap each other.
+    static ENFORCER_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    /// Installs a policy shaped like a real zone's: the owner bound to
+    /// `admin`, the Task Center's `control-panel` to `kernel`, and the agent
+    /// that creates the tasks left in `agent`.
+    async fn install_zone_like_enforcer() {
+        let config = build_current_rbac_config(Some(
+            "g, devtest, admin\ng, bob, users\ng, control-panel, kernel\ng, buckyos_jarvis, agent",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+    }
+
+    /// The Task Center runs as `control-panel`, so every relation in the
+    /// preset — all keyed on the exact `{user_id, app_id}` — misses tasks the
+    /// user's own agent created. RBAC's `obj://task/{user}` is what closes it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_panel_sees_tasks_created_by_the_users_own_agent() {
+        let _guard = ENFORCER_LOCK
+            .get_or_init(Default::default)
+            .lock()
+            .await;
+        install_zone_like_enforcer().await;
+        let (service, _tmp) = setup_service().await;
+
+        let agent = user_ctx("devtest", "buckyos_jarvis");
+        let task = service
+            .handle_create_task(raw_create_req("aicc:job-1", "k-aicc-1"), agent)
+            .await
+            .unwrap();
+
+        // The owner, through the control surface.
+        let page = service
+            .handle_list_tasks(ListTasksReq::default(), user_ctx("devtest", "control-panel"))
+            .await
+            .unwrap();
+        assert!(
+            page.tasks.iter().any(|t| t.task_id == task.task_id),
+            "control-panel must list the owner's agent tasks"
+        );
+
+        // Full data scope: the Task Center renders progress and the scheduled
+        // task payload straight off `input`.
+        let detail = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id.clone(),
+                },
+                user_ctx("devtest", "control-panel"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.data_scope, Some(TaskDataScope::Full));
+        assert_eq!(detail.input, json!({"payload": "aicc:job-1"}));
+
+        // Another user gets nothing, from the same control surface.
+        let page = service
+            .handle_list_tasks(ListTasksReq::default(), user_ctx("bob", "control-panel"))
+            .await
+            .unwrap();
+        assert!(
+            page.tasks.is_empty(),
+            "the control surface must stay scoped to the requesting user"
+        );
+
+        // And an ordinary app of the same user still cannot cross app_id.
+        let page = service
+            .handle_list_tasks(
+                ListTasksReq::default(),
+                user_ctx("devtest", "buckyos_filebrowser"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            page.tasks.is_empty(),
+            "a non-control-surface app must keep the doc §8.5 isolation"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
