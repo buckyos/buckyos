@@ -1159,6 +1159,13 @@ pub struct AttachInstanceResult {
     pub lease_expires_at: u64,
     /// Kevent channel slug for wake-up hints.
     pub target_key: String,
+    /// Per-lease push credential: the dispatcher presents this token on
+    /// every offer/activate call to this instance, and the runner must
+    /// reject pushes without it. Derived from a dispatcher-process secret,
+    /// so a dispatcher restart rotates it — the runner re-adopts the fresh
+    /// token from its next renew response.
+    #[serde(default)]
+    pub delivery_token: String,
 }
 impl_from_json!(AttachInstanceResult);
 
@@ -1178,6 +1185,11 @@ impl_from_json!(RenewInstanceReq);
 pub struct RenewInstanceResult {
     pub lease_epoch: u64,
     pub lease_expires_at: u64,
+    /// Current per-lease push credential (see `AttachInstanceResult`);
+    /// returned on every renew so a dispatcher restart heals within one
+    /// renew cycle.
+    #[serde(default)]
+    pub delivery_token: String,
 }
 impl_from_json!(RenewInstanceResult);
 

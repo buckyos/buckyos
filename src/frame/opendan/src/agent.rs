@@ -51,6 +51,7 @@ use crate::msg_center_pump::{self, PumpConfig};
 use crate::paths;
 use crate::round_history::SessionHistoryReader;
 use crate::session_event_pump::SessionEventPump;
+use crate::task_event_pump::TaskEventPump;
 use crate::session_model::{
     AgentTaskBinding, PendingInput, SessionKind, SessionMeta, SessionStatus, SessionSummary,
     TimerEventKind, TimerReason, TimerTargetType, TimerTriggerType, UI_CLOCK_TIMER_EVENT_ID,
@@ -303,6 +304,10 @@ pub struct AIAgent {
     /// no `kevent_client` (CLI / test). Cheap to keep around: idle pump
     /// just parks on its `refresh` Notify when no session subscribes.
     event_pump: Option<Arc<SessionEventPump>>,
+    /// Bound-task kevent pump: watches `/task_mgr/{task_id}` (+ tree) for
+    /// the agent.delegate tasks this agent runs, as the acceleration lane
+    /// next to the owner sweep. `None` without a kevent client.
+    task_event_pump: Option<Arc<TaskEventPump>>,
     /// Owns the on-disk workspace records under `<agent_root>/workspace/`.
     /// Stateless — cloning is just a `PathBuf`.
     workspaces: LocalWorkspaceManager,
@@ -338,6 +343,9 @@ impl AIAgent {
                 pump_shutdown.clone(),
             )
         });
+        let task_event_pump = runtime.kevent_client.as_ref().map(|kc| {
+            TaskEventPump::new(agent_name.clone(), kc.clone(), pump_shutdown.clone())
+        });
         let workspaces = LocalWorkspaceManager::new(config.layout.workspaces_dir.clone());
         let dispatcher: Arc<dyn DispatchEvaluator> =
             Arc::new(FixedRulesDispatch::new(&config.toml.dispatch));
@@ -355,10 +363,16 @@ impl AIAgent {
             shutdown_rx: Arc::new(Mutex::new(Some(shutdown_rx))),
             pump_shutdown,
             event_pump,
+            task_event_pump,
             workspaces,
             dispatcher,
             session_id_eval,
         }))
+    }
+
+    /// Bound-task kevent pump handle (executor watch/unwatch calls).
+    pub(crate) fn task_event_pump(&self) -> Option<&Arc<TaskEventPump>> {
+        self.task_event_pump.as_ref()
     }
 
     /// Public accessor for the agent-owned workspace manager. Tools that
@@ -517,6 +531,11 @@ impl AIAgent {
             let p = p.clone();
             tokio::spawn(async move { p.run().await })
         });
+        let task_event_pump_handle = self.task_event_pump.as_ref().map(|p| {
+            let p = p.clone();
+            let agent = self.clone();
+            tokio::spawn(async move { p.run(agent).await })
+        });
 
         if std::env::var("AGENT_MAIN_LOOP").ok().as_deref() == Some("1") {
             info!(
@@ -542,6 +561,9 @@ impl AIAgent {
             let _ = handle.await;
         }
         if let Some(handle) = event_pump_handle {
+            let _ = handle.await;
+        }
+        if let Some(handle) = task_event_pump_handle {
             let _ = handle.await;
         }
         self.stop_all_sessions().await;

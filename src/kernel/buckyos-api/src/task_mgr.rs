@@ -1435,6 +1435,14 @@ pub struct ListTasksReq {
     pub root_id: Option<TaskId>,
     #[serde(default)]
     pub executor_kind: Option<TaskExecutorKind>,
+    /// Filter to tasks bound to this App runner (executor app id). Lets a
+    /// runner's recovery sweep scan only its own tasks server-side instead
+    /// of pulling the zone's whole task list.
+    #[serde(default)]
+    pub runner_app_id: Option<String>,
+    /// Filter to tasks bound to this dispatch target id.
+    #[serde(default)]
+    pub runner_target_id: Option<String>,
     #[serde(default)]
     pub created_after: Option<u64>,
     #[serde(default)]

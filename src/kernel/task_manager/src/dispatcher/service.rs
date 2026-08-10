@@ -39,6 +39,9 @@ fn dispatch_err(code: &str, detail: impl std::fmt::Display) -> RPCErrors {
 
 /// Transport used for the dispatcher's push RPCs to runner endpoints.
 /// Injected so tests can run the full protocol without HTTP.
+/// `auth_token` is the per-lease delivery token minted for the instance —
+/// NEVER the dispatcher's own kernel session token, which must not leave
+/// this process (a runner-supplied endpoint is not a trusted sink).
 #[async_trait]
 pub trait RunnerCaller: Send + Sync {
     async fn call(
@@ -47,11 +50,42 @@ pub trait RunnerCaller: Send + Sync {
         method: &str,
         params: Value,
         timeout_ms: u64,
+        auth_token: Option<String>,
     ) -> Result<Value>;
 }
 
+/// Runner endpoints are instance self-reports, so constrain where the
+/// dispatcher will ever connect: plain http(s) to the local host only.
+/// This matches the v1 same-node deployment (native process or container
+/// published via `-p port:port`); relaxing it for multi-node zones must
+/// come with endpoints resolved from service discovery, not self-reports.
+pub fn validate_runner_endpoint(endpoint: &str) -> Result<()> {
+    let parsed = url::Url::parse(endpoint).map_err(|err| {
+        RPCErrors::ParseRequestError(format!("invalid runner endpoint {}: {}", endpoint, err))
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(RPCErrors::ParseRequestError(format!(
+            "runner endpoint {} must be http(s)",
+            endpoint
+        )));
+    }
+    let loopback = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    if !loopback {
+        return Err(RPCErrors::ParseRequestError(format!(
+            "runner endpoint {} must resolve to the local host (v1 same-node dispatch)",
+            endpoint
+        )));
+    }
+    Ok(())
+}
+
 /// Production caller: a fresh kRPC client per call, authenticated with the
-/// dispatcher's current runtime session token.
+/// per-lease delivery token.
 pub struct KrpcRunnerCaller;
 
 #[async_trait]
@@ -62,12 +96,14 @@ impl RunnerCaller for KrpcRunnerCaller {
         method: &str,
         params: Value,
         timeout_ms: u64,
+        auth_token: Option<String>,
     ) -> Result<Value> {
-        let runtime = get_buckyos_api_runtime()?;
-        let token = runtime.get_session_token().await;
+        // Defense in depth: attach already validates, but endpoints persisted
+        // by older builds or other writers must not widen the egress.
+        validate_runner_endpoint(endpoint)?;
         let client = kRPC::new_with_timeout_secs(
             endpoint,
-            Some(token),
+            auth_token,
             (timeout_ms / 1000).max(1),
         );
         client.call(method, params).await
@@ -91,6 +127,11 @@ pub struct TaskDispatcherService {
     runner_caller: Arc<dyn RunnerCaller>,
     kevent_client: Option<KEventClient>,
     wakeup: Arc<Notify>,
+    /// Process-local secret the per-lease delivery tokens are derived from.
+    /// Deliberately NOT persisted: a dispatcher restart rotates every token,
+    /// and runners re-adopt the fresh one from their next renew response
+    /// (offer/activate calls in the gap fail closed and back off).
+    delivery_secret: Arc<String>,
 }
 
 impl TaskDispatcherService {
@@ -108,11 +149,32 @@ impl TaskDispatcherService {
             runner_caller,
             kevent_client,
             wakeup: Arc::new(Notify::new()),
+            delivery_secret: Arc::new(format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )),
         }
     }
 
     pub fn db(&self) -> Arc<DispatchDb> {
         self.db.clone()
+    }
+
+    /// Deterministic per-lease push credential. Scoped to
+    /// `(target, instance, lease_epoch)` so a leaked token neither works
+    /// for another instance nor survives a re-attach.
+    fn delivery_token_for(&self, target_id: &str, instance_id: &str, lease_epoch: u64) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.delivery_secret.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(target_id.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(instance_id.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(lease_epoch.to_le_bytes());
+        format!("dlv-{}", hex::encode(hasher.finalize()))
     }
 
     async fn authenticate(&self, ctx: &RPCContext) -> Result<RequestContext> {
@@ -506,6 +568,11 @@ impl TaskDispatcherService {
             lease_epoch: attempt.lease_epoch,
             deadline_at: attempt.deadline_at,
         };
+        let delivery_token = self.delivery_token_for(
+            &attempt.target_id,
+            &attempt.instance_id,
+            attempt.lease_epoch,
+        );
         let offer_result = self
             .runner_caller
             .call(
@@ -513,6 +580,7 @@ impl TaskDispatcherService {
                 &function.offer_method,
                 serde_json::to_value(&offer_req).unwrap_or(Value::Null),
                 record.delivery_policy.rpc_timeout_ms,
+                Some(delivery_token),
             )
             .await;
 
@@ -723,6 +791,11 @@ impl TaskDispatcherService {
             runner_epoch,
             reservation_token: reservation_token.to_string(),
         };
+        let delivery_token = self.delivery_token_for(
+            &attempt.target_id,
+            &attempt.instance_id,
+            attempt.lease_epoch,
+        );
         let activate_result = self
             .runner_caller
             .call(
@@ -730,6 +803,7 @@ impl TaskDispatcherService {
                 &function.activate_method,
                 serde_json::to_value(&activate_req).unwrap_or(Value::Null),
                 record.delivery_policy.rpc_timeout_ms,
+                Some(delivery_token),
             )
             .await;
 
@@ -1513,6 +1587,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 "instance endpoint is required".into(),
             ));
         }
+        validate_runner_endpoint(&req.endpoint)?;
         let lease_epoch = self.db.next_lease_epoch(&req.target_id).await?;
         let lease_ms = req
             .lease_ms
@@ -1534,6 +1609,11 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             lease_epoch,
             lease_expires_at: instance.lease_expires_at,
             target_key: task_dispatcher_target_key(&req.target_id),
+            delivery_token: self.delivery_token_for(
+                &req.target_id,
+                &req.instance_id,
+                lease_epoch,
+            ),
         })
     }
 
@@ -1569,6 +1649,11 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         Ok(RenewInstanceResult {
             lease_epoch: req.lease_epoch,
             lease_expires_at,
+            delivery_token: self.delivery_token_for(
+                &req.target_id,
+                &req.instance_id,
+                req.lease_epoch,
+            ),
         })
     }
 

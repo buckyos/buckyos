@@ -174,14 +174,16 @@ impl WorkflowRpcHandler {
                 let owner = self.authenticated_schedule_owner(&req.params, &ctx).await?;
                 self.create_scheduled_task(&req.params, owner).await
             }
-            "update_scheduled_task" => self.update_scheduled_task(&req.params).await,
-            "get_scheduled_task" => self.get_scheduled_task(&req.params).await,
-            "list_scheduled_tasks" => self.list_scheduled_tasks(&req.params).await,
-            "pause_scheduled_task" => self.pause_scheduled_task(&req.params).await,
-            "resume_scheduled_task" => self.resume_scheduled_task(&req.params).await,
-            "archive_scheduled_task" => self.archive_scheduled_task(&req.params).await,
-            "run_scheduled_task_now" => self.run_scheduled_task_now(&req.params).await,
-            "get_scheduled_task_history" => self.get_scheduled_task_history(&req.params).await,
+            "update_scheduled_task" => self.update_scheduled_task(&req.params, &ctx).await,
+            "get_scheduled_task" => self.get_scheduled_task(&req.params, &ctx).await,
+            "list_scheduled_tasks" => self.list_scheduled_tasks(&req.params, &ctx).await,
+            "pause_scheduled_task" => self.pause_scheduled_task(&req.params, &ctx).await,
+            "resume_scheduled_task" => self.resume_scheduled_task(&req.params, &ctx).await,
+            "archive_scheduled_task" => self.archive_scheduled_task(&req.params, &ctx).await,
+            "run_scheduled_task_now" => self.run_scheduled_task_now(&req.params, &ctx).await,
+            "get_scheduled_task_history" => {
+                self.get_scheduled_task_history(&req.params, &ctx).await
+            }
             "validate_scheduled_task" => self.validate_scheduled_task(&req.params).await,
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
@@ -800,9 +802,9 @@ impl WorkflowRpcHandler {
         Ok(authenticated)
     }
 
-    async fn update_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
+    async fn update_scheduled_task(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
-        let mut next_schedule = match self.schedules.get(&schedule_id).await {
+        let mut next_schedule = match self.schedule_for_caller(&schedule_id, ctx).await? {
             Some(record) => record,
             None => return Ok(not_found("schedule", &schedule_id)),
         };
@@ -847,16 +849,23 @@ impl WorkflowRpcHandler {
         Ok(json!({ "ok": true, "schedule": updated.to_value() }))
     }
 
-    async fn get_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
+    async fn get_scheduled_task(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
-        match self.schedules.get(&schedule_id).await {
+        match self.schedule_for_caller(&schedule_id, ctx).await? {
             Some(record) => Ok(json!({ "ok": true, "schedule": record.to_value() })),
             None => Ok(not_found("schedule", &schedule_id)),
         }
     }
 
-    async fn list_scheduled_tasks(&self, params: &Value) -> RpcResult<Value> {
-        let owner = optional_owner(params);
+    async fn list_scheduled_tasks(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
+        let caller = self.caller_verifier.verify(ctx).await?;
+        if let Some(requested) = optional_owner(params) {
+            if requested != caller {
+                return Err(RPCErrors::NoPermission(
+                    "cannot list another owner's schedules".to_string(),
+                ));
+            }
+        }
         let status = params
             .get("status")
             .and_then(Value::as_str)
@@ -865,7 +874,7 @@ impl WorkflowRpcHandler {
         let name = params.get("name").and_then(Value::as_str);
         let records = self
             .schedules
-            .list(owner.as_ref(), status, workflow_id, name)
+            .list(Some(&caller), status, workflow_id, name)
             .await;
         Ok(json!({
             "ok": true,
@@ -873,13 +882,16 @@ impl WorkflowRpcHandler {
         }))
     }
 
-    async fn pause_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        self.set_schedule_status(params, ScheduleStatus::Paused)
+    async fn pause_scheduled_task(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
+        self.set_schedule_status(params, ScheduleStatus::Paused, ctx)
             .await
     }
 
-    async fn resume_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
+    async fn resume_scheduled_task(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
+        if self.schedule_for_caller(&schedule_id, ctx).await?.is_none() {
+            return Ok(not_found("schedule", &schedule_id));
+        }
         let updated = self
             .schedules
             .update(&schedule_id, |record| {
@@ -898,8 +910,8 @@ impl WorkflowRpcHandler {
         }
     }
 
-    async fn archive_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        self.set_schedule_status(params, ScheduleStatus::Canceled)
+    async fn archive_scheduled_task(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
+        self.set_schedule_status(params, ScheduleStatus::Canceled, ctx)
             .await
     }
 
@@ -907,8 +919,12 @@ impl WorkflowRpcHandler {
         &self,
         params: &Value,
         status: ScheduleStatus,
+        ctx: &RPCContext,
     ) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
+        if self.schedule_for_caller(&schedule_id, ctx).await?.is_none() {
+            return Ok(not_found("schedule", &schedule_id));
+        }
         let updated = self
             .schedules
             .update(&schedule_id, |record| {
@@ -927,8 +943,11 @@ impl WorkflowRpcHandler {
         }
     }
 
-    async fn run_scheduled_task_now(&self, params: &Value) -> RpcResult<Value> {
+    async fn run_scheduled_task_now(&self, params: &Value, ctx: &RPCContext) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
+        if self.schedule_for_caller(&schedule_id, ctx).await?.is_none() {
+            return Ok(not_found("schedule", &schedule_id));
+        }
         let fire_time = params
             .get("fire_time")
             .and_then(Value::as_i64)
@@ -945,8 +964,15 @@ impl WorkflowRpcHandler {
         }
     }
 
-    async fn get_scheduled_task_history(&self, params: &Value) -> RpcResult<Value> {
+    async fn get_scheduled_task_history(
+        &self,
+        params: &Value,
+        ctx: &RPCContext,
+    ) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
+        if self.schedule_for_caller(&schedule_id, ctx).await?.is_none() {
+            return Ok(not_found("schedule", &schedule_id));
+        }
         let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
         let history = self.schedules.history(&schedule_id, limit).await;
         Ok(json!({
@@ -954,6 +980,24 @@ impl WorkflowRpcHandler {
             "schedule_id": schedule_id,
             "fires": history.iter().map(ScheduleFireRecord::to_value).collect::<Vec<_>>(),
         }))
+    }
+
+    async fn schedule_for_caller(
+        &self,
+        schedule_id: &str,
+        ctx: &RPCContext,
+    ) -> RpcResult<Option<WorkflowSchedule>> {
+        let caller = self.caller_verifier.verify(ctx).await?;
+        let Some(schedule) = self.schedules.get(schedule_id).await else {
+            return Ok(None);
+        };
+        if schedule.owner != caller {
+            return Err(RPCErrors::NoPermission(format!(
+                "caller {}:{} may not access schedule {}",
+                caller.user_id, caller.app_id, schedule_id
+            )));
+        }
+        Ok(Some(schedule))
     }
 
     async fn validate_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
@@ -2166,6 +2210,12 @@ mod tests {
         }
     }
 
+    fn make_req_as(method: &str, params: Value, user_id: &str, app_id: &str) -> RPCRequest {
+        let mut req = make_req(method, params);
+        req.token = Some(format!("{user_id}|{app_id}"));
+        req
+    }
+
     #[tokio::test]
     async fn dispatch_unknown_method_returns_unknown() {
         let handler = make_handler();
@@ -2394,7 +2444,7 @@ mod tests {
         ] {
             let resp = handler
                 .handle_rpc_call(
-                    make_req(method, json!({"schedule_id": schedule_id})),
+                    make_req_as(method, json!({"schedule_id": schedule_id}), "u", "a"),
                     "127.0.0.1".parse().unwrap(),
                 )
                 .await
@@ -2425,6 +2475,119 @@ mod tests {
             .await
             .expect_err("forged schedule owner must be rejected");
         assert!(matches!(err, RPCErrors::NoPermission(_)));
+    }
+
+    #[tokio::test]
+    async fn scheduled_task_resources_are_scoped_to_authenticated_owner() {
+        let handler = make_handler();
+        let create = handler
+            .handle_rpc_call(
+                make_req(
+                    "create_scheduled_task",
+                    json!({
+                        "owner": {"user_id": "u", "app_id": "agent-a"},
+                        "name": "private-schedule",
+                        "schedule": {"kind": "once", "run_at": Utc::now().timestamp() + 3600},
+                        "target": {"kind": "remind", "text": "private", "to": "self"},
+                    }),
+                ),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        let schedule_id = match create.result {
+            RPCResult::Success(value) => value["schedule_id"].as_str().unwrap().to_string(),
+            RPCResult::Failed(err) => panic!("create schedule failed: {err:?}"),
+        };
+
+        let err = handler
+            .handle_rpc_call(
+                make_req("get_scheduled_task", json!({"schedule_id": schedule_id})),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .expect_err("schedule access without a token must be rejected");
+        assert!(matches!(err, RPCErrors::NoPermission(_)));
+
+        for (method, params) in [
+            ("get_scheduled_task", json!({"schedule_id": schedule_id})),
+            (
+                "update_scheduled_task",
+                json!({"schedule_id": schedule_id, "name": "forged"}),
+            ),
+            ("pause_scheduled_task", json!({"schedule_id": schedule_id})),
+            ("resume_scheduled_task", json!({"schedule_id": schedule_id})),
+            (
+                "archive_scheduled_task",
+                json!({"schedule_id": schedule_id}),
+            ),
+            (
+                "run_scheduled_task_now",
+                json!({"schedule_id": schedule_id}),
+            ),
+            (
+                "get_scheduled_task_history",
+                json!({"schedule_id": schedule_id}),
+            ),
+        ] {
+            let err = handler
+                .handle_rpc_call(
+                    make_req_as(method, params, "u", "agent-b"),
+                    "127.0.0.1".parse().unwrap(),
+                )
+                .await
+                .expect_err("foreign schedule access must be rejected");
+            assert!(
+                matches!(err, RPCErrors::NoPermission(_)),
+                "{method}: {err:?}"
+            );
+        }
+
+        let list = handler
+            .handle_rpc_call(
+                make_req_as("list_scheduled_tasks", json!({}), "u", "agent-b"),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        let list = match list.result {
+            RPCResult::Success(value) => value,
+            RPCResult::Failed(err) => panic!("list failed: {err:?}"),
+        };
+        assert!(list["schedules"].as_array().unwrap().is_empty());
+
+        let err = handler
+            .handle_rpc_call(
+                make_req_as(
+                    "list_scheduled_tasks",
+                    json!({"owner": {"user_id": "u", "app_id": "agent-a"}}),
+                    "u",
+                    "agent-b",
+                ),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .expect_err("foreign owner list filter must be rejected");
+        assert!(matches!(err, RPCErrors::NoPermission(_)));
+
+        let own = handler
+            .handle_rpc_call(
+                make_req_as(
+                    "get_scheduled_task",
+                    json!({"schedule_id": schedule_id}),
+                    "u",
+                    "agent-a",
+                ),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        let own = match own.result {
+            RPCResult::Success(value) => value,
+            RPCResult::Failed(err) => panic!("owner get failed: {err:?}"),
+        };
+        assert_eq!(own["schedule"]["name"], "private-schedule");
+        assert_eq!(own["schedule"]["status"], "Running");
     }
 
     #[tokio::test]
@@ -2476,9 +2639,11 @@ mod tests {
         let fire_time = Utc::now().timestamp();
         let first = handler
             .handle_rpc_call(
-                make_req(
+                make_req_as(
                     "run_scheduled_task_now",
                     json!({"schedule_id": schedule_id, "fire_time": fire_time}),
+                    "u",
+                    "a",
                 ),
                 "127.0.0.1".parse().unwrap(),
             )
@@ -2500,9 +2665,11 @@ mod tests {
 
         let second = handler
             .handle_rpc_call(
-                make_req(
+                make_req_as(
                     "run_scheduled_task_now",
                     json!({"schedule_id": schedule_id, "fire_time": fire_time}),
+                    "u",
+                    "a",
                 ),
                 "127.0.0.1".parse().unwrap(),
             )
@@ -2552,9 +2719,11 @@ mod tests {
 
         let fire = handler
             .handle_rpc_call(
-                make_req(
+                make_req_as(
                     "run_scheduled_task_now",
                     json!({"schedule_id": schedule_id, "fire_time": run_at - 10}),
+                    "u",
+                    "agent-a",
                 ),
                 "127.0.0.1".parse().unwrap(),
             )
@@ -2605,9 +2774,11 @@ mod tests {
             .to_string();
         let fire = handler
             .handle_rpc_call(
-                make_req(
+                make_req_as(
                     "run_scheduled_task_now",
                     json!({"schedule_id": schedule_id, "fire_time": run_at - 20}),
+                    "u",
+                    "agent-a",
                 ),
                 "127.0.0.1".parse().unwrap(),
             )
@@ -2659,9 +2830,11 @@ mod tests {
 
         let fire = handler
             .handle_rpc_call(
-                make_req(
+                make_req_as(
                     "run_scheduled_task_now",
                     json!({"schedule_id": schedule_id, "fire_time": run_at - 20}),
+                    "u",
+                    "agent-a",
                 ),
                 "127.0.0.1".parse().unwrap(),
             )
@@ -2737,9 +2910,11 @@ mod tests {
 
         let history = handler
             .handle_rpc_call(
-                make_req(
+                make_req_as(
                     "get_scheduled_task_history",
                     json!({"schedule_id": schedule_id, "limit": 10}),
+                    "u",
+                    "a",
                 ),
                 "127.0.0.1".parse().unwrap(),
             )

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 struct MockRunnerCaller {
     responses: Mutex<VecDeque<Result<Value>>>,
     calls: Mutex<Vec<(String, String, Value)>>,
+    tokens: Mutex<Vec<Option<String>>>,
 }
 
 impl MockRunnerCaller {
@@ -60,6 +61,10 @@ impl MockRunnerCaller {
     fn calls(&self) -> Vec<(String, String, Value)> {
         self.calls.lock().unwrap().clone()
     }
+
+    fn tokens(&self) -> Vec<Option<String>> {
+        self.tokens.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
@@ -70,11 +75,13 @@ impl RunnerCaller for MockRunnerCaller {
         method: &str,
         params: Value,
         _timeout_ms: u64,
+        auth_token: Option<String>,
     ) -> Result<Value> {
         self.calls
             .lock()
             .unwrap()
             .push((endpoint.to_string(), method.to_string(), params));
+        self.tokens.lock().unwrap().push(auth_token);
         self.responses
             .lock()
             .unwrap()
@@ -155,7 +162,7 @@ async fn register_and_attach(env: &TestEnv, target_id: &str) {
             AttachInstanceReq {
                 target_id: target_id.to_string(),
                 instance_id: "inst-1".into(),
-                endpoint: "http://runner-1/kapi/runner".into(),
+                endpoint: "http://127.0.0.1:39321/kapi/runner".into(),
                 capacity: 4,
                 available_capacity: None,
                 lease_ms: None,
@@ -338,7 +345,7 @@ async fn offline_target_waits_then_delivers_on_attach() {
             AttachInstanceReq {
                 target_id: "target-1".into(),
                 instance_id: "inst-1".into(),
-                endpoint: "http://runner-1/kapi/runner".into(),
+                endpoint: "http://127.0.0.1:39321/kapi/runner".into(),
                 capacity: 1,
                 available_capacity: None,
                 lease_ms: None,
@@ -507,7 +514,7 @@ async fn approval_gate_holds_then_releases_or_denies() {
             AttachInstanceReq {
                 target_id: "target-1".into(),
                 instance_id: "inst-1".into(),
-                endpoint: "http://runner-1/kapi/runner".into(),
+                endpoint: "http://127.0.0.1:39321/kapi/runner".into(),
                 capacity: 2,
                 available_capacity: None,
                 lease_ms: None,
@@ -776,7 +783,7 @@ async fn stale_lease_instance_cannot_renew() {
             AttachInstanceReq {
                 target_id: "target-1".into(),
                 instance_id: "inst-1".into(),
-                endpoint: "http://runner-1/kapi/runner".into(),
+                endpoint: "http://127.0.0.1:39321/kapi/runner".into(),
                 capacity: 4,
                 available_capacity: None,
                 lease_ms: None,
@@ -801,4 +808,107 @@ async fn stale_lease_instance_cannot_renew() {
         .await
         .unwrap_err();
     assert!(is_stale_instance_err(&err));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn attach_rejects_non_local_endpoints() {
+    let env = setup_env().await;
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("target-1", DispatchApprovalPolicy::Never),
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+    for endpoint in [
+        "http://evil.example.com/kapi/runner",
+        "http://10.0.0.7:4060/kapi/runner",
+        "ftp://127.0.0.1/kapi/runner",
+        "not a url",
+    ] {
+        let err = env
+            .dispatcher
+            .handle_attach_instance(
+                AttachInstanceReq {
+                    target_id: "target-1".into(),
+                    instance_id: "inst-evil".into(),
+                    endpoint: endpoint.into(),
+                    capacity: 4,
+                    available_capacity: None,
+                    lease_ms: None,
+                },
+                service_ctx("svc", "runner-app"),
+            )
+            .await
+            .expect_err("non-local endpoint must be rejected");
+        assert!(
+            matches!(err, RPCErrors::ParseRequestError(_)),
+            "{endpoint}: {err:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pushes_present_the_lease_delivery_token() {
+    let env = setup_env().await;
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("target-1", DispatchApprovalPolicy::Never),
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+    let attached = env
+        .dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "target-1".into(),
+                instance_id: "inst-1".into(),
+                endpoint: "http://127.0.0.1:39321/kapi/runner".into(),
+                capacity: 4,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+    assert!(attached.delivery_token.starts_with("dlv-"));
+    // Renewing the same lease hands back the same token; a re-attach
+    // (new lease epoch) rotates it.
+    let renewed = env
+        .dispatcher
+        .handle_renew_instance(
+            RenewInstanceReq {
+                target_id: "target-1".into(),
+                instance_id: "inst-1".into(),
+                lease_epoch: attached.lease_epoch,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(renewed.delivery_token, attached.delivery_token);
+
+    env.dispatcher
+        .handle_dispatch_task(dispatch_req("job-token"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    env.caller.push_offer_accepted("inst-1", "res-1");
+    env.caller.push_activated();
+    env.dispatcher.evaluate_once(false).await;
+
+    // Both offer and activate presented the lease token — and never a
+    // kernel session token.
+    let tokens = env.caller.tokens();
+    assert_eq!(tokens.len(), 2);
+    for token in tokens {
+        assert_eq!(token.as_deref(), Some(attached.delivery_token.as_str()));
+    }
 }

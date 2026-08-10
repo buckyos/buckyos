@@ -247,6 +247,7 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 强约束：
 
 - `create_scheduled_task` 必须从已验证的 session token 取得调用者 `(user_id, app_id)`，请求中的 `owner` 只能作为一致性声明，不能覆盖调用者身份。
+- `get/list/update/pause/resume/archive/run-now/history` 必须验证同一 session 身份：单资源操作只允许 schedule owner，list 强制限定为当前 owner，不能通过 `owner` filter 越权读取其它租户。
 - schedule root task 的 `creator` 必须等于该调用者；每次 fire 创建的 subtask，以及 `workflow.run` 展开的 Run / Step / Map shard / Thunk 任务，都必须继承这组 creator。Workflow 只作为受信创建控制面；executor 身份按 task type 单独绑定，不能因为经过 Workflow 中转而改变任务 creator。
 - 一个 schedule 必须对应一个 TaskMgr root task，类型为 `workflow/schedule`。root task 创建失败时，enabled schedule 不应静默成功；fire 时 root task 不可用应返回明确错误或把 schedule 置为 `error`。
 - 每次 fire 必须创建一个 fire subtask，且固定 `parent_id = schedule.task_mirror.root_task_id`、`root_id = schedule.task_mirror.root_id`。模板不能覆盖这两个绑定。

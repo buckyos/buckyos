@@ -150,7 +150,10 @@ impl Default for TaskExecutorCfg {
         Self {
             enabled: true,
             runner_id: String::new(),
-            poll_interval_ms: 5_000,
+            // The sweep is a recovery backstop, not the discovery path:
+            // activation pushes and the bound-task kevent subscription wake
+            // the executor directly, so a minute-level cadence suffices.
+            poll_interval_ms: 60_000,
         }
     }
 }

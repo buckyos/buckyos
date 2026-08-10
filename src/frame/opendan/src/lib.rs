@@ -57,6 +57,7 @@ pub mod tool_plan;
 pub mod agent;
 pub mod agent_task_executor;
 pub mod dispatch_adapter;
+pub mod task_event_pump;
 
 // §9 step 6 — msg-center / kevent inbound pump that feeds AIAgent::inbox().
 pub mod msg_center_pump;

@@ -384,6 +384,14 @@ impl TaskStore {
             conditions.push("executor_kind = ?".into());
             params.push(Param::Text(kind.to_string()));
         }
+        if let Some(runner_app) = req.runner_app_id.as_deref() {
+            conditions.push("runner_app_id = ?".into());
+            params.push(Param::Text(runner_app.to_string()));
+        }
+        if let Some(runner_target) = req.runner_target_id.as_deref() {
+            conditions.push("runner_target_id = ?".into());
+            params.push(Param::Text(runner_target.to_string()));
+        }
         if let Some(after) = req.created_after {
             conditions.push("created_at >= ?".into());
             params.push(Param::Int(after as i64));

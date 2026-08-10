@@ -78,6 +78,8 @@ TaskMgr 中的 schedule root task 是可观察面，不是调度真相源。Work
 
 身份必须沿整棵任务树保持不变：创建 schedule 时，Workflow 从 session token 验证 `(user_id, app_id)`，并要求请求 `owner` 与之完全一致；schedule root task、每次 fire subtask，以及 `workflow.run` 继续展开的任务，都继承该 creator。Workflow 是受信的创建控制面，不是这些任务的 creator；executor 身份按 task type 独立决定。实现上通过 TaskMgr 的 `create_promised_task` 写入已验证的 delegated creator，再通过 executor bind 完成执行绑定。
 
+Schedule 管理 API 同样以 session 身份为权威：`get/update/pause/resume/archive/run_now/history` 只允许 owner，`list` 无论是否携带 owner filter 都只能返回当前 owner 的记录；内部 due scan 按系统流程运行，不经过用户 RPC ACL。
+
 ### 4.3 AgentTool CLI
 
 OpenDAN 的计划任务 CLI 只和 Workflow schedule API 交互。对 Agent 来说，它是一个 crontab-compatible 工具；底层是否创建 workflow schedule、service schedule 或 command schedule 不暴露给 prompt。

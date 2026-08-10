@@ -111,9 +111,29 @@ impl AIAgent {
             .await
     }
 
+    /// Entry point for the bound-task kevent pump: same idempotent drive as
+    /// the sweep, plus an ownership re-check — a watched task that stopped
+    /// being ours only needs its subscription dropped.
+    pub(crate) async fn process_agent_delegate_task_from_event(
+        self: Arc<Self>,
+        task: Task,
+        runner: &str,
+    ) -> Result<()> {
+        if !task_runs_on_app(&task, self.own_task_app_id().as_str())
+            || !task_targets_agent(&task, runner, self.dispatch_target_id().as_str())
+        {
+            if let Some(pump) = self.task_event_pump() {
+                pump.unwatch(&task.task_id).await;
+            }
+            return Ok(());
+        }
+        self.process_agent_delegate_task(task, runner).await
+    }
+
     /// Sweep this agent's OWN `agent.delegate` tasks (owner-only recovery).
-    /// Multiple agents share one app id, so ownership within the app is
-    /// decided per task by `task_targets_agent`.
+    /// The list is filtered server-side to tasks bound to this App runner;
+    /// multiple agents share one app id, so ownership within the app is
+    /// still decided per task by `task_targets_agent`.
     async fn sweep_agent_delegate_tasks(self: Arc<Self>, runner: &str) {
         let own_app_id = self.own_task_app_id();
         let target_agent_id = self.dispatch_target_id();
@@ -137,6 +157,7 @@ impl AIAgent {
                 .list_tasks(ListTasksReq {
                     schema_id: Some(AGENT_DELEGATE_SCHEMA_ID.to_string()),
                     phase: Some(phase),
+                    runner_app_id: Some(own_app_id.clone()),
                     ..Default::default()
                 })
                 .await
@@ -177,7 +198,17 @@ impl AIAgent {
         runner: &str,
     ) -> Result<()> {
         if task.phase.is_terminal() {
+            // Terminal mutations publish one more task event, so this is
+            // also how subscriptions converge to zero after completion.
+            if let Some(pump) = self.task_event_pump() {
+                pump.unwatch(&task.task_id).await;
+            }
             return Ok(());
+        }
+        // Acceleration lane: watch this bound task's kevent channels so
+        // control requests and child completions wake us ahead of the sweep.
+        if let Some(pump) = self.task_event_pump() {
+            pump.watch(&task.task_id, task.root_id.as_str()).await;
         }
         // Control requests reach the runner as a pending request that must
         // be acknowledged (2.0 control protocol).
