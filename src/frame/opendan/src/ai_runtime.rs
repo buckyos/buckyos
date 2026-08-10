@@ -615,6 +615,12 @@ mod policy_tests {
     }
 
     #[test]
+    fn fork_status_uses_parent_turn_nonce() {
+        assert_eq!(ui_status_nonce("ui-session-7::fork-1"), "ui-session-7");
+        assert_eq!(ui_status_nonce("ui-session-8"), "ui-session-8");
+    }
+
+    #[test]
     fn exec_bash_provider_tool_uses_tool_whitelist() {
         let policy = AgentPolicy::new(Vec::new());
         let request = request_with_policy(ToolPolicy {
@@ -702,6 +708,14 @@ impl OpenDanWorklogSink {
             sink.set_with_nonce(line, nonce);
         }
     }
+}
+
+pub(crate) fn ui_status_nonce(trace_id: &str) -> String {
+    trace_id
+        .split_once("::fork-")
+        .map(|(parent, _)| parent)
+        .unwrap_or(trace_id)
+        .to_string()
 }
 
 #[async_trait]
@@ -843,7 +857,7 @@ impl WorklogSink for OpenDanWorklogSink {
         let status_nonce = payload
             .get("trace_id")
             .and_then(Value::as_str)
-            .map(str::to_string);
+            .map(ui_status_nonce);
         self.update_status(status_line, status_nonce);
 
         let record = json!({

@@ -302,7 +302,7 @@ pub struct AgentSession {
     /// caused the parent LLM to think a forward was needed". §8.4 of the
     /// design doc calls this the "本轮 origin user 消息". Per-turn ephemeral
     /// state — not persisted, simply overwritten each turn.
-    current_origin_msg: Arc<std::sync::Mutex<Option<String>>>,
+    current_origin_msg: Arc<std::sync::Mutex<Option<AiMessage>>>,
 
     /// Interrupt handle of the LLMContext currently inside a `run()` call.
     /// `Some` while an inference is in flight; `None` between turns or when
@@ -1019,7 +1019,7 @@ impl AgentSession {
             user_messages: messages.clone(),
             system_events: Vec::new(),
         };
-        self.set_current_origin_msg(messages.first().map(|message| message.text_content()));
+        self.set_current_origin_msg(messages.first().cloned());
         self.run_one_round(messages, Vec::new(), Some(seed), false)
             .await
     }
@@ -1324,11 +1324,7 @@ impl AgentSession {
                         self.set_status(SessionStatus::WaitingInput).await;
                         continue;
                     }
-                    self.set_current_origin_msg(
-                        bootstrap_messages
-                            .first()
-                            .map(|message| message.text_content()),
-                    );
+                    self.set_current_origin_msg(bootstrap_messages.first().cloned());
                     let seed = RoundSeed {
                         trigger: RoundTrigger::SystemEvent {
                             source: "bootstrap".to_string(),
@@ -1556,7 +1552,7 @@ impl AgentSession {
             let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
             let mut latest_peer_did: Option<String> = None;
             let mut latest_peer_tunnel: Option<String> = None;
-            let mut latest_origin_msg: Option<String> = None;
+            let mut latest_origin_msg: Option<AiMessage> = None;
             // Parallel collections destined for the round-history seed. We
             // mirror the per-input visit so user-msg ordering & system-event
             // payloads are captured intact rather than the post-formatted
@@ -1592,7 +1588,7 @@ impl AgentSession {
                                     if first_msg_preview.is_none() {
                                         first_msg_preview = Some(trigger_preview(&preview_text));
                                     }
-                                    latest_origin_msg = Some(preview_text);
+                                    latest_origin_msg = Some(message.clone());
                                     hist_user_messages.push(message.clone());
                                     msg_count += 1;
                                 }
@@ -5634,14 +5630,18 @@ impl AgentSession {
         self.current_origin_msg
             .lock()
             .ok()
-            .and_then(|g| g.clone())
+            .and_then(|g| g.as_ref().map(AiMessage::text_content))
             .filter(|s| !s.trim().is_empty())
     }
 
+    pub fn current_origin_user_ai_message(&self) -> Option<AiMessage> {
+        self.current_origin_msg.lock().ok().and_then(|g| g.clone())
+    }
+
     /// Worker-internal: stash / clear the per-turn origin message. Pass
-    /// `Some(text)` right before running a turn; `None` to clear (e.g. on
+    /// `Some(message)` right before running a turn; `None` to clear (e.g. on
     /// session exit).
-    fn set_current_origin_msg(&self, value: Option<String>) {
+    fn set_current_origin_msg(&self, value: Option<AiMessage>) {
         if let Ok(mut g) = self.current_origin_msg.lock() {
             *g = value;
         }

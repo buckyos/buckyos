@@ -474,8 +474,21 @@ impl TypedTool for ForwardMsgTool {
                 })?
             }
         };
+        let forwarded_message = build_forwarded_message(
+            agent
+                .get_session(&self.source_session_id)
+                .await
+                .and_then(|session| session.current_origin_user_ai_message()),
+            &body,
+        );
+        let forwarded_text = forwarded_message.text_content();
         let record_id = agent
-            .forward_message(&args.target_worksession_id, &self.source_session_id, &body)
+            .forward_ai_message(
+                &args.target_worksession_id,
+                &self.source_session_id,
+                &forwarded_text,
+                forwarded_message,
+            )
             .await
             .map_err(|err| AgentToolError::ExecFailed(format!("{err:#}")))?;
         Ok(ForwardMsgOutput {
@@ -484,6 +497,18 @@ impl TypedTool for ForwardMsgTool {
             record_id,
         })
     }
+}
+
+fn build_forwarded_message(origin: Option<AiMessage>, override_text: &str) -> AiMessage {
+    let mut message =
+        origin.unwrap_or_else(|| AiMessage::text(AiRole::User, override_text.to_string()));
+    if message.text_content().trim() != override_text {
+        message.content.push(AiContent::Text {
+            text: format!("Forwarding context:\n{override_text}"),
+        });
+    }
+    message.role = AiRole::User;
+    message
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -1301,6 +1326,22 @@ mod tests {
         assert_eq!(TOOL_FORWARD_MSG, "forward_msg");
         assert_eq!(TOOL_TRY_CREATE_WORKSESSION, "try_create_worksession");
         assert_eq!(TOOL_UPDATE_SESSION_TOPIC, "update_session_topic");
+    }
+
+    #[test]
+    fn forwarded_override_preserves_origin_attachment_marker() {
+        let marker = "[image attachment; obj_id=\"cyfile:abc\"; label=\"image/jpeg\"]";
+        let origin = AiMessage::text(
+            AiRole::User,
+            format!("Use this image to make a video\n{marker}"),
+        );
+
+        let forwarded = build_forwarded_message(Some(origin), "Create a five second video");
+        let text = forwarded.text_content();
+
+        assert_eq!(forwarded.role, AiRole::User);
+        assert!(text.contains(marker));
+        assert!(text.contains("Create a five second video"));
     }
 
     #[test]
