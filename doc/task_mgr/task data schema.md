@@ -1,5 +1,9 @@
 # Task Data Schema
 
+> **历史版本（beta2.2 起）**：TaskMgr 2.0 已实施（`doc/task_mgr/task-mgr 2.0.md` 是当前
+> 总规范）。本文描述的是 1.x 实现，仅作为历史实现输入保留；其中与 2.0 冲突的协议、
+> 状态与数据模型描述一律以 2.0 文档和当前代码为准。
+
 本文档以 `src/kernel/buckyos-api/src/taskdata.rs` 为准，说明 BuckyOS 对 `Task.data` 的强类型抽象。
 
 TaskManager 的数据库字段仍然保存 JSON，核心服务只负责保存、合并和事件通知；业务侧应优先通过 `buckyos-api` 中的 `TaskDataType` / `TypedTaskData` / 各具体 `*TaskData` 类型读写，避免继续散落使用未约束的 `serde_json::Value`。

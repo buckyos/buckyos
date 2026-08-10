@@ -1,5 +1,9 @@
 # Task Dispatch Center 设计
 
+> **历史版本（beta2.2 起）**：TaskMgr 2.0 已实施（`doc/task_mgr/task-mgr 2.0.md` 是当前
+> 总规范）。本文描述的是 1.x 实现，仅作为历史实现输入保留；其中与 2.0 冲突的协议、
+> 状态与数据模型描述一律以 2.0 文档和当前代码为准。
+
 - 状态：设计定稿；M1+M2+M4 已实施（2026-08-07，beta2.2）
   - M1：`buckyos-api/src/task_dispatcher.rs` + `task_manager/src/dispatcher/`
     （独立 RDB `task-dispatcher-main`、`/kapi/task-dispatcher` 同进程第二 path、

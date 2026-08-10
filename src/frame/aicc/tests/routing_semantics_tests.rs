@@ -6,7 +6,7 @@ use aicc::{CostEstimate, ModelCatalog, ProviderStartResult, Registry, Router, Te
 use buckyos_api::{
     AiMessage, AiMethodRequest, AiMethodStatus, AiPayload, AiRole, AiccLogicalNodeOverlay,
     AiccRouteOverlay, Capability, LlmChatInvokeRequest, ModelDisable, ModelItem, ModelSpec,
-    Requirements, RouteResolveRequest, TaskFilter, TextToImageInvokeRequest,
+    Requirements, RouteResolveRequest, TextToImageInvokeRequest,
 };
 use common::*;
 use std::collections::BTreeMap;
@@ -395,10 +395,7 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))

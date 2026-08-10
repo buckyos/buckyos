@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{AiMethodStatus, AiResponse, Capability, TaskFilter, TaskStatus};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, TaskOutcome, TaskPhase};
 use common::*;
 use std::sync::Arc;
 
@@ -46,17 +46,14 @@ async fn task_01_immediate_persists_completed() {
     );
 
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
-        task.status,
-        TaskStatus::Completed,
+        (task.phase, task.outcome),
+        (TaskPhase::Terminal, Some(TaskOutcome::Succeeded)),
         "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch."
     );
 }
@@ -144,17 +141,14 @@ async fn task_03_queued_persists_pending_and_position() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
-        task.status,
-        TaskStatus::Pending,
+        (task.phase, task.outcome),
+        (TaskPhase::Accepted, None),
         "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(

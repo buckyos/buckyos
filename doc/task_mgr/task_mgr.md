@@ -1,5 +1,9 @@
 # TaskMgr 架构与实现说明
 
+> **历史版本（beta2.2 起）**：TaskMgr 2.0 已实施（`doc/task_mgr/task-mgr 2.0.md` 是当前
+> 总规范）。本文描述的是 1.x 实现，仅作为历史实现输入保留；其中与 2.0 冲突的协议、
+> 状态与数据模型描述一律以 2.0 文档和当前代码为准。
+
 本文档整合 `src/kernel/task_manager/readme.md`、`src/kernel/task_manager/review.md` 的设计内容，并以当前代码实现为准描述 TaskMgr 的服务定位、数据模型、RPC 协议、事件语义、存储和运行方式。
 
 当前实现入口：

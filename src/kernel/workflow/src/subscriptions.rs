@@ -33,8 +33,8 @@
 //! [`apply_task_data`]: crate::WorkflowOrchestrator::apply_task_data
 
 use buckyos_api::{
-    get_buckyos_api_runtime, parse_typed_task_data, EventReader, KEventClient, NodeRunState,
-    RunStatus, Task, TaskFilter, TaskManagerClient, TypedTaskData, WorkflowStepTaskData,
+    get_buckyos_api_runtime, parse_typed_task_data, EventReader, KEventClient, ListTasksReq,
+    NodeRunState, RunStatus, Task, TaskManagerClient, TypedTaskData, WorkflowStepTaskData,
 };
 use log::{debug, info, warn};
 use serde_json::Value;
@@ -257,7 +257,8 @@ impl RunSubscriptionManager {
                 }
                 let task_id = payload
                     .get("task_id")
-                    .and_then(Value::as_i64)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
                     .ok_or_else(|| "data_omitted event missing task_id".to_string())?;
                 let client = self.task_mgr_client().await.map_err(|err| {
                     format!(
@@ -266,7 +267,7 @@ impl RunSubscriptionManager {
                     )
                 })?;
                 let task = client
-                    .get_task(task_id)
+                    .get_task(&task_id)
                     .await
                     .map_err(|err| format!("get_task task_id={} failed: {:?}", task_id, err))?;
                 debug!(
@@ -397,37 +398,42 @@ impl RunSubscriptionManager {
             return Ok(());
         }
 
-        let filter = TaskFilter {
-            root_id: Some(run_id.to_string()),
-            task_type: Some(STEP_TASK_TYPE.to_string()),
-            ..Default::default()
-        };
-        let tasks = self
-            .task_mgr_client()
-            .await?
-            .list_tasks(Some(filter))
+        // Steps are found by their versioned schema and matched by run_id
+        // inside the payload.
+        let client = self.task_mgr_client().await?;
+        let page = client
+            .list_tasks(ListTasksReq {
+                schema_id: Some(crate::task_tracker::WORKFLOW_STEP_SCHEMA_ID.to_string()),
+                ..Default::default()
+            })
             .await
             .map_err(|err| format!("list_tasks: {:?}", err))?;
 
-        for task in tasks {
+        for summary in page.tasks {
+            let Ok(task) = client.get_task(&summary.task_id).await else {
+                continue;
+            };
             let Some(node_id) = step_task_node_id(&task) else {
                 continue;
             };
+            let data = workflow_step_task_data(&task)?;
+            if data.request.run_id != run_id {
+                continue;
+            }
             if !waiting_nodes.contains(&node_id) {
                 continue;
             }
-            let data = workflow_step_task_data(&task)?;
             if data.human_action.is_none() {
                 continue;
             }
             debug!(
                 "workflow.subscriptions.sweep: replay run_id={} node={} task_id={}",
-                run_id, node_id, task.id
+                run_id, node_id, task.task_id
             );
             if let Err(err) = self.apply_run_data(run_id, &data).await {
                 debug!(
                     "workflow.subscriptions.sweep: apply run_id={} node={} task_id={} err={}",
-                    run_id, node_id, task.id, err
+                    run_id, node_id, task.task_id, err
                 );
             }
         }
@@ -436,7 +442,12 @@ impl RunSubscriptionManager {
 }
 
 fn workflow_step_task_data(task: &Task) -> Result<WorkflowStepTaskData, String> {
-    parse_workflow_step_task_data(task.data.clone())
+    let payload = task
+        .result
+        .clone()
+        .or_else(|| task.progress.clone())
+        .unwrap_or_else(|| task.input.clone());
+    parse_workflow_step_task_data(payload)
 }
 
 fn parse_workflow_step_task_data(data: Value) -> Result<WorkflowStepTaskData, String> {

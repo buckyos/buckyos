@@ -90,8 +90,8 @@ pub struct CreateWorksessionArgs {
     /// Existing TaskManager task to bind. When set, title/objective/workspace
     /// may be derived from the task data.
     #[serde(default)]
-    #[schemars(range(min = 1))]
-    pub task_id: Option<i64>,
+    #[schemars(length(min = 1))]
+    pub task_id: Option<String>,
     /// Reuse an existing workspace by id. Empty / absent ⇒ mint a fresh
     /// workspace bound to the new session.
     #[serde(default)]
@@ -122,7 +122,7 @@ pub struct CreateWorksessionOutput {
     pub status: String,
     pub worker_status: String,
     pub auto_started: bool,
-    pub task_id: Option<i64>,
+    pub task_id: Option<String>,
     pub followup_routing: WorksessionFollowupRouting,
 }
 
@@ -1323,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn create_worksession_task_id_schema_requires_positive_id() {
+    fn create_worksession_task_id_schema_requires_non_empty_id() {
         let manager = AgentToolManager::new();
         register_worksession_tools(&manager, Weak::new(), "ui-session");
         let spec = manager
@@ -1332,7 +1332,7 @@ mod tests {
 
         assert_eq!(
             spec.args_schema
-                .pointer("/properties/task_id/minimum")
+                .pointer("/properties/task_id/minLength")
                 .and_then(serde_json::Value::as_i64),
             Some(1)
         );

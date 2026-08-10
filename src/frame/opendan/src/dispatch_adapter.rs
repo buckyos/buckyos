@@ -1,60 +1,59 @@
-//! OpenDAN Dispatch Target Adapter — the receive boundary for external
+//! OpenDAN Dispatch Runner Adapter — the receive boundary for external
 //! structured delegation (`agent.delegate/v1`) via the Task Dispatch Center.
 //!
-//! Design: `doc/opendan/Agent Task Executor.md` §5/§6/§8.1 and
-//! `doc/task_mgr/task_dispatch_center.md` §9.
+//! TaskMgr 2.0 push model: the dispatcher creates the single public Task up
+//! front, then actively calls this runner's `offer_task` (validate + reserve
+//! capacity, NO side effects) and `activate_task` (start execution exactly
+//! once per delivery). There is no claim loop and no second target-side
+//! task; the executor drives the dispatcher-created task directly.
 //!
-//! The adapter only handles the handoff boundary: register the agent as a
-//! Target, attach a TargetInstance, validate offers, idempotently create the
-//! OpenDAN-owned `agent.delegate` task, accept. Execution stays with the
-//! Agent Task Executor / WorkSession machinery; recovery of accepted tasks
-//! stays owner-only.
+//! Idempotency: the `delivery_id -> reservation/activation` journal lives in
+//! the agent's own persistent store (a fsync'd JSON file under the agent
+//! root, mutated under a process-wide lock), so offer/activate replays after
+//! a crash return the original decision and never start a second execution.
 //!
-//! Idempotency contract (`IdempotentAccept`): the `dispatch_id -> task_id`
-//! binding lives in the agent's own persistent store (a fsync'd JSON file
-//! under the agent root, mutated under a process-wide lock). The order is
-//! crash-safe:
-//!   1. persist `dispatch_id -> pending` (intent)
-//!   2. create the TaskMgr task (its `data.request.dispatch_id` names us)
-//!   3. persist `dispatch_id -> task_id`
-//! A crash between 2 and 3 is healed on redelivery by scanning our own
-//! tasks for `request.dispatch_id` before creating anything new.
+//! Deployment note: the runner endpoint is a loopback kRPC server the
+//! adapter starts itself and reports through `attach_instance`. That is
+//! reachable in the single-OOD deployment (dispatcher and OpenDAN on one
+//! node); a multi-node split needs a routable app endpoint instead.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, AgentDelegateDispatchInput, AgentDelegateProgress,
-    AgentDelegateTaskData, AgentDelegateTaskRequest, DispatchOfferDecision, DispatchOfferHandler,
-    DispatchRecord, DispatchRejectReason, OperationDescriptor, TargetInstanceConfig,
-    TargetRegistration, TaskFilter, TaskManagerClient, AGENT_DELEGATE_OPERATION_V1,
+    get_buckyos_api_runtime, ActivateTaskReq, ActivateTaskResp, AgentDelegateDispatchInput,
+    AttachInstanceReq, DetachInstanceReq, DispatchRejectReason, OfferTaskReq, OfferTaskResp,
+    RenewInstanceReq, RunnerFunctionDescriptor, TargetRegistration, TaskRunnerHandler,
+    TaskRunnerServerHandler, AGENT_DELEGATE_OPERATION_V1,
 };
+use buckyos_http_server::{HttpServer, Runner};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::agent::AIAgent;
-use crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE;
 
 const BINDINGS_FILE: &str = "dispatch_bindings.json";
-/// In-flight offer capacity reported to the dispatcher. A single
+/// In-flight reservation capacity reported to the dispatcher. A single
 /// AgentRuntime instance is the normal deployment; 4 matches the design
 /// doc's pilot registration.
 const DISPATCH_CAPACITY: u32 = 4;
 const REGISTER_RETRY_SECS: u64 = 30;
+const RUNNER_KAPI_PATH: &str = "/kapi/opendan-task-runner";
 
 // ---------------------------------------------------------------------------
-// persistent dispatch_id -> task_id bindings
+// persistent delivery journal
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BindingEntry {
-    /// `None` = intent persisted, task creation possibly in flight
-    /// (crash window); healed via owner-task scan on redelivery.
-    task_id: Option<i64>,
+struct DeliveryEntry {
+    task_id: String,
+    reservation_token: String,
+    #[serde(default)]
+    activated: bool,
     updated_at_ms: i64,
 }
 
@@ -63,12 +62,12 @@ struct BindingFile {
     #[serde(default)]
     version: u32,
     #[serde(default)]
-    bindings: HashMap<String, BindingEntry>,
+    deliveries: HashMap<String, DeliveryEntry>,
 }
 
-/// File-backed `dispatch_id -> task_id` store. All mutations run under one
-/// async lock (offer handling is low-frequency), and every write goes
-/// through write-tmp + rename.
+/// File-backed `delivery_id -> reservation/activation` journal. All
+/// mutations run under one async lock (offer handling is low-frequency),
+/// and every write goes through write-tmp + rename.
 pub struct DispatchBindingStore {
     path: PathBuf,
     state: Mutex<BindingFile>,
@@ -94,21 +93,24 @@ impl DispatchBindingStore {
         })
     }
 
-    async fn get(&self, dispatch_id: &str) -> Option<Option<i64>> {
+    async fn get(&self, delivery_id: &str) -> Option<DeliveryEntry> {
         let state = self.state.lock().await;
-        state.bindings.get(dispatch_id).map(|entry| entry.task_id)
+        state.deliveries.get(delivery_id).cloned()
     }
 
-    async fn put(&self, dispatch_id: &str, task_id: Option<i64>) -> Result<()> {
+    async fn open_reservations(&self) -> usize {
+        let state = self.state.lock().await;
+        state
+            .deliveries
+            .values()
+            .filter(|entry| !entry.activated)
+            .count()
+    }
+
+    async fn put(&self, delivery_id: &str, entry: DeliveryEntry) -> Result<()> {
         let mut state = self.state.lock().await;
-        state.version = 1;
-        state.bindings.insert(
-            dispatch_id.to_string(),
-            BindingEntry {
-                task_id,
-                updated_at_ms: chrono::Utc::now().timestamp_millis(),
-            },
-        );
+        state.version = 2;
+        state.deliveries.insert(delivery_id.to_string(), entry);
         let bytes = serde_json::to_vec_pretty(&*state)?;
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, &bytes)
@@ -120,240 +122,154 @@ impl DispatchBindingStore {
 }
 
 // ---------------------------------------------------------------------------
-// offer handler
+// runner handler (offer/activate push protocol)
 // ---------------------------------------------------------------------------
 
-struct AgentDispatchHandler {
+struct AgentRunnerHandler {
     agent: Arc<AIAgent>,
     bindings: Arc<DispatchBindingStore>,
     target_id: String,
-    /// Serializes offer handling: the binding check + task creation must not
-    /// interleave for the same (or different) dispatch ids.
+    instance_id: String,
+    /// Serializes reservation decisions so capacity checks and journal
+    /// writes never interleave.
     accept_lock: Mutex<()>,
 }
 
-impl AgentDispatchHandler {
-    async fn task_mgr(&self) -> Result<Arc<TaskManagerClient>> {
-        self.agent
-            .runtime
-            .task_mgr_client()
-            .await
-            .map_err(|err| anyhow!("task manager unavailable: {err}"))
-    }
-
-    /// Own-task scan for the crash window between "task created" and
-    /// "binding persisted". Owner-only (our app id), never a cross-owner
-    /// inbox: it just recognizes tasks we created for this dispatch before.
-    async fn find_own_task_for_dispatch(&self, dispatch_id: &str) -> Result<Option<i64>> {
-        let task_mgr = self.task_mgr().await?;
-        let app_id = self.agent.own_task_app_id();
-        let tasks = task_mgr
-            .list_tasks(Some(TaskFilter {
-                app_id: Some(app_id),
-                task_type: Some(TASK_TYPE_AGENT_DELEGATE.to_string()),
-                ..Default::default()
-            }))
-            .await
-            .map_err(|err| anyhow!("list own delegate tasks: {err}"))?;
-        Ok(tasks
-            .into_iter()
-            .find(|task| {
-                task.data
-                    .get("request")
-                    .and_then(|request| request.get("dispatch_id"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(dispatch_id)
-            })
-            .map(|task| task.id))
-    }
-
-    /// Validate + idempotently create the OpenDAN-owned task for one offer.
-    async fn accept_offer(&self, record: &DispatchRecord) -> Result<DispatchOfferDecision> {
-        // 1. Operation / envelope validation. The dispatcher's ACL already
-        //    ran; this is the target's own business authorization and it is
-        //    never skipped.
-        if record.operation != AGENT_DELEGATE_OPERATION_V1 {
-            return Ok(DispatchOfferDecision::Reject {
-                reason: DispatchRejectReason::UnsupportedOperation,
-                detail: Some(format!("operation {} not supported", record.operation)),
+impl AgentRunnerHandler {
+    /// The runner's own business validation — the dispatcher's ACL already
+    /// ran, but the target-side authorization is never skipped.
+    fn validate_offer(&self, req: &OfferTaskReq) -> Option<OfferTaskResp> {
+        if req.schema_id != AGENT_DELEGATE_OPERATION_V1 {
+            return Some(OfferTaskResp::Rejected {
+                stable_reason: DispatchRejectReason::UnsupportedOperation,
+                detail: Some(format!("schema {} not supported", req.schema_id)),
             });
         }
-        if record.target_id != self.target_id {
-            return Ok(DispatchOfferDecision::Reject {
-                reason: DispatchRejectReason::PreconditionFailed,
+        if req.target_id != self.target_id {
+            return Some(OfferTaskResp::Rejected {
+                stable_reason: DispatchRejectReason::PreconditionFailed,
                 detail: Some(format!(
                     "offer targets {}, this instance serves {}",
-                    record.target_id, self.target_id
+                    req.target_id, self.target_id
                 )),
             });
         }
-        let business_user = record.auth.on_behalf_of.trim().to_string();
-        if business_user.is_empty() {
-            return Ok(DispatchOfferDecision::Reject {
-                reason: DispatchRejectReason::AuthDenied,
+        if req.auth.on_behalf_of.trim().is_empty() {
+            return Some(OfferTaskResp::Rejected {
+                stable_reason: DispatchRejectReason::AuthDenied,
                 detail: Some("auth envelope carries no business user".to_string()),
             });
         }
-        let input: AgentDelegateDispatchInput = match serde_json::from_value(record.input.clone()) {
-            Ok(input) => input,
-            Err(err) => {
-                return Ok(DispatchOfferDecision::Reject {
-                    reason: DispatchRejectReason::SchemaMismatch,
-                    detail: Some(format!("invalid agent.delegate/v1 input: {err}")),
-                });
-            }
-        };
-        if input.purpose.trim().is_empty() {
-            return Ok(DispatchOfferDecision::Reject {
-                reason: DispatchRejectReason::InvalidInput,
+        let input: std::result::Result<AgentDelegateDispatchInput, _> =
+            serde_json::from_value(req.input.clone());
+        match input {
+            Ok(input) if input.purpose.trim().is_empty() => Some(OfferTaskResp::Rejected {
+                stable_reason: DispatchRejectReason::InvalidInput,
                 detail: Some("purpose must not be empty".to_string()),
-            });
-        }
-
-        // 2. Idempotent accept: same dispatch_id must always yield the same
-        //    task id, at most one task.
-        let _guard = self.accept_lock.lock().await;
-        if let Some(Some(task_id)) = self.bindings.get(record.dispatch_id.as_str()).await {
-            return Ok(DispatchOfferDecision::Accept {
-                target_task_id: task_id,
-            });
-        }
-        // Pending intent (or first sight): heal the create-then-crash window
-        // from our own tasks before creating anything.
-        if let Some(task_id) = self
-            .find_own_task_for_dispatch(record.dispatch_id.as_str())
-            .await?
-        {
-            self.bindings
-                .put(record.dispatch_id.as_str(), Some(task_id))
-                .await?;
-            return Ok(DispatchOfferDecision::Accept {
-                target_task_id: task_id,
-            });
-        }
-
-        // 3. Create the OpenDAN-owned task. Owner = verified business user +
-        //    our own app id; the requester never becomes the task owner.
-        self.bindings.put(record.dispatch_id.as_str(), None).await?;
-        let task_mgr = self.task_mgr().await?;
-        let task_name = input
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("agent.delegate")
-            .to_string();
-        let data = AgentDelegateTaskData {
-            request: AgentDelegateTaskRequest {
-                version: 1,
-                source: Some("task-dispatcher".to_string()),
-                dispatch_id: Some(record.dispatch_id.clone()),
-                target_agent_id: Some(self.target_id.clone()),
-                title: input.title.clone(),
-                purpose: Some(input.purpose.clone()),
-                requester_agent_id: None,
-                owner_session_id: input
-                    .owner_session_ref
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string),
-                input: input.input.clone(),
-                context_refs: input.context_refs.clone(),
-                workspace_hints: input.workspace_hints.clone(),
-                constraints: input.constraints.clone(),
-                reason_messages: Vec::new(),
-                trigger: None,
-            },
-            progress: Some(AgentDelegateProgress {
-                execution: Some(serde_json::json!({ "status": "accepted" })),
-                one_line_status: Some("Accepted by OpenDAN".to_string()),
-                updated_at_ms: Some(chrono::Utc::now().timestamp_millis()),
             }),
-            result: None,
-            route: None,
-            blocker: None,
-            human_input: None,
-            error: None,
-        };
-        let task = task_mgr
-            .create_task(
-                task_name.as_str(),
-                TASK_TYPE_AGENT_DELEGATE,
-                Some(serde_json::to_value(&data)?),
-                business_user.as_str(),
-                self.agent.own_task_app_id().as_str(),
-                None,
-            )
-            .await
-            .map_err(|err| anyhow!("create delegate task for {}: {err}", record.dispatch_id))?;
-        self.bindings
-            .put(record.dispatch_id.as_str(), Some(task.id))
-            .await?;
-        info!(
-            "opendan.dispatch_adapter[{}]: dispatch {} -> task {} (user {})",
-            self.agent.agent_name, record.dispatch_id, task.id, business_user
-        );
-        Ok(DispatchOfferDecision::Accept {
-            target_task_id: task.id,
-        })
+            Ok(_) => None,
+            Err(err) => Some(OfferTaskResp::Rejected {
+                stable_reason: DispatchRejectReason::SchemaMismatch,
+                detail: Some(format!("invalid agent.delegate/v1 input: {err}")),
+            }),
+        }
     }
 }
 
 #[async_trait]
-impl DispatchOfferHandler for AgentDispatchHandler {
-    async fn handle_offer(&self, record: &DispatchRecord) -> DispatchOfferDecision {
-        match self.accept_offer(record).await {
-            Ok(decision) => decision,
-            Err(err) => {
-                // Transient local failure (task-mgr unreachable, disk):
-                // leave the offer to lease-expiry redelivery.
-                warn!(
-                    "opendan.dispatch_adapter[{}]: offer {} deferred: {err:#}",
-                    self.agent.agent_name, record.dispatch_id
-                );
-                DispatchOfferDecision::Defer
-            }
+impl TaskRunnerHandler for AgentRunnerHandler {
+    async fn handle_offer_task(
+        &self,
+        req: OfferTaskReq,
+        _ctx: kRPC::RPCContext,
+    ) -> kRPC::Result<OfferTaskResp> {
+        let _guard = self.accept_lock.lock().await;
+        // Idempotent replay returns the original decision without a second
+        // reservation.
+        if let Some(entry) = self.bindings.get(&req.delivery_id).await {
+            return Ok(OfferTaskResp::OfferAccepted {
+                app_instance_id: self.instance_id.clone(),
+                reservation_token: entry.reservation_token,
+            });
         }
-    }
-
-    async fn on_accepted(&self, record: &DispatchRecord, target_task_id: i64) {
-        // Execution starts only after accept succeeded (receive contract
-        // §6.3.4): hand the owned task to the executor path.
-        if let Err(err) = self
-            .agent
-            .clone()
-            .process_accepted_dispatch_task(target_task_id)
+        if let Some(reject) = self.validate_offer(&req) {
+            return Ok(reject);
+        }
+        if self.bindings.open_reservations().await >= DISPATCH_CAPACITY as usize {
+            return Ok(OfferTaskResp::Busy {
+                retry_after_ms: Some(30_000),
+            });
+        }
+        // Reserve only — business side effects wait for activate.
+        let reservation_token = format!("res-{}", uuid::Uuid::new_v4().simple());
+        self.bindings
+            .put(
+                &req.delivery_id,
+                DeliveryEntry {
+                    task_id: req.task_id.clone(),
+                    reservation_token: reservation_token.clone(),
+                    activated: false,
+                    updated_at_ms: chrono::Utc::now().timestamp_millis(),
+                },
+            )
             .await
-        {
-            warn!(
-                "opendan.dispatch_adapter[{}]: start execution for task {} (dispatch {}) failed: {err:#}",
-                self.agent.agent_name, target_task_id, record.dispatch_id
-            );
-        }
+            .map_err(|err| kRPC::RPCErrors::ReasonError(format!("persist reservation: {err}")))?;
+        info!(
+            "opendan.dispatch_adapter[{}]: reserved delivery {} for task {}",
+            self.agent.agent_name, req.delivery_id, req.task_id
+        );
+        Ok(OfferTaskResp::OfferAccepted {
+            app_instance_id: self.instance_id.clone(),
+            reservation_token,
+        })
     }
 
-    async fn on_dispatch_gone(&self, record: &DispatchRecord, target_task_id: i64) {
-        // The dispatch was canceled/expired while our accept was in flight:
-        // the local task must not run.
-        warn!(
-            "opendan.dispatch_adapter[{}]: dispatch {} gone, canceling local task {}",
-            self.agent.agent_name, record.dispatch_id, target_task_id
-        );
-        match self.task_mgr().await {
-            Ok(task_mgr) => {
-                if let Err(err) = task_mgr.cancel_task(target_task_id, false).await {
-                    error!(
-                        "opendan.dispatch_adapter[{}]: cancel local task {} failed: {err}",
-                        self.agent.agent_name, target_task_id
+    async fn handle_activate_task(
+        &self,
+        req: ActivateTaskReq,
+        _ctx: kRPC::RPCContext,
+    ) -> kRPC::Result<ActivateTaskResp> {
+        let _guard = self.accept_lock.lock().await;
+        let Some(mut entry) = self.bindings.get(&req.delivery_id).await else {
+            return Err(kRPC::RPCErrors::ReasonError(format!(
+                "unknown delivery {}",
+                req.delivery_id
+            )));
+        };
+        if entry.reservation_token != req.reservation_token || entry.task_id != req.task_id {
+            return Err(kRPC::RPCErrors::ReasonError(format!(
+                "reservation mismatch for delivery {}",
+                req.delivery_id
+            )));
+        }
+        // Exactly-once activation per (task_id, runner_epoch, delivery_id):
+        // replays are acknowledged without a second execution start.
+        if !entry.activated {
+            entry.activated = true;
+            entry.updated_at_ms = chrono::Utc::now().timestamp_millis();
+            self.bindings
+                .put(&req.delivery_id, entry)
+                .await
+                .map_err(|err| {
+                    kRPC::RPCErrors::ReasonError(format!("persist activation: {err}"))
+                })?;
+            let agent = self.agent.clone();
+            let task_id = req.task_id.clone();
+            let agent_name = agent.agent_name.clone();
+            tokio::spawn(async move {
+                if let Err(err) = agent.process_accepted_dispatch_task(&task_id).await {
+                    warn!(
+                        "opendan.dispatch_adapter[{}]: start execution for task {} failed: {err:#}",
+                        agent_name, task_id
                     );
                 }
-            }
-            Err(err) => error!(
-                "opendan.dispatch_adapter[{}]: cancel local task {} impossible: {err}",
-                self.agent.agent_name, target_task_id
-            ),
+            });
+            info!(
+                "opendan.dispatch_adapter[{}]: activated delivery {} (task {}, epoch {})",
+                self.agent.agent_name, req.delivery_id, req.task_id, req.runner_epoch
+            );
         }
+        Ok(ActivateTaskResp { activated: true })
     }
 }
 
@@ -374,7 +290,7 @@ impl AIAgent {
         }
     }
 
-    /// App id under which this agent records its own tasks (owner scan key).
+    /// App id under which this agent runs its own tasks (runner scan key).
     pub fn own_task_app_id(&self) -> String {
         match get_buckyos_api_runtime() {
             Ok(runtime) => runtime.get_app_id(),
@@ -382,10 +298,10 @@ impl AIAgent {
         }
     }
 
-    /// Register this agent as a Dispatch Target and run the TargetInstance
-    /// loop (attach → kevent → claim/accept → renew → detach) until
-    /// shutdown. `None` when the executor is disabled or the dispatcher /
-    /// task-mgr handles are absent — IM/session paths never depend on it.
+    /// Register this agent as a dispatch runner and keep the instance lease
+    /// alive (register → serve offer/activate → attach → renew → detach)
+    /// until shutdown. `None` when the executor is disabled or the local
+    /// stores are absent — IM/session paths never depend on it.
     pub fn spawn_dispatch_target(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
         if !self.config.toml.runtime.task_executor.enabled {
             return None;
@@ -407,26 +323,67 @@ impl AIAgent {
 
     async fn run_dispatch_target(self: Arc<Self>, bindings: Arc<DispatchBindingStore>) {
         let target_id = self.dispatch_target_id();
+        let instance_id = format!("{}-inst", self.agent_name);
         let registration = TargetRegistration {
             target_id: target_id.clone(),
             // Owner identity is stamped server-side from our verified token.
             owner_user_id: String::new(),
             owner_app_id: String::new(),
-            operations: vec![OperationDescriptor {
-                operation: AGENT_DELEGATE_OPERATION_V1.to_string(),
-                input_schema_ref: None,
-            }],
+            functions: vec![RunnerFunctionDescriptor::new(AGENT_DELEGATE_OPERATION_V1)],
             auth_policy: buckyos_api::DispatchAuthPolicy::ZoneUsers,
             // agent.delegate/v1 carries no manual gate: delegation to an
             // agent is the normal entry path, not a privileged operation.
             approval_policy: buckyos_api::DispatchApprovalPolicy::Never,
-            idempotency_contract: buckyos_api::IdempotencyContract::IdempotentAccept,
             delivery_policy: buckyos_api::DeliveryPolicy::default(),
             max_concurrency: DISPATCH_CAPACITY,
             enabled: true,
+            registration_revision: 0,
         };
 
-        // Registration must land before the instance loop; retry quietly —
+        // Loopback runner endpoint the dispatcher pushes offers to.
+        let handler = Arc::new(AgentRunnerHandler {
+            agent: self.clone(),
+            bindings,
+            target_id: target_id.clone(),
+            instance_id: instance_id.clone(),
+            accept_lock: Mutex::new(()),
+        });
+        let port = match std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .map(|addr| addr.port())
+        {
+            Ok(port) => port,
+            Err(err) => {
+                error!(
+                    "opendan.dispatch_adapter[{}]: allocate runner port failed: {err}",
+                    self.agent_name
+                );
+                return;
+            }
+        };
+        let endpoint = format!("http://127.0.0.1:{port}{RUNNER_KAPI_PATH}");
+        let runner_server = OpendanTaskRunnerServer {
+            rpc_handler: TaskRunnerServerHandler::new(AgentRunnerHandlerRef {
+                inner: handler.clone(),
+            }),
+        };
+        let http_runner = Runner::new(port);
+        if let Err(err) =
+            http_runner.add_http_server(RUNNER_KAPI_PATH.to_string(), Arc::new(runner_server))
+        {
+            error!(
+                "opendan.dispatch_adapter[{}]: mount runner server failed: {err:?}",
+                self.agent_name
+            );
+            return;
+        }
+        tokio::spawn(async move {
+            if let Err(err) = http_runner.run().await {
+                error!("opendan.dispatch_adapter: runner http server exited: {err:?}");
+            }
+        });
+
+        // Registration must land before the instance lease; retry quietly —
         // the dispatcher may still be coming up.
         loop {
             let result = match self.runtime.task_dispatcher_client().await {
@@ -436,7 +393,7 @@ impl AIAgent {
             match result {
                 Ok(_) => {
                     info!(
-                        "opendan.dispatch_adapter[{}]: registered dispatch target {}",
+                        "opendan.dispatch_adapter[{}]: registered dispatch runner {}",
                         self.agent_name, target_id
                     );
                     break;
@@ -454,29 +411,165 @@ impl AIAgent {
             }
         }
 
-        let handler: Arc<dyn DispatchOfferHandler> = Arc::new(AgentDispatchHandler {
-            agent: self.clone(),
-            bindings,
-            target_id: target_id.clone(),
-            accept_lock: Mutex::new(()),
-        });
-        let kevent = self
-            .runtime
-            .kevent_client
-            .as_ref()
-            .map(|client| client.as_ref().clone());
-        let result = buckyos_api::run_target_instance(
-            TargetInstanceConfig::new(target_id.clone(), DISPATCH_CAPACITY),
-            kevent,
-            self.pump_shutdown.clone(),
-            handler,
-        )
-        .await;
-        if let Err(err) = result {
-            error!(
-                "opendan.dispatch_adapter[{}]: target instance loop for {} exited: {err}",
-                self.agent_name, target_id
-            );
+        // Instance lease loop: attach, renew at a third of the lease, on a
+        // stale lease re-attach (which fences the previous epoch).
+        let mut lease_epoch: Option<u64> = None;
+        let mut lease_expires_at: u64 = 0;
+        loop {
+            let dispatcher = match self.runtime.task_dispatcher_client().await {
+                Ok(dispatcher) => dispatcher,
+                Err(err) => {
+                    warn!(
+                        "opendan.dispatch_adapter[{}]: dispatcher unavailable: {err}",
+                        self.agent_name
+                    );
+                    tokio::select! {
+                        _ = self.pump_shutdown.notified() => return,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(REGISTER_RETRY_SECS)) => continue,
+                    }
+                }
+            };
+            match lease_epoch {
+                None => {
+                    match dispatcher
+                        .attach_instance(AttachInstanceReq {
+                            target_id: target_id.clone(),
+                            instance_id: instance_id.clone(),
+                            endpoint: endpoint.clone(),
+                            capacity: DISPATCH_CAPACITY,
+                            available_capacity: None,
+                            lease_ms: None,
+                        })
+                        .await
+                    {
+                        Ok(attached) => {
+                            info!(
+                                "opendan.dispatch_adapter[{}]: attached instance {} (lease epoch {})",
+                                self.agent_name, instance_id, attached.lease_epoch
+                            );
+                            lease_epoch = Some(attached.lease_epoch);
+                            lease_expires_at = attached.lease_expires_at;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "opendan.dispatch_adapter[{}]: attach instance failed: {err}",
+                                self.agent_name
+                            );
+                        }
+                    }
+                }
+                Some(epoch) => {
+                    match dispatcher
+                        .renew_instance(RenewInstanceReq {
+                            target_id: target_id.clone(),
+                            instance_id: instance_id.clone(),
+                            lease_epoch: epoch,
+                            available_capacity: None,
+                            lease_ms: None,
+                        })
+                        .await
+                    {
+                        Ok(renewed) => {
+                            lease_expires_at = renewed.lease_expires_at;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "opendan.dispatch_adapter[{}]: renew lease failed ({err}); re-attaching",
+                                self.agent_name
+                            );
+                            lease_epoch = None;
+                        }
+                    }
+                }
+            }
+
+            let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+            let wait_ms = if lease_epoch.is_some() && lease_expires_at > now_ms {
+                ((lease_expires_at - now_ms) / 3).clamp(5_000, 60_000)
+            } else {
+                REGISTER_RETRY_SECS * 1000
+            };
+            tokio::select! {
+                _ = self.pump_shutdown.notified() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {}
+            }
         }
+
+        // Best-effort detach on shutdown.
+        if let Some(epoch) = lease_epoch {
+            if let Ok(dispatcher) = self.runtime.task_dispatcher_client().await {
+                let _ = dispatcher
+                    .detach_instance(DetachInstanceReq {
+                        target_id: target_id.clone(),
+                        instance_id: instance_id.clone(),
+                        lease_epoch: epoch,
+                    })
+                    .await;
+            }
+        }
+    }
+}
+
+/// Arc-wrapper so the RPC dispatch layer can own the shared handler.
+struct AgentRunnerHandlerRef {
+    inner: Arc<AgentRunnerHandler>,
+}
+
+#[async_trait]
+impl TaskRunnerHandler for AgentRunnerHandlerRef {
+    async fn handle_offer_task(
+        &self,
+        req: OfferTaskReq,
+        ctx: kRPC::RPCContext,
+    ) -> kRPC::Result<OfferTaskResp> {
+        self.inner.handle_offer_task(req, ctx).await
+    }
+
+    async fn handle_activate_task(
+        &self,
+        req: ActivateTaskReq,
+        ctx: kRPC::RPCContext,
+    ) -> kRPC::Result<ActivateTaskResp> {
+        self.inner.handle_activate_task(req, ctx).await
+    }
+}
+
+struct OpendanTaskRunnerServer {
+    rpc_handler: TaskRunnerServerHandler<AgentRunnerHandlerRef>,
+}
+
+#[async_trait]
+impl HttpServer for OpendanTaskRunnerServer {
+    async fn serve_request(
+        &self,
+        req: http::Request<
+            http_body_util::combinators::BoxBody<bytes::Bytes, buckyos_http_server::ServerError>,
+        >,
+        info: buckyos_http_server::StreamInfo,
+    ) -> buckyos_http_server::ServerResult<
+        http::Response<
+            http_body_util::combinators::BoxBody<bytes::Bytes, buckyos_http_server::ServerError>,
+        >,
+    > {
+        if *req.method() == http::Method::POST {
+            return buckyos_http_server::serve_http_by_rpc_handler(req, info, &self.rpc_handler)
+                .await;
+        }
+        Err(buckyos_http_server::server_err!(
+            buckyos_http_server::ServerErrorCode::BadRequest,
+            "Method not allowed"
+        ))
+    }
+
+    fn id(&self) -> String {
+        "opendan-task-runner".to_string()
+    }
+
+    fn http_version(&self) -> http::Version {
+        http::Version::HTTP_11
+    }
+
+    fn http3_port(&self) -> Option<u16> {
+        None
     }
 }

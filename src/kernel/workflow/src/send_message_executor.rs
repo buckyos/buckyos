@@ -1,6 +1,7 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, parse_typed_task_data, MsgCenterClient, SendMessageTaskData, Task,
-    TaskFilter, TaskManagerClient, TaskStatus, TypedTaskData,
+    get_buckyos_api_runtime, parse_typed_task_data, CommitResultReq, FailTaskReq, ListTasksReq,
+    MsgCenterClient, ReportStartedReq, RunnerWriteEnvelope, SendMessageTaskData, Task, TaskError,
+    TaskManagerClient, TaskPhase, TypedTaskData,
 };
 use log::{info, warn};
 use serde_json::{json, Value};
@@ -12,6 +13,7 @@ use tokio::time::{sleep, Duration};
 use crate::scheduled_task_manager::ScheduleStore;
 
 const TASK_TYPE: &str = "workflow.send_message";
+const TASK_SCHEMA_ID: &str = "workflow.send_message/v1";
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct SendMessageTaskExecutor {
@@ -52,15 +54,11 @@ impl SendMessageTaskExecutor {
         });
     }
 
-    /// Sweep this service's own task type. `workflow.send_message` tasks are
-    /// created by the scheduled-task manager in this process; there is no
-    /// cross-service runner inbox anymore.
+    /// Sweep this service's own task schema. `workflow.send_message` tasks
+    /// are created by the scheduled-task manager in this process (SelfApp,
+    /// so not-yet-started means phase Accepted); there is no cross-service
+    /// runner inbox.
     async fn sweep_pending(&self) {
-        let filter = TaskFilter {
-            task_type: Some(TASK_TYPE.to_string()),
-            status: Some(TaskStatus::Pending),
-            ..Default::default()
-        };
         let task_mgr = match self.task_mgr_client().await {
             Ok(client) => client,
             Err(err) => {
@@ -68,51 +66,74 @@ impl SendMessageTaskExecutor {
                 return;
             }
         };
-        let tasks = match task_mgr.list_tasks(Some(filter)).await {
-            Ok(tasks) => tasks,
+        let page = match task_mgr
+            .list_tasks(ListTasksReq {
+                schema_id: Some(TASK_SCHEMA_ID.to_string()),
+                phase: Some(TaskPhase::Accepted),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(page) => page,
             Err(err) => {
                 warn!("workflow.send_message executor list_tasks failed: {err:?}");
                 return;
             }
         };
-        for task in tasks {
+        for summary in page.tasks {
+            let task = match task_mgr.get_task(&summary.task_id).await {
+                Ok(task) => task,
+                Err(_) => continue,
+            };
             if let Err(err) = self.execute_task(&task).await {
-                warn!("workflow.send_message task {} failed: {}", task.id, err);
-                let update_result = match self.task_mgr_client().await {
-                    Ok(client) => client.mark_task_as_failed(task.id, &err).await,
-                    Err(client_err) => {
-                        warn!(
-                            "workflow.send_message task {} get task_manager client failed: {}",
-                            task.id, client_err
-                        );
-                        continue;
-                    }
-                };
-                if let Err(update_err) = update_result {
+                warn!("workflow.send_message task {} failed: {}", task.task_id, err);
+                if let Err(update_err) = self.fail_task(&task.task_id, &err).await {
                     warn!(
-                        "workflow.send_message task {} mark failed failed: {update_err:?}",
-                        task.id
+                        "workflow.send_message task {} mark failed failed: {update_err}",
+                        task.task_id
                     );
                 }
             }
         }
     }
 
+    async fn fail_task(&self, task_id: &str, message: &str) -> Result<(), String> {
+        let client = self.task_mgr_client().await?;
+        let task = client.get_task(task_id).await.map_err(|err| err.to_string())?;
+        if task.phase.is_terminal() {
+            return Ok(());
+        }
+        client
+            .fail_task(FailTaskReq {
+                envelope: RunnerWriteEnvelope {
+                    task_id: task.task_id.clone(),
+                    app_instance_id: None,
+                    runner_epoch: task.runner_epoch,
+                    expected_revision: task.revision,
+                },
+                error: TaskError::new("send_message_failed", message),
+            })
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
     async fn execute_task(&self, task: &Task) -> Result<(), String> {
-        let task_id = task.id;
-        self.task_mgr_client()
-            .await?
-            .update_task(
-                task_id,
-                Some(TaskStatus::Running),
-                Some(0.1),
-                Some("sending message".to_string()),
-                None,
-            )
+        let task_id = task.task_id.clone();
+        let client = self.task_mgr_client().await?;
+        let task = client
+            .report_started(ReportStartedReq {
+                envelope: RunnerWriteEnvelope {
+                    task_id: task_id.clone(),
+                    app_instance_id: None,
+                    runner_epoch: task.runner_epoch,
+                    expected_revision: task.revision,
+                },
+            })
             .await
             .map_err(|err| format!("mark running failed: {err:?}"))?;
 
-        let mut task_data = parse_send_message_data(task.data.clone())?;
+        let mut task_data = parse_send_message_data(task.input.clone())?;
         let schedule_id = task_data
             .request
             .trigger
@@ -125,13 +146,17 @@ impl SendMessageTaskExecutor {
             .get(&schedule_id)
             .await
             .ok_or_else(|| format!("schedule `{schedule_id}` not found"))?;
-        // The task must be owned by the schedule owner it references —
-        // otherwise a foreign task could ride on someone else's schedule.
-        if task.user_id != schedule.owner.user_id || task.app_id != schedule.owner.app_id {
-            return Err(format!(
-                "task owner {}/{} does not match schedule `{schedule_id}` owner {}/{}",
-                task.user_id, task.app_id, schedule.owner.user_id, schedule.owner.app_id
-            ));
+        // 2.0: fire subtasks are created by this workflow service itself, so
+        // creator must be our own identity — a foreign task cannot ride on
+        // someone else's schedule through this executor.
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            let own_app = runtime.get_app_id();
+            if task.creator.app_id != own_app {
+                return Err(format!(
+                    "task creator app {} is not this workflow service ({own_app})",
+                    task.creator.app_id
+                ));
+            }
         }
         let sender = resolve_sender_did(
             &self.buckyos_root,
@@ -172,20 +197,14 @@ impl SendMessageTaskExecutor {
         }));
         let updated_data = serde_json::to_value(&task_data)
             .map_err(|err| format!("serialize send_message result failed: {err}"))?;
-        self.task_mgr_client()
-            .await?
-            .update_task_data(task_id, updated_data)
-            .await
-            .map_err(|err| format!("update result data failed: {err:?}"))?;
-        self.task_mgr_client()
-            .await?
-            .update_task(
-                task_id,
-                Some(TaskStatus::Completed),
-                Some(1.0),
-                Some("message sent".to_string()),
-                None,
-            )
+        client
+            .commit_result(CommitResultReq {
+                task_id: task.task_id.clone(),
+                result: updated_data,
+                app_instance_id: None,
+                runner_epoch: Some(task.runner_epoch),
+                expected_revision: task.revision,
+            })
             .await
             .map_err(|err| format!("mark completed failed: {err:?}"))?;
         info!("workflow.send_message task {} sent", task_id);

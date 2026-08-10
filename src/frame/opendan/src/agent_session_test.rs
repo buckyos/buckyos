@@ -42,18 +42,14 @@ fn pending_event(event_id: &str) -> PendingInput {
 #[test]
 fn schedule_task_prompt_text_extracts_source_and_failure() {
     let task = Task {
-        id: 7,
-        user_id: "alice".to_string(),
-        app_id: "buckyos_jarvis".to_string(),
-        session_id: String::new(),
-        parent_id: None,
-        root_id: "sch-1".to_string(),
+        task_id: "t-7".to_string(),
         name: "workflow/schedule/Daily email todo scan from note_123".to_string(),
-        task_type: "workflow/schedule".to_string(),
-        status: TaskStatus::Failed,
-        progress: 0.0,
-        message: Some("smtp timeout".to_string()),
-        data: serde_json::json!({
+        parent_id: None,
+        root_id: "t-7".to_string(),
+        child_control_policy: Default::default(),
+        schema_id: "workflow.schedule/v1".to_string(),
+        schema_version: 1,
+        input: serde_json::json!({
             "request": {
                 "schedule_id": "sch-1",
                 "name": "Daily email todo scan from note_123",
@@ -68,9 +64,37 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
                 "consecutive_failures": 2
             }
         }),
-        permissions: buckyos_api::TaskPermissions::default(),
+        input_digest: String::new(),
+        creator: buckyos_api::ActorRef::new("alice", "buckyos_jarvis"),
+        idempotency_key: "sch-1".to_string(),
+        origin_ref: None,
+        retry_of: None,
+        supersedes: None,
+        executor: buckyos_api::TaskExecutor::App {
+            target_id: None,
+            app_id: "buckyos_jarvis".to_string(),
+            app_instance_id: None,
+        },
+        runner_epoch: 1,
+        assignees: None,
+        phase: buckyos_api::TaskPhase::Terminal,
+        wait_reason: None,
+        pending_control: None,
+        control_profile: buckyos_api::TaskControlProfile::baseline(1),
+        progress: None,
+        message: Some("smtp timeout".to_string()),
+        outcome: Some(buckyos_api::TaskOutcome::Failed),
+        result: None,
+        error: None,
+        completed_by: None,
+        policy_preset: "collaborative-tree/v1".to_string(),
+        permission_boundary: false,
+        revision: 1,
+        data_scope: None,
         created_at: 10,
         updated_at: 20,
+        completed_at: Some(20),
+        archived_at: None,
     };
 
     assert_eq!(
@@ -973,7 +997,7 @@ fn driver_pull_keeps_task_events_internal_even_when_event_pull_is_none() {
         PendingTaskCall {
             call_id: "call-1".to_string(),
             tool_name: "exec".to_string(),
-            task_id: 7,
+            task_id: "7".to_string(),
             event_pattern: "/task_mgr/7".to_string(),
         },
     );
@@ -1407,7 +1431,7 @@ fn session_meta_round_trips_pending_inputs() {
         pending_task_calls: vec![PendingTaskCall {
             call_id: "call-1".to_string(),
             tool_name: "download".to_string(),
-            task_id: 42,
+            task_id: "42".to_string(),
             event_pattern: "/task_mgr/42".to_string(),
         }],
         improvement_budget: None,
@@ -1468,7 +1492,7 @@ fn session_meta_round_trips_pending_inputs() {
     );
     assert_eq!(restored.workspace_id.as_deref(), Some("ws-1"));
     assert_eq!(restored.pending_task_calls.len(), 1);
-    assert_eq!(restored.pending_task_calls[0].task_id, 42);
+    assert_eq!(restored.pending_task_calls[0].task_id, "42");
     assert_eq!(restored.pending_task_calls[0].call_id, "call-1");
     assert_eq!(restored.title, "design review");
     assert_eq!(restored.objective, "draft the rollout plan");

@@ -925,7 +925,7 @@ pub struct WorkflowScheduleTaskResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fire_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_task_id: Option<i64>,
+    pub last_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_id: Option<String>,
     #[serde(default)]
@@ -1609,7 +1609,7 @@ struct LegacyWorkflowScheduleFields {
     #[serde(default)]
     last_fire_at: Option<i64>,
     #[serde(default)]
-    last_task_id: Option<i64>,
+    last_task_id: Option<String>,
     #[serde(default)]
     last_run_id: Option<String>,
     #[serde(default)]

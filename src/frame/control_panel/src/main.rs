@@ -5,6 +5,7 @@ mod app_install_engine;
 mod app_install_planner;
 mod app_install_resolver;
 mod app_install_runner;
+mod ndn_download;
 mod app_installer;
 mod app_package_namespace;
 mod app_servcie_mgr;

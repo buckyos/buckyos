@@ -6,7 +6,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
-    AiRole, MsgCenterClient, Task, TaskFilter, TaskManagerClient, TaskNote, TaskStatus,
+    AiRole, ListTasksReq, MsgCenterClient, Task, TaskManagerClient, TaskNote, TaskOutcome,
+    TaskPhase,
     TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
 };
 use log::{info, warn};
@@ -2360,7 +2361,7 @@ impl AgentSession {
             self.meta.lock().await.pending_task_calls.clone();
         if let Ok(client) = self.runtime.task_mgr_client().await {
             for entry in &pending_task_entries {
-                if let Err(err) = client.cancel_task(entry.task_id, true).await {
+                if let Err(err) = client.cancel_task(&entry.task_id, true).await {
                     warn!(
                         "opendan.session[{}]: interrupt: cancel_task({}) failed (best effort): {err:#}",
                         self.session_id, entry.task_id
@@ -2560,14 +2561,15 @@ impl AgentSession {
         };
         let mut synthesized = 0u32;
         for entry in entries {
-            match client.get_task(entry.task_id).await {
+            match client.get_task(&entry.task_id).await {
                 Ok(task) => {
-                    if !task.status.is_terminal() {
+                    if !task.phase.is_terminal() {
                         continue;
                     }
                     let payload = serde_json::json!({
-                        "to_status": task.status.to_string(),
-                        "data": task.data,
+                        "phase": task.phase.to_string(),
+                        "outcome": task.outcome,
+                        "data": crate::task_util::task_payload(&task),
                         "message": task.message.clone().unwrap_or_default(),
                     });
                     let event = PendingInput::Event {
@@ -4479,10 +4481,11 @@ impl AgentSession {
                     {
                         Ok(handle) => {
                             let pattern = format!("/task_mgr/{}", handle.task_id);
+                            let handle_task_id = handle.task_id.clone();
                             self.add_pending_task_call(PendingTaskCall {
                                 call_id: call_id.clone(),
                                 tool_name: tool_name.clone(),
-                                task_id: handle.task_id,
+                                task_id: handle_task_id,
                                 event_pattern: pattern.clone(),
                             })
                             .await;
@@ -4659,15 +4662,16 @@ impl AgentSession {
                 }
             }
         });
-        if let Err(err) = client
-            .update_task(
-                binding.task_id,
-                Some(TaskStatus::Completed),
-                Some(100.0),
-                Some("Agent session completed".to_string()),
-                Some(patch),
-            )
-            .await
+        let Ok(task) = client.get_task(&binding.task_id).await else {
+            return;
+        };
+        if task.phase.is_terminal() {
+            return;
+        }
+        let mut merged = crate::task_util::task_payload(&task);
+        crate::task_util::merge_json(&mut merged, &patch);
+        if let Err(err) =
+            crate::task_util::commit_task_result(&client, task, merged).await
         {
             warn!(
                 "opendan.session[{}]: feedback task completed failed: {err:#}",
@@ -4694,10 +4698,10 @@ impl AgentSession {
         let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
-        let Ok(task) = client.get_task(binding.task_id).await else {
+        let Ok(task) = client.get_task(&binding.task_id).await else {
             return;
         };
-        if task.status.is_terminal() {
+        if task.phase.is_terminal() {
             return;
         }
         let report = final_snapshot
@@ -4734,25 +4738,35 @@ impl AgentSession {
         let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
-        if let Err(err) = client
-            .update_task(
-                binding.task_id,
-                Some(TaskStatus::Failed),
-                None,
-                Some(message.clone()),
-                Some(json!({
-                    "agent_delegate": {
-                        "execution": {
-                            "session_id": self.session_id,
-                            "status": "failed",
-                        },
-                        "error": {
-                            "message": message,
-                        }
+        let Ok(task) = client.get_task(&binding.task_id).await else {
+            return;
+        };
+        if task.phase.is_terminal() {
+            return;
+        }
+        let mut detail = crate::task_util::task_payload(&task);
+        crate::task_util::merge_json(
+            &mut detail,
+            &json!({
+                "agent_delegate": {
+                    "execution": {
+                        "session_id": self.session_id,
+                        "status": "failed",
+                    },
+                    "error": {
+                        "message": message,
                     }
-                })),
-            )
-            .await
+                }
+            }),
+        );
+        if let Err(err) = crate::task_util::fail_own_task(
+            &client,
+            task,
+            "agent_session_failed",
+            message.clone(),
+            Some(detail),
+        )
+        .await
         {
             warn!(
                 "opendan.session[{}]: feedback task failed failed: {err:#}",
@@ -4772,24 +4786,38 @@ impl AgentSession {
         let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
-        if let Err(err) = client
-            .update_task(
-                binding.task_id,
-                Some(TaskStatus::Canceled),
-                None,
-                Some(reason.clone()),
-                Some(json!({
-                    "agent_delegate": {
-                        "execution": {
-                            "session_id": self.session_id,
-                            "status": "canceled",
-                            "reason": reason,
-                        }
-                    }
-                })),
-            )
-            .await
+        let Ok(task) = client.get_task(&binding.task_id).await else {
+            return;
+        };
+        if task.phase.is_terminal() {
+            return;
+        }
+        let progress_patch = json!({
+            "agent_delegate": {
+                "execution": {
+                    "session_id": self.session_id,
+                    "status": "canceled",
+                    "reason": reason,
+                }
+            }
+        });
+        let mut merged = crate::task_util::task_payload(&task);
+        crate::task_util::merge_json(&mut merged, &progress_patch);
+        let task = match crate::task_util::report_progress_value(
+            &client,
+            task,
+            Some(merged),
+            Some(reason.clone()),
+        )
+        .await
         {
+            Ok(task) => task,
+            Err(_) => match client.get_task(&binding.task_id).await {
+                Ok(task) => task,
+                Err(_) => return,
+            },
+        };
+        if let Err(err) = crate::task_util::cancel_own_task(&client, &task).await {
             warn!(
                 "opendan.session[{}]: feedback task canceled failed: {err:#}",
                 self.session_id
@@ -5673,41 +5701,76 @@ impl AgentSession {
         let Ok(client) = self.runtime.task_mgr_client().await else {
             return;
         };
-        let Ok(task) = client.get_task(binding.task_id).await else {
+        let Ok(task) = client.get_task(&binding.task_id).await else {
             return;
         };
-        if task.status.is_terminal() || task.status == TaskStatus::Paused {
+        if task.phase.is_terminal() || task.phase == TaskPhase::Paused {
             return;
         }
-        let task_status = task_status_for_session_status(status);
-        let progress = if matches!(task_status, Some(TaskStatus::Completed)) {
-            Some(100.0)
-        } else {
-            None
-        };
         let message = task_message_for_session_status(status, &one_line_status);
         let status_text = session_status_text(status);
-        if let Err(err) = client
-            .update_task(
-                binding.task_id,
-                task_status,
-                progress,
-                message,
-                Some(json!({
-                    "agent_delegate": {
-                        "execution": {
-                            "session_id": self.session_id,
-                            "workspace_id": self.workspace_id().await,
-                            "session_status": status_text,
-                            "status": status_text,
-                            "one_line_status": one_line_status,
-                            "updated_at_ms": now_ms(),
-                        }
+        let patch = json!({
+            "agent_delegate": {
+                "execution": {
+                    "session_id": self.session_id,
+                    "workspace_id": self.workspace_id().await,
+                    "session_status": status_text,
+                    "status": status_text,
+                    "one_line_status": one_line_status,
+                    "updated_at_ms": now_ms(),
+                }
+            }
+        });
+        let mut merged = crate::task_util::task_payload(&task);
+        crate::task_util::merge_json(&mut merged, &patch);
+        let result = match status {
+            SessionStatus::Ended => {
+                crate::task_util::commit_task_result(&client, task, merged).await
+            }
+            SessionStatus::Error => {
+                crate::task_util::fail_own_task(
+                    &client,
+                    task,
+                    "agent_session_failed",
+                    one_line_status.clone(),
+                    Some(merged),
+                )
+                .await
+            }
+            SessionStatus::Running | SessionStatus::WaitingTool => {
+                match crate::task_util::ensure_running(&client, task).await {
+                    Ok(task) => {
+                        crate::task_util::report_progress_value(&client, task, Some(merged), message)
+                            .await
                     }
-                })),
-            )
-            .await
-        {
+                    Err(err) => Err(err),
+                }
+            }
+            SessionStatus::WaitingInput => {
+                match crate::task_util::report_progress_value(&client, task, Some(merged), message)
+                    .await
+                {
+                    Ok(task) if task.phase == TaskPhase::Running
+                        || task.phase == TaskPhase::Accepted =>
+                    {
+                        crate::task_util::report_waiting_reason(
+                            &client,
+                            task,
+                            buckyos_api::TaskWaitReason::with_code(
+                                buckyos_api::TaskWaitReasonKind::HumanInput,
+                                "agent_wait_user_msg",
+                            ),
+                        )
+                        .await
+                    }
+                    other => other,
+                }
+            }
+            SessionStatus::Idle => {
+                crate::task_util::report_progress_value(&client, task, Some(merged), message).await
+            }
+        };
+        if let Err(err) = result {
             warn!(
                 "opendan.session[{}]: mirror status {:?} to task {} failed: {err:#}",
                 self.session_id, status, binding.task_id
@@ -6300,7 +6363,7 @@ async fn build_runtime_workspace_list_text(agent_config: &AgentConfig, since_sec
 struct ScheduleTaskPromptLine {
     at: u64,
     action: &'static str,
-    task_id: i64,
+    task_id: String,
     task_title: String,
     note: String,
 }
@@ -6310,47 +6373,51 @@ async fn render_last_schedule_task_list_text(
     since_secs: u64,
     now_secs: u64,
 ) -> std::result::Result<String, String> {
-    let mut tasks = task_mgr
-        .list_tasks(Some(TaskFilter {
-            task_type: Some("workflow/schedule".to_string()),
+    let page = task_mgr
+        .list_tasks(ListTasksReq {
+            schema_id: Some("workflow.schedule/v1".to_string()),
             ..Default::default()
-        }))
+        })
         .await
         .map_err(|err| err.to_string())?;
-    tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let mut summaries = page.tasks;
+    summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
     let mut lines = Vec::new();
-    for task in tasks {
+    for summary in summaries {
+        let Ok(task) = task_mgr.get_task(&summary.task_id).await else {
+            continue;
+        };
         if is_prompt_time_window(task.created_at, since_secs, now_secs) {
             lines.push(ScheduleTaskPromptLine {
                 at: task.created_at,
                 action: "created",
-                task_id: task.id,
+                task_id: task.task_id.clone(),
                 task_title: schedule_task_title(&task),
                 note: schedule_task_created_note(&task),
             });
         }
 
-        if task.status == TaskStatus::Failed
+        if task.outcome == Some(TaskOutcome::Failed)
             && is_prompt_time_window(task.updated_at, since_secs, now_secs)
         {
             lines.push(ScheduleTaskPromptLine {
                 at: task.updated_at,
                 action: "failed",
-                task_id: task.id,
+                task_id: task.task_id.clone(),
                 task_title: schedule_task_title(&task),
                 note: schedule_task_failure_note(&task),
             });
         }
 
-        match task_mgr.list_task_notes(task.id).await {
+        match task_mgr.list_task_notes(&task.task_id).await {
             Ok(notes) => {
                 for note in notes.into_iter().filter(is_user_manual_task_note) {
                     if is_prompt_time_window(note.created_at, since_secs, now_secs) {
                         lines.push(ScheduleTaskPromptLine {
                             at: note.created_at,
                             action: "user_noted",
-                            task_id: task.id,
+                            task_id: task.task_id.clone(),
                             task_title: schedule_task_title(&task),
                             note: schedule_task_note_summary(&note),
                         });
@@ -6360,7 +6427,7 @@ async fn render_last_schedule_task_list_text(
             Err(err) => {
                 warn!(
                     "opendan.session: list schedule task notes failed task_id={}: {err}",
-                    task.id
+                    task.task_id
                 );
             }
         }
@@ -6396,7 +6463,7 @@ fn is_prompt_time_window(ts_secs: u64, since_secs: u64, now_secs: u64) -> bool {
 
 fn schedule_task_title(task: &Task) -> String {
     if let Ok(TypedTaskData::WorkflowSchedule(data)) =
-        parse_typed_task_data(task.task_type.as_str(), task.data.clone())
+        parse_typed_task_data("workflow/schedule", crate::task_util::task_payload(task))
     {
         if let Some(name) = data.request.name.filter(|name| !name.trim().is_empty()) {
             return name.trim().to_string();
@@ -6411,7 +6478,7 @@ fn schedule_task_title(task: &Task) -> String {
 
 fn schedule_task_created_note(task: &Task) -> String {
     let mut sources = Vec::new();
-    collect_notebook_source_fragments(&task.data, &mut sources);
+    collect_notebook_source_fragments(&crate::task_util::task_payload(task), &mut sources);
     if notebook_source_like(&task.name) {
         sources.push(task.name.clone());
     }
@@ -6435,7 +6502,7 @@ fn schedule_task_created_note(task: &Task) -> String {
 
 fn schedule_task_failure_note(task: &Task) -> String {
     if let Ok(TypedTaskData::WorkflowSchedule(data)) =
-        parse_typed_task_data(task.task_type.as_str(), task.data.clone())
+        parse_typed_task_data("workflow/schedule", crate::task_util::task_payload(task))
     {
         if let Some(result) = data.result {
             if let Some(last_error) = result.last_error {
@@ -7279,16 +7346,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
-}
-
-fn task_status_for_session_status(status: SessionStatus) -> Option<TaskStatus> {
-    match status {
-        SessionStatus::Running | SessionStatus::WaitingTool => Some(TaskStatus::Running),
-        SessionStatus::WaitingInput => Some(TaskStatus::WaitingForApproval),
-        SessionStatus::Ended => Some(TaskStatus::Completed),
-        SessionStatus::Error => Some(TaskStatus::Failed),
-        SessionStatus::Idle => None,
-    }
 }
 
 fn task_message_for_session_status(status: SessionStatus, one_line_status: &str) -> Option<String> {

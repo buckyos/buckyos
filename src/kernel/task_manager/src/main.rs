@@ -1,8 +1,8 @@
+mod acl;
 mod dispatcher;
-mod download_executor;
+mod json_schema;
 mod server;
-mod task;
-mod task_db;
+mod task_store;
 
 use buckyos_api::TASK_MANAGER_SERVICE_NAME;
 use buckyos_kit::{get_buckyos_service_data_dir, init_logging};

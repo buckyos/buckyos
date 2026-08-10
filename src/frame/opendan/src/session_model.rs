@@ -289,8 +289,7 @@ impl SessionMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTaskBinding {
-    pub task_id: i64,
-    pub root_task_id: i64,
+    pub task_id: String,
     pub root_id: String,
     pub task_type: String,
     pub runner: String,
@@ -298,7 +297,7 @@ pub struct AgentTaskBinding {
     pub user_id: String,
     pub app_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -313,7 +312,7 @@ pub struct ReportDeliveryState {
 pub struct PendingTaskCall {
     pub call_id: String,
     pub tool_name: String,
-    pub task_id: i64,
+    pub task_id: String,
     pub event_pattern: String,
 }
 

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    parse_typed_task_data, BuckyOSRuntimeType, Task, TaskDataType, TaskManagerClient, TaskStatus,
+    parse_typed_task_data, BuckyOSRuntimeType, CommitResultReq, FailTaskReq,
+    RunnerWriteEnvelope, Task, TaskDataType, TaskError, TaskManagerClient, TaskOutcome, TaskPhase,
     ToolExecBashTaskData, TypedTaskData,
 };
 use kRPC::kRPC;
@@ -305,16 +306,16 @@ enum ParsedCommand {
     },
     CheckTask {
         tool_name: String,
-        task_id: i64,
+        task_id: String,
     },
     CancelTask {
         tool_name: String,
-        task_id: i64,
+        task_id: String,
         recursive: bool,
     },
     FinishTask {
         tool_name: String,
-        task_id: i64,
+        task_id: String,
         outcome: FinishTaskOutcome,
         message: Option<String>,
     },
@@ -647,7 +648,7 @@ async fn execute(
         } => dispatch_object_x_call(&env, &tool_name, route_config_path, input).await,
         ParsedCommand::CheckTask { tool_name, task_id } => {
             let task_mgr = build_task_manager_client(&env).await?;
-            let task = task_mgr.get_task(task_id).await.map_err(|err| {
+            let task = task_mgr.get_task(&task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
             })?;
             Ok(render_cli_output(
@@ -673,17 +674,17 @@ async fn execute(
             recursive,
         } => {
             let task_mgr = build_task_manager_client(&env).await?;
-            let before = task_mgr.get_task(task_id).await.map_err(|err| {
+            let before = task_mgr.get_task(&task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
             })?;
             task_mgr
-                .cancel_task(task_id, recursive)
+                .cancel_task(&task_id, recursive)
                 .await
                 .map_err(|err| {
                     AgentToolError::ExecFailed(format!("cancel task `{task_id}` failed: {err}"))
                 })?;
             let interrupt_error = interrupt_task_if_supported(&before).await;
-            let after = task_mgr.get_task(task_id).await.map_err(|err| {
+            let after = task_mgr.get_task(&task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
             })?;
             Ok(render_cli_output(
@@ -698,29 +699,47 @@ async fn execute(
             message,
         } => {
             let task_mgr = build_task_manager_client(&env).await?;
-            match outcome {
-                FinishTaskOutcome::Completed => {
-                    task_mgr
-                        .update_task(
-                            task_id,
-                            Some(TaskStatus::Completed),
-                            Some(100.0),
-                            message.clone(),
-                            None,
-                        )
-                        .await
-                }
-                FinishTaskOutcome::Failed => {
-                    let error_message = message
-                        .clone()
-                        .unwrap_or_else(|| "failed by finish_task".to_string());
-                    task_mgr.update_task_error(task_id, &error_message).await
-                }
-            }
-            .map_err(|err| {
-                AgentToolError::ExecFailed(format!("finish task `{task_id}` failed: {err}"))
+            let current = task_mgr.get_task(&task_id).await.map_err(|err| {
+                AgentToolError::ExecFailed(format!("get task `{task_id}` failed: {err}"))
             })?;
-            let task = task_mgr.get_task(task_id).await.map_err(|err| {
+            if !current.phase.is_terminal() {
+                match outcome {
+                    FinishTaskOutcome::Completed => {
+                        task_mgr
+                            .commit_result(CommitResultReq {
+                                task_id: current.task_id.clone(),
+                                result: serde_json::json!({
+                                    "message": message.clone(),
+                                    "finished_by": "finish_task",
+                                }),
+                                app_instance_id: None,
+                                runner_epoch: Some(current.runner_epoch),
+                                expected_revision: current.revision,
+                            })
+                            .await
+                    }
+                    FinishTaskOutcome::Failed => {
+                        let error_message = message
+                            .clone()
+                            .unwrap_or_else(|| "failed by finish_task".to_string());
+                        task_mgr
+                            .fail_task(FailTaskReq {
+                                envelope: RunnerWriteEnvelope {
+                                    task_id: current.task_id.clone(),
+                                    app_instance_id: None,
+                                    runner_epoch: current.runner_epoch,
+                                    expected_revision: current.revision,
+                                },
+                                error: TaskError::new("finish_task_failed", error_message),
+                            })
+                            .await
+                    }
+                }
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!("finish task `{task_id}` failed: {err}"))
+                })?;
+            }
+            let task = task_mgr.get_task(&task_id).await.map_err(|err| {
                 AgentToolError::ExecFailed(format!("reload task `{task_id}` failed: {err}"))
             })?;
             Ok(render_cli_output(
@@ -1374,12 +1393,12 @@ fn parse_finish_task_outcome(value: &str) -> Result<FinishTaskOutcome, AgentTool
     }
 }
 
-fn parse_task_id_arg(tokens: &[String], tool_name: &str) -> Result<i64, AgentToolError> {
+fn parse_task_id_arg(tokens: &[String], tool_name: &str) -> Result<String, AgentToolError> {
     if tokens.is_empty() {
         return Err(with_tool_usage("missing required arg `task_id`", tool_name));
     }
 
-    let mut task_id: Option<i64> = None;
+    let mut task_id: Option<String> = None;
     let mut idx = 0usize;
     while idx < tokens.len() {
         match tokens[idx].as_str() {
@@ -1428,10 +1447,12 @@ fn parse_task_id_arg(tokens: &[String], tool_name: &str) -> Result<i64, AgentToo
     task_id.ok_or_else(|| with_tool_usage("missing required arg `task_id`", tool_name))
 }
 
-fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<i64, AgentToolError> {
-    raw.trim()
-        .parse::<i64>()
-        .map_err(|_| with_tool_usage(format!("invalid task_id `{}`", raw.trim()), tool_name))
+fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<String, AgentToolError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(with_tool_usage("invalid empty task_id", tool_name));
+    }
+    Ok(trimmed.to_string())
 }
 
 // =================================================================
@@ -6923,7 +6944,7 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
             .as_ref()
             .and_then(|data| data.command.clone())
     } else {
-        Some(format!("{tool_name} {}", task.id))
+        Some(format!("{tool_name} {}", task.task_id))
     };
     let output = exec_bash_task.as_ref().and_then(|data| data.output.clone());
     let return_code = exec_bash_task
@@ -6940,7 +6961,7 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
     let mut result = AgentToolResult::from_details(detail)
         .with_status(top_status)
         .with_result(summary)
-        .with_task_id(task.id.to_string());
+        .with_task_id(task.task_id.clone());
     if !is_exec_bash_task {
         result = result.with_tool(tool_name);
     }
@@ -6981,17 +7002,17 @@ fn build_cancel_task_result(
     }
 
     let summary = match interrupt_error {
-        Some(err) => format!("canceled task {} (interrupt failed: {err})", task.id),
-        None => format!("canceled task {}", task.id),
+        Some(err) => format!("canceled task {} (interrupt failed: {err})", task.task_id),
+        None => format!("canceled task {}", task.task_id),
     };
 
     AgentToolResult::from_details(detail)
         .with_status(AgentToolStatus::Success)
         .with_result(summary)
-        .with_title(format!("{tool_name} {} => success", task.id))
+        .with_title(format!("{tool_name} {} => success", task.task_id))
         .with_tool(tool_name)
-        .with_cmd_line(format!("{tool_name} {}", task.id))
-        .with_task_id(task.id.to_string())
+        .with_cmd_line(format!("{tool_name} {}", task.task_id))
+        .with_task_id(task.task_id.clone())
 }
 
 fn build_finish_task_result(
@@ -7020,33 +7041,48 @@ fn build_finish_task_result(
 
     AgentToolResult::from_details(detail)
         .with_status(AgentToolStatus::Success)
-        .with_result(format!("{outcome_text} task {}", task.id))
-        .with_title(format!("{tool_name} {} {outcome_text} => success", task.id))
+        .with_result(format!("{outcome_text} task {}", task.task_id))
+        .with_title(format!("{tool_name} {} {outcome_text} => success", task.task_id))
         .with_tool(tool_name)
         .with_cmd_line(match outcome {
-            FinishTaskOutcome::Completed => format!("{tool_name} {}", task.id),
-            FinishTaskOutcome::Failed => format!("{tool_name} {} failed", task.id),
+            FinishTaskOutcome::Completed => format!("{tool_name} {}", task.task_id),
+            FinishTaskOutcome::Failed => format!("{tool_name} {} failed", task.task_id),
         })
-        .with_task_id(task.id.to_string())
+        .with_task_id(task.task_id.clone())
+}
+
+fn task_data_payload(task: &Task) -> Json {
+    task.result
+        .clone()
+        .or_else(|| task.progress.clone())
+        .unwrap_or_else(|| task.input.clone())
+}
+
+fn task_status_text(task: &Task) -> String {
+    match task.outcome {
+        Some(outcome) => outcome.to_string(),
+        None => task.phase.to_string(),
+    }
 }
 
 fn normalized_task_detail(task: &Task) -> Json {
-    let mut detail = if task.data.is_object() {
-        task.data.clone()
+    let payload = task_data_payload(task);
+    let mut detail = if payload.is_object() {
+        payload
     } else {
-        json!({ "task_data": task.data.clone() })
+        json!({ "task_data": payload })
     };
     if let Some(map) = detail.as_object_mut() {
         map.entry("task_id".to_string())
-            .or_insert_with(|| Json::String(task.id.to_string()));
+            .or_insert_with(|| Json::String(task.task_id.clone()));
         map.entry("task_status".to_string())
-            .or_insert_with(|| Json::String(task.status.to_string()));
+            .or_insert_with(|| Json::String(task_status_text(task)));
         map.entry("task_name".to_string())
             .or_insert_with(|| Json::String(task.name.clone()));
         map.entry("task_type".to_string())
-            .or_insert_with(|| Json::String(task.task_type.clone()));
+            .or_insert_with(|| Json::String(task.schema_id.clone()));
         map.entry("task_progress".to_string())
-            .or_insert_with(|| json!(task.progress));
+            .or_insert_with(|| task.progress.clone().unwrap_or(Json::Null));
         if let Some(message) = task.message.as_ref() {
             map.entry("task_message".to_string())
                 .or_insert_with(|| Json::String(message.clone()));
@@ -7056,19 +7092,18 @@ fn normalized_task_detail(task: &Task) -> Json {
 }
 
 fn task_protocol_status(task: &Task) -> AgentToolStatus {
-    match task.status {
-        TaskStatus::Completed => match tool_exec_bash_task_data(task)
-            .and_then(|data| data.status)
-            .as_deref()
-        {
-            Some("error") => AgentToolStatus::Error,
-            _ => AgentToolStatus::Success,
-        },
-        TaskStatus::Failed | TaskStatus::Canceled => AgentToolStatus::Error,
-        TaskStatus::Pending
-        | TaskStatus::Running
-        | TaskStatus::Paused
-        | TaskStatus::WaitingForApproval => AgentToolStatus::Pending,
+    match (task.phase, task.outcome) {
+        (TaskPhase::Terminal, Some(TaskOutcome::Succeeded)) => {
+            match tool_exec_bash_task_data(task)
+                .and_then(|data| data.status)
+                .as_deref()
+            {
+                Some("error") => AgentToolStatus::Error,
+                _ => AgentToolStatus::Success,
+            }
+        }
+        (TaskPhase::Terminal, _) => AgentToolStatus::Error,
+        _ => AgentToolStatus::Pending,
     }
 }
 
@@ -7081,16 +7116,18 @@ fn task_summary(task: &Task, protocol_status: AgentToolStatus) -> String {
         .map(|value| value.to_string())
         .or_else(|| task.message.as_ref().map(|value| value.trim().to_string()))
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| match (protocol_status, task.status) {
-            (AgentToolStatus::Pending, TaskStatus::WaitingForApproval) => {
-                format!("task {} is waiting for approval", task.id)
+        .unwrap_or_else(|| match (protocol_status, task.phase, task.outcome) {
+            (AgentToolStatus::Pending, TaskPhase::Waiting, _) => {
+                format!("task {} is waiting for approval", task.task_id)
             }
-            (AgentToolStatus::Pending, _) => format!("task {} is still running", task.id),
-            (AgentToolStatus::Success, _) => format!("task {} completed", task.id),
-            (AgentToolStatus::Error, TaskStatus::Canceled) => {
-                format!("task {} was canceled", task.id)
+            (AgentToolStatus::Pending, _, _) => {
+                format!("task {} is still running", task.task_id)
             }
-            (AgentToolStatus::Error, _) => format!("task {} failed", task.id),
+            (AgentToolStatus::Success, _, _) => format!("task {} completed", task.task_id),
+            (AgentToolStatus::Error, _, Some(TaskOutcome::Canceled)) => {
+                format!("task {} was canceled", task.task_id)
+            }
+            (AgentToolStatus::Error, _, _) => format!("task {} failed", task.task_id),
         })
 }
 
@@ -7106,12 +7143,13 @@ fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
             "long_running" => Some(AgentToolPendingReason::LongRunning),
             _ => None,
         })
-        .or_else(|| match task.status {
-            TaskStatus::WaitingForApproval => Some(AgentToolPendingReason::UserApproval),
-            TaskStatus::Pending | TaskStatus::Running | TaskStatus::Paused => {
-                Some(AgentToolPendingReason::LongRunning)
-            }
-            _ => None,
+        .or_else(|| match task.phase {
+            TaskPhase::Waiting => Some(AgentToolPendingReason::UserApproval),
+            TaskPhase::Promised
+            | TaskPhase::Accepted
+            | TaskPhase::Running
+            | TaskPhase::Paused => Some(AgentToolPendingReason::LongRunning),
+            TaskPhase::Terminal => None,
         })
 }
 
@@ -7143,7 +7181,7 @@ async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
 }
 
 fn tool_exec_bash_task_data(task: &Task) -> Option<ToolExecBashTaskData> {
-    match parse_typed_task_data(TaskDataType::ToolExecBash.as_str(), task.data.clone()).ok()? {
+    match parse_typed_task_data(TaskDataType::ToolExecBash.as_str(), task_data_payload(task)).ok()? {
         TypedTaskData::ToolExecBash(data) if data.kind == TaskDataType::ToolExecBash.as_str() => {
             Some(data)
         }
@@ -8244,7 +8282,7 @@ methods = ["x_call"]
         match parsed {
             ParsedCommand::CheckTask { tool_name, task_id } => {
                 assert_eq!(tool_name, TOOL_CHECK_TASK);
-                assert_eq!(task_id, 42);
+                assert_eq!(task_id, "42");
             }
             other => panic!("unexpected parsed command: {other:?}"),
         }
@@ -8270,7 +8308,7 @@ methods = ["x_call"]
                 recursive,
             } => {
                 assert_eq!(tool_name, TOOL_CANCEL_TASK);
-                assert_eq!(task_id, 7);
+                assert_eq!(task_id, "7");
                 assert!(recursive);
             }
             other => panic!("unexpected parsed command: {other:?}"),
@@ -8297,7 +8335,7 @@ methods = ["x_call"]
                 message,
             } => {
                 assert_eq!(tool_name, TOOL_FINISH_TASK);
-                assert_eq!(task_id, 9);
+                assert_eq!(task_id, "9");
                 assert_eq!(outcome, FinishTaskOutcome::Completed);
                 assert_eq!(message, None);
             }
@@ -8328,7 +8366,7 @@ methods = ["x_call"]
                 message,
             } => {
                 assert_eq!(tool_name, TOOL_FINISH_TASK);
-                assert_eq!(task_id, 9);
+                assert_eq!(task_id, "9");
                 assert_eq!(outcome, FinishTaskOutcome::Failed);
                 assert_eq!(message.as_deref(), Some("cannot route task"));
             }

@@ -41,8 +41,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use buckyos_api::{
-    get_buckyos_api_runtime, CreateTaskOptions, OpenDanAsyncToolTaskData, Task, TaskManagerClient,
-    TaskStatus,
+    get_buckyos_api_runtime, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
+    OpenDanAsyncToolTaskData, RunnerWriteEnvelope, Task, TaskError, TaskManagerClient,
 };
 use log::warn;
 use serde_json::Value;
@@ -52,6 +52,8 @@ use serde_json::Value;
 /// other workloads. Stable string — keep in sync with whatever subscriber
 /// downstream filters by.
 pub const TASK_TYPE_OPENDAN_TOOL: &str = "opendan.async_tool";
+/// Versioned task schema id for async tool tasks (2.0).
+pub const OPENDAN_TOOL_SCHEMA_ID: &str = "opendan.async_tool/v1";
 
 /// Default app id we tag dispatched tasks with. Real deployments will
 /// override this via [`TaskDispatch::with_app_id`] so multi-app installs
@@ -121,33 +123,41 @@ impl TaskDispatch {
         payload: Value,
     ) -> Result<DispatchedTask> {
         let task_name = format!("opendan/{session_id}/{tool_name}");
-        let opts = CreateTaskOptions {
-            // Parenting under the session's logical id lets future
-            // worksession code group tasks by session for cancel / cleanup.
-            parent_id: None,
-            root_id: None,
-            session_id: Some(session_id.to_string()),
-            priority: None,
-            permissions: None,
-        };
         let task = self
             .client()
             .await?
-            .create_task(
-                &task_name,
-                TASK_TYPE_OPENDAN_TOOL,
-                Some(serde_json::to_value(OpenDanAsyncToolTaskData {
-                    request: payload,
+            .create_task(CreateTaskReq {
+                name: task_name.clone(),
+                schema_id: OPENDAN_TOOL_SCHEMA_ID.to_string(),
+                schema_version: None,
+                // The session id rides in the immutable input so future
+                // worksession code can still group tasks by session.
+                input: serde_json::to_value(OpenDanAsyncToolTaskData {
+                    request: serde_json::json!({
+                        "session_id": session_id,
+                        "payload": payload,
+                    }),
                     result: None,
-                })?),
-                &self.user_id,
-                &self.app_id,
-                Some(opts),
-            )
+                })?,
+                executor: CreateTaskExecutor::SelfApp {
+                    app_instance_id: None,
+                },
+                parent_id: None,
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!(
+                    "opendan-tool-{}",
+                    uuid::Uuid::new_v4().simple()
+                ),
+                retry_of: None,
+                supersedes: None,
+                message: None,
+            })
             .await
             .map_err(|err| anyhow!("create_task `{task_name}` failed: {err}"))?;
         Ok(DispatchedTask {
-            task_id: task.id,
+            task_id: task.task_id.clone(),
             task,
         })
     }
@@ -158,14 +168,9 @@ impl TaskDispatch {
     /// warn-logged but not propagated: by the time we reach this point
     /// the result is already in the LLM context, so we don't want a
     /// task_mgr glitch to fail the turn.
-    pub async fn mark_task_completed(&self, task_id: i64, success: bool) {
-        let status = if success {
-            TaskStatus::Completed
-        } else {
-            TaskStatus::Failed
-        };
-        let result = match self.client().await {
-            Ok(client) => client.update_task_status(task_id, status).await,
+    pub async fn mark_task_completed(&self, task_id: &str, success: bool) {
+        let client = match self.client().await {
+            Ok(client) => client,
             Err(err) => {
                 warn!(
                     "opendan.task_dispatch: get task-manager client for task {task_id} failed: {err}"
@@ -173,8 +178,43 @@ impl TaskDispatch {
                 return;
             }
         };
+        let task = match client.get_task(task_id).await {
+            Ok(task) => task,
+            Err(err) => {
+                warn!("opendan.task_dispatch: get_task({task_id}) failed: {err}");
+                return;
+            }
+        };
+        if task.phase.is_terminal() {
+            return;
+        }
+        let result = if success {
+            client
+                .commit_result(CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: serde_json::json!({"absorbed": true}),
+                    app_instance_id: None,
+                    runner_epoch: Some(task.runner_epoch),
+                    expected_revision: task.revision,
+                })
+                .await
+                .map(|_| ())
+        } else {
+            client
+                .fail_task(FailTaskReq {
+                    envelope: RunnerWriteEnvelope {
+                        task_id: task.task_id.clone(),
+                        app_instance_id: None,
+                        runner_epoch: task.runner_epoch,
+                        expected_revision: task.revision,
+                    },
+                    error: TaskError::new("tool_failed", "async tool reported failure"),
+                })
+                .await
+                .map(|_| ())
+        };
         if let Err(err) = result {
-            warn!("opendan.task_dispatch: update_task_status({task_id}, {status:?}) failed: {err}");
+            warn!("opendan.task_dispatch: close task {task_id} (success={success}) failed: {err}");
         }
     }
 }
@@ -183,7 +223,7 @@ impl TaskDispatch {
 /// `task_id` on its snapshot's pending list; `task` carries the freshly
 /// minted record for logging.
 pub struct DispatchedTask {
-    pub task_id: i64,
+    pub task_id: String,
     pub task: Task,
 }
 

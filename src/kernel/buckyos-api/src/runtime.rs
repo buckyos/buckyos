@@ -2024,20 +2024,20 @@ impl BuckyOSRuntime {
     /// Waits for a task without retaining a short-session TaskManager client.
     /// Every authoritative task read acquires a new client with the runtime's
     /// current session token.
-    pub async fn wait_for_task_end_kevent(&self, id: i64) -> Result<Task> {
+    pub async fn wait_for_task_end_kevent(&self, task_id: &str) -> Result<Task> {
         const FIRST_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
         const STEADY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
         let kevent = match self.get_kevent_client().await {
             Ok(client) => match client
-                .create_event_reader(vec![format!("/task_mgr/{}", id)])
+                .create_event_reader(vec![task_mgr_task_event_path(task_id)])
                 .await
             {
                 Ok(reader) => Some((client, reader)),
                 Err(err) => {
                     warn!(
                         "runtime.wait_for_task_end_kevent: subscribe failed (task_id={}): {}; polling only",
-                        id, err
+                        task_id, err
                     );
                     None
                 }
@@ -2045,14 +2045,14 @@ impl BuckyOSRuntime {
             Err(err) => {
                 warn!(
                     "runtime.wait_for_task_end_kevent: get_kevent_client failed (task_id={}): {}; polling only",
-                    id, err
+                    task_id, err
                 );
                 None
             }
         };
 
-        let task = self.get_task_mgr_client().await?.get_task(id).await?;
-        if task.status.is_terminal() {
+        let task = self.get_task_mgr_client().await?.get_task(task_id).await?;
+        if task.phase.is_terminal() {
             return Ok(task);
         }
 
@@ -2064,8 +2064,8 @@ impl BuckyOSRuntime {
                 }
                 None => tokio::time::sleep(interval).await,
             }
-            let task = self.get_task_mgr_client().await?.get_task(id).await?;
-            if task.status.is_terminal() {
+            let task = self.get_task_mgr_client().await?.get_task(task_id).await?;
+            if task.phase.is_terminal() {
                 return Ok(task);
             }
             interval = if kevent.is_some() {

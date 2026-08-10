@@ -1494,7 +1494,7 @@ pub struct AiMethodRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AiTaskOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<String>,
 }
 
 impl AiMethodRequest {

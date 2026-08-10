@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
 };
-use buckyos_api::{AiMethodStatus, AiResponse, Capability, ResourceRef, TaskFilter};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, ResourceRef};
 use common::*;
 use std::sync::Arc;
 
@@ -195,10 +195,7 @@ async fn proto_sec_04_idempotency_key_preserved() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
@@ -476,10 +473,7 @@ async fn proto_res_01_named_object_passthrough_preserved() {
         .unwrap();
     assert_eq!(resp.status, AiMethodStatus::Running);
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .unwrap();
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
@@ -679,10 +673,7 @@ async fn proto_res_08_named_object_and_url_mixed_order_stable() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .unwrap();
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
@@ -717,10 +708,7 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>)
-        .await
-        .unwrap();
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))

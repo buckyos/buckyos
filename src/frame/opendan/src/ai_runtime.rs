@@ -25,7 +25,7 @@ use buckyos_api::{
     ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
     AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
     KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskDispatcherClient,
-    TaskFilter, TaskManagerClient, TaskStatus, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
+    ListTasksReq, TaskManagerClient, TaskOutcome, TypedTaskData,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -226,18 +226,23 @@ async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse,
     let id = resolve_aicc_task_id(&taskmgr, external_task_id).await?;
 
     let task = runtime
-        .wait_for_task_end_kevent(id)
+        .wait_for_task_end_kevent(&id)
         .await
         .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 
-    if task.status != TaskStatus::Completed {
+    if task.outcome != Some(TaskOutcome::Succeeded) {
         return Err(LLMComputeError::Provider(format!(
-            "aicc task {} ended with status {:?}",
-            id, task.status
+            "aicc task {} ended with outcome {:?}",
+            id, task.outcome
         )));
     }
 
-    let task_data = match buckyos_api::parse_typed_task_data(task.task_type.as_str(), task.data) {
+    let payload = task
+        .result
+        .clone()
+        .or_else(|| task.progress.clone())
+        .unwrap_or_else(|| task.input.clone());
+    let task_data = match buckyos_api::parse_typed_task_data("aicc.compute", payload) {
         Ok(TypedTaskData::AiccCompute(data)) => data,
         _ => {
             return Err(LLMComputeError::Provider(format!(
@@ -270,36 +275,39 @@ async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse,
 async fn resolve_aicc_task_id(
     taskmgr: &TaskManagerClient,
     external_task_id: &str,
-) -> Result<i64, LLMComputeError> {
-    if let Ok(id) = external_task_id.parse::<i64>() {
-        return Ok(id);
+) -> Result<String, LLMComputeError> {
+    if external_task_id.starts_with("t-") {
+        return Ok(external_task_id.to_string());
     }
 
-    let filter = TaskFilter {
-        app_id: Some(AICC_SERVICE_SERVICE_NAME.to_string()),
-        session_id: None,
-        task_type: None,
-        status: None,
-        parent_id: None,
-        root_id: None,
-    };
-    let tasks = taskmgr
-        .list_tasks(Some(filter))
+    let page = taskmgr
+        .list_tasks(ListTasksReq {
+            schema_id: Some("aicc.compute/v1".to_string()),
+            ..Default::default()
+        })
         .await
         .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 
-    for task in tasks {
+    for summary in page.tasks {
+        let Ok(task) = taskmgr.get_task(&summary.task_id).await else {
+            continue;
+        };
+        let payload = task
+            .result
+            .clone()
+            .or_else(|| task.progress.clone())
+            .unwrap_or_else(|| task.input.clone());
         let matched = matches!(
-            buckyos_api::parse_typed_task_data(task.task_type.as_str(), task.data),
+            buckyos_api::parse_typed_task_data("aicc.compute", payload),
             Ok(TypedTaskData::AiccCompute(data))
                 if data.request.external_task_id.as_deref() == Some(external_task_id)
         );
         if matched {
-            return Ok(task.id);
+            return Ok(task.task_id);
         }
     }
     Err(LLMComputeError::Provider(format!(
-        "aicc task_id '{}' is not a numeric task id and no task-manager row references it",
+        "aicc task_id '{}' is not a task id and no task-manager row references it",
         external_task_id
     )))
 }

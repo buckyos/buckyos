@@ -467,12 +467,8 @@ async fn proto_mix_04_resource_order_stable() {
         },
     ];
     let resp = center.complete(req, RPCContext::default()).await.unwrap();
-    let task = center
-        .task_manager_client()
-        .unwrap()
-        .list_tasks(None::<buckyos_api::TaskFilter>)
+    let task = common::all_tasks(&center.task_manager_client().unwrap())
         .await
-        .unwrap()
         .into_iter()
         .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
         .unwrap();

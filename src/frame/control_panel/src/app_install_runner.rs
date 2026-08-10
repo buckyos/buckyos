@@ -12,7 +12,8 @@
 
 use crate::app_install_engine::InstallEngine;
 use buckyos_api::msg_queue::{Message, SubPosition};
-use buckyos_api::{get_buckyos_api_runtime, TaskStatus};
+use crate::app_install_engine::InstallTaskStatus;
+use buckyos_api::get_buckyos_api_runtime;
 use log::{info, warn};
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,22 +50,22 @@ impl InstallRunner {
     }
 
     /// RPC 侧调度入口：持久化 dispatch 引用 + 立即本地执行。
-    pub async fn dispatch(self: &Arc<Self>, task_id: i64) {
-        if let Err(err) = self.post_dispatch_message(task_id).await {
+    pub async fn dispatch(self: &Arc<Self>, task_id: String) {
+        if let Err(err) = self.post_dispatch_message(&task_id).await {
             // 消息投递失败不影响正确性（扫描兜底），但要留痕。
             warn!("post install dispatch for task {task_id} failed: {err}");
         }
         self.spawn_run(task_id);
     }
 
-    pub fn spawn_run(self: &Arc<Self>, task_id: i64) {
+    pub fn spawn_run(self: &Arc<Self>, task_id: String) {
         let runner = self.clone();
         tokio::spawn(async move {
-            let _ = runner.engine.run_task(task_id).await;
+            let _ = runner.engine.run_task(&task_id).await;
         });
     }
 
-    async fn post_dispatch_message(&self, task_id: i64) -> Result<(), String> {
+    async fn post_dispatch_message(&self, task_id: &str) -> Result<(), String> {
         let runtime = get_buckyos_api_runtime().map_err(|err| err.to_string())?;
         let client = runtime
             .get_msg_queue_client()
@@ -113,9 +114,9 @@ impl InstallRunner {
             Ok(tasks) => {
                 for task in tasks {
                     match task.status {
-                        TaskStatus::Pending | TaskStatus::Running => {
+                        InstallTaskStatus::Pending | InstallTaskStatus::Running => {
                             info!("recover install task {} ({:?})", task.id, task.status);
-                            self.spawn_run(task.id);
+                            self.spawn_run(task.id.clone());
                         }
                         _ => {}
                     }
@@ -171,10 +172,15 @@ impl InstallRunner {
             for message in messages {
                 let task_id = serde_json::from_slice::<serde_json::Value>(&message.payload)
                     .ok()
-                    .and_then(|value| value.get("task_id").and_then(|id| id.as_i64()));
+                    .and_then(|value| {
+                        value
+                            .get("task_id")
+                            .and_then(|id| id.as_str())
+                            .map(str::to_string)
+                    });
                 if let Some(task_id) = task_id {
                     // 每次执行都以 TaskManager 为真相（payload 只是引用）。
-                    let _ = self.engine.run_task(task_id).await;
+                    let _ = self.engine.run_task(&task_id).await;
                 }
                 // 安全边界：run_task 返回时任务必然处于
                 // 终态 / WaitingForApproval / Paused / 其它执行体持有，
@@ -199,8 +205,8 @@ impl InstallRunner {
             match self.engine.store().list_active().await {
                 Ok(tasks) => {
                     for task in tasks {
-                        if matches!(task.status, TaskStatus::Pending | TaskStatus::Running) {
-                            self.spawn_run(task.id);
+                        if matches!(task.status, InstallTaskStatus::Pending | InstallTaskStatus::Running) {
+                            self.spawn_run(task.id.clone());
                         }
                     }
                 }

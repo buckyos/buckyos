@@ -1,6 +1,8 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, parse_typed_task_data, CreateTaskOptions, Task, TaskFilter,
-    TaskManagerClient, TaskPermissions, TaskScope, TaskStatus, TypedTaskData,
+    get_buckyos_api_runtime, parse_typed_task_data, CreateTaskExecutor, CreateTaskReq,
+    GetSubtasksReq, ListTasksReq, ReportProgressReq, ReportRunningReq, ReportStartedReq,
+    ReportWaitingReq, RunnerWriteEnvelope, Task, TaskManagerClient, TaskPhase, TaskWaitReason,
+    TaskWaitReasonKind, TypedTaskData,
     WorkflowScheduleOwner, WorkflowSchedulePolicy, WorkflowScheduleTaskData,
     WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult,
 };
@@ -14,7 +16,40 @@ use uuid::Uuid;
 
 use crate::state::Owner;
 
-// schedule 状态直接用 Task DB 的权威类型 TaskStatus，不再发明平行枚举。
+// 2.0：schedule 的业务生命周期是自己的枚举（wire 字符串与 1.x TaskStatus 保持
+// 一致，desktop UI 无需再变）。Task DB 里 schedule root task 永远保持非终态，
+// 生命周期状态的权威载体是 TaskData.request.status；task phase 只是投影。
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ScheduleStatus {
+    Running,
+    Paused,
+    Failed,
+    Canceled,
+}
+
+impl ScheduleStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, ScheduleStatus::Canceled)
+    }
+
+    pub fn from_str_loose(value: &str) -> Option<Self> {
+        match value {
+            "Running" => Some(Self::Running),
+            "Paused" => Some(Self::Paused),
+            "Failed" => Some(Self::Failed),
+            "Canceled" => Some(Self::Canceled),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ScheduleStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 // 映射约定：Running=启用 / Paused=暂停 / Canceled=归档 / Failed=错误。
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,7 +125,7 @@ impl Default for SchedulePolicy {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScheduleTaskMirror {
     #[serde(default)]
-    pub root_task_id: Option<i64>,
+    pub root_task_id: Option<String>,
     #[serde(default)]
     pub root_id: Option<String>,
 }
@@ -102,7 +137,7 @@ pub struct ScheduleState {
     #[serde(default)]
     pub last_fire_at: Option<i64>,
     #[serde(default)]
-    pub last_task_id: Option<i64>,
+    pub last_task_id: Option<String>,
     #[serde(default)]
     pub last_run_id: Option<String>,
     #[serde(default)]
@@ -118,7 +153,7 @@ pub struct WorkflowSchedule {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    pub status: TaskStatus,
+    pub status: ScheduleStatus,
     pub schedule: ScheduleSpec,
     pub target: ScheduleTarget,
     pub state: ScheduleState,
@@ -171,7 +206,7 @@ pub struct ScheduleFireRecord {
     pub manual: bool,
     pub status: FireStatus,
     #[serde(default)]
-    pub task_id: Option<i64>,
+    pub task_id: Option<String>,
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
@@ -223,7 +258,7 @@ impl ScheduleStore {
             if guard.schedules.contains_key(&schedule.schedule_id) {
                 continue;
             }
-            if schedule.status == TaskStatus::Running && is_reboot_schedule(&schedule.schedule) {
+            if schedule.status == ScheduleStatus::Running && is_reboot_schedule(&schedule.schedule) {
                 schedule.state.next_fire_at = Some(now);
             }
             guard
@@ -247,7 +282,7 @@ impl ScheduleStore {
     pub async fn list(
         &self,
         owner: Option<&Owner>,
-        status: Option<TaskStatus>,
+        status: Option<ScheduleStatus>,
         workflow_id: Option<&str>,
         name: Option<&str>,
     ) -> Vec<WorkflowSchedule> {
@@ -291,7 +326,7 @@ impl ScheduleStore {
             .await
             .schedules
             .values()
-            .filter(|schedule| schedule.status == TaskStatus::Running)
+            .filter(|schedule| schedule.status == ScheduleStatus::Running)
             .filter(|schedule| {
                 schedule
                     .state
@@ -340,7 +375,7 @@ impl ScheduleStore {
         &self,
         fire_id: &str,
         status: FireStatus,
-        task_id: Option<i64>,
+        task_id: Option<String>,
         run_id: Option<String>,
         error: Option<String>,
     ) -> Option<ScheduleFireRecord> {
@@ -420,136 +455,173 @@ impl ScheduleTaskMirrorClient {
             return Ok(schedule.task_mirror.clone());
         }
 
-        let root_id = schedule.schedule_id.clone();
-        if let Some(task_id) = self.find_existing_root_task(schedule).await? {
-            self.update_root_task_by_id(task_id, schedule).await?;
-            return Ok(ScheduleTaskMirror {
-                root_task_id: Some(task_id),
-                root_id: Some(root_id),
-            });
-        }
-
+        // The schedule id doubles as the idempotency key, so create is also
+        // the find path after a restart (no separate scan needed).
         let task_name = schedule_root_task_name(schedule);
         let client = self.client().await?;
         let task = client
-            .create_task(
-                task_name.as_str(),
-                "workflow/schedule",
-                Some(schedule_task_data(schedule)),
-                self.user_id.as_str(),
-                self.app_id.as_str(),
-                Some(CreateTaskOptions {
-                    root_id: Some(root_id.clone()),
-                    permissions: Some(schedule_root_task_permissions()),
-                    ..Default::default()
-                }),
-            )
+            .create_task(CreateTaskReq {
+                name: task_name,
+                schema_id: WORKFLOW_SCHEDULE_SCHEMA_ID.to_string(),
+                schema_version: None,
+                input: schedule_task_data(schedule),
+                executor: CreateTaskExecutor::SelfApp {
+                    app_instance_id: None,
+                },
+                parent_id: None,
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!("wf-schedule-{}", schedule.schedule_id),
+                retry_of: None,
+                supersedes: None,
+                message: None,
+            })
             .await
             .map_err(|err| err.to_string())?;
+        let task_id = task.task_id.clone();
+        self.update_root_task_by_id(task_id.clone(), schedule).await?;
         Ok(ScheduleTaskMirror {
-            root_task_id: Some(task.id),
-            root_id: Some(root_id),
+            root_task_id: Some(task_id.clone()),
+            root_id: Some(task_id),
         })
     }
 
     pub async fn update_root_task(&self, schedule: &WorkflowSchedule) -> Result<(), String> {
-        let Some(task_id) = schedule.task_mirror.root_task_id else {
+        let Some(task_id) = schedule.task_mirror.root_task_id.clone() else {
             return Ok(());
         };
         self.update_root_task_by_id(task_id, schedule).await
     }
 
+    /// Mirror the schedule lifecycle onto its root task: the task stays
+    /// non-terminal (Running / Waiting projections); the authoritative
+    /// status rides in the progress payload.
     async fn update_root_task_by_id(
         &self,
-        task_id: i64,
+        task_id: String,
         schedule: &WorkflowSchedule,
     ) -> Result<(), String> {
-        self.client()
-            .await?
-            .update_task(
-                task_id,
-                Some(schedule.status),
-                None,
-                Some(schedule_message(schedule)),
-                Some(schedule_task_data(schedule)),
-            )
-            .await
-            .map_err(|err| err.to_string())
-    }
-
-    async fn find_existing_root_task(
-        &self,
-        schedule: &WorkflowSchedule,
-    ) -> Result<Option<i64>, String> {
         let client = self.client().await?;
-        let tasks = client
-            .list_tasks(Some(TaskFilter {
-                app_id: Some(self.app_id.clone()),
-                task_type: Some("workflow/schedule".to_string()),
-                root_id: Some(schedule.schedule_id.clone()),
-                ..Default::default()
-            }))
+        let task = client.get_task(&task_id).await.map_err(|err| err.to_string())?;
+        if task.phase.is_terminal() {
+            return Ok(());
+        }
+        let envelope = |task: &Task| RunnerWriteEnvelope {
+            task_id: task.task_id.clone(),
+            app_instance_id: None,
+            runner_epoch: task.runner_epoch,
+            expected_revision: task.revision,
+        };
+        let task = client
+            .report_progress(ReportProgressReq {
+                envelope: envelope(&task),
+                progress: Some(schedule_task_data(schedule)),
+                message: Some(schedule_message(schedule)),
+            })
             .await
             .map_err(|err| err.to_string())?;
-        Ok(tasks
-            .into_iter()
-            .find(|task| task.user_id == self.user_id && task.root_id == schedule.schedule_id)
-            .map(|task| task.id))
+        match schedule.status {
+            ScheduleStatus::Running => {
+                let result = match task.phase {
+                    TaskPhase::Accepted => client
+                        .report_started(ReportStartedReq {
+                            envelope: envelope(&task),
+                        })
+                        .await
+                        .map(|_| ()),
+                    TaskPhase::Waiting => client
+                        .report_running(ReportRunningReq {
+                            envelope: envelope(&task),
+                        })
+                        .await
+                        .map(|_| ()),
+                    _ => Ok(()),
+                };
+                result.map_err(|err| err.to_string())
+            }
+            ScheduleStatus::Paused | ScheduleStatus::Failed | ScheduleStatus::Canceled => {
+                if task.phase == TaskPhase::Waiting {
+                    return Ok(());
+                }
+                let task = match task.phase {
+                    TaskPhase::Accepted => client
+                        .report_started(ReportStartedReq {
+                            envelope: envelope(&task),
+                        })
+                        .await
+                        .map_err(|err| err.to_string())?,
+                    _ => task,
+                };
+                let (kind, code) = match schedule.status {
+                    ScheduleStatus::Paused => (TaskWaitReasonKind::Other, "schedule_paused"),
+                    ScheduleStatus::Failed => (TaskWaitReasonKind::Other, "schedule_error"),
+                    _ => (TaskWaitReasonKind::Other, "schedule_archived"),
+                };
+                client
+                    .report_waiting(ReportWaitingReq {
+                        envelope: envelope(&task),
+                        reason: TaskWaitReason::with_code(kind, code),
+                    })
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            }
+        }
     }
 
     pub async fn create_fire_subtask(
         &self,
         schedule: &WorkflowSchedule,
         rendered: &RenderedScheduleSubtask,
-    ) -> Result<i64, String> {
-        let Some(parent_id) = schedule.task_mirror.root_task_id else {
+    ) -> Result<String, String> {
+        let Some(parent_id) = schedule.task_mirror.root_task_id.clone() else {
             return Err("schedule root task is missing".to_string());
         };
-        let root_id = schedule
-            .task_mirror
-            .root_id
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| schedule.schedule_id.clone());
-        // The workflow service is a zone-trusted caller: it records the fire
-        // subtask under the schedule owner it already authenticated at
-        // registration time. No identity-downgrade retry — a failure here is
-        // a real error, not a cue to silently switch identities.
+        // 2.0: the fire subtask's creator is the workflow service identity
+        // from the session token; the business owner stays recorded in the
+        // schedule payload and gains visibility through the task tree.
         let client = self.client().await?;
         let task = client
-            .create_task(
-                rendered.name.as_str(),
-                rendered.task_type.as_str(),
-                Some(rendered.data.clone()),
-                schedule.owner.user_id.as_str(),
-                schedule.owner.app_id.as_str(),
-                Some(CreateTaskOptions {
-                    parent_id: Some(parent_id),
-                    root_id: Some(root_id.clone()),
-                    ..Default::default()
-                }),
-            )
+            .create_task(CreateTaskReq {
+                name: rendered.name.clone(),
+                schema_id: fire_subtask_schema_id(rendered.task_type.as_str()),
+                schema_version: None,
+                input: rendered.data.clone(),
+                executor: CreateTaskExecutor::SelfApp {
+                    app_instance_id: None,
+                },
+                parent_id: Some(parent_id),
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!("wf-fire-{}", uuid::Uuid::new_v4().simple()),
+                retry_of: None,
+                supersedes: None,
+                message: None,
+            })
             .await
             .map_err(|err| err.to_string())?;
-        Ok(task.id)
+        Ok(task.task_id)
     }
 
     pub async fn active_fire_subtasks(&self, schedule: &WorkflowSchedule) -> Result<u32, String> {
-        let Some(parent_id) = schedule.task_mirror.root_task_id else {
+        let Some(parent_id) = schedule.task_mirror.root_task_id.clone() else {
             return Ok(0);
         };
         let client = self.client().await?;
-        let tasks = client
-            .list_tasks(Some(TaskFilter {
-                parent_id: Some(parent_id),
-                root_id: schedule.task_mirror.root_id.clone(),
-                ..Default::default()
-            }))
+        let page = client
+            .get_subtasks(GetSubtasksReq {
+                task_id: parent_id,
+                cursor: None,
+                limit: None,
+            })
             .await
             .map_err(|err| err.to_string())?;
-        Ok(tasks
+        Ok(page
+            .tasks
             .iter()
-            .filter(|task| !task.status.is_terminal())
+            .filter(|task| !task.phase.is_terminal())
             .count() as u32)
     }
 
@@ -557,29 +629,32 @@ impl ScheduleTaskMirrorClient {
         &self,
         schedule: &WorkflowSchedule,
         run_id: &str,
-    ) -> Result<Option<i64>, String> {
-        let Some(parent_id) = schedule.task_mirror.root_task_id else {
+    ) -> Result<Option<String>, String> {
+        let Some(parent_id) = schedule.task_mirror.root_task_id.clone() else {
             return Ok(None);
         };
         let client = self.client().await?;
-        let tasks = client
-            .list_tasks(Some(TaskFilter {
-                parent_id: Some(parent_id),
-                root_id: schedule.task_mirror.root_id.clone(),
-                task_type: Some("workflow/run".to_string()),
-                ..Default::default()
-            }))
+        let page = client
+            .get_subtasks(GetSubtasksReq {
+                task_id: parent_id,
+                cursor: None,
+                limit: None,
+            })
             .await
             .map_err(|err| err.to_string())?;
-        Ok(tasks
-            .iter()
-            .find(|task| {
-                matches!(
-                    parse_typed_task_data(task.task_type.as_str(), task.data.clone()),
-                    Ok(TypedTaskData::WorkflowRun(data)) if data.request.run_id == run_id
-                )
-            })
-            .map(|task| task.id))
+        for summary in page.tasks {
+            let Ok(task) = client.get_task(&summary.task_id).await else {
+                continue;
+            };
+            let payload = schedule_task_payload(&task);
+            if matches!(
+                parse_typed_task_data("workflow/run", payload),
+                Ok(TypedTaskData::WorkflowRun(data)) if data.request.run_id == run_id
+            ) {
+                return Ok(Some(task.task_id));
+            }
+        }
+        Ok(None)
     }
 
     /// 启动时从 Task DB 把全部 `workflow/schedule` root task 读回并解析成
@@ -587,23 +662,53 @@ impl ScheduleTaskMirrorClient {
     /// 解析失败的脏行被跳过（不让一条坏数据挡住整批 hydrate）。
     pub async fn load_schedules(&self) -> Result<Vec<WorkflowSchedule>, String> {
         let client = self.client().await?;
-        let tasks = client
-            .list_tasks(Some(TaskFilter {
-                app_id: Some(self.app_id.clone()),
-                task_type: Some("workflow/schedule".to_string()),
+        let page = client
+            .list_tasks(ListTasksReq {
+                schema_id: Some(WORKFLOW_SCHEDULE_SCHEMA_ID.to_string()),
+                include_archived: false,
                 ..Default::default()
-            }))
+            })
             .await
             .map_err(|err| err.to_string())?;
-        Ok(tasks.iter().filter_map(schedule_from_task).collect())
+        let mut schedules = Vec::new();
+        for summary in page.tasks {
+            let Ok(task) = client.get_task(&summary.task_id).await else {
+                continue;
+            };
+            if let Some(schedule) = schedule_from_task(&task) {
+                schedules.push(schedule);
+            }
+        }
+        Ok(schedules)
     }
+}
+
+/// Versioned schema id of the schedule root task.
+pub const WORKFLOW_SCHEDULE_SCHEMA_ID: &str = "workflow.schedule/v1";
+
+/// Fire subtasks reuse the versioned schema derived from the rendered legacy
+/// task type (`workflow/run` -> `workflow.run_tree/v1`, others mechanical).
+fn fire_subtask_schema_id(task_type: &str) -> String {
+    match task_type {
+        "workflow/run" => crate::task_tracker::WORKFLOW_RUN_SCHEMA_ID.to_string(),
+        other => format!("{}/v1", other.replace('/', ".")),
+    }
+}
+
+/// Payload view of a schedule-tree task: result wins, then progress, then
+/// the immutable input.
+fn schedule_task_payload(task: &Task) -> Value {
+    task.result
+        .clone()
+        .or_else(|| task.progress.clone())
+        .unwrap_or_else(|| task.input.clone())
 }
 
 /// Task（workflow/schedule root task）→ WorkflowSchedule 的无损反序列化。
 /// schedule_id / created_at / task_mirror 直接取自 Task 列；owner/policy/
 /// description 取自 TaskData（Task 列里没有）；schedule/target/state 取自 TaskData。
 fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
-    let data = match parse_typed_task_data(task.task_type.as_str(), task.data.clone()) {
+    let data = match parse_typed_task_data("workflow/schedule", schedule_task_payload(task)) {
         Ok(TypedTaskData::WorkflowSchedule(data)) => data,
         _ => return None,
     };
@@ -614,8 +719,12 @@ fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
     let target: ScheduleTarget = req
         .target
         .and_then(|value| serde_json::from_value(value).ok())?;
-    // status 的权威来源是 Task 的 status 列（与 data.request.status 由同一次写入保持一致）。
-    let status = task.status;
+    // 2.0：status 的权威来源是 TaskData.request.status；task phase 只是投影。
+    let status = req
+        .status
+        .as_deref()
+        .and_then(ScheduleStatus::from_str_loose)
+        .unwrap_or(ScheduleStatus::Running);
     let owner = req
         .owner
         .map(|o| Owner {
@@ -623,8 +732,8 @@ fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
             app_id: o.app_id,
         })
         .unwrap_or_else(|| Owner {
-            user_id: task.user_id.clone(),
-            app_id: task.app_id.clone(),
+            user_id: task.creator.user_id.clone(),
+            app_id: task.creator.app_id.clone(),
         });
     let policy = req.policy.map(policy_from_typed).unwrap_or_default();
     let result = data.result.unwrap_or_default();
@@ -640,7 +749,7 @@ fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
         }),
     };
     let schedule_id = if req.schedule_id.trim().is_empty() {
-        task.root_id.clone()
+        task.task_id.clone()
     } else {
         req.schedule_id
     };
@@ -655,7 +764,7 @@ fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
         state,
         policy,
         task_mirror: ScheduleTaskMirror {
-            root_task_id: Some(task.id),
+            root_task_id: Some(task.task_id.clone()),
             root_id: Some(task.root_id.clone()),
         },
         created_at: task.created_at as i64,
@@ -704,13 +813,6 @@ fn misfire_str(misfire: MisfirePolicy) -> &'static str {
     }
 }
 
-fn schedule_root_task_permissions() -> TaskPermissions {
-    TaskPermissions {
-        read: TaskScope::User,
-        write: TaskScope::User,
-    }
-}
-
 fn schedule_root_task_name(schedule: &WorkflowSchedule) -> String {
     format!(
         "workflow/schedule/{} [{}]",
@@ -737,7 +839,7 @@ fn schedule_task_data(schedule: &WorkflowSchedule) -> Value {
         result: Some(WorkflowScheduleTaskResult {
             next_fire_at: schedule.state.next_fire_at,
             last_fire_at: schedule.state.last_fire_at,
-            last_task_id: schedule.state.last_task_id,
+            last_task_id: schedule.state.last_task_id.clone(),
             last_run_id: schedule.state.last_run_id.clone(),
             consecutive_failures: schedule.state.consecutive_failures as u64,
             last_error: schedule.state.last_error.clone().map(Value::String),
@@ -748,19 +850,18 @@ fn schedule_task_data(schedule: &WorkflowSchedule) -> Value {
 
 fn schedule_message(schedule: &WorkflowSchedule) -> String {
     match schedule.status {
-        TaskStatus::Running => schedule
+        ScheduleStatus::Running => schedule
             .state
             .next_fire_at
             .map(|ts| format!("next fire at {}", rfc3339(ts)))
             .unwrap_or_else(|| "enabled".to_string()),
-        TaskStatus::Paused => "paused".to_string(),
-        TaskStatus::Canceled => "archived".to_string(),
-        TaskStatus::Failed => schedule
+        ScheduleStatus::Paused => "paused".to_string(),
+        ScheduleStatus::Canceled => "archived".to_string(),
+        ScheduleStatus::Failed => schedule
             .state
             .last_error
             .clone()
             .unwrap_or_else(|| "schedule error".to_string()),
-        other => format!("{}", other),
     }
 }
 

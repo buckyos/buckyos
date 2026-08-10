@@ -4,17 +4,25 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, AgentDelegateProgress, AgentDelegateTaskData,
-    AiMessage, AiRole, CreateTaskOptions, HumanInputTaskData, HumanInputTaskRequest, Task,
-    TaskFilter, TaskStatus, TypedTaskData,
+    AiMessage, AiRole, CreateTaskExecutor, CreateTaskReq, HumanInputTaskData,
+    HumanInputTaskRequest, ListTasksReq, Task, TaskControlAction, TaskExecutor, TaskOutcome,
+    TaskPhase, TaskWaitReason, TaskWaitReasonKind, TypedTaskData,
 };
 use log::{error, warn};
 use serde_json::{json, Value};
 
 use crate::agent::{AIAgent, CreateWorkSessionParams};
 use crate::session_model::{InterruptMode, PendingInput, SessionKind, SessionMeta, SessionStatus};
+use crate::task_util::{
+    ack_pending_control, ensure_running, fail_own_task, pending_control_action,
+    report_progress_value, report_waiting_reason, task_payload,
+};
 
 pub const TASK_TYPE_AGENT_DELEGATE: &str = "agent.delegate";
 pub const TASK_TYPE_HUMAN_INPUT: &str = "human.input";
+/// Versioned task schema ids (2.0).
+pub const AGENT_DELEGATE_SCHEMA_ID: &str = "agent.delegate/v1";
+pub const HUMAN_INPUT_SCHEMA_ID: &str = "human.input/v1";
 const TASK_ROUTE_BEHAVIOR: &str = "task_route";
 
 impl AIAgent {
@@ -40,11 +48,11 @@ impl AIAgent {
     }
 
     /// Owner-task recovery loop (doc `Agent Task Executor.md` §8.2). This is
-    /// NOT a work inbox: it only sweeps tasks this OpenDAN owns
-    /// (`app_id = ours`) and never subscribes global TaskMgr events to
-    /// discover foreign work. External delegation arrives exclusively via
-    /// the Dispatch Target Adapter (`dispatch_adapter.rs`), which wakes the
-    /// executor directly after accept.
+    /// NOT a work inbox: it only sweeps `agent.delegate` tasks this OpenDAN
+    /// runs (bound App runner / targeted agent) and never subscribes global
+    /// TaskMgr events to discover foreign work. External delegation arrives
+    /// exclusively via the Dispatch Runner Adapter (`dispatch_adapter.rs`),
+    /// which wakes the executor directly after activation.
     pub fn spawn_task_inbox(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
         if !self.config.toml.runtime.task_executor.enabled {
             return None;
@@ -74,7 +82,7 @@ impl AIAgent {
             .max(1_000);
 
         // Startup scan once, then a periodic owner-only sweep as the
-        // lost-wakeup backstop. Accepted dispatches and internal session
+        // lost-wakeup backstop. Activated dispatches and internal session
         // paths wake the executor directly, so no event subscription is
         // needed for discovery.
         self.clone().sweep_agent_delegate_tasks(&runner).await;
@@ -89,9 +97,9 @@ impl AIAgent {
         }
     }
 
-    /// Entry point for the Dispatch Target Adapter: run the executor path
-    /// for a task this OpenDAN just created by accepting a dispatch.
-    pub async fn process_accepted_dispatch_task(self: Arc<Self>, task_id: i64) -> Result<()> {
+    /// Entry point for the Dispatch Runner Adapter: run the executor path
+    /// for a task the dispatcher just bound and activated on this OpenDAN.
+    pub async fn process_accepted_dispatch_task(self: Arc<Self>, task_id: &str) -> Result<()> {
         let task_mgr = self
             .runtime
             .task_mgr_client()
@@ -109,12 +117,11 @@ impl AIAgent {
     async fn sweep_agent_delegate_tasks(self: Arc<Self>, runner: &str) {
         let own_app_id = self.own_task_app_id();
         let target_agent_id = self.dispatch_target_id();
-        for status in [
-            TaskStatus::Pending,
-            TaskStatus::WaitingForApproval,
-            TaskStatus::Running,
-            TaskStatus::Paused,
-            TaskStatus::Canceled,
+        for phase in [
+            TaskPhase::Accepted,
+            TaskPhase::Waiting,
+            TaskPhase::Running,
+            TaskPhase::Paused,
         ] {
             let task_mgr = match self.runtime.task_mgr_client().await {
                 Ok(client) => client,
@@ -126,23 +133,31 @@ impl AIAgent {
                     return;
                 }
             };
-            let filter = TaskFilter {
-                app_id: Some(own_app_id.clone()),
-                task_type: Some(TASK_TYPE_AGENT_DELEGATE.to_string()),
-                status: Some(status),
-                ..Default::default()
-            };
-            let tasks = match task_mgr.list_tasks(Some(filter)).await {
-                Ok(tasks) => tasks,
+            let page = match task_mgr
+                .list_tasks(ListTasksReq {
+                    schema_id: Some(AGENT_DELEGATE_SCHEMA_ID.to_string()),
+                    phase: Some(phase),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(page) => page,
                 Err(err) => {
                     warn!(
                         "opendan.task_inbox[{}]: list {:?} delegate tasks failed: {err}",
-                        self.agent_name, status
+                        self.agent_name, phase
                     );
                     continue;
                 }
             };
-            for task in tasks {
+            for summary in page.tasks {
+                let task = match task_mgr.get_task(&summary.task_id).await {
+                    Ok(task) => task,
+                    Err(_) => continue,
+                };
+                if !task_runs_on_app(&task, own_app_id.as_str()) {
+                    continue;
+                }
                 if !task_targets_agent(&task, runner, target_agent_id.as_str()) {
                     continue;
                 }
@@ -161,32 +176,48 @@ impl AIAgent {
         mut task: Task,
         runner: &str,
     ) -> Result<()> {
-        if task.status == TaskStatus::Canceled {
-            return self
-                .reflect_task_control_to_session(task, runner, "canceled", InterruptMode::Discard)
-                .await;
-        }
-        if task.status.is_terminal() {
+        if task.phase.is_terminal() {
             return Ok(());
         }
-        if task.status == TaskStatus::Paused {
-            return self
-                .reflect_task_control_to_session(task, runner, "paused", InterruptMode::Discard)
-                .await;
+        // Control requests reach the runner as a pending request that must
+        // be acknowledged (2.0 control protocol).
+        match pending_control_action(&task) {
+            Some(TaskControlAction::Cancel) => {
+                return self
+                    .reflect_task_control_to_session(task, runner, "canceled", InterruptMode::Discard)
+                    .await;
+            }
+            Some(TaskControlAction::Pause) => {
+                return self
+                    .reflect_task_control_to_session(task, runner, "paused", InterruptMode::Discard)
+                    .await;
+            }
+            Some(TaskControlAction::Resume) => {
+                let task_mgr = self
+                    .runtime
+                    .task_mgr_client()
+                    .await
+                    .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
+                let acked = ack_pending_control(&task_mgr, &task, true, None).await?;
+                task = acked;
+            }
+            None => {}
         }
-        if task.status == TaskStatus::WaitingForApproval
-            && !self.clone().resume_waiting_delegate_task(&task).await?
-        {
+        if task.phase == TaskPhase::Paused {
+            // Already acknowledged as paused; nothing to drive.
             return Ok(());
         }
-        if task.status == TaskStatus::WaitingForApproval {
+        if waiting_for_human_input(&task) {
+            if !self.clone().resume_waiting_delegate_task(&task).await? {
+                return Ok(());
+            }
             let task_mgr = self
                 .runtime
                 .task_mgr_client()
                 .await
                 .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
-            task = task_mgr.get_task(task.id).await?;
-            if task.status.is_terminal() {
+            task = task_mgr.get_task(&task.task_id).await?;
+            if task.phase.is_terminal() {
                 return Ok(());
             }
         }
@@ -236,7 +267,8 @@ impl AIAgent {
         task: &Task,
         runner: &str,
     ) -> Result<bool> {
-        let Some(bound) = find_bound_worksession(&self.config.layout.sessions_dir, task.id) else {
+        let Some(bound) = find_bound_worksession(&self.config.layout.sessions_dir, &task.task_id)
+        else {
             return Ok(false);
         };
         let task_mgr = self
@@ -246,54 +278,51 @@ impl AIAgent {
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
 
         if bound.ended {
-            task_mgr
-                .update_task(
-                    task.id,
-                    Some(TaskStatus::Failed),
-                    Some(task.progress),
-                    Some(
-                        "Existing bound agent session already ended before task recovery"
-                            .to_string(),
-                    ),
-                    Some(agent_delegate_update_value(task, |data| {
-                        set_agent_delegate_execution(
-                            data,
-                            json!({
-                                "session_id": bound.session_id,
-                                "workspace_id": bound.workspace_id,
-                                "behavior": bound.behavior,
-                                "runner": runner,
-                                "status": "ended",
-                                "recovered_at_ms": now_ms()
-                            }),
-                        );
-                    })?),
-                )
-                .await?;
+            let detail = agent_delegate_update_value(task, |data| {
+                set_agent_delegate_execution(
+                    data,
+                    json!({
+                        "session_id": bound.session_id,
+                        "workspace_id": bound.workspace_id,
+                        "behavior": bound.behavior,
+                        "runner": runner,
+                        "status": "ended",
+                        "recovered_at_ms": now_ms()
+                    }),
+                );
+            })?;
+            fail_own_task(
+                &task_mgr,
+                task.clone(),
+                "session_ended",
+                "Existing bound agent session already ended before task recovery",
+                Some(detail),
+            )
+            .await?;
             return Ok(true);
         }
 
-        task_mgr
-            .update_task(
-                task.id,
-                Some(TaskStatus::Running),
-                Some(task.progress.max(10.0)),
-                Some("Recovered existing agent session binding".to_string()),
-                Some(agent_delegate_update_value(task, |data| {
-                    set_agent_delegate_execution(
-                        data,
-                        json!({
-                            "session_id": bound.session_id,
-                            "workspace_id": bound.workspace_id,
-                            "behavior": bound.behavior,
-                            "runner": runner,
-                            "status": "running",
-                            "recovered_at_ms": now_ms()
-                        }),
-                    );
-                })?),
-            )
-            .await?;
+        let data = agent_delegate_update_value(task, |data| {
+            set_agent_delegate_execution(
+                data,
+                json!({
+                    "session_id": bound.session_id,
+                    "workspace_id": bound.workspace_id,
+                    "behavior": bound.behavior,
+                    "runner": runner,
+                    "status": "running",
+                    "recovered_at_ms": now_ms()
+                }),
+            );
+        })?;
+        let task = ensure_running(&task_mgr, task.clone()).await?;
+        report_progress_value(
+            &task_mgr,
+            task,
+            Some(data),
+            Some("Recovered existing agent session binding".to_string()),
+        )
+        .await?;
 
         let session = self.clone().ensure_session(&bound.session_id).await?;
         session.wake().await;
@@ -310,20 +339,20 @@ impl AIAgent {
             .task_mgr_client()
             .await
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
-        task_mgr
-            .update_task(
-                task.id,
-                Some(TaskStatus::Running),
-                Some(5.0),
-                Some("Creating agent session from task data".to_string()),
-                Some(agent_delegate_update_value(&task, |data| {
-                    data.route = Some(json!({
-                        "status": "direct",
-                        "strategy": "create_worksession_by_taskid"
-                    }));
-                })?),
-            )
-            .await?;
+        let progress_value = agent_delegate_update_value(&task, |data| {
+            data.route = Some(json!({
+                "status": "direct",
+                "strategy": "create_worksession_by_taskid"
+            }));
+        })?;
+        let task = ensure_running(&task_mgr, task).await?;
+        let task = report_progress_value(
+            &task_mgr,
+            task,
+            Some(progress_value),
+            Some("Creating agent session from task data".to_string()),
+        )
+        .await?;
 
         self.clone()
             .create_work_session(CreateWorkSessionParams {
@@ -343,13 +372,13 @@ impl AIAgent {
                     .as_deref()
                     .map(str::to_string)
                     .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| format!("task-{}", task.id)),
+                    .unwrap_or_else(|| format!("task-{}", task.task_id)),
                 reason_messages: vec![format!(
                     "agent.delegate task {} used direct task_id worksession creation",
-                    task.id
+                    task.task_id
                 )],
                 task_binding: None,
-                task_id: Some(task.id),
+                task_id: Some(task.task_id.clone()),
                 auto_start: true,
                 bind_task: true,
             })
@@ -363,7 +392,7 @@ impl AIAgent {
             .task_mgr_client()
             .await
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
-        let session_id = format!("task-route-{}", task.id);
+        let session_id = format!("task-route-{}", task.task_id);
         let session_dir = self.config.layout.session_dir(&session_id);
         let existing_meta = load_session_meta(&session_dir);
         let session = if let Some(meta) = existing_meta {
@@ -384,15 +413,15 @@ impl AIAgent {
                 .as_deref()
                 .map(str::to_string)
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| format!("task-{}", task.id));
+                .unwrap_or_else(|| format!("task-{}", task.task_id));
             let mut meta = SessionMeta::new(
                 session_id.clone(),
                 SessionKind::Work,
                 TASK_ROUTE_BEHAVIOR.to_string(),
                 created_by_session_id,
             );
-            meta.title = format!("Route task {}", task.id);
-            meta.objective = format!("Create a WorkSession for task {}", task.id);
+            meta.title = format!("Route task {}", task.task_id);
+            meta.objective = format!("Create a WorkSession for task {}", task.task_id);
             meta.workspace_id = Some(session_id.clone());
             meta.bootstrap_done = true;
             self.clone()
@@ -409,8 +438,8 @@ impl AIAgent {
         let input_text = task_route_input_text(&task);
         session
             .enqueue_pending(PendingInput::Msg {
-                record_id: format!("task-route-{}", task.id),
-                from: format!("task:{}", task.id),
+                record_id: format!("task-route-{}", task.task_id),
+                from: format!("task:{}", task.task_id),
                 from_did: None,
                 from_name: Some("TaskManager".to_string()),
                 tunnel_did: None,
@@ -418,22 +447,22 @@ impl AIAgent {
                 ai_message: AiMessage::text(AiRole::User, input_text),
             })
             .await?;
-        let update_result = task_mgr
-            .update_task(
-                task.id,
-                Some(TaskStatus::Running),
-                Some(task.progress.max(1.0)),
-                Some("Routing agent task via task_route".to_string()),
-                Some(agent_delegate_update_value(&task, |data| {
-                    data.route = Some(json!({
-                        "status": "routed",
-                        "strategy": "task_route_behavior",
-                        "session_id": session_id,
-                        "routed_at_ms": now_ms()
-                    }));
-                })?),
-            )
-            .await;
+        let progress_value = agent_delegate_update_value(&task, |data| {
+            data.route = Some(json!({
+                "status": "routed",
+                "strategy": "task_route_behavior",
+                "session_id": session_id,
+                "routed_at_ms": now_ms()
+            }));
+        })?;
+        let task = ensure_running(&task_mgr, task).await?;
+        let update_result = report_progress_value(
+            &task_mgr,
+            task,
+            Some(progress_value),
+            Some("Routing agent task via task_route".to_string()),
+        )
+        .await;
         session.wake().await;
         update_result?;
         Ok(())
@@ -451,26 +480,21 @@ impl AIAgent {
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
         let reason =
             "agent.delegate task requires task_route, but runtime.task_route.enabled is false";
-        task_mgr
-            .update_task(
-                task.id,
-                Some(TaskStatus::Failed),
-                Some(task.progress),
-                Some(reason.to_string()),
-                Some(agent_delegate_update_value(&task, |data| {
-                    data.route = Some(json!({
-                        "status": "failed",
-                        "strategy": "task_route_disabled",
-                        "session_id": route_session_id,
-                        "reason": reason,
-                        "failed_at_ms": now_ms()
-                    }));
-                })?),
-            )
-            .await?;
+        let detail = agent_delegate_update_value(&task, |data| {
+            data.route = Some(json!({
+                "status": "failed",
+                "strategy": "task_route_disabled",
+                "session_id": route_session_id,
+                "reason": reason,
+                "failed_at_ms": now_ms()
+            }));
+        })?;
+        fail_own_task(&task_mgr, task, "task_route_disabled", reason, Some(detail)).await?;
         Ok(())
     }
 
+    /// Reflect a pending Pause/Cancel control request into the bound session
+    /// (interrupt), then acknowledge the request as the runner.
     async fn reflect_task_control_to_session(
         self: Arc<Self>,
         task: Task,
@@ -482,63 +506,60 @@ impl AIAgent {
             return Ok(());
         }
         let delegate_data = agent_delegate_task_data(&task)?;
-        if task_control_already_reflected(&delegate_data, status) {
-            return Ok(());
-        }
         let task_mgr = self
             .runtime
             .task_mgr_client()
             .await
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
-        let Some(session_id) = execution_session_id(&delegate_data) else {
-            task_mgr
-                .update_task(
-                    task.id,
-                    Some(task.status),
-                    Some(task.progress),
-                    Some(format!("Agent task {status} before session start")),
-                    Some(agent_delegate_update_value(&task, |data| {
-                        set_agent_delegate_execution(
-                            data,
-                            json!({
-                                "status": status,
-                                "control_observed_at_ms": now_ms(),
-                            }),
-                        );
-                    })?),
-                )
-                .await?;
-            return Ok(());
-        };
-        if let Ok(session) = self.clone().ensure_session(&session_id).await {
-            if let Err(err) = session.interrupt(mode).await {
-                warn!(
-                    "opendan.task_executor[{}]: interrupt session {} for task {} {} failed: {err:#}",
-                    self.agent_name, session_id, task.id, status
-                );
-            }
-        }
-        task_mgr
-            .update_task(
-                task.id,
-                Some(task.status),
-                Some(task.progress),
-                Some(format!("Agent session {status} by task manager")),
-                Some(agent_delegate_update_value(&task, |data| {
-                    set_agent_delegate_execution(
-                        data,
-                        json!({
-                            "session_id": session_id,
-                            "status": status,
-                            "control": {
-                                "status": status,
-                                "observed_at_ms": now_ms(),
-                            }
-                        }),
+        if let Some(session_id) = execution_session_id(&delegate_data) {
+            if let Ok(session) = self.clone().ensure_session(&session_id).await {
+                if let Err(err) = session.interrupt(mode).await {
+                    warn!(
+                        "opendan.task_executor[{}]: interrupt session {} for task {} {} failed: {err:#}",
+                        self.agent_name, session_id, task.task_id, status
                     );
-                })?),
+                }
+            }
+            let progress_value = agent_delegate_update_value(&task, |data| {
+                set_agent_delegate_execution(
+                    data,
+                    json!({
+                        "session_id": session_id,
+                        "status": status,
+                        "control": {
+                            "status": status,
+                            "observed_at_ms": now_ms(),
+                        }
+                    }),
+                );
+            })?;
+            let task = report_progress_value(
+                &task_mgr,
+                task,
+                Some(progress_value),
+                Some(format!("Agent session {status} by task manager")),
             )
             .await?;
+            ack_pending_control(&task_mgr, &task, true, None).await?;
+        } else {
+            let progress_value = agent_delegate_update_value(&task, |data| {
+                set_agent_delegate_execution(
+                    data,
+                    json!({
+                        "status": status,
+                        "control_observed_at_ms": now_ms(),
+                    }),
+                );
+            })?;
+            let task = report_progress_value(
+                &task_mgr,
+                task,
+                Some(progress_value),
+                Some(format!("Agent task {status} before session start")),
+            )
+            .await?;
+            ack_pending_control(&task_mgr, &task, true, None).await?;
+        }
         Ok(())
     }
 
@@ -547,15 +568,23 @@ impl AIAgent {
             Ok(client) => client,
             Err(_) => return Ok(false),
         };
-        let subtasks = task_mgr.get_subtasks(task.id).await?;
-        let completed = subtasks
-            .iter()
-            .filter(|child| child.task_type == TASK_TYPE_HUMAN_INPUT)
-            .find(|child| child.status == TaskStatus::Completed);
-        let Some(child) = completed else {
+        let subtasks = task_mgr
+            .get_subtasks(buckyos_api::GetSubtasksReq {
+                task_id: task.task_id.clone(),
+                cursor: None,
+                limit: None,
+            })
+            .await?;
+        let completed_summary = subtasks.tasks.iter().find(|child| {
+            child.schema_id == HUMAN_INPUT_SCHEMA_ID
+                && child.phase.is_terminal()
+                && child.outcome == Some(TaskOutcome::Succeeded)
+        });
+        let Some(summary) = completed_summary else {
             return Ok(false);
         };
-        let child_data = human_input_task_data(child)?;
+        let child = task_mgr.get_task(&summary.task_id).await?;
+        let child_data = human_input_task_data(&child)?;
         let response_text = human_input_response_text(&child_data)
             .unwrap_or_else(|| "Human input task was completed.".to_string());
         let Some(session_id) = execution_session_id(&agent_delegate_task_data(task)?) else {
@@ -564,28 +593,28 @@ impl AIAgent {
                 .as_ref()
                 .and_then(|result| result.response.clone())
                 .unwrap_or(Value::Null);
-            task_mgr
-                .update_task(
-                    task.id,
-                    Some(TaskStatus::Pending),
-                    Some(task.progress),
-                    Some("Human input received; routing task".to_string()),
-                    Some(agent_delegate_update_value(task, |data| {
-                        data.human_input = Some(json!({
-                            "task_id": child.id,
-                            "response": response,
-                        }));
-                    })?),
-                )
-                .await?;
+            let progress_value = agent_delegate_update_value(task, |data| {
+                data.human_input = Some(json!({
+                    "task_id": child.task_id,
+                    "response": response,
+                }));
+            })?;
+            let refreshed = ensure_running(&task_mgr, task.clone()).await?;
+            report_progress_value(
+                &task_mgr,
+                refreshed,
+                Some(progress_value),
+                Some("Human input received; routing task".to_string()),
+            )
+            .await?;
             return Ok(true);
         };
         let session = self.clone().ensure_session(&session_id).await?;
-        let record_id = format!("task-human-input-{}-{}", task.id, child.id);
+        let record_id = format!("task-human-input-{}-{}", task.task_id, child.task_id);
         session
             .enqueue_pending(PendingInput::Msg {
                 record_id,
-                from: format!("task:{}", child.id),
+                from: format!("task:{}", child.task_id),
                 from_did: None,
                 from_name: Some("TaskCenter".to_string()),
                 tunnel_did: None,
@@ -593,27 +622,29 @@ impl AIAgent {
                 ai_message: AiMessage::text(AiRole::User, response_text),
             })
             .await?;
-        task_mgr
-            .update_task(
-                task.id,
-                Some(TaskStatus::Running),
-                Some(task.progress.max(10.0)),
-                Some("Human input received; resuming agent session".to_string()),
-                Some(agent_delegate_update_value(task, |data| {
-                    data.human_input = Some(json!({
-                        "task_id": child.id,
-                        "response": child_data
-                            .result
-                            .as_ref()
-                            .and_then(|result| result.response.clone())
-                            .unwrap_or(Value::Null),
-                    }));
-                })?),
-            )
-            .await?;
+        let progress_value = agent_delegate_update_value(task, |data| {
+            data.human_input = Some(json!({
+                "task_id": child.task_id,
+                "response": child_data
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.response.clone())
+                    .unwrap_or(Value::Null),
+            }));
+        })?;
+        let refreshed = ensure_running(&task_mgr, task.clone()).await?;
+        report_progress_value(
+            &task_mgr,
+            refreshed,
+            Some(progress_value),
+            Some("Human input received; resuming agent session".to_string()),
+        )
+        .await?;
         Ok(true)
     }
 
+    /// Park the parent behind a HumanSet child task: the assignee commits the
+    /// answer through Task Center, the executor resumes on the result.
     pub async fn create_human_input_task(
         self: Arc<Self>,
         parent: &Task,
@@ -626,77 +657,108 @@ impl AIAgent {
             .task_mgr_client()
             .await
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
-        let existing = task_mgr.get_subtasks(parent.id).await.unwrap_or_default();
-        if let Some(open) = existing.iter().find(|child| {
-            child.task_type == TASK_TYPE_HUMAN_INPUT
-                && child.status == TaskStatus::WaitingForApproval
-        }) {
-            task_mgr
-                .update_task(
-                    parent.id,
-                    Some(TaskStatus::WaitingForApproval),
-                    Some(parent.progress),
-                    Some("Waiting for human input".to_string()),
-                    None,
-                )
-                .await?;
-            return Ok(open.clone());
+        let existing = task_mgr
+            .get_subtasks(buckyos_api::GetSubtasksReq {
+                task_id: parent.task_id.clone(),
+                cursor: None,
+                limit: None,
+            })
+            .await
+            .map(|page| page.tasks)
+            .unwrap_or_default();
+        if let Some(open) = existing
+            .iter()
+            .find(|child| child.schema_id == HUMAN_INPUT_SCHEMA_ID && !child.phase.is_terminal())
+        {
+            let open = task_mgr.get_task(&open.task_id).await?;
+            let parent_now = ensure_parent_waiting(&task_mgr, parent, &open.task_id).await?;
+            let _ = parent_now;
+            return Ok(open);
         }
         let child = task_mgr
-            .create_task(
-                &format!("human-input/{}", parent.id),
-                TASK_TYPE_HUMAN_INPUT,
-                Some(serde_json::to_value(HumanInputTaskData {
+            .create_task(CreateTaskReq {
+                name: format!("human-input/{}", parent.task_id),
+                schema_id: HUMAN_INPUT_SCHEMA_ID.to_string(),
+                schema_version: None,
+                input: serde_json::to_value(HumanInputTaskData {
                     request: HumanInputTaskRequest {
                         version: 1,
                         kind: kind.to_string(),
                         question: Some(question.to_string()),
                         required_by: Some(json!({
-                            "task_id": parent.id,
+                            "task_id": parent.task_id,
                             "executor": self.task_executor_runner_id()?,
                         })),
                         candidates,
                         response_schema: Some(json!({ "type": "object" })),
                     },
                     result: None,
-                })?),
-                &parent.user_id,
-                &parent.app_id,
-                Some(CreateTaskOptions {
-                    parent_id: Some(parent.id),
-                    root_id: Some(parent.root_id.clone()),
-                    session_id: Some(parent.session_id.clone()),
-                    priority: None,
-                    permissions: Some(parent.permissions.clone()),
-                }),
-            )
+                })?,
+                executor: CreateTaskExecutor::HumanSet {
+                    assignees: vec![parent.creator.user_id.clone()],
+                },
+                parent_id: Some(parent.task_id.clone()),
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!("human-input-{}", parent.task_id),
+                retry_of: None,
+                supersedes: None,
+                message: Some(question.to_string()),
+            })
             .await?;
-        task_mgr
-            .update_task(
-                child.id,
-                Some(TaskStatus::WaitingForApproval),
-                None,
-                Some(question.to_string()),
-                None,
-            )
-            .await?;
-        task_mgr
-            .update_task(
-                parent.id,
-                Some(TaskStatus::WaitingForApproval),
-                Some(parent.progress),
-                Some("Waiting for human input".to_string()),
-                Some(agent_delegate_update_value(parent, |data| {
-                    data.blocker = Some(json!({
-                        "task_id": child.id,
-                        "task_type": TASK_TYPE_HUMAN_INPUT,
-                        "kind": kind,
-                    }));
-                })?),
-            )
-            .await?;
+        ensure_parent_waiting(&task_mgr, parent, &child.task_id).await?;
         Ok(child)
     }
+}
+
+async fn ensure_parent_waiting(
+    task_mgr: &buckyos_api::TaskManagerClient,
+    parent: &Task,
+    child_task_id: &str,
+) -> Result<Task> {
+    let parent = task_mgr.get_task(&parent.task_id).await?;
+    if parent.phase == TaskPhase::Waiting || parent.phase.is_terminal() {
+        return Ok(parent);
+    }
+    let progress_value = agent_delegate_update_value(&parent, |data| {
+        data.blocker = Some(json!({
+            "task_id": child_task_id,
+            "task_type": TASK_TYPE_HUMAN_INPUT,
+        }));
+    })?;
+    let parent = report_progress_value(
+        task_mgr,
+        parent,
+        Some(progress_value),
+        Some("Waiting for human input".to_string()),
+    )
+    .await?;
+    report_waiting_reason(
+        task_mgr,
+        parent,
+        TaskWaitReason {
+            kind: TaskWaitReasonKind::HumanInput,
+            code: Some("human_input".to_string()),
+            related_task_id: Some(child_task_id.to_string()),
+            message: None,
+        },
+    )
+    .await
+}
+
+fn waiting_for_human_input(task: &Task) -> bool {
+    task.phase == TaskPhase::Waiting
+        && task
+            .wait_reason
+            .as_ref()
+            .map(|reason| {
+                matches!(
+                    reason.kind,
+                    TaskWaitReasonKind::HumanInput | TaskWaitReasonKind::Authorization
+                )
+            })
+            .unwrap_or(false)
 }
 
 fn workspace_id_from_hint(value: &Value) -> Option<String> {
@@ -713,7 +775,7 @@ fn workspace_id_from_hint(value: &Value) -> Option<String> {
 }
 
 fn agent_delegate_task_data(task: &Task) -> Result<AgentDelegateTaskData> {
-    match parse_typed_task_data(task.task_type.as_str(), task.data.clone()) {
+    match parse_typed_task_data(TASK_TYPE_AGENT_DELEGATE, task_payload(task)) {
         Ok(TypedTaskData::AgentDelegate(data)) => Ok(data),
         Ok(other) => Err(anyhow!(
             "expected agent.delegate task data, got {:?}",
@@ -724,7 +786,7 @@ fn agent_delegate_task_data(task: &Task) -> Result<AgentDelegateTaskData> {
 }
 
 fn human_input_task_data(task: &Task) -> Result<HumanInputTaskData> {
-    match parse_typed_task_data(task.task_type.as_str(), task.data.clone()) {
+    match parse_typed_task_data(TASK_TYPE_HUMAN_INPUT, task_payload(task)) {
         Ok(TypedTaskData::HumanInput(data)) => Ok(data),
         Ok(other) => Err(anyhow!(
             "expected human.input task data, got {:?}",
@@ -777,9 +839,19 @@ fn delegate_execution_runner(data: &AgentDelegateTaskData) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Is this OpenDAN app the bound App runner of the task? Direct-created
+/// tasks bind our own app at create time; dispatched tasks are bound by the
+/// dispatcher.
+fn task_runs_on_app(task: &Task, own_app_id: &str) -> bool {
+    matches!(
+        &task.executor,
+        TaskExecutor::App { app_id, .. } if app_id == own_app_id
+    )
+}
+
 /// Per-agent ownership check within OpenDAN's own tasks (the sweep is
-/// already owner-only via `app_id`). The canonical target identity is
-/// `request.target_agent_id` (stamped by the Dispatch Target Adapter and new
+/// already runner-app scoped). The canonical target identity is
+/// `request.target_agent_id` (stamped by the Dispatch Runner Adapter and new
 /// internal producers); `progress.execution.runner` remains accepted for
 /// tasks created by older internal paths / schedule templates. A task with
 /// neither belongs to no executor.
@@ -868,16 +940,6 @@ fn direct_task_workspace_id(data: &AgentDelegateTaskData) -> Option<String> {
         })
 }
 
-fn task_control_already_reflected(data: &AgentDelegateTaskData, status: &str) -> bool {
-    data.progress
-        .as_ref()
-        .and_then(|progress| progress.execution.as_ref())
-        .and_then(|execution| execution.get("status"))
-        .and_then(Value::as_str)
-        .map(|value| value == status)
-        .unwrap_or(false)
-}
-
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -907,17 +969,16 @@ fn human_input_response_text(data: &HumanInputTaskData) -> Option<String> {
 
 fn task_route_input_text(task: &Task) -> String {
     serde_json::to_string_pretty(&json!({
-        "task_id": task.id,
-        "root_task_id": task.root_id.parse::<i64>().unwrap_or(task.id),
+        "task_id": task.task_id,
         "root_id": task.root_id.as_str(),
-        "task_type": task.task_type.as_str(),
+        "schema_id": task.schema_id.as_str(),
         "task_name": task.name.as_str(),
-        "user_id": task.user_id.as_str(),
-        "app_id": task.app_id.as_str(),
+        "user_id": task.creator.user_id.as_str(),
+        "app_id": task.creator.app_id.as_str(),
         "parent_id": task.parent_id,
-        "data": &task.data,
+        "data": task_payload(task),
     }))
-    .unwrap_or_else(|_| format!(r#"{{"task_id":{}}}"#, task.id))
+    .unwrap_or_else(|_| format!(r#"{{"task_id":"{}"}}"#, task.task_id))
 }
 
 fn load_session_meta(session_dir: &std::path::Path) -> Option<SessionMeta> {
@@ -935,7 +996,7 @@ struct BoundWorkSession {
 
 fn find_bound_worksession(
     sessions_dir: &std::path::Path,
-    task_id: i64,
+    task_id: &str,
 ) -> Option<BoundWorkSession> {
     let entries = std::fs::read_dir(sessions_dir).ok()?;
     for entry in entries.flatten() {
@@ -972,28 +1033,49 @@ fn find_bound_worksession(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{TaskPermissions, TaskScope};
+    use buckyos_api::{ActorRef, TaskControlProfile};
 
     fn task(data: Value) -> Task {
         Task {
-            id: 7,
-            user_id: "user".to_string(),
-            app_id: "opendan".to_string(),
-            session_id: String::new(),
-            parent_id: None,
-            root_id: "7".to_string(),
+            task_id: "t-7".to_string(),
             name: "delegate".to_string(),
-            task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
-            status: TaskStatus::Pending,
-            progress: 0.0,
-            message: None,
-            data,
-            permissions: TaskPermissions {
-                read: TaskScope::User,
-                write: TaskScope::Private,
+            parent_id: None,
+            root_id: "t-7".to_string(),
+            child_control_policy: Default::default(),
+            schema_id: AGENT_DELEGATE_SCHEMA_ID.to_string(),
+            schema_version: 1,
+            input: data,
+            input_digest: String::new(),
+            creator: ActorRef::new("user", "opendan"),
+            idempotency_key: "k".to_string(),
+            origin_ref: None,
+            retry_of: None,
+            supersedes: None,
+            executor: TaskExecutor::App {
+                target_id: None,
+                app_id: "opendan".to_string(),
+                app_instance_id: None,
             },
+            runner_epoch: 1,
+            assignees: None,
+            phase: TaskPhase::Accepted,
+            wait_reason: None,
+            pending_control: None,
+            control_profile: TaskControlProfile::baseline(1),
+            progress: None,
+            message: None,
+            outcome: None,
+            result: None,
+            error: None,
+            completed_by: None,
+            policy_preset: "collaborative-tree/v1".to_string(),
+            permission_boundary: false,
+            revision: 1,
+            data_scope: None,
             created_at: 1,
             updated_at: 1,
+            completed_at: None,
+            archived_at: None,
         }
     }
 
@@ -1028,6 +1110,27 @@ mod tests {
             "input": "free-form task"
         }));
         assert!(agent_delegate_task_data(&task).is_err());
+    }
+
+    #[test]
+    fn delegate_payload_prefers_progress_over_input() {
+        let mut delegated = task(json!({
+            "request": {
+                "version": 1,
+                "purpose": "Do the task"
+            }
+        }));
+        delegated.progress = Some(json!({
+            "request": {
+                "version": 1,
+                "purpose": "Do the task"
+            },
+            "progress": {
+                "execution": {"session_id": "ws-1"}
+            }
+        }));
+        let data = agent_delegate_task_data(&delegated).expect("agent.delegate task data");
+        assert_eq!(execution_session_id(&data).as_deref(), Some("ws-1"));
     }
 
     #[test]
@@ -1070,6 +1173,10 @@ mod tests {
             "agent",
             "did:agent:jarvis"
         ));
+
+        // Runner-app scoping.
+        assert!(task_runs_on_app(&dispatched, "opendan"));
+        assert!(!task_runs_on_app(&dispatched, "other-app"));
     }
 
     #[test]
@@ -1085,9 +1192,8 @@ mod tests {
         );
         meta.workspace_id = Some("workspace-1".to_string());
         meta.task_binding = Some(crate::session_model::AgentTaskBinding {
-            task_id: 7,
-            root_task_id: 7,
-            root_id: "7".to_string(),
+            task_id: "t-7".to_string(),
+            root_id: "t-7".to_string(),
             task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
             runner: "agent".to_string(),
             task_name: "delegate".to_string(),
@@ -1102,7 +1208,7 @@ mod tests {
         .expect("write meta");
 
         assert_eq!(
-            find_bound_worksession(dir.path(), 7),
+            find_bound_worksession(dir.path(), "t-7"),
             Some(BoundWorkSession {
                 session_id: "ws-bound".to_string(),
                 workspace_id: Some("workspace-1".to_string()),

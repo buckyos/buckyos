@@ -956,7 +956,7 @@ fn build_install_record(
             .and_then(|candidate| candidate.pikg_digest.clone()),
         target: plan.target.clone(),
         state,
-        task_id: view.id,
+        task_id: view.id.clone(),
         proof_id: None,
         plan_fingerprint: plan.plan_fingerprint.clone(),
         created_at: now,

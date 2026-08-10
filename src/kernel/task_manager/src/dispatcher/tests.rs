@@ -1,1945 +1,804 @@
-//! Task Dispatch Center unit tests.
-//!
-//! Coverage per `doc/task_mgr/task_dispatch_center.md` §10 M1.4 / §11:
-//! explicit-target & default-route resolution, route switching vs target
-//! stickiness, dispatch/claim/accept/reject/cancel/renew, offer-lease expiry
-//! & redelivery, delivery exhaustion, request expiry, idempotency keys,
-//! stale-epoch fencing, Uncertain gating, restart recovery, and the
-//! authorization matrix (normal vs zone-trusted callers, target owners).
-//!
-//! Time-dependent paths are driven by passing a future `now` into
-//! `run_maintenance_once` / `evaluate_target` — no sleeps.
+//! Dispatcher 2.0 protocol tests: saga recovery, deterministic delivery,
+//! offer/bind/activate fencing, approval gate and cancel convergence.
 
 use super::dispatch_db::DispatchDb;
-use super::service::{TaskDispatcherService, INSTANCE_LEASE_TTL_MS};
-use crate::server::SessionTokenVerifier;
-use ::kRPC::*;
+use super::service::{RunnerCaller, TaskDispatcherService};
+use crate::server::tests::setup_service;
+use crate::server::{TaskManagerService, RAW_TASK_SCHEMA_ID};
 use async_trait::async_trait;
 use buckyos_api::*;
-use jsonwebtoken::{DecodingKey, EncodingKey};
+use kRPC::{RPCContext, RPCErrors, Result};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-use tempfile::tempdir;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
-// Fixed ed25519 test keypair (same material as the task server tests).
-const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
------END PRIVATE KEY-----"#;
-const TEST_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
+/// Scripted runner transport: pops one response per call and journals every
+/// request so tests can assert idempotent replays.
+#[derive(Default)]
+struct MockRunnerCaller {
+    responses: Mutex<VecDeque<Result<Value>>>,
+    calls: Mutex<Vec<(String, String, Value)>>,
+}
 
-const OPENDAN_USER: &str = "ood1";
-const OPENDAN_APP: &str = "opendan";
-const TARGET_JARVIS: &str = "did:agent:jarvis";
-const TARGET_EBOOK_OCR: &str = "did:service:ebook-ocr";
-const TARGET_CAD_OCR: &str = "did:service:cad-ocr";
-const OP_DELEGATE: &str = "agent.delegate/v1";
-const OP_OCR: &str = "document.ocr/v1";
+impl MockRunnerCaller {
+    fn push_offer_accepted(&self, instance: &str, token: &str) {
+        self.responses.lock().unwrap().push_back(Ok(json!({
+            "kind": "OfferAccepted",
+            "app_instance_id": instance,
+            "reservation_token": token,
+        })));
+    }
 
-struct StaticKeyVerifier {
-    key: DecodingKey,
+    fn push_busy(&self, retry_after_ms: Option<u64>) {
+        self.responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(json!({"kind": "Busy", "retry_after_ms": retry_after_ms})));
+    }
+
+    fn push_rejected(&self, reason: &str) {
+        self.responses.lock().unwrap().push_back(Ok(json!({
+            "kind": "Rejected",
+            "stable_reason": reason,
+        })));
+    }
+
+    fn push_activated(&self) {
+        self.responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(json!({"activated": true})));
+    }
+
+    fn push_transport_error(&self) {
+        self.responses
+            .lock()
+            .unwrap()
+            .push_back(Err(RPCErrors::ReasonError("connect refused".into())));
+    }
+
+    fn calls(&self) -> Vec<(String, String, Value)> {
+        self.calls.lock().unwrap().clone()
+    }
 }
 
 #[async_trait]
-impl SessionTokenVerifier for StaticKeyVerifier {
-    async fn verify(&self, token: &str) -> Result<RPCSessionToken> {
-        let mut parsed = RPCSessionToken::from_string(token)?;
-        parsed.verify_by_key(&self.key)?;
-        Ok(parsed)
-    }
-}
-
-fn test_encoding_key() -> EncodingKey {
-    EncodingKey::from_ed_pem(TEST_PRIVATE_KEY.as_bytes()).unwrap()
-}
-
-/// Self-signed (iss == sub): zone-trusted kernel/frame service identity.
-fn zone_token(user_id: &str, app_id: &str) -> String {
-    let (jwt, _) =
-        RPCSessionToken::generate_jwt_token(user_id, app_id, None, &test_encoding_key()).unwrap();
-    jwt
-}
-
-/// verify-hub style token: interactive user/app session, never zone-trusted.
-fn user_token(user_id: &str, app_id: &str) -> String {
-    interactive_token(user_id, app_id, false)
-}
-
-/// verify-hub token with the sudo claim: an elevated interactive session.
-/// Exempt from `InteractiveCallers` holds and allowed to approve/deny.
-fn sudo_token(user_id: &str, app_id: &str) -> String {
-    interactive_token(user_id, app_id, true)
-}
-
-fn interactive_token(user_id: &str, app_id: &str, sudo: bool) -> String {
-    let now = buckyos_kit::buckyos_get_unix_timestamp();
-    let session_token = RPCSessionToken {
-        token_type: RPCSessionTokenType::JWT,
-        token: None,
-        aud: None,
-        exp: Some(now + 3600),
-        iss: Some(VERIFY_HUB_UNIQUE_ID.to_string()),
-        jti: None,
-        sub: Some(user_id.to_string()),
-        appid: Some(app_id.to_string()),
-        sudo,
-        extra: HashMap::new(),
-    };
-    session_token.generate_jwt(None, &test_encoding_key()).unwrap()
-}
-
-struct Harness {
-    service: TaskDispatcherService,
-    server: TaskDispatcherServerHandler<TaskDispatcherService>,
-    _temp_dir: tempfile::TempDir,
-    db_conn: String,
-}
-
-async fn open_service(conn: &str) -> TaskDispatcherService {
-    let db = DispatchDb::open(conn, RdbBackend::Sqlite, None).await.unwrap();
-    let verifier = StaticKeyVerifier {
-        key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
-    };
-    TaskDispatcherService::new(
-        db,
-        KEventClient::new_local("task-dispatcher-test"),
-        Arc::new(verifier),
-    )
-}
-
-async fn setup() -> Harness {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().join("dispatch.db");
-    let db_conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    let service = open_service(&db_conn).await;
-    let server = TaskDispatcherServerHandler::new(service.clone());
-    Harness {
-        service,
-        server,
-        _temp_dir: temp_dir,
-        db_conn,
-    }
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
-impl Harness {
-    async fn rpc(&self, method: &str, params: Value, token: Option<String>) -> Result<RPCResponse> {
-        let req = RPCRequest {
-            method: method.to_string(),
-            params,
-            seq: 1,
-            token,
-            trace_id: Some("".to_string()),
-        };
-        self.server
-            .handle_rpc_call(req, IpAddr::from_str("127.0.0.1").unwrap())
-            .await
-    }
-
-    async fn call_ok(&self, method: &str, params: Value, token: &str) -> Value {
-        let resp = self
-            .rpc(method, params, Some(token.to_string()))
-            .await
-            .unwrap_or_else(|err| panic!("{} failed: {}", method, err));
-        match resp.result {
-            RPCResult::Success(value) => value,
-            RPCResult::Failed(err) => panic!("{} failed: {}", method, err),
-        }
-    }
-
-    async fn call_err(&self, method: &str, params: Value, token: &str) -> String {
-        match self.rpc(method, params, Some(token.to_string())).await {
-            Err(err) => err.to_string(),
-            Ok(resp) => match resp.result {
-                RPCResult::Failed(err) => err,
-                RPCResult::Success(value) => {
-                    panic!("{} unexpectedly succeeded: {}", method, value)
-                }
-            },
-        }
-    }
-
-    async fn register_default_target(&self) {
-        self.register_target_with(TARGET_JARVIS, OP_DELEGATE, "IdempotentAccept", 4)
-            .await;
-    }
-
-    async fn register_target_with(
+impl RunnerCaller for MockRunnerCaller {
+    async fn call(
         &self,
-        target_id: &str,
-        operation: &str,
-        contract: &str,
-        max_concurrency: u32,
-    ) {
-        self.call_ok(
-            "register_target",
-            json!({
-                "registration": {
-                    "target_id": target_id,
-                    "operations": [{"operation": operation}],
-                    "auth_policy": "ZoneUsers",
-                    "idempotency_contract": contract,
-                    "delivery_policy": {
-                        "offer_lease_ms": 30000,
-                        "max_offer_deliveries": 10,
-                        "instance_selection": "RoundRobin"
-                    },
-                    "max_concurrency": max_concurrency,
-                    "enabled": true
-                }
-            }),
-            &zone_token(OPENDAN_USER, OPENDAN_APP),
-        )
-        .await;
+        endpoint: &str,
+        method: &str,
+        params: Value,
+        _timeout_ms: u64,
+    ) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((endpoint.to_string(), method.to_string(), params));
+        self.responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(RPCErrors::ReasonError("no scripted response".into())))
     }
+}
 
-    async fn register_jarvis_with_approval(&self, approval_policy: &str) {
-        self.call_ok(
-            "register_target",
-            json!({
-                "registration": {
-                    "target_id": TARGET_JARVIS,
-                    "operations": [{"operation": OP_DELEGATE}],
-                    "auth_policy": "ZoneUsers",
-                    "approval_policy": approval_policy,
-                    "idempotency_contract": "IdempotentAccept",
-                    "max_concurrency": 4,
-                    "enabled": true
-                }
-            }),
-            &zone_token(OPENDAN_USER, OPENDAN_APP),
-        )
-        .await;
+struct TestEnv {
+    task_core: TaskManagerService,
+    dispatcher: TaskDispatcherService,
+    caller: Arc<MockRunnerCaller>,
+    _tmp: tempfile::TempDir,
+    _tmp2: tempfile::TempDir,
+}
+
+async fn setup_env() -> TestEnv {
+    let (task_core, tmp) = setup_service().await;
+    let tmp2 = tempfile::tempdir().unwrap();
+    let db_path = tmp2.path().join("dispatch.db");
+    let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+    let db = DispatchDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
+    let caller = Arc::new(MockRunnerCaller::default());
+    let dispatcher = TaskDispatcherService::new(
+        Arc::new(db),
+        task_core.clone(),
+        crate::server::tests::static_verifier(),
+        caller.clone(),
+        None,
+    );
+    TestEnv {
+        task_core,
+        dispatcher,
+        caller,
+        _tmp: tmp,
+        _tmp2: tmp2,
     }
+}
 
-    async fn attach(&self) -> (String, u64) {
-        let result = self
-            .call_ok(
-                "attach_instance",
-                json!({"target_id": TARGET_JARVIS, "capacity": 4}),
-                &zone_token(OPENDAN_USER, OPENDAN_APP),
-            )
-            .await;
-        (
-            result["instance_id"].as_str().unwrap().to_string(),
-            result["lease_epoch"].as_u64().unwrap(),
-        )
+fn service_ctx(user: &str, app: &str) -> RPCContext {
+    crate::server::tests::service_ctx_pub(user, app)
+}
+
+fn user_ctx(user: &str, app: &str) -> RPCContext {
+    crate::server::tests::user_ctx_pub(user, app)
+}
+
+fn test_registration(target_id: &str, approval: DispatchApprovalPolicy) -> TargetRegistration {
+    TargetRegistration {
+        target_id: target_id.to_string(),
+        owner_user_id: String::new(),
+        owner_app_id: String::new(),
+        functions: vec![RunnerFunctionDescriptor::new(RAW_TASK_SCHEMA_ID)],
+        auth_policy: DispatchAuthPolicy::ZoneUsers,
+        approval_policy: approval,
+        delivery_policy: DeliveryPolicy {
+            max_attempts: 3,
+            ..Default::default()
+        },
+        max_concurrency: 4,
+        enabled: true,
+        registration_revision: 0,
     }
+}
 
-    async fn dispatch_to_jarvis(&self, idempotency_key: &str, token: &str) -> Value {
-        self.call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": idempotency_key,
-                "input": {"title": "Review changes", "purpose": "check the diff"}
-            }),
-            token,
+async fn register_and_attach(env: &TestEnv, target_id: &str) {
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration(target_id, DispatchApprovalPolicy::Never),
+            },
+            service_ctx("svc", "runner-app"),
         )
         .await
+        .unwrap();
+    env.dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: target_id.to_string(),
+                instance_id: "inst-1".into(),
+                endpoint: "http://runner-1/kapi/runner".into(),
+                capacity: 4,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+}
+
+fn dispatch_req(key: &str) -> DispatchTaskReq {
+    DispatchTaskReq {
+        target_id: Some("target-1".into()),
+        schema_id: RAW_TASK_SCHEMA_ID.into(),
+        schema_version: None,
+        name: Some("dispatched job".into()),
+        input: json!({"work": key}),
+        idempotency_key: key.to_string(),
+        priority: None,
+        expires_at: None,
+        on_behalf_of: None,
+        workflow_ref: None,
+        parent_task_id: None,
     }
-
-    async fn record(&self, dispatch_id: &str) -> DispatchRecord {
-        let value = self
-            .call_ok(
-                "get_dispatch",
-                json!({"dispatch_id": dispatch_id}),
-                &zone_token(OPENDAN_USER, "observer"),
-            )
-            .await;
-        serde_json::from_value(value["record"].clone()).unwrap()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// resolution: explicit target / default route / stickiness
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_requires_registered_enabled_supporting_target() {
-    let h = setup().await;
-    let caller = user_token("alice", "some-app");
-
-    // Unregistered explicit target fails immediately — no orphan record.
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": "did:agent:ghost",
-                "operation": OP_DELEGATE,
-                "idempotency_key": "k1",
-                "input": {}
-            }),
-            &caller,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_TARGET_NOT_REGISTERED), "{}", err);
-
-    h.register_default_target().await;
-
-    // Unsupported operation fails.
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": "agent.delegate/v2",
-                "idempotency_key": "k2",
-                "input": {}
-            }),
-            &caller,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_UNSUPPORTED_OPERATION), "{}", err);
-
-    // Disabled target fails; waiting records are unaffected but new ones
-    // are refused.
-    h.call_ok(
-        "disable_target",
-        json!({"target_id": TARGET_JARVIS}),
-        &zone_token(OPENDAN_USER, OPENDAN_APP),
-    )
-    .await;
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "k3",
-                "input": {}
-            }),
-            &caller,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_TARGET_DISABLED), "{}", err);
-
-    // No default route configured for the operation.
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "operation": OP_OCR,
-                "idempotency_key": "k4",
-                "input": {}
-            }),
-            &caller,
-        )
-        .await;
-    assert!(
-        err.contains(DISPATCH_ERR_DEFAULT_TARGET_NOT_CONFIGURED),
-        "{}",
-        err
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn default_route_resolves_and_freezes_target() {
-    let h = setup().await;
-    let admin = zone_token(OPENDAN_USER, "control-panel");
-    h.register_target_with(TARGET_EBOOK_OCR, OP_OCR, "IdempotentAccept", 4)
-        .await;
-    h.register_target_with(TARGET_CAD_OCR, OP_OCR, "IdempotentAccept", 4)
-        .await;
+async fn dispatch_happy_path_offer_bind_activate() {
+    let env = setup_env().await;
+    register_and_attach(&env, "target-1").await;
 
-    // Route must point at a registered, enabled, supporting target.
-    let err = h
-        .call_err(
-            "set_operation_route",
-            json!({"operation": OP_OCR, "default_target_id": "did:service:nope"}),
-            &admin,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_TARGET_NOT_REGISTERED), "{}", err);
-
-    let route = h
-        .call_ok(
-            "set_operation_route",
-            json!({"operation": OP_OCR, "default_target_id": TARGET_EBOOK_OCR}),
-            &admin,
-        )
-        .await;
-    assert_eq!(route["revision"], 1);
-
-    // Omitted target resolves via the route and records the revision.
-    let submit = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "operation": OP_OCR,
-                "idempotency_key": "ocr-1",
-                "input": {"content_ref": "obj://sha256/8af3"}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(submit["target_id"], TARGET_EBOOK_OCR);
-    assert_eq!(submit["target_selection"]["DefaultRoute"]["route_revision"], 1);
-    let first_dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-
-    // Admin switches the default backend: only NEW dispatches see it.
-    let route = h
-        .call_ok(
-            "set_operation_route",
-            json!({"operation": OP_OCR, "default_target_id": TARGET_CAD_OCR}),
-            &admin,
-        )
-        .await;
-    assert_eq!(route["revision"], 2);
-
-    let submit2 = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "operation": OP_OCR,
-                "idempotency_key": "ocr-2",
-                "input": {"content_ref": "obj://sha256/8af3"}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(submit2["target_id"], TARGET_CAD_OCR);
-
-    // Target stickiness: the old record stays on ebook-ocr across
-    // maintenance rounds, and the idempotent replay still answers ebook-ocr.
-    h.service.run_maintenance_once(now_ms()).await;
-    let old = h.record(&first_dispatch_id).await;
-    assert_eq!(old.target_id, TARGET_EBOOK_OCR);
-
-    let replay = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "operation": OP_OCR,
-                "idempotency_key": "ocr-1",
-                "input": {"content_ref": "obj://sha256/8af3"}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(replay["dispatch_id"].as_str().unwrap(), first_dispatch_id);
-    assert_eq!(replay["target_id"], TARGET_EBOOK_OCR);
-
-    // Disabled route refuses new default-route dispatches.
-    h.call_ok(
-        "disable_operation_route",
-        json!({"operation": OP_OCR}),
-        &admin,
-    )
-    .await;
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({"operation": OP_OCR, "idempotency_key": "ocr-3", "input": {}}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert!(
-        err.contains(DISPATCH_ERR_DEFAULT_TARGET_NOT_CONFIGURED),
-        "{}",
-        err
-    );
-}
-
-// ---------------------------------------------------------------------------
-// happy path: offer -> claim -> accept, and the idempotent replays around it
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_claim_accept_round_trip() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    // Offline target: record waits durably.
-    let submit = h
-        .dispatch_to_jarvis("wf-run-9f3a/step-review/attempt-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "Offered"); // instance online + capacity
-
-    // claim is idempotent transport: same batch until accepted.
-    let claim_params = json!({
-        "target_id": TARGET_JARVIS,
-        "instance_id": instance_id,
-        "lease_epoch": epoch,
-        "max": 16
-    });
-    let claimed = h.call_ok("claim_next", claim_params.clone(), &owner).await;
-    assert_eq!(claimed["records"].as_array().unwrap().len(), 1);
-    let claimed_again = h.call_ok("claim_next", claim_params.clone(), &owner).await;
-    assert_eq!(claimed_again["records"].as_array().unwrap().len(), 1);
-    let record_value = &claimed_again["records"][0];
-    assert_eq!(record_value["dispatch_id"], dispatch_id.as_str());
-    // The envelope rides with the offer; identity came from the token.
-    assert_eq!(record_value["auth"]["requested_by_user"], "alice");
-    assert_eq!(record_value["auth"]["on_behalf_of"], "alice");
-
-    let accept_params = json!({
-        "dispatch_id": dispatch_id,
-        "instance_id": instance_id,
-        "lease_epoch": epoch,
-        "target_task_id": 42
-    });
-    let accepted = h.call_ok("accept_dispatch", accept_params.clone(), &owner).await;
-    assert_eq!(accepted["accepted"], true);
-    assert_eq!(accepted["status"], "Accepted");
-
-    // ACK-loss replay: same dispatch_id + same task id succeeds; a
-    // different task id is a contract violation.
-    let replay = h.call_ok("accept_dispatch", accept_params, &owner).await;
-    assert_eq!(replay["accepted"], true);
-    let err = h
-        .call_err(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 43
-            }),
-            &owner,
-        )
-        .await;
-    assert!(err.contains("already accepted"), "{}", err);
-
-    // Accepted is terminal: the caller observes the link, cancel is
-    // refused, nothing re-offers.
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Accepted);
-    assert_eq!(record.target_task_id, Some(42));
-    let err = h
-        .call_err(
-            "cancel_dispatch",
-            json!({"dispatch_id": dispatch_id}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_ALREADY_ACCEPTED), "{}", err);
-
-    let claimed = h.call_ok("claim_next", claim_params.clone(), &owner).await;
-    assert_eq!(claimed["records"].as_array().unwrap().len(), 0);
-
-    // Business failure of task 42 never reaches the dispatcher: there is no
-    // API to re-open an accepted record, and maintenance leaves it alone.
-    h.service.run_maintenance_once(now_ms() + 3_600_000).await;
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Accepted);
-    assert_eq!(record.offer_delivery_count, 1);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn idempotency_key_replay_and_conflict() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let caller = user_token("alice", "some-app");
-
-    let first = h.dispatch_to_jarvis("key-1", &caller).await;
-    let replay = h.dispatch_to_jarvis("key-1", &caller).await;
-    assert_eq!(first["dispatch_id"], replay["dispatch_id"]);
-
-    // Same key, different input -> conflict, no second record.
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "key-1",
-                "input": {"different": true}
-            }),
-            &caller,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_IDEMPOTENCY_CONFLICT), "{}", err);
-
-    // Same key from a different caller identity is a different scope.
-    let other = h.dispatch_to_jarvis("key-1", &user_token("bob", "some-app")).await;
-    assert_ne!(other["dispatch_id"], first["dispatch_id"]);
-}
-
-// ---------------------------------------------------------------------------
-// offer lease expiry: redelivery under IdempotentAccept, Uncertain without
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn expired_offer_requeues_and_redelivers_same_dispatch_id() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let (instance_id, _epoch) = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("redeliver-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "Offered");
-    let offered = h.record(&dispatch_id).await;
-    assert_eq!(offered.offer_instance_id.as_deref(), Some(instance_id.as_str()));
-    assert_eq!(offered.offer_delivery_count, 1);
-
-    // Offer lease (30s) runs out; instance lease (60s) is still alive:
-    // redelivery reuses the SAME dispatch_id — handoff recovery, not retry.
-    let later = now_ms() + 31_000;
-    h.service.run_maintenance_once(later).await;
-
-    let redelivered = h.record(&dispatch_id).await;
-    assert_eq!(redelivered.status, DispatchStatus::Offered);
-    assert_eq!(redelivered.offer_delivery_count, 2);
+    let result = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("job-1"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    // The public task exists immediately with a stable id.
+    assert!(result.task_id.starts_with("t-"));
+    assert_eq!(result.status, DispatchStatus::Queued);
+    assert_eq!(result.task.phase, TaskPhase::Promised);
+    assert_eq!(result.task.creator.user_id, "alice");
     assert_eq!(
-        redelivered.offer_instance_id.as_deref(),
-        Some(instance_id.as_str())
+        result.task.origin_ref.as_ref().unwrap().kind,
+        TASK_DISPATCHER_SERVICE_NAME
     );
-}
 
-#[tokio::test(flavor = "current_thread")]
-async fn none_contract_goes_uncertain_and_needs_resolve() {
-    let h = setup().await;
-    h.register_target_with(TARGET_JARVIS, OP_DELEGATE, "None", 4).await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let _ = h.attach().await;
+    env.caller.push_offer_accepted("inst-1", "res-1");
+    env.caller.push_activated();
+    env.dispatcher.evaluate_once(false).await;
 
-    let submit = h
-        .dispatch_to_jarvis("uncertain-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "Offered");
-
-    let later = now_ms() + 31_000;
-    h.service.run_maintenance_once(later).await;
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Uncertain);
-
-    // No automatic redelivery, ever — even long after all leases are gone.
-    h.service.run_maintenance_once(later + 120_000).await;
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Uncertain);
-
-    // The runtime restarts and re-attaches (fresh instance + epoch) — the
-    // realistic path for a late business-side accept.
-    let (instance_id, epoch) = h.attach().await;
-
-    // Caller cancel is gated: Uncertain requires resolve_uncertain.
-    let err = h
-        .call_err(
-            "cancel_dispatch",
-            json!({"dispatch_id": dispatch_id}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_UNCERTAIN_REQUIRES_RESOLVE), "{}", err);
-
-    // Normal callers cannot resolve.
-    let err = h
-        .call_err(
-            "resolve_uncertain",
-            json!({"dispatch_id": dispatch_id, "resolution": "Canceled"}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert!(err.contains("zone-trusted"), "{}", err);
-
-    // A late accept from the target itself is authoritative business
-    // recovery and resolves Uncertain -> Accepted.
-    let accepted = h
-        .call_ok(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 77
-            }),
-            &owner,
-        )
-        .await;
-    assert_eq!(accepted["accepted"], true);
-    let record = h.record(&dispatch_id).await;
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&result.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.status, DispatchStatus::Accepted);
-    assert_eq!(record.target_task_id, Some(77));
-}
+    assert_eq!(record.attempt_count, 1);
 
-#[tokio::test(flavor = "current_thread")]
-async fn resolve_uncertain_as_canceled() {
-    let h = setup().await;
-    h.register_target_with(TARGET_JARVIS, OP_DELEGATE, "None", 4).await;
-    let _ = h.attach().await;
-    let submit = h
-        .dispatch_to_jarvis("uncertain-2", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    h.service.run_maintenance_once(now_ms() + 31_000).await;
-    assert_eq!(h.record(&dispatch_id).await.status, DispatchStatus::Uncertain);
-
-    let resolved = h
-        .call_ok(
-            "resolve_uncertain",
-            json!({"dispatch_id": dispatch_id, "resolution": "Canceled"}),
-            &zone_token(OPENDAN_USER, "admin-svc"),
-        )
-        .await;
-    assert_eq!(resolved["record"]["status"], "Canceled");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn delivery_exhaustion_expires_record() {
-    let h = setup().await;
-    // max_offer_deliveries = 2
-    h.call_ok(
-        "register_target",
-        json!({
-            "registration": {
-                "target_id": TARGET_JARVIS,
-                "operations": [{"operation": OP_DELEGATE}],
-                "idempotency_contract": "IdempotentAccept",
-                "delivery_policy": {
-                    "offer_lease_ms": 30000,
-                    "max_offer_deliveries": 2,
-                    "instance_selection": "RoundRobin"
-                },
-                "max_concurrency": 4,
-                "enabled": true
-            }
-        }),
-        &zone_token(OPENDAN_USER, OPENDAN_APP),
-    )
-    .await;
-    let _ = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("exhaust-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "Offered"); // delivery 1
-
-    let base = now_ms();
-    h.service.run_maintenance_once(base + 31_000).await; // requeue + delivery 2
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.offer_delivery_count, 2);
-
-    h.service.run_maintenance_once(base + 62_000).await; // budget exhausted
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Expired);
-    assert_eq!(record.message.as_deref(), Some("delivery_exhausted"));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn request_expiry_wins_over_waiting() {
-    let h = setup().await;
-    h.register_default_target().await;
-    // No instance attached: the record waits durably.
-    let expires_at = (now_ms() + 5_000) as u64;
-    let submit = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "expire-1",
-                "expires_at": expires_at,
-                "input": {}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "WaitingForTarget");
-
-    h.service.run_maintenance_once(now_ms() + 6_000).await;
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Expired);
-    assert_eq!(record.message.as_deref(), Some("request_expired"));
-
-    // Re-submitting after a terminal state needs a NEW idempotency key —
-    // the old key (same immutable request) still answers with the old
-    // (expired) record instead of restarting anything.
-    let replay = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "expire-1",
-                "expires_at": expires_at,
-                "input": {}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(replay["dispatch_id"].as_str().unwrap(), dispatch_id);
-    assert_eq!(replay["status"], "Expired");
-    let fresh = h.dispatch_to_jarvis("expire-2", &user_token("alice", "some-app")).await;
-    assert_ne!(fresh["dispatch_id"].as_str().unwrap(), dispatch_id);
-
-    // Past deadlines are refused outright.
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "expire-3",
-                "expires_at": 1000,
-                "input": {}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert!(err.contains("expires_at"), "{}", err);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn replay_after_real_deadline_returns_existing_record() {
-    let h = setup().await;
-    h.register_default_target().await;
-
-    // Deadline 1s out; the record expires (maintenance) and REAL time also
-    // passes the deadline before the caller retries after a network error.
-    let expires_at = (now_ms() + 1_000) as u64;
-    let params = json!({
-        "target_id": TARGET_JARVIS,
-        "operation": OP_DELEGATE,
-        "idempotency_key": "late-replay-1",
-        "expires_at": expires_at,
-        "input": {}
-    });
-    let submit = h
-        .call_ok("dispatch", params.clone(), &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-
-    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-    h.service.run_maintenance_once(now_ms()).await;
-
-    // The replay must answer with the existing (Expired) record — the
-    // past-deadline check only applies to NEW records.
-    let replay = h
-        .call_ok("dispatch", params, &user_token("alice", "some-app"))
-        .await;
-    assert_eq!(replay["dispatch_id"].as_str().unwrap(), dispatch_id);
-    assert_eq!(replay["status"], "Expired");
-}
-
-// ---------------------------------------------------------------------------
-// instance lifecycle: epoch fencing, renew, detach recycling
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn stale_epoch_is_fenced_everywhere() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("fence-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-
-    for (method, params) in [
-        (
-            "claim_next",
-            json!({"target_id": TARGET_JARVIS, "instance_id": instance_id, "lease_epoch": epoch + 1, "max": 4}),
-        ),
-        (
-            "renew_instance",
-            json!({"target_id": TARGET_JARVIS, "instance_id": instance_id, "lease_epoch": epoch + 1, "available_capacity": 4}),
-        ),
-        (
-            "accept_dispatch",
-            json!({"dispatch_id": dispatch_id, "instance_id": instance_id, "lease_epoch": epoch + 1, "target_task_id": 42}),
-        ),
-        (
-            "reject_dispatch",
-            json!({"dispatch_id": dispatch_id, "instance_id": instance_id, "lease_epoch": epoch + 1, "reason": "schema_mismatch"}),
-        ),
-    ] {
-        let err = h.call_err(method, params, &owner).await;
-        assert!(
-            err.contains(DISPATCH_ERR_STALE_INSTANCE),
-            "{}: {}",
-            method,
-            err
-        );
-    }
-
-    // Current epoch still works.
-    let renewed = h
-        .call_ok(
-            "renew_instance",
-            json!({"target_id": TARGET_JARVIS, "instance_id": instance_id, "lease_epoch": epoch, "available_capacity": 4}),
-            &owner,
-        )
-        .await;
-    assert_eq!(renewed["has_due"], true);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn detach_recycles_offers_to_next_instance() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (first_instance, first_epoch) = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("detach-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "Offered");
-
-    // Clean detach recycles the in-flight offer immediately; with no other
-    // instance the record waits.
-    h.call_ok(
-        "detach_instance",
-        json!({"target_id": TARGET_JARVIS, "instance_id": first_instance, "lease_epoch": first_epoch}),
-        &owner,
-    )
-    .await;
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::WaitingForTarget);
-
-    // The next attach gets a higher epoch and receives the redelivery.
-    let (second_instance, second_epoch) = h.attach().await;
-    assert!(second_epoch > first_epoch);
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Offered);
-    assert_eq!(
-        record.offer_instance_id.as_deref(),
-        Some(second_instance.as_str())
-    );
-    assert_eq!(record.offer_delivery_count, 2);
-
-    // The detached instance can no longer act on the record.
-    let err = h
-        .call_err(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": first_instance,
-                "lease_epoch": first_epoch,
-                "target_task_id": 42
-            }),
-            &owner,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_STALE_INSTANCE), "{}", err);
-
-    // The new instance accepts normally.
-    let accepted = h
-        .call_ok(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": second_instance,
-                "lease_epoch": second_epoch,
-                "target_task_id": 4242
-            }),
-            &owner,
-        )
-        .await;
-    assert_eq!(accepted["accepted"], true);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn reject_is_terminal_and_stable() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("reject-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-
-    h.call_ok(
-        "reject_dispatch",
-        json!({
-            "dispatch_id": dispatch_id,
-            "instance_id": instance_id,
-            "lease_epoch": epoch,
-            "reason": "schema_mismatch",
-            "detail": "unknown field"
-        }),
-        &owner,
-    )
-    .await;
-    let record = h.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Rejected);
-    assert_eq!(record.reject_reason, Some(DispatchRejectReason::SchemaMismatch));
-
-    // Accepting a rejected record reports the terminal state instead: the
-    // target must cancel any local task.
-    let result = h
-        .call_ok(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 9
-            }),
-            &owner,
-        )
-        .await;
-    assert_eq!(result["accepted"], false);
-    assert_eq!(result["status"], "Rejected");
-
-    // No redelivery of rejected records, no matter how much time passes.
-    h.service.run_maintenance_once(now_ms() + 120_000).await;
-    assert_eq!(h.record(&dispatch_id).await.status, DispatchStatus::Rejected);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn cancel_before_accept_wins_race() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("race-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-
-    // Caller cancels while the offer is out.
-    let canceled = h
-        .call_ok(
-            "cancel_dispatch",
-            json!({"dispatch_id": dispatch_id}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(canceled["status"], "Canceled");
-
-    // The instance's accept is atomically refused; it must cancel the task
-    // it just created locally.
-    let result = h
-        .call_ok(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 55
-            }),
-            &owner,
-        )
-        .await;
-    assert_eq!(result["accepted"], false);
-    assert_eq!(result["status"], "Canceled");
-
-    // Cancel replay is a no-op success.
-    let canceled = h
-        .call_ok(
-            "cancel_dispatch",
-            json!({"dispatch_id": dispatch_id}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(canceled["status"], "Canceled");
-}
-
-// ---------------------------------------------------------------------------
-// restart recovery
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn restart_recovers_waiting_records_and_timers() {
-    let h = setup().await;
-    h.register_default_target().await;
-
-    // Offline submit; then the "process" restarts on the same store.
-    let submit = h
-        .dispatch_to_jarvis("restart-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "WaitingForTarget");
-
-    let service2 = open_service(&h.db_conn).await;
-    let server2 = TaskDispatcherServerHandler::new(service2.clone());
-    service2.startup_recovery().await;
-
-    // Instance attaches to the new process and receives the offer; the
-    // record identity is unchanged.
-    let h2 = Harness {
-        service: service2,
-        server: server2,
-        _temp_dir: tempdir().unwrap(),
-        db_conn: h.db_conn.clone(),
-    };
-    let (instance_id, epoch) = h2.attach().await;
-    let record = h2.record(&dispatch_id).await;
-    assert_eq!(record.status, DispatchStatus::Offered);
-
-    let accepted = h2
-        .call_ok(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 314
-            }),
-            &zone_token(OPENDAN_USER, OPENDAN_APP),
-        )
-        .await;
-    assert_eq!(accepted["accepted"], true);
-}
-
-// ---------------------------------------------------------------------------
-// authorization matrix
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn requests_without_token_are_rejected() {
-    let h = setup().await;
-    for (method, params) in [
-        ("dispatch", json!({"operation": OP_DELEGATE, "idempotency_key": "k", "input": {}})),
-        ("get_dispatch", json!({"dispatch_id": "dsp-x"})),
-        ("register_target", json!({"registration": {"target_id": "t", "operations": [{"operation": "x/v1"}]}})),
-        ("attach_instance", json!({"target_id": "t"})),
-        ("resolve_uncertain", json!({"dispatch_id": "dsp-x", "resolution": "Canceled"})),
-    ] {
-        for token in [None, Some(String::new())] {
-            let result = h.rpc(method, params.clone(), token).await;
-            let failed = match result {
-                Err(_) => true,
-                Ok(resp) => matches!(resp.result, RPCResult::Failed(_)),
-            };
-            assert!(failed, "{} should fail without a session token", method);
+    // The same public task is now bound and Accepted, epoch 1.
+    let task = env
+        .task_core
+        .trusted_get_task(&result.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.phase, TaskPhase::Accepted);
+    assert_eq!(task.runner_epoch, 1);
+    match &task.executor {
+        TaskExecutor::App {
+            target_id,
+            app_id,
+            app_instance_id,
+        } => {
+            assert_eq!(target_id.as_deref(), Some("target-1"));
+            assert_eq!(app_id, "runner-app");
+            assert_eq!(app_instance_id.as_deref(), Some("inst-1"));
         }
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn normal_callers_cannot_touch_target_or_admin_surface() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let (instance_id, epoch) = h.attach().await;
-    let mallory = user_token("mallory", "evil-app");
-
-    // register / disable / route config / instance ops all refuse
-    // interactive-session tokens.
-    for (method, params) in [
-        (
-            "register_target",
-            json!({"registration": {"target_id": "did:agent:evil", "operations": [{"operation": OP_DELEGATE}]}}),
-        ),
-        ("disable_target", json!({"target_id": TARGET_JARVIS})),
-        (
-            "set_operation_route",
-            json!({"operation": OP_DELEGATE, "default_target_id": TARGET_JARVIS}),
-        ),
-        ("disable_operation_route", json!({"operation": OP_DELEGATE})),
-        ("list_targets", json!({})),
-        ("attach_instance", json!({"target_id": TARGET_JARVIS})),
-        (
-            "claim_next",
-            json!({"target_id": TARGET_JARVIS, "instance_id": instance_id, "lease_epoch": epoch, "max": 4}),
-        ),
-        (
-            "renew_instance",
-            json!({"target_id": TARGET_JARVIS, "instance_id": instance_id, "lease_epoch": epoch, "available_capacity": 1}),
-        ),
-    ] {
-        let err = h.call_err(method, params, &mallory).await;
-        assert!(
-            err.contains("zone-trusted") || err.contains("No permission"),
-            "{}: {}",
-            method,
-            err
-        );
+        other => panic!("unexpected executor {:?}", other),
     }
 
-    // A zone-trusted service that is NOT the owner cannot drive the target
-    // side either.
-    let other_service = zone_token(OPENDAN_USER, "other-svc");
-    for (method, params) in [
-        ("attach_instance", json!({"target_id": TARGET_JARVIS})),
-        (
-            "claim_next",
-            json!({"target_id": TARGET_JARVIS, "instance_id": instance_id, "lease_epoch": epoch, "max": 4}),
-        ),
-        ("disable_target", json!({"target_id": TARGET_JARVIS})),
-        (
-            "register_target",
-            json!({"registration": {"target_id": TARGET_JARVIS, "operations": [{"operation": OP_DELEGATE}]}}),
-        ),
-    ] {
-        let err = h.call_err(method, params, &other_service).await;
-        assert!(err.contains("not the owner") || err.contains("owned by"), "{}: {}", method, err);
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn same_owner_reregistration_updates_in_place() {
-    // Adapters re-register on every runtime start; the upsert must update
-    // the existing row instead of erroring or duplicating.
-    let h = setup().await;
-    h.register_target_with(TARGET_JARVIS, OP_DELEGATE, "IdempotentAccept", 4)
-        .await;
-    h.register_target_with(TARGET_JARVIS, OP_DELEGATE, "IdempotentAccept", 8)
-        .await;
-
-    let target = h
-        .call_ok(
-            "get_target",
-            json!({"target_id": TARGET_JARVIS}),
-            &zone_token(OPENDAN_USER, "observer-svc"),
-        )
-        .await;
-    assert_eq!(target["target"]["max_concurrency"], 8);
-    assert_eq!(target["target"]["owner_app_id"], OPENDAN_APP);
-
-    let listed = h
-        .call_ok("list_targets", json!({}), &zone_token(OPENDAN_USER, "observer-svc"))
-        .await;
-    assert_eq!(listed["targets"].as_array().unwrap().len(), 1);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn on_behalf_of_cannot_launder_identity() {
-    let h = setup().await;
-    h.register_default_target().await;
-
-    // Normal caller impersonating someone else: refused.
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "obo-1",
-                "on_behalf_of": "root",
-                "input": {}
-            }),
-            &user_token("mallory", "evil-app"),
-        )
-        .await;
-    assert!(err.contains("on behalf of"), "{}", err);
-
-    // Zone-trusted caller may carry an authenticated business user.
-    let submit = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "obo-2",
-                "on_behalf_of": "alice",
-                "workflow_ref": {"workflow_id": "code-review", "run_id": "wf-run-9f3a", "step_id": "review"},
-                "input": {"purpose": "review"}
-            }),
-            &zone_token(OPENDAN_USER, "workflow"),
-        )
-        .await;
-    let record = h.record(submit["dispatch_id"].as_str().unwrap()).await;
-    assert_eq!(record.auth.requested_by_user, OPENDAN_USER);
-    assert_eq!(record.auth.requested_by_app, "workflow");
-    assert_eq!(record.auth.on_behalf_of, "alice");
-    assert!(record.auth.zone_trusted_caller);
+    // Exactly one offer + one activate, carrying the delivery id and epoch.
+    let calls = env.caller.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].1, "offer_task");
     assert_eq!(
-        record.auth.workflow_ref.as_ref().map(|r| r.run_id.as_str()),
-        Some("wf-run-9f3a")
+        calls[0].2["delivery_id"],
+        json!(format!("{}#1", result.dispatch_id))
     );
-}
+    assert_eq!(calls[1].1, "activate_task");
+    assert_eq!(calls[1].2["runner_epoch"], json!(1));
+    assert_eq!(calls[1].2["reservation_token"], json!("res-1"));
 
-#[tokio::test(flavor = "current_thread")]
-async fn zone_trusted_only_target_refuses_normal_users() {
-    let h = setup().await;
-    h.call_ok(
-        "register_target",
-        json!({
-            "registration": {
-                "target_id": TARGET_JARVIS,
-                "operations": [{"operation": OP_DELEGATE}],
-                "auth_policy": "ZoneTrustedOnly",
-                "max_concurrency": 2
-            }
-        }),
-        &zone_token(OPENDAN_USER, OPENDAN_APP),
-    )
-    .await;
-
-    let err = h
-        .call_err(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "zt-1",
-                "input": {}
-            }),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert!(err.contains("zone-trusted"), "{}", err);
-
-    let submit = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "zt-2",
-                "input": {}
-            }),
-            &zone_token(OPENDAN_USER, "workflow"),
-        )
-        .await;
-    assert_eq!(submit["status"], "WaitingForTarget");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn record_visibility_follows_requester_and_on_behalf_of() {
-    let h = setup().await;
-    h.register_default_target().await;
-
-    let alice_submit = h.dispatch_to_jarvis("vis-1", &user_token("alice", "some-app")).await;
-    let alice_id = alice_submit["dispatch_id"].as_str().unwrap().to_string();
-    // Workflow dispatches on behalf of alice.
-    let wf_submit = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "vis-2",
-                "on_behalf_of": "alice",
-                "input": {}
-            }),
-            &zone_token(OPENDAN_USER, "workflow"),
-        )
-        .await;
-    let wf_id = wf_submit["dispatch_id"].as_str().unwrap().to_string();
-
-    // bob sees neither.
-    for dispatch_id in [&alice_id, &wf_id] {
-        let err = h
-            .call_err(
-                "get_dispatch",
-                json!({"dispatch_id": dispatch_id}),
-                &user_token("bob", "some-app"),
-            )
-            .await;
-        assert!(err.contains("No permission"), "{}", err);
-    }
-    let listed = h
-        .call_ok("list_dispatches", json!({}), &user_token("bob", "some-app"))
-        .await;
-    assert_eq!(listed["records"].as_array().unwrap().len(), 0);
-
-    // alice sees both: one as requester, one as on_behalf_of.
-    let listed = h
-        .call_ok("list_dispatches", json!({}), &user_token("alice", "some-app"))
-        .await;
-    assert_eq!(listed["records"].as_array().unwrap().len(), 2);
-
-    // bob cannot cancel alice's dispatch.
-    let err = h
-        .call_err(
-            "cancel_dispatch",
-            json!({"dispatch_id": alice_id}),
-            &user_token("bob", "some-app"),
-        )
-        .await;
-    assert!(err.contains("No permission"), "{}", err);
-
-    // alice can cancel the workflow-made dispatch that names her.
-    let canceled = h
-        .call_ok(
-            "cancel_dispatch",
-            json!({"dispatch_id": wf_id}),
-            &user_token("alice", "some-app"),
-        )
-        .await;
-    assert_eq!(canceled["status"], "Canceled");
-}
-
-// ---------------------------------------------------------------------------
-// assignment behavior details
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn max_concurrency_bounds_in_flight_offers() {
-    let h = setup().await;
-    h.register_target_with(TARGET_JARVIS, OP_DELEGATE, "IdempotentAccept", 2)
-        .await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    let mut dispatch_ids = Vec::new();
-    for index in 0..3 {
-        let submit = h
-            .dispatch_to_jarvis(&format!("cap-{}", index), &user_token("alice", "some-app"))
-            .await;
-        dispatch_ids.push(submit["dispatch_id"].as_str().unwrap().to_string());
-    }
-
-    let offered: Vec<_> = futures_join_records(&h, &dispatch_ids)
+    // The delivery journal is complete.
+    let attempt = env
+        .dispatcher
+        .db()
+        .latest_attempt(&result.dispatch_id)
         .await
-        .into_iter()
-        .filter(|record| record.status == DispatchStatus::Offered)
-        .collect();
-    assert_eq!(offered.len(), 2, "max_concurrency=2 caps in-flight offers");
-
-    // Accepting one frees a slot for the third record.
-    let first_offered = offered[0].dispatch_id.clone();
-    h.call_ok(
-        "accept_dispatch",
-        json!({
-            "dispatch_id": first_offered,
-            "instance_id": instance_id,
-            "lease_epoch": epoch,
-            "target_task_id": 1
-        }),
-        &owner,
-    )
-    .await;
-    let records = futures_join_records(&h, &dispatch_ids).await;
-    let offered_count = records
-        .iter()
-        .filter(|record| record.status == DispatchStatus::Offered)
-        .count();
-    assert_eq!(offered_count, 2);
-}
-
-async fn futures_join_records(h: &Harness, ids: &[String]) -> Vec<DispatchRecord> {
-    let mut records = Vec::with_capacity(ids.len());
-    for id in ids {
-        records.push(h.record(id).await);
-    }
-    records
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt.outcome, Some(DeliveryOutcome::Activated));
+    assert_eq!(attempt.runner_epoch, Some(1));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn kevent_notifies_target_and_record_channels() {
-    let h = setup().await;
-    h.register_default_target().await;
+async fn dispatch_idempotent_replay_returns_same_task() {
+    let env = setup_env().await;
+    register_and_attach(&env, "target-1").await;
 
-    // Subscribe the target hint channel before attaching so the offer
-    // notification is captured. (kevent is acceleration only; the claim
-    // path itself is exercised elsewhere without it.)
-    let kevent = KEventClient::new_local("task-dispatcher-observer");
-    let service_kevent = h.service.clone();
-    let _ = service_kevent; // service publishes through its own local client
+    let first = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("dup"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    let replay = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("dup"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    assert_eq!(first.dispatch_id, replay.dispatch_id);
+    assert_eq!(first.task_id, replay.task_id);
 
-    // Local-mode clients are process-local brokers, so subscribe against
-    // the service's publishing client via a reader created from it.
-    let target_key = task_dispatcher_target_key(TARGET_JARVIS);
-    let channel = task_dispatcher_target_event_id(target_key.as_str());
-    drop(kevent);
-    let reader = h
-        .service
-        .kevent_client_for_tests()
-        .create_event_reader(vec![channel])
+    // Same key + different input is a conflict.
+    let mut conflicting = dispatch_req("dup");
+    conflicting.input = json!({"work": "other"});
+    let err = env
+        .dispatcher
+        .handle_dispatch_task(conflicting, user_ctx("alice", "app-a"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains(DISPATCH_ERR_IDEMPOTENCY_CONFLICT));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn offline_target_waits_then_delivers_on_attach() {
+    let env = setup_env().await;
+    // Registered but no instance attached.
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("target-1", DispatchApprovalPolicy::Never),
+            },
+            service_ctx("svc", "runner-app"),
+        )
         .await
         .unwrap();
 
-    let _ = h.attach().await;
-    let submit = h
-        .dispatch_to_jarvis("kevent-1", &user_token("alice", "some-app"))
-        .await;
-    assert_eq!(submit["status"], "Offered");
-
-    let event = reader.pull_event(Some(1_000)).await.unwrap();
-    let event = event.expect("offer notification should arrive on the target channel");
-    assert_eq!(
-        event.data["dispatch_id"].as_str().unwrap(),
-        submit["dispatch_id"].as_str().unwrap()
-    );
-    // Payload carries ids only, never the input.
-    assert!(event.data.get("input").is_none());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn audit_trail_records_every_transition() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("audit-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    h.call_ok(
-        "accept_dispatch",
-        json!({
-            "dispatch_id": dispatch_id,
-            "instance_id": instance_id,
-            "lease_epoch": epoch,
-            "target_task_id": 42
-        }),
-        &owner,
-    )
-    .await;
-
-    let events = h
-        .service
-        .db_for_tests()
-        .list_events(dispatch_id.as_str())
+    let result = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("wait-job"), user_ctx("alice", "app-a"))
         .await
         .unwrap();
-    let transitions: Vec<(String, String)> = events;
-    assert_eq!(
-        transitions,
-        vec![
-            ("".to_string(), "Queued".to_string()),
-            ("Queued".to_string(), "Offered".to_string()),
-            ("Offered".to_string(), "Accepted".to_string()),
-        ]
-    );
-}
+    env.dispatcher.evaluate_once(false).await;
 
-#[tokio::test(flavor = "current_thread")]
-async fn instance_lease_expiry_recycles_offers() {
-    let h = setup().await;
-    h.register_default_target().await;
-    let _ = h.attach().await;
-
-    let submit = h
-        .dispatch_to_jarvis("lease-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "Offered");
-
-    // Past the instance lease (60s): instance dropped, offer lease (30s)
-    // also gone -> record requeued, and with no instances left it waits.
-    let later = now_ms() + INSTANCE_LEASE_TTL_MS as i64 + 1_000;
-    h.service.run_maintenance_once(later).await;
-    let record = h.record(&dispatch_id).await;
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&result.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.status, DispatchStatus::WaitingForTarget);
-}
-
-// ---------------------------------------------------------------------------
-// M4: manual release (approval gate)
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "current_thread")]
-async fn approval_gate_holds_interactive_and_approve_releases() {
-    let h = setup().await;
-    h.register_jarvis_with_approval("InteractiveCallers").await;
-    let owner = zone_token(OPENDAN_USER, OPENDAN_APP);
-    let (instance_id, epoch) = h.attach().await;
-
-    // Interactive submission is held BEFORE assignment — even with a live
-    // instance and free capacity, nothing is evaluated or offered.
-    let submit = h
-        .dispatch_to_jarvis("appr-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "PendingApproval");
-
-    // Idempotent replay reports the held state, same record.
-    let replay = h
-        .dispatch_to_jarvis("appr-1", &user_token("alice", "some-app"))
-        .await;
-    assert_eq!(replay["dispatch_id"].as_str().unwrap(), dispatch_id);
-    assert_eq!(replay["status"], "PendingApproval");
-
-    // The target cannot see or act on the held record through ANY path.
-    let claim_params = json!({
-        "target_id": TARGET_JARVIS,
-        "instance_id": instance_id,
-        "lease_epoch": epoch,
-        "max": 16
-    });
-    let claimed = h.call_ok("claim_next", claim_params.clone(), &owner).await;
-    assert_eq!(claimed["records"].as_array().unwrap().len(), 0);
-    let err = h
-        .call_err(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 42
-            }),
-            &owner,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_PENDING_APPROVAL), "{}", err);
-    let err = h
-        .call_err(
-            "reject_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "reason": "policy_denied"
-            }),
-            &owner,
-        )
-        .await;
-    assert!(err.contains(DISPATCH_ERR_PENDING_APPROVAL), "{}", err);
-
-    // Maintenance never assigns a held record either.
-    h.service.run_maintenance_once(now_ms() + 45_000).await;
+    let task = env
+        .task_core
+        .trusted_get_task(&result.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.phase, TaskPhase::Promised);
     assert_eq!(
-        h.record(&dispatch_id).await.status,
-        DispatchStatus::PendingApproval
+        task.wait_reason.as_ref().unwrap().code.as_deref(),
+        Some("target_offline")
     );
 
-    // Plain interactive sessions cannot approve — neither strangers nor the
-    // submitter themselves.
-    for token in [
-        user_token("mallory", "evil-app"),
-        user_token("alice", "some-app"),
-    ] {
-        let err = h
-            .call_err("approve_dispatch", json!({"dispatch_id": dispatch_id}), &token)
-            .await;
-        assert!(err.contains("sudo"), "{}", err);
-    }
-
-    // A sudo session releases the record; it flows into normal centralized
-    // assignment (Queued -> Offered on the attached instance).
-    let approved = h
-        .call_ok(
-            "approve_dispatch",
-            json!({"dispatch_id": dispatch_id, "note": "ok, install window friday"}),
-            &sudo_token("root", "control-panel"),
+    // Instance comes online -> delivery proceeds.
+    env.dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "target-1".into(),
+                instance_id: "inst-1".into(),
+                endpoint: "http://runner-1/kapi/runner".into(),
+                capacity: 1,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
         )
-        .await;
-    assert_eq!(approved["record"]["status"], "Offered");
-    let record = h.record(&dispatch_id).await;
-    let approval = record.approval.expect("approval decision must be recorded");
-    assert_eq!(approval.decision, ApprovalDecision::Approved);
-    assert_eq!(approval.decided_by_user, "root");
-    assert_eq!(approval.decided_by_app, "control-panel");
-    assert_eq!(approval.note.as_deref(), Some("ok, install window friday"));
-    // Release != privilege escalation: the envelope is byte-for-byte the
-    // original low-privilege submission.
-    assert_eq!(record.auth.requested_by_user, "alice");
-    assert_eq!(record.auth.on_behalf_of, "alice");
-    assert!(!record.auth.zone_trusted_caller);
-
-    // Approve replay on the released record is idempotent.
-    let again = h
-        .call_ok(
-            "approve_dispatch",
-            json!({"dispatch_id": dispatch_id}),
-            &sudo_token("root", "control-panel"),
-        )
-        .await;
-    assert_eq!(again["record"]["status"], "Offered");
-
-    // Now the target claims and accepts normally.
-    let claimed = h.call_ok("claim_next", claim_params, &owner).await;
-    assert_eq!(claimed["records"].as_array().unwrap().len(), 1);
-    let accepted = h
-        .call_ok(
-            "accept_dispatch",
-            json!({
-                "dispatch_id": dispatch_id,
-                "instance_id": instance_id,
-                "lease_epoch": epoch,
-                "target_task_id": 4242
-            }),
-            &owner,
-        )
-        .await;
-    assert_eq!(accepted["accepted"], true);
-
-    // Full audit trail: held -> released -> assigned -> accepted.
-    let events = h
-        .service
-        .db_for_tests()
-        .list_events(dispatch_id.as_str())
         .await
         .unwrap();
-    assert_eq!(
-        events,
-        vec![
-            ("".to_string(), "PendingApproval".to_string()),
-            ("PendingApproval".to_string(), "Queued".to_string()),
-            ("Queued".to_string(), "Offered".to_string()),
-            ("Offered".to_string(), "Accepted".to_string()),
-        ]
-    );
-}
+    env.caller.push_offer_accepted("inst-1", "res-1");
+    env.caller.push_activated();
+    env.dispatcher.evaluate_once(false).await;
 
-#[tokio::test(flavor = "current_thread")]
-async fn approval_policy_exemptions_and_all_callers() {
-    let h = setup().await;
-    h.register_jarvis_with_approval("InteractiveCallers").await;
-    let _ = h.attach().await;
-
-    // Zone-trusted callers and sudo sessions pass the InteractiveCallers
-    // gate without a hold; no approval record is written for them.
-    let trusted = h
-        .dispatch_to_jarvis("exempt-1", &zone_token(OPENDAN_USER, "workflow"))
-        .await;
-    assert_eq!(trusted["status"], "Offered");
-    assert!(h.record(trusted["dispatch_id"].as_str().unwrap())
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&result.dispatch_id)
         .await
-        .approval
-        .is_none());
-
-    let sudo = h
-        .dispatch_to_jarvis("exempt-2", &sudo_token("alice", "some-app"))
-        .await;
-    assert_eq!(sudo["status"], "Offered");
-
-    // A held record must not consume the target's concurrency budget: with
-    // max_concurrency=4 and 2 offers in flight, an interactive hold plus two
-    // more trusted submissions still fit.
-    let held = h
-        .dispatch_to_jarvis("exempt-3", &user_token("bob", "some-app"))
-        .await;
-    assert_eq!(held["status"], "PendingApproval");
-    for key in ["exempt-4", "exempt-5"] {
-        let more = h
-            .dispatch_to_jarvis(key, &zone_token(OPENDAN_USER, "workflow"))
-            .await;
-        assert_eq!(more["status"], "Offered", "held record must not eat budget");
-    }
-
-    // AllCallers holds everyone — the "agent's dangerous operations need a
-    // human too" tier: even zone-trusted submissions stop at the gate.
-    h.register_jarvis_with_approval("AllCallers").await;
-    let trusted_held = h
-        .dispatch_to_jarvis("exempt-6", &zone_token(OPENDAN_USER, "workflow"))
-        .await;
-    assert_eq!(trusted_held["status"], "PendingApproval");
-    let sudo_held = h
-        .dispatch_to_jarvis("exempt-7", &sudo_token("alice", "some-app"))
-        .await;
-    assert_eq!(sudo_held["status"], "PendingApproval");
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.status, DispatchStatus::Accepted);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn deny_dispatch_is_terminal_and_resubmit_needs_new_key() {
-    let h = setup().await;
-    h.register_jarvis_with_approval("InteractiveCallers").await;
-    let admin = sudo_token("root", "control-panel");
+async fn busy_requeues_with_backoff_rejected_fails_task() {
+    let env = setup_env().await;
+    register_and_attach(&env, "target-1").await;
 
-    let submit = h
-        .dispatch_to_jarvis("deny-1", &user_token("bob", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
+    // Busy -> requeued with a future ready_at.
+    let busy = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("busy-job"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    env.caller.push_busy(Some(60_000));
+    env.dispatcher.evaluate_once(false).await;
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&busy.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.status, DispatchStatus::Queued);
+    assert!(record.ready_at > crate::task_store::now_ms() + 30_000);
+    let task = env
+        .task_core
+        .trusted_get_task(&busy.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        task.wait_reason.as_ref().unwrap().kind,
+        TaskWaitReasonKind::Capacity
+    );
 
-    let denied = h
-        .call_ok(
-            "deny_dispatch",
-            json!({"dispatch_id": dispatch_id, "note": "app failed security review"}),
-            &admin,
-        )
-        .await;
-    assert_eq!(denied["record"]["status"], "Rejected");
-    let record = h.record(&dispatch_id).await;
+    // Stable rejection -> record Rejected, public task Terminal/Failed.
+    let rejected = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("rejected-job"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    env.caller.push_rejected("auth_denied");
+    env.dispatcher.evaluate_once(false).await;
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&rejected.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(record.status, DispatchStatus::Rejected);
-    assert_eq!(record.reject_reason, Some(DispatchRejectReason::ApprovalDenied));
-    let approval = record.approval.expect("denial must be recorded");
-    assert_eq!(approval.decision, ApprovalDecision::Denied);
-    assert_eq!(approval.decided_by_user, "root");
-    assert_eq!(record.message.as_deref(), Some("app failed security review"));
-
-    // Deny replay is idempotent; approve after deny is refused — terminal
-    // records are never revived.
-    let again = h
-        .call_ok("deny_dispatch", json!({"dispatch_id": dispatch_id}), &admin)
-        .await;
-    assert_eq!(again["record"]["status"], "Rejected");
-    let err = h
-        .call_err("approve_dispatch", json!({"dispatch_id": dispatch_id}), &admin)
-        .await;
-    assert!(err.contains(DISPATCH_ERR_NOT_PENDING_APPROVAL), "{}", err);
-
-    // The submitter's replay answers with the denied record; re-applying
-    // means a NEW idempotency key and a fresh gate pass.
-    let replay = h
-        .dispatch_to_jarvis("deny-1", &user_token("bob", "some-app"))
-        .await;
-    assert_eq!(replay["dispatch_id"].as_str().unwrap(), dispatch_id);
-    assert_eq!(replay["status"], "Rejected");
-    let fresh = h
-        .dispatch_to_jarvis("deny-2", &user_token("bob", "some-app"))
-        .await;
-    assert_ne!(fresh["dispatch_id"].as_str().unwrap(), dispatch_id);
-    assert_eq!(fresh["status"], "PendingApproval");
-
-    // Denied-by-note is audited in dispatch_event as well.
-    let events = h
-        .service
-        .db_for_tests()
-        .list_events(dispatch_id.as_str())
+    assert_eq!(record.reject_reason, Some(DispatchRejectReason::AuthDenied));
+    let task = env
+        .task_core
+        .trusted_get_task(&rejected.task_id)
         .await
+        .unwrap()
         .unwrap();
-    assert_eq!(
-        events,
-        vec![
-            ("".to_string(), "PendingApproval".to_string()),
-            ("PendingApproval".to_string(), "Rejected".to_string()),
-        ]
-    );
+    assert_eq!(task.phase, TaskPhase::Terminal);
+    assert_eq!(task.outcome, Some(TaskOutcome::Failed));
+    assert_eq!(task.error.as_ref().unwrap().code, "auth_denied");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn pending_approval_cancel_and_deadline() {
-    let h = setup().await;
-    h.register_jarvis_with_approval("InteractiveCallers").await;
-    let admin = sudo_token("root", "control-panel");
-
-    // The submitter may withdraw a record still waiting at the gate.
-    let submit = h
-        .dispatch_to_jarvis("hold-cancel", &user_token("bob", "some-app"))
-        .await;
-    let canceled_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    let canceled = h
-        .call_ok(
-            "cancel_dispatch",
-            json!({"dispatch_id": canceled_id}),
-            &user_token("bob", "some-app"),
-        )
-        .await;
-    assert_eq!(canceled["status"], "Canceled");
-    let err = h
-        .call_err("approve_dispatch", json!({"dispatch_id": canceled_id}), &admin)
-        .await;
-    assert!(err.contains(DISPATCH_ERR_NOT_PENDING_APPROVAL), "{}", err);
-
-    // expires_at covers the approval wait: an unreleased record expires.
-    let expires_at = (now_ms() + 5_000) as u64;
-    let submit = h
-        .call_ok(
-            "dispatch",
-            json!({
-                "target_id": TARGET_JARVIS,
-                "operation": OP_DELEGATE,
-                "idempotency_key": "hold-expire",
-                "expires_at": expires_at,
-                "input": {}
-            }),
-            &user_token("bob", "some-app"),
-        )
-        .await;
-    let expired_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "PendingApproval");
-    h.service.run_maintenance_once(now_ms() + 6_000).await;
-    let record = h.record(&expired_id).await;
-    assert_eq!(record.status, DispatchStatus::Expired);
-    assert_eq!(record.message.as_deref(), Some("request_expired"));
-    assert!(record.approval.is_none());
-    let err = h
-        .call_err("approve_dispatch", json!({"dispatch_id": expired_id}), &admin)
-        .await;
-    assert!(err.contains(DISPATCH_ERR_NOT_PENDING_APPROVAL), "{}", err);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn approvals_channel_hints_and_queue_listing() {
-    let h = setup().await;
-    h.register_jarvis_with_approval("InteractiveCallers").await;
-
-    // Subscribe the admin hint channel before submitting.
-    let reader = h
-        .service
-        .kevent_client_for_tests()
-        .create_event_reader(vec![task_dispatcher_approvals_event_id()])
+async fn transport_error_requeues_and_attempt_budget_expires() {
+    let env = setup_env().await;
+    register_and_attach(&env, "target-1").await;
+    let result = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("flaky"), user_ctx("alice", "app-a"))
         .await
         .unwrap();
 
-    let submit = h
-        .dispatch_to_jarvis("queue-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-
-    let event = reader.pull_event(Some(1_000)).await.unwrap();
-    let event = event.expect("approvals hint should arrive");
-    assert_eq!(event.data["dispatch_id"].as_str().unwrap(), dispatch_id);
-    assert_eq!(event.data["to"], "PendingApproval");
-    // Ids only — the input never rides on the hint channel.
-    assert!(event.data.get("input").is_none());
-
-    // The authoritative queue is a plain status filter on list_dispatches.
-    let queue = h
-        .call_ok(
-            "list_dispatches",
-            json!({"status": "PendingApproval"}),
-            &zone_token(OPENDAN_USER, "control-panel"),
-        )
-        .await;
-    let records = queue["records"].as_array().unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["dispatch_id"].as_str().unwrap(), dispatch_id);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn schema_v1_store_migrates_approval_column_in_place() {
-    // Simulate a store created by the M1 (v1) schema — dispatch_record has
-    // no approval column — and prove open() migrates it in place.
-    const V1_RECORD_DDL: &str = "CREATE TABLE dispatch_record (
-        dispatch_id            TEXT PRIMARY KEY,
-        requested_target_id    TEXT,
-        target_id              TEXT NOT NULL,
-        target_selection       TEXT NOT NULL,
-        operation              TEXT NOT NULL,
-        status                 TEXT NOT NULL,
-        input                  TEXT NOT NULL,
-        auth                   TEXT NOT NULL,
-        idempotency_key        TEXT NOT NULL,
-        requested_by_user      TEXT NOT NULL,
-        requested_by_app       TEXT NOT NULL,
-        on_behalf_of           TEXT NOT NULL,
-        offer_instance_id      TEXT,
-        offer_lease_expires_at INTEGER,
-        offer_delivery_count   INTEGER NOT NULL DEFAULT 0,
-        target_task_id         INTEGER,
-        reject_reason          TEXT,
-        message                TEXT,
-        expires_at             INTEGER,
-        created_at             INTEGER NOT NULL,
-        updated_at             INTEGER NOT NULL
-    )";
-
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().join("dispatch.db");
-    let db_conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    {
-        use sqlx::Executor;
-        sqlx::any::install_default_drivers();
-        let pool = sqlx::any::AnyPoolOptions::new()
-            .max_connections(1)
-            .connect(&db_conn)
+    // Exhaust the 3-attempt budget with transport errors, forcing ready_at
+    // back to now between rounds.
+    for _ in 0..3 {
+        let record = env
+            .dispatcher
+            .db()
+            .get_record(&result.dispatch_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut update = super::dispatch_db::RecordStateUpdate::to_status(record.status);
+        update.ready_at = Some(0);
+        env.dispatcher
+            .db()
+            .update_record_state(&result.dispatch_id, record.status, update)
             .await
             .unwrap();
-        pool.execute(V1_RECORD_DDL).await.unwrap();
-        pool.close().await;
+        env.caller.push_transport_error();
+        env.dispatcher.evaluate_once(false).await;
     }
+    // One more evaluation: budget exhausted -> Expired.
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&result.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut update = super::dispatch_db::RecordStateUpdate::to_status(record.status);
+    update.ready_at = Some(0);
+    env.dispatcher
+        .db()
+        .update_record_state(&result.dispatch_id, record.status, update)
+        .await
+        .unwrap();
+    env.dispatcher.evaluate_once(false).await;
 
-    // Opening the service applies the v2 DDL (other tables) and the in-place
-    // migration (approval column); the full approval flow then works on the
-    // migrated store.
-    let service = open_service(&db_conn).await;
-    let server = TaskDispatcherServerHandler::new(service.clone());
-    let h = Harness {
-        service,
-        server,
-        _temp_dir: temp_dir,
-        db_conn,
-    };
-    h.register_jarvis_with_approval("InteractiveCallers").await;
-    let submit = h
-        .dispatch_to_jarvis("migrate-1", &user_token("alice", "some-app"))
-        .await;
-    let dispatch_id = submit["dispatch_id"].as_str().unwrap().to_string();
-    assert_eq!(submit["status"], "PendingApproval");
-    let approved = h
-        .call_ok(
-            "approve_dispatch",
-            json!({"dispatch_id": dispatch_id}),
-            &sudo_token("root", "control-panel"),
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&result.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.status, DispatchStatus::Expired);
+    assert_eq!(record.attempt_count, 3);
+    let task = env
+        .task_core
+        .trusted_get_task(&result.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.outcome, Some(TaskOutcome::Failed));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn approval_gate_holds_then_releases_or_denies() {
+    let env = setup_env().await;
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration(
+                    "target-1",
+                    DispatchApprovalPolicy::InteractiveCallers,
+                ),
+            },
+            service_ctx("svc", "runner-app"),
         )
-        .await;
-    assert_eq!(approved["record"]["status"], "WaitingForTarget");
-    assert!(h.record(&dispatch_id).await.approval.is_some());
+        .await
+        .unwrap();
+    env.dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "target-1".into(),
+                instance_id: "inst-1".into(),
+                endpoint: "http://runner-1/kapi/runner".into(),
+                capacity: 2,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+
+    // Interactive caller is held at the gate; no offer happens.
+    let held = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("gated"), user_ctx("bob", "app-b"))
+        .await
+        .unwrap();
+    assert_eq!(held.status, DispatchStatus::PendingApproval);
+    env.dispatcher.evaluate_once(false).await;
+    assert!(env.caller.calls().is_empty(), "gated record must not offer");
+    let task = env
+        .task_core
+        .trusted_get_task(&held.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        task.wait_reason.as_ref().unwrap().kind,
+        TaskWaitReasonKind::Authorization
+    );
+
+    // A zone-trusted caller passes straight through the gate.
+    let passed = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("trusted"), service_ctx("svc2", "svc-app"))
+        .await
+        .unwrap();
+    assert_eq!(passed.status, DispatchStatus::Queued);
+
+    // Interactive non-sudo cannot approve.
+    let err = env
+        .dispatcher
+        .handle_approve_dispatch(
+            ApproveDispatchReq {
+                dispatch_id: held.dispatch_id.clone(),
+                decision: ApprovalDecision::Approved,
+                note: None,
+            },
+            user_ctx("bob", "app-b"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RPCErrors::NoPermission(_)));
+
+    // Admin approves -> queued -> delivered; creator stays bob.
+    env.dispatcher
+        .handle_approve_dispatch(
+            ApproveDispatchReq {
+                dispatch_id: held.dispatch_id.clone(),
+                decision: ApprovalDecision::Approved,
+                note: Some("ok".into()),
+            },
+            service_ctx("admin", "admin-app"),
+        )
+        .await
+        .unwrap();
+    env.caller.push_offer_accepted("inst-1", "res-a");
+    env.caller.push_activated();
+    env.caller.push_offer_accepted("inst-1", "res-b");
+    env.caller.push_activated();
+    env.dispatcher.evaluate_once(false).await;
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&held.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.status, DispatchStatus::Accepted);
+    assert_eq!(record.approval.as_ref().unwrap().decided_by_user, "admin");
+    let task = env
+        .task_core
+        .trusted_get_task(&held.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.creator.user_id, "bob");
+
+    // Denial path terminates the public task with the stable error.
+    let denied = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("denied"), user_ctx("bob", "app-b"))
+        .await
+        .unwrap();
+    env.dispatcher
+        .handle_approve_dispatch(
+            ApproveDispatchReq {
+                dispatch_id: denied.dispatch_id.clone(),
+                decision: ApprovalDecision::Denied,
+                note: None,
+            },
+            service_ctx("admin", "admin-app"),
+        )
+        .await
+        .unwrap();
+    let task = env
+        .task_core
+        .trusted_get_task(&denied.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.outcome, Some(TaskOutcome::Failed));
+    assert_eq!(
+        task.error.as_ref().unwrap().code,
+        DISPATCH_ERR_APPROVAL_DENIED
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_converges_through_task_control_protocol() {
+    let env = setup_env().await;
+    // No instances: the record stays queued and cancellable.
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("target-1", DispatchApprovalPolicy::Never),
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+    let result = env
+        .dispatcher
+        .handle_dispatch_task(dispatch_req("cancel-me"), user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+
+    // The generic UI cancels via the TaskMgr control protocol; TaskMgr only
+    // records the request (task has a dispatcher origin).
+    let control = env
+        .task_core
+        .handle_request_control(
+            RequestControlReq {
+                task_id: result.task_id.clone(),
+                action: TaskControlAction::Cancel,
+                request_id: "req-1".into(),
+                recursive: false,
+                expected_revision: None,
+            },
+            user_ctx("alice", "app-a"),
+        )
+        .await
+        .unwrap();
+    let RequestControlResult::Task { task } = control else {
+        panic!("expected task result")
+    };
+    assert_eq!(
+        task.phase,
+        TaskPhase::Promised,
+        "cancel is pending, not applied"
+    );
+    assert!(task.pending_control.is_some());
+
+    // The dispatcher sweep atomically revokes the queue entry and confirms.
+    env.dispatcher.evaluate_once(true).await;
+    let record = env
+        .dispatcher
+        .db()
+        .get_record(&result.dispatch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.status, DispatchStatus::Canceled);
+    let task = env
+        .task_core
+        .trusted_get_task(&result.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.phase, TaskPhase::Terminal);
+    assert_eq!(task.outcome, Some(TaskOutcome::Canceled));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn creating_task_saga_recovers_after_crash() {
+    let env = setup_env().await;
+    register_and_attach(&env, "target-1").await;
+
+    // Simulate a crash right after the record persisted but before the task
+    // create ACK: insert a bare CreatingTask record.
+    let now = crate::task_store::now_ms();
+    let record = DispatchRecord {
+        dispatch_id: "dsp-crash".into(),
+        requested_target_id: Some("target-1".into()),
+        target_id: "target-1".into(),
+        target_selection: TargetSelection::Explicit,
+        schema_id: RAW_TASK_SCHEMA_ID.into(),
+        schema_version: 1,
+        registration_revision: 1,
+        delivery_policy: DeliveryPolicy::default(),
+        status: DispatchStatus::CreatingTask,
+        task_id: None,
+        input: json!({"work": "crashed"}),
+        auth: DispatchAuthEnvelope {
+            requested_by_user: "alice".into(),
+            requested_by_app: "app-a".into(),
+            on_behalf_of: "alice".into(),
+            zone_trusted_caller: false,
+            workflow_ref: None,
+            input_digest: compute_input_digest(&json!({"work": "crashed"})),
+            created_at: now,
+            expires_at: None,
+        },
+        priority: 0,
+        ready_at: now,
+        attempt_count: 0,
+        reject_reason: None,
+        approval: None,
+        message: None,
+        expires_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    env.dispatcher
+        .db()
+        .insert_record(&record, "crash-key")
+        .await
+        .unwrap();
+
+    // Recovery completes the saga: task created with the derived idempotency
+    // key, record queued, then delivered.
+    env.caller.push_offer_accepted("inst-1", "res-1");
+    env.caller.push_activated();
+    env.dispatcher.evaluate_once(false).await;
+
+    let record = env
+        .dispatcher
+        .db()
+        .get_record("dsp-crash")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.status, DispatchStatus::Accepted);
+    let task_id = record.task_id.clone().unwrap();
+    let task = env
+        .task_core
+        .trusted_get_task(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.idempotency_key, "dsp:dsp-crash");
+    assert_eq!(task.creator.user_id, "alice");
+
+    // Re-running recovery replays the same task (no duplicates).
+    let before_calls = env.caller.calls().len();
+    env.dispatcher.evaluate_once(false).await;
+    assert_eq!(env.caller.calls().len(), before_calls);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stale_lease_instance_cannot_renew() {
+    let env = setup_env().await;
+    register_and_attach(&env, "target-1").await;
+    // Re-attach bumps the lease epoch; the old epoch is fenced.
+    let second = env
+        .dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "target-1".into(),
+                instance_id: "inst-1".into(),
+                endpoint: "http://runner-1/kapi/runner".into(),
+                capacity: 4,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.lease_epoch, 2);
+    let err = env
+        .dispatcher
+        .handle_renew_instance(
+            RenewInstanceReq {
+                target_id: "target-1".into(),
+                instance_id: "inst-1".into(),
+                lease_epoch: 1,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            service_ctx("svc", "runner-app"),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_stale_instance_err(&err));
 }

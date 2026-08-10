@@ -8,7 +8,7 @@
 use crate::taskdata::TaskDataProgress;
 use crate::{
     AppDocType, AppServiceSpec, MountPointConfig, PermissionItem, ServiceSettings,
-    ServiceSpecConfig, TaskStatus,
+    ServiceSpecConfig, TaskId, TaskOutcome, TaskPhase, TaskWaitReason, TaskWaitReasonKind,
 };
 use name_lib::DID;
 use ndn_lib::{build_named_object_by_json, ObjId};
@@ -986,7 +986,7 @@ pub struct InstallRecord {
     pub pikg_digest: Option<String>,
     pub target: InstallTarget,
     pub state: InstallRecordState,
-    pub task_id: i64,
+    pub task_id: TaskId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_id: Option<String>,
     pub plan_fingerprint: String,
@@ -1035,8 +1035,10 @@ pub struct ApprovalRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallStatusSnapshot {
     pub schema_version: u32,
-    pub task_id: i64,
-    pub task_status: TaskStatus,
+    pub task_id: TaskId,
+    pub task_phase: TaskPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_outcome: Option<TaskOutcome>,
     pub user_id: String,
     pub source: InstallSource,
     pub policy: InstallPolicy,
@@ -1166,8 +1168,10 @@ impl fmt::Display for StagingHandle {
 
 /// snapshot 构建辅助：由事务状态与任务元数据合成只读 snapshot。
 pub fn build_install_status_snapshot(
-    task_id: i64,
-    task_status: TaskStatus,
+    task_id: TaskId,
+    task_phase: TaskPhase,
+    task_outcome: Option<TaskOutcome>,
+    wait_reason: Option<&TaskWaitReason>,
     user_id: &str,
     source: &InstallSource,
     policy: InstallPolicy,
@@ -1176,7 +1180,11 @@ pub fn build_install_status_snapshot(
     updated_at: u64,
 ) -> AppInstallStatusSnapshot {
     let plan = state.plan.as_ref();
-    let approval_request = if matches!(task_status, TaskStatus::WaitingForApproval) {
+    let waiting_for_approval = task_phase == TaskPhase::Waiting
+        && wait_reason
+            .map(|reason| reason.kind == TaskWaitReasonKind::Authorization)
+            .unwrap_or(false);
+    let approval_request = if waiting_for_approval {
         plan.map(|plan| ApprovalRequest {
             plan_fingerprint: plan.plan_fingerprint.clone(),
             permission_options: plan.permission_options.clone(),
@@ -1209,14 +1217,15 @@ pub fn build_install_status_snapshot(
             }
         }
     }
-    if !task_status.is_terminal() {
+    if !task_phase.is_terminal() {
         available_actions.push(InstallUserAction::Cancel);
     }
 
     AppInstallStatusSnapshot {
         schema_version: APP_INSTALL_SCHEMA_VERSION,
         task_id,
-        task_status,
+        task_phase,
+        task_outcome,
         user_id: user_id.to_string(),
         source: source.clone(),
         policy,

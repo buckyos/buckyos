@@ -103,22 +103,20 @@ pub struct AgentSessionEnv {
 
 #[derive(Debug, Clone)]
 pub struct TaskEnv {
-    pub task_id: i64,
-    pub root_task_id: i64,
+    pub task_id: String,
     pub root_id: String,
     pub task_type: String,
     pub runner: String,
     pub task_name: String,
     pub user_id: String,
     pub app_id: String,
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<String>,
 }
 
 impl From<AgentTaskBinding> for TaskEnv {
     fn from(binding: AgentTaskBinding) -> Self {
         Self {
             task_id: binding.task_id,
-            root_task_id: binding.root_task_id,
             root_id: binding.root_id,
             task_type: binding.task_type,
             runner: binding.runner,
@@ -264,8 +262,7 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
         "session.objective" => Some(Json::String(env.session_objective.clone())),
         "session.owner" => Some(Json::String(env.session_owner.clone())),
         "session.current_behavior" => Some(Json::String(env.behavior_name.clone())),
-        "session.task_id" => Some(task_number(env, |task| task.task_id)),
-        "session.root_task_id" => Some(task_number(env, |task| task.root_task_id)),
+        "session.task_id" => Some(task_number(env, |task| task.task_id.clone())),
         "session.current_todo" => Some(env.session_current_todo.clone()),
         "session.current_todo_list" => Some(Json::String(env.session_current_todo_list.clone())),
         "session.background_hint_changed" => Some(Json::Bool(env.background_hint_changed())),
@@ -341,23 +338,23 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
         )),
 
         "task" => Some(task_object(env)),
-        "task.id" | "task.task_id" => Some(task_number(env, |task| task.task_id)),
-        "task.root_task_id" => Some(task_number(env, |task| task.root_task_id)),
+        "task.id" | "task.task_id" => Some(task_number(env, |task| task.task_id.clone())),
         "task.root_id" => Some(task_string(env, |task| task.root_id.as_str())),
         "task.type" | "task.task_type" => Some(task_string(env, |task| task.task_type.as_str())),
         "task.runner" => Some(task_string(env, |task| task.runner.as_str())),
         "task.name" | "task.task_name" => Some(task_string(env, |task| task.task_name.as_str())),
         "task.user_id" => Some(task_string(env, |task| task.user_id.as_str())),
         "task.app_id" => Some(task_string(env, |task| task.app_id.as_str())),
-        "task.parent_id" => Some(match env.task.as_ref().and_then(|task| task.parent_id) {
-            Some(id) => Json::from(id),
-            None => Json::Null,
-        }),
+        "task.parent_id" => Some(
+            match env.task.as_ref().and_then(|task| task.parent_id.clone()) {
+                Some(id) => Json::from(id),
+                None => Json::Null,
+            },
+        ),
 
         "task_executor" => Some(task_executor_object(env)),
         "task_executor.has_task" => Some(Json::Bool(env.task.is_some())),
-        "task_executor.task_id" => Some(task_number(env, |task| task.task_id)),
-        "task_executor.root_task_id" => Some(task_number(env, |task| task.root_task_id)),
+        "task_executor.task_id" => Some(task_number(env, |task| task.task_id.clone())),
 
         "notebook" => Some(notebook_object(env)),
         "notebook.list_text" => Some(Json::String(env.notebook_list_text.clone())),
@@ -407,8 +404,7 @@ fn session_object(env: &AgentSessionEnv) -> Json {
         "objective": env.session_objective,
         "owner": env.session_owner,
         "current_behavior": env.behavior_name,
-        "task_id": env.task.as_ref().map(|task| task.task_id),
-        "root_task_id": env.task.as_ref().map(|task| task.root_task_id),
+        "task_id": env.task.as_ref().map(|task| task.task_id.clone()),
         "current_todo": env.session_current_todo.clone(),
         "current_todo_list": env.session_current_todo_list,
         "background_hint_changed": env.background_hint_changed(),
@@ -424,8 +420,7 @@ fn task_object(env: &AgentSessionEnv) -> Json {
     match &env.task {
         Some(task) => json!({
             "id": task.task_id,
-            "task_id": task.task_id,
-            "root_task_id": task.root_task_id,
+            "task_id": task.task_id.clone(),
             "root_id": task.root_id,
             "type": task.task_type,
             "task_type": task.task_type,
@@ -444,12 +439,11 @@ fn task_executor_object(env: &AgentSessionEnv) -> Json {
     json!({
         "has_task": env.task.is_some(),
         "task": task_object(env),
-        "task_id": env.task.as_ref().map(|task| task.task_id),
-        "root_task_id": env.task.as_ref().map(|task| task.root_task_id),
+        "task_id": env.task.as_ref().map(|task| task.task_id.clone()),
     })
 }
 
-fn task_number(env: &AgentSessionEnv, f: impl Fn(&TaskEnv) -> i64) -> Json {
+fn task_number(env: &AgentSessionEnv, f: impl Fn(&TaskEnv) -> String) -> Json {
     env.task
         .as_ref()
         .map(f)
@@ -1019,9 +1013,8 @@ mod tests {
     async fn loader_resolves_phase1_keys() {
         let mut env = sample_env();
         env.task = Some(TaskEnv {
-            task_id: 42,
-            root_task_id: 40,
-            root_id: "40".to_string(),
+            task_id: "t-42".to_string(),
+            root_id: "t-40".to_string(),
             task_type: "agent.delegate".to_string(),
             runner: "jarvis".to_string(),
             task_name: "delegate".to_string(),
@@ -1056,7 +1049,10 @@ mod tests {
             loader.load("$session.current_todo.content").await.unwrap(),
             Some(Json::String("do thing details".into()))
         );
-        assert_eq!(loader.load("$task.id").await.unwrap(), Some(Json::from(42)));
+        assert_eq!(
+            loader.load("$task.id").await.unwrap(),
+            Some(Json::from("t-42"))
+        );
         assert_eq!(
             loader.load("$task_executor.has_task").await.unwrap(),
             Some(Json::Bool(true))

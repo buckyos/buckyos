@@ -18,7 +18,7 @@
 //! 形态调用方使用，后者由直连 HTTP 客户端使用——同 msg_center / aicc 的惯例。
 
 use ::kRPC::*;
-use buckyos_api::{TaskStatus, WorkflowDefinition};
+use buckyos_api::WorkflowDefinition;
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -35,7 +35,8 @@ use crate::scheduled_task_manager::{
     due_fire_times, is_reboot_schedule, next_fire_after, next_fire_times, render_subtask_template,
     rfc3339, schedule_policy_from_value, schedule_spec_from_value, schedule_target_from_value,
     schedule_workflow_id, validate_subtask_template, FireStatus, MisfirePolicy, ScheduleFireRecord,
-    ScheduleSpec, ScheduleState, ScheduleStore, ScheduleTarget, ScheduleTaskMirror,
+    ScheduleSpec, ScheduleState, ScheduleStatus, ScheduleStore, ScheduleTarget,
+    ScheduleTaskMirror,
     ScheduleTaskMirrorClient, WorkflowSchedule,
 };
 use crate::state::{
@@ -711,8 +712,8 @@ impl WorkflowRpcHandler {
         let policy = schedule_policy_from_value(params.get("policy"))
             .map_err(|err| RPCErrors::ParseRequestError(format!("invalid `policy`: {}", err)))?;
         let now = Utc::now().timestamp();
-        let status = optional_schedule_status(params).unwrap_or(TaskStatus::Running);
-        let next_fire_at = if status == TaskStatus::Running {
+        let status = optional_schedule_status(params).unwrap_or(ScheduleStatus::Running);
+        let next_fire_at = if status == ScheduleStatus::Running {
             initial_next_fire_at(&schedule, now)
         } else {
             None
@@ -760,7 +761,7 @@ impl WorkflowRpcHandler {
         }
         if params.get("schedule").is_some() {
             next_schedule.schedule = parse_schedule_spec(params)?;
-            if next_schedule.status == TaskStatus::Running {
+            if next_schedule.status == ScheduleStatus::Running {
                 next_schedule.state.next_fire_at =
                     initial_next_fire_at(&next_schedule.schedule, Utc::now().timestamp());
             }
@@ -817,7 +818,7 @@ impl WorkflowRpcHandler {
     }
 
     async fn pause_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        self.set_schedule_status(params, TaskStatus::Paused).await
+        self.set_schedule_status(params, ScheduleStatus::Paused).await
     }
 
     async fn resume_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
@@ -825,7 +826,7 @@ impl WorkflowRpcHandler {
         let updated = self
             .schedules
             .update(&schedule_id, |record| {
-                record.status = TaskStatus::Running;
+                record.status = ScheduleStatus::Running;
                 record.state.next_fire_at =
                     initial_next_fire_at(&record.schedule, Utc::now().timestamp());
                 record.state.last_error = None;
@@ -841,16 +842,16 @@ impl WorkflowRpcHandler {
     }
 
     async fn archive_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        self.set_schedule_status(params, TaskStatus::Canceled).await
+        self.set_schedule_status(params, ScheduleStatus::Canceled).await
     }
 
-    async fn set_schedule_status(&self, params: &Value, status: TaskStatus) -> RpcResult<Value> {
+    async fn set_schedule_status(&self, params: &Value, status: ScheduleStatus) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
         let updated = self
             .schedules
             .update(&schedule_id, |record| {
                 record.status = status;
-                if status == TaskStatus::Canceled {
+                if status == ScheduleStatus::Canceled {
                     record.state.next_fire_at = None;
                 }
             })
@@ -1017,7 +1018,7 @@ impl WorkflowRpcHandler {
             .get(schedule_id)
             .await
             .ok_or_else(|| not_found("schedule", schedule_id))?;
-        if !manual && schedule.status != TaskStatus::Running {
+        if !manual && schedule.status != ScheduleStatus::Running {
             return Err(json!({
                 "ok": false,
                 "error": "schedule_not_enabled",
@@ -1109,7 +1110,7 @@ impl WorkflowRpcHandler {
             metrics.insert("trigger".to_string(), trigger);
             metrics.insert("trigger_input".to_string(), trigger_input);
             if let (Some(root_task_id), Some(root_id)) = (
-                schedule.task_mirror.root_task_id,
+                schedule.task_mirror.root_task_id.clone(),
                 schedule.task_mirror.root_id.clone(),
             ) {
                 metrics.insert(
@@ -1171,7 +1172,7 @@ impl WorkflowRpcHandler {
                 .complete_fire(
                     &fire.fire_id,
                     FireStatus::TaskCreated,
-                    task_id,
+                    task_id.clone(),
                     Some(run_id.clone()),
                     None,
                 )
@@ -1181,12 +1182,12 @@ impl WorkflowRpcHandler {
                 .schedules
                 .update(&schedule.schedule_id, |record| {
                     record.state.last_fire_at = Some(fire_time);
-                    record.state.last_task_id = task_id;
+                    record.state.last_task_id = task_id.clone();
                     record.state.last_run_id = Some(run_id);
                     record.state.consecutive_failures = 0;
                     record.state.last_error = None;
                     if matches!(record.schedule, ScheduleSpec::Once { .. }) {
-                        record.status = TaskStatus::Canceled;
+                        record.status = ScheduleStatus::Canceled;
                         record.state.next_fire_at = None;
                     } else if is_reboot_schedule(&record.schedule) {
                         record.state.next_fire_at = None;
@@ -1216,7 +1217,7 @@ impl WorkflowRpcHandler {
                 .complete_fire(
                     &fire.fire_id,
                     FireStatus::TaskCreated,
-                    Some(task_id),
+                    Some(task_id.clone()),
                     None,
                     None,
                 )
@@ -1233,19 +1234,19 @@ impl WorkflowRpcHandler {
         schedule: &WorkflowSchedule,
         fire_time: i64,
         manual: bool,
-        task_id: Option<i64>,
+        task_id: Option<String>,
         run_id: Option<String>,
     ) {
         let updated = self
             .schedules
             .update(&schedule.schedule_id, |record| {
                 record.state.last_fire_at = Some(fire_time);
-                record.state.last_task_id = task_id;
+                record.state.last_task_id = task_id.clone();
                 record.state.last_run_id = run_id;
                 record.state.consecutive_failures = 0;
                 record.state.last_error = None;
                 if matches!(record.schedule, ScheduleSpec::Once { .. }) {
-                    record.status = TaskStatus::Canceled;
+                    record.status = ScheduleStatus::Canceled;
                     record.state.next_fire_at = None;
                 } else if is_reboot_schedule(&record.schedule) {
                     record.state.next_fire_at = None;
@@ -1278,7 +1279,7 @@ impl WorkflowRpcHandler {
         let updated = self
             .schedules
             .update(&schedule.schedule_id, |record| {
-                record.status = TaskStatus::Failed;
+                record.status = ScheduleStatus::Failed;
                 record.state.consecutive_failures =
                     record.state.consecutive_failures.saturating_add(1);
                 record.state.last_error = Some(error.clone());
@@ -1460,16 +1461,16 @@ fn parse_schedule_target(params: &Value) -> RpcResult<ScheduleTarget> {
         .map_err(|err| RPCErrors::ParseRequestError(format!("invalid `target`: {}", err)))
 }
 
-fn optional_schedule_status(params: &Value) -> Option<TaskStatus> {
+fn optional_schedule_status(params: &Value) -> Option<ScheduleStatus> {
     params
         .get("status")
         .and_then(Value::as_str)
         .and_then(parse_schedule_status)
 }
 
-/// schedule status 直接用 TaskStatus 词汇（Running/Paused/Canceled/Failed）。
-fn parse_schedule_status(raw: &str) -> Option<TaskStatus> {
-    TaskStatus::from_str(raw).ok()
+/// schedule status 沿用 1.x TaskStatus 的词汇（Running/Paused/Canceled/Failed）。
+fn parse_schedule_status(raw: &str) -> Option<ScheduleStatus> {
+    ScheduleStatus::from_str_loose(raw)
 }
 
 fn initial_next_fire_at(schedule: &ScheduleSpec, now: i64) -> Option<i64> {
@@ -1555,8 +1556,11 @@ mod tests {
     use super::*;
     use crate::{ExecutorRegistry, InMemoryObjectStore, InMemoryThunkDispatcher};
     use buckyos_api::{
-        CreateTaskOptions, Task, TaskFilter, TaskManagerClient, TaskManagerHandler, TaskNote,
-        TaskPermissions, TaskStatus,
+        ActorRef, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetSubtasksReq,
+        GetTaskReq, ListTaskNotesReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
+        ReportStartedReq, ReportWaitingReq, Task, TaskControlProfile, TaskExecutor,
+        TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary,
+        TaskSummaryPage,
     };
     use std::collections::HashMap;
     use std::ops::Range;
@@ -1572,8 +1576,8 @@ mod tests {
     struct MemoryTaskState {
         next_id: i64,
         next_note_id: i64,
-        tasks: HashMap<i64, Task>,
-        notes: HashMap<i64, Vec<TaskNote>>,
+        tasks: HashMap<String, Task>,
+        notes: HashMap<String, Vec<TaskNote>>,
     }
 
     impl MemoryTaskManager {
@@ -1588,8 +1592,46 @@ mod tests {
             }
         }
 
-        async fn get(&self, id: i64) -> Option<Task> {
-            self.inner.lock().await.tasks.get(&id).cloned()
+        async fn get(&self, id: &str) -> Option<Task> {
+            self.inner.lock().await.tasks.get(id).cloned()
+        }
+
+        async fn edit(
+            &self,
+            id: &str,
+            edit: impl FnOnce(&mut Task),
+        ) -> Result<Task> {
+            let mut guard = self.inner.lock().await;
+            let task = guard
+                .tasks
+                .get_mut(id)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("task {id} not found")))?;
+            edit(task);
+            task.revision += 1;
+            Ok(task.clone())
+        }
+
+        fn summarize(task: &Task) -> TaskSummary {
+            TaskSummary {
+                task_id: task.task_id.clone(),
+                name: task.name.clone(),
+                parent_id: task.parent_id.clone(),
+                root_id: task.root_id.clone(),
+                schema_id: task.schema_id.clone(),
+                schema_version: task.schema_version,
+                creator: task.creator.clone(),
+                executor_kind: task.executor.kind(),
+                phase: task.phase,
+                wait_reason: task.wait_reason.clone(),
+                pending_control_action: task.pending_control.as_ref().map(|c| c.action),
+                outcome: task.outcome,
+                message: task.message.clone(),
+                revision: task.revision,
+                created_at: task.created_at,
+                updated_at: task.updated_at,
+                completed_at: task.completed_at,
+                archived_at: task.archived_at,
+            }
         }
     }
 
@@ -1597,278 +1639,251 @@ mod tests {
     impl TaskManagerHandler for MemoryTaskManager {
         async fn handle_create_task(
             &self,
-            name: &str,
-            task_type: &str,
-            data: Option<Value>,
-            opts: CreateTaskOptions,
-            user_id: &str,
-            app_id: &str,
+            req: CreateTaskReq,
             _ctx: RPCContext,
-        ) -> RpcResult<Task> {
-            // In-process callers model the workflow service itself, which is
-            // a zone-trusted caller in the real TaskMgr: it may create tasks
-            // (and subtasks) on behalf of already-authenticated owners.
-            let mut inner = self.inner.lock().await;
-            let id = inner.next_id;
-            inner.next_id += 1;
-            let root_id = if let Some(parent_id) = opts.parent_id {
-                inner
+        ) -> Result<Task> {
+            let mut guard = self.inner.lock().await;
+            let id = guard.next_id;
+            guard.next_id += 1;
+            let task_id = format!("t-mem-{id}");
+            let executor = match &req.executor {
+                CreateTaskExecutor::SelfApp { app_instance_id } => TaskExecutor::App {
+                    target_id: None,
+                    app_id: "workflow".to_string(),
+                    app_instance_id: app_instance_id.clone(),
+                },
+                CreateTaskExecutor::HumanSet { .. } => TaskExecutor::HumanSet,
+            };
+            let root_id = match req.parent_id.as_deref() {
+                Some(parent) => guard
                     .tasks
-                    .get(&parent_id)
+                    .get(parent)
                     .map(|task| task.root_id.clone())
-                    .unwrap_or_else(|| opts.root_id.clone().unwrap_or_else(|| id.to_string()))
-            } else {
-                opts.root_id.clone().unwrap_or_else(|| id.to_string())
+                    .unwrap_or_else(|| task_id.clone()),
+                None => task_id.clone(),
             };
             let task = Task {
-                id,
-                user_id: user_id.to_string(),
-                app_id: app_id.to_string(),
-                session_id: opts.session_id.unwrap_or_default(),
-                parent_id: opts.parent_id,
+                task_id: task_id.clone(),
+                name: req.name.clone(),
+                parent_id: req.parent_id.clone(),
                 root_id,
-                name: name.to_string(),
-                task_type: task_type.to_string(),
-                status: TaskStatus::Pending,
-                progress: 0.0,
-                message: None,
-                data: data.unwrap_or(Value::Null),
-                permissions: opts.permissions.unwrap_or_else(TaskPermissions::default),
-                created_at: Utc::now().timestamp() as u64,
-                updated_at: Utc::now().timestamp() as u64,
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                schema_id: req.schema_id.clone(),
+                schema_version: 1,
+                input: req.input.clone(),
+                input_digest: buckyos_api::compute_task_input_digest(&req.input),
+                creator: ActorRef::new("u", "workflow"),
+                idempotency_key: req.idempotency_key.clone(),
+                origin_ref: None,
+                retry_of: None,
+                supersedes: None,
+                executor,
+                runner_epoch: 1,
+                assignees: None,
+                phase: TaskPhase::Accepted,
+                wait_reason: None,
+                pending_control: None,
+                control_profile: TaskControlProfile::baseline(1),
+                progress: None,
+                message: req.message.clone(),
+                outcome: None,
+                result: None,
+                error: None,
+                completed_by: None,
+                policy_preset: "collaborative-tree/v1".to_string(),
+                permission_boundary: false,
+                revision: 1,
+                data_scope: None,
+                created_at: 1,
+                updated_at: 1,
+                completed_at: None,
+                archived_at: None,
             };
-            inner.tasks.insert(id, task.clone());
+            // Idempotent replay by key.
+            if let Some(existing) = guard
+                .tasks
+                .values()
+                .find(|t| t.idempotency_key == req.idempotency_key)
+            {
+                return Ok(existing.clone());
+            }
+            guard.tasks.insert(task_id, task.clone());
             Ok(task)
         }
 
-        async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> RpcResult<Task> {
+        async fn handle_get_task(
+            &self,
+            req: GetTaskReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
             self.inner
                 .lock()
                 .await
                 .tasks
-                .get(&id)
+                .get(&req.task_id)
                 .cloned()
-                .ok_or_else(|| RPCErrors::ReasonError("task not found".to_string()))
+                .ok_or_else(|| RPCErrors::ReasonError(format!("task {} not found", req.task_id)))
+        }
+
+        async fn handle_list_tasks(
+            &self,
+            req: ListTasksReq,
+            _ctx: RPCContext,
+        ) -> Result<TaskSummaryPage> {
+            let guard = self.inner.lock().await;
+            let tasks = guard
+                .tasks
+                .values()
+                .filter(|task| {
+                    req.schema_id
+                        .as_deref()
+                        .map(|schema| task.schema_id == schema)
+                        .unwrap_or(true)
+                        && req.phase.map(|phase| task.phase == phase).unwrap_or(true)
+                })
+                .map(Self::summarize)
+                .collect();
+            Ok(TaskSummaryPage {
+                tasks,
+                next_cursor: None,
+            })
+        }
+
+        async fn handle_get_subtasks(
+            &self,
+            req: GetSubtasksReq,
+            _ctx: RPCContext,
+        ) -> Result<TaskSummaryPage> {
+            let guard = self.inner.lock().await;
+            let tasks = guard
+                .tasks
+                .values()
+                .filter(|task| task.parent_id.as_deref() == Some(req.task_id.as_str()))
+                .map(Self::summarize)
+                .collect();
+            Ok(TaskSummaryPage {
+                tasks,
+                next_cursor: None,
+            })
+        }
+
+        async fn handle_report_started(
+            &self,
+            req: ReportStartedReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Running;
+            })
+            .await
+        }
+
+        async fn handle_report_running(
+            &self,
+            req: ReportRunningReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Running;
+                task.wait_reason = None;
+            })
+            .await
+        }
+
+        async fn handle_report_waiting(
+            &self,
+            req: ReportWaitingReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Waiting;
+                task.wait_reason = Some(req.reason.clone());
+            })
+            .await
+        }
+
+        async fn handle_report_progress(
+            &self,
+            req: ReportProgressReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.envelope.task_id, |task| {
+                if let Some(progress) = req.progress.clone() {
+                    task.progress = Some(progress);
+                }
+                if let Some(message) = req.message.clone() {
+                    task.message = Some(message);
+                }
+            })
+            .await
+        }
+
+        async fn handle_commit_result(
+            &self,
+            req: CommitResultReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.task_id, |task| {
+                task.result = Some(req.result.clone());
+                task.outcome = Some(TaskOutcome::Succeeded);
+                task.phase = TaskPhase::Terminal;
+            })
+            .await
+        }
+
+        async fn handle_fail_task(
+            &self,
+            req: FailTaskReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.error = Some(req.error.clone());
+                task.outcome = Some(TaskOutcome::Failed);
+                task.phase = TaskPhase::Terminal;
+            })
+            .await
         }
 
         async fn handle_add_task_note(
             &self,
-            task_id: i64,
-            note_type: Option<&str>,
-            content: &str,
-            data: Option<Value>,
+            req: buckyos_api::AddTaskNoteReq,
             _ctx: RPCContext,
-        ) -> RpcResult<TaskNote> {
-            let task = self
-                .inner
-                .lock()
-                .await
-                .tasks
-                .get(&task_id)
-                .cloned()
-                .ok_or_else(|| RPCErrors::ReasonError("task not found".to_string()))?;
-            let now = Utc::now().timestamp() as u64;
-            let mut inner = self.inner.lock().await;
-            let id = inner.next_note_id;
-            inner.next_note_id += 1;
+        ) -> Result<TaskNote> {
+            let mut guard = self.inner.lock().await;
+            let id = guard.next_note_id;
+            guard.next_note_id += 1;
             let note = TaskNote {
                 id,
-                task_id,
-                note_type: note_type.unwrap_or("human").to_string(),
-                content: content.to_string(),
-                data: data.unwrap_or(Value::Null),
-                author_user_id: task.user_id.clone(),
-                author_app_id: task.app_id.clone(),
-                created_at: now,
-                updated_at: now,
+                task_id: req.task_id.clone(),
+                note_type: req.note_type.clone().unwrap_or_else(|| "human".to_string()),
+                content: req.content.clone(),
+                data: req.data.clone().unwrap_or_else(|| json!({})),
+                author_user_id: "u".to_string(),
+                author_app_id: "workflow".to_string(),
+                created_at: 1,
+                updated_at: 1,
             };
-            inner.notes.entry(task_id).or_default().push(note.clone());
+            guard
+                .notes
+                .entry(req.task_id.clone())
+                .or_default()
+                .push(note.clone());
             Ok(note)
         }
 
         async fn handle_list_task_notes(
             &self,
-            task_id: i64,
+            req: ListTaskNotesReq,
             _ctx: RPCContext,
-        ) -> RpcResult<Vec<TaskNote>> {
-            let inner = self.inner.lock().await;
-            if !inner.tasks.contains_key(&task_id) {
-                return Err(RPCErrors::ReasonError("task not found".to_string()));
-            }
-            Ok(inner.notes.get(&task_id).cloned().unwrap_or_default())
-        }
-
-        async fn handle_list_tasks(
-            &self,
-            filter: TaskFilter,
-            _ctx: RPCContext,
-        ) -> RpcResult<Vec<Task>> {
+        ) -> Result<Vec<TaskNote>> {
             Ok(self
                 .inner
                 .lock()
                 .await
-                .tasks
-                .values()
-                .filter(|task| {
-                    filter
-                        .app_id
-                        .as_deref()
-                        .map(|v| task.app_id == v)
-                        .unwrap_or(true)
-                })
-                .filter(|task| {
-                    filter
-                        .session_id
-                        .as_deref()
-                        .map(|v| task.session_id == v)
-                        .unwrap_or(true)
-                })
-                .filter(|task| {
-                    filter
-                        .task_type
-                        .as_deref()
-                        .map(|v| task.task_type == v)
-                        .unwrap_or(true)
-                })
-                .filter(|task| filter.status.map(|v| task.status == v).unwrap_or(true))
-                .filter(|task| {
-                    filter
-                        .parent_id
-                        .map(|v| task.parent_id == Some(v))
-                        .unwrap_or(true)
-                })
-                .filter(|task| {
-                    filter
-                        .root_id
-                        .as_deref()
-                        .map(|v| task.root_id == v)
-                        .unwrap_or(true)
-                })
+                .notes
+                .get(&req.task_id)
                 .cloned()
-                .collect())
-        }
-
-        async fn handle_list_tasks_by_time_range(
-            &self,
-            _app_id: Option<&str>,
-            _session_id: Option<&str>,
-            _task_type: Option<&str>,
-            _time_range: Range<u64>,
-            _ctx: RPCContext,
-        ) -> RpcResult<Vec<Task>> {
-            Ok(Vec::new())
-        }
-
-        async fn handle_get_subtasks(
-            &self,
-            parent_id: i64,
-            ctx: RPCContext,
-        ) -> RpcResult<Vec<Task>> {
-            self.handle_list_tasks(
-                TaskFilter {
-                    parent_id: Some(parent_id),
-                    ..Default::default()
-                },
-                ctx,
-            )
-            .await
-        }
-
-        async fn handle_update_task(
-            &self,
-            id: i64,
-            status: Option<TaskStatus>,
-            progress: Option<f32>,
-            message: Option<String>,
-            data: Option<Value>,
-            _ctx: RPCContext,
-        ) -> RpcResult<()> {
-            let mut inner = self.inner.lock().await;
-            let task = inner
-                .tasks
-                .get_mut(&id)
-                .ok_or_else(|| RPCErrors::ReasonError("task not found".to_string()))?;
-            if let Some(status) = status {
-                task.status = status;
-            }
-            if let Some(progress) = progress {
-                task.progress = progress;
-            }
-            if message.is_some() {
-                task.message = message;
-            }
-            if let Some(data) = data {
-                task.data = data;
-            }
-            Ok(())
-        }
-
-        async fn handle_update_task_progress(
-            &self,
-            id: i64,
-            completed_items: u64,
-            total_items: u64,
-            ctx: RPCContext,
-        ) -> RpcResult<()> {
-            let progress = if total_items == 0 {
-                0.0
-            } else {
-                completed_items as f32 / total_items as f32
-            };
-            self.handle_update_task(id, None, Some(progress), None, None, ctx)
-                .await
-        }
-
-        async fn handle_update_task_status(
-            &self,
-            id: i64,
-            status: TaskStatus,
-            ctx: RPCContext,
-        ) -> RpcResult<()> {
-            self.handle_update_task(id, Some(status), None, None, None, ctx)
-                .await
-        }
-
-        async fn handle_update_task_error(
-            &self,
-            id: i64,
-            error_message: &str,
-            ctx: RPCContext,
-        ) -> RpcResult<()> {
-            self.handle_update_task(
-                id,
-                Some(TaskStatus::Failed),
-                None,
-                Some(error_message.to_string()),
-                None,
-                ctx,
-            )
-            .await
-        }
-
-        async fn handle_update_task_data(
-            &self,
-            id: i64,
-            data: Value,
-            ctx: RPCContext,
-        ) -> RpcResult<()> {
-            self.handle_update_task(id, None, None, None, Some(data), ctx)
-                .await
-        }
-
-        async fn handle_cancel_task(
-            &self,
-            id: i64,
-            _recursive: bool,
-            ctx: RPCContext,
-        ) -> RpcResult<()> {
-            self.handle_update_task_status(id, TaskStatus::Canceled, ctx)
-                .await
-        }
-
-        async fn handle_delete_task(&self, id: i64, _ctx: RPCContext) -> RpcResult<()> {
-            self.inner.lock().await.tasks.remove(&id);
-            Ok(())
+                .unwrap_or_default())
         }
     }
 
@@ -2321,8 +2336,9 @@ mod tests {
         };
         let schedule_id = created["schedule_id"].as_str().unwrap().to_string();
         let root_task_id = created["schedule"]["task_mirror"]["root_task_id"]
-            .as_i64()
-            .unwrap();
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let fire = handler
             .handle_rpc_call(
@@ -2339,11 +2355,11 @@ mod tests {
             RPCResult::Failed(err) => panic!("run-now failed: {:?}", err),
         };
         assert_eq!(value["fire"]["status"], "task_created");
-        let task_id = value["fire"]["task_id"].as_i64().unwrap();
-        let task = tasks.get(task_id).await.unwrap();
-        assert_eq!(task.task_type, "agent.delegate");
-        assert_eq!(task.parent_id, Some(root_task_id));
-        assert_eq!(task.root_id, schedule_id);
+        let task_id = value["fire"]["task_id"].as_str().unwrap().to_string();
+        let task = tasks.get(&task_id).await.unwrap();
+        assert_eq!(task.schema_id, "agent.delegate/v1");
+        assert_eq!(task.parent_id, Some(root_task_id.clone()));
+        assert_eq!(task.root_id, root_task_id);
     }
 
     #[tokio::test]
@@ -2371,8 +2387,9 @@ mod tests {
         };
         let schedule_id = created["schedule_id"].as_str().unwrap().to_string();
         let root_task_id = created["schedule"]["task_mirror"]["root_task_id"]
-            .as_i64()
-            .unwrap();
+            .as_str()
+            .unwrap()
+            .to_string();
         let fire = handler
             .handle_rpc_call(
                 make_req(
@@ -2387,12 +2404,12 @@ mod tests {
             RPCResult::Success(v) => v,
             RPCResult::Failed(err) => panic!("run-now failed: {:?}", err),
         };
-        let task_id = value["fire"]["task_id"].as_i64().unwrap();
-        let task = tasks.get(task_id).await.unwrap();
-        assert_eq!(task.task_type, "workflow.send_message");
-        assert_eq!(task.parent_id, Some(root_task_id));
-        assert_eq!(task.root_id, schedule_id);
-        assert_eq!(task.data["send_message"]["text"], "drink water");
+        let task_id = value["fire"]["task_id"].as_str().unwrap().to_string();
+        let task = tasks.get(&task_id).await.unwrap();
+        assert_eq!(task.schema_id, "workflow.send_message/v1");
+        assert_eq!(task.parent_id, Some(root_task_id.clone()));
+        assert_eq!(task.root_id, root_task_id);
+        assert_eq!(task.input["send_message"]["text"], "drink water");
     }
 
     #[tokio::test]
@@ -2423,8 +2440,9 @@ mod tests {
         };
         let schedule_id = created["schedule_id"].as_str().unwrap().to_string();
         let root_task_id = created["schedule"]["task_mirror"]["root_task_id"]
-            .as_i64()
-            .unwrap();
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let fire = handler
             .handle_rpc_call(
@@ -2440,12 +2458,12 @@ mod tests {
             RPCResult::Success(v) => v,
             RPCResult::Failed(err) => panic!("run-now failed: {:?}", err),
         };
-        let task_id = value["fire"]["task_id"].as_i64().unwrap();
-        let task = tasks.get(task_id).await.unwrap();
-        assert_eq!(task.task_type, "workflow.send_message");
-        assert_eq!(task.parent_id, Some(root_task_id));
-        assert_eq!(task.user_id, "u");
-        assert_eq!(task.app_id, "agent-a");
+        let task_id = value["fire"]["task_id"].as_str().unwrap().to_string();
+        let task = tasks.get(&task_id).await.unwrap();
+        assert_eq!(task.schema_id, "workflow.send_message/v1");
+        assert_eq!(task.parent_id, Some(root_task_id.clone()));
+        assert_eq!(task.creator.user_id, "u");
+        assert_eq!(task.creator.app_id, "workflow");
     }
 
     #[tokio::test]

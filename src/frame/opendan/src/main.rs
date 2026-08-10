@@ -58,7 +58,7 @@ struct RootfsSyncEntry {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 struct WorkSessionQuickTestSpec {
-    task_id: Option<i64>,
+    task_id: Option<String>,
     title: String,
     objective: String,
     workspace_id: Option<String>,

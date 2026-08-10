@@ -2,7 +2,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppStartTaskData, AppStartTaskRequest,
     AppType, AppUninstallTaskData, AppUninstallTaskRequest, InstallPolicy, RepoClient,
     ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SubPkgDesc, SystemConfigClient,
-    SystemConfigError, TaskManagerClient, TaskStatus,
+    SystemConfigError, TaskManagerClient,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use flate2::write::GzEncoder;
@@ -369,21 +369,37 @@ impl AppInstaller {
         name: String,
         task_type: &str,
         data: Value,
-        user_id: &str,
-        app_id: &str,
-    ) -> Result<(i64, String), RPCErrors> {
+        _user_id: &str,
+        _app_id: &str,
+    ) -> Result<(String, String), RPCErrors> {
         let task_mgr = self.task_mgr_client().await?;
         let task = task_mgr
-            .create_task(name.as_str(), task_type, Some(data), user_id, app_id, None)
+            .create_task(buckyos_api::CreateTaskReq {
+                name,
+                schema_id: format!("{}/v1", task_type.replace('/', ".")),
+                schema_version: None,
+                input: data,
+                executor: buckyos_api::CreateTaskExecutor::SelfApp {
+                    app_instance_id: None,
+                },
+                parent_id: None,
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!("{}-{}", task_type, uuid::Uuid::new_v4().simple()),
+                retry_of: None,
+                supersedes: None,
+                message: None,
+            })
             .await?;
-        Ok((task.id, task.root_id))
+        Ok((task.task_id, task.root_id))
     }
 
     async fn run_start_task(
         &self,
         app_id: String,
         user_id: Option<String>,
-        task_id: i64,
+        task_id: String,
     ) -> Result<(), RPCErrors> {
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self
@@ -399,13 +415,12 @@ impl AppInstaller {
         }
 
         if let Ok(task_mgr) = self.task_mgr_client().await {
+            let _ = task_mgr.runner_start(&task_id).await;
             let _ = task_mgr
-                .update_task(
-                    task_id,
-                    Some(TaskStatus::Running),
-                    Some(15.0),
+                .runner_progress(
+                    &task_id,
+                    Some(json!({"percent": 15.0})),
                     Some("Updating app state to running".to_string()),
-                    None,
                 )
                 .await;
         }
@@ -432,13 +447,7 @@ impl AppInstaller {
 
         self.task_mgr_client()
             .await?
-            .update_task(
-                task_id,
-                Some(TaskStatus::Completed),
-                Some(100.0),
-                Some("App started".to_string()),
-                Some(data),
-            )
+            .runner_complete(&task_id, data)
             .await?;
         info!(
             "start task {} completed for app `{}` user `{}`",
@@ -454,7 +463,7 @@ impl AppInstaller {
         app_id: String,
         user_id: Option<String>,
         is_remove_data: bool,
-        task_id: i64,
+        task_id: String,
     ) -> Result<(), RPCErrors> {
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self
@@ -462,13 +471,12 @@ impl AppInstaller {
             .await?;
 
         if let Ok(task_mgr) = self.task_mgr_client().await {
+            let _ = task_mgr.runner_start(&task_id).await;
             let _ = task_mgr
-                .update_task(
-                    task_id,
-                    Some(TaskStatus::Running),
-                    Some(15.0),
+                .runner_progress(
+                    &task_id,
+                    Some(json!({"percent": 15.0})),
                     Some("Stopping app".to_string()),
-                    None,
                 )
                 .await;
         }
@@ -477,12 +485,10 @@ impl AppInstaller {
 
         if let Ok(task_mgr) = self.task_mgr_client().await {
             let _ = task_mgr
-                .update_task(
-                    task_id,
-                    None,
-                    Some(55.0),
+                .runner_progress(
+                    &task_id,
+                    Some(json!({"percent": 55.0})),
                     Some("Marking app as deleted".to_string()),
-                    None,
                 )
                 .await;
         }
@@ -500,12 +506,10 @@ impl AppInstaller {
         if is_remove_data {
             if let Ok(task_mgr) = self.task_mgr_client().await {
                 let _ = task_mgr
-                    .update_task(
-                        task_id,
-                        None,
-                        Some(80.0),
+                    .runner_progress(
+                        &task_id,
+                        Some(json!({"percent": 80.0})),
                         Some("Removing app data".to_string()),
-                        None,
                     )
                     .await;
             }
@@ -520,13 +524,7 @@ impl AppInstaller {
 
         self.task_mgr_client()
             .await?
-            .update_task(
-                task_id,
-                Some(TaskStatus::Completed),
-                Some(100.0),
-                Some("App uninstalled".to_string()),
-                Some(data),
-            )
+            .runner_complete(&task_id, data)
             .await?;
         info!(
             "uninstall task {} completed for app `{}` user `{}`",
@@ -601,7 +599,7 @@ impl AppInstaller {
         app_id: &str,
         user_id: Option<&str>,
         is_remove_data: bool,
-    ) -> Result<u64, RPCErrors> {
+    ) -> Result<String, RPCErrors> {
         let spec = self.get_app_service_spec(app_id, user_id).await?;
         let (task_id, _root_id) = self
             .create_task(
@@ -628,21 +626,27 @@ impl AppInstaller {
         let installer = self.clone();
         let app_id = app_id.to_string();
         let user_id = Some(spec.user_id.clone());
+        let spawned_task_id = task_id.clone();
         tokio::spawn(async move {
             if let Err(error) = installer
-                .run_uninstall_task(app_id, user_id, is_remove_data, task_id)
+                .run_uninstall_task(app_id, user_id, is_remove_data, spawned_task_id.clone())
                 .await
             {
-                warn!("uninstall app task {} failed: {}", task_id, error);
+                warn!("uninstall app task {} failed: {}", spawned_task_id, error);
                 if let Ok(task_mgr) = installer.task_mgr_client().await {
                     let _ = task_mgr
-                        .mark_task_as_failed(task_id, &error.to_string())
+                        .runner_fail(
+                            &spawned_task_id,
+                            "uninstall_failed",
+                            error.to_string(),
+                            None,
+                        )
                         .await;
                 }
             }
         });
 
-        Ok(task_id as u64)
+        Ok(task_id)
     }
 
     /// 停止应用。
@@ -694,7 +698,11 @@ impl AppInstaller {
     /// 3. 调度器 schedule_loop 检测到 state 变化，选点并写入 nodes/{node}/config.apps（app_service_instance_config）
     /// 4. node-daemon 读 config 收敛，启动容器
     /// 5. 创建 task，返回 task_id
-    pub async fn start_app(&self, app_id: &str, user_id: Option<&str>) -> Result<u64, RPCErrors> {
+    pub async fn start_app(
+        &self,
+        app_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<String, RPCErrors> {
         let spec = self.get_app_service_spec(app_id, user_id).await?;
         let (task_id, _root_id) = self
             .create_task(
@@ -719,18 +727,27 @@ impl AppInstaller {
         let installer = self.clone();
         let app_id = app_id.to_string();
         let user_id = Some(spec.user_id.clone());
+        let spawned_task_id = task_id.clone();
         tokio::spawn(async move {
-            if let Err(error) = installer.run_start_task(app_id, user_id, task_id).await {
-                warn!("start app task {} failed: {}", task_id, error);
+            if let Err(error) = installer
+                .run_start_task(app_id, user_id, spawned_task_id.clone())
+                .await
+            {
+                warn!("start app task {} failed: {}", spawned_task_id, error);
                 if let Ok(task_mgr) = installer.task_mgr_client().await {
                     let _ = task_mgr
-                        .mark_task_as_failed(task_id, &error.to_string())
+                        .runner_fail(
+                            &spawned_task_id,
+                            "start_failed",
+                            error.to_string(),
+                            None,
+                        )
                         .await;
                 }
             }
         });
 
-        Ok(task_id as u64)
+        Ok(task_id)
     }
 
     /// 查询应用 spec。
@@ -1773,7 +1790,7 @@ impl ControlPanelServer {
             .create_install_task(request, app_hint)
             .await
             .map_err(Self::install_error_to_rpc)?;
-        self.install_runner.dispatch(task_id).await;
+        self.install_runner.dispatch(task_id.clone()).await;
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({
                 "task_id": task_id.to_string(),
@@ -1842,11 +1859,13 @@ impl ControlPanelServer {
         .await
     }
 
-    fn parse_task_id(req: &RPCRequest) -> Result<i64, RPCErrors> {
+    fn parse_task_id(req: &RPCRequest) -> Result<String, RPCErrors> {
         let raw = Self::require_param_str(req, "task_id")?;
-        raw.trim()
-            .parse::<i64>()
-            .map_err(|_| RPCErrors::ParseRequestError(format!("invalid task_id `{raw}`")))
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(RPCErrors::ParseRequestError("invalid empty task_id".into()));
+        }
+        Ok(trimmed.to_string())
     }
 
     /// apps.install.confirm { task_id, target?, install_params? }
@@ -1882,7 +1901,7 @@ impl ControlPanelServer {
 
         self.install_engine
             .confirm(
-                task_id,
+                &task_id,
                 principal.username.as_str(),
                 Self::principal_is_admin(principal),
                 target,
@@ -1890,7 +1909,7 @@ impl ControlPanelServer {
             )
             .await
             .map_err(Self::install_error_to_rpc)?;
-        self.install_runner.spawn_run(task_id);
+        self.install_runner.spawn_run(task_id.clone());
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({ "task_id": task_id.to_string() })),
             req.seq,
@@ -1907,13 +1926,13 @@ impl ControlPanelServer {
         let task_id = Self::parse_task_id(&req)?;
         self.install_engine
             .retry(
-                task_id,
+                &task_id,
                 principal.username.as_str(),
                 Self::principal_is_admin(principal),
             )
             .await
             .map_err(Self::install_error_to_rpc)?;
-        self.install_runner.spawn_run(task_id);
+        self.install_runner.spawn_run(task_id.clone());
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({ "task_id": task_id.to_string() })),
             req.seq,
@@ -1930,7 +1949,7 @@ impl ControlPanelServer {
         let task_id = Self::parse_task_id(&req)?;
         self.install_engine
             .cancel(
-                task_id,
+                &task_id,
                 principal.username.as_str(),
                 Self::principal_is_admin(principal),
             )
@@ -1977,7 +1996,7 @@ impl ControlPanelServer {
             .create_update_task(request, app_id.as_str())
             .await
             .map_err(Self::install_error_to_rpc)?;
-        self.install_runner.dispatch(task_id).await;
+        self.install_runner.dispatch(task_id.clone()).await;
 
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({

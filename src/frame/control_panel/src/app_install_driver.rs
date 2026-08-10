@@ -1048,68 +1048,27 @@ fn infer_obj_id_from_url(url: &str) -> Option<ObjId> {
 async fn download_object_by_id(
     url: &str,
     obj_id: &ObjId,
-    user_id: &str,
-    app_id: &str,
-    parent: Option<(i64, String)>,
+    _user_id: &str,
+    _app_id: &str,
+    _parent: Option<(String, String)>,
 ) -> Result<(), InstallError> {
-    let runtime = get_buckyos_api_runtime().map_err(|err| {
+    // 2.0: acquisition runs in-process (the task-manager built-in download
+    // executor is gone); progress surfaces through the install task itself.
+    crate::ndn_download::download_object_to_named_store(
+        url,
+        obj_id,
+        &buckyos_api::DownloadTaskOptions::default(),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|err| {
         InstallError::new(
-            InstallStage::Acquire,
-            InstallErrorCode::Internal,
-            true,
-            format!("get runtime failed: {err}"),
-        )
-    })?;
-    let task_mgr = runtime.get_task_mgr_client().await.map_err(|err| {
-        InstallError::new(
-            InstallStage::Acquire,
-            InstallErrorCode::Internal,
-            true,
-            format!("get task mgr failed: {err}"),
-        )
-    })?;
-    let opts = parent.map(|(parent_id, root_id)| buckyos_api::CreateTaskOptions {
-        parent_id: Some(parent_id),
-        root_id: if root_id.is_empty() {
-            None
-        } else {
-            Some(root_id)
-        },
-        ..Default::default()
-    });
-    let download_task_id = task_mgr
-        .create_download_task(url, Some(obj_id.clone()), None, user_id, app_id, opts)
-        .await
-        .map_err(|err| {
-            InstallError::new(
-                InstallStage::Acquire,
-                InstallErrorCode::AcquisitionFailed,
-                true,
-                format!("create download task failed: {err}"),
-            )
-        })?;
-    // kevent 加速 + 权威回读（内部自带 timeout sweep 兜底）。
-    let task = runtime
-        .wait_for_task_end_kevent(download_task_id)
-        .await
-        .map_err(|err| {
-            InstallError::new(
-                InstallStage::Acquire,
-                InstallErrorCode::AcquisitionFailed,
-                true,
-                format!("wait download task failed: {err}"),
-            )
-        })?;
-    if task.status != buckyos_api::TaskStatus::Completed {
-        return Err(InstallError::new(
             InstallStage::Acquire,
             InstallErrorCode::AcquisitionFailed,
             true,
-            task.message
-                .unwrap_or_else(|| format!("download task {download_task_id} did not complete")),
-        ));
-    }
-    Ok(())
+            format!("download {url} failed: {err}"),
+        )
+    })
 }
 
 impl ProductionInstallDriver {
@@ -1138,7 +1097,7 @@ impl ProductionInstallDriver {
                 &obj_id,
                 view.user_id.as_str(),
                 view.app_id.as_str(),
-                Some((view.id, view.root_id.clone())),
+                Some((view.id.clone(), view.root_id.clone())),
             )
             .await
             {

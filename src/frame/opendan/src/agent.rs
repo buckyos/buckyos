@@ -27,7 +27,7 @@ use agent_tool::{AgentAttentionSignalStore, AttentionSignalStoreConfig};
 use anyhow::{anyhow, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, AgentDelegateProgress, AgentDelegateTaskData,
-    AgentDelegateTaskRequest, AiMessage, AiRole, CreateTaskOptions, Task, TimerOptions,
+    AgentDelegateTaskRequest, AiMessage, AiRole, Task, TimerOptions,
     TypedTaskData,
 };
 use chrono::{Datelike, Local, Timelike, Utc};
@@ -1986,7 +1986,7 @@ impl AIAgent {
                 )
             })?;
             let task = client
-                .get_task(task_id)
+                .get_task(&task_id)
                 .await
                 .map_err(|err| anyhow!("create_work_session: load task {task_id}: {err}"))?;
             let defaults = work_session_defaults_from_task(&task);
@@ -2006,7 +2006,7 @@ impl AIAgent {
             }
             reason_messages.push(format!(
                 "worksession created from task {} ({})",
-                task.id, task.task_type
+                task.task_id, task.schema_id
             ));
             task_binding = Some(agent_task_binding_from_task(&task));
         }
@@ -2134,7 +2134,7 @@ impl AIAgent {
             auto_started: auto_start,
             task_id: task_binding_for_update
                 .as_ref()
-                .map(|binding| binding.task_id),
+                .map(|binding| binding.task_id.clone()),
         })
     }
 
@@ -2151,57 +2151,83 @@ impl AIAgent {
             .task_mgr_client()
             .await
             .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
-        let (user_id, app_id) = self.default_task_identity(created_by_session_id);
         let task_name = if title.trim().is_empty() {
             meaningful_workspace_name(title, objective)
         } else {
             title.trim().to_string()
         };
         let runner = self.task_executor_runner_id()?;
+        let task_data = AgentDelegateTaskData {
+            request: AgentDelegateTaskRequest {
+                version: 1,
+                purpose: Some(objective.to_string()),
+                title: Some(title.to_string()),
+                requester_agent_id: Some(self.agent_id()),
+                owner_session_id: Some(created_by_session_id.to_string()),
+                input: Some(serde_json::json!({
+                    "text": objective,
+                    "session_id": session_id
+                })),
+                workspace_hints: vec![serde_json::json!({
+                    "workspace_id": workspace_id
+                })],
+                ..Default::default()
+            },
+            progress: Some(AgentDelegateProgress {
+                execution: Some(serde_json::json!({
+                    "session_id": session_id,
+                    "workspace_id": workspace_id,
+                    "runner": runner.clone(),
+                    "status": "creating"
+                })),
+                one_line_status: None,
+                updated_at_ms: Some(Utc::now().timestamp_millis()),
+            }),
+            result: None,
+            route: None,
+            blocker: None,
+            human_input: None,
+            error: None,
+        };
         let task = task_mgr
-            .create_task(
-                &task_name,
-                TASK_TYPE_AGENT_DELEGATE,
-                Some(serde_json::to_value(AgentDelegateTaskData {
-                    request: AgentDelegateTaskRequest {
-                        version: 1,
-                        purpose: Some(objective.to_string()),
-                        title: Some(title.to_string()),
-                        requester_agent_id: Some(self.agent_id()),
-                        owner_session_id: Some(created_by_session_id.to_string()),
-                        input: Some(serde_json::json!({
-                            "text": objective
-                        })),
-                        workspace_hints: vec![serde_json::json!({
-                            "workspace_id": workspace_id
-                        })],
-                        ..Default::default()
-                    },
-                    progress: Some(AgentDelegateProgress {
-                        execution: Some(serde_json::json!({
-                            "session_id": session_id,
-                            "workspace_id": workspace_id,
-                            "runner": runner.clone(),
-                            "status": "creating"
-                        })),
-                        one_line_status: None,
-                        updated_at_ms: Some(Utc::now().timestamp_millis()),
-                    }),
-                    result: None,
-                    route: None,
-                    blocker: None,
-                    human_input: None,
-                    error: None,
-                })?),
-                &user_id,
-                &app_id,
-                Some(CreateTaskOptions {
-                    session_id: Some(session_id.to_string()),
-                    ..Default::default()
-                }),
-            )
+            .create_task(buckyos_api::CreateTaskReq {
+                name: task_name,
+                schema_id: crate::agent_task_executor::AGENT_DELEGATE_SCHEMA_ID.to_string(),
+                schema_version: None,
+                input: serde_json::to_value(&task_data)?,
+                executor: buckyos_api::CreateTaskExecutor::SelfApp {
+                    app_instance_id: None,
+                },
+                parent_id: None,
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!("ws-task-{}", session_id),
+                retry_of: None,
+                supersedes: None,
+                message: None,
+            })
             .await
             .map_err(|err| anyhow!("create task: {err}"))?;
+        // Seed the mutable projection so readers find execution state in
+        // progress from the start.
+        let task = match crate::task_util::report_progress_value(
+            &task_mgr,
+            task.clone(),
+            Some(serde_json::to_value(&task_data)?),
+            None,
+        )
+        .await
+        {
+            Ok(task) => task,
+            Err(err) => {
+                warn!(
+                    "opendan.agent[{}]: seed worksession task progress failed: {err:#}",
+                    self.agent_name
+                );
+                task
+            }
+        };
         Ok(agent_task_binding_from_task(&task))
     }
 
@@ -2217,12 +2243,6 @@ impl AIAgent {
         let Ok(task_mgr) = self.runtime.task_mgr_client().await else {
             return;
         };
-        let status = if auto_started {
-            Some(buckyos_api::TaskStatus::Running)
-        } else {
-            None
-        };
-        let progress = if auto_started { Some(10.0) } else { None };
         let message = if auto_started {
             "Agent session started"
         } else {
@@ -2239,7 +2259,8 @@ impl AIAgent {
             }
         };
         let execution_status = if auto_started { "running" } else { "idle" };
-        let data = match task_mgr.get_task(binding.task_id).await {
+        let loaded = task_mgr.get_task(&binding.task_id).await;
+        let data = match loaded.as_ref().map(|task| task.clone()) {
             Ok(task) => {
                 let mut data = match agent_delegate_task_data(&task) {
                     Some(data) => data,
@@ -2283,37 +2304,34 @@ impl AIAgent {
                 return;
             }
         };
-        if let Err(err) = task_mgr
-            .update_task(
-                binding.task_id,
-                status,
-                progress,
-                Some(message.to_string()),
-                Some(data),
-            )
-            .await
+        let Ok(task) = loaded else { return };
+        let task = if auto_started {
+            match crate::task_util::ensure_running(&task_mgr, task).await {
+                Ok(task) => task,
+                Err(err) => {
+                    warn!(
+                        "opendan.agent[{}]: start worksession task {} failed: {err:#}",
+                        self.agent_name, binding.task_id
+                    );
+                    return;
+                }
+            }
+        } else {
+            task
+        };
+        if let Err(err) = crate::task_util::report_progress_value(
+            &task_mgr,
+            task,
+            Some(data),
+            Some(message.to_string()),
+        )
+        .await
         {
             warn!(
                 "opendan.agent[{}]: update worksession task {} started failed: {err:#}",
                 self.agent_name, binding.task_id
             );
         }
-    }
-
-    fn default_task_identity(&self, created_by_session_id: &str) -> (String, String) {
-        if let Ok(runtime) = get_buckyos_api_runtime() {
-            let user_id = runtime
-                .get_owner_user_id()
-                .or_else(|| runtime.user_id.clone())
-                .unwrap_or_else(|| created_by_session_id.to_string());
-            return (user_id, runtime.get_app_id());
-        }
-        let fallback_user = if created_by_session_id.trim().is_empty() {
-            self.agent_id()
-        } else {
-            created_by_session_id.to_string()
-        };
-        (fallback_user, self.agent_id())
     }
 
     pub(crate) async fn allocate_workspace_id(&self, name: &str) -> String {
@@ -2449,7 +2467,7 @@ pub struct CreateWorkSessionParams {
     pub created_by_session_id: String,
     pub reason_messages: Vec<String>,
     pub task_binding: Option<AgentTaskBinding>,
-    pub task_id: Option<i64>,
+    pub task_id: Option<String>,
     pub auto_start: bool,
     pub bind_task: bool,
 }
@@ -2465,11 +2483,13 @@ pub struct CreateWorkSessionOutcome {
     pub workspace_status: String,
     pub behavior: String,
     pub auto_started: bool,
-    pub task_id: Option<i64>,
+    pub task_id: Option<String>,
 }
 
-fn normalize_task_id(task_id: Option<i64>) -> Option<i64> {
-    task_id.filter(|task_id| *task_id > 0)
+fn normalize_task_id(task_id: Option<String>) -> Option<String> {
+    task_id
+        .map(|task_id| task_id.trim().to_string())
+        .filter(|task_id| !task_id.is_empty())
 }
 
 struct WorkSessionTaskDefaults {
@@ -2539,7 +2559,12 @@ fn work_session_defaults_from_task(task: &Task) -> WorkSessionTaskDefaults {
 }
 
 fn agent_delegate_task_data(task: &Task) -> Option<AgentDelegateTaskData> {
-    match parse_typed_task_data(task.task_type.as_str(), task.data.clone()).ok()? {
+    match parse_typed_task_data(
+        crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE,
+        crate::task_util::task_payload(task),
+    )
+    .ok()?
+    {
         TypedTaskData::AgentDelegate(data) => Some(data),
         _ => None,
     }
@@ -2578,15 +2603,14 @@ pub(crate) fn agent_task_binding_from_task(task: &Task) -> AgentTaskBinding {
         })
         .unwrap_or_default();
     AgentTaskBinding {
-        task_id: task.id,
-        root_task_id: task.root_id.parse::<i64>().unwrap_or(task.id),
+        task_id: task.task_id.clone(),
         root_id: task.root_id.clone(),
-        task_type: task.task_type.clone(),
+        task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
         runner,
         task_name: task.name.clone(),
-        user_id: task.user_id.clone(),
-        app_id: task.app_id.clone(),
-        parent_id: task.parent_id,
+        user_id: task.creator.user_id.clone(),
+        app_id: task.creator.app_id.clone(),
+        parent_id: task.parent_id.clone(),
     }
 }
 
@@ -2972,19 +2996,25 @@ mod tests {
     use crate::worklog::{WorklogService, WorklogToolConfig};
     use async_trait::async_trait;
     use buckyos_api::{
-        AiMethodRequest, AiMethodResponse, AiccClient, AiccHandler, CancelResponse, TaskFilter,
-        TaskManagerClient, TaskManagerHandler, TaskNote, TaskPermissions, TaskStatus,
+        ActorRef, AiMethodRequest, AiMethodResponse, AiccClient, AiccHandler, CancelResponse,
+        CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetSubtasksReq,
+        GetTaskReq, ListTaskNotesReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
+        ReportStartedReq, ReportWaitingReq, TaskControlProfile, TaskManagerClient,
+        TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage,
     };
     use kRPC::{RPCContext, RPCErrors};
     use std::ops::Range;
     use std::sync::atomic::{AtomicI64, Ordering};
 
     #[test]
-    fn normalize_task_id_omits_non_positive_values() {
+    fn normalize_task_id_omits_blank_values() {
         assert_eq!(normalize_task_id(None), None);
-        assert_eq!(normalize_task_id(Some(-1)), None);
-        assert_eq!(normalize_task_id(Some(0)), None);
-        assert_eq!(normalize_task_id(Some(1)), Some(1));
+        assert_eq!(normalize_task_id(Some("".to_string())), None);
+        assert_eq!(normalize_task_id(Some("  ".to_string())), None);
+        assert_eq!(
+            normalize_task_id(Some(" t-1 ".to_string())),
+            Some("t-1".to_string())
+        );
     }
 
     #[test]
@@ -3234,25 +3264,60 @@ runner_id = "agent"
 
     impl MemoryTaskMgr {
         fn insert(&self, mut task: Task) -> Task {
-            if task.id == 0 {
-                task.id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+            if task.task_id.is_empty() {
+                let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+                task.task_id = format!("t-mem-{id}");
             }
             if task.root_id.is_empty() {
-                task.root_id = task.id.to_string();
+                task.root_id = task.task_id.clone();
             }
             self.inner.tasks.lock().unwrap().push(task.clone());
             task
         }
 
-        fn task(&self, id: i64) -> Task {
+        fn task(&self, id: &str) -> Task {
             self.inner
                 .tasks
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|task| task.id == id)
+                .find(|task| task.task_id == id)
                 .cloned()
                 .expect("task")
+        }
+
+        fn edit(&self, id: &str, edit: impl FnOnce(&mut Task)) -> Result<Task, RPCErrors> {
+            let mut guard = self.inner.tasks.lock().unwrap();
+            let task = guard
+                .iter_mut()
+                .find(|task| task.task_id == id)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("task {id} not found")))?;
+            edit(task);
+            task.revision += 1;
+            Ok(task.clone())
+        }
+
+        fn summarize(task: &Task) -> TaskSummary {
+            TaskSummary {
+                task_id: task.task_id.clone(),
+                name: task.name.clone(),
+                parent_id: task.parent_id.clone(),
+                root_id: task.root_id.clone(),
+                schema_id: task.schema_id.clone(),
+                schema_version: task.schema_version,
+                creator: task.creator.clone(),
+                executor_kind: task.executor.kind(),
+                phase: task.phase,
+                wait_reason: task.wait_reason.clone(),
+                pending_control_action: task.pending_control.as_ref().map(|c| c.action),
+                outcome: task.outcome,
+                message: task.message.clone(),
+                revision: task.revision,
+                created_at: task.created_at,
+                updated_at: task.updated_at,
+                completed_at: task.completed_at,
+                archived_at: task.archived_at,
+            }
         }
     }
 
@@ -3260,39 +3325,64 @@ runner_id = "agent"
     impl TaskManagerHandler for MemoryTaskMgr {
         async fn handle_create_task(
             &self,
-            name: &str,
-            task_type: &str,
-            data: Option<serde_json::Value>,
-            opts: CreateTaskOptions,
-            user_id: &str,
-            app_id: &str,
+            req: CreateTaskReq,
             _ctx: RPCContext,
         ) -> std::result::Result<Task, RPCErrors> {
-            let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+            let executor = match &req.executor {
+                CreateTaskExecutor::SelfApp { app_instance_id } => buckyos_api::TaskExecutor::App {
+                    target_id: None,
+                    app_id: "opendan".to_string(),
+                    app_instance_id: app_instance_id.clone(),
+                },
+                CreateTaskExecutor::HumanSet { .. } => buckyos_api::TaskExecutor::HumanSet,
+            };
+            let phase = match executor {
+                buckyos_api::TaskExecutor::HumanSet => TaskPhase::Waiting,
+                _ => TaskPhase::Accepted,
+            };
             let task = Task {
-                id,
-                user_id: user_id.to_string(),
-                app_id: app_id.to_string(),
-                session_id: opts.session_id.unwrap_or_default(),
-                parent_id: opts.parent_id,
-                root_id: opts.root_id.unwrap_or_else(|| id.to_string()),
-                name: name.to_string(),
-                task_type: task_type.to_string(),
-                status: TaskStatus::Pending,
-                progress: 0.0,
-                message: None,
-                data: data.unwrap_or_else(|| serde_json::json!({})),
-                permissions: opts.permissions.unwrap_or_default(),
+                task_id: String::new(),
+                name: req.name.clone(),
+                parent_id: req.parent_id.clone(),
+                root_id: req.parent_id.clone().unwrap_or_default(),
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                schema_id: req.schema_id.clone(),
+                schema_version: 1,
+                input: req.input.clone(),
+                input_digest: buckyos_api::compute_task_input_digest(&req.input),
+                creator: ActorRef::new("user", "opendan"),
+                idempotency_key: req.idempotency_key.clone(),
+                origin_ref: None,
+                retry_of: None,
+                supersedes: None,
+                executor,
+                runner_epoch: 1,
+                assignees: None,
+                phase,
+                wait_reason: None,
+                pending_control: None,
+                control_profile: TaskControlProfile::baseline(1),
+                progress: None,
+                message: req.message.clone(),
+                outcome: None,
+                result: None,
+                error: None,
+                completed_by: None,
+                policy_preset: "collaborative-tree/v1".to_string(),
+                permission_boundary: false,
+                revision: 1,
+                data_scope: None,
                 created_at: 1,
                 updated_at: 1,
+                completed_at: None,
+                archived_at: None,
             };
-            self.inner.tasks.lock().unwrap().push(task.clone());
-            Ok(task)
+            Ok(self.insert(task))
         }
 
         async fn handle_get_task(
             &self,
-            id: i64,
+            req: GetTaskReq,
             _ctx: RPCContext,
         ) -> std::result::Result<Task, RPCErrors> {
             self.inner
@@ -3300,37 +3390,183 @@ runner_id = "agent"
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|task| task.id == id)
+                .find(|task| task.task_id == req.task_id)
                 .cloned()
-                .ok_or_else(|| RPCErrors::ReasonError(format!("task {id} not found")))
+                .ok_or_else(|| RPCErrors::ReasonError(format!("task {} not found", req.task_id)))
         }
 
-        async fn handle_add_task_note(
+        async fn handle_list_tasks(
             &self,
-            task_id: i64,
-            note_type: Option<&str>,
-            content: &str,
-            data: Option<serde_json::Value>,
+            req: ListTasksReq,
             _ctx: RPCContext,
-        ) -> std::result::Result<TaskNote, RPCErrors> {
-            let task = self
+        ) -> std::result::Result<TaskSummaryPage, RPCErrors> {
+            let tasks = self
                 .inner
                 .tasks
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|task| task.id == task_id)
-                .cloned()
-                .ok_or_else(|| RPCErrors::ReasonError(format!("task {task_id} not found")))?;
+                .filter(|task| {
+                    req.schema_id
+                        .as_deref()
+                        .map(|schema| task.schema_id == schema)
+                        .unwrap_or(true)
+                        && req.phase.map(|phase| task.phase == phase).unwrap_or(true)
+                })
+                .map(Self::summarize)
+                .collect();
+            Ok(TaskSummaryPage {
+                tasks,
+                next_cursor: None,
+            })
+        }
+
+        async fn handle_get_subtasks(
+            &self,
+            req: GetSubtasksReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<TaskSummaryPage, RPCErrors> {
+            let tasks = self
+                .inner
+                .tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|task| task.parent_id.as_deref() == Some(req.task_id.as_str()))
+                .map(Self::summarize)
+                .collect();
+            Ok(TaskSummaryPage {
+                tasks,
+                next_cursor: None,
+            })
+        }
+
+        async fn handle_report_started(
+            &self,
+            req: ReportStartedReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Running;
+            })
+        }
+
+        async fn handle_report_running(
+            &self,
+            req: ReportRunningReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Running;
+                task.wait_reason = None;
+            })
+        }
+
+        async fn handle_report_waiting(
+            &self,
+            req: ReportWaitingReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Waiting;
+                task.wait_reason = Some(req.reason.clone());
+            })
+        }
+
+        async fn handle_report_progress(
+            &self,
+            req: ReportProgressReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                if let Some(progress) = req.progress.clone() {
+                    task.progress = Some(progress);
+                }
+                if let Some(message) = req.message.clone() {
+                    task.message = Some(message);
+                }
+            })
+        }
+
+        async fn handle_commit_result(
+            &self,
+            req: CommitResultReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.task_id, |task| {
+                task.result = Some(req.result.clone());
+                task.outcome = Some(TaskOutcome::Succeeded);
+                task.phase = TaskPhase::Terminal;
+            })
+        }
+
+        async fn handle_fail_task(
+            &self,
+            req: FailTaskReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.error = Some(req.error.clone());
+                task.outcome = Some(TaskOutcome::Failed);
+                task.phase = TaskPhase::Terminal;
+            })
+        }
+
+        async fn handle_request_control(
+            &self,
+            req: buckyos_api::RequestControlReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<buckyos_api::RequestControlResult, RPCErrors> {
+            let task = self.edit(&req.task_id, |task| {
+                task.pending_control = Some(buckyos_api::TaskControlRequest {
+                    request_id: req.request_id.clone(),
+                    action: req.action,
+                    requested_by: ActorRef::new("user", "opendan"),
+                    requested_at: 1,
+                });
+            })?;
+            Ok(buckyos_api::RequestControlResult::Task { task })
+        }
+
+        async fn handle_ack_control(
+            &self,
+            req: buckyos_api::AckControlReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                let action = task.pending_control.take().map(|c| c.action);
+                if req.applied {
+                    match action {
+                        Some(buckyos_api::TaskControlAction::Cancel) => {
+                            task.outcome = Some(TaskOutcome::Canceled);
+                            task.phase = TaskPhase::Terminal;
+                        }
+                        Some(buckyos_api::TaskControlAction::Pause) => {
+                            task.phase = TaskPhase::Paused;
+                        }
+                        Some(buckyos_api::TaskControlAction::Resume) => {
+                            task.phase = TaskPhase::Running;
+                        }
+                        None => {}
+                    }
+                }
+            })
+        }
+
+        async fn handle_add_task_note(
+            &self,
+            req: buckyos_api::AddTaskNoteReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<TaskNote, RPCErrors> {
             let id = self.inner.next_note_id.fetch_add(1, Ordering::Relaxed) + 1;
             let note = TaskNote {
                 id,
-                task_id,
-                note_type: note_type.unwrap_or("human").to_string(),
-                content: content.to_string(),
-                data: data.unwrap_or_else(|| serde_json::json!({})),
-                author_user_id: task.user_id.clone(),
-                author_app_id: task.app_id.clone(),
+                task_id: req.task_id.clone(),
+                note_type: req.note_type.clone().unwrap_or_else(|| "human".to_string()),
+                content: req.content.clone(),
+                data: req.data.clone().unwrap_or_else(|| serde_json::json!({})),
+                author_user_id: "user".to_string(),
+                author_app_id: "opendan".to_string(),
                 created_at: 1,
                 updated_at: 1,
             };
@@ -3340,7 +3576,7 @@ runner_id = "agent"
 
         async fn handle_list_task_notes(
             &self,
-            task_id: i64,
+            req: ListTaskNotesReq,
             _ctx: RPCContext,
         ) -> std::result::Result<Vec<TaskNote>, RPCErrors> {
             Ok(self
@@ -3349,172 +3585,9 @@ runner_id = "agent"
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|note| note.task_id == task_id)
+                .filter(|note| note.task_id == req.task_id)
                 .cloned()
                 .collect())
-        }
-
-        async fn handle_list_tasks(
-            &self,
-            filter: TaskFilter,
-            _ctx: RPCContext,
-        ) -> std::result::Result<Vec<Task>, RPCErrors> {
-            Ok(self
-                .inner
-                .tasks
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|task| {
-                    filter
-                        .task_type
-                        .as_ref()
-                        .map(|value| task.task_type == *value)
-                        .unwrap_or(true)
-                        && filter
-                            .status
-                            .map(|value| task.status == value)
-                            .unwrap_or(true)
-                })
-                .cloned()
-                .collect())
-        }
-
-        async fn handle_list_tasks_by_time_range(
-            &self,
-            _app_id: Option<&str>,
-            _session_id: Option<&str>,
-            _task_type: Option<&str>,
-            _time_range: Range<u64>,
-            _ctx: RPCContext,
-        ) -> std::result::Result<Vec<Task>, RPCErrors> {
-            Ok(Vec::new())
-        }
-
-        async fn handle_get_subtasks(
-            &self,
-            parent_id: i64,
-            _ctx: RPCContext,
-        ) -> std::result::Result<Vec<Task>, RPCErrors> {
-            Ok(self
-                .inner
-                .tasks
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|task| task.parent_id == Some(parent_id))
-                .cloned()
-                .collect())
-        }
-
-        async fn handle_update_task(
-            &self,
-            id: i64,
-            status: Option<TaskStatus>,
-            progress: Option<f32>,
-            message: Option<String>,
-            data: Option<serde_json::Value>,
-            _ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            let mut tasks = self.inner.tasks.lock().unwrap();
-            let task = tasks
-                .iter_mut()
-                .find(|task| task.id == id)
-                .ok_or_else(|| RPCErrors::ReasonError(format!("task {id} not found")))?;
-            if let Some(status) = status {
-                task.status = status;
-            }
-            if let Some(progress) = progress {
-                task.progress = progress;
-            }
-            if let Some(message) = message {
-                task.message = Some(message);
-            }
-            if let Some(data) = data {
-                merge_json_test(&mut task.data, &data);
-            }
-            Ok(())
-        }
-
-        async fn handle_update_task_progress(
-            &self,
-            id: i64,
-            completed_items: u64,
-            total_items: u64,
-            ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            let progress = if total_items == 0 {
-                0.0
-            } else {
-                completed_items as f32 / total_items as f32
-            };
-            self.handle_update_task(id, None, Some(progress), None, None, ctx)
-                .await
-        }
-
-        async fn handle_update_task_status(
-            &self,
-            id: i64,
-            status: TaskStatus,
-            ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            self.handle_update_task(id, Some(status), None, None, None, ctx)
-                .await
-        }
-
-        async fn handle_update_task_error(
-            &self,
-            id: i64,
-            error_message: &str,
-            ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            self.handle_update_task(
-                id,
-                Some(TaskStatus::Failed),
-                None,
-                Some(error_message.to_string()),
-                None,
-                ctx,
-            )
-            .await
-        }
-
-        async fn handle_update_task_data(
-            &self,
-            id: i64,
-            data: serde_json::Value,
-            _ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            let mut tasks = self.inner.tasks.lock().unwrap();
-            let task = tasks
-                .iter_mut()
-                .find(|task| task.id == id)
-                .ok_or_else(|| RPCErrors::ReasonError(format!("task {id} not found")))?;
-            task.data = data;
-            Ok(())
-        }
-
-        async fn handle_cancel_task(
-            &self,
-            id: i64,
-            _recursive: bool,
-            ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            self.handle_update_task_status(id, TaskStatus::Canceled, ctx)
-                .await
-        }
-
-        async fn handle_delete_task(
-            &self,
-            id: i64,
-            _ctx: RPCContext,
-        ) -> std::result::Result<(), RPCErrors> {
-            self.inner
-                .tasks
-                .lock()
-                .unwrap()
-                .retain(|task| task.id != id);
-            Ok(())
         }
     }
 
@@ -3532,23 +3605,47 @@ runner_id = "agent"
         }
     }
 
-    fn delegate_task(id: i64, data: serde_json::Value) -> Task {
+    fn delegate_task(id: &str, data: serde_json::Value) -> Task {
         Task {
-            id,
-            user_id: "user".to_string(),
-            app_id: "opendan".to_string(),
-            session_id: String::new(),
+            task_id: id.to_string(),
+            name: "delegate task".to_string(),
             parent_id: None,
             root_id: id.to_string(),
-            name: "delegate task".to_string(),
-            task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
-            status: TaskStatus::Pending,
-            progress: 0.0,
+            child_control_policy: Default::default(),
+            schema_id: crate::agent_task_executor::AGENT_DELEGATE_SCHEMA_ID.to_string(),
+            schema_version: 1,
+            input: data,
+            input_digest: String::new(),
+            creator: ActorRef::new("user", "opendan"),
+            idempotency_key: id.to_string(),
+            origin_ref: None,
+            retry_of: None,
+            supersedes: None,
+            executor: buckyos_api::TaskExecutor::App {
+                target_id: None,
+                app_id: "opendan".to_string(),
+                app_instance_id: None,
+            },
+            runner_epoch: 1,
+            assignees: None,
+            phase: TaskPhase::Accepted,
+            wait_reason: None,
+            pending_control: None,
+            control_profile: TaskControlProfile::baseline(1),
+            progress: None,
             message: None,
-            data,
-            permissions: TaskPermissions::default(),
+            outcome: None,
+            result: None,
+            error: None,
+            completed_by: None,
+            policy_preset: "collaborative-tree/v1".to_string(),
+            permission_boundary: false,
+            revision: 1,
+            data_scope: None,
             created_at: 1,
             updated_at: 1,
+            completed_at: None,
+            archived_at: None,
         }
     }
 
@@ -4076,7 +4173,7 @@ runner_id = "agent"
         let dir = tempfile::tempdir().expect("tempdir");
         let task_mgr = MemoryTaskMgr::default();
         let task = task_mgr.insert(delegate_task(
-            41,
+            "t-mem-41",
             serde_json::json!({
                 "agent_delegate": {
                     "title": "Task title",
@@ -4099,7 +4196,7 @@ runner_id = "agent"
                 created_by_session_id: "ui-1".to_string(),
                 reason_messages: Vec::new(),
                 task_binding: None,
-                task_id: Some(task.id),
+                task_id: Some(task.task_id.clone()),
                 auto_start: false,
                 bind_task: true,
             })
@@ -4108,7 +4205,7 @@ runner_id = "agent"
 
         assert_eq!(outcome.title, "Task title");
         assert_eq!(outcome.workspace_id, "existing-workspace");
-        assert_eq!(outcome.task_id, Some(task.id));
+        assert_eq!(outcome.task_id, Some(task.task_id.clone()));
         let session = agent
             .get_session(&outcome.session_id)
             .await
@@ -4116,14 +4213,16 @@ runner_id = "agent"
         let meta = session.meta.lock().await;
         assert_eq!(meta.objective, "Complete the task objective");
         assert_eq!(
-            meta.task_binding.as_ref().map(|binding| binding.task_id),
-            Some(task.id)
+            meta.task_binding
+                .as_ref()
+                .map(|binding| binding.task_id.clone()),
+            Some(task.task_id.clone())
         );
         drop(meta);
 
-        let updated = task_mgr.task(task.id);
+        let updated = task_mgr.task(&task.task_id);
         let updated_data = agent_delegate_task_data(&updated).expect("agent.delegate task data");
-        assert_eq!(updated.status, TaskStatus::Pending);
+        assert_eq!(updated.phase, TaskPhase::Accepted);
         assert_eq!(
             updated_data
                 .progress
@@ -4168,10 +4267,18 @@ runner_id = "agent"
             .expect("create work session");
 
         let task_id = outcome.task_id.expect("task id");
-        let task = task_mgr.task(task_id);
-        assert_eq!(task.task_type, TASK_TYPE_AGENT_DELEGATE);
-        assert_eq!(task.status, TaskStatus::Running);
-        assert_eq!(task.session_id, outcome.session_id);
+        let task = task_mgr.task(&task_id);
+        assert_eq!(
+            task.schema_id,
+            crate::agent_task_executor::AGENT_DELEGATE_SCHEMA_ID
+        );
+        assert_eq!(task.phase, TaskPhase::Running);
+        assert_eq!(
+            task.input
+                .pointer("/request/input/session_id")
+                .and_then(serde_json::Value::as_str),
+            Some(outcome.session_id.as_str())
+        );
         let data = agent_delegate_task_data(&task).expect("agent.delegate task data");
         assert_eq!(data.request.purpose.as_deref(), Some("Do generated work"));
         assert_eq!(

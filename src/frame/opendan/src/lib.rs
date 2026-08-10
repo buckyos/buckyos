@@ -75,6 +75,7 @@ pub mod local_workspace;
 //                  (consumed when the §9.4 PendingTool outcome wires through).
 pub mod contact;
 pub mod task_dispatch;
+pub mod task_util;
 
 // Session-topic storage / recall primitives used by the non-CLI tool entry.
 pub mod hint_recall;
