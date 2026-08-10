@@ -64,12 +64,17 @@ type TaskRecord = {
   message?: string | null;
   updated_at?: number;
   data?: {
-    aicc?: {
+    request?: {
       external_task_id?: string;
-      output?: JsonValue;
-      error?: JsonValue;
+    };
+    progress?: {
       status?: string;
     };
+    result?: {
+      output?: JsonValue;
+      provider_output?: JsonValue;
+    };
+    error?: JsonValue;
   };
 };
 
@@ -159,7 +164,7 @@ async function findTaskByExternalId(
       (a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0),
     );
     const matched = tasks.find(
-      (task) => task.data?.aicc?.external_task_id === externalTaskId,
+      (task) => task.data?.request?.external_task_id === externalTaskId,
     );
     if (matched) return matched;
     await sleep(1000);
@@ -239,12 +244,12 @@ function aiResponseArtifacts(response: AiResponse): AiArtifact[] {
 }
 
 function pickAiResponseFromTask(task: TaskRecord): AiResponse | null {
-  const output = task.data?.aicc?.output;
+  const output = task.data?.result?.output;
   return asAiResponse(output ?? null);
 }
 
 function pickErrorFromTask(task: TaskRecord): string {
-  const error = task.data?.aicc?.error ?? task.message ?? null;
+  const error = task.data?.error ?? task.message ?? null;
   return typeof error === "string" ? error : JSON.stringify(error ?? "<empty>");
 }
 

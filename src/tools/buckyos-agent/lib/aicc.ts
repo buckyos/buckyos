@@ -10,7 +10,7 @@ import {
   Profile,
   ResourceRef,
 } from "./types.ts";
-import { AiccRuntime } from "./runtime.ts";
+import type { AiccRuntime } from "./runtime.ts";
 
 // deno-lint-ignore no-explicit-any
 type RpcClient = { call: (method: string, params: Record<string, unknown>) => Promise<any> };
@@ -76,12 +76,17 @@ interface TaskRecord {
   message?: string | null;
   updated_at?: number;
   data?: {
-    aicc?: {
+    request?: {
       external_task_id?: string;
-      output?: JsonValue;
-      error?: JsonValue;
+    };
+    progress?: {
       status?: string;
     };
+    result?: {
+      output?: JsonValue;
+      provider_output?: JsonValue;
+    };
+    error?: JsonValue;
   };
 }
 
@@ -219,7 +224,7 @@ async function waitForFinalTask(
     const tasks = normalizeTaskList(raw).sort(
       (a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0),
     );
-    const matched = tasks.find((t) => t.data?.aicc?.external_task_id === externalTaskId);
+    const matched = tasks.find((t) => t.data?.request?.external_task_id === externalTaskId);
     if (matched) {
       while (Date.now() < deadlineMs) {
         reportRunning();
@@ -288,7 +293,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     return {
       taskId: response.task_id,
       status: "succeeded",
-      summary: asAiResponse(finalTask.data?.aicc?.output ?? null),
+      summary: asAiResponse(finalTask.data?.result?.output ?? null),
       rawResponse: response,
       finalTask,
     };
@@ -296,7 +301,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
   return {
     taskId: response.task_id,
     status: "failed",
-    summary: asAiResponse(finalTask.data?.aicc?.output ?? null),
+    summary: asAiResponse(finalTask.data?.result?.output ?? null),
     rawResponse: response,
     finalTask,
   };
@@ -365,7 +370,7 @@ export function textToImage(runtime: AiccRuntime, opts: TextToImageOptions): Pro
 
 export function describeFailure(result: CallResult): string {
   if (result.finalTask) {
-    const err = result.finalTask.data?.aicc?.error ?? result.finalTask.message;
+    const err = result.finalTask.data?.error ?? result.finalTask.message;
     if (err) return typeof err === "string" ? err : JSON.stringify(err);
     return `task ended with ${result.finalTask.status}`;
   }

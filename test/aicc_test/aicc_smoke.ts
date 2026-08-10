@@ -64,12 +64,17 @@ type TaskRecord = {
   message?: string | null;
   updated_at?: number;
   data?: {
-    aicc?: {
+    request?: {
       external_task_id?: string;
-      output?: JsonValue;
-      error?: JsonValue;
+    };
+    progress?: {
       status?: string;
     };
+    result?: {
+      output?: JsonValue;
+      provider_output?: JsonValue;
+    };
+    error?: JsonValue;
   };
 };
 
@@ -1094,11 +1099,11 @@ async function saveArtifacts(
 }
 
 function extractTaskResponse(task: TaskRecord): AiResponse | null {
-  return asAiResponse(task.data?.aicc?.output ?? null);
+  return asAiResponse(task.data?.result?.output ?? null);
 }
 
 function extractTaskError(task: TaskRecord): unknown {
-  return task.data?.aicc?.error ?? task.message ?? null;
+  return task.data?.error ?? task.message ?? null;
 }
 
 function isSkippableError(message: string): boolean {
@@ -1134,7 +1139,7 @@ async function findTaskByExternalId(
       (left, right) => (right.updated_at ?? 0) - (left.updated_at ?? 0),
     );
     const matched = tasks.find(
-      (task) => task.data?.aicc?.external_task_id === externalTaskId,
+      (task) => task.data?.request?.external_task_id === externalTaskId,
     );
     if (matched) {
       return matched;
@@ -1616,7 +1621,7 @@ async function runCase(args: {
         status: "failed",
         task_id: response.task_id,
         error: message,
-        task_output: finalTask.data?.aicc?.output ?? null,
+        task_output: finalTask.data?.result?.output ?? null,
       });
       return {
         status: "failed",
