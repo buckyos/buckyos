@@ -28,7 +28,7 @@ OpenDAN 和 Workflow 都需要“计划任务”能力。例如：
 
 一句话结论：
 
-> 计划任务的通用 owner 应是 Workflow 的 Schedule/Trigger 层；TaskMgr 是可观察面和执行账本；OpenDAN 使用 crontab 工具，不拥有调度系统。
+> 计划任务的真相源与管理责任属于 Workflow 的 Schedule/Trigger 层；业务 owner 仍是创建 schedule 的已认证 `(user_id, app_id)`。TaskMgr 是可观察面和执行账本；OpenDAN 使用 crontab 工具，不拥有调度系统。
 
 ## 2. 设计目标
 
@@ -75,6 +75,8 @@ workflow/schedule: scan-new-images daily 03:00
 ```
 
 TaskMgr 中的 schedule root task 是可观察面，不是调度真相源。Workflow 更新它的状态和 `data.schedule` 摘要。fire subtask 创建后，由拥有该 `task_type` 的 Service 接管执行（beta2.2 起没有 TaskMgr runner 路由，执行者信息在 data 业务字段里）；schedule manager 不承担业务执行。
+
+身份必须沿整棵任务树保持不变：创建 schedule 时，Workflow 从 session token 验证 `(user_id, app_id)`，并要求请求 `owner` 与之完全一致；schedule root task、每次 fire subtask，以及 `workflow.run` 继续展开的任务，都继承该 creator。Workflow 是受信的创建控制面，不是这些任务的 creator；executor 身份按 task type 独立决定。实现上通过 TaskMgr 的 `create_promised_task` 写入已验证的 delegated creator，再通过 executor bind 完成执行绑定。
 
 ### 4.3 AgentTool CLI
 
@@ -454,3 +456,4 @@ P1：
 6. 恢复 schedule 后正确计算下一次触发时间。
 7. missed run 默认只补一次。
 8. OpenDAN CLI 不需要知道 TaskMgr 细节即可创建和管理计划任务。
+9. schedule root、fire subtask 与 fire 展开的 Workflow 任务树，其 TaskMgr creator 都等于创建 schedule 的已认证 `(user_id, app_id)`。

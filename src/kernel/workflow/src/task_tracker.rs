@@ -14,11 +14,11 @@ use crate::error::{WorkflowError, WorkflowResult};
 use crate::runtime::{NodeRunState, RunStatus, WorkflowRun};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, CreateTaskExecutor, CreateTaskReq, Task, TaskDataErrorInfo,
-    TaskDataProgress, TaskError, TaskManagerClient, TaskPhase, TaskWaitReason,
-    TaskWaitReasonKind, ThunkTaskData, ThunkTaskRequest, WorkflowMapShardTaskData,
-    WorkflowMapShardTaskRequest, WorkflowRunTaskData, WorkflowRunTaskRequest,
-    WorkflowRunTaskResult, WorkflowStepTaskData, WorkflowStepTaskRequest,
+    get_buckyos_api_runtime, BindAppExecutorReq, CreatePromisedTaskReq, CreateTaskExecutor,
+    CreateTaskReq, Task, TaskDataErrorInfo, TaskDataProgress, TaskError, TaskExecutor,
+    TaskManagerClient, TaskPhase, TaskWaitReason, TaskWaitReasonKind, ThunkTaskData,
+    ThunkTaskRequest, WorkflowMapShardTaskData, WorkflowMapShardTaskRequest, WorkflowRunTaskData,
+    WorkflowRunTaskRequest, WorkflowRunTaskResult, WorkflowStepTaskData, WorkflowStepTaskRequest,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -258,7 +258,6 @@ impl WorkflowTaskTracker for RecordingTaskTracker {
 /// 把执行单元真实落到 buckyos task_manager 的实现。
 pub struct TaskManagerTaskTracker {
     client: Option<Arc<TaskManagerClient>>,
-    user_id: String,
     app_id: String,
     state: Mutex<TaskTrackerState>,
 }
@@ -276,23 +275,17 @@ struct TaskTrackerState {
 }
 
 impl TaskManagerTaskTracker {
-    pub fn new(
-        client: Arc<TaskManagerClient>,
-        user_id: impl Into<String>,
-        app_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(client: Arc<TaskManagerClient>, app_id: impl Into<String>) -> Self {
         Self {
             client: Some(client),
-            user_id: user_id.into(),
             app_id: app_id.into(),
             state: Mutex::new(TaskTrackerState::default()),
         }
     }
 
-    pub fn from_runtime(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
+    pub fn from_runtime(app_id: impl Into<String>) -> Self {
         Self {
             client: None,
-            user_id: user_id.into(),
             app_id: app_id.into(),
             state: Mutex::new(TaskTrackerState::default()),
         }
@@ -310,6 +303,87 @@ impl TaskManagerTaskTracker {
             .map_err(|err| WorkflowError::TaskTracker(err.to_string()))
     }
 
+    async fn create_tracked_task(
+        &self,
+        name: String,
+        schema_id: String,
+        input: Value,
+        parent_id: Option<String>,
+        idempotency_key: String,
+    ) -> WorkflowResult<Task> {
+        let client = self.client().await?;
+        let Some(parent_id) = parent_id else {
+            return client
+                .create_task(CreateTaskReq {
+                    name,
+                    schema_id,
+                    schema_version: None,
+                    input,
+                    executor: CreateTaskExecutor::SelfApp {
+                        app_instance_id: None,
+                    },
+                    parent_id: None,
+                    child_control_policy: None,
+                    policy_preset: None,
+                    permission_boundary: false,
+                    idempotency_key,
+                    retry_of: None,
+                    supersedes: None,
+                    message: None,
+                })
+                .await
+                .map_err(|err| WorkflowError::TaskTracker(err.to_string()));
+        };
+
+        let parent = client
+            .get_task(&parent_id)
+            .await
+            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+        let task = client
+            .create_promised_task(CreatePromisedTaskReq {
+                name,
+                schema_id,
+                schema_version: None,
+                input,
+                creator: parent.creator,
+                expected_input_digest: None,
+                origin_ref: None,
+                parent_id: Some(parent_id),
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: idempotency_key.clone(),
+                wait_reason: None,
+                message: None,
+            })
+            .await
+            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+        match &task.executor {
+            TaskExecutor::Unbound => client
+                .bind_app_executor(BindAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    target_id: None,
+                    app_id: self.app_id.clone(),
+                    app_instance_id: self.app_id.clone(),
+                    delivery_id: Some(idempotency_key),
+                    expected_revision: task.revision,
+                })
+                .await
+                .map_err(|err| WorkflowError::TaskTracker(err.to_string())),
+            TaskExecutor::App {
+                app_id,
+                app_instance_id,
+                ..
+            } if app_id == &self.app_id && app_instance_id.as_deref() == Some(&self.app_id) => {
+                Ok(task)
+            }
+            _ => Err(WorkflowError::TaskTracker(format!(
+                "delegated task {} has an unexpected executor",
+                task.task_id
+            ))),
+        }
+    }
+
     async fn ensure_run_task(&self, run: &WorkflowRun) -> WorkflowResult<String> {
         if let Some(task_id) = self.state.lock().await.run_tasks.get(&run.run_id).cloned() {
             return Ok(task_id);
@@ -317,29 +391,17 @@ impl TaskManagerTaskTracker {
 
         let task_name = format!("{} [{}]", run.workflow_name, run.run_id);
         let parent_id = run_task_parent(run);
-        let client = self.client().await?;
         // The run id doubles as the idempotency key, so a restarted tracker
         // finds the same root task instead of minting a duplicate.
-        let task = client
-            .create_task(CreateTaskReq {
-                name: task_name,
-                schema_id: WORKFLOW_RUN_SCHEMA_ID.to_string(),
-                schema_version: None,
-                input: run_request_data(run),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
+        let task = self
+            .create_tracked_task(
+                task_name,
+                WORKFLOW_RUN_SCHEMA_ID.to_string(),
+                run_request_data(run),
                 parent_id,
-                child_control_policy: None,
-                policy_preset: None,
-                permission_boundary: false,
-                idempotency_key: format!("wf-run-{}", run.run_id),
-                retry_of: None,
-                supersedes: None,
-                message: None,
-            })
-            .await
-            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+                format!("wf-run-{}", run.run_id),
+            )
+            .await?;
         self.state
             .lock()
             .await
@@ -360,27 +422,15 @@ impl TaskManagerTaskTracker {
         let parent_id = self.ensure_run_task(run).await?;
 
         let task_name = format!("{} [{}/{}]", step.name, run.run_id, step.node_id);
-        let client = self.client().await?;
-        let task = client
-            .create_task(CreateTaskReq {
-                name: task_name,
-                schema_id: WORKFLOW_STEP_SCHEMA_ID.to_string(),
-                schema_version: None,
-                input: initial_step_task_data(run, step),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
-                parent_id: Some(parent_id),
-                child_control_policy: None,
-                policy_preset: None,
-                permission_boundary: false,
-                idempotency_key: format!("wf-step-{}-{}", run.run_id, step.node_id),
-                retry_of: None,
-                supersedes: None,
-                message: None,
-            })
-            .await
-            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+        let task = self
+            .create_tracked_task(
+                task_name,
+                WORKFLOW_STEP_SCHEMA_ID.to_string(),
+                initial_step_task_data(run, step),
+                Some(parent_id),
+                format!("wf-step-{}-{}", run.run_id, step.node_id),
+            )
+            .await?;
         self.state
             .lock()
             .await
@@ -414,33 +464,21 @@ impl TaskManagerTaskTracker {
             None => self.ensure_run_task(run).await?,
         };
 
-        let client = self.client().await?;
-        let task = client
-            .create_task(CreateTaskReq {
-                name: format!(
+        let task = self
+            .create_tracked_task(
+                format!(
                     "{}[{}] [{}]",
                     shard.for_each_id, shard.shard_index, run.run_id
                 ),
-                schema_id: WORKFLOW_MAP_SHARD_SCHEMA_ID.to_string(),
-                schema_version: None,
-                input: initial_map_shard_task_data(run, shard),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
-                parent_id: Some(parent_id),
-                child_control_policy: None,
-                policy_preset: None,
-                permission_boundary: false,
-                idempotency_key: format!(
+                WORKFLOW_MAP_SHARD_SCHEMA_ID.to_string(),
+                initial_map_shard_task_data(run, shard),
+                Some(parent_id),
+                format!(
                     "wf-shard-{}-{}-{}",
                     run.run_id, shard.for_each_id, shard.shard_index
                 ),
-                retry_of: None,
-                supersedes: None,
-                message: None,
-            })
-            .await
-            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+            )
+            .await?;
         self.state
             .lock()
             .await
@@ -480,27 +518,15 @@ impl TaskManagerTaskTracker {
             None => self.ensure_run_task(run).await?,
         };
 
-        let client = self.client().await?;
-        let task = client
-            .create_task(CreateTaskReq {
-                name: format!("thunk:{} [{}]", thunk.thunk_obj_id, run.run_id),
-                schema_id: WORKFLOW_THUNK_SCHEMA_ID.to_string(),
-                schema_version: None,
-                input: thunk_task_data(run, thunk),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
-                parent_id: Some(parent_id),
-                child_control_policy: None,
-                policy_preset: None,
-                permission_boundary: false,
-                idempotency_key: format!("wf-thunk-{}-{}", run.run_id, thunk.thunk_obj_id),
-                retry_of: None,
-                supersedes: None,
-                message: None,
-            })
-            .await
-            .map_err(|err| WorkflowError::TaskTracker(err.to_string()))?;
+        let task = self
+            .create_tracked_task(
+                format!("thunk:{} [{}]", thunk.thunk_obj_id, run.run_id),
+                WORKFLOW_THUNK_SCHEMA_ID.to_string(),
+                thunk_task_data(run, thunk),
+                Some(parent_id),
+                format!("wf-thunk-{}-{}", run.run_id, thunk.thunk_obj_id),
+            )
+            .await?;
         self.state
             .lock()
             .await
@@ -527,7 +553,12 @@ impl TaskManagerTaskTracker {
             return Ok(());
         }
         let task = self
-            .write_progress(&client, task, Some(progress_data.clone()), Some(message.clone()))
+            .write_progress(
+                &client,
+                task,
+                Some(progress_data.clone()),
+                Some(message.clone()),
+            )
             .await?;
         let result = match desired {
             MirrorState::Pending => Ok(task),
@@ -550,7 +581,7 @@ impl TaskManagerTaskTracker {
                 .commit_result(buckyos_api::CommitResultReq {
                     task_id: task.task_id.clone(),
                     result: progress_data,
-                    app_instance_id: None,
+                    app_instance_id: runner_envelope(&task).app_instance_id,
                     runner_epoch: Some(task.runner_epoch),
                     expected_revision: task.revision,
                 })
@@ -604,11 +635,7 @@ impl TaskManagerTaskTracker {
         result.map(|_| ())
     }
 
-    async fn drive_running(
-        &self,
-        client: &TaskManagerClient,
-        task: Task,
-    ) -> WorkflowResult<Task> {
+    async fn drive_running(&self, client: &TaskManagerClient, task: Task) -> WorkflowResult<Task> {
         match task.phase {
             TaskPhase::Accepted => client
                 .report_started(buckyos_api::ReportStartedReq {
@@ -654,9 +681,15 @@ enum MirrorState {
 }
 
 fn runner_envelope(task: &Task) -> buckyos_api::RunnerWriteEnvelope {
+    let app_instance_id = match &task.executor {
+        TaskExecutor::App {
+            app_instance_id, ..
+        } => app_instance_id.clone(),
+        _ => None,
+    };
     buckyos_api::RunnerWriteEnvelope {
         task_id: task.task_id.clone(),
-        app_instance_id: None,
+        app_instance_id,
         runner_epoch: task.runner_epoch,
         expected_revision: task.revision,
     }

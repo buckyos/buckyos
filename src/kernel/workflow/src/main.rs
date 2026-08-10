@@ -147,7 +147,6 @@ pub async fn start_workflow_service() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("workflow service login failed: {:?}", err))?;
     runtime.set_main_service_port(WORKFLOW_SERVICE_PORT).await;
     let buckyos_root = runtime.buckyos_root_dir.clone();
-    let user_id = runtime.user_id.clone().unwrap_or_default();
     let app_id = runtime.app_id.clone();
 
     set_buckyos_api_runtime(runtime)
@@ -155,7 +154,7 @@ pub async fn start_workflow_service() -> Result<()> {
 
     // §6.3：Run / Step / Map shard / Thunk 同步到 task_manager。每次操作从
     // runtime 获取短 session client，task_manager 暂时不可用时由调用路径降级。
-    let tracker = ServiceTracker::from_runtime(user_id.clone(), app_id.clone());
+    let tracker = ServiceTracker::from_runtime(app_id.clone());
     info!("workflow tracker bound to task_manager runtime client");
 
     // §1.2 / §9：一期 P0 必须有的 service:: adapter。aicc 暂时不可用不影响
@@ -169,10 +168,7 @@ pub async fn start_workflow_service() -> Result<()> {
     let runs = Arc::new(RunStore::new());
     // schedule 的唯一真相源是 Task DB（task_type=workflow/schedule 的 root task）。
     // 这里只持有内存运行投影，启动时从 Task DB 重建；自身不落盘。
-    let schedule_mirror = Arc::new(ScheduleTaskMirrorClient::from_runtime(
-        user_id.clone(),
-        app_id.clone(),
-    ));
+    let schedule_mirror = Arc::new(ScheduleTaskMirrorClient::from_runtime(app_id.clone()));
     // hydrate 不在 boot 时一次性做（task_mgr 可能尚未就绪）；交给 scan 循环
     // 首个 tick 起持续重试直到成功，见 WorkflowRpcHandler::ensure_schedules_hydrated。
     let schedules = Arc::new(ScheduleStore::new_memory());

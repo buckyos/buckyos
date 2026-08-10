@@ -396,19 +396,15 @@ impl ServiceTracker {
         }
     }
 
-    pub fn from_task_manager(
-        client: Arc<TaskManagerClient>,
-        user_id: impl Into<String>,
-        app_id: impl Into<String>,
-    ) -> Self {
+    pub fn from_task_manager(client: Arc<TaskManagerClient>, app_id: impl Into<String>) -> Self {
         Self {
-            inner: TrackerKind::TaskManager(TaskManagerTaskTracker::new(client, user_id, app_id)),
+            inner: TrackerKind::TaskManager(TaskManagerTaskTracker::new(client, app_id)),
         }
     }
 
-    pub fn from_runtime(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
+    pub fn from_runtime(app_id: impl Into<String>) -> Self {
         Self {
-            inner: TrackerKind::TaskManager(TaskManagerTaskTracker::from_runtime(user_id, app_id)),
+            inner: TrackerKind::TaskManager(TaskManagerTaskTracker::from_runtime(app_id)),
         }
     }
 

@@ -246,6 +246,8 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 
 强约束：
 
+- `create_scheduled_task` 必须从已验证的 session token 取得调用者 `(user_id, app_id)`，请求中的 `owner` 只能作为一致性声明，不能覆盖调用者身份。
+- schedule root task 的 `creator` 必须等于该调用者；每次 fire 创建的 subtask，以及 `workflow.run` 展开的 Run / Step / Map shard / Thunk 任务，都必须继承这组 creator。Workflow 只作为受信创建控制面；executor 身份按 task type 单独绑定，不能因为经过 Workflow 中转而改变任务 creator。
 - 一个 schedule 必须对应一个 TaskMgr root task，类型为 `workflow/schedule`。root task 创建失败时，enabled schedule 不应静默成功；fire 时 root task 不可用应返回明确错误或把 schedule 置为 `error`。
 - 每次 fire 必须创建一个 fire subtask，且固定 `parent_id = schedule.task_mirror.root_task_id`、`root_id = schedule.task_mirror.root_id`。模板不能覆盖这两个绑定。
 - schedule 内核不 hardcode `remind` / `agent_task` / RPC 业务逻辑。subtask 创建后由拥有该 `task_type` 的 Service 接管执行（beta2.2 起没有 TaskMgr runner 路由），例如 `agent.delegate` 由 OpenDAN AgentTaskExecutor 按 task_type + data 内目标 agent 处理，`workflow.run` 进入 workflow run 机制。
@@ -417,7 +419,7 @@ Workflow schedule 是 trigger 真相源，不是业务 executor。它只负责�
 | 维度 | 要求 |
 |------|------|
 | 身份 | 复用 buckyos-api 的 zone-internal kRPC 身份；外部入口经过 cyfs gateway 鉴权 |
-| Owner | 每个 Definition / Run 带 `(user_id, app_id)`；list / get / mutate 一律按 owner 过滤 |
+| Owner | 每个 Definition / Run 带 `(user_id, app_id)`；list / get / mutate 一律按 owner 过滤。计划任务及其派生任务的 TaskMgr `creator` 始终是创建 schedule 的已认证调用者，不是 Workflow service |
 | ACL | Step / Run task 的 TaskData 写权限由 task_manager 校验；workflow 把 DSL 中声明的 stakeholders 同步到对应子任务的 ACL 上，不再在 workflow 自己实现一套 step-level ACL |
 | 调度器身份 | scheduler 不直接调 workflow 的 RPC，但写 task_manager 中归属于本 Run 任务树的 Thunk task；ACL 由 task_manager 校验“写者必须是 owner 该子任务的服务身份” |
 | Secrets | DSL 中不能出现明文 secret；`http::` adapter 的认证信息必须存放在 endpoint registry，按 endpoint id 引用 |

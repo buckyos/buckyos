@@ -1,10 +1,10 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, parse_typed_task_data, CreateTaskExecutor, CreateTaskReq,
-    GetSubtasksReq, ListTasksReq, ReportProgressReq, ReportRunningReq, ReportStartedReq,
-    ReportWaitingReq, RunnerWriteEnvelope, Task, TaskManagerClient, TaskPhase, TaskWaitReason,
-    TaskWaitReasonKind, TypedTaskData, WorkflowScheduleOwner, WorkflowSchedulePolicy,
-    WorkflowScheduleTaskData, WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult,
-    WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
+    get_buckyos_api_runtime, parse_typed_task_data, ActorRef, BindAppExecutorReq,
+    CreatePromisedTaskReq, GetSubtasksReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
+    ReportStartedReq, ReportWaitingReq, RunnerWriteEnvelope, Task, TaskExecutor, TaskManagerClient,
+    TaskPhase, TaskWaitReason, TaskWaitReasonKind, TypedTaskData, WorkflowScheduleOwner,
+    WorkflowSchedulePolicy, WorkflowScheduleTaskData, WorkflowScheduleTaskRequest,
+    WorkflowScheduleTaskResult, WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
 };
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -258,7 +258,8 @@ impl ScheduleStore {
             if guard.schedules.contains_key(&schedule.schedule_id) {
                 continue;
             }
-            if schedule.status == ScheduleStatus::Running && is_reboot_schedule(&schedule.schedule) {
+            if schedule.status == ScheduleStatus::Running && is_reboot_schedule(&schedule.schedule)
+            {
                 schedule.state.next_fire_at = Some(now);
             }
             guard
@@ -410,27 +411,20 @@ impl ScheduleStore {
 
 pub struct ScheduleTaskMirrorClient {
     client: Option<Arc<TaskManagerClient>>,
-    user_id: String,
     app_id: String,
 }
 
 impl ScheduleTaskMirrorClient {
-    pub fn new(
-        client: Arc<TaskManagerClient>,
-        user_id: impl Into<String>,
-        app_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(client: Arc<TaskManagerClient>, app_id: impl Into<String>) -> Self {
         Self {
             client: Some(client),
-            user_id: user_id.into(),
             app_id: app_id.into(),
         }
     }
 
-    pub fn from_runtime(user_id: impl Into<String>, app_id: impl Into<String>) -> Self {
+    pub fn from_runtime(app_id: impl Into<String>) -> Self {
         Self {
             client: None,
-            user_id: user_id.into(),
             app_id: app_id.into(),
         }
     }
@@ -458,29 +452,19 @@ impl ScheduleTaskMirrorClient {
         // The schedule id doubles as the idempotency key, so create is also
         // the find path after a restart (no separate scan needed).
         let task_name = schedule_root_task_name(schedule);
-        let client = self.client().await?;
-        let task = client
-            .create_task(CreateTaskReq {
-                name: task_name,
-                schema_id: WORKFLOW_SCHEDULE_SCHEMA_ID.to_string(),
-                schema_version: None,
-                input: schedule_task_data(schedule),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
-                parent_id: None,
-                child_control_policy: None,
-                policy_preset: None,
-                permission_boundary: false,
-                idempotency_key: format!("wf-schedule-{}", schedule.schedule_id),
-                retry_of: None,
-                supersedes: None,
-                message: None,
-            })
-            .await
-            .map_err(|err| err.to_string())?;
+        let task = self
+            .create_delegated_app_task(
+                task_name,
+                WORKFLOW_SCHEDULE_SCHEMA_ID.to_string(),
+                schedule_task_data(schedule),
+                ActorRef::new(&schedule.owner.user_id, &schedule.owner.app_id),
+                None,
+                format!("wf-schedule-{}", schedule.schedule_id),
+            )
+            .await?;
         let task_id = task.task_id.clone();
-        self.update_root_task_by_id(task_id.clone(), schedule).await?;
+        self.update_root_task_by_id(task_id.clone(), schedule)
+            .await?;
         Ok(ScheduleTaskMirror {
             root_task_id: Some(task_id.clone()),
             root_id: Some(task_id),
@@ -503,16 +487,14 @@ impl ScheduleTaskMirrorClient {
         schedule: &WorkflowSchedule,
     ) -> Result<(), String> {
         let client = self.client().await?;
-        let task = client.get_task(&task_id).await.map_err(|err| err.to_string())?;
+        let task = client
+            .get_task(&task_id)
+            .await
+            .map_err(|err| err.to_string())?;
         if task.phase.is_terminal() {
             return Ok(());
         }
-        let envelope = |task: &Task| RunnerWriteEnvelope {
-            task_id: task.task_id.clone(),
-            app_instance_id: None,
-            runner_epoch: task.runner_epoch,
-            expected_revision: task.revision,
-        };
+        let envelope = task_runner_envelope;
         let task = client
             .report_progress(ReportProgressReq {
                 envelope: envelope(&task),
@@ -573,36 +555,83 @@ impl ScheduleTaskMirrorClient {
     pub async fn create_fire_subtask(
         &self,
         schedule: &WorkflowSchedule,
+        fire: &ScheduleFireRecord,
         rendered: &RenderedScheduleSubtask,
     ) -> Result<String, String> {
         let Some(parent_id) = schedule.task_mirror.root_task_id.clone() else {
             return Err("schedule root task is missing".to_string());
         };
-        // 2.0: the fire subtask's creator is the workflow service identity
-        // from the session token; the business owner stays recorded in the
-        // schedule payload and gains visibility through the task tree.
+        let client = self.client().await?;
+        let parent = client
+            .get_task(&parent_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        let task = self
+            .create_delegated_app_task(
+                rendered.name.clone(),
+                fire_subtask_schema_id(rendered.task_type.as_str()),
+                rendered.data.clone(),
+                parent.creator,
+                Some(parent_id),
+                format!("wf-fire-{}-{}", schedule.schedule_id, fire.fire_time),
+            )
+            .await?;
+        Ok(task.task_id)
+    }
+
+    async fn create_delegated_app_task(
+        &self,
+        name: String,
+        schema_id: String,
+        input: Value,
+        creator: ActorRef,
+        parent_id: Option<String>,
+        idempotency_key: String,
+    ) -> Result<Task, String> {
         let client = self.client().await?;
         let task = client
-            .create_task(CreateTaskReq {
-                name: rendered.name.clone(),
-                schema_id: fire_subtask_schema_id(rendered.task_type.as_str()),
+            .create_promised_task(CreatePromisedTaskReq {
+                name,
+                schema_id,
                 schema_version: None,
-                input: rendered.data.clone(),
-                executor: CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
-                parent_id: Some(parent_id),
+                input,
+                creator,
+                expected_input_digest: None,
+                origin_ref: None,
+                parent_id,
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
-                idempotency_key: format!("wf-fire-{}", uuid::Uuid::new_v4().simple()),
-                retry_of: None,
-                supersedes: None,
+                idempotency_key: idempotency_key.clone(),
+                wait_reason: None,
                 message: None,
             })
             .await
             .map_err(|err| err.to_string())?;
-        Ok(task.task_id)
+        match &task.executor {
+            TaskExecutor::Unbound => client
+                .bind_app_executor(BindAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    target_id: None,
+                    app_id: self.app_id.clone(),
+                    app_instance_id: self.app_id.clone(),
+                    delivery_id: Some(idempotency_key),
+                    expected_revision: task.revision,
+                })
+                .await
+                .map_err(|err| err.to_string()),
+            TaskExecutor::App {
+                app_id,
+                app_instance_id,
+                ..
+            } if app_id == &self.app_id && app_instance_id.as_deref() == Some(&self.app_id) => {
+                Ok(task)
+            }
+            _ => Err(format!(
+                "delegated task {} has an unexpected executor",
+                task.task_id
+            )),
+        }
     }
 
     pub async fn active_fire_subtasks(&self, schedule: &WorkflowSchedule) -> Result<u32, String> {
@@ -707,9 +736,24 @@ fn schedule_task_payload(task: &Task) -> Value {
         .unwrap_or_else(|| task.input.clone())
 }
 
+fn task_runner_envelope(task: &Task) -> RunnerWriteEnvelope {
+    let app_instance_id = match &task.executor {
+        TaskExecutor::App {
+            app_instance_id, ..
+        } => app_instance_id.clone(),
+        _ => None,
+    };
+    RunnerWriteEnvelope {
+        task_id: task.task_id.clone(),
+        app_instance_id,
+        runner_epoch: task.runner_epoch,
+        expected_revision: task.revision,
+    }
+}
+
 /// Task（workflow/schedule root task）→ WorkflowSchedule 的无损反序列化。
-/// schedule_id / created_at / task_mirror 直接取自 Task 列；owner/policy/
-/// description 取自 TaskData（Task 列里没有）；schedule/target/state 取自 TaskData。
+/// schedule_id / created_at / task_mirror / owner 直接取自 Task 列；policy/
+/// description 取自 TaskData；schedule/target/state 取自 TaskData。
 fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
     let data = match parse_typed_task_data("workflow/schedule", schedule_task_payload(task)) {
         Ok(TypedTaskData::WorkflowSchedule(data)) => data,
@@ -728,16 +772,10 @@ fn schedule_from_task(task: &Task) -> Option<WorkflowSchedule> {
         .as_deref()
         .and_then(ScheduleStatus::from_str_loose)
         .unwrap_or(ScheduleStatus::Running);
-    let owner = req
-        .owner
-        .map(|o| Owner {
-            user_id: o.user_id,
-            app_id: o.app_id,
-        })
-        .unwrap_or_else(|| Owner {
-            user_id: task.creator.user_id.clone(),
-            app_id: task.creator.app_id.clone(),
-        });
+    let owner = Owner {
+        user_id: task.creator.user_id.clone(),
+        app_id: task.creator.app_id.clone(),
+    };
     let policy = req.policy.map(policy_from_typed).unwrap_or_default();
     let result = data.result.unwrap_or_default();
     let state = ScheduleState {

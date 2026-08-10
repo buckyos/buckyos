@@ -18,7 +18,7 @@
 //! 形态调用方使用，后者由直连 HTTP 客户端使用——同 msg_center / aicc 的惯例。
 
 use ::kRPC::*;
-use buckyos_api::WorkflowDefinition;
+use buckyos_api::{get_buckyos_api_runtime, WorkflowDefinition};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -35,8 +35,7 @@ use crate::scheduled_task_manager::{
     due_fire_times, is_reboot_schedule, next_fire_after, next_fire_times, render_subtask_template,
     rfc3339, schedule_policy_from_value, schedule_spec_from_value, schedule_target_from_value,
     schedule_workflow_id, validate_subtask_template, FireStatus, MisfirePolicy, ScheduleFireRecord,
-    ScheduleSpec, ScheduleState, ScheduleStatus, ScheduleStore, ScheduleTarget,
-    ScheduleTaskMirror,
+    ScheduleSpec, ScheduleState, ScheduleStatus, ScheduleStore, ScheduleTarget, ScheduleTaskMirror,
     ScheduleTaskMirrorClient, WorkflowSchedule,
 };
 use crate::state::{
@@ -46,6 +45,36 @@ use crate::state::{
 use crate::subscriptions::RunSubscriptionManager;
 
 type RpcResult<T> = std::result::Result<T, RPCErrors>;
+
+#[async_trait::async_trait]
+trait WorkflowCallerVerifier: Send + Sync {
+    async fn verify(&self, ctx: &RPCContext) -> RpcResult<Owner>;
+}
+
+struct RuntimeWorkflowCallerVerifier;
+
+#[async_trait::async_trait]
+impl WorkflowCallerVerifier for RuntimeWorkflowCallerVerifier {
+    async fn verify(&self, ctx: &RPCContext) -> RpcResult<Owner> {
+        let token = ctx
+            .token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                RPCErrors::NoPermission("workflow requires a session token".to_string())
+            })?;
+        let verified = get_buckyos_api_runtime()?
+            .verify_trusted_session_token(token)
+            .await?;
+        let (user_id, app_id) = verified.get_subs()?;
+        if user_id.trim().is_empty() || app_id.trim().is_empty() {
+            return Err(RPCErrors::InvalidToken(
+                "workflow caller identity is incomplete".to_string(),
+            ));
+        }
+        Ok(Owner { user_id, app_id })
+    }
+}
 
 pub type ServiceOrchestrator =
     WorkflowOrchestrator<InMemoryThunkDispatcher, InMemoryObjectStore, ServiceTracker>;
@@ -57,6 +86,7 @@ pub struct WorkflowRpcHandler {
     schedules: Arc<ScheduleStore>,
     orchestrator: Arc<ServiceOrchestrator>,
     schedule_mirror: Option<Arc<ScheduleTaskMirrorClient>>,
+    caller_verifier: Arc<dyn WorkflowCallerVerifier>,
     /// schedule 内存投影是否已从 Task DB 灌入。boot 时 task_mgr 可能尚未就绪，
     /// 加载会失败；由 scan 循环每 tick 重试直到成功（对齐 kevent+sweep 兜底）。
     schedules_hydrated: std::sync::atomic::AtomicBool,
@@ -79,6 +109,7 @@ impl WorkflowRpcHandler {
             schedules: Arc::new(ScheduleStore::new_memory()),
             orchestrator,
             schedule_mirror: None,
+            caller_verifier: Arc::new(RuntimeWorkflowCallerVerifier),
             schedules_hydrated: std::sync::atomic::AtomicBool::new(false),
             schedules_hydrate_warned: std::sync::atomic::AtomicBool::new(false),
             subscriptions: None,
@@ -95,6 +126,12 @@ impl WorkflowRpcHandler {
         self
     }
 
+    #[cfg(test)]
+    fn with_caller_verifier(mut self, verifier: Arc<dyn WorkflowCallerVerifier>) -> Self {
+        self.caller_verifier = verifier;
+        self
+    }
+
     pub fn with_subscriptions(mut self, subscriptions: Arc<RunSubscriptionManager>) -> Self {
         self.subscriptions = Some(subscriptions);
         self
@@ -103,9 +140,10 @@ impl WorkflowRpcHandler {
     pub async fn handle_rpc_call(
         &self,
         req: RPCRequest,
-        _ip_from: IpAddr,
+        ip_from: IpAddr,
     ) -> RpcResult<RPCResponse> {
         let method = canonical_method(&req.method);
+        let ctx = RPCContext::from_request(&req, ip_from);
 
         let result = match method {
             // §3.1 Definition
@@ -132,7 +170,10 @@ impl WorkflowRpcHandler {
             "get_history" => self.get_history(&req.params).await,
             "subscribe_events" => self.subscribe_events(&req.params).await,
             // Schedule / Trigger
-            "create_scheduled_task" => self.create_scheduled_task(&req.params).await,
+            "create_scheduled_task" => {
+                let owner = self.authenticated_schedule_owner(&req.params, &ctx).await?;
+                self.create_scheduled_task(&req.params, owner).await
+            }
             "update_scheduled_task" => self.update_scheduled_task(&req.params).await,
             "get_scheduled_task" => self.get_scheduled_task(&req.params).await,
             "list_scheduled_tasks" => self.list_scheduled_tasks(&req.params).await,
@@ -697,8 +738,7 @@ impl WorkflowRpcHandler {
 
     // ----- Schedule / Trigger -------------------------------------------
 
-    async fn create_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        let owner = require_owner(params)?;
+    async fn create_scheduled_task(&self, params: &Value, owner: Owner) -> RpcResult<Value> {
         let name = require_string(params, "name")?;
         let description = params
             .get("description")
@@ -742,6 +782,22 @@ impl WorkflowRpcHandler {
             "schedule_id": record.schedule_id,
             "schedule": record.to_value(),
         }))
+    }
+
+    async fn authenticated_schedule_owner(
+        &self,
+        params: &Value,
+        ctx: &RPCContext,
+    ) -> RpcResult<Owner> {
+        let requested = require_owner(params)?;
+        let authenticated = self.caller_verifier.verify(ctx).await?;
+        if requested != authenticated {
+            return Err(RPCErrors::NoPermission(format!(
+                "schedule owner {}:{} does not match authenticated caller {}:{}",
+                requested.user_id, requested.app_id, authenticated.user_id, authenticated.app_id
+            )));
+        }
+        Ok(authenticated)
     }
 
     async fn update_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
@@ -818,7 +874,8 @@ impl WorkflowRpcHandler {
     }
 
     async fn pause_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        self.set_schedule_status(params, ScheduleStatus::Paused).await
+        self.set_schedule_status(params, ScheduleStatus::Paused)
+            .await
     }
 
     async fn resume_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
@@ -842,10 +899,15 @@ impl WorkflowRpcHandler {
     }
 
     async fn archive_scheduled_task(&self, params: &Value) -> RpcResult<Value> {
-        self.set_schedule_status(params, ScheduleStatus::Canceled).await
+        self.set_schedule_status(params, ScheduleStatus::Canceled)
+            .await
     }
 
-    async fn set_schedule_status(&self, params: &Value, status: ScheduleStatus) -> RpcResult<Value> {
+    async fn set_schedule_status(
+        &self,
+        params: &Value,
+        status: ScheduleStatus,
+    ) -> RpcResult<Value> {
         let schedule_id = require_string(params, "schedule_id")?;
         let updated = self
             .schedules
@@ -1206,7 +1268,10 @@ impl WorkflowRpcHandler {
                     .fail_schedule_fire(&schedule, &fire, "task_manager_unavailable".to_string())
                     .await);
             };
-            let task_id = match mirror.create_fire_subtask(&schedule, &rendered).await {
+            let task_id = match mirror
+                .create_fire_subtask(&schedule, &fire, &rendered)
+                .await
+            {
                 Ok(task_id) => task_id,
                 Err(err) => {
                     return Err(self.fail_schedule_fire(&schedule, &fire, err).await);
@@ -1556,14 +1621,13 @@ mod tests {
     use super::*;
     use crate::{ExecutorRegistry, InMemoryObjectStore, InMemoryThunkDispatcher};
     use buckyos_api::{
-        ActorRef, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetSubtasksReq,
-        GetTaskReq, ListTaskNotesReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
-        ReportStartedReq, ReportWaitingReq, Task, TaskControlProfile, TaskExecutor,
-        TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary,
-        TaskSummaryPage,
+        ActorRef, BindAppExecutorReq, CommitResultReq, CreatePromisedTaskReq, CreateTaskExecutor,
+        CreateTaskReq, FailTaskReq, GetSubtasksReq, GetTaskReq, ListTaskNotesReq, ListTasksReq,
+        ReportProgressReq, ReportRunningReq, ReportStartedReq, ReportWaitingReq, Task,
+        TaskControlProfile, TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote,
+        TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage, TaskWaitReason, TaskWaitReasonKind,
     };
     use std::collections::HashMap;
-    use std::ops::Range;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -1596,11 +1660,7 @@ mod tests {
             self.inner.lock().await.tasks.get(id).cloned()
         }
 
-        async fn edit(
-            &self,
-            id: &str,
-            edit: impl FnOnce(&mut Task),
-        ) -> Result<Task> {
+        async fn edit(&self, id: &str, edit: impl FnOnce(&mut Task)) -> Result<Task> {
             let mut guard = self.inner.lock().await;
             let task = guard
                 .tasks
@@ -1637,11 +1697,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl TaskManagerHandler for MemoryTaskManager {
-        async fn handle_create_task(
-            &self,
-            req: CreateTaskReq,
-            _ctx: RPCContext,
-        ) -> Result<Task> {
+        async fn handle_create_task(&self, req: CreateTaskReq, _ctx: RPCContext) -> Result<Task> {
             let mut guard = self.inner.lock().await;
             let id = guard.next_id;
             guard.next_id += 1;
@@ -1711,11 +1767,95 @@ mod tests {
             Ok(task)
         }
 
-        async fn handle_get_task(
+        async fn handle_create_promised_task(
             &self,
-            req: GetTaskReq,
+            req: CreatePromisedTaskReq,
             _ctx: RPCContext,
         ) -> Result<Task> {
+            let mut guard = self.inner.lock().await;
+            if let Some(existing) = guard
+                .tasks
+                .values()
+                .find(|task| task.idempotency_key == req.idempotency_key)
+            {
+                return Ok(existing.clone());
+            }
+            let id = guard.next_id;
+            guard.next_id += 1;
+            let task_id = format!("t-mem-{id}");
+            let root_id = match req.parent_id.as_deref() {
+                Some(parent) => guard
+                    .tasks
+                    .get(parent)
+                    .map(|task| task.root_id.clone())
+                    .unwrap_or_else(|| task_id.clone()),
+                None => task_id.clone(),
+            };
+            let input_digest = buckyos_api::compute_task_input_digest(&req.input);
+            let task = Task {
+                task_id: task_id.clone(),
+                name: req.name,
+                parent_id: req.parent_id,
+                root_id,
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                schema_id: req.schema_id,
+                schema_version: req.schema_version.unwrap_or(1),
+                input: req.input,
+                input_digest,
+                creator: req.creator,
+                idempotency_key: req.idempotency_key,
+                origin_ref: req.origin_ref,
+                retry_of: None,
+                supersedes: None,
+                executor: TaskExecutor::Unbound,
+                runner_epoch: 0,
+                assignees: None,
+                phase: TaskPhase::Promised,
+                wait_reason: req
+                    .wait_reason
+                    .or_else(|| Some(TaskWaitReason::new(TaskWaitReasonKind::Dispatch))),
+                pending_control: None,
+                control_profile: TaskControlProfile::baseline(1),
+                progress: None,
+                message: req.message,
+                outcome: None,
+                result: None,
+                error: None,
+                completed_by: None,
+                policy_preset: req
+                    .policy_preset
+                    .unwrap_or_else(|| "collaborative-tree/v1".to_string()),
+                permission_boundary: req.permission_boundary,
+                revision: 1,
+                data_scope: None,
+                created_at: 1,
+                updated_at: 1,
+                completed_at: None,
+                archived_at: None,
+            };
+            guard.tasks.insert(task_id, task.clone());
+            Ok(task)
+        }
+
+        async fn handle_bind_app_executor(
+            &self,
+            req: BindAppExecutorReq,
+            _ctx: RPCContext,
+        ) -> Result<Task> {
+            self.edit(&req.task_id, |task| {
+                task.executor = TaskExecutor::App {
+                    target_id: req.target_id.clone(),
+                    app_id: req.app_id.clone(),
+                    app_instance_id: Some(req.app_instance_id.clone()),
+                };
+                task.runner_epoch += 1;
+                task.phase = TaskPhase::Accepted;
+                task.wait_reason = None;
+            })
+            .await
+        }
+
+        async fn handle_get_task(&self, req: GetTaskReq, _ctx: RPCContext) -> Result<Task> {
             self.inner
                 .lock()
                 .await
@@ -1831,11 +1971,7 @@ mod tests {
             .await
         }
 
-        async fn handle_fail_task(
-            &self,
-            req: FailTaskReq,
-            _ctx: RPCContext,
-        ) -> Result<Task> {
+        async fn handle_fail_task(&self, req: FailTaskReq, _ctx: RPCContext) -> Result<Task> {
             self.edit(&req.envelope.task_id, |task| {
                 task.error = Some(req.error.clone());
                 task.outcome = Some(TaskOutcome::Failed);
@@ -1953,37 +2089,79 @@ mod tests {
         })
     }
 
+    struct TestWorkflowCallerVerifier;
+
+    #[async_trait::async_trait]
+    impl WorkflowCallerVerifier for TestWorkflowCallerVerifier {
+        async fn verify(&self, ctx: &RPCContext) -> RpcResult<Owner> {
+            let token = ctx
+                .token
+                .as_deref()
+                .ok_or_else(|| RPCErrors::NoPermission("missing test token".to_string()))?;
+            let (user_id, app_id) = token
+                .split_once('|')
+                .ok_or_else(|| RPCErrors::InvalidToken("invalid test token".to_string()))?;
+            Ok(Owner {
+                user_id: user_id.to_string(),
+                app_id: app_id.to_string(),
+            })
+        }
+    }
+
     fn make_handler() -> WorkflowRpcHandler {
         make_handler_with_tasks().0
     }
 
     fn make_handler_with_tasks() -> (WorkflowRpcHandler, MemoryTaskManager) {
+        make_handler_with_tasks_and_tracker(false)
+    }
+
+    fn make_handler_with_tracked_tasks() -> (WorkflowRpcHandler, MemoryTaskManager) {
+        make_handler_with_tasks_and_tracker(true)
+    }
+
+    fn make_handler_with_tasks_and_tracker(
+        track_tasks: bool,
+    ) -> (WorkflowRpcHandler, MemoryTaskManager) {
         let definitions = Arc::new(DefinitionStore::new());
         let runs = Arc::new(RunStore::new());
         let dispatcher = Arc::new(InMemoryThunkDispatcher::new());
         let object_store = Arc::new(InMemoryObjectStore::new());
-        let tracker = Arc::new(ServiceTracker::noop());
-        let orchestrator = Arc::new(
-            WorkflowOrchestrator::new(dispatcher, object_store, tracker)
-                .with_executor_registry(Arc::new(ExecutorRegistry::new())),
-        );
         let task_manager = MemoryTaskManager::new();
         let task_client = Arc::new(TaskManagerClient::new_in_process(Box::new(
             task_manager.clone(),
         )));
-        let handler =
-            WorkflowRpcHandler::new(definitions, runs, orchestrator).with_schedule_mirror(
-                Arc::new(ScheduleTaskMirrorClient::new(task_client, "u", "workflow")),
-            );
+        let tracker = Arc::new(if track_tasks {
+            ServiceTracker::from_task_manager(task_client.clone(), "workflow")
+        } else {
+            ServiceTracker::noop()
+        });
+        let orchestrator = Arc::new(
+            WorkflowOrchestrator::new(dispatcher, object_store, tracker)
+                .with_executor_registry(Arc::new(ExecutorRegistry::new())),
+        );
+        let handler = WorkflowRpcHandler::new(definitions, runs, orchestrator)
+            .with_schedule_mirror(Arc::new(ScheduleTaskMirrorClient::new(
+                task_client,
+                "workflow",
+            )))
+            .with_caller_verifier(Arc::new(TestWorkflowCallerVerifier));
         (handler, task_manager)
     }
 
     fn make_req(method: &str, params: Value) -> RPCRequest {
+        let token = params.get("owner").and_then(|owner| {
+            Some(format!(
+                "{}|{}",
+                owner.get("user_id")?.as_str()?,
+                owner.get("app_id")?.as_str()?
+            ))
+        });
         RPCRequest {
             method: method.to_string(),
             params,
             seq: 1,
-            token: None,
+            token,
             trace_id: None,
         }
     }
@@ -2230,8 +2408,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_scheduled_task_now_is_idempotent_by_fire_time() {
+    async fn create_scheduled_task_rejects_owner_different_from_authenticated_caller() {
         let handler = make_handler();
+        let mut req = make_req(
+            "create_scheduled_task",
+            json!({
+                "owner": {"user_id": "u", "app_id": "agent-a"},
+                "name": "forged-owner",
+                "schedule": {"kind": "once", "run_at": Utc::now().timestamp() + 3600},
+                "target": {"kind": "remind", "text": "drink water", "to": "self"},
+            }),
+        );
+        req.token = Some("u|agent-b".to_string());
+        let err = handler
+            .handle_rpc_call(req, "127.0.0.1".parse().unwrap())
+            .await
+            .expect_err("forged schedule owner must be rejected");
+        assert!(matches!(err, RPCErrors::NoPermission(_)));
+    }
+
+    #[tokio::test]
+    async fn run_scheduled_task_now_is_idempotent_by_fire_time() {
+        let (handler, tasks) = make_handler_with_tracked_tasks();
         let submit = handler
             .handle_rpc_call(
                 make_req(
@@ -2265,8 +2463,14 @@ mod tests {
             )
             .await
             .unwrap();
-        let schedule_id = match create.result {
-            RPCResult::Success(v) => v["schedule_id"].as_str().unwrap().to_string(),
+        let (schedule_id, root_task_id) = match create.result {
+            RPCResult::Success(v) => (
+                v["schedule_id"].as_str().unwrap().to_string(),
+                v["schedule"]["task_mirror"]["root_task_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            ),
             RPCResult::Failed(err) => panic!("create schedule failed: {:?}", err),
         };
         let fire_time = Utc::now().timestamp();
@@ -2287,6 +2491,12 @@ mod tests {
         assert_eq!(first_value["ok"], true);
         assert_eq!(first_value["fire"]["status"], "task_created");
         let first_run_id = first_value["fire"]["run_id"].as_str().unwrap().to_string();
+        let first_task_id = first_value["fire"]["task_id"].as_str().unwrap();
+        let root_task = tasks.get(&root_task_id).await.unwrap();
+        let run_task = tasks.get(first_task_id).await.unwrap();
+        assert_eq!(root_task.creator, ActorRef::new("u", "a"));
+        assert_eq!(run_task.creator, root_task.creator);
+        assert_eq!(run_task.parent_id.as_deref(), Some(root_task_id.as_str()));
 
         let second = handler
             .handle_rpc_call(
@@ -2357,9 +2567,12 @@ mod tests {
         assert_eq!(value["fire"]["status"], "task_created");
         let task_id = value["fire"]["task_id"].as_str().unwrap().to_string();
         let task = tasks.get(&task_id).await.unwrap();
+        let root = tasks.get(&root_task_id).await.unwrap();
         assert_eq!(task.schema_id, "agent.delegate/v1");
         assert_eq!(task.parent_id, Some(root_task_id.clone()));
         assert_eq!(task.root_id, root_task_id);
+        assert_eq!(root.creator, ActorRef::new("u", "agent-a"));
+        assert_eq!(task.creator, root.creator);
     }
 
     #[tokio::test]
@@ -2414,9 +2627,9 @@ mod tests {
 
     #[tokio::test]
     async fn fire_remind_records_subtask_under_schedule_owner() {
-        // beta2.2: the workflow service creates fire subtasks under the
-        // schedule owner it authenticated at registration time — there is no
-        // identity-downgrade retry anymore.
+        // beta2.2: the schedule root and every fire task keep the original
+        // authenticated caller as creator; Workflow is only the control plane
+        // and bound executor.
         let (handler, tasks) = make_handler_with_tasks();
         let run_at = Utc::now().timestamp() + 3600;
         let create = handler
@@ -2460,10 +2673,12 @@ mod tests {
         };
         let task_id = value["fire"]["task_id"].as_str().unwrap().to_string();
         let task = tasks.get(&task_id).await.unwrap();
+        let root = tasks.get(&root_task_id).await.unwrap();
         assert_eq!(task.schema_id, "workflow.send_message/v1");
         assert_eq!(task.parent_id, Some(root_task_id.clone()));
         assert_eq!(task.creator.user_id, "u");
-        assert_eq!(task.creator.app_id, "workflow");
+        assert_eq!(task.creator.app_id, "agent-a");
+        assert_eq!(task.creator, root.creator);
     }
 
     #[tokio::test]

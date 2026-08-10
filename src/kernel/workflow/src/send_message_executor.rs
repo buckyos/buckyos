@@ -1,7 +1,7 @@
 use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, CommitResultReq, FailTaskReq, ListTasksReq,
     MsgCenterClient, ReportStartedReq, RunnerWriteEnvelope, SendMessageTaskData, Task, TaskError,
-    TaskManagerClient, TaskPhase, TypedTaskData,
+    TaskExecutor, TaskManagerClient, TaskPhase, TypedTaskData,
 };
 use log::{info, warn};
 use serde_json::{json, Value};
@@ -86,7 +86,10 @@ impl SendMessageTaskExecutor {
                 Err(_) => continue,
             };
             if let Err(err) = self.execute_task(&task).await {
-                warn!("workflow.send_message task {} failed: {}", task.task_id, err);
+                warn!(
+                    "workflow.send_message task {} failed: {}",
+                    task.task_id, err
+                );
                 if let Err(update_err) = self.fail_task(&task.task_id, &err).await {
                     warn!(
                         "workflow.send_message task {} mark failed failed: {update_err}",
@@ -99,18 +102,16 @@ impl SendMessageTaskExecutor {
 
     async fn fail_task(&self, task_id: &str, message: &str) -> Result<(), String> {
         let client = self.task_mgr_client().await?;
-        let task = client.get_task(task_id).await.map_err(|err| err.to_string())?;
+        let task = client
+            .get_task(task_id)
+            .await
+            .map_err(|err| err.to_string())?;
         if task.phase.is_terminal() {
             return Ok(());
         }
         client
             .fail_task(FailTaskReq {
-                envelope: RunnerWriteEnvelope {
-                    task_id: task.task_id.clone(),
-                    app_instance_id: None,
-                    runner_epoch: task.runner_epoch,
-                    expected_revision: task.revision,
-                },
+                envelope: runner_envelope(&task),
                 error: TaskError::new("send_message_failed", message),
             })
             .await
@@ -123,12 +124,7 @@ impl SendMessageTaskExecutor {
         let client = self.task_mgr_client().await?;
         let task = client
             .report_started(ReportStartedReq {
-                envelope: RunnerWriteEnvelope {
-                    task_id: task_id.clone(),
-                    app_instance_id: None,
-                    runner_epoch: task.runner_epoch,
-                    expected_revision: task.revision,
-                },
+                envelope: runner_envelope(task),
             })
             .await
             .map_err(|err| format!("mark running failed: {err:?}"))?;
@@ -146,17 +142,16 @@ impl SendMessageTaskExecutor {
             .get(&schedule_id)
             .await
             .ok_or_else(|| format!("schedule `{schedule_id}` not found"))?;
-        // 2.0: fire subtasks are created by this workflow service itself, so
-        // creator must be our own identity — a foreign task cannot ride on
-        // someone else's schedule through this executor.
-        if let Ok(runtime) = get_buckyos_api_runtime() {
-            let own_app = runtime.get_app_id();
-            if task.creator.app_id != own_app {
-                return Err(format!(
-                    "task creator app {} is not this workflow service ({own_app})",
-                    task.creator.app_id
-                ));
-            }
+        if task.creator.user_id != schedule.owner.user_id
+            || task.creator.app_id != schedule.owner.app_id
+        {
+            return Err(format!(
+                "task creator {}/{} does not match schedule owner {}/{}",
+                task.creator.user_id,
+                task.creator.app_id,
+                schedule.owner.user_id,
+                schedule.owner.app_id
+            ));
         }
         let sender = resolve_sender_did(
             &self.buckyos_root,
@@ -201,7 +196,7 @@ impl SendMessageTaskExecutor {
             .commit_result(CommitResultReq {
                 task_id: task.task_id.clone(),
                 result: updated_data,
-                app_instance_id: None,
+                app_instance_id: runner_app_instance_id(&task),
                 runner_epoch: Some(task.runner_epoch),
                 expected_revision: task.revision,
             })
@@ -209,6 +204,24 @@ impl SendMessageTaskExecutor {
             .map_err(|err| format!("mark completed failed: {err:?}"))?;
         info!("workflow.send_message task {} sent", task_id);
         Ok(())
+    }
+}
+
+fn runner_app_instance_id(task: &Task) -> Option<String> {
+    match &task.executor {
+        TaskExecutor::App {
+            app_instance_id, ..
+        } => app_instance_id.clone(),
+        _ => None,
+    }
+}
+
+fn runner_envelope(task: &Task) -> RunnerWriteEnvelope {
+    RunnerWriteEnvelope {
+        task_id: task.task_id.clone(),
+        app_instance_id: runner_app_instance_id(task),
+        runner_epoch: task.runner_epoch,
+        expected_revision: task.revision,
     }
 }
 
