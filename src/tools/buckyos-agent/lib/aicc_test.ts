@@ -14,8 +14,11 @@ function runtimeWithTask(task: Record<string, unknown>): AiccRuntime {
     call: () => Promise.resolve({ task_id: "aicc-1", status: "running" }),
   };
   const taskMgr = {
-    call: (method: string) => {
-      if (method === "list_tasks") return Promise.resolve({ tasks: [task] });
+    call: (method: string, params: Record<string, unknown>) => {
+      if (method === "list_tasks") {
+        assertEquals(params, { task_type: "aicc.compute" });
+        return Promise.resolve({ tasks: [task] });
+      }
       if (method === "get_task") return Promise.resolve({ task });
       throw new Error(`unexpected method: ${method}`);
     },

@@ -200,8 +200,6 @@ async function waitForFinalTask(
   taskMgr: RpcClient,
   externalTaskId: string,
   method: string,
-  appId: string,
-  userId: string,
   deadlineMs: number,
 ): Promise<TaskRecord> {
   const startedAt = Date.now();
@@ -216,10 +214,7 @@ async function waitForFinalTask(
   while (Date.now() < deadlineMs) {
     reportRunning();
     const raw = await taskMgr.call("list_tasks", {
-      app_id: appId,
       task_type: "aicc.compute",
-      source_user_id: userId,
-      source_app_id: appId,
     });
     const tasks = normalizeTaskList(raw).sort(
       (a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0),
@@ -285,8 +280,6 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     taskMgr,
     response.task_id,
     opts.method,
-    runtime.appId,
-    runtime.userId,
     deadline,
   );
   if (finalTask.status === "Completed") {
