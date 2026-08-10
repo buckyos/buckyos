@@ -73,10 +73,41 @@ Target    --DeliveryPolicy + capacity------> TargetInstance
 | 组件 | 职责 | Dispatcher 与它的关系 |
 | --- | --- | --- |
 | TaskMgr | 长任务状态总账 | Dispatcher 不是 TaskMgr 的一部分抽象；同进程部署但独立 store、独立 RPC、独立授权。TaskMgr 对 Dispatcher 零依赖 |
-| Scheduler | 节点资源放置 | Dispatcher 可以选择实现 operation 的逻辑 Target，但不决定其节点位置；Target 在哪个节点运行由 Scheduler/部署决定 |
+| Scheduler | 节点资源放置 | Dispatcher 可以选择实现 operation 的逻辑 Target，但不决定其节点位置；Target 在哪个节点运行由 Scheduler/部署决定（边界原理见 §1.1.1） |
 | Workflow | 执行图编排 | Workflow 是调用者；DSL、分支、补偿、schedule 语义都不下沉到 Dispatcher |
 | 业务 RPC | 在线服务调用 | Target 在线且无需持久交接时，直接调用 Target 业务接口，不经过 Dispatcher |
 | MsgCenter | 消息投递 | 消息用于人类沟通与进展展示；接收确认、offer 重放、幂等交接不用消息协议表达 |
+
+#### 1.1.1 为什么 Dispatcher 不在 Scheduler 里（架构边界，2026-08-09 定案）
+
+Scheduler 是**算法型轻状态组件**：输入基本只有 system config，专注策略计算
+（placement、过滤、打分），崩溃语义被刻意保持得极简——**崩溃只导致新决策不产生，
+在执行的动作不受影响、不丢任何数据**。支撑这条性质的机制是：每轮把全部调度决策
+合成单笔 `exec_tx` 原子、快速地写回 system config，Scheduler 自身没有任何独占的
+持久状态。
+
+分发做不到这么简单。任务被接受时是合法的，但执行资源不够就必须排队，而排队逻辑
+不能上抛给调用方——所以做分发的组件**必然自带持久队列**，随之而来的是完全不同的
+崩溃契约：启动恢复扫描、offer lease 回收、redelivery（见 §6.4）。把这套东西放进
+Scheduler，会同时毁掉"只管策略"和"崩溃只停新动作"两条性质；Scheduler 永远不需要
+考虑"队列用什么技术实现、队列满了怎么办"。因此 Dispatcher 落在 TaskMgr 这一层：
+长程任务的可持久化是分布式系统的根本需求，TaskMgr 因此位于内核最底座，队列与
+交接状态天然属于这个位置。概念层次上，TaskMgr 是 Scheduler 的底层组件——
+Scheduler 需要状态管理时以 TaskMgr 为支撑，不自建存储或队列。
+
+由此系统里有两个"我想做一件事、不关心谁做、你完成就好"的入口，语义与崩溃契约
+都不同，互不混用：
+
+| 入口 | 语义 | 崩溃契约 |
+| --- | --- | --- |
+| Scheduler | 期望状态的持续收敛（AppSpec → NodeConfig，声明式、幂等重算） | 崩溃只停新决策；无自有状态、无恢复协议 |
+| Dispatcher | 一次性工作的持久交接（dispatch → accept → 业务 Task，离散、有终态） | 崩溃后 startup_recovery：timer 重建、lease 回收、offer redelivery |
+
+历史注脚：scheduler 里遗留的 `run_thunk`（workflow 时期）只实现了选点这一半，
+投递端是有意的存根（receipt 的 `next_step: "external dispatcher should bind task
+to runner/node"` 即此边界的自白），当前全仓无调用方。若随 workflow 版本复活，
+正确拼法是 Scheduler 出 placement 建议 + Dispatcher 做持久交接，不把存根补成
+第二套交接协议（另见 `doc/arch/scheduler/scheduler.md`）。
 
 ### 1.2 使用门槛
 
@@ -1143,6 +1174,7 @@ Task 始终保持 Running；kevent 全丢时兜底轮询仍收敛。
 | 审批策略 | per-target `DispatchApprovalPolicy::{Never, InteractiveCallers, AllCallers}`，默认 `Never`；判定只看直接调用者 token 分级（zone 可信 / sudo 会话豁免 `InteractiveCallers`）；per-operation 覆盖列为后续扩展 |
 | 审批与身份 | approve/deny 只推进状态机：envelope 不变、不提权、不豁免 Target 业务鉴权；审批人落 `approval` 字段与 `dispatch_event`；审批权与 Target owner 身份、提交者身份都不挂钩 |
 | 审批门可见性边界（2026-08-07 实施定案） | 门封死**接收通道**：未放行记录不评估、不 offer、不发 target 通知、claim/accept/reject 全拒；zone 可信调用者 get/list 只读可见性遵循既有查询授权不收窄；对 owner 隐藏未放行 input 属读取面脱敏，列后续扩展（§7.1） |
+| 与 Scheduler 的边界原理（2026-08-09 定案） | Scheduler 是算法型轻状态组件：只管策略、崩溃只停新决策（一轮决策单笔 `exec_tx` 原子写回、无自有持久状态）。分发必然自带队列与恢复协议（合法任务因资源不足排队且排队不能上抛），故 Dispatcher 永不进 Scheduler，落在 TaskMgr 层；Scheduler 需要状态时用 TaskMgr 支撑；`run_thunk` 复活拼法 = Scheduler placement 建议 + Dispatcher 交接（§1.1.1） |
 
 ## 13. 非目标
 

@@ -28,6 +28,85 @@
 - 不在核心逻辑里直接写 system_config
 - 不把执行细节、业务流程细节继续塞进 scheduler
 
+## 架构边界：只管策略 + 崩溃只停新动作（2026-08-09 定案）
+
+这一节与具体功能无关，回答两个问题：为什么这么设计，以及什么东西永远不该进
+scheduler。
+
+### 为什么这么设计：唯一决策模块与原子决策
+
+分布式系统经验：系统里最主要的模块应该只关注纯粹的输入输出；需要依赖复杂状态
+去做决策的组件，在系统里越少越好。
+
+我们系统的选择是：**调度器是系统里唯一的决策模块**。其他组件只闷头干活——按已
+写入的目标状态执行、收敛、上报——只有 scheduler 负责决策。
+
+因为调度器只负责决策，我们把决策定义为**原子性的**：它不存在持续决策的问题，
+不存在“做决策 A 时依赖的系统状态，与做决策 B 时的系统状态之间产生漂移”的情况。
+一次决策进行时，系统状态是被 frozen 的。对应到实现，就是每轮 loop 开头的一次性
+dump：决策的全部输入在那一刻定格，纯内存计算过程中不再读任何新状态，算完单笔
+事务写回。
+
+直接好处是**决策非常容易被复现**：决策 = 纯函数（config dump + snapshot ->
+action list）。当系统做出有害决策并出现 bug 时，拿到当轮 dump 就能离线精确定位
+并复现（`scheduler_test.rs` 的测法就是这个形态）。
+
+这条架构约束的核心，在于**对分布式系统复杂性的分离**：常规分布式系统的一致性
+共识问题极其难解决，我们尽量不让自己去面对这个痛苦的问题——能不去面对就不去
+面对，能逃避就逃避。单一决策者 + frozen 输入 + 单笔原子写回，意味着不需要多个
+决策者之间的共识协议，也不需要跨组件的分布式事务；执行侧的一致性靠“幂等收敛 +
+下轮重算”兜底，而不是靠共识。
+
+### 算法型轻状态组件
+
+scheduler 是算法型组件：输入基本只有 system_config dump，输出是一轮调度决策；
+全部状态就是 system_config（含 snapshot），没有自建存储。它只管策略，永远不用
+考虑“消息队列用什么技术实现、队列满了怎么办”这类问题。
+
+推论：**任务分发（Dispatcher）必然不属于 scheduler。** 分发一定会碰到“任务接受
+时合法、但执行资源不够需要排队”，而排队逻辑不能上抛给调用方，所以分发者必然
+自带持久队列——队列的实现细节不是算法型 scheduler 该关心的点。持久交接语义由
+Task Dispatch Center 承担（task-manager 进程内的独立模块，
+`doc/task_mgr/task_dispatch_center.md` §1.1.1 记录了这条边界的完整论证）。
+
+层次上：TaskMgr 是 scheduler 的底层组件——长程任务可持久化是分布式系统的根本
+需求，两者都在内核最底座。scheduler 是系统里所有“我想做一件事、不关心谁做、你
+完成就好”的整体入口；当它需要状态管理时，用 TaskMgr 作支撑，不自建存储或队列。
+
+### 崩溃约束（硬）
+
+**scheduler 崩溃只导致新动作不执行：在执行的动作不受影响，不丢任何数据。**
+前提是调度结果写入原子且快速。
+
+当前实现满足这条约束，机制就是 loop 的形态本身：每轮 dump → 纯内存计算 → 一轮
+全部决策（放置 / RBAC / gateway / aicc）合成**单笔 `exec_tx`** 原子提交。崩在
+事务前 = 本轮决策没写入，下轮从 config 重算（决策纯派生，无数据可丢）；崩在
+事务后 = 决策完整生效，真正的执行都在 node_daemon / task-manager，不受影响。
+
+贡献者规则：
+
+- 不要把“一轮决策单笔事务提交”拆成多次写；新增写回必须并进同一 `tx_actions`。
+- 不要给 scheduler 引入自有持久状态或崩溃恢复协议。如果一个新能力需要恢复
+  扫描、lease 回收、redelivery（对照 Dispatcher 的 `startup_recovery`），
+  说明它走错了层。
+
+两个已知边角（现状事实，均不违反约束）：
+
+- snapshot 写在 `exec_tx` 之后、不同事务。崩在两者之间只导致下轮变更检测误判
+  “有变化”，冗余重写一遍 RBAC/gateway——写入幂等，收敛，良性。
+- snapshot `set()` 失败会 `?` 退出内层 loop，且 `main.rs` 的 spawn 不重启：
+  fail-stop 安全（只停新动作），但属于静默停摆，与 `exec_tx` 失败走 `continue`
+  的处理不对称。
+
+### run_thunk 的定位
+
+`thunk_runner.rs` 的 `run_thunk`（workflow 时期）只实现了选点这一半（策略）；
+投递端 `ExternalTaskThunkDispatchBackend` 是有意的存根（receipt 里
+`next_step: "external dispatcher should bind task to runner/node"` 就是上述边界
+的自白），当前全仓无调用方。若随 workflow 版本复活，拼法是 scheduler 出
+placement 建议（纯选点）+ Task Dispatch Center 做持久交接；不要把投递存根补成
+第二套交接协议。
+
 ## schedule loop 现状
 
 实际 loop 在 `schedule_loop()`，当前是每 5 秒一轮，不是旧文档里的 10 秒。
@@ -260,3 +339,5 @@ Step2 当前只处理两种 spec 状态：
 - 对外架构说明：`doc/arch/04_scheduler.md`
 - 当前代码的最终真相：`src/kernel/scheduler/src/scheduler.rs`
 - 下一阶段方向：`doc/arch/使用function_instance实现分布式调度器.md`
+- 持久交接 / 队列语义的归属：`doc/task_mgr/task_dispatch_center.md`（§1.1.1
+  记录了 scheduler 与 Dispatcher 的边界原理与崩溃契约对比）
