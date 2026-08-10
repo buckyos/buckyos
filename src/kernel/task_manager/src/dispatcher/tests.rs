@@ -810,6 +810,165 @@ async fn stale_lease_instance_cannot_renew() {
     assert!(is_stale_instance_err(&err));
 }
 
+/// The runner surface must work for an app service's steady-state identity:
+/// a verify-hub-issued (never zone-trusted) token. OpenDAN's boot token is
+/// device-signed for only a few seconds before the runtime's keep-alive
+/// swaps it, so gating register/attach/renew on zone-trust breaks every
+/// renew after that window (the debug_jarvis regression).
+#[tokio::test(flavor = "current_thread")]
+async fn app_identity_runs_the_full_runner_lease_lifecycle() {
+    let env = setup_env().await;
+    let app = user_ctx("devtest", "buckyos_jarvis");
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
+            },
+            app.clone(),
+        )
+        .await
+        .expect("app identity registers its own target");
+    // Re-register (process restart) under the same app id also passes,
+    // even if the first registration was stamped with a different user
+    // (the boot-window device identity).
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
+            },
+            user_ctx("ood1", "buckyos_jarvis"),
+        )
+        .await
+        .expect("same app re-registers across identity refresh");
+    let attached = env
+        .dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "did:web:jarvis".into(),
+                instance_id: "jarvis-inst".into(),
+                endpoint: "http://127.0.0.1:10016/kapi/opendan-task-runner".into(),
+                capacity: 4,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            app.clone(),
+        )
+        .await
+        .expect("app identity attaches");
+    env.dispatcher
+        .handle_renew_instance(
+            RenewInstanceReq {
+                target_id: "did:web:jarvis".into(),
+                instance_id: "jarvis-inst".into(),
+                lease_epoch: attached.lease_epoch,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            app.clone(),
+        )
+        .await
+        .expect("app identity renews its lease");
+    env.dispatcher
+        .handle_detach_instance(
+            DetachInstanceReq {
+                target_id: "did:web:jarvis".into(),
+                instance_id: "jarvis-inst".into(),
+                lease_epoch: attached.lease_epoch,
+            },
+            app,
+        )
+        .await
+        .expect("app identity detaches");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn foreign_app_cannot_touch_another_apps_target() {
+    let env = setup_env().await;
+    let owner = user_ctx("devtest", "buckyos_jarvis");
+    env.dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
+            },
+            owner.clone(),
+        )
+        .await
+        .unwrap();
+    let attached = env
+        .dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "did:web:jarvis".into(),
+                instance_id: "jarvis-inst".into(),
+                endpoint: "http://127.0.0.1:10016/kapi/opendan-task-runner".into(),
+                capacity: 4,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            owner,
+        )
+        .await
+        .unwrap();
+
+    let intruder = user_ctx("mallory", "evil-app");
+    let overwrite = env
+        .dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
+            },
+            intruder.clone(),
+        )
+        .await
+        .expect_err("foreign app must not overwrite a registration");
+    assert!(matches!(overwrite, RPCErrors::NoPermission(_)));
+    let hijack = env
+        .dispatcher
+        .handle_attach_instance(
+            AttachInstanceReq {
+                target_id: "did:web:jarvis".into(),
+                instance_id: "evil-inst".into(),
+                endpoint: "http://127.0.0.1:6666/kapi/evil".into(),
+                capacity: 4,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            intruder.clone(),
+        )
+        .await
+        .expect_err("foreign app must not attach to the target");
+    assert!(matches!(hijack, RPCErrors::NoPermission(_)));
+    let steal_renew = env
+        .dispatcher
+        .handle_renew_instance(
+            RenewInstanceReq {
+                target_id: "did:web:jarvis".into(),
+                instance_id: "jarvis-inst".into(),
+                lease_epoch: attached.lease_epoch,
+                available_capacity: None,
+                lease_ms: None,
+            },
+            intruder,
+        )
+        .await
+        .expect_err("foreign app must not renew the owner's lease");
+    assert!(matches!(steal_renew, RPCErrors::NoPermission(_)));
+
+    // A zone-trusted admin may update the registration without stealing
+    // ownership: the original owner keeps working afterwards.
+    let updated = env
+        .dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
+            },
+            service_ctx("svc", "scheduler"),
+        )
+        .await
+        .expect("zone-trusted admin edits the registration");
+    assert_eq!(updated.owner_app_id, "buckyos_jarvis");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn attach_rejects_non_local_endpoints() {
     let env = setup_env().await;

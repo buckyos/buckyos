@@ -8,7 +8,7 @@
 
 | 项 | 结论 |
 | --- | --- |
-| P0-1 runner endpoint 容器不可达 | ✅ 挂到已声明服务端口，v1 明确同机模型 |
+| P0-1 runner endpoint 容器不可达 | ✅ 挂到调度器按 AppIndex 分配的 instance 端口（env 注入），v1 明确同机模型 |
 | P0-2 activate ACK 不证明启动 | ✅ 同步启动成功后才 ACK；失败保持 delivery 可重放 |
 | P0-3 journal 假 fsync | ✅ 真 fsync（含父目录）；损坏 fail-loud 拒绝接单 |
 | P1-1 sweep 全 zone 轮询 | ✅ 服务端 `runner_app_id` 过滤；默认间隔 5s→60s |
@@ -23,17 +23,24 @@
 ### P0-1 runner endpoint（`dispatch_adapter.rs`）
 
 - 不再自开随机 loopback 端口。runner kapi 挂在 `0.0.0.0:$OPENDAN_SERVICE_PORT`
-  （env 由 node_daemon 注入，缺省 4060；`Runner::new` 本身绑 UNSPECIFIED——
-  原 TODO 说「绑址 127.0.0.1」有误，旧代码只是用 loopback listener 拿随机端口号，
-  真正致命的是随机端口没有对应 `-p` 发布规则）。
+  （`Runner::new` 本身绑 UNSPECIFIED——原 TODO 说「绑址 127.0.0.1」有误，
+  旧代码只是用 loopback listener 拿随机端口号，真正致命的是随机端口没有对应
+  `-p` 发布规则）。
+- **端口的真实来源是调度器的 AppIndex 分配**，不是 AppDoc 声明的 4060：
+  `alloc_replica_instance_port`（`scheduler.rs:1066`）对 `"www"` + `app_index>0`
+  返回 `app_index*16 + BASE_APP_PORT(10000)`——jarvis（index 1）实际是 **10016**；
+  AppDoc 的 `inner 4060` 只是声明，被分配器覆盖。分配值经 `ReplicaInstance.service_ports`
+  → node_config → node_daemon `select_agent_service_port()` → `-p {port}:{port}` +
+  env `OPENDAN_SERVICE_PORT={port}` 注入容器。runner 信任 env 即自动跟随；
+  **多 agent 双容器由 index 错开（10016/10032/…），天然不冲突**。
+  代码里的 4060 fallback 只覆盖原生 frame-service 过渡形态（无 env、同 netns、
+  自洽即通）。
 - 上报 endpoint 固定为 `http://127.0.0.1:{port}/kapi/opendan-task-runner`——
   **宿主机（dispatcher）视角**：原生同机直达 loopback；容器形态经 `-p {port}:{port}`
   的 DNAT/docker-proxy 到容器。两种形态同一 URL。
 - **跨节点结论：v1 限定同机**。dispatcher 侧 `validate_runner_endpoint` 只放行
   loopback，把这个限定变成硬校验（fail-fast 在 attach 时）。多节点 zone 必须走
   cyfs-gateway 路由 + 服务发现解析 endpoint（不再信任实例自报），属后续项。
-- 多 agent 端口冲突：一进程一 agent 是当前形态；若将来多个 agent app 各自声明
-  相同 service_port，会在 `docker run -p` / bind 时显式失败，不会静默。
 
 ### P0-2 activate 语义（`dispatch_adapter.rs::handle_activate_task`）
 
@@ -108,6 +115,33 @@ agent.delegate/v1 是 agent 的正常入口，加审批门等于给每个普通�
   60s owner sweep 保留为丢事件兜底。
 - 生命周期自收敛：终态变更自身会发最后一个事件 → 重读发现 terminal → unwatch。
   绝不做全局 `/task_mgr/**` 发现（beta2.2 删除是设计意图）。
+
+### 落地后修复：runner 面鉴权从 zone-trusted 改为 owner 绑定（2026-08-10）
+
+debug_jarvis 实跑暴露：register/attach 启动后立即成功，20s 后（1/3 lease）首次
+renew 起全部 `No permission: requires a zone-trusted service identity`。
+
+根因是 dispatcher M1 把 runner 面（register/attach/renew/detach）gate 在
+zone-trusted 上，与 runtime 的 token 生命周期冲突：AppService 启动时持
+node_daemon 注入的 device 签发 token（iss=设备名 → zone-trusted），但
+`renew_token_from_verify_hub`（runtime.rs）只要 `iss != "verify-hub"` 就在首个
+keep_alive tick（5s）强制换成 verify-hub 签发的正式 token → **任何 app service
+的稳态身份永远不是 zone-trusted**，register/attach 能过纯属启动窗口时序运气。
+
+修复（`dispatcher/service.rs`）：
+- runner 面改为「已认证 app 身份 + first-writer-wins owner 绑定」：
+  register 首次注册者的 verified `app_id` 盖为 owner；后续 register/attach/
+  renew/detach 必须同 owner_app_id（`require_target_owner`）。
+- zone-trusted 保留管理豁免（可代管注册但**不重盖 owner**，防管理编辑劫走 target）；
+  管理面（disable_target/get_target/list_targets/operation_route*）维持 zone-trusted。
+- owner 匹配刻意只用 app_id 不用 user_id：boot 窗口 token 的 user 是设备名、
+  稳态是 owner 用户名，用 user 匹配会造成重启后永久死锁。
+- 已知 v1 限制：zone 内已安装的恶意 app 可抢注**未注册**的 target_id（真 owner
+  register 时会收到 loud 的权限错误暴露此事）；多用户 zone 下同 app_id 跨用户
+  未隔离——后续引入 per-user app instance 身份再收紧。
+- 回归测试：`app_identity_runs_the_full_runner_lease_lifecycle`（verify-hub 身份
+  全链 + 跨身份刷新 re-register）、`foreign_app_cannot_touch_another_apps_target`
+  （覆盖注册/attach/renew 劫持全拒 + 管理编辑不夺 owner）。
 
 ### P2-2 测试
 

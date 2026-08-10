@@ -161,6 +161,39 @@ impl TaskDispatcherService {
         self.db.clone()
     }
 
+    /// The runner surface (register/attach/renew/detach) authenticates APP
+    /// identities, not the zone-trusted kernel grade: a runner is an app
+    /// service, and an app service's steady-state session token is issued
+    /// by verify-hub (the runtime's keep-alive exchanges the boot-time
+    /// device-signed token within seconds), so a zone-trusted gate here
+    /// only ever passes during that boot window. Protection is ownership
+    /// instead: the first registrant's verified app id is stamped as the
+    /// owner and every later mutation must come from the same app
+    /// (zone-trusted kernel identities keep an admin override). Known v1
+    /// limit: a hostile *installed* app could squat an unregistered
+    /// target id — surfaced loudly to the real owner as a permission
+    /// error on register; per-user app instance identity can tighten this
+    /// later.
+    async fn require_target_owner(
+        &self,
+        request_ctx: &RequestContext,
+        target_id: &str,
+        what: &str,
+    ) -> Result<TargetRegistration> {
+        let registration = self
+            .db
+            .get_registration(target_id)
+            .await?
+            .ok_or_else(|| dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, target_id))?;
+        if !request_ctx.zone_trusted && registration.owner_app_id != request_ctx.app_id {
+            return Err(RPCErrors::NoPermission(format!(
+                "{} must come from the registered owner app {}",
+                what, registration.owner_app_id
+            )));
+        }
+        Ok(registration)
+    }
+
     /// Deterministic per-lease push credential. Scoped to
     /// `(target, instance, lease_epoch)` so a leaked token neither works
     /// for another instance nor survives a re-attach.
@@ -1536,7 +1569,6 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         ctx: RPCContext,
     ) -> Result<TargetRegistration> {
         let request_ctx = self.authenticate(&ctx).await?;
-        Self::require_zone_trusted(&request_ctx, "register_target")?;
         let mut registration = req.registration;
         if registration.target_id.trim().is_empty() {
             return Err(RPCErrors::ParseRequestError("target_id is required".into()));
@@ -1546,9 +1578,31 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 "a registration needs at least one runner function".into(),
             ));
         }
+        // First-writer-wins ownership: an existing registration may only be
+        // updated by its owner app (or a zone-trusted admin identity).
+        let existing = self.db.get_registration(&registration.target_id).await?;
+        if let Some(existing) = existing.as_ref() {
+            if !request_ctx.zone_trusted && existing.owner_app_id != request_ctx.app_id {
+                return Err(RPCErrors::NoPermission(format!(
+                    "target {} is owned by app {}",
+                    registration.target_id, existing.owner_app_id
+                )));
+            }
+        }
         // Owner identity comes from the verified token, never the payload.
-        registration.owner_user_id = request_ctx.user_id.clone();
-        registration.owner_app_id = request_ctx.app_id.clone();
+        // An admin (zone-trusted) update of someone else's registration
+        // keeps the original owner — admin edits must not hijack the
+        // target away from its runner.
+        match existing {
+            Some(existing) if existing.owner_app_id != request_ctx.app_id => {
+                registration.owner_user_id = existing.owner_user_id;
+                registration.owner_app_id = existing.owner_app_id;
+            }
+            _ => {
+                registration.owner_user_id = request_ctx.user_id.clone();
+                registration.owner_app_id = request_ctx.app_id.clone();
+            }
+        }
         let stored = self.db.upsert_registration(registration).await?;
         self.notify_evaluate();
         Ok(stored)
@@ -1570,18 +1624,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         ctx: RPCContext,
     ) -> Result<AttachInstanceResult> {
         let request_ctx = self.authenticate(&ctx).await?;
-        Self::require_zone_trusted(&request_ctx, "attach_instance")?;
-        let registration = self
-            .db
-            .get_registration(&req.target_id)
-            .await?
-            .ok_or_else(|| dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &req.target_id))?;
-        if registration.owner_app_id != request_ctx.app_id {
-            return Err(RPCErrors::NoPermission(format!(
-                "instance attach must come from the registered owner app {}",
-                registration.owner_app_id
-            )));
-        }
+        self.require_target_owner(&request_ctx, &req.target_id, "attach_instance")
+            .await?;
         if req.endpoint.trim().is_empty() {
             return Err(RPCErrors::ParseRequestError(
                 "instance endpoint is required".into(),
@@ -1623,7 +1667,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         ctx: RPCContext,
     ) -> Result<RenewInstanceResult> {
         let request_ctx = self.authenticate(&ctx).await?;
-        Self::require_zone_trusted(&request_ctx, "renew_instance")?;
+        self.require_target_owner(&request_ctx, &req.target_id, "renew_instance")
+            .await?;
         let lease_ms = req
             .lease_ms
             .unwrap_or(DEFAULT_INSTANCE_LEASE_MS)
@@ -1659,7 +1704,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
 
     async fn handle_detach_instance(&self, req: DetachInstanceReq, ctx: RPCContext) -> Result<()> {
         let request_ctx = self.authenticate(&ctx).await?;
-        Self::require_zone_trusted(&request_ctx, "detach_instance")?;
+        self.require_target_owner(&request_ctx, &req.target_id, "detach_instance")
+            .await?;
         let instance = self.db.get_instance(&req.target_id, &req.instance_id).await?;
         if let Some(instance) = instance {
             if instance.lease_epoch != req.lease_epoch {

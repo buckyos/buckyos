@@ -29,16 +29,22 @@
 //! because only the real dispatcher can present the token it minted for
 //! this lease.
 //!
-//! Deployment: the runner kapi is served on the agent app's declared
-//! service port (`$OPENDAN_SERVICE_PORT`, default 4060) bound to
-//! `0.0.0.0`, which node_daemon publishes with `-p {port}:{port}` for
-//! containerized agents. The endpoint reported through `attach_instance`
-//! is `http://127.0.0.1:{port}` from the *dispatcher's* (host) point of
-//! view — reachable both for the native same-host deployment and for the
-//! containerized one via the published port. v1 explicitly assumes the
-//! dispatcher and the agent share one node; a multi-node split must route
-//! through cyfs-gateway and resolve the endpoint from service discovery
-//! instead of trusting instance self-reports.
+//! Deployment: the runner kapi is served on the agent app's *instance*
+//! service port bound to `0.0.0.0`. That port is scheduler-allocated per
+//! app (`app_index * 16 + BASE_APP_PORT`, e.g. 10016 for the default
+//! Jarvis at index 1 — the AppDoc's inner 4060 is only a declaration the
+//! allocator overrides) and reaches this process through the
+//! `$OPENDAN_SERVICE_PORT` env node_daemon injects alongside the matching
+//! `-p {port}:{port}` publish rule, so multiple agent containers never
+//! collide on the host. The 4060 fallback exists solely for the
+//! transitional native frame-service form (no env, no mapping, same
+//! netns — any self-consistent port works there). The endpoint reported
+//! through `attach_instance` is `http://127.0.0.1:{port}` from the
+//! *dispatcher's* (host) point of view — reachable both natively and via
+//! the published container port. v1 explicitly assumes the dispatcher and
+//! the agent share one node; a multi-node split must route through
+//! cyfs-gateway and resolve the endpoint from service discovery instead
+//! of trusting instance self-reports.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -470,9 +476,12 @@ impl AIAgent {
         }
     }
 
-    /// The port the runner kapi serves on: the agent app's declared service
-    /// port. node_daemon publishes exactly this port for containerized
-    /// agents, so a random port would be unreachable from the host.
+    /// The port the runner kapi serves on. Containerized agents receive the
+    /// scheduler-allocated instance port (per `app_index`, published as
+    /// `-p {port}:{port}`) via the injected env — trusting it is what keeps
+    /// two agent containers from colliding. The fixed fallback only covers
+    /// the transitional native frame-service form, which has no env and no
+    /// port mapping, so any self-consistent port works.
     fn runner_service_port(&self) -> u16 {
         std::env::var(SERVICE_PORT_ENV)
             .ok()
