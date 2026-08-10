@@ -29,11 +29,9 @@ use std::sync::Arc;
 /// Recursive control requests refuse to walk unbounded trees (doc §15.8).
 const MAX_RECURSIVE_CONTROL_NODES: usize = 512;
 
-/// Built-in pass-through schema for system services that carry their own
-/// payload contracts. Not user-creatable.
-pub const RAW_TASK_SCHEMA_ID: &str = "raw/v1";
-/// Built-in human approval schema (doc §16.6).
-pub const HUMAN_APPROVAL_SCHEMA_ID: &str = "human.approval/v1";
+// The built-in schema ids (`RAW_TASK_SCHEMA_ID`, `HUMAN_APPROVAL_SCHEMA_ID`,
+// ...) and their definitions live in buckyos-api next to the `TaskDataType`
+// catalog they were migrated from; this module seeds and enforces them.
 
 /// The caller identity resolved from the *verified* session token.
 ///
@@ -114,54 +112,22 @@ impl TaskManagerService {
         self.store.clone()
     }
 
-    /// Register the built-in schemas so direct tasks can be created before
-    /// any app publishes its own contract.
+    /// Seed the first-party schema catalog so a clean zone can create the
+    /// production tasks (workflow, opendan, aicc, app install, ...) before any
+    /// service has published a contract of its own.
+    ///
+    /// Per-entry failures are logged and skipped rather than aborting startup:
+    /// one bad contract must not take the whole Task Core offline, and the
+    /// affected schema simply degrades to `task_schema_not_found` on create.
     pub async fn ensure_builtin_schemas(&self) -> Result<()> {
-        let any = json!({});
-        let raw = TaskSchemaDefinition {
-            schema_id: RAW_TASK_SCHEMA_ID.to_string(),
-            schema_version: 1,
-            input_schema: any.clone(),
-            output_schema: any.clone(),
-            presentation_schema: None,
-            allowed_executor_kinds: vec![
-                TaskExecutorKind::Unbound,
-                TaskExecutorKind::App,
-                TaskExecutorKind::HumanSet,
-            ],
-            user_creatable: false,
-            publisher_app_id: TASK_MANAGER_SERVICE_NAME.to_string(),
-            enabled: true,
-            created_at: 0,
-        };
-        let approval = TaskSchemaDefinition {
-            schema_id: HUMAN_APPROVAL_SCHEMA_ID.to_string(),
-            schema_version: 1,
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                    "context": {}
-                }
-            }),
-            output_schema: json!({
-                "type": "object",
-                "required": ["decision"],
-                "properties": {
-                    "decision": {"enum": ["Approve", "Reject"]},
-                    "comment": {"type": "string"}
-                }
-            }),
-            presentation_schema: None,
-            allowed_executor_kinds: vec![TaskExecutorKind::HumanSet],
-            user_creatable: false,
-            publisher_app_id: TASK_MANAGER_SERVICE_NAME.to_string(),
-            enabled: true,
-            created_at: 0,
-        };
-        self.store.register_schema(&raw).await?;
-        self.store.register_schema(&approval).await?;
+        for definition in builtin_task_schemas() {
+            if let Err(err) = self.store.register_schema(&definition).await {
+                error!(
+                    "task-manager: seeding built-in schema {} failed: {:?}",
+                    definition.schema_id, err
+                );
+            }
+        }
         Ok(())
     }
 
@@ -2123,6 +2089,55 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             runner_epoch: task.runner_epoch,
             expected_revision: task.revision,
         }
+    }
+
+    /// A clean zone must be able to create every first-party production task
+    /// without the owning service having published anything yet. Seeding
+    /// swallows per-entry errors, so assert the rows actually landed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn builtin_schemas_are_seeded_on_a_clean_store() {
+        let (service, _tmp) = setup_service().await;
+        let store = service.store();
+        for definition in builtin_task_schemas() {
+            let stored = store
+                .get_schema(&definition.schema_id, None)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("built-in schema {} not seeded: {:?}", definition.schema_id, err)
+                });
+            assert!(stored.enabled, "{} seeded disabled", definition.schema_id);
+            assert_eq!(stored.allowed_executor_kinds, definition.allowed_executor_kinds);
+        }
+
+        // Re-running the bootstrap is a no-op, not an idempotency conflict.
+        service.ensure_builtin_schemas().await.unwrap();
+
+        // And a production schema is usable end to end on that clean store.
+        let ctx = user_ctx("alice", "workflow");
+        let task = service
+            .handle_create_task(
+                CreateTaskReq {
+                    name: "run tree".into(),
+                    schema_id: WORKFLOW_RUN_TREE_TASK_SCHEMA_ID.to_string(),
+                    schema_version: None,
+                    input: json!({"request": {"run_id": "r1"}}),
+                    executor: CreateTaskExecutor::SelfApp {
+                        app_instance_id: None,
+                    },
+                    parent_id: None,
+                    child_control_policy: None,
+                    policy_preset: None,
+                    permission_boundary: false,
+                    idempotency_key: "wf-run-r1".into(),
+                    retry_of: None,
+                    supersedes: None,
+                    message: None,
+                },
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.schema_id, WORKFLOW_RUN_TREE_TASK_SCHEMA_ID);
     }
 
     #[tokio::test(flavor = "current_thread")]

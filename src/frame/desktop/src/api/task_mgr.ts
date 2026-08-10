@@ -1,6 +1,29 @@
-import { buckyos } from 'buckyos'
+import {
+  buckyos,
+  taskMgrErrorCode,
+  HUMAN_APPROVAL_SCHEMA_ID,
+  HUMAN_INPUT_TASK_SCHEMA_ID,
+  TASK_ERR_REVISION_CONFLICT,
+  TaskExecutorKind,
+  TaskPhase,
+  TaskOutcome,
+  WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
+} from 'buckyos'
+import type {
+  Task as TaskMgrTask,
+  TaskControlAction,
+  TaskManagerClient,
+  TaskSummary,
+  TaskWaitReason,
+} from 'buckyos'
 import { isMockRuntime } from '../runtime'
 import { TaskCenterMockStore } from './task_mgr_mock.ts'
+
+// The 2.0 protocol vocabulary is the websdk's; re-exported so Task Center
+// code has one import site for both the view model and the wire enums.
+export { TaskExecutorKind, TaskPhase, TaskOutcome }
+export type { TaskControlAction, TaskSummary, TaskWaitReason }
+export type { TaskMgrTask }
 
 export type TaskStatus =
   | 'pending'
@@ -79,6 +102,17 @@ export interface Task {
   schemaType: string | null
   payload: Record<string, unknown>
   children: Task[]
+  /**
+   * 2.0 composite state kept alongside the coarse `status`, so the UI can
+   * render the Pausing / Canceling / Waiting projections of doc §5.4 without
+   * widening the status union. Absent on mock tasks.
+   */
+  phase?: TaskPhase
+  outcome?: TaskOutcome | null
+  executorKind?: TaskExecutorKind
+  pendingControlAction?: TaskControlAction | null
+  waitReason?: TaskWaitReason | null
+  error?: string | null
 }
 
 export type SystemNotificationAction = 'confirm' | 'dismiss' | 'approve' | 'reject'
@@ -130,6 +164,12 @@ export interface TaskCenterModel {
   getSnapshot(): number
   subscribe(listener: () => void): () => void
   refresh(): Promise<void>
+  /**
+   * Pull one task's Input/Result/progress. A refresh only lists metadata plus
+   * the payloads the list views need, so a detail view asks for its own
+   * (doc §14.3). No-op once the cached copy is current.
+   */
+  loadTaskDetail(taskId: string): Promise<void>
   getAllTasks(): Task[]
   getRunningTasks(): Task[]
   getRecentFinishedTasks(): Task[]
@@ -141,51 +181,40 @@ export interface TaskCenterModel {
   getEvents(): SystemEvent[]
 }
 
-type RawTaskStatus =
-  | 'Pending'
-  | 'Running'
-  | 'Paused'
-  | 'Completed'
-  | 'Failed'
-  | 'Canceled'
-  | 'Cancelled'
-  | 'WaitingForApproval'
-  | string
+// ---------------------------------------------------------------------------
+// TaskMgr 2.0 adapter
+// ---------------------------------------------------------------------------
+//
+// Wire types and calls come from the websdk's `TaskManagerClient`; this file
+// only owns the projection from the 2.0 protocol onto the Task Center's view
+// model (coarse status, task type/source buckets, schedule payload).
 
-interface RawTaskPermissions {
-  read?: string
-  write?: string
-}
-
-interface RawTask {
-  id: number | string
-  user_id?: string
-  app_id?: string
-  session_id?: string
-  parent_id?: number | string | null
-  root_id?: string
-  name?: string
-  task_type?: string
-  status?: RawTaskStatus
-  progress?: number
-  message?: string | null
-  data?: unknown
-  permissions?: RawTaskPermissions
-  created_at?: number
-  updated_at?: number
-}
-
-interface TaskMgrSdkClient {
-  listTasks(params?: Record<string, unknown>): Promise<RawTask[]>
-  updateTaskData(id: number, data: unknown): Promise<void>
+/** One listed task plus its detail, when the detail read was permitted. */
+interface TaskSnapshot {
+  summary: TaskSummary
+  detail: TaskMgrTask | null
 }
 
 interface TaskCenterRpcProvider {
-  listTasks(): Promise<RawTask[]>
+  listTasks(): Promise<TaskSnapshot[]>
+  loadDetail(taskId: string): Promise<TaskMgrTask | null>
   handleNotificationAction(task: Task, action: string): Promise<void>
 }
 
-const terminalStatuses = new Set<TaskStatus>(['completed', 'failed', 'cancelled'])
+/** Apps whose tasks are platform work rather than a user-installed app's. */
+const KERNEL_APP_IDS = new Set([
+  'task-manager',
+  'task-dispatcher',
+  'control-panel',
+  'workflow',
+  'scheduler',
+  'repo-service',
+  'node-daemon',
+  'verify-hub',
+  'kevent',
+  'aicc',
+  'system',
+])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -207,15 +236,10 @@ function asStringOrNumber(value: unknown): string | number | null {
   return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value)) ? value : null
 }
 
-function normalizeTaskId(value: number | string | null | undefined): string | null {
+function normalizeTaskId(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null
   const text = String(value)
   return text.trim() ? text : null
-}
-
-function normalizeNumericTaskId(value: string): number | null {
-  const numeric = Number(value)
-  return Number.isInteger(numeric) && numeric > 0 ? numeric : null
 }
 
 function toIsoTime(value: unknown): string {
@@ -225,64 +249,112 @@ function toIsoTime(value: unknown): string {
   return new Date(millis).toISOString()
 }
 
-function toTaskStatus(status: RawTaskStatus | undefined): TaskStatus {
-  switch (status) {
-    case 'Running':
-      return 'running'
-    case 'Paused':
-    case 'WaitingForApproval':
-      return 'paused'
-    case 'Completed':
+/**
+ * Coarse list/badge status. The finer Pausing / Resuming / Canceling /
+ * Waiting projections stay on `phase` + `pendingControlAction` so this union
+ * (and every switch over it) keeps working.
+ */
+function toTaskStatus(
+  phase: TaskPhase,
+  outcome: TaskOutcome | null | undefined,
+): TaskStatus {
+  switch (phase) {
+    case TaskPhase.Terminal:
+      if (outcome === TaskOutcome.Failed) return 'failed'
+      if (outcome === TaskOutcome.Canceled) return 'cancelled'
       return 'completed'
-    case 'Failed':
-      return 'failed'
-    case 'Canceled':
-    case 'Cancelled':
-      return 'cancelled'
-    case 'Pending':
+    case TaskPhase.Paused:
+      return 'paused'
+    // Waiting is still owned by its executor, but it needs the same "stalled,
+    // may need you" affordance the 1.x WaitingForApproval status had.
+    case TaskPhase.Waiting:
+      return 'paused'
+    case TaskPhase.Running:
+    case TaskPhase.Accepted:
+      return 'running'
+    case TaskPhase.Promised:
     default:
       return 'pending'
   }
 }
 
-function toTaskType(rawType: string | undefined, data: Record<string, unknown>): TaskType {
-  const taskType = (rawType ?? '').toLowerCase()
-  const schemaType = asString(data.schema_type) ?? asString(data.schemaType)
-
-  if (taskType === 'workflow/schedule' || schemaType === 'workflow/schedule') return 'scheduled'
-  if (taskType.includes('download')) return 'download'
-  if (taskType.includes('install') || taskType.includes('app.')) return 'install'
-  if (taskType.includes('sync')) return 'sync'
-  if (taskType.includes('workflow') || taskType.includes('agent.')) return 'workflow'
+function toTaskType(schemaId: string): TaskType {
+  if (schemaId === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID) return 'scheduled'
+  if (schemaId.startsWith('download/')) return 'download'
+  if (schemaId.startsWith('app.')) return 'install'
+  if (schemaId.includes('sync')) return 'sync'
+  if (
+    schemaId.startsWith('workflow.') ||
+    schemaId.startsWith('agent.') ||
+    schemaId.startsWith('opendan.')
+  ) {
+    return 'workflow'
+  }
   return 'one-time'
 }
 
-function toTaskSource(task: RawTask, data: Record<string, unknown>): TaskSource {
-  const dataSource = asString(data.source)
-  if (dataSource === 'system' || dataSource === 'user' || dataSource === 'agent' || dataSource === 'app') {
-    return dataSource
-  }
-
-  const appId = (task.app_id ?? '').toLowerCase()
-  const taskType = (task.task_type ?? '').toLowerCase()
-  if (appId.includes('agent') || appId.includes('jarvis') || taskType.includes('agent.')) return 'agent'
-  if (appId && appId !== 'system' && appId !== 'task-manager') return 'app'
-  if (task.user_id) return 'user'
-  return 'system'
+function toTaskSource(summary: TaskSummary): TaskSource {
+  const appId = (summary.creator.app_id ?? '').toLowerCase()
+  if (appId.includes('opendan') || appId.includes('agent') || appId.includes('jarvis')) return 'agent'
+  if (summary.schema_id.startsWith('agent.')) return 'agent'
+  if (KERNEL_APP_IDS.has(appId)) return 'system'
+  if (appId) return 'app'
+  return 'user'
 }
 
-function clampProgress(value: unknown, status: TaskStatus): number | null {
-  const n = asNumber(value)
-  if (n === null) return null
-  const progress = Math.max(0, Math.min(100, Math.round(n)))
-  if (progress > 0 || status === 'running' || status === 'paused') return progress
+/**
+ * 2.0 progress is free-form JSON owned by the runner, so pull a percentage
+ * out of the shapes the platform runners actually write and give up rather
+ * than guess.
+ */
+function toProgressPercent(progress: unknown): number | null {
+  const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
+  const direct = asNumber(progress)
+  if (direct !== null) return clamp(direct <= 1 ? direct * 100 : direct)
+  if (!isRecord(progress)) return null
+
+  const percent = asNumber(progress.percent) ?? asNumber(progress.percentage)
+  if (percent !== null) return clamp(percent)
+
+  const ratio = asNumber(progress.ratio)
+  if (ratio !== null) return clamp(ratio * 100)
+
+  const completed = asNumber(progress.completed) ?? asNumber(progress.completed_items)
+  const total = asNumber(progress.total) ?? asNumber(progress.total_items)
+  if (completed !== null && total !== null && total > 0) return clamp((completed / total) * 100)
   return null
 }
 
-function toScheduleStatus(status: TaskStatus): WorkflowScheduleStatus {
-  switch (status) {
-    case 'running':
+/** Payload view of a task: result wins, then progress, then immutable input. */
+function taskPayload(detail: TaskMgrTask | null): Record<string, unknown> {
+  if (!detail) return {}
+  if (detail.result !== undefined && detail.result !== null) return asRecord(detail.result)
+  if (detail.progress !== undefined && detail.progress !== null) return asRecord(detail.progress)
+  return asRecord(detail.input)
+}
+
+function waitReasonText(reason: TaskWaitReason | null | undefined): string | null {
+  if (!reason) return null
+  if (reason.message) return reason.message
+  const detail = reason.code ? `${reason.kind}/${reason.code}` : reason.kind
+  return `Waiting: ${detail}`
+}
+
+/** ScheduleStatus (the schedule's own lifecycle) -> the UI's friendly enum. */
+function toScheduleStatus(value: unknown, fallback: TaskStatus): WorkflowScheduleStatus {
+  switch (asString(value)) {
+    case 'Running':
       return 'enabled'
+    case 'Paused':
+      return 'paused'
+    case 'Failed':
+      return 'error'
+    case 'Canceled':
+      return 'archived'
+    default:
+      break
+  }
+  switch (fallback) {
     case 'paused':
       return 'paused'
     case 'failed':
@@ -295,28 +367,30 @@ function toScheduleStatus(status: TaskStatus): WorkflowScheduleStatus {
   }
 }
 
+/**
+ * The schedule root task keeps its whole lifecycle inside the payload: the
+ * task itself stays non-terminal, so `request.status` — not the task phase —
+ * is the authority for enabled/paused/archived/error.
+ */
 function normalizeSchedulePayload(
-  raw: RawTask,
+  summary: TaskSummary,
   data: Record<string, unknown>,
   status: TaskStatus,
 ): WorkflowScheduleTaskPayload {
   const request = asRecord(data.request)
   const result = asRecord(data.result)
-  const scheduleId = asString(request.schedule_id) ?? raw.root_id ?? normalizeTaskId(raw.id) ?? ''
-  const name = asString(request.name) ?? (raw.name ?? '').replace(/^workflow\/schedule\//, '')
+  const scheduleId = asString(request.schedule_id) ?? summary.root_id ?? summary.task_id
+  const name = asString(request.name) ?? summary.name.replace(/^workflow\/schedule\//, '')
   const schedule = request.schedule as WorkflowScheduleSpec | undefined
   const target = request.target as WorkflowScheduleTarget | undefined
 
   return {
     ...data,
-    backendStatus: raw.status,
     request: {
       ...request,
       schedule_id: scheduleId,
       name,
-      // schedule 状态的唯一真相是 Task 的 status 列（后端已统一用 TaskStatus）。
-      // 不再读 request.status 字符串（它现在是 TaskStatus 词汇，非本 UI 的友好枚举）。
-      status: toScheduleStatus(status),
+      status: toScheduleStatus(request.status, status),
       schedule,
       target,
     },
@@ -332,45 +406,54 @@ function normalizeSchedulePayload(
   }
 }
 
-export function toTaskCenterTask(raw: RawTask): Task {
-  const taskId = normalizeTaskId(raw.id) ?? ''
-  const data = asRecord(raw.data)
-  const status = toTaskStatus(raw.status)
-  const type = toTaskType(raw.task_type, data)
-  const source = toTaskSource(raw, data)
-  const createdAt = toIsoTime(raw.created_at)
-  const updatedAt = toIsoTime(raw.updated_at ?? raw.created_at)
-  const isSchedule = raw.task_type === 'workflow/schedule' || type === 'scheduled'
-  const title = asString(data.title) ?? raw.name ?? `Task ${taskId}`
-  const summary =
-    raw.message ??
-    asString(data.summary) ??
-    asString(data.message) ??
-    (raw.status === 'WaitingForApproval' ? 'Waiting for user approval' : '')
-  const payload = isSchedule ? normalizeSchedulePayload(raw, data, status) : { ...data, backendStatus: raw.status }
+export function toTaskCenterTask({ summary, detail }: TaskSnapshot): Task {
+  const status = toTaskStatus(summary.phase, summary.outcome)
+  const type = toTaskType(summary.schema_id)
+  const createdAt = toIsoTime(summary.created_at)
+  const updatedAt = toIsoTime(summary.updated_at)
+  const waitReason = detail?.wait_reason ?? summary.wait_reason ?? null
+  const errorMessage = detail?.error?.message ?? null
+  const data = taskPayload(detail)
+  const isSchedule = summary.schema_id === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID
 
   return {
-    rootTaskId: raw.root_id || taskId,
-    taskId,
-    parentTaskId: normalizeTaskId(raw.parent_id),
-    source,
+    rootTaskId: summary.root_id || summary.task_id,
+    taskId: summary.task_id,
+    parentTaskId: normalizeTaskId(summary.parent_id),
+    source: toTaskSource(summary),
     type,
     status,
-    title,
-    summary,
+    title: summary.name || `Task ${summary.task_id}`,
+    summary:
+      asString(summary.message) ??
+      asString(detail?.message) ??
+      errorMessage ??
+      waitReasonText(waitReason) ??
+      '',
     createdAt,
     updatedAt,
-    startedAt: status === 'pending' ? null : createdAt,
-    endedAt: terminalStatuses.has(status) ? updatedAt : null,
-    progress: clampProgress(raw.progress, status),
-    schemaType: isSchedule ? 'workflow/schedule' : asString(data.schema_type) ?? asString(data.schemaType),
-    payload,
+    startedAt: summary.phase === TaskPhase.Promised ? null : createdAt,
+    endedAt:
+      summary.completed_at
+        ? toIsoTime(summary.completed_at)
+        : summary.phase === TaskPhase.Terminal
+          ? updatedAt
+          : null,
+    progress: toProgressPercent(detail?.progress),
+    schemaType: summary.schema_id,
+    payload: isSchedule ? normalizeSchedulePayload(summary, data, status) : data,
     children: [],
+    phase: summary.phase,
+    outcome: summary.outcome ?? null,
+    executorKind: summary.executor_kind,
+    pendingControlAction: detail?.pending_control?.action ?? summary.pending_control_action ?? null,
+    waitReason,
+    error: errorMessage,
   }
 }
 
-function buildTaskTree(rawTasks: RawTask[]): Task[] {
-  const tasks = rawTasks.map(toTaskCenterTask)
+function buildTaskTree(snapshots: TaskSnapshot[]): Task[] {
+  const tasks = snapshots.map(toTaskCenterTask)
   const byId = new Map(tasks.map((task) => [task.taskId, task]))
   const roots: Task[] = []
 
@@ -446,13 +529,22 @@ function deriveEvents(tasks: Task[]): SystemEvent[] {
     .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
 }
 
+/**
+ * A pending human task is the 2.0 shape of "needs a decision from you": a
+ * HumanSet executor that has not been committed yet (doc §10.2).
+ */
+function isPendingHumanTask(task: Task): boolean {
+  return task.executorKind === TaskExecutorKind.HumanSet && task.phase !== TaskPhase.Terminal
+}
+
 function deriveNotifications(tasks: Task[]): SystemNotification[] {
   return flattenTasks(tasks)
-    .filter((task) => task.payload.backendStatus === 'WaitingForApproval')
+    .filter(isPendingHumanTask)
     .map((task) => ({
       id: `task-approval-${task.taskId}`,
       source: 'system' as const,
-      title: 'Approval Required',
+      title:
+        task.schemaType === HUMAN_APPROVAL_SCHEMA_ID ? 'Approval Required' : 'Input Required',
       summary: task.summary || task.title,
       severity: 'warning' as const,
       createdAt: task.updatedAt,
@@ -471,28 +563,43 @@ function flattenTasks(tasks: Task[]): Task[] {
   return out
 }
 
-function taskDataForUpdate(task: Task): Record<string, unknown> {
-  const data = { ...task.payload }
-  delete data.backendStatus
-  return data
-}
-
-function toHumanActionKind(action: string): 'approve' | 'reject' | null {
+function toHumanActionKind(action: string): 'Approve' | 'Reject' | null {
   switch (action) {
     case 'approve':
     case 'confirm':
-      return 'approve'
+      return 'Approve'
     case 'reject':
     case 'dismiss':
-      return 'reject'
+      return 'Reject'
     default:
       return null
   }
 }
 
-function notificationTaskId(id: string): string | null {
-  const prefix = 'task-approval-'
-  return id.startsWith(prefix) ? id.slice(prefix.length) : null
+/**
+ * The one-shot Result a Task Center decision commits. Each schema owns its
+ * own output contract, so shape the decision to the schema instead of
+ * patching a shared `data` blob the way 1.x `updateTaskData` did.
+ */
+function humanCommitResult(
+  task: TaskMgrTask,
+  decision: 'Approve' | 'Reject',
+): Record<string, unknown> {
+  const actedAt = new Date().toISOString()
+  if (task.schema_id === HUMAN_INPUT_TASK_SCHEMA_ID) {
+    // human.input readers parse the whole TypedTaskData envelope, so the
+    // immutable request has to travel with the answer.
+    const input = asRecord(task.input)
+    return {
+      ...input,
+      result: {
+        response: { decision },
+        answered_by: 'desktop',
+        answered_at: Math.floor(Date.now() / 1000),
+      },
+    }
+  }
+  return { decision, comment: '', acted_at: actedAt, source: 'desktop' }
 }
 
 function matchesTaskFilter(task: Task, opts: TaskCenterFilter): boolean {
@@ -544,6 +651,10 @@ export class TaskCenterMockModel extends TaskCenterMockStore implements TaskCent
     this.subscription.emitChange()
   }
 
+  async loadTaskDetail(): Promise<void> {
+    // Mock tasks already carry their payload inline.
+  }
+
   override handleNotification(id: string, action: string): void {
     super.handleNotification(id, action)
     this.subscription.emitChange()
@@ -551,6 +662,7 @@ export class TaskCenterMockModel extends TaskCenterMockStore implements TaskCent
 }
 
 export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterModel {
+  private snapshots: TaskSnapshot[] = []
   private tasks: Task[] = []
   private notifications: SystemNotification[] = []
   private events: SystemEvent[] = []
@@ -564,15 +676,32 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   }
 
   async refresh(): Promise<void> {
-    let rawTasks: RawTask[]
     try {
-      rawTasks = await this.provider.listTasks()
+      this.snapshots = await this.provider.listTasks()
     } catch (error) {
-      console.error('task_mgr.listTasks failed', error)
+      console.error('task_mgr.list_tasks failed', error)
       return
     }
+    this.rebuild()
+  }
 
-    this.tasks = buildTaskTree(rawTasks)
+  async loadTaskDetail(taskId: string): Promise<void> {
+    const snapshot = this.snapshots.find((item) => item.summary.task_id === taskId)
+    if (!snapshot || snapshot.detail) return
+    let detail: TaskMgrTask | null
+    try {
+      detail = await this.provider.loadDetail(taskId)
+    } catch (error) {
+      console.error('task_mgr.get_task failed', taskId, error)
+      return
+    }
+    if (!detail) return
+    snapshot.detail = detail
+    this.rebuild()
+  }
+
+  private rebuild(): void {
+    this.tasks = buildTaskTree(this.snapshots)
     this.notifications = deriveNotifications(this.tasks).map((notification) => {
       const handled = this.handledNotifications.get(notification.id)
       return handled
@@ -589,20 +718,24 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
 
   getRunningTasks(): Task[] {
     return this.tasks.filter(
-      (task) => task.schemaType !== 'workflow/schedule' && (task.status === 'running' || task.status === 'paused'),
+      (task) =>
+        task.schemaType !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID &&
+        (task.status === 'running' || task.status === 'paused'),
     )
   }
 
   getRecentFinishedTasks(): Task[] {
     return this.tasks.filter(
       (task) =>
-        task.schemaType !== 'workflow/schedule' &&
+        task.schemaType !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID &&
         (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled'),
     )
   }
 
   getScheduledTasks(): Task[] {
-    return this.tasks.filter((task) => task.schemaType === 'workflow/schedule' || task.type === 'scheduled')
+    return this.tasks.filter(
+      (task) => task.schemaType === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID || task.type === 'scheduled',
+    )
   }
 
   getTaskById(taskId: string): Task | null {
@@ -638,7 +771,7 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
     void this.provider.handleNotificationAction(task, action)
       .then(() => this.refresh())
       .catch((error) => {
-        console.error('task_mgr.handleNotification failed', error)
+        console.error('task_mgr.commit_result failed', error)
         this.handledNotifications.delete(id)
         notification.handled = false
         delete notification.handledAction
@@ -652,35 +785,149 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   }
 }
 
+function notificationTaskId(id: string): string | null {
+  const prefix = 'task-approval-'
+  return id.startsWith(prefix) ? id.slice(prefix.length) : null
+}
+
 export function createTaskCenterModel(options: { useMock?: boolean } = {}): TaskCenterModel {
   return (options.useMock ?? isMockRuntime()) ? new TaskCenterMockModel() : new TaskCenterRpcModel()
 }
 
-class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
-  private client: TaskMgrSdkClient | null = null
+/** Pages to walk before giving up; the Task Center is a human-scale list. */
+const LIST_PAGE_LIMIT = 200
+const MAX_LIST_PAGES = 10
+/** Concurrent `get_task` reads while hydrating a refresh. */
+const DETAIL_FETCH_CONCURRENCY = 8
+/** Upper bound on details pulled per refresh, newest first. */
+const REFRESH_HYDRATE_LIMIT = 300
 
-  async listTasks(): Promise<RawTask[]> {
-    return this.getClient().listTasks()
+class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
+  private client: TaskManagerClient | null = null
+  /**
+   * `list_tasks` only returns metadata (doc §14.3), so the payload-bearing
+   * views read details separately. Cached by revision: a steady-state refresh
+   * only re-reads the tasks that actually changed, and a detail fetched on
+   * demand survives later refreshes for free.
+   */
+  private details = new Map<string, { revision: number; task: TaskMgrTask }>()
+
+  async listTasks(): Promise<TaskSnapshot[]> {
+    const summaries = await this.listSummaries()
+    const live = new Set(summaries.map((summary) => summary.task_id))
+    for (const taskId of [...this.details.keys()]) {
+      if (!live.has(taskId)) this.details.delete(taskId)
+    }
+    return this.hydrate(summaries)
+  }
+
+  async loadDetail(taskId: string): Promise<TaskMgrTask | null> {
+    const detail = await this.getTask(taskId)
+    this.details.set(detail.task_id, { revision: detail.revision, task: detail })
+    return detail
   }
 
   async handleNotificationAction(task: Task, action: string): Promise<void> {
-    const kind = toHumanActionKind(action)
-    const id = normalizeNumericTaskId(task.taskId)
-    if (!kind || id === null) return
+    const decision = toHumanActionKind(action)
+    if (!decision) return
 
-    await this.getClient().updateTaskData(id, {
-      ...taskDataForUpdate(task),
-      human_action: {
-        kind,
-        acted_at: new Date().toISOString(),
-        source: 'desktop',
-      },
+    // Commit against a fresh snapshot: `expected_revision` is a CAS and the
+    // cached copy may be several refreshes old.
+    const attempted = await this.getTask(task.taskId)
+    try {
+      await this.commitResult(attempted, decision)
+      return
+    } catch (error) {
+      if (taskMgrErrorCode(error) !== TASK_ERR_REVISION_CONFLICT) throw error
+      // Someone else moved the task under us. If they committed the result,
+      // the decision is already made (doc §10.2 first-CAS-wins).
+      const current = await this.getTask(task.taskId)
+      if (current.phase === TaskPhase.Terminal) return
+      await this.commitResult(current, decision)
+    }
+  }
+
+  private async commitResult(task: TaskMgrTask, decision: 'Approve' | 'Reject'): Promise<void> {
+    await this.getClient().commitResult({
+      task_id: task.task_id,
+      result: humanCommitResult(task, decision),
+      expected_revision: task.revision,
     })
   }
 
-  private getClient(): TaskMgrSdkClient {
+  private async listSummaries(): Promise<TaskSummary[]> {
+    const summaries: TaskSummary[] = []
+    let cursor: string | undefined
+    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+      const result = await this.getClient().listTasks({ limit: LIST_PAGE_LIMIT, cursor })
+      summaries.push(...(result.tasks ?? []))
+      cursor = result.next_cursor
+      if (!cursor) break
+    }
+    return summaries
+  }
+
+  /**
+   * A refresh only pulls the details the list views actually render: the
+   * schedule payloads and the progress of still-active tasks. Finished tasks
+   * keep their metadata row until someone opens them, which is what
+   * `loadDetail` is for.
+   */
+  private static needsRefreshDetail(summary: TaskSummary): boolean {
+    return (
+      summary.schema_id === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID ||
+      summary.phase !== TaskPhase.Terminal
+    )
+  }
+
+  private async hydrate(summaries: TaskSummary[]): Promise<TaskSnapshot[]> {
+    const snapshots: TaskSnapshot[] = summaries.map((summary) => {
+      const cached = this.details.get(summary.task_id)
+      return { summary, detail: cached?.revision === summary.revision ? cached.task : null }
+    })
+    const candidates = snapshots
+      .filter(
+        (snapshot) =>
+          snapshot.detail === null && BuckyOSTaskMgrProvider.needsRefreshDetail(snapshot.summary),
+      )
+      .sort((a, b) => b.summary.updated_at - a.summary.updated_at)
+    const stale = candidates.slice(0, REFRESH_HYDRATE_LIMIT)
+    if (candidates.length > stale.length) {
+      console.debug(
+        `task_mgr: hydrated ${stale.length} of ${candidates.length} active tasks; ` +
+          'the rest show metadata until opened',
+      )
+    }
+
+    let next = 0
+    const workers = Array.from(
+      { length: Math.min(DETAIL_FETCH_CONCURRENCY, stale.length) },
+      async () => {
+        for (let index = next++; index < stale.length; index = next++) {
+          const snapshot = stale[index]
+          try {
+            const detail = await this.getTask(snapshot.summary.task_id)
+            this.details.set(detail.task_id, { revision: detail.revision, task: detail })
+            snapshot.detail = detail
+          } catch (error) {
+            // Metadata-only visibility (doc §8.4 DataScope) and tasks that
+            // vanished mid-refresh both land here: keep the summary row.
+            console.debug('task_mgr.get_task failed', snapshot.summary.task_id, error)
+          }
+        }
+      },
+    )
+    await Promise.all(workers)
+    return snapshots
+  }
+
+  private async getTask(taskId: string): Promise<TaskMgrTask> {
+    return this.getClient().getTask(taskId)
+  }
+
+  private getClient(): TaskManagerClient {
     if (!this.client) {
-      this.client = buckyos.getTaskManagerClient() as unknown as TaskMgrSdkClient
+      this.client = buckyos.getTaskManagerClient()
     }
     return this.client
   }

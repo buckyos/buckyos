@@ -895,6 +895,256 @@ pub struct TaskSchemaDefinition {
 }
 
 // ---------------------------------------------------------------------------
+// Built-in task schema catalog
+// ---------------------------------------------------------------------------
+//
+// Every first-party schema a kernel/frame service creates tasks with. The
+// catalog lives here (next to `TaskDataType`, the 1.x contract asset it was
+// migrated from) and is seeded by task-manager at bootstrap, so a clean zone
+// can create these tasks before any service has published anything. Apps
+// outside this catalog publish their own contracts through
+// `register_task_schema` (doc §9.1/§9.2).
+//
+// The versioned id is the 1.x task-data type with `/` dotted and a `/vN`
+// suffix. `workflow/run` is the one exception: it dots to `workflow.run`,
+// which already names the dispatch-target contract, so the run tree keeps its
+// own `workflow.run_tree/v1` id.
+
+/// Pass-through schema for system services that carry their own payload
+/// contracts. Accepts any JSON on both sides; not user-creatable.
+pub const RAW_TASK_SCHEMA_ID: &str = "raw/v1";
+/// Human approval schema used by the dispatch approval gate (doc §16.6).
+pub const HUMAN_APPROVAL_SCHEMA_ID: &str = "human.approval/v1";
+
+pub const DOWNLOAD_TASK_SCHEMA_ID: &str = "download/v1";
+pub const SCHEDULER_DISPATCH_THUNK_TASK_SCHEMA_ID: &str = "scheduler.dispatch_thunk/v1";
+pub const WORKFLOW_RUN_TREE_TASK_SCHEMA_ID: &str = "workflow.run_tree/v1";
+pub const WORKFLOW_STEP_TASK_SCHEMA_ID: &str = "workflow.step/v1";
+pub const WORKFLOW_MAP_SHARD_TASK_SCHEMA_ID: &str = "workflow.map_shard/v1";
+pub const WORKFLOW_THUNK_TASK_SCHEMA_ID: &str = "workflow.thunk/v1";
+pub const WORKFLOW_SCHEDULE_TASK_SCHEMA_ID: &str = "workflow.schedule/v1";
+pub const WORKFLOW_SEND_MESSAGE_TASK_SCHEMA_ID: &str = "workflow.send_message/v1";
+pub const WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID: &str = "workflow.execute_rpc/v1";
+pub const WORKFLOW_RUN_TARGET_TASK_SCHEMA_ID: &str = "workflow.run/v1";
+pub const AGENT_DELEGATE_TASK_SCHEMA_ID: &str = "agent.delegate/v1";
+pub const HUMAN_INPUT_TASK_SCHEMA_ID: &str = "human.input/v1";
+pub const OPENDAN_ASYNC_TOOL_TASK_SCHEMA_ID: &str = "opendan.async_tool/v1";
+/// Fired by the `opendan.command` scheduled-task target. It has no
+/// `TaskDataType` envelope and no runner yet, but the schedule fire must be
+/// able to create the task rather than dying on `task_schema_not_found`.
+pub const OPENDAN_COMMAND_TASK_SCHEMA_ID: &str = "opendan.command/v1";
+pub const TOOL_EXEC_BASH_TASK_SCHEMA_ID: &str = "tool.exec_bash/v1";
+pub const AICC_COMPUTE_TASK_SCHEMA_ID: &str = "aicc.compute/v1";
+pub const APP_INSTALL_TASK_SCHEMA_ID: &str = "app.install/v1";
+pub const APP_UNINSTALL_TASK_SCHEMA_ID: &str = "app.uninstall/v1";
+pub const APP_START_TASK_SCHEMA_ID: &str = "app.start/v1";
+pub const APP_UPDATE_TASK_SCHEMA_ID: &str = "app.update/v1";
+
+/// Versioned schema id of a 1.x task-data type.
+pub fn task_schema_id_for(kind: crate::TaskDataType) -> &'static str {
+    use crate::TaskDataType::*;
+    match kind {
+        Download => DOWNLOAD_TASK_SCHEMA_ID,
+        SchedulerDispatchThunk => SCHEDULER_DISPATCH_THUNK_TASK_SCHEMA_ID,
+        WorkflowRun => WORKFLOW_RUN_TREE_TASK_SCHEMA_ID,
+        WorkflowStep => WORKFLOW_STEP_TASK_SCHEMA_ID,
+        WorkflowMapShard => WORKFLOW_MAP_SHARD_TASK_SCHEMA_ID,
+        WorkflowThunk => WORKFLOW_THUNK_TASK_SCHEMA_ID,
+        WorkflowSchedule => WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
+        WorkflowSendMessage => WORKFLOW_SEND_MESSAGE_TASK_SCHEMA_ID,
+        AgentDelegate => AGENT_DELEGATE_TASK_SCHEMA_ID,
+        HumanInput => HUMAN_INPUT_TASK_SCHEMA_ID,
+        OpenDanAsyncTool => OPENDAN_ASYNC_TOOL_TASK_SCHEMA_ID,
+        AiccCompute => AICC_COMPUTE_TASK_SCHEMA_ID,
+        AppInstall => APP_INSTALL_TASK_SCHEMA_ID,
+        AppUninstall => APP_UNINSTALL_TASK_SCHEMA_ID,
+        AppStart => APP_START_TASK_SCHEMA_ID,
+        AppUpdate => APP_UPDATE_TASK_SCHEMA_ID,
+        ServiceRpc => WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
+        WorkflowRunTarget => WORKFLOW_RUN_TARGET_TASK_SCHEMA_ID,
+        ToolExecBash => TOOL_EXEC_BASH_TASK_SCHEMA_ID,
+    }
+}
+
+/// `(schema_id, owning app, executor kinds the schema accepts)`.
+///
+/// Executor kinds are what the *create* path checks: `Unbound` is required
+/// for anything the dispatcher can promise, `App` for a service running its
+/// own task, `HumanSet` for assignee-committed tasks.
+const BUILTIN_TASK_SCHEMAS: &[(&str, &str, &[TaskExecutorKind])] = &[
+    (
+        DOWNLOAD_TASK_SCHEMA_ID,
+        TASK_MANAGER_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        SCHEDULER_DISPATCH_THUNK_TASK_SCHEMA_ID,
+        crate::SCHEDULER_SERVICE_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_RUN_TREE_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_STEP_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_MAP_SHARD_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_THUNK_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_SEND_MESSAGE_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        WORKFLOW_RUN_TARGET_TASK_SCHEMA_ID,
+        crate::WORKFLOW_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        AGENT_DELEGATE_TASK_SCHEMA_ID,
+        crate::OPENDAN_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        HUMAN_INPUT_TASK_SCHEMA_ID,
+        crate::OPENDAN_SERVICE_NAME,
+        &[TaskExecutorKind::HumanSet],
+    ),
+    (
+        OPENDAN_ASYNC_TOOL_TASK_SCHEMA_ID,
+        crate::OPENDAN_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        OPENDAN_COMMAND_TASK_SCHEMA_ID,
+        crate::OPENDAN_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        TOOL_EXEC_BASH_TASK_SCHEMA_ID,
+        crate::OPENDAN_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        AICC_COMPUTE_TASK_SCHEMA_ID,
+        crate::AICC_SERVICE_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        APP_INSTALL_TASK_SCHEMA_ID,
+        crate::CONTROL_PANEL_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        APP_UNINSTALL_TASK_SCHEMA_ID,
+        crate::CONTROL_PANEL_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        APP_START_TASK_SCHEMA_ID,
+        crate::CONTROL_PANEL_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        APP_UPDATE_TASK_SCHEMA_ID,
+        crate::CONTROL_PANEL_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+];
+
+/// Every built-in schema, in seeding order. `raw/v1` and `human.approval/v1`
+/// are task-manager's own; the rest are the first-party production catalog.
+///
+/// Input/output are deliberately loose (`{"type": "object"}`): the payloads
+/// are the `TypedTaskData` envelopes, whose field-level contract is owned and
+/// versioned by the producing service, not by TaskMgr. Tightening one means
+/// publishing a new `schema_version` (doc §9.1 rule 1).
+pub fn builtin_task_schemas() -> Vec<TaskSchemaDefinition> {
+    let object = json!({"type": "object"});
+    let mut schemas = vec![
+        TaskSchemaDefinition {
+            schema_id: RAW_TASK_SCHEMA_ID.to_string(),
+            schema_version: 1,
+            input_schema: json!({}),
+            output_schema: json!({}),
+            presentation_schema: None,
+            allowed_executor_kinds: vec![
+                TaskExecutorKind::Unbound,
+                TaskExecutorKind::App,
+                TaskExecutorKind::HumanSet,
+            ],
+            user_creatable: false,
+            publisher_app_id: TASK_MANAGER_SERVICE_NAME.to_string(),
+            enabled: true,
+            created_at: 0,
+        },
+        TaskSchemaDefinition {
+            schema_id: HUMAN_APPROVAL_SCHEMA_ID.to_string(),
+            schema_version: 1,
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "context": {}
+                }
+            }),
+            output_schema: json!({
+                "type": "object",
+                "required": ["decision"],
+                "properties": {
+                    "decision": {"enum": ["Approve", "Reject"]},
+                    "comment": {"type": "string"}
+                }
+            }),
+            presentation_schema: None,
+            allowed_executor_kinds: vec![TaskExecutorKind::HumanSet],
+            user_creatable: false,
+            publisher_app_id: TASK_MANAGER_SERVICE_NAME.to_string(),
+            enabled: true,
+            created_at: 0,
+        },
+    ];
+    schemas.extend(BUILTIN_TASK_SCHEMAS.iter().map(
+        |(schema_id, publisher_app_id, executor_kinds)| TaskSchemaDefinition {
+            schema_id: schema_id.to_string(),
+            schema_version: 1,
+            input_schema: object.clone(),
+            output_schema: object.clone(),
+            presentation_schema: None,
+            allowed_executor_kinds: executor_kinds.to_vec(),
+            user_creatable: false,
+            publisher_app_id: publisher_app_id.to_string(),
+            enabled: true,
+            created_at: 0,
+        },
+    ));
+    schemas
+}
+
+// ---------------------------------------------------------------------------
 // Task model
 // ---------------------------------------------------------------------------
 
@@ -2661,6 +2911,44 @@ mod tests {
             compute_task_input_digest(&a),
             compute_task_input_digest(&json!({"a": {"x": [2, 1], "y": 2}, "b": 1}))
         );
+    }
+
+    #[test]
+    fn builtin_catalog_covers_every_task_data_type() {
+        let schemas = builtin_task_schemas();
+        let registered: std::collections::HashSet<&str> = schemas
+            .iter()
+            .map(|schema| schema.schema_id.as_str())
+            .collect();
+        for kind in crate::TaskDataType::ALL {
+            let schema_id = task_schema_id_for(*kind);
+            assert!(
+                registered.contains(schema_id),
+                "task data type {} maps to schema {} which is not in the built-in catalog",
+                kind,
+                schema_id
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_catalog_has_no_duplicate_ids() {
+        let schemas = builtin_task_schemas();
+        let unique: std::collections::HashSet<&String> =
+            schemas.iter().map(|schema| &schema.schema_id).collect();
+        assert_eq!(unique.len(), schemas.len(), "duplicate built-in schema id");
+        for schema in &schemas {
+            assert!(
+                !schema.allowed_executor_kinds.is_empty(),
+                "{} has no allowed executor kind",
+                schema.schema_id
+            );
+            assert!(
+                schema.schema_id.contains("/v"),
+                "{} is missing its major version suffix",
+                schema.schema_id
+            );
+        }
     }
 
     #[test]

@@ -2,9 +2,9 @@ use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, CreateTaskExecutor, CreateTaskReq,
     GetSubtasksReq, ListTasksReq, ReportProgressReq, ReportRunningReq, ReportStartedReq,
     ReportWaitingReq, RunnerWriteEnvelope, Task, TaskManagerClient, TaskPhase, TaskWaitReason,
-    TaskWaitReasonKind, TypedTaskData,
-    WorkflowScheduleOwner, WorkflowSchedulePolicy, WorkflowScheduleTaskData,
-    WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult,
+    TaskWaitReasonKind, TypedTaskData, WorkflowScheduleOwner, WorkflowSchedulePolicy,
+    WorkflowScheduleTaskData, WorkflowScheduleTaskRequest, WorkflowScheduleTaskResult,
+    WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
 };
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -686,11 +686,14 @@ impl ScheduleTaskMirrorClient {
 /// Versioned schema id of the schedule root task.
 pub const WORKFLOW_SCHEDULE_SCHEMA_ID: &str = "workflow.schedule/v1";
 
-/// Fire subtasks reuse the versioned schema derived from the rendered legacy
-/// task type (`workflow/run` -> `workflow.run_tree/v1`, others mechanical).
+/// Fire subtasks reuse the versioned schema of the rendered target task type.
+/// Most legacy types dot mechanically; the two aliases below name a contract
+/// whose registered schema id differs, so they are mapped explicitly rather
+/// than minting an id nothing registered.
 fn fire_subtask_schema_id(task_type: &str) -> String {
     match task_type {
         "workflow/run" => crate::task_tracker::WORKFLOW_RUN_SCHEMA_ID.to_string(),
+        "service.rpc" => WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID.to_string(),
         other => format!("{}/v1", other.replace('/', ".")),
     }
 }
@@ -1685,4 +1688,53 @@ fn nth_weekday_of_month(
         }
     }
     0
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    /// Every target kind `schedule_target_from_value` can produce must fire
+    /// into a schema the platform actually registers, otherwise the fire dies
+    /// on `task_schema_not_found` in a clean zone.
+    #[test]
+    fn builtin_schedule_targets_fire_into_registered_schemas() {
+        let registered: std::collections::HashSet<String> = buckyos_api::builtin_task_schemas()
+            .into_iter()
+            .map(|schema| schema.schema_id)
+            .collect();
+        let target_kinds = [
+            json!({"kind": "remind", "text": "hi"}),
+            json!({
+                "kind": "agent_task",
+                "title": "t",
+                "objective": "o",
+                "workspace_id": "ws"
+            }),
+            json!({"kind": "workflow.run", "workflow_id": "wf"}),
+            json!({"kind": "opendan.command", "command": "ls"}),
+            json!({"kind": "service.rpc", "service": "svc", "method": "m"}),
+        ];
+        for value in target_kinds {
+            let target = schedule_target_from_value(&value).expect("target parses");
+            let schema_id = fire_subtask_schema_id(&target.task_type);
+            assert!(
+                registered.contains(&schema_id),
+                "target kind {} fires schema {} which is not registered",
+                value["kind"],
+                schema_id
+            );
+        }
+    }
+
+    /// `workflow.run` targets never reach `create_fire_subtask` (the server
+    /// starts a run instead), but the run tree they create must be registered.
+    #[test]
+    fn workflow_run_tree_schema_is_registered() {
+        let registered: std::collections::HashSet<String> = buckyos_api::builtin_task_schemas()
+            .into_iter()
+            .map(|schema| schema.schema_id)
+            .collect();
+        assert!(registered.contains(&fire_subtask_schema_id("workflow/run")));
+    }
 }

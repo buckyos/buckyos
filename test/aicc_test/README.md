@@ -82,6 +82,53 @@ pnpm run test:fal
 
 smoke 用例会通过 `../test_helpers/buckyos_client.ts` 的 `initTestRuntime()` 初始化标准 AppClient runtime，然后从 runtime 获取 AICC 和 task-manager client。
 
+## 运行多模态 LLM 推理
+
+`llm.chat` smoke 会在同一条 user message 里同时发送文本 block 和图片 block，并要求路由到支持 `vision` 的模型。可以只运行这一个用例：
+
+```bash
+cd test/aicc_test
+AICC_SMOKE_METHODS=llm.chat pnpm test
+```
+
+可以通过环境变量替换提示词、图片和模型逻辑路径：
+
+```bash
+AICC_TEST_INPUT="What is in this image?" \
+AICC_TEST_IMAGE_URL="https://example.com/image.jpg" \
+AICC_MODEL_ALIAS="llm.vision" \
+AICC_SMOKE_METHODS=llm.chat \
+pnpm test
+```
+
+关键请求结构是：
+
+```json
+{
+  "capability": "llm",
+  "model": { "alias": "llm.vision" },
+  "requirements": { "must_features": ["vision"] },
+  "payload": {
+    "input_json": {
+      "messages": [{
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "Describe this image." },
+          {
+            "type": "image",
+            "source": {
+              "kind": "url",
+              "url": "https://www.gstatic.com/webp/gallery/1.jpg",
+              "mime_hint": "image/jpeg"
+            }
+          }
+        ]
+      }]
+    }
+  }
+}
+```
+
 ## 运行 remote runner
 
 ```bash

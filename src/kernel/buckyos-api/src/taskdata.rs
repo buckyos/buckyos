@@ -260,6 +260,30 @@ pub enum TaskDataType {
 }
 
 impl TaskDataType {
+    /// Every declared type. Lets the built-in task-schema catalog be checked
+    /// for coverage at test time instead of drifting silently.
+    pub const ALL: &'static [TaskDataType] = &[
+        Self::Download,
+        Self::SchedulerDispatchThunk,
+        Self::WorkflowRun,
+        Self::WorkflowStep,
+        Self::WorkflowMapShard,
+        Self::WorkflowThunk,
+        Self::WorkflowSchedule,
+        Self::WorkflowSendMessage,
+        Self::AgentDelegate,
+        Self::HumanInput,
+        Self::OpenDanAsyncTool,
+        Self::AiccCompute,
+        Self::AppInstall,
+        Self::AppUninstall,
+        Self::AppStart,
+        Self::AppUpdate,
+        Self::ServiceRpc,
+        Self::WorkflowRunTarget,
+        Self::ToolExecBash,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Download => TASK_DATA_TYPE_DOWNLOAD,

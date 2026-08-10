@@ -234,9 +234,11 @@ type CaseResult =
     reportDir: string;
   };
 
-const AICC_MODEL_ALIAS = getEnv("AICC_MODEL_ALIAS") ?? "llm.plan";
+const AICC_MODEL_ALIAS = getEnv("AICC_MODEL_ALIAS") ?? "llm.vision";
 const AICC_TEST_INPUT = getEnv("AICC_TEST_INPUT") ??
-  "今天天气如何，我在sanjose";
+  "Describe the main subject in this image in one sentence.";
+const AICC_TEST_IMAGE_URL = getEnv("AICC_TEST_IMAGE_URL") ??
+  "https://www.gstatic.com/webp/gallery/1.jpg";
 const AICC_WAIT_TIMEOUT_MS = Number(
   getEnv("AICC_WAIT_TIMEOUT_MS") ?? "90000",
 );
@@ -252,6 +254,11 @@ const videoResource: ResourceRef = {
   kind: "url",
   url: AICC_TEST_VIDEO_URL,
   mime_hint: "video/mp4",
+};
+const imageResource: ResourceRef = {
+  kind: "url",
+  url: AICC_TEST_IMAGE_URL,
+  mime_hint: "image/jpeg",
 };
 const audioResource: ResourceRef = AICC_TEST_AUDIO_BASE64
   ? {
@@ -284,15 +291,18 @@ const allCases: SmokeCase[] = [
     capability: "llm",
     defaultAlias: AICC_MODEL_ALIAS,
     check: "text",
-    requirements: { must_features: ["web_search"] },
+    requirements: { must_features: ["vision"] },
     buildPayload: () => ({
       input_json: {
         messages: [{
           role: "user",
-          content: [{ type: "text", text: AICC_TEST_INPUT }],
+          content: [
+            { type: "text", text: AICC_TEST_INPUT },
+            { type: "image", source: imageResource },
+          ],
         }],
         temperature: 0.2,
-        max_output_tokens: 2560,
+        max_output_tokens: 256,
       },
     }),
   },
@@ -1820,6 +1830,7 @@ async function main(): Promise<void> {
   console.log(`Run ID: ${runId}`);
   console.log(`Cases: ${cases.length}`);
   console.log(`Report Dir: ${reportRoot}`);
+  console.log(`Image URL: ${AICC_TEST_IMAGE_URL}`);
   console.log(`Video URL: ${AICC_TEST_VIDEO_URL}`);
   console.log(
     `Audio URL: ${AICC_TEST_AUDIO_BASE64 ? "<base64>" : AICC_TEST_AUDIO_URL}`,

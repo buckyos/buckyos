@@ -700,6 +700,18 @@ RunnerFunctionRegistration {
 - 不在 Task Center 展示的内部 Runner，仍然必须注册后才能被自动 dispatch。
 - 直接由 Service 创建并绑定给自身 AppInstance 的内部 Task 可以不经过 Dispatcher。
 
+一方平台 schema（`raw/v1`、`human.approval/v1` 以及由 `TaskDataType` 迁移来的
+`workflow.*`、`agent.delegate/v1`、`human.input/v1`、`opendan.*`、`aicc.compute/v1`、`app.*` 等）
+不依赖各服务启动时自行发布：目录定义在 `buckyos-api/src/task_mgr.rs::builtin_task_schemas()`，
+由 task-manager 在 bootstrap 幂等 seed，`publisher_app_id` 仍写真实 owner。这样干净 Zone 在
+Workflow/OpenDAN/AICC 尚未起来时也不会出现 `task_schema_not_found`，也不需要每个内核服务各带
+一套注册重试循环。目录之外的 App 仍然通过 `register_task_schema` 自行发布，且只能发布
+`publisher_app_id == 自身 app_id` 的 schema（zone-trusted 调用者除外）。
+
+这批内置 schema 的 input/output 一律是 `{"type": "object"}`：payload 是 `TypedTaskData` 信封，
+其字段级契约由产出方服务拥有并版本化，不由 TaskMgr 代管。要收紧某一个，必须发布新的
+`schema_version`（§9.1 规则 1）。
+
 ### 9.3 Input 和 Result 语义
 
 Input 创建后不可变。需要修改 Input 时：
@@ -1282,6 +1294,19 @@ Task Center 应：
 - 树视图默认只加载 metadata，展开详情时再按 ACL 获取 Input/Result。
 - 明确显示取消保证是 interrupt 还是 safe。
 
+Task Center 侧的落地约束（`desktop/src/api/task_mgr.ts`）：
+
+- 列表走 `list_tasks` 分页拿 `TaskSummary`，只对「schedule root task」和「非 Terminal 任务」补
+  `get_task`（列表要展示它们的 progress/payload），detail 页再按 task_id 单独取。detail 按
+  `revision` 缓存，稳态刷新只重读真正变过的 Task。
+- Task ID 是 opaque string，任何位置都不得做数字化解析或校验。
+- 「需要我处理」的通用判据是 `executor_kind = HumanSet` 且非 Terminal，不是某个 status 字符串。
+  用户决定通过 `commit_result` 一次性写入，按 schema 组织 Result（`human.approval/v1` 写
+  `{decision}`，`human.input/v1` 写完整 `{request, result:{response}}` 信封），不存在通用
+  `update_task_data` 通道。
+- schedule root task 永远保持非终态，UI 的 enabled/paused/archived/error 取自
+  payload `request.status`，task phase 只作为兜底投影。
+
 ## 15. 持久数据设计
 
 ### 15.1 Overview
@@ -1703,7 +1728,10 @@ Task 行不是账本真相源，也不负责配额扣减。父 Task 聚合子 Ta
   `claim_next` 路径，收敛 Uncertain/IdempotentAccept 的“重复创建目标 Task”语义。
 - Runner service 与注册协议：发布版本化 RunnerFunctionRegistration，实现 Dispatcher 主动调用的
   幂等 `offer_task`/`activate_task`，在 activate 和 runner epoch 确认前禁止业务副作用。
-- `buckyos-api/src/taskdata.rs`：现有 TaskData 类型迁移为版本化 Task Schema。
+- `buckyos-api/src/taskdata.rs`：现有 TaskData 类型迁移为版本化 Task Schema。schema_id 由旧
+  type 点号化加 `/v1` 得到，唯一例外是 `workflow/run`：它点号化后与 dispatch target 契约
+  `workflow.run` 撞名，run tree 因此保留 `workflow.run_tree/v1`。`TaskDataType::ALL` 与
+  `builtin_task_schemas()` 的覆盖关系有测试守护，新增 TaskDataType 忘记登记会直接失败。
 - Task Center、Workflow、OpenDAN、Scheduler、Control Panel：同步共享类型、API、状态投影和
   深链接。
 - Scheduler 不新增 store、队列或恢复协议；如接入异步 thunk 或批量动作，仅输出 frozen
@@ -1736,3 +1764,6 @@ Task 行不是账本真相源，也不负责配额扣减。父 Task 聚合子 Ta
    必须新建 Task。
 14. PendingApproval 不产生 offer；approve 不改变 auth envelope，deny/expire 正确终结公开 Task。
 15. Scheduler 崩溃只停止新 placement 决策，不影响 Dispatcher 队列和已经运行的 Task。
+16. 干净 Zone（空 Task DB、其它服务尚未启动）能直接创建全部一方 schema 的 Task；重跑
+    bootstrap 是 no-op 而不是 `idempotency_conflict`；每个内置 schedule target kind 触发出来的
+    子任务 schema 都已注册。

@@ -1,5 +1,6 @@
 /* ── TaskCenter Task Detail Page ── */
 
+import { useEffect } from 'react'
 import {
   ArrowLeft,
   Play,
@@ -119,6 +120,11 @@ interface TaskDetailPageProps {
 export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskDetailPageProps) {
   const store = useTaskCenterStore()
   const { t } = useI18n()
+  // Lists carry metadata only; the payload/progress of a finished task is
+  // fetched when its detail page opens.
+  useEffect(() => {
+    void store.loadTaskDetail(taskId)
+  }, [store, taskId])
   const task = store.getTaskById(taskId)
   const backLabel =
     backPage === 'schedules'
@@ -151,9 +157,9 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
   }
 
   const errorMsg =
-    task.status === 'failed' && task.payload?.error
+    task.error ?? (task.status === 'failed' && task.payload?.error
       ? String(task.payload.error)
-      : null
+      : null)
 
   return (
     <div className="space-y-5">

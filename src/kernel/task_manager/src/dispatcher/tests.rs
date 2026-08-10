@@ -4,7 +4,7 @@
 use super::dispatch_db::DispatchDb;
 use super::service::{RunnerCaller, TaskDispatcherService};
 use crate::server::tests::setup_service;
-use crate::server::{TaskManagerService, RAW_TASK_SCHEMA_ID};
+use crate::server::TaskManagerService;
 use async_trait::async_trait;
 use buckyos_api::*;
 use kRPC::{RPCContext, RPCErrors, Result};

@@ -1,5 +1,6 @@
 /* ── TaskCenter mock store ── */
 
+import { WORKFLOW_SCHEDULE_TASK_SCHEMA_ID } from 'buckyos'
 import type {
   Task,
   TaskStatus,
@@ -166,7 +167,7 @@ const seedTasks: Task[] = [
     status: 'running',
     source: 'system',
     progress: null,
-    schemaType: 'workflow/schedule',
+    schemaType: WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
     createdAt: '2026-05-01T09:00:00Z',
     updatedAt: '2026-05-24T09:45:00Z',
     startedAt: '2026-05-01T09:00:00Z',
@@ -253,7 +254,7 @@ const seedTasks: Task[] = [
     status: 'running',
     source: 'agent',
     progress: null,
-    schemaType: 'workflow/schedule',
+    schemaType: WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
     createdAt: '2026-05-20T18:00:00Z',
     updatedAt: '2026-05-28T10:02:00Z',
     startedAt: '2026-05-20T18:00:00Z',
@@ -313,7 +314,7 @@ const seedTasks: Task[] = [
     status: 'paused',
     source: 'agent',
     progress: null,
-    schemaType: 'workflow/schedule',
+    schemaType: WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
     createdAt: '2026-05-03T12:30:00Z',
     updatedAt: '2026-05-26T16:20:00Z',
     startedAt: '2026-05-03T12:30:00Z',
@@ -371,7 +372,7 @@ const seedTasks: Task[] = [
     status: 'failed',
     source: 'system',
     progress: null,
-    schemaType: 'workflow/schedule',
+    schemaType: WORKFLOW_SCHEDULE_TASK_SCHEMA_ID,
     createdAt: '2026-05-12T05:40:00Z',
     updatedAt: '2026-05-28T09:30:00Z',
     startedAt: '2026-05-12T05:40:00Z',
@@ -595,20 +596,20 @@ export class TaskCenterMockStore {
 
   getRunningTasks(): Task[] {
     return this.tasks.filter(
-      (t) => t.schemaType !== 'workflow/schedule' && (t.status === 'running' || t.status === 'paused'),
+      (t) => t.schemaType !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID && (t.status === 'running' || t.status === 'paused'),
     )
   }
 
   getRecentFinishedTasks(): Task[] {
     return this.tasks.filter(
       (t) =>
-        t.schemaType !== 'workflow/schedule' &&
+        t.schemaType !== WORKFLOW_SCHEDULE_TASK_SCHEMA_ID &&
         (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'),
     )
   }
 
   getScheduledTasks(): Task[] {
-    return this.tasks.filter((t) => t.schemaType === 'workflow/schedule' || t.type === 'scheduled')
+    return this.tasks.filter((t) => t.schemaType === WORKFLOW_SCHEDULE_TASK_SCHEMA_ID || t.type === 'scheduled')
   }
 
   getTaskById(taskId: string): Task | null {
