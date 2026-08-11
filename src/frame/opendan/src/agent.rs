@@ -27,8 +27,8 @@ use agent_tool::{AgentAttentionSignalStore, AttentionSignalStoreConfig};
 use anyhow::{anyhow, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, parse_typed_task_data, AgentDelegateProgress, AgentDelegateTaskData,
-    AgentDelegateTaskRequest, AiMessage, AiRole, Task, TimerOptions,
-    TypedTaskData,
+    AgentDelegateTaskRequest, AiMessage, AiRole, Task, TimerOptions, TypedTaskData,
+    UI_SESSION_STATE_STATUS_LINE_KEY,
 };
 use chrono::{Datelike, Local, Timelike, Utc};
 use log::{info, warn};
@@ -36,11 +36,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, Duration};
 
-use crate::agent_bash::{build_session_tools, SessionBinLayout, SessionToolsBuild};
+use crate::agent_bash::{
+    build_session_tools, BashProgressSink, SessionBinLayout, SessionToolsBuild,
+};
 use crate::agent_config::{AgentConfig, SessionIdStrategy};
 use crate::agent_session::{AgentSession, AgentSessionBuild, SessionReply};
 use crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE;
-use crate::ai_runtime::AgentRuntime;
+use crate::ai_runtime::{ui_status_nonce, AgentRuntime};
 use crate::contact::ContactLookup;
 use crate::dispatch::{
     DispatchEvaluator, EnumSessionIdStrategy, FixedRulesDispatch, SessionIdEvaluator,
@@ -71,6 +73,14 @@ const SELF_IMPROVE_STAGE1_SESSION_PREFIX: &str = "self_improve_signals";
 const SELF_IMPROVE_STAGE2_SESSION_PREFIX: &str = "self_improve_set_memory";
 const SELF_IMPROVE_SKILL_STAGE2_SESSION_PREFIX: &str = "try_create_new_skill";
 const SELF_IMPROVE_STAGE2_ROTATE_AFTER_MS: u64 = 72 * 60 * 60 * 1000;
+
+fn progress_status_session_id(kind: SessionKind, session_id: &str, owner: &str) -> String {
+    if matches!(kind, SessionKind::Work) && !owner.trim().is_empty() {
+        owner.trim().to_string()
+    } else {
+        session_id.to_string()
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -1837,6 +1847,50 @@ impl AIAgent {
         let agent_id = self.agent_id();
         let bin_renderer = self.build_session_bin_renderer(&agent_id, &session_id, &behavior_name);
         let appclient_session_token = resolve_appclient_session_token().await?;
+        let progress_sink = self.runtime.msg_center.as_ref().map(|msg_center| {
+            let msg_center = msg_center.clone();
+            let progress_session_id =
+                progress_status_session_id(kind, &session_id, &owner);
+            let i18n = self.config.i18n.clone();
+            Arc::new(move |ctx: &agent_tool::SessionRuntimeContext, progress: &crate::agent_bash::BashProgressUpdate| {
+                let line = if progress.stage == "finalizing" {
+                    i18n.render(
+                        "status.aicc_finalizing",
+                        &[("method", progress.method.clone())],
+                    )
+                } else {
+                    i18n.render(
+                        "status.aicc_running",
+                        &[
+                            ("method", progress.method.clone()),
+                            ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
+                        ],
+                    )
+                };
+                let msg_center = msg_center.clone();
+                let session_id = progress_session_id.clone();
+                let turn_nonce = ui_status_nonce(&ctx.trace_id);
+                tokio::spawn(async move {
+                    let value = serde_json::json!({
+                        "value": line,
+                        "turn_nonce": turn_nonce,
+                    });
+                    if let Err(err) = msg_center
+                        .update_ui_session_state(
+                            session_id.clone(),
+                            UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                            value,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "opendan.agent: update AICC progress for session {} failed: {err}",
+                            session_id
+                        );
+                    }
+                });
+            }) as BashProgressSink
+        });
 
         let tools = build_session_tools(SessionToolsBuild {
             workspace_root: tool_root.clone(),
@@ -1847,6 +1901,7 @@ impl AIAgent {
             appclient_session_token,
             filesystem_policy: self.config.toml.runtime.filesystem_policy,
             bin_renderer,
+            progress_sink,
         })
         .map_err(|err| anyhow!("build session tools: {err}"))?;
         // Worksession control tools (create_worksession / forward_msg) are
@@ -1929,6 +1984,7 @@ impl AIAgent {
         let log_sid = session_id.clone();
         let agent_name = self.agent_name.clone();
         let owner_for_log = owner.clone();
+        let reply_session = Arc::downgrade(&session);
         tokio::spawn(async move {
             while let Some(reply) = reply_rx.recv().await {
                 match reply {
@@ -1940,6 +1996,9 @@ impl AIAgent {
                     }
                     SessionReply::Error { message } => {
                         warn!("opendan.agent[{agent_name}]: session={log_sid} error: {message}");
+                        if let Some(session) = reply_session.upgrade() {
+                            session.post_outbound_error(&message).await;
+                        }
                     }
                     SessionReply::Ended => {
                         info!("opendan.agent[{agent_name}]: session={log_sid} ended");
@@ -2401,8 +2460,24 @@ impl AIAgent {
         source_session_id: &str,
         text: &str,
     ) -> Result<String> {
+        self.forward_ai_message(
+            target_session_id,
+            source_session_id,
+            text,
+            AiMessage::text(AiRole::User, text.trim().to_string()),
+        )
+        .await
+    }
+
+    pub async fn forward_ai_message(
+        &self,
+        target_session_id: &str,
+        source_session_id: &str,
+        text: &str,
+        mut ai_message: AiMessage,
+    ) -> Result<String> {
         let trimmed = text.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && ai_message.content.is_empty() {
             return Err(anyhow!("forward_message: text is empty"));
         }
         let target = {
@@ -2425,6 +2500,12 @@ impl AIAgent {
             return Err(anyhow!("{}", ended_forward_message_guidance(&summary)));
         }
         let record_id = format!("forward:{source_session_id}:{}", mint_session_id("fwd"));
+        ai_message.role = AiRole::User;
+        let pending_text = if trimmed.is_empty() {
+            ai_message.text_content()
+        } else {
+            trimmed.to_string()
+        };
         target
             .enqueue_pending(PendingInput::Msg {
                 record_id: record_id.clone(),
@@ -2432,8 +2513,8 @@ impl AIAgent {
                 from_did: None,
                 from_name: None,
                 tunnel_did: None,
-                text: trimmed.to_string(),
-                ai_message: AiMessage::text(AiRole::User, trimmed.to_string()),
+                text: pending_text,
+                ai_message,
             })
             .await?;
         Ok(record_id)
@@ -3625,6 +3706,18 @@ runner_id = "agent"
             }
             (dst, patch) => *dst = patch.clone(),
         }
+    }
+
+    #[test]
+    fn worksession_progress_targets_owner_ui_session() {
+        assert_eq!(
+            progress_status_session_id(SessionKind::Work, "work-1", "ui-1"),
+            "ui-1"
+        );
+        assert_eq!(
+            progress_status_session_id(SessionKind::Ui, "ui-1", "owner"),
+            "ui-1"
+        );
     }
 
     fn delegate_task(id: &str, data: serde_json::Value) -> Task {

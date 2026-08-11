@@ -1,6 +1,7 @@
 use crate::aicc::{
-    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
-    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
+    emit_background_provider_result, provider_type_from_settings, redacted_json_log,
+    AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderRefreshTask,
+    ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
 use crate::model_types::{
@@ -36,6 +37,8 @@ const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-002";
 const DEFAULT_GEMINI_VIDEO_MODELS: &str = "veo-3.1-generate-preview";
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GEMINI_MODELS_MAX_PAGES: usize = 10;
 const GEMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
@@ -73,6 +76,7 @@ const GEMINI_VIDEO_PARAMETER_ALLOWLIST: &[&str] = &[
     "duration_seconds",
     "negative_prompt",
     "person_generation",
+    "resolution",
     "sample_count",
     "seed",
 ];
@@ -96,7 +100,7 @@ pub struct GoogleGeminiInstanceConfig {
     pub alias_map: HashMap<String, String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GoogleGeminiProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
@@ -1469,6 +1473,7 @@ impl GoogleGeminiProvider {
             "duration_seconds" | "durationSeconds" => Some("durationSeconds"),
             "negative_prompt" | "negativePrompt" => Some("negativePrompt"),
             "person_generation" | "personGeneration" => Some("personGeneration"),
+            "resolution" => Some("resolution"),
             "sample_count" | "sampleCount" => Some("sampleCount"),
             "seed" => Some("seed"),
             _ => None,
@@ -1666,6 +1671,84 @@ impl GoogleGeminiProvider {
             )
         })?;
         Ok((status, body, latency_ms))
+    }
+
+    async fn get_video_operation(
+        &self,
+        operation_name: &str,
+    ) -> Result<(StatusCode, Value), ProviderError> {
+        let url = if operation_name.starts_with("http://") || operation_name.starts_with("https://")
+        {
+            operation_name.to_string()
+        } else {
+            format!(
+                "{}/{}",
+                self.base_url,
+                operation_name.trim_start_matches('/')
+            )
+        };
+        let response = self
+            .client
+            .get(url)
+            .header("x-goog-api-key", self.api_token.as_str())
+            .send()
+            .await
+            .map_err(|err| {
+                ProviderError::fatal(format!(
+                    "google gemini video status request failed: {}",
+                    err
+                ))
+            })?;
+        let status = response.status();
+        let body = response.json::<Value>().await.map_err(|err| {
+            ProviderError::fatal(format!(
+                "failed to parse google gemini video status response: {}",
+                err
+            ))
+        })?;
+        Ok((status, body))
+    }
+
+    async fn download_video(
+        &self,
+        url: &str,
+    ) -> Result<(StatusCode, Vec<u8>, String), ProviderError> {
+        let url = if url.starts_with("http://") || url.starts_with("https://") {
+            url.to_string()
+        } else {
+            format!("{}/{}", self.base_url, url.trim_start_matches('/'))
+        };
+        let response = self
+            .client
+            .get(url)
+            .header("x-goog-api-key", self.api_token.as_str())
+            .send()
+            .await
+            .map_err(|err| {
+                ProviderError::fatal(format!("google gemini video download failed: {}", err))
+            })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("video/mp4")
+            .to_string();
+        let bytes = response.bytes().await.map_err(|err| {
+            ProviderError::fatal(format!(
+                "failed to read google gemini video content: {}",
+                err
+            ))
+        })?;
+        Ok((status, bytes.to_vec(), content_type))
+    }
+
+    fn video_uri(operation: &Value) -> Option<&str> {
+        operation
+            .pointer("/response/generateVideoResponse/generatedSamples/0/video/uri")
+            .or_else(|| operation.pointer("/response/generatedVideos/0/video/uri"))
+            .or_else(|| operation.pointer("/response/generated_videos/0/video/uri"))
+            .and_then(|value| value.as_str())
     }
 
     fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
@@ -2320,7 +2403,16 @@ impl GoogleGeminiProvider {
         provider_model: &str,
         method: &str,
         req: &AiMethodRequest,
+        sink: Arc<dyn TaskEventSink>,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if method == ai_methods::VIDEO_IMG2VIDEO
+            && req.payload.resources.is_empty()
+            && Self::resource_from_input_json(req, &["image"]).is_none()
+        {
+            return Err(ProviderError::fatal(
+                "video.img2video requires an image input",
+            ));
+        }
         let mut instance = Map::new();
         instance.insert(
             "prompt".to_string(),
@@ -2333,7 +2425,12 @@ impl GoogleGeminiProvider {
             .cloned()
             .or_else(|| Self::resource_from_input_json(req, &["image", "video"]))
         {
-            instance.insert("input".to_string(), Self::resource_part(&resource)?);
+            let field = match method {
+                ai_methods::VIDEO_IMG2VIDEO => "image",
+                ai_methods::VIDEO_VIDEO2VIDEO | ai_methods::VIDEO_EXTEND => "video",
+                _ => "image",
+            };
+            instance.insert(field.to_string(), Self::resource_part(&resource)?);
         }
         if let Some(handle) = req
             .payload
@@ -2363,9 +2460,13 @@ impl GoogleGeminiProvider {
         if !ignored_parameters.is_empty() {
             warn!(
                 "aicc.gemini ignored unsupported video parameters: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
-                self.instance.provider_instance_name, provider_model, ctx.trace_id, ignored_parameters
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                ignored_parameters
             );
         }
+        let started_at = std::time::Instant::now();
         let (status, body, latency_ms) = self
             .post_model_action(provider_model, "predictLongRunning", &request_obj)
             .await?;
@@ -2376,6 +2477,108 @@ impl GoogleGeminiProvider {
                 .unwrap_or("google gemini video returned non-success status");
             return Err(Self::classify_api_error(status, message.to_string()));
         }
+        let operation_name = body
+            .get("name")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ProviderError::fatal("google gemini video response is missing operation name")
+            })?
+            .to_string();
+
+        let provider = self.clone();
+        let task_id = ctx
+            .task_id
+            .clone()
+            .unwrap_or_else(|| operation_name.clone());
+        let provider_model = provider_model.to_string();
+        let method = method.to_string();
+        let request = req.clone();
+        tokio::spawn(async move {
+            let result = provider
+                .finish_video(
+                    provider_model.as_str(),
+                    method.as_str(),
+                    operation_name,
+                    body,
+                    request_obj,
+                    started_at,
+                    latency_ms,
+                )
+                .await;
+            emit_background_provider_result(sink, task_id.as_str(), &request, result).await;
+        });
+
+        Ok(ProviderStartResult::Started)
+    }
+
+    async fn finish_video(
+        &self,
+        provider_model: &str,
+        method: &str,
+        operation_name: String,
+        mut operation: Value,
+        request_obj: Map<String, Value>,
+        started_at: std::time::Instant,
+        latency_ms: u64,
+    ) -> Result<AiResponse, ProviderError> {
+        loop {
+            if let Some(error) = operation.get("error") {
+                let message = error
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("google gemini video generation failed");
+                return Err(ProviderError::fatal(message.to_string()));
+            }
+            if operation
+                .get("done")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                break;
+            }
+            if started_at.elapsed() >= GEMINI_VIDEO_MAX_WAIT {
+                return Err(ProviderError::fatal(format!(
+                    "google gemini video generation timed out after {} seconds",
+                    GEMINI_VIDEO_MAX_WAIT.as_secs()
+                )));
+            }
+            time::sleep(GEMINI_VIDEO_POLL_INTERVAL).await;
+            let (poll_status, next_operation) =
+                self.get_video_operation(operation_name.as_str()).await?;
+            if !poll_status.is_success() {
+                let message = next_operation
+                    .pointer("/error/message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("google gemini video status returned non-success status");
+                return Err(ProviderError::fatal(message.to_string()));
+            }
+            operation = next_operation;
+        }
+        let video_uri = Self::video_uri(&operation).ok_or_else(|| {
+            ProviderError::fatal("google gemini completed video response is missing video uri")
+        })?;
+        let (download_status, bytes, content_type) = self.download_video(video_uri).await?;
+        if !download_status.is_success() {
+            return Err(ProviderError::fatal(format!(
+                "google gemini video download returned status {}",
+                download_status.as_u16()
+            )));
+        }
+        let mime = if content_type.contains("video/") {
+            content_type
+        } else {
+            "video/mp4".to_string()
+        };
+        let artifact = AiArtifact {
+            name: "video.mp4".to_string(),
+            resource: ResourceRef::Base64 {
+                mime: mime.clone(),
+                data_base64: general_purpose::STANDARD.encode(bytes),
+            },
+            mime: Some(mime),
+            metadata: None,
+        };
         let mut extra = Map::new();
         extra.insert(
             "provider".to_string(),
@@ -2386,26 +2589,32 @@ impl GoogleGeminiProvider {
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
-        if let Some(name) = body.get("name").cloned() {
-            extra.insert("operation_name".to_string(), name.clone());
-            if method == ai_methods::VIDEO_EXTEND {
-                extra.insert("continuation_handle".to_string(), name);
-            }
+        extra.insert(
+            "latency_ms".to_string(),
+            Value::from(started_at.elapsed().as_millis() as u64),
+        );
+        extra.insert("submit_latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "operation_name".to_string(),
+            Value::String(operation_name.clone()),
+        );
+        if method == ai_methods::VIDEO_EXTEND {
+            extra.insert(
+                "continuation_handle".to_string(),
+                Value::String(video_uri.to_string()),
+            );
         }
         extra.insert(
             "provider_io".to_string(),
-            json!({ "input": request_obj, "output": body }),
+            json!({ "input": request_obj, "output": operation }),
         );
-        Ok(ProviderStartResult::Immediate(AiResponse {
-            provider_task_ref: extra
-                .get("operation_name")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string()),
-            finish_reason: Some("started".to_string()),
+        Ok(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            provider_task_ref: Some(operation_name),
+            finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
-        }))
+        })
     }
 }
 
@@ -2445,6 +2654,18 @@ impl Provider for GoogleGeminiProvider {
                 estimated_latency_ms: Some(6000),
             };
         }
+        if matches!(
+            input.api_type,
+            ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+        ) {
+            return CostEstimateOutput {
+                estimated_cost_usd: 0.5,
+                pricing_mode: PricingMode::Unknown,
+                quota_state: QuotaState::Normal,
+                confidence: 0.5,
+                estimated_latency_ms: Some(120_000),
+            };
+        }
 
         let input_tokens = input.input_tokens.max(1);
         let output_tokens = input.estimated_output_tokens.unwrap_or(1024).max(1);
@@ -2479,7 +2700,7 @@ impl Provider for GoogleGeminiProvider {
         ctx: crate::aicc::InvokeCtx,
         provider_model: String,
         req: ResolvedRequest,
-        _sink: Arc<dyn TaskEventSink>,
+        sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.method.as_str() {
             ai_methods::LLM_CHAT => {
@@ -2532,6 +2753,7 @@ impl Provider for GoogleGeminiProvider {
                     provider_model.as_str(),
                     req.method.as_str(),
                     &req.request,
+                    sink,
                 )
                 .await
             }
@@ -3148,6 +3370,82 @@ mod tests {
         assert_eq!(parse_gemini_major_minor("text-embedding-004"), None);
         // 三段版本 (2.5.1) 不识别——Google 没有这种命名，避免误判
         assert_eq!(parse_gemini_major_minor("gemini-2.5.1-flash"), None);
+    }
+
+    #[test]
+    fn veo_inventory_exposes_text_and_image_to_video() {
+        let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
+            "gemini-primary",
+            ProviderType::CloudApi,
+            "google-gemini",
+            &GeminiModelBuckets {
+                video: vec!["veo-3.1-generate-preview".to_string()],
+                ..Default::default()
+            },
+            &[],
+            Some("test".to_string()),
+        );
+        let veo = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "veo-3.1-generate-preview")
+            .expect("veo model should exist");
+        assert!(veo.api_types.contains(&ApiType::VideoTextToVideo));
+        assert!(veo.api_types.contains(&ApiType::VideoImageToVideo));
+        assert!(veo
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "video.img2video"));
+    }
+
+    #[test]
+    fn video_uri_parses_gemini_operation_response() {
+        let operation = json!({
+            "done": true,
+            "response": {
+                "generateVideoResponse": {
+                    "generatedSamples": [{
+                        "video": { "uri": "https://example.com/video.mp4" }
+                    }]
+                }
+            }
+        });
+        assert_eq!(
+            GoogleGeminiProvider::video_uri(&operation),
+            Some("https://example.com/video.mp4")
+        );
+    }
+
+    #[test]
+    fn estimate_video_cost_uses_veo_long_task_latency() {
+        let provider = GoogleGeminiProvider::new(
+            GoogleGeminiInstanceConfig {
+                provider_instance_name: "gemini-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "google-gemini".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+                models: vec![],
+                default_model: None,
+                image_models: vec![],
+                default_image_model: None,
+                features: vec![],
+                alias_map: HashMap::new(),
+            },
+            "token".to_string(),
+        )
+        .expect("provider should be built");
+        let estimate = provider.estimate_cost(&CostEstimateInput {
+            api_type: ApiType::VideoImageToVideo,
+            exact_model: "veo-3.1-generate-preview@gemini-primary".to_string(),
+            input_tokens: 0,
+            estimated_output_tokens: None,
+            cached_input_tokens: None,
+            request_features: vec![],
+        });
+        assert_eq!(estimate.estimated_cost_usd, 0.5);
+        assert_eq!(estimate.estimated_latency_ms, Some(120_000));
     }
 
     #[test]

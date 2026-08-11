@@ -130,6 +130,7 @@ pub struct InvokeCtx {
     pub caller_app_id: Option<String>,
     pub session_token: Option<String>,
     pub trace_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 impl InvokeCtx {
@@ -158,6 +159,7 @@ impl InvokeCtx {
             caller_app_id,
             session_token,
             trace_id: ctx.trace_id.clone(),
+            task_id: None,
         }
     }
 }
@@ -2137,6 +2139,7 @@ fn method_for_route_api_type(api_type: &str) -> std::result::Result<&'static str
         "audio.asr" | "audio.transcriptions.create" => Ok(ai_methods::AUDIO_ASR),
         "audio.tts" | "audio.speech.create" => Ok(ai_methods::AUDIO_TTS),
         "video.txt2video" | "videos.generate" => Ok(ai_methods::VIDEO_TXT2VIDEO),
+        "video.img2video" => Ok(ai_methods::VIDEO_IMG2VIDEO),
         other => Err(reason_error(
             "invalid_request",
             format!("unsupported api_type '{}'", other),
@@ -4175,7 +4178,7 @@ impl AIComputeCenter {
         mut request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let mut invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
         apply_default_features_for_method(method, &mut request);
         info!(
             "aicc.complete received: tenant={} caller_app={:?} method={} capability={:?} model_alias={} idempotency_key={:?}",
@@ -4187,6 +4190,7 @@ impl AIComputeCenter {
             request.idempotency_key
         );
         let external_task_id = self.generate_task_id();
+        invoke_ctx.task_id = Some(external_task_id.clone());
         let base_sink = self.sink_factory.build(&invoke_ctx, &external_task_id);
         let event_ref = base_sink.event_ref();
         let deferred_sink = Arc::new(DeferredTaskEventSink::new(base_sink));
@@ -4432,12 +4436,12 @@ impl AIComputeCenter {
                     external_task_id.as_str(),
                     invoke_ctx.tenant_id.as_str(),
                     instance_id.as_str(),
-                    task_mgr_id,
+                    task_mgr_id.clone(),
                 );
                 self.emit_task_started(event_sink, external_task_id.as_str(), instance_id.as_str())
                     .await;
                 Ok(AiMethodResponse::new(
-                    external_task_id,
+                    task_mgr_id,
                     AiMethodStatus::Running,
                     None,
                     event_ref,
@@ -4465,12 +4469,12 @@ impl AIComputeCenter {
                     external_task_id.as_str(),
                     invoke_ctx.tenant_id.as_str(),
                     instance_id.as_str(),
-                    task_mgr_id,
+                    task_mgr_id.clone(),
                 );
                 self.emit_task_queued(event_sink, external_task_id.as_str(), position)
                     .await;
                 Ok(AiMethodResponse::new(
-                    external_task_id,
+                    task_mgr_id,
                     AiMethodStatus::Running,
                     None,
                     event_ref,
@@ -4506,12 +4510,17 @@ impl AIComputeCenter {
             invoke_ctx.tenant_id, invoke_ctx.caller_app_id, task_id
         );
 
-        let binding = self
-            .task_bindings
-            .read()
-            .ok()
-            .and_then(|bindings| bindings.get(task_id).cloned());
-        let Some(binding) = binding else {
+        let binding = self.task_bindings.read().ok().and_then(|bindings| {
+            bindings
+                .get_key_value(task_id)
+                .or_else(|| {
+                    bindings
+                        .iter()
+                        .find(|(_, item)| item.task_mgr_id == task_id)
+                })
+                .map(|(external_task_id, item)| (external_task_id.clone(), item.clone()))
+        });
+        let Some((external_task_id, binding)) = binding else {
             return Ok(CancelResponse::new(task_id.to_string(), false));
         };
 
@@ -4526,11 +4535,14 @@ impl AIComputeCenter {
             return Ok(CancelResponse::new(task_id.to_string(), false));
         };
 
-        let accepted = provider.cancel(invoke_ctx.clone(), task_id).await.is_ok();
+        let accepted = provider
+            .cancel(invoke_ctx.clone(), external_task_id.as_str())
+            .await
+            .is_ok();
         if accepted {
             if let Ok(taskmgr) = self.acquire_task_manager_client(&invoke_ctx).await {
                 let event = TaskEvent {
-                    task_id: task_id.to_string(),
+                    task_id: external_task_id.clone(),
                     kind: TaskEventKind::CancelRequested,
                     timestamp_ms: now_ms(),
                     data: Some(json!({
@@ -4560,7 +4572,7 @@ impl AIComputeCenter {
                 }
             }
             if let Ok(mut bindings) = self.task_bindings.write() {
-                bindings.remove(task_id);
+                bindings.remove(external_task_id.as_str());
             }
         }
         Ok(CancelResponse::new(task_id.to_string(), accepted))
@@ -5362,7 +5374,7 @@ struct StoredNamedArtifact {
     height: Option<u32>,
 }
 
-async fn materialize_response_artifacts_if_needed(
+pub(crate) async fn materialize_response_artifacts_if_needed(
     task_id: &str,
     req: &AiMethodRequest,
     summary: &mut AiResponse,
@@ -5439,6 +5451,61 @@ async fn materialize_response_artifacts_if_needed(
         append_materialized_artifact_extra(summary, materialized);
     }
     Ok(count)
+}
+
+pub(crate) async fn emit_background_provider_result(
+    sink: Arc<dyn TaskEventSink>,
+    task_id: &str,
+    request: &AiMethodRequest,
+    result: std::result::Result<AiResponse, ProviderError>,
+) {
+    let event = match result {
+        Ok(mut summary) => {
+            if let Err(error) =
+                materialize_response_artifacts_if_needed(task_id, request, &mut summary).await
+            {
+                TaskEvent {
+                    task_id: task_id.to_string(),
+                    kind: TaskEventKind::Error,
+                    timestamp_ms: now_ms(),
+                    data: Some(json!({
+                        "code": "artifact_materialize_failed",
+                        "message": format!("materialize artifact failed: {}", error)
+                    })),
+                }
+            } else {
+                let has_text = !summary.text_content().is_empty();
+                let artifact_count = summary.artifacts().len();
+                let finish_reason = summary.finish_reason.clone();
+                TaskEvent {
+                    task_id: task_id.to_string(),
+                    kind: TaskEventKind::Final,
+                    timestamp_ms: now_ms(),
+                    data: Some(json!({
+                        "summary": redacted_summary_value(&summary),
+                        "finish_reason": finish_reason,
+                        "has_text": has_text,
+                        "artifact_count": artifact_count
+                    })),
+                }
+            }
+        }
+        Err(error) => TaskEvent {
+            task_id: task_id.to_string(),
+            kind: TaskEventKind::Error,
+            timestamp_ms: now_ms(),
+            data: Some(json!({
+                "code": "provider_error",
+                "message": error.to_string()
+            })),
+        },
+    };
+    if let Err(error) = sink.emit(event).await {
+        error!(
+            "aicc.background_provider_event_failed task_id={} err={}",
+            task_id, error
+        );
+    }
 }
 
 async fn store_base64_artifact(
@@ -6082,6 +6149,10 @@ mod tests {
             self.shutdown_call_count.load(AtomicOrdering::Relaxed)
         }
 
+        fn canceled_ids(&self) -> Vec<String> {
+            self.canceled.lock().unwrap().clone()
+        }
+
         fn with_refresh_inventory(mut self, inventory: ProviderInventory) -> Self {
             self.refresh_inventory = Some(inventory);
             self
@@ -6350,6 +6421,47 @@ mod tests {
         assert!(!logged.contains("def456"));
         assert!(!logged.contains("ghi789"));
         assert!(!logged.contains(&"a".repeat(LOG_BASE64_LIKE_MIN_CHARS)));
+    }
+
+    #[test]
+    fn async_final_task_data_redacts_provider_inline_data() {
+        let request = base_request();
+        let mut data = build_initial_aicc_task_data(
+            &request,
+            "aicc-redaction-test",
+            None,
+            &InvokeCtx::default(),
+        );
+        let event = TaskEvent {
+            task_id: "aicc-redaction-test".to_string(),
+            kind: TaskEventKind::Final,
+            timestamp_ms: 1,
+            data: Some(json!({
+                "summary": redacted_summary_value(&AiResponse {
+                    extra: Some(json!({
+                        "provider_io": {
+                            "input": {
+                                "contents": [{
+                                    "parts": [{
+                                        "inlineData": {
+                                            "mimeType": "image/jpeg",
+                                            "data": "raw-image-base64"
+                                        }
+                                    }]
+                                }]
+                            }
+                        }
+                    })),
+                    ..Default::default()
+                })
+            })),
+        };
+
+        merge_task_data_with_event(&mut data, &event);
+
+        let encoded = serde_json::to_string(&data).expect("serialize task data");
+        assert!(!encoded.contains("raw-image-base64"));
+        assert!(encoded.contains("[redacted_base64] len=16"));
     }
 
     #[test]
@@ -6807,11 +6919,10 @@ mod tests {
         assert!(!response.task_id.is_empty());
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = all_tasks(&taskmgr).await;
-        let task = tasks
-            .into_iter()
-            .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
-            .expect("running response should persist task");
+        let task = taskmgr
+            .get_task(&response.task_id)
+            .await
+            .expect("running response should return the task-manager task id");
         assert_eq!(task.phase, TaskPhase::Running);
         assert_eq!(
             task.message.as_deref(),
@@ -6848,11 +6959,10 @@ mod tests {
         assert_eq!(response.status, AiMethodStatus::Running);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = all_tasks(&taskmgr).await;
-        let task = tasks
-            .into_iter()
-            .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
-            .expect("queued response should persist task");
+        let task = taskmgr
+            .get_task(&response.task_id)
+            .await
+            .expect("queued response should return the task-manager task id");
 
         assert_eq!(task.phase, TaskPhase::Accepted);
         assert_eq!(task.message.as_deref(), Some(QUEUE_STATUS_QUEUED));
@@ -6908,11 +7018,10 @@ mod tests {
             .expect("complete should succeed");
         assert_eq!(response.status, AiMethodStatus::Running);
 
-        let tasks = all_tasks(&taskmgr).await;
-        let task = tasks
-            .into_iter()
-            .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
-            .expect("aicc task should exist");
+        let task = taskmgr
+            .get_task(&response.task_id)
+            .await
+            .expect("running response should return the task-manager task id");
         assert_eq!(task.parent_id, Some(parent_task.task_id.clone()));
     }
 
@@ -6949,11 +7058,10 @@ mod tests {
         assert_eq!(response.status, AiMethodStatus::Running);
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
-        let tasks = all_tasks(&taskmgr).await;
-        let task = tasks
-            .into_iter()
-            .find(|item| aicc_external_task_id(item).as_deref() == Some(response.task_id.as_str()))
-            .expect("aicc task should exist");
+        let task = taskmgr
+            .get_task(&response.task_id)
+            .await
+            .expect("running response should return the task-manager task id");
         // Free-form root ids are gone in 2.0; the session id still rides in
         // the immutable request payload.
         assert_eq!(task.root_id, task.task_id);
@@ -7152,5 +7260,47 @@ mod tests {
             cancel_result.unwrap_err(),
             RPCErrors::NoPermission(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn cancel_with_task_manager_id_uses_provider_task_id() {
+        let registry = Registry::default();
+        let catalog = ModelCatalog::default();
+        catalog.set_mapping(
+            Capability::Llm,
+            "llm.plan.default",
+            "provider-a",
+            "gpt-4o-mini",
+        );
+        let provider = Arc::new(MockProvider::new(
+            mock_instance("provider-a-1", "provider-a"),
+            cost(0.001, 100),
+            vec![Ok(ProviderStartResult::Started)],
+        ));
+        registry.add_provider(provider.clone());
+        let center = center_with_taskmgr(registry, catalog);
+        let ctx = RPCContext {
+            token: Some("tenant-alice".to_string()),
+            ..Default::default()
+        };
+
+        let response = center.complete(base_request(), ctx.clone()).await.unwrap();
+        let task = center
+            .taskmgr
+            .as_ref()
+            .unwrap()
+            .get_task(&response.task_id)
+            .await
+            .unwrap();
+        let external_task_id = aicc_external_task_id(&task).unwrap();
+
+        let canceled = center
+            .handle_cancel(response.task_id.as_str(), ctx)
+            .await
+            .unwrap();
+
+        assert!(canceled.accepted);
+        assert_ne!(external_task_id, response.task_id);
+        assert_eq!(provider.canceled_ids(), vec![external_task_id]);
     }
 }

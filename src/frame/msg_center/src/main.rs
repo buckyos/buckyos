@@ -12,7 +12,8 @@ use ::kRPC::*;
 use anyhow::{Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
-    BuckyOSRuntimeType, DeliveryReportResult, MsgCenterClient, MsgCenterServerHandler,
+    BuckyOSRuntimeType, DeliveryRecordWithObject, DeliveryReportResult, DeliveryState,
+    MsgCenterClient, MsgCenterServerHandler,
     SystemConfigClient, UserContactSettings, UserPrivateProfile, UserSettings, UserState,
     MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
 };
@@ -27,6 +28,7 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
 use name_lib::DID;
+use ndn_lib::{MsgContent, MsgContentFormat, MsgObject};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -337,6 +339,7 @@ async fn pump_delivery_queue_once(
             continue;
         };
         let delivery_id = record.record.delivery_id.clone();
+        let failure_notice = build_delivery_failure_notice(&record);
         worked = true;
 
         let report = match executor_mgr.execute_via(&transport_did, record).await {
@@ -362,34 +365,87 @@ async fn pump_delivery_queue_once(
         };
 
         let report_ok = report.ok;
-        if let Err(err) = msg_center
+        match msg_center
             .report_delivery(delivery_id.clone(), report)
             .await
         {
-            // The SENDING lease sweep will reclaim this row if the report is
-            // lost for good.
-            warn!(
-                "msg-center report_delivery failed: executor={} delivery_id={} err={}",
-                transport_did.to_string(),
-                delivery_id,
-                err
-            );
-        } else if report_ok {
-            info!(
-                "msg-center delivery done: executor={} delivery_id={}",
-                transport_did.to_string(),
-                delivery_id
-            );
-        } else {
-            warn!(
-                "msg-center delivery reported failure: executor={} delivery_id={}",
-                transport_did.to_string(),
-                delivery_id
-            );
+            Err(err) => {
+                // The SENDING lease sweep will reclaim this row if the report is
+                // lost for good.
+                warn!(
+                    "msg-center report_delivery failed: executor={} delivery_id={} err={}",
+                    transport_did.to_string(),
+                    delivery_id,
+                    err
+                );
+            }
+            Ok(_) if report_ok => {
+                info!(
+                    "msg-center delivery done: executor={} delivery_id={}",
+                    transport_did.to_string(),
+                    delivery_id
+                );
+            }
+            Ok(record) => {
+                warn!(
+                    "msg-center delivery reported failure: executor={} delivery_id={}",
+                    transport_did.to_string(),
+                    delivery_id
+                );
+                if record.state == DeliveryState::Dead {
+                    if let Some(notice) = failure_notice {
+                        let idempotency_key = Some(format!("delivery-failure:{delivery_id}"));
+                        match msg_center.post_send(notice, idempotency_key).await {
+                            Ok(result) if result.ok => {}
+                            Ok(result) => warn!(
+                                "msg-center delivery failure notice rejected: delivery_id={} reason={:?}",
+                                delivery_id, result.reason
+                            ),
+                            Err(err) => warn!(
+                                "msg-center delivery failure notice failed: delivery_id={} err={}",
+                                delivery_id, err
+                            ),
+                        }
+                    }
+                }
+            }
         }
     }
 
     Ok(worked)
+}
+
+fn build_delivery_failure_notice(record: &DeliveryRecordWithObject) -> Option<MsgObject> {
+    let mut msg = record.msg.clone()?;
+    if msg
+        .meta
+        .get("delivery_failure_fallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let text = msg
+        .meta
+        .remove("delivery_failure_notice")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return None;
+    }
+    msg.to = vec![record.record.envelope.target_did.clone()];
+    msg.created_at_ms = now_ms();
+    msg.content = MsgContent {
+        format: Some(MsgContentFormat::TextPlain),
+        content: text,
+        ..Default::default()
+    };
+    msg.meta.insert(
+        "delivery_failure_fallback".to_string(),
+        Value::Bool(true),
+    );
+    Some(msg)
 }
 
 fn start_delivery_pump(center: MessageCenter, executor_mgr: Arc<DeliveryExecutorMgr>) {
@@ -1001,5 +1057,82 @@ async fn main() {
     init_logging("msg_center", true);
     if let Err(err) = start_msg_center_service().await {
         error!("msg-center service start failed: {:?}", err);
+    }
+}
+
+#[cfg(test)]
+mod delivery_failure_tests {
+    use super::*;
+    use buckyos_api::{DeliveryEnvelope, DeliveryRecord, TransportKind};
+    use ndn_lib::{MsgObjKind, NamedObject};
+
+    fn record_with_notice() -> DeliveryRecordWithObject {
+        let transport_did = DID::new("bns", "telegram");
+        let target_did = DID::new("msgtunnel", "42.user.telegram");
+        let mut msg = MsgObject {
+            from: DID::new("bns", "jarvis"),
+            to: vec![target_did.clone()],
+            kind: MsgObjKind::Chat,
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: "result".to_string(),
+                ..Default::default()
+            },
+            created_at_ms: 1,
+            ..Default::default()
+        };
+        msg.meta.insert(
+            "delivery_failure_notice".to_string(),
+            Value::String("delivery failed".to_string()),
+        );
+        let msg_id = msg.gen_obj_id().0;
+        DeliveryRecordWithObject {
+            record: DeliveryRecord {
+                delivery_id: "delivery-1".to_string(),
+                envelope: DeliveryEnvelope {
+                    msg_id,
+                    target_did,
+                    transport_did,
+                    transport: TransportKind::Tunnel {
+                        platform: "telegram".to_string(),
+                        tunnel_instance_id: "telegram".to_string(),
+                    },
+                    address: None,
+                },
+                state: DeliveryState::Sending,
+                attempts: 4,
+                next_retry_at_ms: None,
+                external_msg_id: None,
+                delivered_at_ms: None,
+                last_error: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+            msg: Some(msg),
+        }
+    }
+
+    #[test]
+    fn builds_plain_text_failure_notice() {
+        let record = record_with_notice();
+        let notice = build_delivery_failure_notice(&record).unwrap();
+        assert_eq!(notice.to, vec![record.record.envelope.target_did]);
+        assert_eq!(notice.content.content, "delivery failed");
+        assert!(notice.content.refs.is_empty());
+        assert_eq!(
+            notice.meta.get("delivery_failure_fallback"),
+            Some(&Value::Bool(true))
+        );
+        assert!(!notice.meta.contains_key("delivery_failure_notice"));
+    }
+
+    #[test]
+    fn does_not_recurse_for_failure_notice() {
+        let mut record = record_with_notice();
+        record.msg.as_mut().unwrap().meta.insert(
+            "delivery_failure_fallback".to_string(),
+            Value::Bool(true),
+        );
+        assert!(build_delivery_failure_notice(&record).is_none());
     }
 }

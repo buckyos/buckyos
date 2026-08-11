@@ -127,7 +127,7 @@ AICC 不定义私有 Job API。长任务使用 `task-manager`：
 | AICC response | task-manager 是否创建 task | task-manager 状态 | `task_id` 来源 | `event_ref` 是否可订阅 |
 |---|---|---|---|---|
 | `status=succeeded` | 是 | `Completed` | AICC 外部 task id | 是，用于审计、最终结果和可观察数据。 |
-| `status=running` | 是 | `Pending` / `Running` | AICC 外部 task id | 是，用于进度、取消和最终结果。 |
+| `status=running` | 是 | `Accepted` / `Running` | TaskMgr 2.0 `task_id` | 是，用于进度、取消和最终结果。调用方直接使用 `get_task({ task_id })`，不扫描任务列表。 |
 | `status=failed` | best effort | `Failed` 或未创建 | AICC 诊断 id | 已创建 task 时可订阅；鉴权、反序列化、早期校验失败可直接返回 kRPC error。 |
 
 视频生成、音乐生成、大批量 embedding、长文件转录等默认走异步任务。

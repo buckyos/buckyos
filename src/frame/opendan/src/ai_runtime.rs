@@ -25,7 +25,7 @@ use buckyos_api::{
     ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
     AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
     KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskDispatcherClient,
-    ListTasksReq, TaskManagerClient, TaskOutcome, TypedTaskData,
+    TaskManagerClient, TaskOutcome, TypedTaskData,
 };
 use log::warn;
 use serde_json::{json, Value};
@@ -209,9 +209,9 @@ impl LlmClient for AiccLlmClient {
 /// `behavior::do_inference_once` used, but reuses
 /// `BuckyOSRuntime::wait_for_task_end_kevent` so the wait is kevent-
 /// accelerated with a sweep fallback.
-async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse, LLMComputeError> {
-    let external_task_id = external_task_id.trim();
-    if external_task_id.is_empty() {
+async fn resolve_async_aicc_result(task_id: &str) -> Result<AiResponse, LLMComputeError> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() {
         return Err(LLMComputeError::Provider(
             "aicc response status=running but task_id is empty".to_string(),
         ));
@@ -219,21 +219,15 @@ async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse,
 
     let runtime = get_buckyos_api_runtime()
         .map_err(|err| LLMComputeError::Internal(format!("load buckyos runtime failed: {err}")))?;
-    let taskmgr = runtime.get_task_mgr_client().await.map_err(|err| {
-        LLMComputeError::Provider(format!("init task-manager client failed: {err}"))
-    })?;
-
-    let id = resolve_aicc_task_id(&taskmgr, external_task_id).await?;
-
     let task = runtime
-        .wait_for_task_end_kevent(&id)
+        .wait_for_task_end_kevent(task_id)
         .await
         .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 
     if task.outcome != Some(TaskOutcome::Succeeded) {
         return Err(LLMComputeError::Provider(format!(
             "aicc task {} ended with outcome {:?}",
-            id, task.outcome
+            task_id, task.outcome
         )));
     }
 
@@ -247,7 +241,7 @@ async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse,
         _ => {
             return Err(LLMComputeError::Provider(format!(
                 "aicc task {} terminated without typed aicc.compute payload",
-                id
+                task_id
             )))
         }
     };
@@ -257,59 +251,16 @@ async fn resolve_async_aicc_result(external_task_id: &str) -> Result<AiResponse,
         .ok_or_else(|| {
             LLMComputeError::Provider(format!(
                 "aicc task {} terminated without aicc output payload",
-                id
+                task_id
             ))
         })?;
     let summary_value = output.get("summary").cloned().unwrap_or(output);
     serde_json::from_value::<AiResponse>(summary_value).map_err(|err| {
         LLMComputeError::Provider(format!(
             "decode AiResponse from aicc task {} output failed: {err}",
-            id
+            task_id
         ))
     })
-}
-
-/// AICC's `external_task_id` is always shaped like `aicc-{ts}-{seq}` and is
-/// not a task-manager id. Walk task-manager listings filtered by the AICC
-/// app to find the row whose `data.aicc.external_task_id` matches.
-async fn resolve_aicc_task_id(
-    taskmgr: &TaskManagerClient,
-    external_task_id: &str,
-) -> Result<String, LLMComputeError> {
-    if external_task_id.starts_with("t-") {
-        return Ok(external_task_id.to_string());
-    }
-
-    let page = taskmgr
-        .list_tasks(ListTasksReq {
-            schema_id: Some("aicc.compute/v1".to_string()),
-            ..Default::default()
-        })
-        .await
-        .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
-
-    for summary in page.tasks {
-        let Ok(task) = taskmgr.get_task(&summary.task_id).await else {
-            continue;
-        };
-        let payload = task
-            .result
-            .clone()
-            .or_else(|| task.progress.clone())
-            .unwrap_or_else(|| task.input.clone());
-        let matched = matches!(
-            buckyos_api::parse_typed_task_data("aicc.compute", payload),
-            Ok(TypedTaskData::AiccCompute(data))
-                if data.request.external_task_id.as_deref() == Some(external_task_id)
-        );
-        if matched {
-            return Ok(task.task_id);
-        }
-    }
-    Err(LLMComputeError::Provider(format!(
-        "aicc task_id '{}' is not a task id and no task-manager row references it",
-        external_task_id
-    )))
 }
 
 // =====================================================================
@@ -615,6 +566,12 @@ mod policy_tests {
     }
 
     #[test]
+    fn fork_status_uses_parent_turn_nonce() {
+        assert_eq!(ui_status_nonce("ui-session-7::fork-1"), "ui-session-7");
+        assert_eq!(ui_status_nonce("ui-session-8"), "ui-session-8");
+    }
+
+    #[test]
     fn exec_bash_provider_tool_uses_tool_whitelist() {
         let policy = AgentPolicy::new(Vec::new());
         let request = request_with_policy(ToolPolicy {
@@ -702,6 +659,14 @@ impl OpenDanWorklogSink {
             sink.set_with_nonce(line, nonce);
         }
     }
+}
+
+pub(crate) fn ui_status_nonce(trace_id: &str) -> String {
+    trace_id
+        .split_once("::fork-")
+        .map(|(parent, _)| parent)
+        .unwrap_or(trace_id)
+        .to_string()
 }
 
 #[async_trait]
@@ -843,7 +808,7 @@ impl WorklogSink for OpenDanWorklogSink {
         let status_nonce = payload
             .get("trace_id")
             .and_then(Value::as_str)
-            .map(str::to_string);
+            .map(ui_status_nonce);
         self.update_status(status_line, status_nonce);
 
         let record = json!({

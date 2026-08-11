@@ -7,6 +7,40 @@
   "required_features": [],
   "models": [
     {
+      "id": "sora-2",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.4
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "id": "sora-2-pro",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 1.2
+      },
+      "estimated_latency_ms": 180000
+    },
+    {
       "id": "gpt-image-1",
       "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
       "logical_mounts": [
@@ -110,6 +144,23 @@
   ],
   "patterns": [
     {
+      "pattern": "sora-*",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.4
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
       "pattern": "*transcribe*",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
@@ -180,19 +231,26 @@
     },
     {
       "pattern": "gpt-*",
-      "api_types": ["llm", "rerank"],
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.openai.{model}",
         "rerank",
         "rerank.openai",
-        "rerank.{model}"
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
       ],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
+        "vision": true,
         "max_context_tokens": 128000,
         "max_output_tokens": 8192
       },

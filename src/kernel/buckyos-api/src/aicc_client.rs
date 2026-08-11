@@ -1544,6 +1544,8 @@ pub enum AiMethodStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AiMethodResponse {
+    /// For `running`, this is the stable TaskMgr task id and can be passed
+    /// directly to `task-manager.get_task({ task_id })`.
     pub task_id: String,
     pub status: AiMethodStatus,
     #[serde(skip_serializing_if = "Option::is_none")]

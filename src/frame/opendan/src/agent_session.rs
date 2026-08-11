@@ -302,7 +302,7 @@ pub struct AgentSession {
     /// caused the parent LLM to think a forward was needed". §8.4 of the
     /// design doc calls this the "本轮 origin user 消息". Per-turn ephemeral
     /// state — not persisted, simply overwritten each turn.
-    current_origin_msg: Arc<std::sync::Mutex<Option<String>>>,
+    current_origin_msg: Arc<std::sync::Mutex<Option<AiMessage>>>,
 
     /// Interrupt handle of the LLMContext currently inside a `run()` call.
     /// `Some` while an inference is in flight; `None` between turns or when
@@ -1019,7 +1019,7 @@ impl AgentSession {
             user_messages: messages.clone(),
             system_events: Vec::new(),
         };
-        self.set_current_origin_msg(messages.first().map(|message| message.text_content()));
+        self.set_current_origin_msg(messages.first().cloned());
         self.run_one_round(messages, Vec::new(), Some(seed), false)
             .await
     }
@@ -1324,11 +1324,7 @@ impl AgentSession {
                         self.set_status(SessionStatus::WaitingInput).await;
                         continue;
                     }
-                    self.set_current_origin_msg(
-                        bootstrap_messages
-                            .first()
-                            .map(|message| message.text_content()),
-                    );
+                    self.set_current_origin_msg(bootstrap_messages.first().cloned());
                     let seed = RoundSeed {
                         trigger: RoundTrigger::SystemEvent {
                             source: "bootstrap".to_string(),
@@ -1556,7 +1552,7 @@ impl AgentSession {
             let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
             let mut latest_peer_did: Option<String> = None;
             let mut latest_peer_tunnel: Option<String> = None;
-            let mut latest_origin_msg: Option<String> = None;
+            let mut latest_origin_msg: Option<AiMessage> = None;
             // Parallel collections destined for the round-history seed. We
             // mirror the per-input visit so user-msg ordering & system-event
             // payloads are captured intact rather than the post-formatted
@@ -1592,7 +1588,7 @@ impl AgentSession {
                                     if first_msg_preview.is_none() {
                                         first_msg_preview = Some(trigger_preview(&preview_text));
                                     }
-                                    latest_origin_msg = Some(preview_text);
+                                    latest_origin_msg = Some(message.clone());
                                     hist_user_messages.push(message.clone());
                                     msg_count += 1;
                                 }
@@ -5634,14 +5630,18 @@ impl AgentSession {
         self.current_origin_msg
             .lock()
             .ok()
-            .and_then(|g| g.clone())
+            .and_then(|g| g.as_ref().map(AiMessage::text_content))
             .filter(|s| !s.trim().is_empty())
     }
 
+    pub fn current_origin_user_ai_message(&self) -> Option<AiMessage> {
+        self.current_origin_msg.lock().ok().and_then(|g| g.clone())
+    }
+
     /// Worker-internal: stash / clear the per-turn origin message. Pass
-    /// `Some(text)` right before running a turn; `None` to clear (e.g. on
+    /// `Some(message)` right before running a turn; `None` to clear (e.g. on
     /// session exit).
-    fn set_current_origin_msg(&self, value: Option<String>) {
+    fn set_current_origin_msg(&self, value: Option<AiMessage>) {
         if let Ok(mut g) = self.current_origin_msg.lock() {
             *g = value;
         }
@@ -5966,6 +5966,19 @@ impl AgentSession {
         )
     }
 
+    pub(crate) async fn post_outbound_error(&self, error: &str) {
+        self.status.set_with_nonce(
+            self.agent_config.i18n.render("status.llm_failed", &[]),
+            self.status.nonce_snapshot(),
+        );
+        let text = self
+            .agent_config
+            .i18n
+            .render("response.failed", &[("error", error.trim().to_string())]);
+        self.post_outbound_message(&AiMessage::text(AiRole::Assistant, text))
+            .await;
+    }
+
     async fn post_outbound_message(&self, message: &AiMessage) {
         // UI sessions are the only ones that reply through msg-center
         // today — work sessions surface their result via report.md instead.
@@ -6037,6 +6050,14 @@ impl AgentSession {
                 serde_json::Value::String(turn_nonce),
             );
         }
+        msg.meta.insert(
+            "delivery_failure_notice".to_string(),
+            serde_json::Value::String(
+                self.agent_config
+                    .i18n
+                    .render("response.delivery_failed", &[]),
+            ),
+        );
 
         let workspace_id = {
             let meta = self.meta.lock().await;
@@ -6061,6 +6082,7 @@ impl AgentSession {
                 .runtime
                 .preserve_attachment_tag_in_egress,
         };
+        let fallback_msg = msg.clone();
         let msg = match llm_context::ai_message_to_msg_object_with_base_validated_async(
             message,
             msg,
@@ -6076,6 +6098,8 @@ impl AgentSession {
                     "opendan.session[{}]: outbound message conversion failed: {err}",
                     self.session_id
                 );
+                self.post_delivery_failure_notice(&msg_center, fallback_msg)
+                    .await;
                 return;
             }
         };
@@ -6096,6 +6120,36 @@ impl AgentSession {
                 "opendan.session[{}]: outbound post_send failed: {err}",
                 self.session_id
             ),
+        }
+    }
+
+    async fn post_delivery_failure_notice(
+        &self,
+        msg_center: &buckyos_api::MsgCenterClient,
+        mut msg: ndn_lib::MsgObject,
+    ) {
+        msg.content = ndn_lib::MsgContent {
+            format: Some(ndn_lib::MsgContentFormat::TextPlain),
+            content: self
+                .agent_config
+                .i18n
+                .render("response.delivery_failed", &[]),
+            ..Default::default()
+        };
+        msg.meta.remove("delivery_failure_notice");
+        msg.meta.insert(
+            "delivery_failure_fallback".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        let idempotency_key = Some(format!(
+            "delivery-failure:{}:{}",
+            self.session_id, msg.created_at_ms
+        ));
+        if let Err(err) = msg_center.post_send(msg, idempotency_key).await {
+            warn!(
+                "opendan.session[{}]: delivery failure notice post_send failed: {err}",
+                self.session_id
+            );
         }
     }
 
