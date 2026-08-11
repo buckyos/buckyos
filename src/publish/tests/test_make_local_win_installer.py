@@ -119,6 +119,19 @@ class WindowsPackagerTests(unittest.TestCase):
             self.assertNotIn('schtasks /Create /TN "BuckyOSNodeDaemonKeepAlive"', script)
             self.assertNotIn('WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"', script)
 
+    def test_buckyos_postinstall_does_not_delete_missing_task(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            payload = Path(td) / "buckyos"
+
+            winpkg._stage_windows_hooks("buckyos", payload)
+
+            hook = payload / "scripts" / "hooks" / "postinstall.ps1"
+            text = hook.read_text(encoding="utf-8")
+
+            self.assertNotIn("schtasks.exe /Delete", text)
+            self.assertIn("schtasks.exe /Create", text)
+            self.assertIn("/F /TR $RunCommand", text)
+
     def test_node_daemon_loader_vbs_no_longer_wraps_powershell(self) -> None:
         loader = Path(winpkg.__file__).resolve().parent / "win_pkg" / "scripts" / "node_daemon_loader.vbs"
 

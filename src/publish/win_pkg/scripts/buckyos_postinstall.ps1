@@ -9,8 +9,6 @@ $Loader = Join-Path $ScriptsDir "node_daemon_loader.vbs"
 $NodeDaemon = Join-Path $Root "bin\node-daemon\node_daemon.exe"
 $RunCommand = 'wscript.exe //B //NoLogo "{0}" "{1}"' -f $Loader, $NodeDaemon
 
-& schtasks.exe /Delete /TN $TaskName /F *> $null
-
 & schtasks.exe /Create /TN $TaskName /SC MINUTE /MO 1 /F /TR $RunCommand
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
