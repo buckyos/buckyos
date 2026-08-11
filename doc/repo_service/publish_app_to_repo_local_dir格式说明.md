@@ -60,11 +60,11 @@ my-agent/
 
 ## 3. AppService
 
-`AppService` 当前只支持 docker 镜像 tar 文件，不再支持其它扫描行为。
+`AppService` 当前支持 Docker 镜像和 Host Script 两种发布布局。一次发布只能选择其中一种，暂不支持在同一个 App Document 中混合 `script` 与 Docker 子包。
 
-### 支持的子包
+### 3.1 Docker 镜像
 
-只支持下面两个 key：
+支持下面两个子包 key：
 
 - `amd64_docker_image`
 - `aarch64_docker_image`
@@ -138,6 +138,25 @@ my-appservice/
 - 顶层 `AppDoc` 永远是**纯 meta**，没有自己的 chunk。
 - 如果 `local_dir` 中没有任何 tar，则不会生成 docker 子包的内容包；此时发布结果就是一个纯 meta 的 `AppDoc`。
 
+### 3.2 Host Script
+
+要求：
+
+- `app_doc_template.pkg_list.script` 必须存在；
+- `local_dir` 本身就是脚本应用根目录；
+- 根目录应包含 Worker Runtime 可识别的入口，例如 `main.py` / `start.py` 或 `main.ts` / `start.ts`；
+- 可选用 `buckyos_script.json` 的 `entry` 字段显式指定入口。
+
+示例：
+
+```text
+my-script-app/
+├── buckyos_script.json
+└── main.py
+```
+
+发布时 `local_dir` 整体会被打包成 `script` 子包。
+
 ## 4. 当前发布流程
 
 当前实现流程如下：
@@ -156,5 +175,6 @@ my-appservice/
 
 - `Web` 和 `Agent`：直接把可运行目录作为 `local_dir`。
 - `Agent`：不要在模板里放 `agent_skills`。
-- `AppService`：只按固定文件名准备 docker tar，不要再放别的发布输入。
+- Docker `AppService`：只按固定文件名准备 docker tar，不要再放别的发布输入。
+- Host Script `AppService`：直接把可运行脚本目录作为 `local_dir`，并只配置 `pkg_list.script`。
 - 如果只想让系统运行时通过 `docker_image_name` 拉镜像，可以让 `local_dir` 保持空目录，走纯 meta 发布。

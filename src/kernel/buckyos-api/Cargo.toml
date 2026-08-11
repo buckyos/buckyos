@@ -18,6 +18,7 @@ once_cell = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 jsonwebtoken = { workspace = true }
+openssl = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 http = { workspace = true }
@@ -25,9 +26,12 @@ http-body-util = { workspace = true }
 bytes = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
-cyfs-sn = { workspace = true }
+cyfs-gateway-api = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
 memmap2 = "0.9.5"
 libc = "0.2.177"
+rusqlite = { workspace = true }
 
 buckyos-kit = { workspace = true }
 package-lib = { workspace = true }
@@ -35,10 +39,8 @@ name-lib = { workspace = true }
 name-client = { workspace = true }
 kRPC ={ workspace = true }
 rbac = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
 ndn-lib = { workspace = true }
 named_store = { workspace = true }
 ndn-toolkit = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }

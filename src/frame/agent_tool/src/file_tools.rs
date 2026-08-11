@@ -3,12 +3,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::warn;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
 
 use crate::{
-    optional_string_arg, require_string_arg, resolve_path_from_root, tokenize_bash_command_line,
-    u64_to_usize_arg, AgentTool, AgentToolError, AgentToolResult, SessionRuntimeContext, ToolSpec,
+    resolve_path_from_root, rewrite_path_with_shell_cwd, u64_to_usize_arg, AgentToolError,
+    CallingConventions, CliInvocation, ContentInput, SessionRuntimeContext, ToolCtx, TypedTool,
 };
 
 pub const TOOL_EDIT_FILE: &str = "edit_file";
@@ -146,95 +148,152 @@ impl EditFileTool {
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct EditFileArgs {
+    pub path: String,
+    pub old_string: String,
+    pub new_string: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EditFileOutput {
+    pub matched: bool,
+    pub changed: bool,
+    #[serde(rename = "mode")]
+    pub operation: String,
+    #[serde(rename = "line")]
+    pub line_no: Option<usize>,
+    pub diff: String,
+    pub diff_truncated: bool,
+    #[serde(skip)]
+    pub file_path: String,
+}
+
 #[async_trait]
-impl AgentTool for EditFileTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_EDIT_FILE.to_string(),
-            description: "Edit file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "pos_chunk": { "type": "string" },
-                    "new_content": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["replace", "after", "before"] }
-                },
-                "required": ["path", "pos_chunk", "new_content"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({"type": "object"}),
-            usage: Some(
-                "edit_file <path> --pos-chunk <text> [--mode replace|after|before] (--new-content <text> | --new-content-stdin)"
-                    .to_string(),
-            ),
+impl TypedTool for EditFileTool {
+    type Args = EditFileArgs;
+    type Output = EditFileOutput;
+
+    fn name(&self) -> &str {
+        TOOL_EDIT_FILE
+    }
+    fn description(&self) -> &str {
+        "Edit file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION
+    }
+
+    fn usage(&self) -> Option<String> {
+        Some(
+            "edit_file <path> --old-string <text> (--new-string <text> | --new-string-stdin)"
+                .to_string(),
+        )
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        parse_write_or_edit_cli(tokens, shell_cwd, WriteOrEditCliSpec::EDIT_FILE)
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        Some(build_edit_request_cmd_line(
+            &args.path,
+            args.old_string.as_str(),
+        ))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        if output.changed {
+            let line_text = output
+                .line_no
+                .map(|line| format!(" at line {line}"))
+                .unwrap_or_default();
+            build_summary_with_optional_block(
+                format!(
+                    "edited {} with {}{line_text}",
+                    output.file_path, output.operation
+                ),
+                "diff",
+                &output.diff,
+            )
+        } else if !output.matched {
+            format!("edit {} skipped, old_string not found", output.file_path)
+        } else {
+            format!("edit {} made no change", output.file_path)
         }
     }
 
-    fn support_bash(&self) -> bool {
-        false
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
+        let status = if !output.matched {
+            "old_string not found".to_string()
+        } else if output.changed {
+            match output.line_no {
+                Some(line) => format!("success (line {line})"),
+                None => "success".to_string(),
+            }
+        } else {
+            "no change".to_string()
+        };
+        Some(format!("{TOOL_EDIT_FILE} {} => {status}", output.file_path))
     }
 
-    fn support_action(&self) -> bool {
-        true
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string_arg(&args, "path")?;
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let file_path = args.path.trim().to_string();
+        if file_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `path`".to_string(),
+            ));
+        }
+        let old_string = args.old_string;
+        if old_string.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `old_string`".to_string(),
+            ));
+        }
+        let new_string = args.new_string;
+        if old_string == new_string {
+            return Err(AgentToolError::InvalidArgs(
+                "`new_string` must be different from `old_string`".to_string(),
+            ));
+        }
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
         self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
 
-        let exists = fs::metadata(&abs_path).await.is_ok();
-        let original_content = if exists {
-            read_text_file_lossy(&abs_path).await?
-        } else {
-            String::new()
+        let original_content = read_text_file_lossy(&abs_path).await?;
+        let matches: Vec<usize> = original_content
+            .match_indices(old_string.as_str())
+            .map(|(pos, _)| pos)
+            .collect();
+        let anchor_pos = match matches.as_slice() {
+            [] => {
+                return Err(AgentToolError::InvalidArgs(
+                    "`old_string` was not found in the file".to_string(),
+                ))
+            }
+            [pos] => *pos,
+            _ => {
+                return Err(AgentToolError::InvalidArgs(format!(
+                    "`old_string` must match exactly once, found {} matches",
+                    matches.len()
+                )))
+            }
         };
 
-        let pos_chunk = require_string_arg(&args, "pos_chunk")?;
-        let new_content = require_string_arg(&args, "new_content")?;
-        let mode = parse_edit_mode(&args)?;
-        let (operation, updated_content, matched) =
-            if let Some(anchor_pos) = original_content.find(&pos_chunk) {
-                let updated = match mode {
-                    "replace" => {
-                        let mut out = original_content.clone();
-                        let end = anchor_pos + pos_chunk.len();
-                        out.replace_range(anchor_pos..end, &new_content);
-                        out
-                    }
-                    "after" => {
-                        let mut out = original_content.clone();
-                        let insert_at = anchor_pos + pos_chunk.len();
-                        out.insert_str(insert_at, &new_content);
-                        out
-                    }
-                    "before" => {
-                        let mut out = original_content.clone();
-                        out.insert_str(anchor_pos, &new_content);
-                        out
-                    }
-                    _ => unreachable!("validated by parse_edit_mode"),
-                };
-                (mode.to_string(), updated, true)
-            } else {
-                (mode.to_string(), original_content.clone(), false)
-            };
+        let operation = "replace".to_string();
+        let mut updated_content = original_content.clone();
+        let end = anchor_pos + old_string.len();
+        updated_content.replace_range(anchor_pos..end, &new_string);
 
         let changed = original_content != updated_content;
-        let created = changed && !exists;
         if changed {
-            if created {
-                self.cfg.ensure_create_allowed(&file_path)?;
-            }
             self.cfg
                 .ensure_write_size_allowed(&file_path, updated_content.len())?;
             if let Some(parent) = abs_path.parent() {
@@ -254,15 +313,20 @@ impl AgentTool for EditFileTool {
             self.cfg.max_diff_lines,
         );
         if changed {
+            let audit_args = json!({
+                "path": file_path,
+                "old_string": old_string,
+                "mode": operation,
+            });
             if let Err(err) = self
                 .write_audit
                 .record_file_write(
-                    ctx,
-                    &args,
+                    ctx.session(),
+                    &audit_args,
                     &FileWriteAuditRecord {
                         file_path: file_path.clone(),
                         operation: operation.clone(),
-                        created,
+                        created: false,
                         changed,
                         bytes_before: original_content.len(),
                         bytes_after: updated_content.len(),
@@ -279,55 +343,22 @@ impl AgentTool for EditFileTool {
             }
         }
 
-        let details = json!({
-            "update": {
-                "mode": operation,
-                "matched": matched,
-                "changed": changed,
-                "line": original_content.find(&pos_chunk).map(|pos| {
-                    original_content[..pos].bytes().filter(|b| *b == b'\n').count() + 1
-                })
-            },
-            "content": updated_content,
-        });
-        let summary = if changed {
-            let line_text = original_content
-                .find(&pos_chunk)
-                .map(|pos| {
-                    original_content[..pos]
-                        .bytes()
-                        .filter(|b| *b == b'\n')
-                        .count()
-                        + 1
-                })
-                .map(|line| format!(" at line {line}"))
-                .unwrap_or_default();
-            build_summary_with_optional_block(
-                format!("edited {file_path} with {operation}{line_text}"),
-                "diff",
-                &diff,
-            )
-        } else if !matched {
-            format!("edit {file_path} skipped, anchor not found")
-        } else {
-            format!("edit {file_path} made no change")
-        };
-        Ok(AgentToolResult::from_details(details)
-            .with_is_agent_tool(true)
-            .with_cmd_line(build_edit_result_cmd_line(
-                &file_path,
-                matched,
-                operation.as_str(),
-                original_content.find(&pos_chunk).map(|pos| {
-                    original_content[..pos]
-                        .bytes()
-                        .filter(|b| *b == b'\n')
-                        .count()
-                        + 1
-                }),
-                &pos_chunk,
-            ))
-            .with_result(summary))
+        let line_no = Some(
+            original_content[..anchor_pos]
+                .bytes()
+                .filter(|b| *b == b'\n')
+                .count()
+                + 1,
+        );
+        Ok(EditFileOutput {
+            matched: true,
+            changed,
+            operation,
+            line_no,
+            diff,
+            diff_truncated,
+            file_path,
+        })
     }
 }
 
@@ -343,53 +374,105 @@ impl WriteFileTool {
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct WriteFileArgs {
+    pub path: String,
+    pub content: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct WriteFileOutput {
+    pub created: bool,
+    pub changed: bool,
+    pub bytes_written: usize,
+    pub line_count: usize,
+    #[serde(skip)]
+    pub file_path: String,
+    #[serde(skip)]
+    pub operation: String,
+    #[serde(skip)]
+    pub content_preview: String,
+    #[serde(skip)]
+    pub content_len: usize,
+    #[serde(skip)]
+    pub bytes_after: usize,
+}
+
 #[async_trait]
-impl AgentTool for WriteFileTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_WRITE_FILE.to_string(),
-            description: "Write file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "content": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["new", "append", "write"] }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({"type": "object"}),
-            usage: Some(
-                "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)"
-                    .to_string(),
-            ),
-        }
+impl TypedTool for WriteFileTool {
+    type Args = WriteFileArgs;
+    type Output = WriteFileOutput;
+
+    fn name(&self) -> &str {
+        TOOL_WRITE_FILE
+    }
+    fn description(&self) -> &str {
+        "Write file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ACTION
     }
 
-    fn support_bash(&self) -> bool {
-        false
+    fn usage(&self) -> Option<String> {
+        Some(
+            "write_file <path> [--mode new|append|write] (--content <text> | --content-stdin)"
+                .to_string(),
+        )
     }
 
-    fn support_action(&self) -> bool {
-        true
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    fn parse_cli_args(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string_arg(&args, "path")?;
-        let content = require_string_arg(&args, "content")?;
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        parse_write_or_edit_cli(tokens, shell_cwd, WriteOrEditCliSpec::WRITE_FILE)
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        let mode = normalize_write_mode(args.mode.as_deref()).unwrap_or("write");
+        Some(build_write_request_cmd_line(&args.path, mode))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        format!(
+            "{} {}, wrote {} bytes across {}",
+            describe_write_operation(output.operation.as_str()),
+            output.file_path,
+            output.content_len,
+            describe_line_count(output.line_count),
+        )
+    }
+
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
+        let mode_label = match output.operation.as_str() {
+            "append" => "append",
+            "new" | "create" => "new",
+            _ => "write",
+        };
+        Some(format!(
+            "{TOOL_WRITE_FILE} {} mode={mode_label} => success ({} bytes)",
+            output.file_path, output.bytes_after,
+        ))
+    }
+
+    async fn execute(
+        &self,
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let file_path = args.path.trim().to_string();
+        if file_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `path`".to_string(),
+            ));
+        }
+        let content = args.content;
+        let mode = normalize_write_mode(args.mode.as_deref())?;
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
         self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
 
-        let mode = parse_write_mode(&args)?;
         let exists = fs::metadata(&abs_path).await.is_ok();
         if mode == "new" && exists {
             return Err(AgentToolError::InvalidArgs(format!(
@@ -413,7 +496,7 @@ impl AgentTool for WriteFileTool {
         }
         .to_string();
         let updated_content = if mode == "append" {
-            format!("{original_content}{content}")
+            format!("{original_content}{}", content)
         } else {
             content.clone()
         };
@@ -439,11 +522,15 @@ impl AgentTool for WriteFileTool {
             &updated_content,
             self.cfg.max_diff_lines,
         );
+        let audit_args = json!({
+            "path": file_path,
+            "mode": operation,
+        });
         if let Err(err) = self
             .write_audit
             .record_file_write(
-                ctx,
-                &args,
+                ctx.session(),
+                &audit_args,
                 &FileWriteAuditRecord {
                     file_path: file_path.clone(),
                     operation: operation.clone(),
@@ -463,27 +550,18 @@ impl AgentTool for WriteFileTool {
             );
         }
 
-        let details = json!({
-            "content": updated_content
-        });
-        let summary = build_summary_with_optional_block(
-            format!(
-                "{} {file_path}, wrote {} bytes across {}",
-                describe_write_operation(operation.as_str()),
-                content.len(),
-                describe_line_count(count_content_lines(&content)),
-            ),
-            "content",
-            &build_content_preview(&content),
-        );
-        Ok(AgentToolResult::from_details(details)
-            .with_is_agent_tool(true)
-            .with_cmd_line(build_write_result_cmd_line(
-                &file_path,
-                operation.as_str(),
-                count_content_lines(&content),
-            ))
-            .with_result(summary))
+        let written_lines = count_content_lines(&content);
+        Ok(WriteFileOutput {
+            created: !exists,
+            changed,
+            bytes_written: updated_content.len(),
+            line_count: written_lines,
+            file_path,
+            operation,
+            content_preview: build_content_preview(&content),
+            content_len: content.len(),
+            bytes_after: updated_content.len(),
+        })
     }
 }
 
@@ -513,53 +591,139 @@ details:
     "content": $read_result
 */
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ReadFileArgs {
+    pub path: String,
+    #[serde(default)]
+    pub range: Option<Json>,
+    #[serde(default)]
+    pub first_chunk: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct ReadFileOutput {
+    pub content: String,
+    pub matched: bool,
+    pub line_range: String,
+    pub bytes: usize,
+    pub line_count: usize,
+    pub start_line: Option<usize>,
+    pub end_line: Option<usize>,
+    pub preview_truncated: bool,
+    #[serde(skip)]
+    pub file_path: String,
+    #[serde(skip)]
+    pub preview: String,
+    #[serde(skip)]
+    pub cmd_line: String,
+}
+
 #[async_trait]
-impl AgentTool for ReadFileTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_READ_FILE.to_string(),
-            description: "Read file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "range": {},
-                    "first_chunk": { "type": "string" }
-                },
-                "required": ["path"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({"type": "object"}),
-            usage: Some(
-                "read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice"
-                    .to_string(),
-            ),
+impl TypedTool for ReadFileTool {
+    type Args = ReadFileArgs;
+    type Output = ReadFileOutput;
+
+    fn name(&self) -> &str {
+        TOOL_READ_FILE
+    }
+    fn description(&self) -> &str {
+        "Read file."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::from_legacy(true, false, true)
+    }
+
+    fn usage(&self) -> Option<String> {
+        Some("read_file <path> [range] [first_chunk]\n\trange: 1-based; supports negative/$/+N, and applies within first_chunk slice".to_string())
+    }
+
+    fn parse_bash_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        let mut args = parse_read_file_bash_args(tokens)?;
+        if let Some(cwd) = shell_cwd {
+            rewrite_read_file_path_with_shell_cwd(&mut args, cwd);
+        }
+        Ok(args)
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        shell_cwd: Option<&Path>,
+    ) -> Result<CliInvocation, AgentToolError> {
+        let mut args = parse_read_file_bash_args(tokens)?;
+        if let Some(cwd) = shell_cwd {
+            rewrite_read_file_path_with_shell_cwd(&mut args, cwd);
+        }
+        Ok(CliInvocation::Json {
+            args,
+            content_input: None,
+        })
+    }
+
+    fn cli_plain_text_stdout(&self) -> bool {
+        true
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        Some(build_read_result_cmd_line(
+            &args.path,
+            args.first_chunk.as_deref(),
+            args.range.as_ref(),
+        ))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        if output.matched {
+            let lines_text = match (output.start_line, output.end_line) {
+                (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
+                (Some(start), Some(end)) => {
+                    format!("{} lines at {start}-{end}", output.line_count)
+                }
+                _ => "0 lines".to_string(),
+            };
+            let base = format!("succeeded, read {} bytes across {lines_text}", output.bytes);
+            if output.preview.is_empty() {
+                base
+            } else {
+                format!("{base}\n```content\n{}\n```", output.preview)
+            }
+        } else {
+            "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
         }
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
+        Some(format!(
+            "{} => {}",
+            output.cmd_line,
+            if output.matched {
+                "success"
+            } else {
+                "anchor not found"
+            }
+        ))
     }
 
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        true
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        _ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let file_path = require_string_arg(&args, "path")?;
+        _ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let file_path = args.path.trim().to_string();
+        if file_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `path`".to_string(),
+            ));
+        }
         let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
         self.cfg.ensure_read_path_allowed(&abs_path, &file_path)?;
 
         let full_content = read_text_file_lossy(&abs_path).await?;
-        let first_chunk = optional_string_arg(&args, "first_chunk")?;
+        let first_chunk = args.first_chunk.clone();
         let (chunk_content, matched, chunk_start_line) =
             if let Some(first_chunk) = first_chunk.as_deref() {
                 if let Some(pos) = full_content.find(first_chunk) {
@@ -578,7 +742,7 @@ impl AgentTool for ReadFileTool {
         let chunk_lines = split_lines_preserve_ending(&chunk_content);
         let total_chunk_lines = chunk_lines.len();
         let (range_start, range_end, line_range_label) =
-            if let Some((start, end)) = parse_line_range(&args, total_chunk_lines)? {
+            if let Some((start, end)) = parse_line_range(args.range.as_ref(), total_chunk_lines)? {
                 (start, end, format!("{start}-{end}"))
             } else if total_chunk_lines == 0 {
                 (1usize, 0usize, String::new())
@@ -602,70 +766,22 @@ impl AgentTool for ReadFileTool {
         let end_line = start_line.map(|start| start + read_line_count.saturating_sub(1));
         let preview = build_read_file_output_preview(start_line, &selected_lines);
         let preview_truncated = read_line_count > READ_FILE_PREVIEW_MAX_LINES;
-        let summary = if matched {
-            let lines_text = match (start_line, end_line) {
-                (Some(start), Some(end)) if start == end => format!("1 line at {start}"),
-                (Some(start), Some(end)) => format!("{read_line_count} lines at {start}-{end}"),
-                _ => "0 lines".to_string(),
-            };
-            let base = format!(
-                "succeeded, read {} bytes across {lines_text}",
-                content.len()
-            );
-            if preview.is_empty() {
-                base
-            } else {
-                format!("{base}\n```content\n{preview}\n```")
-            }
-        } else {
-            "succeeded, first_chunk was not found, read 0 bytes across 0 lines".to_string()
-        };
-        let details = json!({
-            "ok": true,
-            "path": file_path,
-            "abs_path": abs_path.to_string_lossy().to_string(),
-            "content": content,
-            "matched": matched,
-            "line_range": line_range_label,
-            "bytes": content.len(),
-            "line_count": read_line_count,
-            "start_line": start_line,
-            "end_line": end_line,
-            "preview_truncated": preview_truncated,
-            "pwd": self.cfg.root_dir.to_string_lossy().to_string(),
-        });
-        Ok(AgentToolResult::from_details(details)
-            .with_is_agent_tool(true)
-            .with_cmd_line(build_read_result_cmd_line(
-                &file_path,
-                first_chunk.as_deref(),
-                args.get("range"),
-            ))
-            .with_result(summary))
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-
-        let mut args = parse_read_file_bash_args(&tokens[1..])?;
-
-        if let Some(shell_cwd) = shell_cwd {
-            rewrite_read_file_path_with_shell_cwd(&mut args, shell_cwd);
-        }
-        let mut result = self.call(ctx, args).await?;
-        result = result.with_command_metadata_from_line(line.trim());
-
-        Ok(result)
+        let bytes = content.len();
+        let cmd_line =
+            build_read_result_cmd_line(&file_path, first_chunk.as_deref(), args.range.as_ref());
+        Ok(ReadFileOutput {
+            content,
+            matched,
+            line_range: line_range_label,
+            bytes,
+            line_count: read_line_count,
+            start_line,
+            end_line,
+            preview_truncated,
+            file_path,
+            preview,
+            cmd_line,
+        })
     }
 }
 
@@ -762,23 +878,8 @@ pub fn rewrite_read_file_path_with_shell_cwd(args: &mut Json, shell_cwd: &Path) 
     );
 }
 
-fn parse_edit_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = args
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("replace");
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" | "replace" => Ok("replace"),
-        "after" => Ok("after"),
-        "before" => Ok("before"),
-        other => Err(AgentToolError::InvalidArgs(format!(
-            "invalid edit mode `{other}`, expected replace/after/before"
-        ))),
-    }
-}
-
-fn parse_write_mode(args: &Json) -> Result<&'static str, AgentToolError> {
-    let raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("write");
+fn normalize_write_mode(raw: Option<&str>) -> Result<&'static str, AgentToolError> {
+    let raw = raw.unwrap_or("write");
     match raw.trim().to_ascii_lowercase().as_str() {
         "new" | "create" => Ok("new"),
         "append" => Ok("append"),
@@ -811,18 +912,18 @@ struct LineRangeSpec {
 }
 
 fn parse_line_range(
-    args: &Json,
+    raw: Option<&Json>,
     total_lines: usize,
 ) -> Result<Option<(usize, usize)>, AgentToolError> {
-    let Some(spec) = parse_line_range_spec(args)? else {
+    let Some(spec) = parse_line_range_spec(raw)? else {
         return Ok(None);
     };
     let (start, end) = resolve_line_range(spec, total_lines)?;
     Ok(Some((start, end)))
 }
 
-fn parse_line_range_spec(args: &Json) -> Result<Option<LineRangeSpec>, AgentToolError> {
-    let Some(raw) = args.get("range") else {
+fn parse_line_range_spec(raw: Option<&Json>) -> Result<Option<LineRangeSpec>, AgentToolError> {
+    let Some(raw) = raw else {
         return Ok(None);
     };
 
@@ -1135,7 +1236,7 @@ fn build_read_result_cmd_line(
     first_chunk: Option<&str>,
     range: Option<&Json>,
 ) -> String {
-    let mut cmd = format!("read {path}");
+    let mut cmd = format!("{TOOL_READ_FILE} {path}");
     if let Some(first_chunk) = first_chunk {
         cmd.push_str(
             format!(
@@ -1157,51 +1258,20 @@ fn build_read_result_cmd_line(
     cmd
 }
 
-fn build_write_result_cmd_line(path: &str, operation: &str, line_count: usize) -> String {
-    let line_text = describe_line_count(line_count);
-    match operation {
-        "append" => format!("append {path} and write {line_text}"),
-        "new" | "create" => format!("create {path} and write {line_text}"),
-        _ => format!("write {path} with {line_text}"),
-    }
+fn build_write_request_cmd_line(path: &str, mode: &str) -> String {
+    let mode_text = match mode {
+        "append" => "append",
+        "new" | "create" => "new",
+        _ => "write",
+    };
+    format!("{TOOL_WRITE_FILE} {path} mode={mode_text}")
 }
 
-fn build_edit_result_cmd_line(
-    path: &str,
-    matched: bool,
-    operation: &str,
-    line_no: Option<usize>,
-    pos_chunk: &str,
-) -> String {
-    if !matched {
-        return format!(
-            "edit {path}, anchor not found for \"{}\"",
-            compact_cmd_param_preview(pos_chunk)
-        );
-    }
-
-    match operation {
-        "replace" => match line_no {
-            Some(line_no) => format!(
-                "edit {path}, replace [{}:{}] to new content",
-                compact_cmd_param_preview(pos_chunk),
-                line_no
-            ),
-            None => format!(
-                "edit {path}, replace [{}] to new content",
-                compact_cmd_param_preview(pos_chunk)
-            ),
-        },
-        "before" => match line_no {
-            Some(line_no) => format!("edit {path}, insert content before line:{line_no}"),
-            None => format!("edit {path}, insert content before anchor"),
-        },
-        "after" => match line_no {
-            Some(line_no) => format!("edit {path}, insert content after line:{line_no}"),
-            None => format!("edit {path}, insert content after anchor"),
-        },
-        _ => format!("edit {path}"),
-    }
+fn build_edit_request_cmd_line(path: &str, old_string: &str) -> String {
+    format!(
+        "{TOOL_EDIT_FILE} {path} old_string=\"{}\"",
+        compact_cmd_param_preview(old_string)
+    )
 }
 
 fn split_lines_preserve_ending(content: &str) -> Vec<String> {
@@ -1330,64 +1400,184 @@ fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
+/// Shared shape for the `write_file` and `edit_file` CLI parsers — the
+/// two tools share path + a stdin-capable content field, and `edit_file`
+/// adds a required `--old-string` argument.
+#[derive(Clone, Copy)]
+pub(crate) struct WriteOrEditCliSpec {
+    pub tool_name: &'static str,
+    pub extra_required: Option<(&'static str, &'static str)>,
+    pub content_flag: &'static str,
+    pub content_stdin_flag: &'static str,
+    pub content_field: &'static str,
+}
+
+impl WriteOrEditCliSpec {
+    pub const WRITE_FILE: Self = Self {
+        tool_name: TOOL_WRITE_FILE,
+        extra_required: None,
+        content_flag: "--content",
+        content_stdin_flag: "--content-stdin",
+        content_field: "content",
+    };
+    pub const EDIT_FILE: Self = Self {
+        tool_name: TOOL_EDIT_FILE,
+        extra_required: Some(("--old-string", "old_string")),
+        content_flag: "--new-string",
+        content_stdin_flag: "--new-string-stdin",
+        content_field: "new_string",
+    };
+
+    fn usage_err(&self, msg: impl Into<String>) -> AgentToolError {
+        AgentToolError::InvalidArgs(format!("{} ({})", msg.into(), self.tool_name))
+    }
+}
+
+pub(crate) fn parse_write_or_edit_cli(
+    tokens: &[String],
+    shell_cwd: Option<&Path>,
+    spec: WriteOrEditCliSpec,
+) -> Result<CliInvocation, AgentToolError> {
+    if tokens.is_empty() {
+        return Err(spec.usage_err("missing required arg `path`"));
+    }
+    let mut path: Option<String> = None;
+    let mut mode: Option<String> = None;
+    let mut content: Option<ContentInput> = None;
+    let mut extra: Option<String> = None;
+    let mut idx = 0usize;
+
+    while idx < tokens.len() {
+        let token = tokens[idx].as_str();
+        if token == "--mode" {
+            idx += 1;
+            mode = Some(
+                tokens
+                    .get(idx)
+                    .ok_or_else(|| spec.usage_err("missing value for `--mode`"))?
+                    .clone(),
+            );
+        } else if token == spec.content_flag {
+            idx += 1;
+            content = Some(ContentInput::Inline(
+                tokens
+                    .get(idx)
+                    .ok_or_else(|| {
+                        spec.usage_err(format!("missing value for `{}`", spec.content_flag))
+                    })?
+                    .clone(),
+            ));
+        } else if token == spec.content_stdin_flag {
+            content = Some(ContentInput::Stdin);
+        } else if let Some((flag, _field)) = spec.extra_required.filter(|(f, _)| token == *f) {
+            idx += 1;
+            extra = Some(
+                tokens
+                    .get(idx)
+                    .ok_or_else(|| spec.usage_err(format!("missing value for `{flag}`")))?
+                    .clone(),
+            );
+        } else if token.starts_with("--") {
+            return Err(spec.usage_err(format!("unsupported flag `{token}`")));
+        } else if let Some((key, value)) = token.split_once('=') {
+            match key {
+                "path" => path = Some(value.to_string()),
+                "mode" => mode = Some(value.to_string()),
+                k if k == spec.content_field => {
+                    content = Some(ContentInput::Inline(value.to_string()))
+                }
+                k if k == format!("{}_stdin", spec.content_field) => {
+                    if value == "true" {
+                        content = Some(ContentInput::Stdin);
+                    } else {
+                        return Err(spec.usage_err(format!(
+                            "{}_stdin must be `true` when provided",
+                            spec.content_field
+                        )));
+                    }
+                }
+                k if matches!(spec.extra_required, Some((_, field)) if field == k) => {
+                    extra = Some(value.to_string());
+                }
+                _ => return Err(spec.usage_err(format!("unsupported arg `{key}`"))),
+            }
+        } else if path.is_none() {
+            path = Some(token.to_string());
+        } else {
+            return Err(spec.usage_err(format!("unexpected positional arg `{token}`")));
+        }
+        idx += 1;
+    }
+
+    let path = path.ok_or_else(|| spec.usage_err("missing required arg `path`"))?;
+    let content = content.ok_or_else(|| {
+        spec.usage_err(format!(
+            "one of `{}` or `{}` is required",
+            spec.content_flag, spec.content_stdin_flag
+        ))
+    })?;
+    if let Some((flag, _)) = spec.extra_required {
+        if extra.is_none() {
+            return Err(spec.usage_err(format!("missing required arg `{flag}`")));
+        }
+    }
+
+    let mut args = serde_json::Map::<String, Json>::new();
+    let path = match shell_cwd {
+        Some(cwd) => rewrite_path_with_shell_cwd(path, cwd),
+        None => path,
+    };
+    args.insert("path".to_string(), Json::String(path));
+    if let Some(mode) = mode {
+        args.insert("mode".to_string(), Json::String(mode));
+    }
+    if let (Some((_, field)), Some(value)) = (spec.extra_required, extra) {
+        args.insert(field.to_string(), Json::String(value));
+    }
+
+    Ok(CliInvocation::Json {
+        args: Json::Object(args),
+        content_input: Some((spec.content_field.to_string(), content)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NullToolHost;
+    use tempfile::tempdir;
+
+    fn test_session() -> SessionRuntimeContext {
+        SessionRuntimeContext {
+            trace_id: "trace".to_string(),
+            agent_name: "agent".to_string(),
+            behavior: "test".to_string(),
+            step_idx: 0,
+            wakeup_id: "wake".to_string(),
+            session_id: "session".to_string(),
+            read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,
+        }
+    }
+
+    fn pr(value: Json, total: usize) -> Result<Option<(usize, usize)>, AgentToolError> {
+        parse_line_range(Some(&value), total)
+    }
 
     #[test]
     fn parse_line_range_text_formats() {
-        assert_eq!(
-            parse_line_range(&json!({"range": "10,20"}), 100).expect("parse"),
-            Some((10, 20))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10:20"}), 100).expect("parse"),
-            Some((10, 20))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10"}), 100).expect("parse"),
-            Some((10, 10))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10,+5"}), 100).expect("parse"),
-            Some((10, 14))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": ",30"}), 100).expect("parse"),
-            Some((1, 30))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-30,"}), 100).expect("parse"),
-            Some((71, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-30,$"}), 100).expect("parse"),
-            Some((71, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-1"}), 100).expect("parse"),
-            Some((100, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-5,-1"}), 100).expect("parse"),
-            Some((96, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "10,$"}), 100).expect("parse"),
-            Some((10, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "$"}), 100).expect("parse"),
-            Some((100, 100))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "1-2"}), 100).expect("parse"),
-            Some((1, 2))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": "-"}), 100).expect("parse"),
-            None
-        );
+        assert_eq!(pr(json!("10,20"), 100).expect("parse"), Some((10, 20)));
+        assert_eq!(pr(json!("10:20"), 100).expect("parse"), Some((10, 20)));
+        assert_eq!(pr(json!("10"), 100).expect("parse"), Some((10, 10)));
+        assert_eq!(pr(json!("10,+5"), 100).expect("parse"), Some((10, 14)));
+        assert_eq!(pr(json!(",30"), 100).expect("parse"), Some((1, 30)));
+        assert_eq!(pr(json!("-30,"), 100).expect("parse"), Some((71, 100)));
+        assert_eq!(pr(json!("-30,$"), 100).expect("parse"), Some((71, 100)));
+        assert_eq!(pr(json!("-1"), 100).expect("parse"), Some((100, 100)));
+        assert_eq!(pr(json!("-5,-1"), 100).expect("parse"), Some((96, 100)));
+        assert_eq!(pr(json!("10,$"), 100).expect("parse"), Some((10, 100)));
+        assert_eq!(pr(json!("$"), 100).expect("parse"), Some((100, 100)));
+        assert_eq!(pr(json!("1-2"), 100).expect("parse"), Some((1, 2)));
+        assert_eq!(pr(json!("-"), 100).expect("parse"), None);
     }
 
     #[test]
@@ -1415,51 +1605,154 @@ mod tests {
             chunk.push_str("line-x\n");
         }
         let cmd = build_read_result_cmd_line("demo.txt", Some(&chunk), Some(&json!("1-5")));
-        assert!(cmd.contains("read demo.txt first_chunk=\""));
+        assert!(cmd.contains("read_file demo.txt first_chunk=\""));
         assert!(cmd.contains(" range=1-5"));
         assert!(cmd.contains("...(total 80 lines)..."));
     }
 
     #[test]
+    fn write_file_summary_omits_content_block() {
+        let tool = WriteFileTool::new(
+            FileToolConfig::new("/tmp"),
+            Arc::new(NoopFileWriteAudit::default()),
+        );
+        let summary = tool.build_summary(&WriteFileOutput {
+            created: true,
+            changed: true,
+            bytes_written: 12,
+            line_count: 2,
+            file_path: "demo.txt".to_string(),
+            operation: "create".to_string(),
+            content_preview: "secret\nbody".to_string(),
+            content_len: 12,
+            bytes_after: 12,
+        });
+
+        assert_eq!(summary, "created demo.txt, wrote 12 bytes across 2 lines");
+        assert!(!summary.contains("```content"));
+        assert!(!summary.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_replaces_unique_old_string() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("demo.txt");
+        fs::write(&path, "alpha\nbeta\ngamma\n").await.unwrap();
+        let tool = EditFileTool::new(
+            FileToolConfig::new(dir.path()),
+            Arc::new(NoopFileWriteAudit::default()),
+        );
+        let session = test_session();
+        let host = NullToolHost;
+        let ctx = ToolCtx::new(&session, &host);
+
+        let output = tool
+            .execute(
+                &ctx,
+                EditFileArgs {
+                    path: "demo.txt".to_string(),
+                    old_string: "beta".to_string(),
+                    new_string: "delta".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(output.changed);
+        assert_eq!(output.line_no, Some(2));
+        assert_eq!(
+            fs::read_to_string(&path).await.unwrap(),
+            "alpha\ndelta\ngamma\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_multiple_old_string_matches() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("demo.txt"), "same\nsame\n")
+            .await
+            .unwrap();
+        let tool = EditFileTool::new(
+            FileToolConfig::new(dir.path()),
+            Arc::new(NoopFileWriteAudit::default()),
+        );
+        let session = test_session();
+        let host = NullToolHost;
+        let ctx = ToolCtx::new(&session, &host);
+
+        let err = tool
+            .execute(
+                &ctx,
+                EditFileArgs {
+                    path: "demo.txt".to_string(),
+                    old_string: "same".to_string(),
+                    new_string: "other".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("match exactly once"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_equal_new_string() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("demo.txt"), "same\n")
+            .await
+            .unwrap();
+        let tool = EditFileTool::new(
+            FileToolConfig::new(dir.path()),
+            Arc::new(NoopFileWriteAudit::default()),
+        );
+        let session = test_session();
+        let host = NullToolHost;
+        let ctx = ToolCtx::new(&session, &host);
+
+        let err = tool
+            .execute(
+                &ctx,
+                EditFileArgs {
+                    path: "demo.txt".to_string(),
+                    old_string: "same".to_string(),
+                    new_string: "same".to_string(),
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("must be different"));
+    }
+
+    #[test]
     fn parse_line_range_json_formats() {
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": 10, "end": 20}}), 100).expect("parse"),
+            pr(json!({"start": 10, "end": 20}), 100).expect("parse"),
             Some((10, 20))
         );
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": 10}}), 100).expect("parse"),
+            pr(json!({"start": 10}), 100).expect("parse"),
             Some((10, 10))
         );
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": -5}}), 100).expect("parse"),
+            pr(json!({"start": -5}), 100).expect("parse"),
             Some((96, 100))
         );
         assert_eq!(
-            parse_line_range(&json!({"range": {"start": 10, "count": 5}}), 100).expect("parse"),
+            pr(json!({"start": 10, "count": 5}), 100).expect("parse"),
             Some((10, 14))
         );
-        assert_eq!(
-            parse_line_range(&json!({"range": [10, 20]}), 100).expect("parse"),
-            Some((10, 20))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": [10]}), 100).expect("parse"),
-            Some((10, 10))
-        );
-        assert_eq!(
-            parse_line_range(&json!({"range": 10}), 100).expect("parse"),
-            Some((10, 10))
-        );
+        assert_eq!(pr(json!([10, 20]), 100).expect("parse"), Some((10, 20)));
+        assert_eq!(pr(json!([10]), 100).expect("parse"), Some((10, 10)));
+        assert_eq!(pr(json!(10), 100).expect("parse"), Some((10, 10)));
     }
 
     #[test]
     fn parse_line_range_errors_on_invalid_forms() {
-        assert!(parse_line_range(&json!({"range": "0"}), 10).is_err());
-        assert!(parse_line_range(&json!({"range": "10,+0"}), 10).is_err());
-        assert!(
-            parse_line_range(&json!({"range": {"start": 1, "end": 2, "count": 3}}), 10).is_err()
-        );
-        assert!(parse_line_range(&json!({"range": {"count": 3}}), 10).is_err());
-        assert!(parse_line_range(&json!({"range": [1, 2, 3]}), 10).is_err());
+        assert!(pr(json!("0"), 10).is_err());
+        assert!(pr(json!("10,+0"), 10).is_err());
+        assert!(pr(json!({"start": 1, "end": 2, "count": 3}), 10).is_err());
+        assert!(pr(json!({"count": 3}), 10).is_err());
+        assert!(pr(json!([1, 2, 3]), 10).is_err());
     }
 }

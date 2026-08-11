@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 openraft = { version = "0.9", features = ["serde", "storage-v2", "anyhow"]}
 serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 log = { workspace = true }
@@ -17,5 +18,11 @@ simplelog = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
+axum = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
+rusqlite = { workspace = true }
+rocksdb = { version = "0.22", default-features = false }
+tower = { version = "0.5", features = ["limit", "load-shed", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "limit"] }
+uuid = { workspace = true, features = ["v7"] }

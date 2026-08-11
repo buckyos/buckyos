@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "buckyos": "./node_modules/buckyos/dist/node.mjs"
+  }
+}

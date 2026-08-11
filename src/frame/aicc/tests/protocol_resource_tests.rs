@@ -2,13 +2,9 @@ mod common;
 
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry,
-    Router, TaskEventKind, TenantRouteConfig,
 };
-use buckyos_api::{
-    AiResponseSummary, Capability, CompleteStatus, ResourceRef, TaskFilter, TaskStatus,
-};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, ResourceRef};
 use common::*;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 fn setup_route_provider(
@@ -20,17 +16,12 @@ fn setup_route_provider(
     cost: f64,
     latency_ms: u64,
 ) {
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        provider_type,
-        model,
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", provider_type, model);
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             instance_id,
             provider_type,
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".to_string()],
         ),
         CostEstimate {
@@ -182,17 +173,12 @@ async fn proto_url_05_invalid_url_format_rejected() {
 async fn proto_sec_04_idempotency_key_preserved() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -209,22 +195,15 @@ async fn proto_sec_04_idempotency_key_preserved() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| {
-            t.data
-                .pointer("/aicc/external_task_id")
-                .and_then(|v| v.as_str())
-                == Some(response.task_id.as_str())
-        })
+        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
         .expect("task should exist");
+    let request = typed_aicc_request(&task).expect("typed aicc request");
     assert_eq!(
-        task.data
-            .pointer("/aicc/request/idempotency_key")
+        request
+            .pointer("/idempotency_key")
             .and_then(|v| v.as_str()),
         Some(idem.as_str())
     , "assert_eq failed in proto_sec_04_idempotency_key_preserved: expected left == right; check this scenario's routing/status/error-code branch.");
@@ -418,30 +397,29 @@ async fn proto_sec_01_no_base64_in_logs() {
         mock_instance(
             "p2",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".into()),
-            tool_calls: vec![],
-            artifacts: vec![buckyos_api::AiArtifact {
-                name: "artifact".into(),
-                resource: ResourceRef::Base64 {
-                    mime: "image/png".into(),
-                    data_base64: secret.clone(),
-                },
-                mime: Some("image/png".into()),
-                metadata: None,
-            }],
-            usage: None,
-            cost: None,
-            finish_reason: Some("stop".into()),
-            provider_task_ref: None,
-            extra: None,
+        vec![Ok(ProviderStartResult::Immediate({
+            let mut response = AiResponse::from_parts(
+                Some("ok".into()),
+                vec![],
+                vec![buckyos_api::AiArtifact {
+                    name: "artifact".into(),
+                    resource: ResourceRef::Base64 {
+                        mime: "image/png".into(),
+                        data_base64: secret.clone(),
+                    },
+                    mime: Some("image/png".into()),
+                    metadata: None,
+                }],
+            );
+            response.finish_reason = Some("stop".into());
+            response
         }))],
     )));
     let sink = Arc::new(CollectingSinkFactory::new());
@@ -493,30 +471,23 @@ async fn proto_res_01_named_object_passthrough_preserved() {
         .complete(req, rpc_ctx_with_tenant(None))
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
-        .await
-        .unwrap();
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| {
-            t.data
-                .pointer("/aicc/external_task_id")
-                .and_then(|v| v.as_str())
-                == Some(resp.task_id.as_str())
-        })
+        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
         .unwrap();
+    let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
-        task.data
-            .pointer("/aicc/request/payload/resources/0/kind")
+        request
+            .pointer("/payload/resources/0/kind")
             .and_then(|v| v.as_str()),
         Some("named_object")
     );
     assert_eq!(
-        task.data
-            .pointer("/aicc/request/payload/resources/0/obj_id")
+        request
+            .pointer("/payload/resources/0/obj_id")
             .and_then(|v| v.as_str()),
         Some("chunk:123456")
     );
@@ -645,12 +616,12 @@ async fn proto_res_06_base64_to_url_translation_for_url_only_provider() {
 async fn proto_res_07_provider_base64_unsupported_error_classified() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p1",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -702,28 +673,21 @@ async fn proto_res_08_named_object_and_url_mixed_order_stable() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
-        .await
-        .unwrap();
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| {
-            t.data
-                .pointer("/aicc/external_task_id")
-                .and_then(|v| v.as_str())
-                == Some(resp.task_id.as_str())
-        })
+        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
         .unwrap();
+    let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
-        task.data
-            .pointer("/aicc/request/payload/resources/0/kind")
+        request
+            .pointer("/payload/resources/0/kind")
             .and_then(|v| v.as_str()),
         Some("named_object")
     );
     assert_eq!(
-        task.data
-            .pointer("/aicc/request/payload/resources/1/kind")
+        request
+            .pointer("/payload/resources/1/kind")
             .and_then(|v| v.as_str()),
         Some("url")
     );
@@ -744,22 +708,15 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().unwrap();
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
-        .await
-        .unwrap();
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| {
-            t.data
-                .pointer("/aicc/external_task_id")
-                .and_then(|v| v.as_str())
-                == Some(resp.task_id.as_str())
-        })
+        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
         .unwrap();
+    let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
-        task.data
-            .pointer("/aicc/request/payload/resources/0/mime_hint")
+        request
+            .pointer("/payload/resources/0/mime_hint")
             .and_then(|v| v.as_str()),
         Some("image/png")
     );
@@ -769,36 +726,37 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
 async fn proto_res_10_no_sensitive_resource_literal_in_provider_logs() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", "provider-a", "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m");
     let secret = openai_b64(&[3, 3, 3, 3, 9, 9]);
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p1",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(10),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".into()),
-            tool_calls: vec![],
-            artifacts: vec![buckyos_api::AiArtifact {
-                name: "redact".into(),
-                resource: ResourceRef::Base64 {
-                    mime: "image/png".into(),
-                    data_base64: secret.clone(),
-                },
-                mime: Some("image/png".into()),
-                metadata: Some(serde_json::json!({"signed_url":"https://example.com?p=secret"})),
-            }],
-            usage: None,
-            cost: None,
-            finish_reason: Some("stop".into()),
-            provider_task_ref: None,
-            extra: None,
+        vec![Ok(ProviderStartResult::Immediate({
+            let mut response = AiResponse::from_parts(
+                Some("ok".into()),
+                vec![],
+                vec![buckyos_api::AiArtifact {
+                    name: "redact".into(),
+                    resource: ResourceRef::Base64 {
+                        mime: "image/png".into(),
+                        data_base64: secret.clone(),
+                    },
+                    mime: Some("image/png".into()),
+                    metadata: Some(
+                        serde_json::json!({"signed_url":"https://example.com?p=secret"}),
+                    ),
+                }],
+            );
+            response.finish_reason = Some("stop".into());
+            response
         }))],
     )));
     let sink = Arc::new(CollectingSinkFactory::new());

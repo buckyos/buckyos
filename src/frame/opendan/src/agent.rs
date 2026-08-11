@@ -1,6680 +1,4422 @@
-use std::collections::{HashMap, HashSet};
+//! §9.6 of NewOpenDANRuntime — top-level `AIAgent` runtime.
+//!
+//! MVP control flow:
+//!
+//! ```text
+//!   AIAgent::open(root, runtime) -> Self        // load AgentConfig
+//!   AIAgent::run()                              // spawns the dispatcher loop
+//!     ├── restore_session_routes()              // restore routing indexes only
+//!     ├── select loop:
+//!     │     - inbound MsgPack  → dispatch_msg_pack → AgentSession::submit_text
+//!     │     - inbound EventPack→ dispatch_event_pack (MVP no-op)
+//!     │     - shutdown        → graceful stop all sessions
+//!     └── reply collector task per session       // logs assistant text / errors
+//! ```
+//!
+//! In MVP the inbound message source is an `mpsc::Sender<InboundMsg>` exposed
+//! by `AIAgent::inbox()` — the caller (an RPC handler, a CLI, or a test
+//! harness) pushes messages in. Wiring contact_mgr / task_mgr happens once
+//! those crates have their consumer surface decided; the seam here is the
+//! `InboundMsg` enum + the `inbox()` accessor.
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
-use std::vec;
 
-use anyhow::{anyhow, Context, Result};
-use async_trait::async_trait;
+use agent_tool::{AgentAttentionSignalStore, AttentionSignalStoreConfig};
+use anyhow::{anyhow, Result};
 use buckyos_api::{
-    get_buckyos_api_runtime, match_event_patterns,
-    msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition},
-    validate_pattern, value_to_object_map, AiToolCall, AiccClient, BoxKind, Event, EventReader,
-    KEventClient, KEventError, MsgCenterClient, MsgRecord, MsgRecordWithObject, MsgState,
-    PostSendResult, SendContext, TaskManagerClient,
+    get_buckyos_api_runtime, parse_typed_task_data, AgentDelegateProgress, AgentDelegateTaskData,
+    AgentDelegateTaskRequest, AiMessage, AiRole, Task, TimerOptions, TypedTaskData,
+    UI_SESSION_STATE_STATUS_LINE_KEY,
 };
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use log::{debug, info, warn};
-use name_lib::DID;
-use ndn_lib::{MsgContent, MsgContentFormat, MsgObjKind, MsgObject};
+use chrono::{Datelike, Local, Timelike, Utc};
+use log::{info, warn};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::time::{sleep, Duration};
 
-use serde_json::{json, Value as Json};
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::sleep;
-use tokio::{fs, task};
-
-use crate::agent_config::{AIAgentConfig, AgentLocalConfigOverrides};
-use crate::agent_environment::{AgentEnvironment, AgentTemplateRenderResult};
-use crate::agent_session::{
-    AgentSession, AgentSessionMgr, GetSessionTool, SessionInputItem, SessionState,
-    SessionWaitDetails,
+use crate::agent_bash::{
+    build_session_tools, BashProgressSink, SessionBinLayout, SessionToolsBuild,
 };
-use crate::agent_tool::{
-    normalize_tool_name, sanitize_session_id_for_path, AgentMemory, AgentMemoryConfig, AgentPolicy,
-    AgentToolManager, AgentToolResult, AgentToolStatus, DoAction, DoActions, MAX_SESSION_ID_LEN,
-    TOOL_EXEC_BASH,
+use crate::agent_config::{AgentConfig, SessionIdStrategy};
+use crate::agent_session::{AgentSession, AgentSessionBuild, SessionReply};
+use crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE;
+use crate::ai_runtime::{ui_status_nonce, AgentRuntime};
+use crate::contact::ContactLookup;
+use crate::dispatch::{
+    DispatchEvaluator, EnumSessionIdStrategy, FixedRulesDispatch, SessionIdEvaluator,
+    SessionIdInput,
 };
-use crate::behavior::{
-    AgentWorkEvent, BehaviorConfig, BehaviorExecInput, BehaviorLLMResult, LLMBehavior,
-    LLMBehaviorDeps, LLMComputeError, LLMTrackingInfo, SessionRuntimeContext, Tokenizer,
-    WorklogSink,
+use crate::local_workspace::LocalWorkspaceManager;
+use crate::msg_center_pump::{self, PumpConfig};
+use crate::paths;
+use crate::round_history::SessionHistoryReader;
+use crate::session_event_pump::SessionEventPump;
+use crate::task_event_pump::TaskEventPump;
+use crate::session_model::{
+    AgentTaskBinding, PendingInput, SessionKind, SessionMeta, SessionStatus, SessionSummary,
+    TimerEventKind, TimerReason, TimerTargetType, TimerTriggerType, UI_CLOCK_TIMER_EVENT_ID,
+    UI_CLOCK_TIMER_INTERVAL_MS,
 };
-use crate::skill_tool::{LoadSkillTool, UnloadSkillTool};
-use crate::step_record::LLMStepRecord;
-use crate::worklog::WorklogActionPayload;
+use crate::tool_plan::{self, ResolvedToolPlan, SessionBinRenderer, ToolPlanToml};
 
-const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
-const AGENT_CONFIG_CANDIDATES: [&str; 2] = ["agent.json", "Agent.json"];
-const MAX_MSG_PULL_PER_TICK: usize = 128;
-const MAX_EVENT_PULL_TIMEOUT_MS: u64 = 1_000;
-const MAX_SESSION_WORKER_IDLE_SLEEP_MS: u64 = 10_000;
-const MSG_ROUTED_REASON: &str = "routed_by_opendan_runtime";
-const MSG_CENTER_EVENT_BOX_PATTERN_NAMES: [&str; 9] = [
-    "in",
-    "inbox",
-    "INBOX",
-    "group_in",
-    "group_inbox",
-    "GROUP_INBOX",
-    "request",
-    "request_box",
-    "REQUEST_BOX",
-];
-const SESSION_QUEUE_APP_ID: &str = "opendan";
-const SESSION_QUEUE_RETENTION_SECONDS: u64 = 7 * 24 * 60 * 60;
-const SESSION_QUEUE_MAX_MESSAGES: u64 = 4096;
-const AGENT_BEHAVIOR_ROUTER_RESOLVE: &str = "resolve_router";
-const AGENT_BEHAVIOR_SELF_CHECK: &str = "self_check";
-const AGENT_BEHAVIOR_WORK_DEFAULT: &str = "plan";
-const WORK_SESSION_ID_PREFIX: &str = "work-";
-const SELF_CHECK_SESSION_ID: &str = "self-check-session";
-const SELF_CHECK_SESSION_TITLE: &str = "Self Check";
-const SELF_CHECK_TRIGGER_EVENT_ID: &str = "timer_self_check_trigger";
-const SELF_CHECK_META_LAST_TRIGGER_MS: &str = "self_check_last_trigger_ms";
-const SELF_CHECK_MIN_TRIGGER_INTERVAL_MS: u64 = 60_000;
-const SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS: u64 = 15 * 60_000;
-const SELF_CHECK_EXACT_TIME_WINDOW_MS: u64 = 10_000;
-const SESSION_META_CREATOR_UI_SESSION_ID: &str = "creator_ui_session_id";
-const ACTION_RESULTS_SKIPPED_KEY: &str = "__skipped__";
-const SESSION_KEVENT_SUBSCRIPTIONS_FILE: &str = "session_kevent_subscriptions.json";
-const LLM_STEP_TIMEOUT_RETRY_WAIT_MS: u64 = 15_000;
-const LLM_STEP_PROVIDER_RETRY_WAIT_MS: u64 = 30_000;
-const LLM_STEP_INTERNAL_RETRY_WAIT_MS: u64 = 10_000;
-const LLM_STEP_PROVIDER_UNAVAILABLE_REPLY: &str =
-    "I'm temporarily unable to reply because no AI model provider is available right now. Please try again later.";
-const LLM_STEP_TOKEN_LIMIT_REPLY: &str =
-    "Your message is too large for the current AI model. Please shorten it and try again.";
+/// Reason string we tag msg-center ack updates with so audit logs can tell
+/// "the opendan agent picked this up" apart from other consumers.
+const SELF_CHECK_HARD_BARRIER_INTERVAL_MS: u64 = 60_000;
+const SELF_IMPROVE_SCHEDULER_INTERVAL_MS: u64 = 60_000;
+const SELF_IMPROVE_THRESHOLD_PENDING_ROUNDS: u64 = 20;
+const SELF_IMPROVE_DAILY_CHECK_HOUR: u32 = 3;
+const SELF_IMPROVE_MAX_TARGET_SESSIONS_PER_WAKE: usize = 4;
+const SELF_IMPROVE_MAX_PENDING_ROUNDS_PER_WAKE: u64 = 20;
+const SELF_IMPROVE_STAGE1_SESSION_PREFIX: &str = "self_improve_signals";
+const SELF_IMPROVE_STAGE2_SESSION_PREFIX: &str = "self_improve_set_memory";
+const SELF_IMPROVE_SKILL_STAGE2_SESSION_PREFIX: &str = "try_create_new_skill";
+const SELF_IMPROVE_STAGE2_ROTATE_AFTER_MS: u64 = 72 * 60 * 60 * 1000;
 
-type ActionResultsMap = HashMap<String, AgentToolResult>;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct SelfCheckMemoryMatch {
-    has_explicit_time: bool,
-    retained: bool,
-    exact_time_hit: bool,
-    coarse_time_hit: bool,
+fn progress_status_session_id(kind: SessionKind, session_id: &str, owner: &str) -> String {
+    if matches!(kind, SessionKind::Work) && !owner.trim().is_empty() {
+        owner.trim().to_string()
+    } else {
+        session_id.to_string()
+    }
 }
 
-#[derive(Debug)]
-struct PulledMsg {
-    session_id: Option<String>,
-    record: MsgRecordWithObject,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct SelfImproveSchedulerState {
+    last_daily_check_date: String,
+    last_threshold_trigger_pending_rounds: u64,
+    last_triggered_at_ms: u64,
+    last_stage1_completed_seq: u64,
+    last_stage1_completed_at_ms: u64,
+    next_stage1_session_seq: u64,
+    last_stage1_session_id: String,
+    next_stage2_session_seq: u64,
+    last_stage2_session_id: String,
+    last_stage2_triggered_at_ms: u64,
+    next_skill_stage2_session_seq: u64,
+    last_skill_stage2_session_id: String,
+    last_skill_stage2_triggered_at_ms: u64,
 }
 
-#[derive(Debug)]
-struct PulledEvent {
-    session_id: Option<String>,
-    event_id: String,
-    event_data: Json,
+#[derive(Debug, Clone)]
+struct SelfImproveTargetSession {
+    session_id: String,
+    owner: String,
+    committed_round_index: u64,
+    latest_round_index: u64,
+    pending_rounds: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum InputQueueKind {
-    Msg,
-    Event,
+#[derive(Debug, Clone)]
+struct SelfImproveStage2SessionChoice {
+    session_id: String,
+    rotated: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum RouteLinkReason {
-    SessionHint,
-    MsgRecordSession,
-    DefaultSession,
-    DefaultFallback,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelfImproveTriggerKind {
+    Daily,
+    Threshold,
 }
 
-impl RouteLinkReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            RouteLinkReason::SessionHint => "SESSION_HINT",
-            RouteLinkReason::MsgRecordSession => "ACTIVE_SESSION",
-            RouteLinkReason::DefaultFallback => "DEFAULT_FALLBACK",
-            RouteLinkReason::DefaultSession => "DEFAULT_SESSION",
+/// One inbound item to route to a session. Tagged so messages and events
+/// share the same tokio queue into the dispatcher — keeping with the
+/// "external boundary via buckyos-api, internal dispatch via tokio" rule.
+///
+/// The dispatcher is responsible for:
+///   1. mapping each variant to a target session (by explicit id, by
+///      `from`-tunnel, or by event-id subscription),
+///   2. handing the item to `AgentSession::enqueue_pending` which
+///      durably parks it on the session,
+///   3. acking back to the source (msg-center `update_record_state` for
+///      Msg items; kevent has no per-event ack today).
+#[derive(Debug, Clone)]
+pub enum Inbound {
+    /// A chat-style message — either pulled from msg-center by the pump or
+    /// injected locally via [`AIAgent::inbox()`].
+    Msg {
+        /// Stable id used both as the dedup key inside the session's
+        /// pending queue and as the ack handle back to msg-center. Locally
+        /// injected items use a synthetic `local-...` id.
+        record_id: String,
+        /// Originating tunnel / DID host name. Drives the active
+        /// `tunnel_to_ui_session` binding for per-peer UI sessions.
+        from: String,
+        /// Full DID of the sender, used as the reply target when the
+        /// session emits an assistant message. `None` for locally-injected
+        /// inputs where there is no real peer DID.
+        from_did: Option<String>,
+        /// Display name for the sender — populated either by msg-center
+        /// (when its contact-mgr already knows the peer) or by the pump
+        /// via [`ContactLookup`](crate::contact::ContactLookup) when the
+        /// record lands without one. Used in prompts so the LLM sees a
+        /// human-readable name instead of a raw DID.
+        from_name: Option<String>,
+        /// Tunnel DID from the msg-center route hint. Retained for diagnostics
+        /// only: replies now target the inbound sender's determined endpoint DID
+        /// (`MsgObject.to`), which carries its own routing, so this is no longer
+        /// forwarded to `post_send`.
+        tunnel_did: Option<String>,
+        /// Optional upstream target. Used when no active per-peer UI tunnel
+        /// binding exists; `/new`, `/switch`, and `/clean` bindings take priority.
+        session_id: Option<String>,
+        /// Group DID for group messages. `None` for one-to-one chat.
+        group_id: Option<String>,
+        text: String,
+        ai_message: AiMessage,
+    },
+    /// A subscribed kevent. MVP forwards these to the per-tunnel UI session
+    /// as a placeholder — proper per-session kevent subscriptions land
+    /// alongside `session_sub_kevent`.
+    Event {
+        event_id: String,
+        /// When the caller already knows which session should consume this
+        /// event (e.g. timer events that the session itself scheduled),
+        /// they can pre-route by setting this.
+        target_session_id: Option<String>,
+        data: serde_json::Value,
+    },
+    /// §3 — slash-command intercepted before LLM dispatch. Carries the
+    /// parsed `command`/`args` plus the same routing fields as `Msg` so
+    /// the agent can ack the msg-center record and post the command's
+    /// system reply through the same outbound path as a normal turn.
+    Command {
+        record_id: String,
+        from: String,
+        from_did: Option<String>,
+        tunnel_did: Option<String>,
+        command: String,
+        args: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardRouteStrategy {
+    ExplicitTargetOnly,
+    MostRecentWaitingInput,
+    NewWorkSessionOnInterrupt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForwardRouteDecision {
+    Forward(String),
+    CreateNewWorkSession,
+    KeepInUi,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardRouteCandidate {
+    pub session_id: String,
+    pub kind: SessionKind,
+    pub status: SessionStatus,
+    pub status_changed_at_ms: u64,
+}
+
+/// forwardMessage routing decision table:
+/// - explicit target: forward only when it is a non-Ended Work session
+/// - no explicit target: at most one message is forwarded
+/// - multiple WaitForInput Work sessions: choose the most recently entered
+///   WaitingInput state
+/// - Running Work sessions are not implicit targets
+/// - user interrupt without explicit target creates a new Work session
+pub fn decide_forward_route(
+    strategy: ForwardRouteStrategy,
+    explicit_target: Option<&str>,
+    user_interrupt: bool,
+    candidates: &[ForwardRouteCandidate],
+) -> ForwardRouteDecision {
+    if let Some(target) = explicit_target {
+        return candidates
+            .iter()
+            .find(|candidate| {
+                candidate.session_id == target
+                    && matches!(candidate.kind, SessionKind::Work)
+                    && !matches!(candidate.status, SessionStatus::Ended)
+            })
+            .map(|candidate| ForwardRouteDecision::Forward(candidate.session_id.clone()))
+            .unwrap_or(ForwardRouteDecision::KeepInUi);
+    }
+
+    if user_interrupt && matches!(strategy, ForwardRouteStrategy::NewWorkSessionOnInterrupt) {
+        return ForwardRouteDecision::CreateNewWorkSession;
+    }
+
+    if matches!(strategy, ForwardRouteStrategy::MostRecentWaitingInput) {
+        return candidates
+            .iter()
+            .filter(|candidate| {
+                matches!(candidate.kind, SessionKind::Work)
+                    && matches!(candidate.status, SessionStatus::WaitingInput)
+            })
+            .max_by_key(|candidate| candidate.status_changed_at_ms)
+            .map(|candidate| ForwardRouteDecision::Forward(candidate.session_id.clone()))
+            .unwrap_or(ForwardRouteDecision::KeepInUi);
+    }
+
+    ForwardRouteDecision::KeepInUi
+}
+
+async fn resolve_appclient_session_token() -> Result<String> {
+    let runtime = match get_buckyos_api_runtime() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            #[cfg(test)]
+            {
+                warn!("opendan.agent: buckyos runtime unavailable before session tools: {err}");
+                return Ok(String::new());
+            }
+            #[cfg(not(test))]
+            {
+                return Err(anyhow!("load buckyos runtime before session tools: {err}"));
+            }
+        }
+    };
+    let token = runtime.get_session_token().await;
+    if token.trim().is_empty() {
+        #[cfg(test)]
+        {
+            warn!("opendan.agent: buckyos runtime returned empty session token for session tools");
+            return Ok(String::new());
+        }
+        #[cfg(not(test))]
+        {
+            return Err(anyhow!(
+                "buckyos runtime returned empty session token before session tools"
+            ));
         }
     }
+    Ok(token)
 }
 
-impl Default for RouteLinkReason {
-    fn default() -> Self {
-        Self::DefaultFallback
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct RouteDecision {
-    linked_session_ids: Vec<String>,
-    reason: RouteLinkReason,
-}
-
-#[derive(Clone, Debug, Default)]
-struct StepRouteTarget {
-    title: Option<String>,
-    summary: Option<String>,
-    behavior: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-struct ReplyHistoryRecord {
-    outbound: MsgObject,
-    result: PostSendResult,
-}
-
-#[derive(Clone, Debug)]
-struct ResourceOverlayStatus {
-    selected_path: Option<PathBuf>,
-    env_path: Option<PathBuf>,
-    package_path: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
-struct SessionQueueBinding {
-    msg_queue_urn: String,
-    event_queue_urn: String,
-    msg_sub_id: String,
-    event_sub_id: String,
-}
-
-#[derive(Clone, Debug)]
-struct StepTransition {
-    keep_running: bool,
-    behavior_switched: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LLMStepErrorHandling {
-    BubbleUp,
-    ReplyAndWait { reply: &'static str },
-    RetryAfter { wait_ms: u64 },
-}
-
-#[derive(Clone, Debug)]
-struct BehaviorLoopReport {
-    executed_steps: u32,
-    keep_running: bool,
-    behavior_switched: bool,
-    last_result: Option<BehaviorLLMResult>,
-}
-
-impl Default for BehaviorLoopReport {
-    fn default() -> Self {
-        Self {
-            executed_steps: 0,
-            keep_running: false,
-            behavior_switched: false,
-            last_result: None,
-        }
-    }
-}
-
-struct NoopWorklogSink;
-
-#[async_trait]
-impl WorklogSink for NoopWorklogSink {
-    async fn emit(&self, _event: AgentWorkEvent) {}
-}
-
-#[derive(Clone)]
-pub struct AIAgentDeps {
-    pub taskmgr: Arc<TaskManagerClient>,
-    pub msg_center: Option<Arc<MsgCenterClient>>,
-    pub msg_queue: Option<Arc<MsgQueueClient>>,
-}
-
-impl AIAgentDeps {
-    pub async fn get_aicc_client(&self) -> Result<Arc<AiccClient>, LLMComputeError> {
-        let runtime = get_buckyos_api_runtime().map_err(|err| {
-            LLMComputeError::Internal(format!("load buckyos runtime failed: {err}"))
-        })?;
-        let client = runtime
-            .get_aicc_client()
-            .await
-            .map_err(|err| LLMComputeError::Provider(format!("init aicc client failed: {err}")))?;
-        Ok(Arc::new(client))
-    }
-}
+/// Shutdown signal. Owners drop the sender or `send(())` to start a graceful
+/// shutdown.
+type ShutdownRx = mpsc::Receiver<()>;
+type ShutdownTx = mpsc::Sender<()>;
 
 pub struct AIAgent {
-    cfg: AIAgentConfig,
-    did: DID,
-    agent_name: String,
-    msg_owner_did: DID,
-    contact_mgr_owner_did: Option<DID>,
-
-    role_md: String,
-    self_md: String,
-
-    policy: Arc<AgentPolicy>,
-    behavior_cfg_cache: Arc<RwLock<HashMap<String, BehaviorConfig>>>,
-    behavior_roots: Vec<PathBuf>,
-    default_behavior: String,
-    default_worker_behavior: String,
-    tool_mgr: Arc<AgentToolManager>,
-    wakeup_seq: AtomicU64,
-
-    memory: AgentMemory,
-    session_mgr: Arc<AgentSessionMgr>,
-    environment: Arc<AgentEnvironment>,
-    agent_env_root: PathBuf,
-
-    tokenizer: Arc<SimpleTokenizer>,
-
-    deps: AIAgentDeps,
-    kevent_client: KEventClient,
-    kevent_event_reader: Mutex<Option<Arc<EventReader>>>,
-    session_kevent_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
-    session_queue_bindings: Arc<RwLock<HashMap<String, SessionQueueBinding>>>,
+    pub config: Arc<AgentConfig>,
+    pub runtime: Arc<AgentRuntime>,
+    pub agent_name: String,
+    /// Map tunnel/from → UI session id.
+    tunnel_to_ui_session: Arc<Mutex<HashMap<String, String>>>,
+    sessions: Arc<Mutex<HashMap<String, Arc<AgentSession>>>>,
+    session_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    inbox_tx: mpsc::Sender<Inbound>,
+    inbox_rx: Arc<Mutex<Option<mpsc::Receiver<Inbound>>>>,
+    shutdown_tx: ShutdownTx,
+    shutdown_rx: Arc<Mutex<Option<ShutdownRx>>>,
+    /// Signalled when `run()` is exiting, so the msg-center pump task can
+    /// drop its kevent reader and return promptly.
+    pub(crate) pump_shutdown: Arc<Notify>,
+    /// Per-session kevent subscription pump. `None` when the runtime has
+    /// no `kevent_client` (CLI / test). Cheap to keep around: idle pump
+    /// just parks on its `refresh` Notify when no session subscribes.
+    event_pump: Option<Arc<SessionEventPump>>,
+    /// Bound-task kevent pump: watches `/task_mgr/{task_id}` (+ tree) for
+    /// the agent.delegate tasks this agent runs, as the acceleration lane
+    /// next to the owner sweep. `None` without a kevent client.
+    task_event_pump: Option<Arc<TaskEventPump>>,
+    /// Owns the on-disk workspace records under `<agent_root>/workspace/`.
+    /// Stateless — cloning is just a `PathBuf`.
+    workspaces: LocalWorkspaceManager,
+    /// v0 dispatcher (fixed rule table). Trait-object so a future
+    /// script-engine impl can drop-in.
+    dispatcher: Arc<dyn DispatchEvaluator>,
+    /// v0 session-id evaluator (4-strategy enum). Same trait-object seam.
+    session_id_eval: Arc<dyn SessionIdEvaluator>,
 }
 
 impl AIAgent {
-    pub async fn load(mut cfg: AIAgentConfig, deps: AIAgentDeps) -> Result<Self> {
-        let agent_root = to_abs_path(&cfg.agent_root)?;
-        let package_root = cfg
-            .agent_package_root
-            .as_ref()
-            .map(|path| to_abs_path(path))
-            .transpose()?;
-        info!(
-            "agent.persist_entity_prepare: kind=agent_root instance={} path={}",
-            cfg.agent_instance_id,
-            agent_root.display()
-        );
-        fs::create_dir_all(&agent_root).await.map_err(|err| {
-            anyhow!(
-                "create agent root failed: path={} err={}",
-                agent_root.display(),
-                err
-            )
-        })?;
-        if let Some(package_root) = &package_root {
-            info!(
-                "agent.loader.package_root: instance={} path={}",
-                cfg.agent_instance_id,
-                package_root.display()
-            );
-        }
-        let (local_overrides, local_config_status) =
-            load_local_agent_config_overrides(&agent_root, package_root.as_deref()).await?;
-        cfg.apply_local_overrides(local_overrides);
-        cfg.normalize()
-            .map_err(|err| anyhow!("invalid agent config: {err}"))?;
-        log_overlay_status("agent_config", &cfg.agent_instance_id, &local_config_status);
-        info!(
-            "agent.loader.local_config: instance={} default_ui_behavior={} default_work_behavior={} self_check_timer_secs={}",
-            cfg.agent_instance_id,
-            cfg.default_ui_behavior_name.as_deref().unwrap_or("<auto>"),
-            cfg.default_work_behavior_name
-                .as_deref()
-                .unwrap_or("<auto>"),
-            cfg.self_check_timer_secs
-        );
-
-        let did_raw = load_agent_did(&cfg, &agent_root, package_root.as_deref()).await?;
-        let did = DID::from_str(did_raw.as_str()).map_err(|err| {
-            anyhow!(
-                "invalid owner did in agent doc: did={:?} err={}",
-                did_raw,
-                err
-            )
-        })?;
-        let contact_mgr_owner_did = if let Some(owner_did) = cfg
-            .agent_owner_did
-            .as_ref()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-        {
-            Some(DID::from_str(owner_did).map_err(|err| {
-                anyhow!(
-                    "invalid owner did in agent config: did={:?} err={}",
-                    owner_did,
-                    err
-                )
-            })?)
+    pub fn open(root: PathBuf, runtime: Arc<AgentRuntime>) -> Result<Arc<Self>> {
+        let config = AgentConfig::open(root).map_err(|err| anyhow!("open agent config: {err}"))?;
+        let agent_name = if !config.toml.identity.display_name.trim().is_empty() {
+            config.toml.identity.display_name.clone()
         } else {
-            None
+            config
+                .layout
+                .root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("agent")
+                .to_string()
         };
-        let msg_owner_did = did.clone();
-        let agent_name = did.to_raw_host_name();
-        let (role_md, role_status) = load_overlay_text_resource(
-            &agent_root,
-            package_root.as_deref(),
-            &[cfg.role_file_name.as_str(), "prompts/role.md"],
-            "# Role\nYou are an OpenDAN agent.",
-        )
-        .await?;
-        let (self_md, self_status) = load_overlay_text_resource(
-            &agent_root,
-            package_root.as_deref(),
-            &[cfg.self_file_name.as_str(), "prompts/self.md"],
-            "# Self\n- Keep tasks traceable\n",
-        )
-        .await?;
-
-        let behavior_roots = build_behavior_roots(
-            &agent_root,
-            package_root.as_deref(),
-            &cfg.behaviors_dir_name,
-        )
-        .await?;
-
-        let agent_env_root = resolve_agent_env_root(&agent_root).await?;
-        let session_root = agent_env_root.join("sessions");
-
-        let tools = Arc::new(AgentToolManager::new());
-
-        let environment = Arc::new(
-            AgentEnvironment::new(agent_env_root.clone())
-                .await
-                .map_err(|err| anyhow!("init agent environment failed: {err}"))?,
-        );
-
-        let default_behavior = cfg
-            .default_ui_behavior_name
-            .clone()
-            .unwrap_or_else(|| AGENT_BEHAVIOR_ROUTER_RESOLVE.to_string());
-        let default_behavior = if cfg.default_ui_behavior_name.is_some() {
-            default_behavior
-        } else {
-            resolve_default_behavior_name(&behavior_roots)
-                .await
-                .unwrap_or(default_behavior)
-        };
-        let default_worker_behavior = if let Some(default_work_behavior_name) =
-            cfg.default_work_behavior_name.clone()
-        {
-            default_work_behavior_name
-        } else {
-            resolve_default_worker_behavior_name(&behavior_roots, default_behavior.as_str()).await
-        };
-
-        let session_store = Arc::new(
-            AgentSessionMgr::new(
+        let (inbox_tx, inbox_rx) = mpsc::channel(256);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let pump_shutdown = Arc::new(Notify::new());
+        let event_pump = runtime.kevent_client.as_ref().map(|kc| {
+            SessionEventPump::new(
                 agent_name.clone(),
-                session_root,
-                default_behavior.clone(),
-                default_worker_behavior.clone(),
+                kc.clone(),
+                inbox_tx.clone(),
+                pump_shutdown.clone(),
             )
-            .await
-            .map_err(|err| anyhow!("init session store failed: {err}"))?,
-        );
-
-        environment
-            .register_workshop_tools_with_task_mgr(
-                &tools,
-                session_store.clone(),
-                deps.taskmgr.clone(),
-            )
-            .map_err(|err| anyhow!("register workshop tools failed: {err}"))?;
-
-        let memory = AgentMemory::new(AgentMemoryConfig::new(agent_root.clone()))
-            .await
-            .map_err(|err| anyhow!("init agent memory failed: {err}"))?;
-        memory
-            .register_tools(&tools)
-            .map_err(|err| anyhow!("register memory tools failed: {err}"))?;
-
-        tools
-            .register_tool(GetSessionTool::new(session_store.clone()))
-            .map_err(|err| anyhow!("register session tool failed: {err}"))?;
-        tools
-            .register_tool(LoadSkillTool::new(session_store.clone()))
-            .map_err(|err| anyhow!("register load_skill tool failed: {err}"))?;
-        tools
-            .register_tool(UnloadSkillTool::new(session_store.clone()))
-            .map_err(|err| anyhow!("register unload_skill tool failed: {err}"))?;
-
-        let behavior_cfg_cache = Arc::new(RwLock::new(HashMap::new()));
-        let policy = Arc::new(AgentPolicy::new(tools.clone(), behavior_cfg_cache.clone()));
-        let kevent_source_node = msg_owner_did.to_raw_host_name();
-        let session_kevent_subscriptions = Arc::new(RwLock::new(
-            load_session_kevent_subscriptions(&agent_env_root).await?,
-        ));
-        log_overlay_status("role", &cfg.agent_instance_id, &role_status);
-        log_overlay_status("self", &cfg.agent_instance_id, &self_status);
-        info!(
-            "agent.loader.behaviors: instance={} roots={:?}",
-            cfg.agent_instance_id, behavior_roots
-        );
-
-        let agent = Self {
-            cfg,
-            did,
+        });
+        let task_event_pump = runtime.kevent_client.as_ref().map(|kc| {
+            TaskEventPump::new(agent_name.clone(), kc.clone(), pump_shutdown.clone())
+        });
+        let workspaces = LocalWorkspaceManager::new(config.layout.workspaces_dir.clone());
+        let dispatcher: Arc<dyn DispatchEvaluator> =
+            Arc::new(FixedRulesDispatch::new(&config.toml.dispatch));
+        let session_id_eval: Arc<dyn SessionIdEvaluator> = Arc::new(EnumSessionIdStrategy);
+        Ok(Arc::new(Self {
+            config: Arc::new(config),
+            runtime,
             agent_name,
-            msg_owner_did,
-            contact_mgr_owner_did,
-            role_md,
-            self_md,
-            behavior_roots,
-            agent_env_root,
-            tool_mgr: tools,
-            memory,
-            environment,
-            session_mgr: session_store,
-            behavior_cfg_cache,
-            policy,
-
-            tokenizer: Arc::new(SimpleTokenizer),
-            deps,
-            kevent_client: KEventClient::new_full(kevent_source_node, None),
-            kevent_event_reader: Mutex::new(None),
-            session_kevent_subscriptions,
-            session_queue_bindings: Arc::new(RwLock::new(HashMap::new())),
-            default_behavior,
-            default_worker_behavior,
-            wakeup_seq: AtomicU64::new(0),
-        };
-        info!(
-            "agent.loader.identity: did={} msg_owner_did={} contact_mgr_owner_did={}",
-            agent.did.to_string(),
-            agent.msg_owner_did.to_string(),
-            agent
-                .contact_mgr_owner_did
-                .as_ref()
-                .map(|did| did.to_string())
-                .unwrap_or_else(|| "<none>".to_string())
-        );
-
-        let _ = agent.load_behavior_config(&agent.default_behavior).await?;
-        let _ = agent
-            .load_behavior_config(&agent.default_worker_behavior)
-            .await?;
-        Ok(agent)
+            tunnel_to_ui_session: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_locks: Arc::new(Mutex::new(HashMap::new())),
+            inbox_tx,
+            inbox_rx: Arc::new(Mutex::new(Some(inbox_rx))),
+            shutdown_tx,
+            shutdown_rx: Arc::new(Mutex::new(Some(shutdown_rx))),
+            pump_shutdown,
+            event_pump,
+            task_event_pump,
+            workspaces,
+            dispatcher,
+            session_id_eval,
+        }))
     }
 
-    pub async fn run_agent_loop(self: Arc<Self>, stop_after_ticks: Option<u32>) -> Result<()> {
-        self.session_mgr
-            .refresh_all_statuses_from_disk()
-            .await
-            .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
+    /// Bound-task kevent pump handle (executor watch/unwatch calls).
+    pub(crate) fn task_event_pump(&self) -> Option<&Arc<TaskEventPump>> {
+        self.task_event_pump.as_ref()
+    }
 
-        let mut self_check_handle = None;
-        if self.cfg.self_check_timer_secs > 0 {
-            info!(
-                "agent.self_check_timer.enabled: agent={} did={} interval_secs={}",
-                self.agent_name,
-                self.did.to_string(),
-                self.cfg.self_check_timer_secs
-            );
-            let timer_agent = self.clone();
-            self_check_handle = Some(task::spawn(async move {
-                timer_agent.run_self_check_timer_loop().await;
-            }));
+    /// Public accessor for the agent-owned workspace manager. Tools that
+    /// need to enumerate / pick workspaces (e.g. `try_create_worksession`)
+    /// hold this handle.
+    pub fn workspaces(&self) -> &LocalWorkspaceManager {
+        &self.workspaces
+    }
+
+    /// Filesystem-safe identifier used wherever we splice the agent into a
+    /// path (§9.2 4-layer overlay's `<agent_id>` segment). Derived from
+    /// `agent_did` when present (canonical, stable across renames) and
+    /// otherwise from the human-friendly `agent_name`.
+    pub fn agent_id(&self) -> String {
+        let raw = if !self.config.toml.identity.agent_did.trim().is_empty() {
+            self.config.toml.identity.agent_did.as_str()
         } else {
-            info!(
-                "agent.self_check_timer.disabled: agent={} interval_secs=0",
-                self.agent_name
-            );
-        }
-
-        let mut worker_handles = Vec::with_capacity(self.cfg.session_worker_threads);
-        for worker_idx in 0..self.cfg.session_worker_threads {
-            let worker_agent = self.clone();
-            let handle = task::spawn(async move {
-                if let Err(err) = worker_agent.run_session_worker_loop(stop_after_ticks).await {
-                    warn!(
-                        "agent.session_worker_loop exited with error: did={:?} worker={} err={}",
-                        worker_agent.did, worker_idx, err
-                    );
-                }
-            });
-            worker_handles.push(handle);
-        }
-
-        let result = self.run_agent_dispatch_loop(stop_after_ticks).await;
-        if let Some(self_check_handle) = &self_check_handle {
-            self_check_handle.abort();
-        }
-        for worker_handle in &worker_handles {
-            worker_handle.abort();
-        }
-        if let Some(self_check_handle) = self_check_handle {
-            let _ = self_check_handle.await;
-        }
-        for worker_handle in worker_handles {
-            let _ = worker_handle.await;
-        }
-        result
-    }
-
-    async fn run_self_check_timer_loop(self: Arc<Self>) {
-        let interval_secs = self.cfg.self_check_timer_secs;
-        let interval = Duration::from_secs(interval_secs);
-        debug!(
-            "agent.self_check_timer.started: agent={} did={} interval_secs={}",
-            self.agent_name,
-            self.did.to_string(),
-            interval_secs
-        );
-        let mut tick = 0_u64;
-
-        loop {
-            sleep(interval).await;
-            tick = tick.saturating_add(1);
-            debug!(
-                "agent.self_check_timer.tick: agent={} did={} tick={} interval_secs={}",
-                self.agent_name,
-                self.did.to_string(),
-                tick,
-                interval_secs
-            );
-            if let Err(err) = self.run_self_check_timer_tick(tick, Utc::now()).await {
-                warn!(
-                    "agent.self_check_timer.tick_failed: agent={} did={} tick={} err={}",
-                    self.agent_name,
-                    self.did.to_string(),
-                    tick,
-                    err
-                );
-            }
-        }
-    }
-
-    async fn run_self_check_timer_tick(
-        &self,
-        tick: u64,
-        current_time: DateTime<Utc>,
-    ) -> Result<()> {
-        if !behavior_exists(&self.behavior_roots, AGENT_BEHAVIOR_SELF_CHECK).await {
-            if tick <= 3 || tick % 60 == 0 {
-                info!(
-                    "agent.self_check_timer.skip_missing_behavior: agent={} tick={} behavior={} note=place self_check.yaml in behaviors directory to enable timer-triggered wakeups",
-                    self.agent_name, tick, AGENT_BEHAVIOR_SELF_CHECK
-                );
-            } else {
-                debug!(
-                    "agent.self_check_timer.skip_missing_behavior: agent={} tick={} behavior={}",
-                    self.agent_name, tick, AGENT_BEHAVIOR_SELF_CHECK
-                );
-            }
-            return Ok(());
-        }
-
-        let now_ms = current_time.timestamp_millis().max(0) as u64;
-        let memory_items = self
-            .memory
-            .load_memory(Some(1024), vec![], Some(current_time))
-            .await
-            .map_err(|err| anyhow!("load self-check memory failed: {err}"))?;
-        if memory_items.is_empty() {
-            debug!(
-                "agent.self_check_timer.skip_empty_memory: agent={} tick={}",
-                self.agent_name, tick
-            );
-            return Ok(());
-        }
-        let mut retained_memory_items = Vec::new();
-        let mut scanned_memory_count = 0usize;
-        let mut temporal_candidate_count = 0usize;
-        let mut exact_time_hit_count = 0usize;
-        let mut coarse_time_hit_count = 0usize;
-        let mut untimed_reminder_samples = Vec::new();
-        for item in memory_items {
-            scanned_memory_count = scanned_memory_count.saturating_add(1);
-            let matched =
-                match_self_check_memory_item(&item, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
-            if matched.has_explicit_time {
-                temporal_candidate_count = temporal_candidate_count.saturating_add(1);
-            } else if untimed_reminder_samples.len() < 3
-                && is_reminder_memory_key(item.key.as_str())
-            {
-                untimed_reminder_samples.push(format!(
-                    "{}|type={}|summary={}",
-                    item.key,
-                    item.type_name,
-                    compact_text_for_log(item.summary.as_str(), 72)
-                ));
-            }
-            if matched.exact_time_hit {
-                exact_time_hit_count = exact_time_hit_count.saturating_add(1);
-            }
-            if matched.coarse_time_hit {
-                coarse_time_hit_count = coarse_time_hit_count.saturating_add(1);
-            }
-            if matched.retained {
-                retained_memory_items.push(item);
-            }
-        }
-        if temporal_candidate_count == 0 && (tick <= 3 || tick % 30 == 0) {
-            info!(
-                "agent.self_check_timer.no_explicit_time_candidate: agent={} tick={} memory_items={} reminder_samples={:?} force_interval_ms={} note=no memory has exact trigger time; self-check can still run via periodic force trigger",
-                self.agent_name,
-                tick,
-                scanned_memory_count,
-                untimed_reminder_samples,
-                SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS
-            );
-        }
-
-        let default_remote = self.default_reply_audience();
-        let session = self
-            .session_mgr
-            .ensure_session(
-                SELF_CHECK_SESSION_ID,
-                Some(SELF_CHECK_SESSION_TITLE.to_string()),
-                Some(AGENT_BEHAVIOR_SELF_CHECK),
-                default_remote.as_deref(),
-            )
-            .await
-            .map_err(|err| anyhow!("ensure self-check session failed: {err}"))?;
-
-        let (
-            session_id,
-            should_save,
-            should_trigger,
-            session_state,
-            last_trigger_ms,
-            since_last_trigger_ms,
-            force_due,
-        ) = {
-            let mut guard = session.lock().await;
-            let last_trigger_ms = self_check_last_trigger_ms(&guard.meta).unwrap_or(0);
-            let since_last_trigger = now_ms.saturating_sub(last_trigger_ms);
-            let force_due = since_last_trigger >= SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS;
-
-            if guard.state == SessionState::Running {
-                (
-                    guard.session_id.clone(),
-                    false,
-                    false,
-                    guard.state,
-                    last_trigger_ms,
-                    since_last_trigger,
-                    force_due,
-                )
-            } else if retained_memory_items.is_empty() && !force_due {
-                (
-                    guard.session_id.clone(),
-                    false,
-                    false,
-                    guard.state,
-                    last_trigger_ms,
-                    since_last_trigger,
-                    force_due,
-                )
-            } else if last_trigger_ms > 0 && since_last_trigger < SELF_CHECK_MIN_TRIGGER_INTERVAL_MS
-            {
-                (
-                    guard.session_id.clone(),
-                    false,
-                    false,
-                    guard.state,
-                    last_trigger_ms,
-                    since_last_trigger,
-                    force_due,
-                )
-            } else if !force_due && last_trigger_ms > 0 {
-                (
-                    guard.session_id.clone(),
-                    false,
-                    false,
-                    guard.state,
-                    last_trigger_ms,
-                    since_last_trigger,
-                    force_due,
-                )
-            } else {
-                guard.current_behavior = AGENT_BEHAVIOR_SELF_CHECK.to_string();
-                guard.step_index = 0;
-                guard.wait_details = None;
-                guard.updated_at_ms = now_ms;
-                guard.last_activity_ms = now_ms;
-                guard.state = SessionState::Wait;
-                set_self_check_last_trigger_ms(&mut guard.meta, now_ms);
-                (
-                    guard.session_id.clone(),
-                    true,
-                    true,
-                    guard.state,
-                    last_trigger_ms,
-                    since_last_trigger,
-                    force_due,
-                )
-            }
+            self.agent_name.as_str()
         };
-
-        if should_trigger {
-            let session_input = SessionInputItem {
-                msg: None,
-                event_id: Some(SELF_CHECK_TRIGGER_EVENT_ID.to_string()),
-                event_data: Some(build_self_check_trigger_event_data(
-                    tick,
-                    current_time,
-                    last_trigger_ms,
-                )),
-            };
-            self.wakeup_by_session_input(
-                session_id.as_str(),
-                &session_input,
-                InputQueueKind::Event,
-            )
-            .await
-            .map_err(|err| anyhow!("wake self-check session by timer event failed: {err}"))?;
-        }
-        if should_save {
-            self.session_mgr
-                .save_session(session_id.as_str())
-                .await
-                .map_err(|err| anyhow!("save self-check session failed: {err}"))?;
-        }
-        if should_trigger {
-            let trigger_reason = if exact_time_hit_count > 0 {
-                "exact_time_hit"
-            } else if coarse_time_hit_count > 0 {
-                "coarse_time_hit"
-            } else if force_due && last_trigger_ms == 0 {
-                "force_initial"
-            } else if force_due {
-                "force_interval"
-            } else {
-                "retained_memory"
-            };
-            info!(
-                "agent.self_check_timer.triggered: agent={} tick={} session_id={} reason={} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} last_trigger_ms={} since_last_trigger_ms={} force_due={} force_interval_ms={}",
-                self.agent_name,
-                tick,
-                session_id,
-                trigger_reason,
-                retained_memory_items.len(),
-                temporal_candidate_count,
-                exact_time_hit_count,
-                coarse_time_hit_count,
-                last_trigger_ms,
-                since_last_trigger_ms,
-                force_due,
-                SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS
-            );
-        } else {
-            debug!(
-                "agent.self_check_timer.not_triggered: agent={} tick={} session_id={} state={:?} retained_memory_items={} temporal_candidates={} exact_hits={} coarse_hits={} last_trigger_ms={} since_last_trigger_ms={} force_due={} force_interval_ms={}",
-                self.agent_name,
-                tick,
-                session_id,
-                session_state,
-                retained_memory_items.len(),
-                temporal_candidate_count,
-                exact_time_hit_count,
-                coarse_time_hit_count,
-                last_trigger_ms,
-                since_last_trigger_ms,
-                force_due,
-                SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS
-            );
-        }
-
-        Ok(())
+        paths::sanitize_path_segment(raw)
     }
 
-    async fn run_agent_dispatch_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
-        let mut tick = 0_u32;
-        let event_pull_timeout_ms = MAX_EVENT_PULL_TIMEOUT_MS;
-
-        loop {
-            if let Some(max_tick) = stop_after_ticks {
-                if tick >= max_tick {
-                    break;
-                }
-            }
-            tick = tick.saturating_add(1);
-
-            //支持运行时，通过修改session相关配置影响行为，不过位置似乎不对
-            // self.session_mgr
-            //     .refresh_all_statuses_from_disk()
-            //     .await
-            //     .map_err(|err| anyhow!("refresh session status failed: {err}"))?;
-
-            //从 agent_pull_input ->dispatch到 session -> session behavior genereate_input() 最终消费
-            let (pulled_msgs, pulled_events, waited_on_events) =
-                self.pull_msgs_and_events(event_pull_timeout_ms).await?;
-
-            let has_inputs = !pulled_msgs.is_empty() || !pulled_events.is_empty();
-            if has_inputs {
-                info!(
-                    "{} pull_msgs_and_events success, dispatch_inputs: pulled_msgs={} pulled_events={} waited_on_events={}",
-                    self.agent_name,
-                    pulled_msgs.len(),
-                    pulled_events.len(),
-                    waited_on_events
-                );
-                self.dispatch_pulled_inputs(pulled_msgs, pulled_events)
-                    .await?;
-            }
-
-            self.session_mgr
-                .schedule_wait_timeouts(now_ms())
-                .await
-                .map_err(|err| anyhow!("schedule session wait-timeout failed: {err}"))?;
-        }
-
-        Ok(())
-    }
-
-    async fn run_session_worker_loop(&self, stop_after_ticks: Option<u32>) -> Result<()> {
-        let mut tick = 0_u32;
-        let mut sleep_ms = self.cfg.default_sleep_ms;
-
-        loop {
-            if let Some(max_tick) = stop_after_ticks {
-                if tick >= max_tick {
-                    break;
-                }
-            }
-            tick = tick.saturating_add(1);
-
-            let Some(session) = self.session_mgr.get_next_ready_session().await else {
-                //t
-                let wait_ms = sleep_ms.min(MAX_SESSION_WORKER_IDLE_SLEEP_MS);
-                let woke_by_notify = self
-                    .session_mgr
-                    .wait_for_ready_or_timeout(Duration::from_millis(wait_ms))
-                    .await;
-                if woke_by_notify {
-                    debug!(
-                        "{}.session_worker_wakeup: reason=notify wait_ms={}",
-                        self.agent_name, wait_ms
-                    );
-                    sleep_ms = self.cfg.default_sleep_ms;
-                } else {
-                    sleep_ms = (sleep_ms.saturating_mul(2))
-                        .min(self.cfg.max_sleep_ms)
-                        .min(MAX_SESSION_WORKER_IDLE_SLEEP_MS);
-                }
-                continue;
-            };
-
-            sleep_ms = self.cfg.default_sleep_ms;
-            let result = self.run_session_loop(session.clone()).await;
-
-            if let Err(err) = result {
-                warn!("agent.session_loop failed: did={:?} err={}", self.did, err);
-            }
-            let session_id = {
-                let guard = session.lock().await;
-                guard.session_id.clone()
-            };
-            if let Err(err) = self.session_mgr.save_session(&session_id).await {
-                warn!(
-                    "agent.session_save_failed: did={:?} session_id={} err={}",
-                    self.did, session_id, err
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn pull_msgs_and_events(
+    /// Build a Session Exec Bin renderer for `behavior_name`. Returns
+    /// `Some(renderer)` whenever we have *any* lower-layer state to manage
+    /// (Agent tools to sync or a tool plan to enforce). The renderer is
+    /// then consulted by `TmuxBashRunner` on every `exec_bash` call.
+    ///
+    /// Missing behavior config / missing tool plan files are downgraded
+    /// to warnings + an empty-plan renderer so a misconfigured behavior
+    /// still gets Agent tools sync and doesn't refuse to start.
+    fn build_session_bin_renderer(
         &self,
-        wait_timeout_ms: u64,
-    ) -> Result<(Vec<PulledMsg>, Vec<PulledEvent>, bool)> {
-        //TODO: Agent需要根据自己持久化的订阅列表，创建event_reader, msg_center_event_reader只是其中之一
-        //目前Agent自动订阅的event:
-        // - /msg_center/{owner_did}/box/{box_name}/**
+        agent_id: &str,
+        session_id: &str,
+        behavior_name: &str,
+    ) -> Option<Arc<SessionBinRenderer>> {
+        let layout = SessionBinLayout::compute(agent_id, session_id, &self.config.layout.root);
 
-        let Some(event_reader) = self.ensure_kevent_event_reader().await else {
-            warn!("{}.event_reader_unavailable", self.agent_name);
-            let pulled_msgs = self.pull_msg_packs().await;
-            return Ok((pulled_msgs, vec![], false));
-        };
-        let mut pulled_events = Vec::<PulledEvent>::new();
-        let mut msg_pull_boxes = Vec::<BoxKind>::new();
-        match event_reader.pull_event(Some(wait_timeout_ms)).await {
-            Ok(Some(event)) => {
-                debug!(
-                    "{}.event_pull_hit: event_id={} source_node={} ingress_node={}",
-                    self.agent_name,
-                    event.eventid,
-                    event.source_node,
-                    event.ingress_node.as_deref().unwrap_or("-")
-                );
-                Self::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
-
-                debug!(
-                    "{}.event_pull_targets: msg_pull_boxes={:?} pulled_events={}",
-                    self.agent_name,
-                    msg_pull_boxes,
-                    pulled_events.len()
-                );
-            }
-            Ok(None) => {
-                // KEvent is a poll accelerator. Timeout still falls back to queue pull.
-                debug!("{}.event_pull_timeout", self.agent_name);
-                Self::append_all_msg_center_boxes_updated(&mut msg_pull_boxes);
-            }
+        // Look up the behavior's tool_plan; tolerate a missing behavior
+        // config because `builtin_ui_default()` is used as a fallback in
+        // the session worker.
+        let plan_name = match self.config.load_behavior(behavior_name) {
+            Ok(cfg) => cfg.capabilities.tool_plan,
             Err(err) => {
                 warn!(
-                    "{}.event_pull_failed: phase=wait timeout_ms={} err={:?}",
-                    self.agent_name, wait_timeout_ms, err
+                    "opendan.agent[{}]: load behavior `{}` for tool plan failed (using empty plan): {err}",
+                    self.agent_name, behavior_name
                 );
-                if matches!(err, KEventError::ReaderClosed(_)) {
-                    self.reset_kevent_event_reader().await;
-                }
+                String::new()
             }
-        }
+        };
 
-        let pulled_msgs = if msg_pull_boxes.is_empty() {
-            vec![]
+        let (plan_name, plan_toml) = if plan_name.trim().is_empty() {
+            (String::new(), ToolPlanToml::default())
         } else {
-            self.pull_msg_packs_by_boxes(msg_pull_boxes.as_slice())
-                .await
-        };
-        debug!(
-            "{}.pull_msgs_and_events_done: msg_pull_boxes={:?} pulled_msgs={} pulled_events={}",
-            self.agent_name,
-            msg_pull_boxes,
-            pulled_msgs.len(),
-            pulled_events.len()
-        );
-        Ok((pulled_msgs, pulled_events, true))
-    }
-
-    async fn pull_msg_packs(&self) -> Vec<PulledMsg> {
-        let mut box_kinds = Vec::new();
-        Self::append_all_msg_center_boxes_updated(&mut box_kinds);
-        self.pull_msg_packs_by_boxes(box_kinds.as_slice()).await
-    }
-
-    async fn pull_msg_packs_by_boxes(&self, box_kinds: &[BoxKind]) -> Vec<PulledMsg> {
-        let Some(msg_center) = self.deps.msg_center.as_ref() else {
-            return vec![];
-        };
-        let Some(owner_did) = self.parse_owner_did_for_msg_center() else {
-            return vec![];
-        };
-
-        let mut out = Vec::<PulledMsg>::new();
-        for box_kind in box_kinds {
-            let state_filter = Self::msg_pull_state_filter_for_box(box_kind);
-            debug!(
-                "agent.msg_pull_box_begin: did={:?} box_kind={:?} state_filter={:?}",
-                self.did, box_kind, state_filter
-            );
-            let mut pulled_in_box = 0usize;
-            for attempt in 0..MAX_MSG_PULL_PER_TICK {
-                debug!(
-                    "agent.msg_pull_get_next_call: did={:?} box_kind={:?} attempt={} state_filter={:?}",
-                    self.did,
-                    box_kind,
-                    attempt + 1,
-                    state_filter
-                );
-                match msg_center
-                    .get_next(
-                        owner_did.clone(),
-                        box_kind.clone(),
-                        state_filter.clone(),
-                        Some(true),
-                        Some(true),
-                    )
-                    .await
-                {
-                    Ok(Some(record)) => {
-                        pulled_in_box = pulled_in_box.saturating_add(1);
-                        info!(
-                            "{}.msg_pull_get_next_hit: box_kind={:?} attempt={} record_id={} state={:?} thread_key={:?}",
-                            self.agent_name,
-                            box_kind,
-                            attempt + 1,
-                            record.record.record_id,
-                            record.record.state,
-                            record.record.ui_session_id
-                        );
-                        if !Self::is_expected_pulled_msg_state(box_kind, &record.record.state) {
-                            warn!(
-                                "agent.msg_pull_unexpected_state: did={:?} box_kind={:?} record_id={} state={:?} expected=unread_or_reading",
-                                self.did, box_kind, record.record.record_id, record.record.state
-                            );
-                            break;
-                        }
-                        out.push(Self::msg_record_to_pulled_msg(record));
-                    }
-                    Ok(None) => {
-                        debug!(
-                            "agent.msg_pull_get_next_miss: did={:?} box_kind={:?} attempt={} pulled_in_box={}",
-                            self.did,
-                            box_kind,
-                            attempt + 1,
-                            pulled_in_box
-                        );
-                        break;
-                    }
-                    Err(err) => {
-                        warn!(
-                            "agent.msg_pull_failed: did={:?} box_kind={:?} attempt={} err={}",
-                            self.did,
-                            box_kind,
-                            attempt + 1,
-                            err
-                        );
-                        break;
-                    }
+            let path = self.config.layout.tool_plan_path(&plan_name);
+            match ToolPlanToml::load_from_file(&path) {
+                Ok(p) => (plan_name, p),
+                Err(err) => {
+                    warn!(
+                        "opendan.agent[{}]: load tool plan `{}` failed (using empty plan): {err}",
+                        self.agent_name, plan_name
+                    );
+                    (plan_name, ToolPlanToml::default())
                 }
             }
-            debug!(
-                "agent.msg_pull_box_done: did={:?} box_kind={:?} pulled_in_box={}",
-                self.did, box_kind, pulled_in_box
-            );
+        };
+
+        let universe = tool_plan::scan_bin_universe([
+            &layout.system_bin,
+            &layout.runtime_bin,
+            &layout.agent_bin,
+        ]);
+        let resolved = ResolvedToolPlan::resolve(
+            if plan_name.is_empty() {
+                "(none)"
+            } else {
+                &plan_name
+            },
+            &plan_toml,
+            &universe,
+        );
+        Some(Arc::new(SessionBinRenderer::new(
+            layout.session_bin.clone(),
+            layout.agent_bin.clone(),
+            if plan_name.is_empty() {
+                "(none)".to_string()
+            } else {
+                plan_name
+            },
+            resolved,
+        )))
+    }
+
+    /// Producer-end clone of the inbox. Multiple callers may keep clones.
+    pub fn inbox(&self) -> mpsc::Sender<Inbound> {
+        self.inbox_tx.clone()
+    }
+
+    /// Look up a live session by id. Returns `None` when no session with
+    /// that id is currently mounted (never existed, archived, or removed
+    /// after `NextAction::End`).
+    ///
+    /// Session-aware tools (`try_create_worksession`, `forward_msg`, ...)
+    /// use this to reach into the calling session for fork primitives /
+    /// pending-input injection.
+    pub async fn get_session(&self, session_id: &str) -> Option<Arc<AgentSession>> {
+        self.sessions.lock().await.get(session_id).cloned()
+    }
+
+    /// Snapshot every live session as a [`SessionSummary`]. Used by the
+    /// `try_create_worksession` fork sub-context to give its LLM enough
+    /// inventory to decide "reuse an existing worksession vs create a new
+    /// one" — see §8.2 of `notepads/NewOpenDANRuntime.md`.
+    ///
+    /// Ordering is alphabetical by `session_id` for determinism. Excludes
+    /// the calling session (when `exclude_id` matches), since "reuse the
+    /// session that just called this tool" is never the right answer.
+    pub async fn list_session_summaries(&self, exclude_id: Option<&str>) -> Vec<SessionSummary> {
+        let sessions: Vec<Arc<AgentSession>> = {
+            let map = self.sessions.lock().await;
+            let mut entries: Vec<_> = map
+                .iter()
+                .filter(|(id, _)| exclude_id != Some(id.as_str()))
+                .map(|(_, s)| s.clone())
+                .collect();
+            entries.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+            entries
+        };
+        let mut out = Vec::with_capacity(sessions.len());
+        for s in sessions {
+            out.push(s.summary().await);
         }
         out
     }
 
-    fn msg_pull_state_filter_for_box(box_kind: &BoxKind) -> Option<Vec<MsgState>> {
-        match box_kind {
-            BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
-                Some(vec![MsgState::Unread])
-            }
-            BoxKind::Outbox | BoxKind::TunnelOutbox => None,
-        }
+    /// Trigger a graceful shutdown. Returns immediately; `run()` exits its
+    /// loop and joins outstanding sessions.
+    pub async fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(()).await;
     }
 
-    fn is_expected_pulled_msg_state(box_kind: &BoxKind, state: &MsgState) -> bool {
-        match box_kind {
-            BoxKind::Inbox | BoxKind::GroupInbox | BoxKind::RequestBox => {
-                matches!(state, MsgState::Unread | MsgState::Reading)
-            }
-            BoxKind::Outbox | BoxKind::TunnelOutbox => true,
+    /// Run the dispatcher loop. Consumes the receivers held inside `self`
+    /// (single-shot — calling twice panics).
+    pub async fn run(self: Arc<Self>) -> Result<()> {
+        info!("opendan.agent[{}]: starting AIAgent::run", self.agent_name);
+        self.clone().restore_session_routes().await;
+        self.clone().ensure_self_check_hard_barrier_timer().await;
+        self.clone().ensure_ui_clock_timer().await;
+
+        let pump_handle = self.clone().spawn_msg_center_pump();
+        let task_inbox_handle = self.clone().spawn_task_inbox();
+        let dispatch_target_handle = self.clone().spawn_dispatch_target();
+        let self_improve_handle = self.clone().spawn_self_improve_scheduler();
+        let event_pump_handle = self.event_pump.as_ref().map(|p| {
+            let p = p.clone();
+            tokio::spawn(async move { p.run().await })
+        });
+        let task_event_pump_handle = self.task_event_pump.as_ref().map(|p| {
+            let p = p.clone();
+            let agent = self.clone();
+            tokio::spawn(async move { p.run(agent).await })
+        });
+
+        if std::env::var("AGENT_MAIN_LOOP").ok().as_deref() == Some("1") {
+            info!(
+                "opendan.agent[{}]: AGENT_MAIN_LOOP=1 enabled",
+                self.agent_name
+            );
         }
-    }
-
-    pub async fn session_sub_kevent(&self, session_id: &str, event_pattern: &str) -> Result<()> {
-        //先持久化到agent的event订阅列表
-        //设置下一个loop重新需要重新创建reader
-        let event_pattern = event_pattern.trim();
-        if event_pattern.is_empty() {
-            return Err(anyhow!("event_pattern must not be empty"));
+        self.clone().main_loop().await?;
+        self.pump_shutdown.notify_waiters();
+        if let Some(handle) = pump_handle {
+            // Best-effort: pump task observes `pump_shutdown` and exits on its
+            // own; we just wait so the kevent reader is fully closed before
+            // the agent drops.
+            let _ = handle.await;
         }
-        validate_pattern(event_pattern)
-            .map_err(|err| anyhow!("invalid event pattern `{event_pattern}`: {err}"))?;
-
-        let session = self
-            .session_mgr
-            .ensure_session(session_id, None, None, None)
-            .await
-            .map_err(|err| anyhow!("ensure session `{session_id}` failed: {err}"))?;
-        let normalized_session_id = {
-            let guard = session.lock().await;
-            guard.session_id.clone()
-        };
-
-        let changed = {
-            let mut guard = self.session_kevent_subscriptions.write().await;
-            guard
-                .entry(event_pattern.to_string())
-                .or_insert_with(HashSet::new)
-                .insert(normalized_session_id.clone())
-        };
-
-        if !changed {
-            return Ok(());
+        if let Some(handle) = task_inbox_handle {
+            let _ = handle.await;
         }
-
-        self.persist_session_kevent_subscriptions().await?;
-        self.reset_kevent_event_reader().await;
+        if let Some(handle) = dispatch_target_handle {
+            let _ = handle.await;
+        }
+        if let Some(handle) = self_improve_handle {
+            let _ = handle.await;
+        }
+        if let Some(handle) = event_pump_handle {
+            let _ = handle.await;
+        }
+        if let Some(handle) = task_event_pump_handle {
+            let _ = handle.await;
+        }
+        self.stop_all_sessions().await;
         Ok(())
     }
 
-    async fn dispatch_pulled_inputs(
-        &self,
-        pulled_msgs: Vec<PulledMsg>,
-        pulled_events: Vec<PulledEvent>,
-    ) -> Result<()> {
-        debug!(
-            "agent.dispatch_pulled_inputs_begin: did={:?} pulled_msgs={} pulled_events={}",
-            self.did,
-            pulled_msgs.len(),
-            pulled_events.len()
-        );
+    pub async fn main_loop(self: Arc<Self>) -> Result<()> {
+        let mut inbox_rx = self
+            .inbox_rx
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| anyhow!("AIAgent::main_loop called twice (inbox already taken)"))?;
+        let mut shutdown_rx =
+            self.shutdown_rx.lock().await.take().ok_or_else(|| {
+                anyhow!("AIAgent::main_loop called twice (shutdown already taken)")
+            })?;
 
-        for pulled in pulled_events {
-            let mut target_session_ids = if let Some(session_id) = pulled.session_id.as_deref() {
-                vec![session_id.to_string()]
-            } else {
-                self.match_session_kevent_targets(pulled.event_id.as_str())
-                    .await
-            };
-            target_session_ids.sort();
-            target_session_ids.dedup();
-            if target_session_ids.is_empty() {
-                debug!(
-                    "agent.dispatch_event_skip_unmatched: event_id={}",
-                    pulled.event_id
-                );
+        loop {
+            tokio::select! {
+                msg = inbox_rx.recv() => {
+                    let Some(msg) = msg else {
+                        info!("opendan.agent[{}]: inbox closed, shutting down", self.agent_name);
+                        break;
+                    };
+                    if let Err(err) = self.clone().dispatch_inbound(msg).await {
+                        warn!("opendan.agent[{}]: dispatch_inbound failed: {err:#}", self.agent_name);
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    info!("opendan.agent[{}]: shutdown signal received", self.agent_name);
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Spawn the msg-center / kevent inbound pump if the runtime wired kevent
+    /// and the agent has a parseable owner DID. Msg-center clients are acquired
+    /// from the runtime by the pump for each operation.
+    fn spawn_msg_center_pump(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
+        let kevent_client = self.runtime.kevent_client.clone()?;
+        let owner_did = msg_center_pump::parse_owner_did(&self.config.toml.identity.agent_did)?;
+        let contact_lookup = Some(Arc::new(ContactLookup::new(
+            self.runtime.msg_center.clone(),
+            Some(owner_did.clone()),
+        )));
+        let cfg = PumpConfig {
+            agent_name: self.agent_name.clone(),
+            owner_did,
+            msg_center: self.runtime.msg_center.clone(),
+            kevent_client,
+            inbox_tx: self.inbox_tx.clone(),
+            shutdown: self.pump_shutdown.clone(),
+            contact_lookup,
+        };
+        Some(tokio::spawn(msg_center_pump::run(cfg)))
+    }
+
+    fn spawn_self_improve_scheduler(self: Arc<Self>) -> Option<tokio::task::JoinHandle<()>> {
+        let class = self.config.class_name_for_kind(SessionKind::SelfImprove);
+        if !self.config.session_class_enabled(&class) {
+            info!(
+                "opendan.agent[{}]: self_improve scheduler disabled by config",
+                self.agent_name
+            );
+            return None;
+        }
+        Some(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = self.pump_shutdown.notified() => break,
+                    _ = sleep(Duration::from_millis(SELF_IMPROVE_SCHEDULER_INTERVAL_MS)) => {
+                        if let Err(err) = self.clone().tick_self_improve_scheduler().await {
+                            warn!("opendan.agent[{}]: self_improve scheduler tick failed: {err:#}", self.agent_name);
+                        }
+                    }
+                }
+            }
+        }))
+    }
+
+    async fn tick_self_improve_scheduler(self: Arc<Self>) -> Result<()> {
+        let class = self.config.class_name_for_kind(SessionKind::SelfImprove);
+        if !self.config.session_class_enabled(&class) {
+            return Ok(());
+        }
+        let mut state = load_self_improve_scheduler_state(&self.config.layout.root).await;
+        let woke_memory_stage2 = self
+            .clone()
+            .maybe_wake_self_improve_memory_stage2(&class, &mut state)
+            .await?;
+        let woke_skill_stage2 = self
+            .clone()
+            .maybe_wake_self_improve_skill_stage2(&class, &mut state)
+            .await?;
+        if woke_memory_stage2 || woke_skill_stage2 {
+            return Ok(());
+        }
+        let targets = self.collect_self_improve_targets().await;
+        let pending_rounds: u64 = targets.iter().map(|target| target.pending_rounds).sum();
+        if pending_rounds < state.last_threshold_trigger_pending_rounds {
+            state.last_threshold_trigger_pending_rounds = 0;
+        }
+        let Some(trigger) = choose_self_improve_trigger(&state, pending_rounds, Local::now())
+        else {
+            return Ok(());
+        };
+        if targets.is_empty() {
+            if matches!(trigger, SelfImproveTriggerKind::Daily) {
+                state.last_daily_check_date = local_date_string(Local::now());
+                write_self_improve_scheduler_state(&self.config.layout.root, &state).await;
+            }
+            return Ok(());
+        }
+        let stage1_session_id = next_self_improve_stage1_session_id(&state);
+        let session = self
+            .clone()
+            .get_or_create_session(
+                stage1_session_id.clone(),
+                "system".to_string(),
+                SessionKind::SelfImprove,
+                &class,
+            )
+            .await?;
+        if !self_improve_session_can_start(&session).await {
+            return Ok(());
+        }
+        let batch_targets = select_self_improve_batch(&targets);
+        let batch_pending_rounds: u64 = batch_targets
+            .iter()
+            .map(|target| target.pending_rounds)
+            .sum();
+        let prompt = render_self_improve_stage1_prompt(
+            trigger,
+            pending_rounds,
+            batch_pending_rounds,
+            targets.len(),
+            &batch_targets,
+            &stage1_session_id,
+        );
+        session
+            .enqueue_internal_continuation(
+                format!(
+                    "self_improve_scheduler:{}",
+                    self_improve_trigger_label(trigger)
+                ),
+                vec![AiMessage::text(AiRole::User, prompt)],
+            )
+            .await?;
+        state.next_stage1_session_seq = state.next_stage1_session_seq.saturating_add(1);
+        state.last_stage1_session_id = stage1_session_id.clone();
+        state.last_triggered_at_ms = current_unix_ms();
+        match trigger {
+            SelfImproveTriggerKind::Daily => {
+                state.last_daily_check_date = local_date_string(Local::now());
+            }
+            SelfImproveTriggerKind::Threshold => {
+                state.last_threshold_trigger_pending_rounds = pending_rounds;
+            }
+        }
+        write_self_improve_scheduler_state(&self.config.layout.root, &state).await;
+        info!(
+            "opendan.agent[{}]: self_improve stage1 triggered session={} kind={} targets={}/{} pending_rounds={}/{}",
+            self.agent_name,
+            stage1_session_id,
+            self_improve_trigger_label(trigger),
+            batch_targets.len(),
+            targets.len(),
+            batch_pending_rounds,
+            pending_rounds
+        );
+        Ok(())
+    }
+
+    async fn maybe_wake_self_improve_memory_stage2(
+        self: Arc<Self>,
+        class: &str,
+        state: &mut SelfImproveSchedulerState,
+    ) -> Result<bool> {
+        if state.last_stage1_completed_seq == 0 || !self.has_pending_stage2_memory_signals() {
+            return Ok(false);
+        }
+        let now_ms = current_unix_ms();
+        let stage2_session = choose_self_improve_stage2_session_id(state, now_ms);
+        let session = self
+            .clone()
+            .get_or_create_session(
+                stage2_session.session_id.clone(),
+                "system".to_string(),
+                SessionKind::SelfImprove,
+                class,
+            )
+            .await?;
+        if !self_improve_session_can_start(&session).await {
+            return Ok(false);
+        }
+        let prompt = render_self_improve_stage2_prompt(
+            state,
+            &stage2_session.session_id,
+            stage2_session.rotated,
+        );
+        session
+            .enqueue_behavior_internal_continuation(
+                "self_improve_set_memory".to_string(),
+                "self_improve_scheduler:stage2_after_stage1_complete".to_string(),
+                vec![AiMessage::text(AiRole::User, prompt)],
+            )
+            .await?;
+        if stage2_session.rotated {
+            state.next_stage2_session_seq = state.next_stage2_session_seq.saturating_add(1);
+            state.last_stage2_session_id = stage2_session.session_id.clone();
+        }
+        state.last_stage2_triggered_at_ms = now_ms;
+        write_self_improve_scheduler_state(&self.config.layout.root, state).await;
+        info!(
+            "opendan.agent[{}]: self_improve stage2 triggered session={} rotated={} from persisted stage1 completion seq={}",
+            self.agent_name,
+            stage2_session.session_id,
+            stage2_session.rotated,
+            state.last_stage1_completed_seq
+        );
+        Ok(true)
+    }
+
+    fn has_pending_stage2_memory_signals(&self) -> bool {
+        let Ok(store) = AgentAttentionSignalStore::open(AttentionSignalStoreConfig::new(
+            self.config.layout.root.join("attention_signals"),
+        )) else {
+            return false;
+        };
+        store
+            .list_pending_stage2_memory_signals(&self.agent_id(), Some(1))
+            .map(|signals| !signals.is_empty())
+            .unwrap_or(false)
+    }
+
+    async fn maybe_wake_self_improve_skill_stage2(
+        self: Arc<Self>,
+        class: &str,
+        state: &mut SelfImproveSchedulerState,
+    ) -> Result<bool> {
+        if state.last_stage1_completed_seq == 0 || !self.has_pending_stage2_skill_signals() {
+            return Ok(false);
+        }
+        let now_ms = current_unix_ms();
+        let stage2_session = choose_self_improve_skill_stage2_session_id(state, now_ms);
+        let session = self
+            .clone()
+            .get_or_create_session(
+                stage2_session.session_id.clone(),
+                "system".to_string(),
+                SessionKind::SelfImprove,
+                class,
+            )
+            .await?;
+        if !self_improve_session_can_start(&session).await {
+            return Ok(false);
+        }
+        let prompt = render_self_improve_skill_stage2_prompt(
+            state,
+            &stage2_session.session_id,
+            stage2_session.rotated,
+        );
+        session
+            .enqueue_behavior_internal_continuation(
+                "try_create_new_skill".to_string(),
+                "self_improve_scheduler:skill_stage2_after_stage1_complete".to_string(),
+                vec![AiMessage::text(AiRole::User, prompt)],
+            )
+            .await?;
+        if stage2_session.rotated {
+            state.next_skill_stage2_session_seq =
+                state.next_skill_stage2_session_seq.saturating_add(1);
+            state.last_skill_stage2_session_id = stage2_session.session_id.clone();
+        }
+        state.last_skill_stage2_triggered_at_ms = now_ms;
+        write_self_improve_scheduler_state(&self.config.layout.root, state).await;
+        info!(
+            "opendan.agent[{}]: self_improve skill stage2 triggered session={} rotated={} from persisted stage1 completion seq={}",
+            self.agent_name,
+            stage2_session.session_id,
+            stage2_session.rotated,
+            state.last_stage1_completed_seq
+        );
+        Ok(true)
+    }
+
+    fn has_pending_stage2_skill_signals(&self) -> bool {
+        let Ok(store) = AgentAttentionSignalStore::open(AttentionSignalStoreConfig::new(
+            self.config.layout.root.join("attention_signals"),
+        )) else {
+            return false;
+        };
+        store
+            .list_pending_stage2_skill_coverage_gap_signals(&self.agent_id(), Some(1))
+            .map(|signals| !signals.is_empty())
+            .unwrap_or(false)
+    }
+
+    pub(crate) async fn mark_self_improve_stage1_completed(&self) {
+        let mut state = load_self_improve_scheduler_state(&self.config.layout.root).await;
+        state.last_stage1_completed_seq = state.last_stage1_completed_seq.saturating_add(1);
+        state.last_stage1_completed_at_ms = current_unix_ms();
+        write_self_improve_scheduler_state(&self.config.layout.root, &state).await;
+        info!(
+            "opendan.agent[{}]: self_improve stage1 completion persisted seq={}",
+            self.agent_name, state.last_stage1_completed_seq
+        );
+    }
+
+    async fn collect_self_improve_targets(&self) -> Vec<SelfImproveTargetSession> {
+        let sessions_dir = self.config.layout.sessions_dir.clone();
+        let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+            return Vec::new();
+        };
+        let mut targets = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
                 continue;
             }
-
-            let session_input = SessionInputItem {
-                msg: None,
-                event_id: Some(pulled.event_id.clone()),
-                event_data: Some(pulled.event_data.clone()),
+            let session_id = match path.file_name().and_then(|value| value.to_str()) {
+                Some(value) if !value.trim().is_empty() => value.to_string(),
+                _ => continue,
             };
+            let meta_path = path.join(".meta").join("session.json");
+            let Ok(bytes) = std::fs::read(&meta_path) else {
+                continue;
+            };
+            let Ok(meta) = serde_json::from_slice::<SessionMeta>(&bytes) else {
+                continue;
+            };
+            if matches!(meta.kind, SessionKind::SelfImprove) {
+                continue;
+            }
+            let latest_round_index = SessionHistoryReader::open(&path)
+                .and_then(|reader| reader.latest_round_index())
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let committed_round_index = meta.already_improved.committed_round_index;
+            if latest_round_index <= committed_round_index {
+                continue;
+            }
+            targets.push(SelfImproveTargetSession {
+                session_id,
+                owner: meta.owner,
+                committed_round_index,
+                latest_round_index,
+                pending_rounds: latest_round_index - committed_round_index,
+            });
+        }
+        targets.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        targets
+    }
 
-            for target_session_id in target_session_ids {
-                self.wakeup_by_session_input(
-                    target_session_id.as_str(),
-                    &session_input,
-                    InputQueueKind::Event,
+    /// Restore lightweight dispatch indexes for non-Ended sessions without
+    /// starting their workers. Workers are mounted on demand when the main loop
+    /// is about to write a new pending input.
+    async fn restore_session_routes(self: Arc<Self>) {
+        let sessions_dir = self.config.layout.sessions_dir.clone();
+        let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let meta_path = path.join(".meta").join("session.json");
+            let Ok(bytes) = std::fs::read(&meta_path) else {
+                continue;
+            };
+            let Ok(meta) = serde_json::from_slice::<SessionMeta>(&bytes) else {
+                warn!(
+                    "opendan.agent[{}]: cannot decode {} — skipping",
+                    self.agent_name,
+                    meta_path.display()
+                );
+                continue;
+            };
+            let mut meta = meta;
+            if matches!(meta.status, SessionStatus::Ended) {
+                continue;
+            }
+            if meta.ensure_default_event_subscriptions(current_unix_ms()) {
+                info!(
+                    "opendan.agent[{}]: backfill default ui clock subscription session_id={} event_id={} mode=background_only",
+                    self.agent_name, meta.session_id, UI_CLOCK_TIMER_EVENT_ID
+                );
+                match serde_json::to_vec_pretty(&meta) {
+                    Ok(bytes) => {
+                        if let Err(err) = std::fs::write(&meta_path, bytes) {
+                            warn!(
+                                "opendan.agent[{}]: backfill default subscriptions for {} failed: {err}",
+                                self.agent_name,
+                                meta_path.display()
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "opendan.agent[{}]: encode default subscriptions for {} failed: {err}",
+                            self.agent_name,
+                            meta_path.display()
+                        );
+                    }
+                }
+            }
+            if matches!(meta.kind, SessionKind::Ui) && !meta.owner.is_empty() {
+                self.tunnel_to_ui_session
+                    .lock()
+                    .await
+                    .insert(meta.owner.clone(), meta.session_id.clone());
+            }
+            if let Some(pump) = self.event_pump.as_ref() {
+                let patterns = meta
+                    .event_subscriptions
+                    .iter()
+                    .map(|sub| sub.pattern.clone())
+                    .collect::<Vec<_>>();
+                pump.set_session_subscriptions(&meta.session_id, patterns)
+                    .await;
+            }
+        }
+    }
+
+    /// Decide which session class an inbound item lands in. Walks the
+    /// `[dispatch]` rule table for the matching event-type string and
+    /// falls back to `default_class` when nothing fires.
+    fn route_to_class(&self, event_type: &str) -> String {
+        self.dispatcher
+            .route(event_type)
+            .filter(|class| self.config.session_class_enabled(class))
+            .or_else(|| {
+                let default = self.config.toml.dispatch.default_class.clone();
+                if self.config.session_class_enabled(&default) {
+                    Some(default)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "ui".to_string())
+    }
+
+    fn route_msg(&self, event_type: &str) -> String {
+        self.route_to_class(event_type)
+    }
+
+    fn route_event_target(&self, data: &serde_json::Value) -> Option<String> {
+        data.get("target_session_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or_else(|| {
+                data.get("reason")
+                    .and_then(|value| {
+                        serde_json::from_value::<crate::session_model::TimerReason>(value.clone())
+                            .ok()
+                    })
+                    .and_then(|reason| {
+                        let target_id = reason.target_id.trim();
+                        if target_id.is_empty() {
+                            None
+                        } else {
+                            Some(target_id.to_string())
+                        }
+                    })
+            })
+    }
+
+    pub async fn schedule_precise_timer(
+        &self,
+        session_id: &str,
+        reason: TimerReason,
+    ) -> Result<String> {
+        let Some(client) = self.runtime.kevent_client.as_ref() else {
+            return Err(anyhow!("schedule_precise_timer: kevent client unavailable"));
+        };
+        let now = Utc::now();
+        let expected = reason.expected_trigger_time.with_timezone(&Utc);
+        let delay_ms = expected
+            .signed_duration_since(now)
+            .num_milliseconds()
+            .max(1) as u64;
+        let event_kind = match reason.target_type {
+            TimerTargetType::Reminder => TimerEventKind::ReminderCheck,
+            TimerTargetType::ScheduledTask => TimerEventKind::ScheduledTaskCheck,
+            TimerTargetType::Other | TimerTargetType::Named(_) => TimerEventKind::ReminderCheck,
+        };
+        let timer_id = client
+            .create_timer(
+                event_kind.event_id(),
+                TimerOptions {
+                    interval_ms: delay_ms,
+                    repeat: false,
+                    initial_delay_ms: Some(delay_ms),
+                    data: Some(serde_json::json!({
+                        "target_session_id": session_id,
+                        "reason": reason,
+                    })),
+                },
+            )
+            .await
+            .map_err(|err| anyhow!("schedule_precise_timer: create_timer failed: {err:?}"))?;
+        Ok(timer_id)
+    }
+
+    async fn ensure_self_check_hard_barrier_timer(self: Arc<Self>) {
+        let Some(client) = self.runtime.kevent_client.as_ref() else {
+            return;
+        };
+        let mut classes = self
+            .config
+            .toml
+            .session
+            .iter()
+            .filter_map(|(name, cfg)| {
+                if cfg.enabled && matches!(cfg.kind, SessionKind::SelfCheck) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let has_configured_self_check = self
+            .config
+            .toml
+            .session
+            .values()
+            .any(|cfg| matches!(cfg.kind, SessionKind::SelfCheck));
+        if classes.is_empty() && !has_configured_self_check {
+            classes.push(self.config.class_name_for_kind(SessionKind::SelfCheck));
+        }
+        classes.sort();
+        classes.dedup();
+
+        for class in classes {
+            let session_id = class.clone();
+            let session = match self
+                .clone()
+                .get_or_create_session(
+                    session_id.clone(),
+                    "system".to_string(),
+                    SessionKind::SelfCheck,
+                    &class,
                 )
                 .await
-                .map_err(|err| {
-                    anyhow!(
-                        "wake routed session by event failed: target_session={} err={}",
-                        target_session_id,
-                        err
-                    )
-                })?;
-                info!(
-                    "{}.dispatch_event_to_session: event_id={} session_id={}",
-                    self.agent_name, pulled.event_id, target_session_id
+            {
+                Ok(session) => session,
+                Err(err) => {
+                    warn!(
+                        "opendan.agent[{}]: create self_check session {} for hard barrier failed: {err:#}",
+                        self.agent_name, session_id
+                    );
+                    continue;
+                }
+            };
+            for event_kind in [
+                TimerEventKind::ReminderCheck,
+                TimerEventKind::HardBarrier,
+                TimerEventKind::ScheduledTaskCheck,
+            ] {
+                let event_id = event_kind.event_id();
+                if let Err(err) = session.subscribe_event(event_id).await {
+                    warn!(
+                        "opendan.agent[{}]: subscribe self_check {} failed: {err:#}",
+                        self.agent_name, event_id
+                    );
+                }
+            }
+            let reason = TimerReason {
+                trigger_type: TimerTriggerType::HardBarrier,
+                target_type: TimerTargetType::Other,
+                target_id: session_id.clone(),
+                expected_trigger_time: Utc::now().fixed_offset(),
+                reason: "periodic hard barrier self-check".to_string(),
+            };
+            if let Err(err) = client
+                .create_timer(
+                    TimerEventKind::HardBarrier.event_id(),
+                    TimerOptions {
+                        interval_ms: SELF_CHECK_HARD_BARRIER_INTERVAL_MS,
+                        repeat: true,
+                        initial_delay_ms: Some(1),
+                        data: Some(serde_json::json!({
+                            "target_session_id": session_id,
+                            "reason": reason,
+                        })),
+                    },
+                )
+                .await
+            {
+                warn!(
+                    "opendan.agent[{}]: create self_check hard barrier timer failed: {err:?}",
+                    self.agent_name
                 );
             }
         }
+    }
 
-        for pulled in pulled_msgs {
-            let record_id = pulled.record.record.record_id.clone();
-            let mut msg_record = pulled.record.record.clone();
-            if msg_record
-                .from_name
+    async fn ensure_ui_clock_timer(self: Arc<Self>) {
+        let Some(client) = self.runtime.kevent_client.as_ref() else {
+            return;
+        };
+        match client
+            .create_timer(
+                UI_CLOCK_TIMER_EVENT_ID,
+                TimerOptions {
+                    interval_ms: UI_CLOCK_TIMER_INTERVAL_MS,
+                    repeat: true,
+                    initial_delay_ms: Some(UI_CLOCK_TIMER_INTERVAL_MS),
+                    data: Some(serde_json::json!({
+                        "purpose": "current_clock",
+                    })),
+                },
+            )
+            .await
+        {
+            Ok(timer_id) => {
+                info!(
+                    "opendan.agent[{}]: ui clock timer started timer_id={} event_id={} interval_ms={}",
+                    self.agent_name,
+                    timer_id,
+                    UI_CLOCK_TIMER_EVENT_ID,
+                    UI_CLOCK_TIMER_INTERVAL_MS
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "opendan.agent[{}]: create ui clock timer failed: {err:?}",
+                    self.agent_name
+                );
+            }
+        }
+    }
+
+    pub async fn snapshot_global_state(
+        &self,
+        exclude_session_id: Option<&str>,
+    ) -> serde_json::Value {
+        let summaries = self.list_session_summaries(exclude_session_id).await;
+        serde_json::json!({
+            "agent_name": self.agent_name,
+            "agent_id": self.agent_id(),
+            "session_count": summaries.len(),
+            "sessions": summaries.into_iter().map(|s| {
+                serde_json::json!({
+                    "session_id": s.session_id,
+                    "kind": s.kind.as_str(),
+                    "title": s.title,
+                    "objective": s.objective,
+                    "status": format!("{:?}", s.status).to_ascii_lowercase(),
+                    "one_line_status": s.one_line_status,
+                    "workspace_id": s.workspace_id,
+                    "current_behavior": s.current_behavior,
+                })
+            }).collect::<Vec<_>>(),
+        })
+    }
+
+    fn route_event_class(&self, event_id: &str) -> Option<String> {
+        if event_id.starts_with("timer.") || event_id.starts_with("/timer/") {
+            let class = self.config.class_name_for_kind(SessionKind::SelfCheck);
+            self.config.session_class_enabled(&class).then_some(class)
+        } else {
+            None
+        }
+    }
+
+    async fn session_accepts_pending(&self, session_id: &str) -> Result<bool> {
+        if let Some(session) = self.sessions.lock().await.get(session_id).cloned() {
+            return Ok(!matches!(
+                session.meta.lock().await.status,
+                SessionStatus::Ended
+            ));
+        }
+        let meta_path = self
+            .config
+            .layout
+            .session_dir(session_id)
+            .join(".meta")
+            .join("session.json");
+        if !meta_path.exists() {
+            return Ok(true);
+        }
+        let bytes = std::fs::read(&meta_path)
+            .map_err(|err| anyhow!("read {} failed: {err}", meta_path.display()))?;
+        let meta: SessionMeta = serde_json::from_slice(&bytes)
+            .map_err(|err| anyhow!("parse {} failed: {err}", meta_path.display()))?;
+        Ok(!matches!(meta.status, SessionStatus::Ended))
+    }
+
+    /// Mint or look up the session id this inbound goes to, given its
+    /// resolved session class. Returns `None` when the strategy's required
+    /// fields aren't present in the inbound (e.g. PerPeer with no `from`).
+    fn evaluate_session_id(&self, class: &str, inbound: &Inbound) -> Option<String> {
+        let cfg = self.config.session_class(class)?;
+        let input = SessionIdInput::from_inbound(class, inbound)?;
+        self.session_id_eval
+            .compute(cfg.session_id_strategy, &input)
+    }
+
+    async fn resolve_msg_session_id(
+        self: &Arc<Self>,
+        from: &str,
+        use_tunnel_binding: bool,
+        explicit_session_id: Option<String>,
+        evaluated_session_id: Option<String>,
+    ) -> Result<String> {
+        if use_tunnel_binding {
+            if let Some(session_id) = self.tunnel_to_ui_session.lock().await.get(from).cloned() {
+                return Ok(session_id);
+            }
+        }
+
+        if let Some(session_id) = explicit_session_id.or(evaluated_session_id) {
+            if use_tunnel_binding {
+                self.bind_tunnel_to_session(from, &session_id).await;
+            }
+            return Ok(session_id);
+        }
+
+        self.clone().resolve_ui_session(from).await
+    }
+
+    async fn dispatch_inbound(self: Arc<Self>, item: Inbound) -> Result<()> {
+        match item {
+            Inbound::Msg {
+                record_id,
+                from,
+                from_did,
+                from_name,
+                tunnel_did,
+                session_id,
+                group_id,
+                text,
+                ai_message,
+            } => {
+                let event_type = if group_id.as_deref().is_some_and(|s| !s.is_empty()) {
+                    "msg.group"
+                } else {
+                    "msg.chat"
+                };
+                let class = self.route_msg(event_type);
+                let kind = self
+                    .config
+                    .session_class(&class)
+                    .map(|c| c.kind)
+                    .unwrap_or(SessionKind::Ui);
+                let use_tunnel_binding = self.config.session_class(&class).is_some_and(|cfg| {
+                    matches!(kind, SessionKind::Ui)
+                        && matches!(cfg.session_id_strategy, SessionIdStrategy::PerPeer)
+                });
+                let evaluated_session_id = if session_id.is_none() {
+                    // Build a tiny shim Inbound so the evaluator can read
+                    // from/from_did without re-borrowing the moved fields.
+                    let probe = Inbound::Msg {
+                        record_id: record_id.clone(),
+                        from: from.clone(),
+                        from_did: from_did.clone(),
+                        from_name: from_name.clone(),
+                        tunnel_did: tunnel_did.clone(),
+                        session_id: None,
+                        group_id: group_id.clone(),
+                        text: String::new(),
+                        ai_message: ai_message.clone(),
+                    };
+                    self.evaluate_session_id(&class, &probe)
+                } else {
+                    None
+                };
+                let resolved_id = self
+                    .resolve_msg_session_id(
+                        &from,
+                        use_tunnel_binding,
+                        session_id,
+                        evaluated_session_id,
+                    )
+                    .await?;
+                if !self.session_accepts_pending(&resolved_id).await? {
+                    warn!(
+                        "opendan.agent[{}]: reject msg record_id={} for ended session {}",
+                        self.agent_name, record_id, resolved_id
+                    );
+                    self.ack_msg_record(record_id).await;
+                    return Ok(());
+                }
+                let session = self
+                    .clone()
+                    .get_or_create_session(resolved_id.clone(), from.clone(), kind, &class)
+                    .await?;
+                // enqueue_pending durably parks the input on the session
+                // and only returns once `.meta/session.json` is on disk.
+                // Once it returns we're safe to ack upstream — a crash from
+                // here on leaves the input owned by the session, not lost.
+                session
+                    .push_msg(PendingInput::Msg {
+                        record_id: record_id.clone(),
+                        from,
+                        from_did,
+                        from_name,
+                        tunnel_did,
+                        text,
+                        ai_message,
+                    })
+                    .await?;
+                self.ack_msg_record(record_id).await;
+                Ok(())
+            }
+            Inbound::Command {
+                record_id,
+                from,
+                from_did,
+                tunnel_did,
+                command,
+                args,
+            } => {
+                let invocation = crate::command_dispatcher::CommandInvocation {
+                    record_id: record_id.clone(),
+                    from: from.clone(),
+                    from_did: from_did.clone(),
+                    tunnel_did: tunnel_did.clone(),
+                    command: command.clone(),
+                    args,
+                };
+                let outcome = match crate::command_dispatcher::run_command(&self, &invocation).await
+                {
+                    Ok(outcome) => outcome,
+                    Err(err) => crate::command_dispatcher::CommandOutcome {
+                        reply: format!("/{command} failed: {err:#}"),
+                    },
+                };
+                // Send the reply back through the tunnel that originated
+                // the command. If there's no live session yet (e.g. brand
+                // new tunnel that immediately typed `/help`), fall through
+                // to the dispatch_command_reply helper which constructs a
+                // standalone outbound message rather than parking it on a
+                // session.
+                self.dispatch_command_reply(
+                    &from,
+                    from_did.as_deref(),
+                    tunnel_did.as_deref(),
+                    &outcome.reply,
+                )
+                .await;
+                self.ack_msg_record(record_id).await;
+                Ok(())
+            }
+            Inbound::Event {
+                event_id,
+                target_session_id,
+                data,
+            } => {
+                info!(
+                    "opendan.agent[{}]: main_loop received event event_id={} target_session_id={:?}",
+                    self.agent_name, event_id, target_session_id
+                );
+                // Event routing is intentionally narrow in MVP: only
+                // pre-routed events (carrier sets `target_session_id`) are
+                // delivered. Broadcast / pattern-matched event delivery
+                // lands with `session_sub_kevent`.
+                let explicit_target = target_session_id.or_else(|| self.route_event_target(&data));
+                let session = if let Some(sid) = explicit_target {
+                    if !self.session_accepts_pending(&sid).await? {
+                        warn!(
+                            "opendan.agent[{}]: reject event {} for ended session {}",
+                            self.agent_name, event_id, sid
+                        );
+                        return Ok(());
+                    }
+                    match self.clone().ensure_session(&sid).await {
+                        Ok(session) => session,
+                        Err(err) => {
+                            warn!(
+                                "opendan.agent[{}]: event {} target session {} unavailable: {err:#}",
+                                self.agent_name, event_id, sid
+                            );
+                            return Ok(());
+                        }
+                    }
+                } else if let Some(class) = self.route_event_class(&event_id) {
+                    let kind = self
+                        .config
+                        .session_class(&class)
+                        .map(|cfg| cfg.kind)
+                        .unwrap_or(SessionKind::SelfCheck);
+                    if !self.session_accepts_pending(&class).await? {
+                        warn!(
+                            "opendan.agent[{}]: reject event {} for ended session {}",
+                            self.agent_name, event_id, class
+                        );
+                        return Ok(());
+                    }
+                    self.clone()
+                        .get_or_create_session(class.clone(), "system".to_string(), kind, &class)
+                        .await?
+                } else {
+                    warn!(
+                        "opendan.agent[{}]: event {} dropped — no target_session_id and broadcast routing not yet wired",
+                        self.agent_name, event_id
+                    );
+                    return Ok(());
+                };
+                let full_delivery = session.notify_event(event_id.clone(), data).await?;
+                info!(
+                    "opendan.agent[{}]: event dispatched event_id={} session_id={} delivery={}",
+                    self.agent_name,
+                    event_id,
+                    session.session_id,
+                    if full_delivery {
+                        "pending_input"
+                    } else {
+                        "background_only"
+                    }
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// §3.3 — send a system-style reply to a slash command. Used by the
+    /// command dispatcher so `/help`, `/list`, etc. ride the same tunnel
+    /// the user sent the command on without parking anything on a
+    /// session. Quietly skips when prerequisites (msg-center, peer DID,
+    /// agent DID) are missing — the same conservative pattern
+    /// `AgentSession::post_outbound_message` uses.
+    async fn dispatch_command_reply(
+        &self,
+        _from: &str,
+        from_did: Option<&str>,
+        tunnel_did: Option<&str>,
+        reply: &str,
+    ) {
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
+            return;
+        };
+        let Some(peer_did_str) = from_did else { return };
+        let Ok(peer_did) = name_lib::DID::from_str(peer_did_str) else {
+            return;
+        };
+        let agent_did_raw = self.config.toml.identity.agent_did.trim();
+        if agent_did_raw.is_empty() {
+            return;
+        }
+        let Ok(agent_did) = name_lib::DID::from_str(agent_did_raw) else {
+            return;
+        };
+        if agent_did == peer_did {
+            return;
+        }
+        // `peer_did` is the inbound sender DID, already a determined target
+        // (a second-level `did:msgtunnel:*` endpoint DID for tunnel traffic),
+        // so it carries its own routing — no SendContext / preferred_tunnel.
+        let _ = tunnel_did;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let mut msg = ndn_lib::MsgObject {
+            from: agent_did.clone(),
+            to: vec![peer_did.clone()],
+            kind: ndn_lib::MsgObjKind::Chat,
+            created_at_ms: now_ms,
+            content: ndn_lib::MsgContent {
+                format: Some(ndn_lib::MsgContentFormat::TextPlain),
+                content: reply.trim().to_string(),
+                ..ndn_lib::MsgContent::default()
+            },
+            ..Default::default()
+        };
+        msg.meta.insert(
+            "llm_role".to_string(),
+            serde_json::Value::String("system".to_string()),
+        );
+        msg.meta.insert(
+            "parse_mode".to_string(),
+            serde_json::Value::String("Plain".to_string()),
+        );
+
+        if let Err(err) = msg_center.post_send(msg, None).await {
+            warn!(
+                "opendan.agent[{}]: command reply post_send failed: {err}",
+                self.agent_name
+            );
+        }
+    }
+
+    /// Best-effort ack to msg-center after the record is durably parked on
+    /// a session. Failure is logged but not returned — the session already
+    /// owns the input, so even a stuck `Reading` record is recoverable
+    /// (msg-center's lease will eventually flip it back to `Unread` and we
+    /// dedup by `record_id` when re-enqueued).
+    async fn ack_msg_record(&self, record_id: String) {
+        // Locally-injected records (synthetic id) never hit msg-center.
+        if record_id.starts_with("local-") {
+            return;
+        }
+        let Ok(msg_center) = self.runtime.msg_center_client().await else {
+            return;
+        };
+        if let Err(err) = msg_center
+            .update_record_state(record_id.clone(), buckyos_api::RecipientState::Read)
+            .await
+        {
+            warn!(
+                "opendan.agent[{}]: ack record_id={} failed: {err}",
+                self.agent_name, record_id
+            );
+        }
+    }
+
+    /// Resolve the UI session associated with a tunnel `from` for a
+    /// slash-command invocation. Unlike `resolve_ui_session` this does
+    /// **not** mint a new session id — commands operate on an existing
+    /// session or fail clean. Returns the bound session id or an Err the
+    /// command handler can turn into a user-visible reply.
+    pub async fn resolve_session_for_command(&self, from: &str) -> Result<String> {
+        if let Some(sid) = self.tunnel_to_ui_session.lock().await.get(from) {
+            return Ok(sid.clone());
+        }
+        Err(anyhow!(
+            "no session is bound to tunnel `{from}` yet — send a message first to mint one"
+        ))
+    }
+
+    pub async fn create_ui_session_for_tunnel(
+        self: Arc<Self>,
+        from: &str,
+        from_did: Option<&str>,
+        tunnel_did: Option<&str>,
+    ) -> Result<String> {
+        let session_id = mint_session_id("ui");
+        let class = self.config.class_name_for_kind(SessionKind::Ui);
+        let behavior = self.config.default_behavior_for_class(&class);
+        let mut seed = SessionMeta::new(
+            session_id.clone(),
+            SessionKind::Ui,
+            behavior.clone(),
+            from.to_string(),
+        );
+        seed.peer_did = from_did
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        seed.peer_tunnel_did = tunnel_did
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        self.clone()
+            .ensure_session_inner(
+                session_id.clone(),
+                SessionKind::Ui,
+                from.to_string(),
+                Some(behavior),
+                Some(seed),
+            )
+            .await?;
+        self.bind_tunnel_to_session(from, &session_id).await;
+        Ok(session_id)
+    }
+
+    pub async fn delete_session_physical(&self, session_id: &str) -> Result<bool> {
+        let session = self.sessions.lock().await.remove(session_id);
+        let Some(session) = session else {
+            return Ok(false);
+        };
+        if let Some(pump) = self.event_pump.as_ref() {
+            pump.remove_session(session_id).await;
+        }
+        let workspace_id = session.meta.lock().await.workspace_id.clone();
+        session.abort_worker().await;
+
+        if let Some(workspace_id) = workspace_id.filter(|s| !s.trim().is_empty()) {
+            if workspace_id == session_id {
+                remove_dir_all_if_exists(self.workspaces.workspace_dir(&workspace_id)).await?;
+            } else {
+                match self.workspaces.load_record(&workspace_id).await {
+                    Ok(record) if record.current_session.as_deref() == Some(session_id) => {
+                        if let Err(err) = self
+                            .workspaces
+                            .set_current_session(&workspace_id, None)
+                            .await
+                        {
+                            warn!(
+                                "opendan.agent[{}]: workspace `{}` unbind session {} failed: {err}",
+                                self.agent_name, workspace_id, session_id
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        warn!(
+                            "opendan.agent[{}]: load workspace `{}` before deleting session {} failed: {err}",
+                            self.agent_name, workspace_id, session_id
+                        );
+                    }
+                }
+            }
+        }
+
+        remove_dir_all_if_exists(self.config.layout.session_dir(session_id)).await?;
+        Ok(true)
+    }
+
+    pub async fn unbind_tunnel_if_session(&self, from: &str, session_id: &str) {
+        let mut guard = self.tunnel_to_ui_session.lock().await;
+        if guard.get(from).map(|sid| sid.as_str()) == Some(session_id) {
+            guard.remove(from);
+        }
+    }
+
+    /// Replace the tunnel→session binding so a `/switch <id>` command
+    /// reroutes subsequent inbound messages to a different session.
+    /// Does not modify the target session's state.
+    pub async fn bind_tunnel_to_session(&self, from: &str, session_id: &str) {
+        self.tunnel_to_ui_session
+            .lock()
+            .await
+            .insert(from.to_string(), session_id.to_string());
+    }
+
+    async fn resolve_ui_session(self: Arc<Self>, from: &str) -> Result<String> {
+        if let Some(sid) = self.tunnel_to_ui_session.lock().await.get(from) {
+            return Ok(sid.clone());
+        }
+        // Mint a deterministic UI session id keyed on `from` — survives
+        // process restart so the same tunnel always lands on the same session.
+        let sid = format!("ui-{}", sanitize_session_segment(from));
+        self.tunnel_to_ui_session
+            .lock()
+            .await
+            .insert(from.to_string(), sid.clone());
+        Ok(sid)
+    }
+
+    async fn get_or_create_session(
+        self: Arc<Self>,
+        session_id: String,
+        owner: String,
+        kind: SessionKind,
+        class: &str,
+    ) -> Result<Arc<AgentSession>> {
+        // Note: existing session lookup is in a separate scope so we can drop
+        // the lock before doing the (potentially expensive) tool manager
+        // bootstrap on a miss.
+        if let Some(s) = self.sessions.lock().await.get(&session_id).cloned() {
+            return Ok(s);
+        }
+        let behavior_hint = Some(self.config.default_behavior_for_class(class));
+        self.ensure_session_inner(session_id, kind, owner, behavior_hint, None)
+            .await
+    }
+
+    async fn session_build_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.session_locks.lock().await;
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    pub async fn ensure_session(self: Arc<Self>, session_id: &str) -> Result<Arc<AgentSession>> {
+        if let Some(s) = self.sessions.lock().await.get(session_id).cloned() {
+            return Ok(s);
+        }
+        let meta_path = self
+            .config
+            .layout
+            .session_dir(session_id)
+            .join(".meta")
+            .join("session.json");
+        let bytes = std::fs::read(&meta_path)
+            .map_err(|err| anyhow!("ensure_session: read {} failed: {err}", meta_path.display()))?;
+        let meta: SessionMeta = serde_json::from_slice(&bytes).map_err(|err| {
+            anyhow!(
+                "ensure_session: parse {} failed: {err}",
+                meta_path.display()
+            )
+        })?;
+        let kind = meta.kind;
+        let owner = meta.owner.clone();
+        let behavior = meta.current_behavior.clone();
+        self.ensure_session_inner(
+            session_id.to_string(),
+            kind,
+            owner,
+            Some(behavior),
+            Some(meta),
+        )
+        .await
+    }
+
+    pub async fn retire_idle_session(&self, session_id: &str) {
+        self.sessions.lock().await.remove(session_id);
+    }
+
+    pub async fn retire_ended_session(&self, session_id: &str) {
+        let removed = self.sessions.lock().await.remove(session_id);
+        if removed.is_some() {
+            if let Some(pump) = self.event_pump.as_ref() {
+                pump.remove_session(session_id).await;
+            }
+        }
+    }
+
+    pub(crate) async fn ensure_session_inner(
+        self: Arc<Self>,
+        session_id: String,
+        kind: SessionKind,
+        owner: String,
+        behavior_hint: Option<String>,
+        existing_meta: Option<SessionMeta>,
+    ) -> Result<Arc<AgentSession>> {
+        {
+            let map = self.sessions.lock().await;
+            if let Some(s) = map.get(&session_id) {
+                return Ok(s.clone());
+            }
+        }
+        let build_lock = self.session_build_lock(&session_id).await;
+        let _guard = build_lock.lock().await;
+        {
+            let map = self.sessions.lock().await;
+            if let Some(s) = map.get(&session_id) {
+                return Ok(s.clone());
+            }
+        }
+        let session_dir = self.config.layout.session_dir(&session_id);
+        let _ = std::fs::create_dir_all(&session_dir);
+        let mut existing_meta = existing_meta;
+        let workspace_rec = if kind.is_work_family() {
+            let preselected_ws = existing_meta
+                .as_ref()
+                .and_then(|m| m.workspace_id.clone())
+                .filter(|s| !s.trim().is_empty());
+            let workspace_id = preselected_ws.unwrap_or_else(|| session_id.clone());
+            let workspace_rec = self
+                .workspaces
+                .create_or_open(&workspace_id, &workspace_id, Some(&session_id))
+                .await
+                .map_err(|err| anyhow!("open workspace `{workspace_id}`: {err}"))?;
+            Some(workspace_rec)
+        } else {
+            None
+        };
+        let tool_root = workspace_rec
+            .as_ref()
+            .map(|rec| self.workspaces.workspace_dir(&rec.workspace_id))
+            .unwrap_or_else(|| session_dir.clone());
+
+        // Resolve the behavior name up-front so we can pull its tool plan
+        // before building the tool manager. (`behavior_hint` wins so a
+        // restoring session keeps the same behavior; otherwise look up
+        // the session class default via the on-disk `[session.<class>]`
+        // table — falling back to the canonical `<class>_default` name.)
+        let behavior_name = behavior_hint.unwrap_or_else(|| {
+            let class = self.config.class_name_for_kind(kind);
+            self.config.default_behavior_for_class(&class)
+        });
+        if let Some(meta) = existing_meta.as_mut() {
+            if meta.status_changed_at_ms == 0 {
+                meta.status_changed_at_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+            }
+        }
+        let agent_id = self.agent_id();
+        let bin_renderer = self.build_session_bin_renderer(&agent_id, &session_id, &behavior_name);
+        let appclient_session_token = resolve_appclient_session_token().await?;
+        let progress_sink = self.runtime.msg_center.as_ref().map(|msg_center| {
+            let msg_center = msg_center.clone();
+            let progress_session_id =
+                progress_status_session_id(kind, &session_id, &owner);
+            let i18n = self.config.i18n.clone();
+            Arc::new(move |ctx: &agent_tool::SessionRuntimeContext, progress: &crate::agent_bash::BashProgressUpdate| {
+                let line = if progress.stage == "finalizing" {
+                    i18n.render(
+                        "status.aicc_finalizing",
+                        &[("method", progress.method.clone())],
+                    )
+                } else {
+                    i18n.render(
+                        "status.aicc_running",
+                        &[
+                            ("method", progress.method.clone()),
+                            ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
+                        ],
+                    )
+                };
+                let msg_center = msg_center.clone();
+                let session_id = progress_session_id.clone();
+                let turn_nonce = ui_status_nonce(&ctx.trace_id);
+                tokio::spawn(async move {
+                    let value = serde_json::json!({
+                        "value": line,
+                        "turn_nonce": turn_nonce,
+                    });
+                    if let Err(err) = msg_center
+                        .update_ui_session_state(
+                            session_id.clone(),
+                            UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                            value,
+                        )
+                        .await
+                    {
+                        warn!(
+                            "opendan.agent: update AICC progress for session {} failed: {err}",
+                            session_id
+                        );
+                    }
+                });
+            }) as BashProgressSink
+        });
+
+        let tools = build_session_tools(SessionToolsBuild {
+            workspace_root: tool_root.clone(),
+            session_dir: session_dir.clone(),
+            agent_root: self.config.layout.root.clone(),
+            agent_id: agent_id.clone(),
+            session_id: session_id.clone(),
+            appclient_session_token,
+            filesystem_policy: self.config.toml.runtime.filesystem_policy,
+            bin_renderer,
+            progress_sink,
+        })
+        .map_err(|err| anyhow!("build session tools: {err}"))?;
+        // Worksession control tools (create_worksession / forward_msg) are
+        // registered on every session — visibility is gated by the
+        // behavior whitelist downstream.
+        crate::worksession_tools::register_worksession_tools(
+            &tools,
+            Arc::downgrade(&self),
+            &session_id,
+        );
+        crate::buildin_tool::register_event_subscription_tools(
+            &tools,
+            Arc::downgrade(&self),
+            &session_id,
+        );
+        crate::buildin_tool::register_session_history_tools(&tools, Arc::downgrade(&self));
+        crate::buildin_tool::register_attention_signal_tools(
+            &tools,
+            Arc::downgrade(&self),
+            &self.config.layout.root,
+        );
+
+        let (reply_tx, mut reply_rx) = mpsc::channel(64);
+        let (session, inbox_rx) = AgentSession::new(AgentSessionBuild {
+            session_id: session_id.clone(),
+            agent_name: self.agent_name.clone(),
+            kind,
+            owner: owner.clone(),
+            current_behavior: behavior_name,
+            runtime: self.runtime.clone(),
+            agent_config: self.config.clone(),
+            tools,
+            reply_tx,
+            existing_meta,
+            event_pump: self.event_pump.clone(),
+            parent_agent: Arc::downgrade(&self),
+        });
+        let session = Arc::new(session);
+        {
+            let mut meta = session.meta.lock().await;
+            if meta.status_changed_at_ms == 0 {
+                meta.status_changed_at_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+            }
+        }
+        if let Some(workspace_rec) = workspace_rec.as_ref() {
+            // Reciprocal binding: session ↔ workspace. Session-side first so
+            // its meta is the source of truth; if the workspace-side update
+            // fails the session still has the correct binding.
+            if let Err(err) = session
+                .set_workspace(Some(workspace_rec.workspace_id.clone()))
+                .await
+            {
+                warn!(
+                    "opendan.agent[{}]: bind workspace `{}` on session {} failed: {err:#}",
+                    self.agent_name, workspace_rec.workspace_id, session_id
+                );
+            }
+            if let Err(err) = self
+                .workspaces
+                .set_current_session(&workspace_rec.workspace_id, Some(&session_id))
+                .await
+            {
+                warn!(
+                    "opendan.agent[{}]: workspace `{}` set_current_session failed: {err}",
+                    self.agent_name, workspace_rec.workspace_id
+                );
+            }
+        }
+        if let Err(err) = session.flush_meta().await {
+            warn!(
+                "opendan.agent[{}]: initial flush_meta for session {} failed: {err:#}",
+                self.agent_name, session_id
+            );
+        }
+        // Reply collector: for MVP just log + (if we had a way) forward to the
+        // tunnel. Spawn it under the session id.
+        let log_sid = session_id.clone();
+        let agent_name = self.agent_name.clone();
+        let owner_for_log = owner.clone();
+        let reply_session = Arc::downgrade(&session);
+        tokio::spawn(async move {
+            while let Some(reply) = reply_rx.recv().await {
+                match reply {
+                    SessionReply::AssistantText { text } => {
+                        info!(
+                            "opendan.agent[{agent_name}]: session={log_sid} owner={owner_for_log} assistant: {}",
+                            truncate(&text, 240)
+                        );
+                    }
+                    SessionReply::Error { message } => {
+                        warn!("opendan.agent[{agent_name}]: session={log_sid} error: {message}");
+                        if let Some(session) = reply_session.upgrade() {
+                            session.post_outbound_error(&message).await;
+                        }
+                    }
+                    SessionReply::Ended => {
+                        info!("opendan.agent[{agent_name}]: session={log_sid} ended");
+                        break;
+                    }
+                }
+            }
+        });
+
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), session.clone());
+        // Propagate any persisted subscriptions for this session into the
+        // shared event pump. Re-running this for a fresh session is cheap
+        // (no subscriptions yet ⇒ empty list ⇒ no reader rebuild).
+        if let Some(pump) = self.event_pump.as_ref() {
+            let patterns = session.subscription_patterns().await;
+            pump.set_session_subscriptions(&session_id, patterns).await;
+        }
+        session.clone().start(inbox_rx).await;
+        Ok(session)
+    }
+
+    /// Refresh the event pump's view of a session's subscriptions. Call
+    /// this after `AgentSession::subscribe_event` / `unsubscribe_event`
+    /// from a tool implementation. No-op when the runtime has no kevent
+    /// client (tests, CLI without zone services).
+    pub async fn refresh_session_subscriptions(&self, session_id: &str) {
+        let Some(pump) = self.event_pump.as_ref() else {
+            return;
+        };
+        let session = self.sessions.lock().await.get(session_id).cloned();
+        let patterns = match session {
+            Some(s) => s.subscription_patterns().await,
+            None => Vec::new(),
+        };
+        pump.set_session_subscriptions(session_id, patterns).await;
+    }
+
+    /// Create a Work session bound to a workspace and start its worker.
+    /// Used by the `create_worksession` tool. Returns enough info for the
+    /// caller (typically the sub-LLM context from `try_create_worksession`)
+    /// to report back to the parent UI session.
+    pub async fn create_work_session(
+        self: Arc<Self>,
+        params: CreateWorkSessionParams,
+    ) -> Result<CreateWorkSessionOutcome> {
+        let CreateWorkSessionParams {
+            mut title,
+            mut objective,
+            mut workspace_id,
+            behavior,
+            created_by_session_id,
+            mut reason_messages,
+            mut task_binding,
+            task_id,
+            auto_start,
+            bind_task,
+        } = params;
+        let task_id = normalize_task_id(task_id);
+        if let Some(task_id) = task_id {
+            let client = self.runtime.task_mgr_client().await.map_err(|err| {
+                anyhow!(
+                    "create_work_session: task_id was specified but task manager is unavailable: {err}"
+                )
+            })?;
+            let task = client
+                .get_task(&task_id)
+                .await
+                .map_err(|err| anyhow!("create_work_session: load task {task_id}: {err}"))?;
+            let defaults = work_session_defaults_from_task(&task);
+            if title.trim().is_empty() {
+                title = defaults.title;
+            }
+            if objective.trim().is_empty() {
+                objective = defaults.objective;
+            }
+            if workspace_id
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .is_none()
             {
-                let session_from_name = pulled
-                    .record
-                    .msg
-                    .as_ref()
-                    .map(|msg| msg.from.to_raw_host_name())
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| {
-                        let fallback = msg_record.from.to_raw_host_name();
-                        (!fallback.trim().is_empty()).then_some(fallback)
-                    });
-                msg_record.from_name = AgentSession::resolve_msg_from_name(
-                    &msg_record.from,
-                    session_from_name.as_deref(),
-                    Some(self.contact_mgr_owner_did()),
-                )
-                .await;
+                workspace_id = defaults.workspace_id;
             }
-            info!(
-                "{}.dispatch_msg_begin: record_id={} state={:?} ui_session_id={:?}",
-                self.agent_name, record_id, msg_record.state, msg_record.ui_session_id
-            );
-
-            let route_result = self
-                .route_msg_pack(pulled.session_id.as_deref(), &pulled.record)
-                .await?;
-
-            info!(
-                "{}.route_msg_pack: record_id={} route_reason={} target_sessions={:?}",
-                self.agent_name,
-                record_id,
-                route_result.reason.as_str(),
-                route_result.linked_session_ids,
-            );
-
-            let session_input = SessionInputItem {
-                msg: Some(msg_record),
-                event_id: None,
-                event_data: None,
-            };
-
-            for session_id in &route_result.linked_session_ids {
-                self.wakeup_by_session_input(
-                    session_id.as_str(),
-                    &session_input,
-                    InputQueueKind::Msg,
-                )
-                .await
-                .map_err(|err| {
-                    anyhow!("mark msg arrival for session `{session_id}` failed: {err}")
-                })?;
-                info!(
-                    "{}.try_wakeup_session_by_input_item: record_id={} session_id={}",
-                    self.agent_name, record_id, session_id
-                );
-            }
-
-            self.set_msg_readed(record_id).await;
-        }
-
-        info!("agent.dispatch_pulled_inputs_done: did={:?}", self.did);
-        Ok(())
-    }
-
-    async fn route_msg_pack(
-        &self,
-        hinted_session_id: Option<&str>,
-        record: &MsgRecordWithObject,
-    ) -> Result<RouteDecision> {
-        if let Some(session_id) = hinted_session_id {
-            return Ok(RouteDecision {
-                linked_session_ids: vec![session_id.to_string()],
-                reason: RouteLinkReason::SessionHint,
-            });
-        }
-        if let Some(session_id) = &record.record.ui_session_id {
-            return Ok(RouteDecision {
-                linked_session_ids: vec![session_id.clone()],
-                reason: RouteLinkReason::MsgRecordSession,
-            });
-        }
-
-        let default_ui_session_id = self
-            .session_mgr
-            .get_ui_session_id(&record.get_target_did(), &record.get_msg_tunnel_ui_id());
-
-        return Ok(RouteDecision {
-            linked_session_ids: vec![default_ui_session_id],
-            reason: RouteLinkReason::DefaultSession,
-        });
-    }
-
-    async fn run_session_loop(
-        &self,
-        session: Arc<Mutex<crate::agent_session::AgentSession>>,
-    ) -> Result<()> {
-        let wakeup_id = format!(
-            "{}.session-wakeup-{}",
-            self.agent_name,
-            self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
-        );
-
-        let started_at = now_ms();
-        let deadline_ms = started_at.saturating_add(self.cfg.max_walltime_ms);
-        let mut step_count = 0_u32;
-        let session_id_for_log = {
-            let guard = session.lock().await;
-            guard.session_id.clone()
-        };
-        info!(
-            "agent.session_loop_start: session_id={} wakeup_id={} started_at_ms={}",
-            session_id_for_log, wakeup_id, started_at
-        );
-
-        loop {
-            if step_count >= self.cfg.max_steps_per_wakeup {
-                warn!(
-                    "agent.session_loop_yield: session_id={} wakeup_id={} reason=step_budget_reached step_count={} max_steps_per_wakeup={}",
-                    session_id_for_log, wakeup_id, step_count, self.cfg.max_steps_per_wakeup
-                );
-                self.set_running_session_to_ready(&session).await?;
-                break;
-            }
-            if now_ms() >= deadline_ms {
-                warn!(
-                    "agent.session_loop_yield: session_id={} wakeup_id={} reason=walltime_reached deadline_ms={}",
-                    session_id_for_log, wakeup_id, deadline_ms
-                );
-                self.set_running_session_to_ready(&session).await?;
-                break;
-            }
-
-            let (session_id, behavior_name, state) = {
-                let mut guard = session.lock().await;
-                if guard.current_behavior.trim().is_empty() {
-                    let fallback = if AgentSession::is_work_session_id(guard.session_id.as_str()) {
-                        AGENT_BEHAVIOR_WORK_DEFAULT
-                    } else {
-                        AGENT_BEHAVIOR_ROUTER_RESOLVE
-                    };
-                    warn!(
-                        "agent.session_empty_behavior_defaulted: session_id={} behavior={}",
-                        guard.session_id, fallback
-                    );
-                    guard.current_behavior = fallback.to_string();
-                }
-                (
-                    guard.session_id.clone(),
-                    guard.current_behavior.clone(),
-                    guard.state,
-                )
-            };
-
-            if state != SessionState::Running {
-                break;
-            }
-
-            let behavior_cfg = match self.load_behavior_config(&behavior_name).await {
-                Ok(cfg) => cfg,
-                Err(err) => {
-                    warn!(
-                        "{}'s behavior {} not found! err={}",
-                        self.agent_name, behavior_name, err
-                    );
-                    break;
-                }
-            };
-
-            let llm_report = self
-                .run_behavior_loop(
-                    session.clone(),
-                    behavior_name.as_str(),
-                    &behavior_cfg,
-                    wakeup_id.as_str(),
-                )
-                .await;
-
-            if llm_report.is_err() {
-                //很少会到这里，通常异常都在run_behavior_loop中处理
-                warn!(
-                    "{}.{} run behavior {} loop failed! err={}",
-                    self.agent_name,
-                    session_id,
-                    behavior_name,
-                    llm_report.err().unwrap()
-                );
-                self.set_running_session_to_wait(&session).await?;
-                break;
-            }
-
-            let report = llm_report?;
-            step_count = step_count.saturating_add(report.executed_steps);
-
-            if report.behavior_switched {
-                info!(
-                    "{}.{} behavior switched from {}",
-                    self.agent_name, session_id, behavior_name,
-                );
-            }
-
-            if !report.keep_running {
-                break;
-            }
-        }
-
-        let need_demote_running = {
-            let guard = session.lock().await;
-            guard.state == SessionState::Running
-        };
-        if need_demote_running {
-            warn!(
-                "agent.session_loop_finalize_running_to_wait: session_id={} wakeup_id={}",
-                session_id_for_log, wakeup_id
-            );
-            self.set_running_session_to_wait(&session).await?;
-        }
-
-        Ok(())
-    }
-
-    //Loop执行到 wait或next_behavior != none (switch behavior)
-    async fn run_behavior_loop(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        behavior_name: &str,
-        behavior_cfg: &BehaviorConfig,
-        wakeup_id: &str,
-    ) -> Result<BehaviorLoopReport> {
-        let mut result_report = BehaviorLoopReport::default();
-
-        loop {
-            let (session_id, current_step_index, current_step_num) = {
-                //TODO 支持sub agent,可能还需要考虑读取owner agent的pause状态
-                let mut guard = session.lock().await;
-                if guard.state != SessionState::Running {
-                    break;
-                }
-                if guard.is_paused {
-                    break;
-                }
-                let current_step_index = guard.step_index;
-                let current_step_num = guard.step_num;
-                let session_id = guard.session_id.clone();
-                guard.sync_behavior_skills(
-                    behavior_name,
-                    behavior_cfg.skills.mode.clone(),
-                    &behavior_cfg.skills.load_skills,
-                );
-                guard.loaded_tools = match behavior_cfg.tools.mode {
-                    crate::behavior::config::BehaviorToolMode::All => vec![],
-                    crate::behavior::config::BehaviorToolMode::None => {
-                        vec!["__tools_none__".to_string()]
-                    }
-                    crate::behavior::config::BehaviorToolMode::AllowList => {
-                        behavior_cfg.tools.names.clone()
-                    }
-                };
-                (session_id, current_step_index, current_step_num)
-            };
-
-            debug!(
-                "{}.run_behavior_loop: session_id={} behavior_name={} current_step_index={}",
-                self.agent_name, session_id, behavior_name, current_step_index
-            );
-
-            let trace = SessionRuntimeContext {
-                trace_id: wakeup_id.to_string(),
-                agent_name: self.agent_name.clone(),
-                behavior: behavior_name.to_string(),
-                step_idx: current_step_index,
-                wakeup_id: wakeup_id.to_string(),
-                session_id: session_id.clone(),
-            };
-
-            // Ensure per-session queues/subscriptions exist before template placeholders
-            // pull `new_msg`/`new_event` from kmsg.
-            self.ensure_session_queue_binding(session_id.as_str())
-                .await?;
-
-            //build input
-            //TODO: 这个逻辑让当前behavior自动结束的条件还成立么?
-            let input = self
-                .generate_input(&trace, behavior_name, behavior_cfg, session.clone())
-                .await?;
-
-            if input.is_none() {
-                result_report.keep_running = false;
-                //DO NOTHING, no side effects
-                break;
-            }
-            let input = input.unwrap();
-            self.append_incoming_message_worklogs(session.clone(), &trace)
-                .await;
-
-            let llm_behavior = LLMBehavior::new(
-                behavior_cfg.to_llm_behavior_config(),
-                LLMBehaviorDeps {
-                    taskmgr: self.deps.taskmgr.clone(),
-                    #[cfg(test)]
-                    aicc: self
-                        .deps
-                        .get_aicc_client()
-                        .await
-                        .map_err(|err| anyhow!("load aicc client failed: {err}"))?,
-                    tools: self.tool_mgr.clone(),
-                    memory: Some(self.memory.clone()),
-                    policy: self.policy.clone(),
-                    worklog: Arc::new(NoopWorklogSink),
-                    tokenizer: self.tokenizer.clone(),
-                    environment: self.environment.clone(),
-                },
-            );
-
-            //run step
-            let step_started_ms = now_ms();
-            let (llm_result, tracking) = match llm_behavior.run_step(&input).await {
-                Ok(result) => result,
-                Err(err) => {
-                    let llm_completed_at_ms = now_ms();
-                    let handling = classify_llm_step_error(&err);
-                    if handling == LLMStepErrorHandling::BubbleUp {
-                        return Err(anyhow!("llm behavior step failed: {err}"));
-                    }
-
-                    let error = format_llm_step_error("run_step", &err);
-                    let mut error_result = BehaviorLLMResult::default();
-                    if let LLMStepErrorHandling::ReplyAndWait { reply } = handling {
-                        error_result.reply = Some(reply.to_string());
-                    }
-                    warn!(
-                        "{}.run_behavior_loop handled_step_error: session_id={} behavior_name={} current_step_index={} handling={:?} err={}",
-                        self.agent_name, session_id, behavior_name, current_step_index, handling, err
-                    );
-                    self.append_llm_step_record(
-                        session.clone(),
-                        &trace,
-                        current_step_num,
-                        step_started_ms,
-                        llm_completed_at_ms,
-                        llm_completed_at_ms,
-                        &input,
-                        None,
-                        &error_result,
-                        &ActionResultsMap::new(),
-                        Some(error.clone()),
-                    )
-                    .await;
-
-                    {
-                        let mut guard = session.lock().await;
-                        guard.step_num = current_step_num.saturating_add(1);
-                    }
-
-                    result_report.executed_steps = result_report.executed_steps.saturating_add(1);
-
-                    match handling {
-                        LLMStepErrorHandling::ReplyAndWait { reply } => {
-                            let reply_history = self
-                                .handle_reply(session.clone(), &trace, Some(reply))
-                                .await;
-                            self.append_reply_message_worklogs(
-                                session.clone(),
-                                &trace,
-                                &reply_history,
-                            )
-                            .await;
-
-                            let (msg_cursor, event_cursor, msg_owner_agent) = {
-                                let guard = session.lock().await;
-                                (
-                                    guard.msg_kmsgqueue_curosr,
-                                    guard.event_kmsgqueue_curosr,
-                                    guard.owner_agent.clone(),
-                                )
-                            };
-
-                            self.persist_step_history_records(
-                                session.clone(),
-                                session_id.as_str(),
-                                reply_history.as_slice(),
-                            )
-                            .await;
-                            self.commit_session_queue_msg_ack(
-                                msg_owner_agent.as_str(),
-                                session_id.as_str(),
-                                msg_cursor,
-                            )
-                            .await?;
-                            self.commit_session_queue_event_ack(
-                                msg_owner_agent.as_str(),
-                                session_id.as_str(),
-                                event_cursor,
-                            )
-                            .await?;
-
-                            {
-                                let mut guard = session.lock().await;
-                                guard.just_readed_input_msg.clear();
-                                guard.just_readed_input_event.clear();
-                            }
-
-                            self.set_running_session_to_wait(&session).await?;
-                        }
-                        LLMStepErrorHandling::RetryAfter { wait_ms } => {
-                            let note = build_llm_step_retry_note("run_step", &err, wait_ms);
-                            self.set_running_session_retry_wait(&session, wait_ms, note.as_str())
-                                .await?;
-                        }
-                        LLMStepErrorHandling::BubbleUp => unreachable!(),
-                    }
-
-                    result_report.keep_running = false;
-                    result_report.behavior_switched = false;
-                    break;
-                }
-            };
-            let llm_completed_at_ms = now_ms();
-
-            //execute side effects
-            self.dispatch_step_msg_records(session.clone(), &llm_result)
-                .await?;
-
-            let mut reply_history = Vec::<ReplyHistoryRecord>::new();
-            if llm_result.work_session_id.is_none() {
-                reply_history = self
-                    .handle_reply(session.clone(), &trace, llm_result.reply.as_deref())
-                    .await;
-            }
-            self.append_reply_message_worklogs(session.clone(), &trace, &reply_history)
-                .await;
-
-            self.apply_memory_updates(&trace, &llm_result.set_memory)
-                .await;
-
-            //如果这里执行action时，触发了请求用户授权，如何从这里重启恢复? 不恢复，此时没有side event,相当于把这个step重新做一次
-            //所有action都通过授权才会执行
-            let action_plan = merged_actions_from_llm_result(&llm_result);
-            let action_results = self.execute_actions(&trace, &action_plan).await;
-            let action_completed_at_ms = now_ms();
-            self.append_action_record_worklogs(session.clone(), &trace, &tracking, &action_results)
-                .await;
-
-            self.append_llm_step_record(
-                session.clone(),
-                &trace,
-                current_step_num,
-                step_started_ms,
-                llm_completed_at_ms,
-                action_completed_at_ms,
-                &input,
-                Some(&tracking),
-                &llm_result,
-                &action_results,
-                None,
-            )
-            .await;
-
-            let (msg_cursor, event_cursor, msg_owner_agent) = {
-                let mut guard = session.lock().await;
-                guard.step_num = current_step_num.saturating_add(1);
-                (
-                    guard.msg_kmsgqueue_curosr,
-                    guard.event_kmsgqueue_curosr,
-                    guard.owner_agent.clone(),
-                )
-            };
-
-            //write just readed input msg to msg_record(both work-session record and ui-session record)
-            self.persist_step_history_records(
-                session.clone(),
-                session_id.as_str(),
-                reply_history.as_slice(),
-            )
-            .await;
-
-            //update input is all used
-            self.commit_session_queue_msg_ack(
-                msg_owner_agent.as_str(),
-                session_id.as_str(),
-                msg_cursor,
-            )
-            .await?;
-            self.commit_session_queue_event_ack(
-                msg_owner_agent.as_str(),
-                session_id.as_str(),
-                event_cursor,
-            )
-            .await?;
-            {
-                let mut guard = session.lock().await;
-                guard.just_readed_input_msg.clear();
-                guard.just_readed_input_event.clear();
-            }
-
-            result_report.executed_steps = result_report.executed_steps + 1;
-            result_report.last_result = Some(llm_result.clone());
-
-            let effective_next_behavior = next_behavior_after_action_results(
-                &action_results,
-                llm_result.next_behavior.as_deref(),
-            );
-
-            //process next_behavior
-            let transition = {
-                let mut guard = session.lock().await;
-                apply_session_behavior_transition(
-                    &mut guard,
-                    self.default_behavior.as_str(),
-                    behavior_cfg.step_limit,
-                    behavior_cfg.faild_back.as_deref(),
-                    effective_next_behavior,
-                )
-            };
-            result_report.keep_running = transition.keep_running;
-            result_report.behavior_switched = transition.behavior_switched;
-
-            if !transition.keep_running || effective_next_behavior.is_some() {
-                break;
-            }
-        }
-
-        Ok(result_report)
-    }
-
-    async fn dispatch_step_msg_records(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        llm_result: &BehaviorLLMResult,
-    ) -> Result<()> {
-        let mut route_targets = HashMap::<String, StepRouteTarget>::new();
-
-        if let Some(session_id) = llm_result.work_session_id.as_deref() {
-            route_targets
-                .entry(session_id.to_string())
-                .or_insert_with(StepRouteTarget::default);
-        } else if let Some((new_session_title, new_session_summary)) =
-            llm_result.new_work_session.as_ref()
-        {
-            let new_session_id = self
-                .gen_new_work_session_id(new_session_title.as_str())
-                .await?;
-            route_targets.insert(
-                new_session_id,
-                StepRouteTarget {
-                    title: Some(new_session_title.clone()),
-                    summary: Some(new_session_summary.clone()),
-                    behavior: Some(self.default_worker_behavior.clone()),
-                },
-            );
-        }
-
-        if route_targets.is_empty() {
-            return Ok(());
-        }
-
-        let (source_session_id, step_inputs_raw) = {
-            let guard = session.lock().await;
-            (
-                guard.session_id.clone(),
-                guard.just_readed_input_msg.clone(),
-            )
-        };
-        if step_inputs_raw.is_empty() {
-            return Ok(());
-        }
-
-        let mut step_msg_inputs = Vec::<SessionInputItem>::with_capacity(step_inputs_raw.len());
-        for payload in step_inputs_raw {
-            let item =
-                serde_json::from_slice::<SessionInputItem>(payload.as_slice()).map_err(|err| {
-                    anyhow!(
-                        "deserialize step input payload failed: source_session={} err={}",
-                        source_session_id,
-                        err
-                    )
-                })?;
-            if item.msg.is_some() {
-                step_msg_inputs.push(item);
-            }
-        }
-
-        if step_msg_inputs.is_empty() {
-            return Ok(());
-        }
-
-        let default_remote = step_msg_inputs
-            .iter()
-            .find_map(|item| item.msg.as_ref().map(|record| record.from.to_string()));
-        let creator_ui_session_id = self
-            .resolve_creator_ui_session_id(source_session_id.as_str(), step_msg_inputs.as_slice())
-            .await;
-
-        for (target_session_id, target) in route_targets {
-            let target_session = self
-                .session_mgr
-                .ensure_session(
-                    target_session_id.as_str(),
-                    target.title,
-                    target.behavior.as_deref(),
-                    default_remote.as_deref(),
-                )
-                .await?;
-
-            if let Some(summary) = target.summary {
-                let mut guard = target_session.lock().await;
-                if guard.summary.trim().is_empty() {
-                    guard.summary = summary;
-                }
-                if let Some(ui_session_id) = creator_ui_session_id.as_deref() {
-                    Self::set_creator_ui_session_id_meta(&mut guard.meta, ui_session_id);
-                }
-            } else if let Some(ui_session_id) = creator_ui_session_id.as_deref() {
-                let mut guard = target_session.lock().await;
-                Self::set_creator_ui_session_id_meta(&mut guard.meta, ui_session_id);
-            }
-
-            for input_item in &step_msg_inputs {
-                self.wakeup_by_session_input(
-                    target_session_id.as_str(),
-                    input_item,
-                    InputQueueKind::Msg,
-                )
-                .await
-                .map_err(|err| {
-                    anyhow!(
-                        "wake routed session by step msg failed: target_session={} err={}",
-                        target_session_id,
-                        err
-                    )
-                })?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn gen_new_work_session_id(&self, session_title: &str) -> Result<String> {
-        let now = Utc::now().format("%y%m%d").to_string();
-        let base_session_id = build_work_session_id(session_title, now.as_str(), None);
-        if self.work_session_id_exists(base_session_id.as_str()).await {
-            return Err(anyhow!(
-                "new session title already exists for today: title={} session_id={}",
-                session_title.trim(),
-                base_session_id
+            reason_messages.push(format!(
+                "worksession created from task {} ({})",
+                task.task_id, task.schema_id
             ));
+            task_binding = Some(agent_task_binding_from_task(&task));
         }
-        Ok(base_session_id)
-    }
-
-    async fn work_session_id_exists(&self, session_id: &str) -> bool {
-        if self.session_mgr.get_session(session_id).await.is_some() {
-            return true;
+        if objective.trim().is_empty() {
+            return Err(anyhow!("create_work_session: objective must not be empty"));
         }
-        let session_dir = self.session_mgr.sessions_root().join(session_id);
-        is_existing_dir(&session_dir).await
-    }
-
-    fn get_params_from_behavior_name(behavior_name: &str) -> Option<Json> {
-        // behavior_name = "DO:todo=T001" or "DO:todo=T001:step=2"
-        // return Some(json!({ "todo": "T001" }));
-        let params_str = behavior_name.split(':').nth(1)?.trim();
-        if params_str.is_empty() {
-            return None;
-        }
-        let mut map = serde_json::Map::new();
-        for pair in params_str.split(':') {
-            let pair = pair.trim();
-            if let Some((k, v)) = pair.split_once('=') {
-                let key = k.trim();
-                let value = v.trim();
-                if !key.is_empty() {
-                    map.insert(key.to_string(), Json::String(value.to_string()));
-                }
-            }
-        }
-        if map.is_empty() {
-            None
-        } else {
-            Some(Json::Object(map))
-        }
-    }
-
-    async fn generate_input(
-        &self,
-        trace: &SessionRuntimeContext,
-        behavior_name: &str,
-        behavior_cfg: &BehaviorConfig,
-        session: Arc<Mutex<AgentSession>>,
-    ) -> Result<Option<BehaviorExecInput>> {
-        // 核心：用 agent_environment 构造 input，并在 step>0 时注入上一条 step record 作为连续性上下文
-        let mut env_context = HashMap::<String, Json>::new();
-        let (session_id, step_index) = {
-            let guard = session.lock().await;
-            (guard.session_id.clone(), guard.step_index)
-        };
-        if step_index > 0 {
-            let mut guard = session.lock().await;
-            if let Ok(Some(last_step)) = guard.render_last_llm_step_record().await {
-                env_context.insert("last_step".to_string(), Json::String(last_step));
-            }
-        }
-
-        let params = Self::get_params_from_behavior_name(behavior_name);
-        if let Some(params) = params {
-            env_context.insert("params".to_string(), params);
-        }
-
-        //构造input_prompt
-        let input_prompt_result = AgentEnvironment::render_prompt(
-            behavior_cfg.input.as_str(),
-            &env_context,
-            session.clone(),
-        )
-        .await?;
-        if should_continue_with_rendered_input(&input_prompt_result) {
-            return Ok(Some(BehaviorExecInput {
-                trace: trace.clone(),
-                role_md: self.role_md.clone(),
-                self_md: self.self_md.clone(),
-                behavior_prompt: behavior_cfg.system.clone(),
-                limits: behavior_cfg.limits.clone(),
-                behavior_cfg: behavior_cfg.clone(),
-                session_id,
-                input_prompt: input_prompt_result.rendered,
-                last_step_prompt: String::new(),
-                session: Some(session.clone()),
-            }));
-        } else {
-            info!(
-                "agent.generate_input_skip: session_id={} behavior={} resolved_vars={:?}",
-                session_id, behavior_name, input_prompt_result.resolved_vars
-            );
-            return Ok(None);
-        }
-    }
-
-    async fn set_msg_readed(&self, record_id: String) {
-        let Some(msg_center) = self.deps.msg_center.as_ref() else {
-            return;
-        };
-        if let Err(err) = msg_center
-            .update_record_state(
-                record_id.clone(),
-                MsgState::Readed,
-                Some(MSG_ROUTED_REASON.to_string()),
-            )
-            .await
-        {
-            warn!(
-                "agent.msg_mark_read_failed: did={:?} record_id={} err={}",
-                self.did, record_id, err
-            );
-        } else {
-            info!(
-                "agent.msg_mark_read_ok: did={:?} record_id={} state={:?}",
-                self.did,
-                record_id,
-                MsgState::Readed
-            );
-        }
-    }
-
-    fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
-        let owner_token = owner.to_raw_host_name();
-        let mut owner_tokens = vec![owner_token.clone()];
-        let normalized_owner_token = owner_token.to_ascii_lowercase();
-        if normalized_owner_token != owner_token {
-            owner_tokens.push(normalized_owner_token);
-        }
-
-        let mut out = Vec::new();
-        let mut dedup = HashSet::<String>::new();
-        for owner_token in owner_tokens {
-            for box_name in MSG_CENTER_EVENT_BOX_PATTERN_NAMES {
-                for pattern in [
-                    format!("/msg_center/{owner_token}/box/{box_name}/**"),
-                    format!("/msg_center/{owner_token}/{box_name}/**"),
-                ] {
-                    if dedup.insert(pattern.clone()) {
-                        out.push(pattern);
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn msg_center_event_name_to_box_kind(raw_name: &str) -> Option<BoxKind> {
-        let normalized = raw_name.trim().to_ascii_lowercase().replace('-', "_");
-        match normalized.as_str() {
-            "in" | "inbox" => Some(BoxKind::Inbox),
-            "group_in" | "group_inbox" => Some(BoxKind::GroupInbox),
-            "request" | "request_box" => Some(BoxKind::RequestBox),
-            _ => None,
-        }
-    }
-
-    async fn build_agent_kevent_patterns(&self) -> Vec<String> {
-        let mut out = Self::build_msg_center_event_patterns(&self.msg_owner_did);
-        let subscriptions = self.session_kevent_subscriptions.read().await;
-        let mut custom_patterns = subscriptions.keys().cloned().collect::<Vec<_>>();
-        custom_patterns.sort();
-        for pattern in custom_patterns {
-            if !out.contains(&pattern) {
-                out.push(pattern);
-            }
-        }
-        out
-    }
-
-    async fn ensure_kevent_event_reader(&self) -> Option<Arc<EventReader>> {
-        let mut guard = self.kevent_event_reader.lock().await;
-        if let Some(reader) = guard.as_ref() {
-            return Some(reader.clone());
-        }
-
-        let patterns = self.build_agent_kevent_patterns().await;
-        match self
-            .kevent_client
-            .create_event_reader(patterns.clone())
-            .await
-        {
-            Ok(reader) => {
-                let reader = Arc::new(reader);
-                *guard = Some(reader.clone());
-                info!(
-                    "agent.event_reader_created: did={:?} msg_owner_did={:?} patterns={:?} reader_id={}",
-                    self.did,
-                    self.msg_owner_did.to_string(),
-                    patterns,
-                    reader.reader_id()
-                );
-                Some(reader)
-            }
-            Err(err) => {
-                if matches!(err, KEventError::InvalidPattern(_)) {
-                    warn!(
-                        "agent.event_reader_create_failed: did={:?} msg_owner_did={:?} reason=invalid_pattern patterns={:?} err={:?}",
-                        self.did,
-                        self.msg_owner_did.to_string(),
-                        patterns,
-                        err
-                    );
-                } else {
-                    debug!(
-                        "agent.event_reader_create_failed: did={:?} msg_owner_did={:?} patterns={:?} err={:?}",
-                        self.did,
-                        self.msg_owner_did.to_string(),
-                        patterns,
-                        err
-                    );
-                }
+        let behavior = behavior.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
                 None
+            } else {
+                Some(trimmed.to_string())
             }
-        }
-    }
-
-    async fn reset_kevent_event_reader(&self) {
-        let reader = {
-            let mut guard = self.kevent_event_reader.lock().await;
-            guard.take()
+        });
+        let new_session_id = self.allocate_worksession_id(title.trim()).await;
+        // Workspace resolution: explicit id reuses; absence mints a readable
+        // id from the task title/name, with a numeric suffix only on conflict.
+        let (workspace_id, workspace_status) = match workspace_id {
+            Some(id) if !id.trim().is_empty() => match self.workspaces.load_record(&id).await {
+                Ok(_) => (id, "reused".to_string()),
+                Err(_) => {
+                    // Either NotFound or unreadable — treat as create-with-id
+                    // request so the LLM's intent is honored.
+                    self.workspaces
+                        .create_or_open(&id, &id, Some(&new_session_id))
+                        .await
+                        .map_err(|err| anyhow!("workspace create_or_open: {err}"))?;
+                    (id, "created".to_string())
+                }
+            },
+            _ => {
+                let name = meaningful_workspace_name(title.trim(), objective.trim());
+                let new_ws_id = self.allocate_workspace_id(&name).await;
+                self.workspaces
+                    .create_or_open(&new_ws_id, &name, Some(&new_session_id))
+                    .await
+                    .map_err(|err| anyhow!("workspace create_or_open: {err}"))?;
+                (new_ws_id, "created".to_string())
+            }
         };
-        if let Some(reader) = reader {
-            if let Err(err) = reader.close().await {
-                debug!("agent.event_reader_close_failed: err={:?}", err);
+        if bind_task && task_binding.is_none() {
+            match self
+                .create_task_for_work_session(
+                    &new_session_id,
+                    title.trim(),
+                    objective.trim(),
+                    &workspace_id,
+                    &created_by_session_id,
+                )
+                .await
+            {
+                Ok(binding) => task_binding = Some(binding),
+                Err(err) => warn!(
+                    "opendan.agent[{}]: create task for worksession {} failed: {err:#}",
+                    self.agent_name, new_session_id
+                ),
             }
         }
-    }
 
-    fn msg_center_event_box_kind(event: &Event) -> Option<BoxKind> {
-        let parts: Vec<&str> = event
-            .eventid
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect();
-        if parts.len() < 3 {
-            return None;
+        // Seed an existing_meta so the session is created with the right
+        // title / objective / kind / workspace binding before its first
+        // worker tick.
+        let mut seed = SessionMeta::new(
+            new_session_id.clone(),
+            SessionKind::Work,
+            behavior.clone().unwrap_or_else(|| {
+                let class = self.config.class_name_for_kind(SessionKind::Work);
+                self.config.default_behavior_for_class(&class)
+            }),
+            created_by_session_id.clone(),
+        );
+        seed.title = title.trim().to_string();
+        seed.objective = objective.trim().to_string();
+        seed.workspace_id = Some(workspace_id.clone());
+        seed.task_binding = task_binding;
+        let task_binding_for_update = seed.task_binding.clone();
+
+        // Write a readme.md capturing the origin context so a later
+        // human / debugger can see why this work session exists.
+        let session_dir = self.config.layout.session_dir(&new_session_id);
+        let _ = std::fs::create_dir_all(&session_dir);
+        write_worksession_readme(
+            &session_dir,
+            &seed.title,
+            &seed.objective,
+            &created_by_session_id,
+            &reason_messages,
+        );
+
+        let behavior_name = seed.current_behavior.clone();
+        let session = self
+            .clone()
+            .ensure_session_inner(
+                new_session_id.clone(),
+                SessionKind::Work,
+                created_by_session_id.clone(),
+                Some(behavior_name.clone()),
+                Some(seed),
+            )
+            .await?;
+        if auto_start {
+            // Wake the worker so the bootstrap turn runs even before the
+            // first external input — `needs_bootstrap_turn` will fire on the
+            // freshly-objective-bearing meta.
+            session.wake().await;
         }
-        if parts[0] != "msg_center" {
-            return None;
+        if let Some(binding) = task_binding_for_update.as_ref() {
+            self.update_work_session_task_started(
+                binding,
+                &new_session_id,
+                &workspace_id,
+                &workspace_status,
+                &behavior_name,
+                auto_start,
+            )
+            .await;
         }
 
-        if let Some(index) = parts.iter().position(|segment| *segment == "box") {
-            return parts
-                .get(index + 1)
-                .and_then(|box_name| Self::msg_center_event_name_to_box_kind(box_name));
-        }
-        parts
-            .get(2)
-            .and_then(|box_name| Self::msg_center_event_name_to_box_kind(box_name))
-    }
-
-    fn append_all_msg_center_boxes_updated(target: &mut Vec<BoxKind>) {
-        for box_kind in [BoxKind::Inbox, BoxKind::GroupInbox, BoxKind::RequestBox] {
-            if !target.contains(&box_kind) {
-                target.push(box_kind);
-            }
-        }
-    }
-
-    fn collect_event_pull_targets(
-        event: Event,
-        msg_pull_boxes: &mut Vec<BoxKind>,
-        pulled_events: &mut Vec<PulledEvent>,
-    ) {
-        if let Some(box_kind) = Self::msg_center_event_box_kind(&event) {
-            if !msg_pull_boxes.contains(&box_kind) {
-                msg_pull_boxes.push(box_kind);
-            }
-            return;
-        }
-        if event.eventid.starts_with("/msg_center/") {
-            warn!(
-                "agent.msg_center_event_unrecognized: event_id={} fallback=pull_all_boxes",
-                event.eventid
-            );
-            Self::append_all_msg_center_boxes_updated(msg_pull_boxes);
-            return;
-        }
-        if let Some(pulled) = Self::kevent_event_to_pulled(event) {
-            pulled_events.push(pulled);
-        }
-    }
-
-    fn kevent_event_to_pulled(event: Event) -> Option<PulledEvent> {
-        if event.eventid.starts_with("/msg_center/") {
-            debug!(
-                "agent.kevent_event_ignored: scope=msg_center event_id={}",
-                event.eventid
-            );
-            return None;
-        }
-        Some(PulledEvent {
-            session_id: None,
-            event_id: event.eventid,
-            event_data: event.data,
+        Ok(CreateWorkSessionOutcome {
+            session_id: new_session_id,
+            title: title.trim().to_string(),
+            workspace_id,
+            workspace_status,
+            behavior: behavior_name,
+            auto_started: auto_start,
+            task_id: task_binding_for_update
+                .as_ref()
+                .map(|binding| binding.task_id.clone()),
         })
     }
 
-    async fn match_session_kevent_targets(&self, event_id: &str) -> Vec<String> {
-        let subscriptions = self.session_kevent_subscriptions.read().await;
-        collect_session_kevent_targets_from_subscriptions(&subscriptions, event_id)
-    }
-
-    fn session_kevent_subscriptions_path(&self) -> PathBuf {
-        self.agent_env_root.join(SESSION_KEVENT_SUBSCRIPTIONS_FILE)
-    }
-
-    async fn persist_session_kevent_subscriptions(&self) -> Result<()> {
-        let path = self.session_kevent_subscriptions_path();
-        let payload = {
-            let guard = self.session_kevent_subscriptions.read().await;
-            serialize_session_kevent_subscriptions(&guard)
-        };
-        let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| {
-            anyhow!(
-                "serialize session kevent subscriptions failed: path={} err={}",
-                path.display(),
-                err
-            )
-        })?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.map_err(|err| {
-                anyhow!(
-                    "create kevent subscription dir failed: path={} err={}",
-                    parent.display(),
-                    err
-                )
-            })?;
-        }
-        fs::write(&path, bytes).await.map_err(|err| {
-            anyhow!(
-                "write session kevent subscriptions failed: path={} err={}",
-                path.display(),
-                err
-            )
-        })?;
-        Ok(())
-    }
-
-    fn msg_record_to_pulled_msg(record: MsgRecordWithObject) -> PulledMsg {
-        let session_id = record.record.ui_session_id.clone();
-        PulledMsg { session_id, record }
-    }
-
-    fn build_session_queue_binding(&self, session_id: &str) -> SessionQueueBinding {
-        SessionQueueBinding {
-            msg_queue_urn: Self::get_session_kmsgqueue_urn(
-                self.agent_name.as_str(),
-                session_id,
-                InputQueueKind::Msg,
-            ),
-            event_queue_urn: Self::get_session_kmsgqueue_urn(
-                self.agent_name.as_str(),
-                session_id,
-                InputQueueKind::Event,
-            ),
-            msg_sub_id: Self::get_session_kmsgqueue_sub_id(
-                self.agent_name.as_str(),
-                session_id,
-                InputQueueKind::Msg,
-            ),
-            event_sub_id: Self::get_session_kmsgqueue_sub_id(
-                self.agent_name.as_str(),
-                session_id,
-                InputQueueKind::Event,
-            ),
-        }
-    }
-
-    fn queue_resource_not_found(err: &kRPC::RPCErrors) -> bool {
-        err.to_string().to_ascii_lowercase().contains("not found")
-    }
-
-    fn queue_resource_already_exists(err: &kRPC::RPCErrors) -> bool {
-        err.to_string()
-            .to_ascii_lowercase()
-            .contains("already exists")
-    }
-
-    async fn ensure_session_queue_exists(
-        &self,
-        msg_queue: &MsgQueueClient,
-        session_id: &str,
-        queue_name: &str,
-        queue_urn: &str,
-        queue_cfg: QueueConfig,
-    ) -> Result<()> {
-        match msg_queue.get_queue_stats(queue_urn).await {
-            Ok(_) => Ok(()),
-            Err(check_err) => {
-                if !Self::queue_resource_not_found(&check_err) {
-                    warn!(
-                        "check session queue failed, fallback create: session={} queue={} err={}",
-                        session_id, queue_urn, check_err
-                    );
-                }
-                info!(
-                    "{} will create session kmsgqueue:{}",
-                    self.agent_name, queue_urn
-                );
-                match msg_queue
-                    .create_queue(
-                        Some(queue_name),
-                        SESSION_QUEUE_APP_ID,
-                        self.agent_name.as_str(),
-                        queue_cfg,
-                    )
-                    .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(create_err) => {
-                        if Self::queue_resource_already_exists(&create_err) {
-                            return Ok(());
-                        }
-                        match msg_queue.get_queue_stats(queue_urn).await {
-                            Ok(_) => Ok(()),
-                            Err(recheck_err) => Err(anyhow!(
-                                "ensure session queue failed: session={} queue={} check_err={} create_err={} recheck_err={}",
-                                session_id,
-                                queue_urn,
-                                check_err,
-                                create_err,
-                                recheck_err
-                            )),
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    async fn ensure_session_queue_subscription_exists(
-        &self,
-        msg_queue: &MsgQueueClient,
-        session_id: &str,
-        queue_urn: &str,
-        sub_id: &str,
-    ) -> Result<()> {
-        match msg_queue.fetch_messages(sub_id, 1, false).await {
-            Ok(_) => Ok(()),
-            Err(check_err) => {
-                if !Self::queue_resource_not_found(&check_err) {
-                    warn!(
-                        "check session queue subscription failed, fallback subscribe: session={} queue={} sub_id={} err={}",
-                        session_id, queue_urn, sub_id, check_err
-                    );
-                }
-                info!(
-                    "agent.persist_entity_prepare: kind=kmsgqueue_subscription session={} queue_urn={} sub_id={}",
-                    session_id, queue_urn, sub_id
-                );
-                match msg_queue
-                    .subscribe(
-                        queue_urn,
-                        self.agent_name.as_str(),
-                        SESSION_QUEUE_APP_ID,
-                        Some(sub_id.to_string()),
-                        SubPosition::Earliest,
-                    )
-                    .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(subscribe_err) => {
-                        if Self::queue_resource_already_exists(&subscribe_err) {
-                            return Ok(());
-                        }
-                        match msg_queue.fetch_messages(sub_id, 1, false).await {
-                            Ok(_) => Ok(()),
-                            Err(recheck_err) => Err(anyhow!(
-                                "ensure session queue subscription failed: session={} queue={} sub_id={} check_err={} subscribe_err={} recheck_err={}",
-                                session_id,
-                                queue_urn,
-                                sub_id,
-                                check_err,
-                                subscribe_err,
-                                recheck_err
-                            )),
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    async fn ensure_session_queue_binding(
+    async fn create_task_for_work_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<SessionQueueBinding>> {
-        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
-            return Ok(None);
-        };
-        if let Some(binding) = self
-            .session_queue_bindings
-            .read()
+        title: &str,
+        objective: &str,
+        workspace_id: &str,
+        created_by_session_id: &str,
+    ) -> Result<AgentTaskBinding> {
+        let task_mgr = self
+            .runtime
+            .task_mgr_client()
             .await
-            .get(session_id)
-            .cloned()
-        {
-            return Ok(Some(binding));
-        }
-
-        let binding = self.build_session_queue_binding(session_id);
-        let queue_cfg = QueueConfig {
-            max_messages: Some(SESSION_QUEUE_MAX_MESSAGES),
-            retention_seconds: Some(SESSION_QUEUE_RETENTION_SECONDS),
-            sync_write: false,
-            other_app_can_read: false,
-            other_app_can_write: false,
-            other_user_can_read: false,
-            other_user_can_write: false,
-        };
-
-        self.ensure_session_queue_exists(
-            msg_queue.as_ref(),
-            session_id,
-            binding.msg_queue_urn.as_str(),
-            binding.msg_queue_urn.as_str(),
-            queue_cfg.clone(),
-        )
-        .await?;
-        self.ensure_session_queue_exists(
-            msg_queue.as_ref(),
-            session_id,
-            binding.event_queue_urn.as_str(),
-            binding.event_queue_urn.as_str(),
-            queue_cfg,
-        )
-        .await?;
-
-        self.ensure_session_queue_subscription_exists(
-            msg_queue.as_ref(),
-            session_id,
-            binding.msg_queue_urn.as_str(),
-            binding.msg_sub_id.as_str(),
-        )
-        .await?;
-        self.ensure_session_queue_subscription_exists(
-            msg_queue.as_ref(),
-            session_id,
-            binding.event_queue_urn.as_str(),
-            binding.event_sub_id.as_str(),
-        )
-        .await?;
-
-        self.session_queue_bindings
-            .write()
-            .await
-            .entry(session_id.to_string())
-            .or_insert_with(|| binding.clone());
-        Ok(Some(binding))
-    }
-
-    pub(crate) fn get_session_kmsgqueue_urn(
-        agent_name: &str,
-        session_id: &str,
-        kind: InputQueueKind,
-    ) -> String {
-        let kind_token = match kind {
-            InputQueueKind::Msg => "msg",
-            InputQueueKind::Event => "event",
-        };
-        format!("/{}/sessions/{}/{}", agent_name, session_id, kind_token)
-    }
-
-    pub(crate) fn get_session_kmsgqueue_sub_id(
-        agent_name: &str,
-        session_id: &str,
-        kind: InputQueueKind,
-    ) -> String {
-        let kind_token = match kind {
-            InputQueueKind::Msg => "msg_subscription",
-            InputQueueKind::Event => "event_subscription",
-        };
-        format!("/{}/sessions/{}/{}", agent_name, session_id, kind_token)
-    }
-
-    async fn enqueue_session_input(
-        &self,
-        session_id: &str,
-        session_input: &SessionInputItem,
-        kind: InputQueueKind,
-    ) -> Result<()> {
-        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
-            return Err(anyhow!("message queue dependency not available"));
-        };
-        let Some(binding) = self.ensure_session_queue_binding(session_id).await? else {
-            return Err(anyhow!("failed to ensure session queue binding"));
-        };
-        let queue_urn = match kind {
-            InputQueueKind::Msg => binding.msg_queue_urn.as_str(),
-            InputQueueKind::Event => binding.event_queue_urn.as_str(),
-        };
-        let kmsg_payload = serde_json::to_vec(&session_input).map_err(|err| {
-            anyhow!(
-                "serialize session queue payload failed: session={} kind={:?} err={}",
-                session_id,
-                kind,
-                err
-            )
-        })?;
-        let mut message = Message::new(kmsg_payload);
-        message.created_at = now_ms();
-        msg_queue
-            .post_message(queue_urn, message)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "post session queue message failed: session={} kind={:?} err={}",
-                    session_id,
-                    kind,
-                    err
-                )
-            })?;
-        Ok(())
-    }
-
-    async fn wakeup_by_session_input(
-        &self,
-        session_id: &str,
-        session_input: &SessionInputItem,
-        kind: InputQueueKind,
-    ) -> Result<()> {
-        self.enqueue_session_input(session_id, session_input, kind)
-            .await?;
-        self.session_mgr
-            .try_wakeup_session_by_input_item(session_id, session_input)
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "wake session by queued input failed: session={} kind={:?} err={}",
-                    session_id,
-                    kind,
-                    err
-                )
-            })?;
-        Ok(())
-    }
-
-    async fn commit_session_queue_msg_ack(
-        &self,
-        owner_id: &str,
-        session_id: &str,
-        last_pulled_msg_index: u64,
-    ) -> Result<()> {
-        if last_pulled_msg_index == 0 {
-            return Ok(());
-        }
-        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
-            return Err(anyhow!("message queue dependency not available"));
-        };
-        let sub_id = Self::get_session_kmsgqueue_sub_id(owner_id, session_id, InputQueueKind::Msg);
-        debug!(
-            "agent.commit_msg_ack: session={} sub_id={} index={}",
-            session_id, sub_id, last_pulled_msg_index
-        );
-        msg_queue
-            .commit_ack(sub_id.as_str(), last_pulled_msg_index as u64)
-            .await?;
-        Ok(())
-    }
-
-    async fn commit_session_queue_event_ack(
-        &self,
-        owner_id: &str,
-        session_id: &str,
-        last_pulled_event_index: u64,
-    ) -> Result<()> {
-        if last_pulled_event_index == 0 {
-            return Ok(());
-        }
-        let Some(msg_queue) = self.deps.msg_queue.as_ref() else {
-            return Err(anyhow!("message queue dependency not available"));
-        };
-        let sub_id =
-            Self::get_session_kmsgqueue_sub_id(owner_id, session_id, InputQueueKind::Event);
-        debug!(
-            "agent.commit_event_ack: session={} sub_id={} index={}",
-            session_id, sub_id, last_pulled_event_index
-        );
-        msg_queue
-            .commit_ack(sub_id.as_str(), last_pulled_event_index as u64)
-            .await?;
-        Ok(())
-    }
-
-    async fn set_running_session_to_wait(
-        &self,
-        session: &Arc<Mutex<crate::agent_session::AgentSession>>,
-    ) -> Result<()> {
-        let session_id = {
-            let mut guard = session.lock().await;
-            if guard.state == SessionState::Running {
-                guard.state = SessionState::Wait;
-            }
-            guard.wait_details = None;
-            guard.session_id.clone()
-        };
-        self.session_mgr.save_session(&session_id).await?;
-        Ok(())
-    }
-
-    async fn set_running_session_to_ready(
-        &self,
-        session: &Arc<Mutex<crate::agent_session::AgentSession>>,
-    ) -> Result<()> {
-        let session_id = {
-            let mut guard = session.lock().await;
-            if guard.state == SessionState::Running {
-                guard.state = SessionState::Ready;
-            }
-            guard.wait_details = None;
-            guard.session_id.clone()
-        };
-        self.session_mgr.save_session(&session_id).await?;
-        Ok(())
-    }
-
-    async fn set_running_session_retry_wait(
-        &self,
-        session: &Arc<Mutex<crate::agent_session::AgentSession>>,
-        wait_ms: u64,
-        note: &str,
-    ) -> Result<()> {
-        let deadline_ms = now_ms().saturating_add(wait_ms);
-        let session_id = {
-            let mut guard = session.lock().await;
-            if guard.state == SessionState::Running {
-                guard.state = SessionState::Wait;
-            }
-            guard.wait_details = Some(SessionWaitDetails {
-                filter: Json::Null,
-                deadline_ms: Some(deadline_ms),
-                note: Some(compact_text_for_log(note, 256))
-                    .filter(|value| !value.trim().is_empty()),
-            });
-            guard.session_id.clone()
-        };
-        self.session_mgr.save_session(&session_id).await?;
-        Ok(())
-    }
-
-    async fn execute_actions(
-        &self,
-        trace: &SessionRuntimeContext,
-        actions: &DoActions,
-    ) -> ActionResultsMap {
-        let mut out = ActionResultsMap::new();
-        if actions.cmds.is_empty() {
-            return out;
-        }
-
-        let allowed_tool_names = {
-            let mut all = self.tool_mgr.list_tool_specs();
-            all.extend(self.tool_mgr.list_action_tool_specs());
-            all.sort_by(|a, b| a.name.cmp(&b.name));
-            all.dedup_by(|a, b| a.name == b.name);
-            let cfg = {
-                let guard = self.behavior_cfg_cache.read().await;
-                guard.get(trace.behavior.as_str()).cloned()
-            };
-            let allowed = if let Some(cfg) = cfg {
-                cfg.tools.filter_tool_specs(&all)
-            } else {
-                all
-            };
-            allowed
-                .into_iter()
-                .map(|spec| spec.name)
-                .collect::<HashSet<_>>()
-        };
-
-        let run_all = actions.mode.trim().eq_ignore_ascii_case("all");
-
-        for (idx, action) in actions.cmds.iter().enumerate() {
-            let (tool_name, tool_args, exec_id, detail_action, action_cmd_line) = match action {
-                DoAction::Exec(command) => {
-                    let command = command.trim();
-                    if command.is_empty() {
-                        out.insert(
-                            format!("#{idx}:exec"),
-                            build_action_error_result(
-                                None,
-                                &json!({
-                                    "kind": "exec",
-                                }),
-                                "",
-                                "empty command is not allowed",
-                            ),
-                        );
-                        if !run_all {
-                            insert_skipped_action_result(
-                                &mut out,
-                                actions.cmds.len().saturating_sub(idx + 1),
-                                "mode=failed_end and previous action failed",
-                            );
-                            break;
-                        }
-                        continue;
-                    }
-                    (
-                        TOOL_EXEC_BASH.to_string(),
-                        json!({ "command": command }),
-                        format!("#{idx}:`{command}`"),
-                        json!({
-                            "kind": "exec",
-                            "command": command,
-                        }),
-                        command.to_string(),
-                    )
-                }
-                DoAction::Call(call) => {
-                    let normalized_name = normalize_tool_name(&call.call_action_name);
-                    if normalized_name.is_empty() {
-                        out.insert(
-                            format!("#{idx}:call"),
-                            build_action_error_result(
-                                None,
-                                &json!({
-                                    "kind": "call_tool",
-                                    "params": {
-                                        "raw_action_name": call.call_action_name,
-                                    },
-                                }),
-                                "",
-                                "action name cannot be empty",
-                            ),
-                        );
-                        if !run_all {
-                            insert_skipped_action_result(
-                                &mut out,
-                                actions.cmds.len().saturating_sub(idx + 1),
-                                "mode=failed_end and previous action failed",
-                            );
-                            break;
-                        }
-                        continue;
-                    }
-
-                    if !call.call_params.is_object() {
-                        out.insert(
-                            format!("#{idx}:`{normalized_name}`"),
-                            build_action_error_result(
-                                Some(normalized_name.as_str()),
-                                &json!({
-                                    "kind": "call_tool",
-                                    "action_name": normalized_name,
-                                    "params": call.call_params.clone(),
-                                }),
-                                normalized_name.as_str(),
-                                "action params must be json object",
-                            ),
-                        );
-                        if !run_all {
-                            insert_skipped_action_result(
-                                &mut out,
-                                actions.cmds.len().saturating_sub(idx + 1),
-                                "mode=failed_end and previous action failed",
-                            );
-                            break;
-                        }
-                        continue;
-                    }
-
-                    let mut params = call.call_params.clone();
-                    if normalized_name == TOOL_EXEC_BASH {
-                        if let Some(obj) = params.as_object_mut() {
-                            obj.remove("session_id");
-                            obj.remove("cwd");
-                            obj.remove("pwd");
-                        }
-                    }
-                    (
-                        normalized_name.clone(),
-                        params.clone(),
-                        format!("#{idx}:call `{normalized_name}`"),
-                        json!({
-                            "kind": "call_tool",
-                            "action_name": normalized_name,
-                            "params": params,
-                        }),
-                        compact_action_cmd_line(normalized_name.as_str(), &params),
-                    )
-                }
-            };
-
-            if !allowed_tool_names.contains(tool_name.as_str()) {
-                out.insert(
-                    exec_id,
-                    build_action_error_result(
-                        Some(tool_name.as_str()),
-                        &detail_action,
-                        action_cmd_line.as_str(),
-                        format!(
-                            "tool `{}` is unavailable or not allowed for behavior `{}`",
-                            tool_name, trace.behavior
-                        )
-                        .as_str(),
-                    ),
-                );
-                if !run_all {
-                    insert_skipped_action_result(
-                        &mut out,
-                        actions.cmds.len().saturating_sub(idx + 1),
-                        "mode=failed_end and previous action failed",
-                    );
-                    break;
-                }
-                continue;
-            }
-
-            let run_result = self
-                .tool_mgr
-                .call_tool(
-                    trace,
-                    AiToolCall {
-                        name: tool_name.clone(),
-                        args: value_to_object_map(tool_args.clone()),
-                        call_id: format!(
-                            "action-{}-{}-{}",
-                            trace.step_idx,
-                            now_ms(),
-                            self.wakeup_seq.fetch_add(1, Ordering::Relaxed)
-                        ),
-                    },
-                )
-                .await;
-
-            match run_result {
-                Ok(mut result) => {
-                    annotate_action_result(
-                        &mut result,
-                        Some(tool_name.as_str()),
-                        &detail_action,
-                        action_cmd_line.as_str(),
-                    );
-                    out.insert(exec_id, result);
-                }
-                Err(err) => {
-                    let prompt_error = compact_action_error_for_prompt(&err);
-                    out.insert(
-                        exec_id,
-                        build_action_error_result(
-                            Some(tool_name.as_str()),
-                            &detail_action,
-                            action_cmd_line.as_str(),
-                            prompt_error.as_str(),
-                        )
-                        .with_output(err.to_string()),
-                    );
-
-                    if !run_all {
-                        insert_skipped_action_result(
-                            &mut out,
-                            actions.cmds.len().saturating_sub(idx + 1),
-                            "mode=failed_end and previous action failed",
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    async fn apply_memory_updates(
-        &self,
-        trace: &SessionRuntimeContext,
-        set_memory: &HashMap<String, String>,
-    ) {
-        let source = json!({
-            "kind": "agent",
-            "name": trace.behavior,
-            "retrieved_at": Utc::now().to_rfc3339(),
-            "locator": {
-                "trace_id": trace.trace_id,
-                "behavior": trace.behavior,
-                "step_idx": trace.step_idx,
-                "agent_did": trace.agent_name,
-                "session_id": trace.session_id,
-                "wakeup_id": trace.wakeup_id,
-            },
-        });
-
-        for (raw_key, content) in set_memory {
-            let key = raw_key.trim();
-            if key.is_empty() {
-                continue;
-            }
-
-            if let Err(err) = self
-                .memory
-                .set_memory(key, content.as_str(), source.clone())
-                .await
-            {
-                warn!(
-                    "agent.set_memory failed: did={:?} key={} err={}",
-                    self.did, key, err
-                );
-                continue;
-            }
-
-            let parsed_content = parse_memory_content_for_self_check(content.as_str());
-            let reminder_like = is_reminder_memory_key(key)
-                || is_reminder_memory_content(&parsed_content);
-            if reminder_like {
-                let has_explicit_time =
-                    memory_has_self_check_explicit_time(key, &parsed_content, Utc::now());
-                if has_explicit_time {
-                    info!(
-                        "agent.set_memory.reminder_precise_time_detected: did={:?} behavior={} session_id={} key={} content_preview={}",
-                        self.did,
-                        trace.behavior,
-                        trace.session_id,
-                        key,
-                        compact_text_for_log(content.as_str(), 120),
-                    );
-                } else {
-                    info!(
-                        "agent.set_memory.reminder_without_precise_time: did={:?} behavior={} session_id={} key={} content_preview={} force_interval_ms={} note=not eligible for exact-time trigger; self-check may process it on periodic force trigger",
-                        self.did,
-                        trace.behavior,
-                        trace.session_id,
-                        key,
-                        compact_text_for_log(content.as_str(), 120),
-                        SELF_CHECK_FORCE_TRIGGER_INTERVAL_MS,
-                    );
-                }
-            }
-        }
-    }
-
-    async fn send_msg_reply(
-        &self,
-        trace: SessionRuntimeContext,
-        source_tunnel_did: Option<DID>,
-        default_audience: Option<&str>,
-        reply: Option<&str>,
-    ) -> Vec<ReplyHistoryRecord> {
-        let Some(content) = reply
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-        else {
-            return vec![];
-        };
-
-        let audience = default_audience
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_default();
-        if audience.is_empty() {
-            warn!(
-                "agent.reply_missing_default_remote: did={:?} behavior={} content={}",
-                self.did,
-                trace.behavior,
-                compact_text_for_log(content.as_str(), 256),
-            );
-            return vec![];
-        }
-
-        info!(
-            "agent.reply: did={:?} behavior={} audience={} format=text content={}",
-            self.did,
-            trace.behavior,
-            audience,
-            compact_text_for_log(content.as_str(), 512)
-        );
-
-        if let Some(record) = self
-            .send_reply_via_msg_center(
-                source_tunnel_did,
-                audience.as_str(),
-                "text",
-                content.as_str(),
-                Some(trace.session_id.as_str()),
-                Some(&trace),
-            )
-            .await
-        {
-            vec![record]
+            .map_err(|err| anyhow!("task manager unavailable: {err}"))?;
+        let task_name = if title.trim().is_empty() {
+            meaningful_workspace_name(title, objective)
         } else {
-            vec![]
-        }
-    }
-
-    async fn send_reply_via_msg_center(
-        &self,
-        source_tunnel_did: Option<DID>,
-        audience: &str,
-        _format: &str,
-        content: &str,
-        session_id: Option<&str>,
-        _trace: Option<&SessionRuntimeContext>,
-    ) -> Option<ReplyHistoryRecord> {
-        let content = content.trim();
-        if content.is_empty() {
-            return None;
-        }
-
-        let Some(msg_center) = self.deps.msg_center.as_ref() else {
-            return None;
+            title.trim().to_string()
         };
-        let Some(sender_did) = self.parse_owner_did_for_msg_center() else {
-            return None;
-        };
-        //TODO:get target_did by owner's contact list
-        let target_did: DID = match DID::from_str(audience) {
-            Ok(did) => did,
-            Err(_) => {
-                warn!(
-                    "agent.reply_invalid_audience: did={:?} audience={}",
-                    self.did, audience
-                );
-                return None;
-            }
-        };
-
-        if target_did == sender_did {
-            debug!(
-                "agent.reply_skip_self_target: did={:?} target={:?} audience={}",
-                self.did, target_did, audience
-            );
-            return None;
-        }
-
-        let mut will_send_msg = MsgObject {
-            from: sender_did.clone(),
-            to: vec![target_did.clone()],
-            kind: MsgObjKind::Chat,
-            created_at_ms: now_ms(),
-            content: MsgContent {
-                format: Some(MsgContentFormat::TextPlain),
-                content: content.to_string(),
+        let runner = self.task_executor_runner_id()?;
+        let task_data = AgentDelegateTaskData {
+            request: AgentDelegateTaskRequest {
+                version: 1,
+                purpose: Some(objective.to_string()),
+                title: Some(title.to_string()),
+                requester_agent_id: Some(self.agent_id()),
+                owner_session_id: Some(created_by_session_id.to_string()),
+                input: Some(serde_json::json!({
+                    "text": objective,
+                    "session_id": session_id
+                })),
+                workspace_hints: vec![serde_json::json!({
+                    "workspace_id": workspace_id
+                })],
                 ..Default::default()
             },
-            ..Default::default()
+            progress: Some(AgentDelegateProgress {
+                execution: Some(serde_json::json!({
+                    "session_id": session_id,
+                    "workspace_id": workspace_id,
+                    "runner": runner.clone(),
+                    "status": "creating"
+                })),
+                one_line_status: None,
+                updated_at_ms: Some(Utc::now().timestamp_millis()),
+            }),
+            result: None,
+            route: None,
+            blocker: None,
+            human_input: None,
+            error: None,
         };
-        let normalized_session_id = session_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-
-        if will_send_msg
-            .thread
-            .topic
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            will_send_msg.thread.topic = normalized_session_id.clone();
-        }
-        will_send_msg.thread.correlation_id = normalized_session_id.clone();
-        if let Some(session_id) = normalized_session_id.as_ref() {
-            will_send_msg
-                .meta
-                .insert("session_id".to_string(), Json::String(session_id.clone()));
-            will_send_msg.meta.insert(
-                "owner_session_id".to_string(),
-                Json::String(session_id.clone()),
-            );
-        }
-
-        let outbound_for_history = will_send_msg.clone();
-
-        let send_ctx = SendContext {
-            contact_mgr_owner: Some(sender_did),
-            preferred_tunnel: source_tunnel_did,
-            ..Default::default()
-        };
-
-        match msg_center
-            .post_send(will_send_msg, Some(send_ctx), None)
+        let task = task_mgr
+            .create_task(buckyos_api::CreateTaskReq {
+                name: task_name,
+                schema_id: crate::agent_task_executor::AGENT_DELEGATE_SCHEMA_ID.to_string(),
+                schema_version: None,
+                input: serde_json::to_value(&task_data)?,
+                executor: buckyos_api::CreateTaskExecutor::SelfApp {
+                    app_instance_id: None,
+                },
+                parent_id: None,
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                idempotency_key: format!("ws-task-{}", session_id),
+                retry_of: None,
+                supersedes: None,
+                message: None,
+            })
             .await
+            .map_err(|err| anyhow!("create task: {err}"))?;
+        // Seed the mutable projection so readers find execution state in
+        // progress from the start.
+        let task = match crate::task_util::report_progress_value(
+            &task_mgr,
+            task.clone(),
+            Some(serde_json::to_value(&task_data)?),
+            None,
+        )
+        .await
         {
-            Ok(result) => {
-                if !result.ok {
-                    warn!(
-                        "agent.reply_post_send_rejected: did={:?} target={:?} reason={}",
-                        self.did,
-                        target_did,
-                        result.reason.unwrap_or_else(|| "unknown".to_string())
-                    );
-                    return None;
+            Ok(task) => task,
+            Err(err) => {
+                warn!(
+                    "opendan.agent[{}]: seed worksession task progress failed: {err:#}",
+                    self.agent_name
+                );
+                task
+            }
+        };
+        Ok(agent_task_binding_from_task(&task))
+    }
+
+    async fn update_work_session_task_started(
+        &self,
+        binding: &AgentTaskBinding,
+        session_id: &str,
+        workspace_id: &str,
+        workspace_status: &str,
+        behavior: &str,
+        auto_started: bool,
+    ) {
+        let Ok(task_mgr) = self.runtime.task_mgr_client().await else {
+            return;
+        };
+        let message = if auto_started {
+            "Agent session started"
+        } else {
+            "Agent session created"
+        };
+        let runner = match self.task_executor_runner_id() {
+            Ok(runner) => runner,
+            Err(err) => {
+                warn!(
+                    "opendan.agent[{}]: cannot resolve task executor runner for task {} update: {err:#}",
+                    self.agent_name, binding.task_id
+                );
+                return;
+            }
+        };
+        let execution_status = if auto_started { "running" } else { "idle" };
+        let loaded = task_mgr.get_task(&binding.task_id).await;
+        let data = match loaded.as_ref().map(|task| task.clone()) {
+            Ok(task) => {
+                let mut data = match agent_delegate_task_data(&task) {
+                    Some(data) => data,
+                    None => {
+                        warn!(
+                            "opendan.agent[{}]: worksession task {} has invalid agent.delegate data",
+                            self.agent_name, binding.task_id
+                        );
+                        return;
+                    }
+                };
+                data.progress
+                    .get_or_insert_with(AgentDelegateProgress::default)
+                    .execution = Some(serde_json::json!({
+                    "session_id": session_id,
+                    "workspace_id": workspace_id,
+                    "workspace_status": workspace_status,
+                    "behavior": behavior,
+                    "runner": runner,
+                    "status": execution_status
+                }));
+                if let Some(progress) = data.progress.as_mut() {
+                    progress.updated_at_ms = Some(Utc::now().timestamp_millis());
                 }
-                Some(ReplyHistoryRecord {
-                    outbound: outbound_for_history,
-                    result,
-                })
+                match serde_json::to_value(data) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        warn!(
+                            "opendan.agent[{}]: serialize worksession task {} data failed: {err:#}",
+                            self.agent_name, binding.task_id
+                        );
+                        return;
+                    }
+                }
             }
             Err(err) => {
                 warn!(
-                    "agent.reply_post_send_failed: did={:?} target={:?} err={}",
-                    self.did, target_did, err
+                    "opendan.agent[{}]: load worksession task {} for update failed: {err:#}",
+                    self.agent_name, binding.task_id
                 );
-                None
+                return;
             }
-        }
-    }
-
-    async fn handle_reply(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-        reply: Option<&str>,
-    ) -> Vec<ReplyHistoryRecord> {
-        let (default_audience, source_tunnel_did) = self.resolve_reply_defaults(session).await;
-        self.send_msg_reply(
-            trace.clone(),
-            source_tunnel_did,
-            default_audience.as_deref(),
-            reply,
-        )
-        .await
-    }
-
-    async fn resolve_reply_defaults(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-    ) -> (Option<String>, Option<DID>) {
-        let default_audience = {
-            let guard = session.lock().await;
-            guard.default_remote.clone()
-        }
-        .or_else(|| self.default_reply_audience());
-        let source_tunnel_did = self
-            .resolve_preferred_reply_tunnel(default_audience.as_deref())
-            .await;
-        (default_audience, source_tunnel_did)
-    }
-
-    fn should_append_worklog_for_trace(trace: &SessionRuntimeContext) -> bool {
-        AgentSession::is_work_session_id(trace.session_id.as_str())
-    }
-
-    fn parse_step_input_msg_record(payload: &[u8]) -> Option<MsgRecord> {
-        serde_json::from_slice::<SessionInputItem>(payload)
-            .ok()
-            .and_then(|item| item.msg)
-            .or_else(|| serde_json::from_slice::<MsgRecord>(payload).ok())
-    }
-
-    fn collect_step_input_new_msgs(step_inputs: &[Vec<u8>]) -> Vec<MsgRecordWithObject> {
-        step_inputs
-            .iter()
-            .filter_map(|raw| Self::parse_step_input_msg_record(raw.as_slice()))
-            .map(|record| MsgRecordWithObject { record, msg: None })
-            .collect()
-    }
-
-    async fn collect_step_input_new_msgs_with_objects(
-        step_inputs: &[Vec<u8>],
-    ) -> Vec<MsgRecordWithObject> {
-        let mut messages = Self::collect_step_input_new_msgs(step_inputs);
-        for message in &mut messages {
-            if message.msg.is_some() {
-                continue;
-            }
-            if let Ok(msg_obj) = message.get_msg().await {
-                message.msg = Some(msg_obj);
-            }
-        }
-        messages
-    }
-
-    fn normalize_ui_session_id(value: &str) -> Option<String> {
-        let session_id = value.trim();
-        if session_id.is_empty() {
-            return None;
-        }
-        if !AgentSessionMgr::is_ui_session(session_id) {
-            return None;
-        }
-        Some(session_id.to_string())
-    }
-
-    fn creator_ui_session_id_from_meta(meta: &Json) -> Option<String> {
-        let obj = meta.as_object()?;
-        let raw = obj.get(SESSION_META_CREATOR_UI_SESSION_ID)?;
-        match raw {
-            Json::String(value) => Self::normalize_ui_session_id(value),
-            Json::Array(items) => items.iter().find_map(|item| {
-                item.as_str()
-                    .and_then(|value| Self::normalize_ui_session_id(value))
-            }),
-            _ => None,
-        }
-    }
-
-    fn set_creator_ui_session_id_meta(meta: &mut Json, creator_ui_session_id: &str) {
-        let Some(creator_ui_session_id) = Self::normalize_ui_session_id(creator_ui_session_id)
-        else {
-            return;
         };
-        if !meta.is_object() {
-            *meta = json!({});
-        }
-        let Some(obj) = meta.as_object_mut() else {
-            return;
-        };
-        if obj
-            .get(SESSION_META_CREATOR_UI_SESSION_ID)
-            .and_then(Json::as_str)
-            .and_then(Self::normalize_ui_session_id)
-            .is_some()
-        {
-            return;
-        }
-        obj.insert(
-            SESSION_META_CREATOR_UI_SESSION_ID.to_string(),
-            Json::String(creator_ui_session_id),
-        );
-    }
-
-    async fn resolve_creator_ui_session_id(
-        &self,
-        source_session_id: &str,
-        step_msg_inputs: &[SessionInputItem],
-    ) -> Option<String> {
-        if let Some(session_id) = Self::normalize_ui_session_id(source_session_id) {
-            return Some(session_id);
-        }
-
-        if let Some(session_id) = step_msg_inputs.iter().find_map(|item| {
-            item.msg
-                .as_ref()
-                .and_then(|msg| msg.ui_session_id.as_deref())
-                .and_then(Self::normalize_ui_session_id)
-        }) {
-            return Some(session_id);
-        }
-
-        let Some(source_session) = self.session_mgr.get_session(source_session_id).await else {
-            return None;
-        };
-        let guard = source_session.lock().await;
-        Self::creator_ui_session_id_from_meta(&guard.meta)
-    }
-
-    fn collect_reply_sync_ui_session_ids(
-        session_id: &str,
-        creator_ui_session_id: Option<String>,
-        step_inputs: &[Vec<u8>],
-    ) -> Vec<String> {
-        let current_session_id = session_id.trim();
-        let mut targets = HashSet::<String>::new();
-
-        if let Some(ui_session_id) = creator_ui_session_id {
-            if ui_session_id.as_str() != current_session_id {
-                targets.insert(ui_session_id);
-            }
-        }
-
-        for raw in step_inputs {
-            let Some(msg) = Self::parse_step_input_msg_record(raw.as_slice()) else {
-                continue;
-            };
-            let Some(ui_session_id) = msg
-                .ui_session_id
-                .as_deref()
-                .and_then(Self::normalize_ui_session_id)
-            else {
-                continue;
-            };
-            if ui_session_id.as_str() != current_session_id {
-                targets.insert(ui_session_id);
-            }
-        }
-
-        let mut out = targets.into_iter().collect::<Vec<_>>();
-        out.sort();
-        out
-    }
-
-    async fn append_worklog_action_record(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-        status: &str,
-        payload: WorklogActionPayload,
-    ) {
-        if !Self::should_append_worklog_for_trace(trace) {
-            return;
-        }
-
-        let mut guard = session.lock().await;
-        if let Err(err) = guard
-            .append_worklog_with_runtime_context(
-                trace,
-                "ActionRecord",
-                status,
-                serde_json::to_value(payload).unwrap_or_else(|_| Json::Null),
-                Some(self.environment.local_workspace_manager()),
-            )
-            .await
-        {
-            warn!(
-                "agent.worklog_append_failed: did={:?} session={} step={} type=ActionRecord err={}",
-                self.did, trace.session_id, trace.step_idx, err
-            );
-        }
-    }
-
-    async fn append_incoming_message_worklogs(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-    ) {
-        if !Self::should_append_worklog_for_trace(trace) {
-            return;
-        }
-
-        let step_inputs = {
-            let guard = session.lock().await;
-            guard.just_readed_input_msg.clone()
-        };
-        for msg in Self::collect_step_input_new_msgs(step_inputs.as_slice()) {
-            let snippet = msg
-                .get_msg()
-                .await
-                .ok()
-                .map(|msg_obj| msg_obj.content.content.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .map(|value| compact_text_for_log(value.as_str(), 220))
-                .unwrap_or_else(|| format!("kind={:?}", msg.record.msg_kind));
-            let payload = json!({
-                "msg_id": msg.record.msg_id,
-                "record_id": msg.record.record_id,
-                "from": msg.record.from.to_string(),
-                "to": msg.record.to.to_string(),
-                "channel": format!("{:?}", msg.record.box_kind),
-                "snippet": snippet.clone(),
-                "content_digest": snippet,
-            });
-            let mut guard = session.lock().await;
-            if let Err(err) = guard
-                .append_worklog_with_runtime_context(
-                    trace,
-                    "GetMessage",
-                    "OK",
-                    payload,
-                    Some(self.environment.local_workspace_manager()),
-                )
-                .await
-            {
-                warn!(
-                    "agent.worklog_append_failed: did={:?} session={} step={} type=GetMessage err={}",
-                    self.did, trace.session_id, trace.step_idx, err
-                );
-            }
-        }
-    }
-
-    async fn append_reply_message_worklogs(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-        reply_history: &[ReplyHistoryRecord],
-    ) {
-        if !Self::should_append_worklog_for_trace(trace) {
-            return;
-        }
-        if reply_history.is_empty() {
-            return;
-        }
-
-        let reply_to_msg_id = {
-            let guard = session.lock().await;
-            guard
-                .just_readed_input_msg
-                .iter()
-                .find_map(|raw| Self::parse_step_input_msg_record(raw.as_slice()))
-                .map(|msg| msg.msg_id)
-        };
-
-        for reply in reply_history {
-            let said = reply.outbound.content.content.trim();
-            let to = reply
-                .outbound
-                .to
-                .first()
-                .map(|did| did.to_string())
-                .unwrap_or_default();
-            let payload = json!({
-                "out_msg_id": reply.result.msg_id,
-                "to": to,
-                "reply_to": reply_to_msg_id.clone(),
-                "content_digest": compact_text_for_log(said, 220),
-                "delivery_count": reply.result.deliveries.len(),
-            });
-
-            let mut guard = session.lock().await;
-            if let Err(err) = guard
-                .append_worklog_with_runtime_context(
-                    trace,
-                    "ReplyMessage",
-                    "OK",
-                    payload,
-                    Some(self.environment.local_workspace_manager()),
-                )
-                .await
-            {
-                warn!(
-                    "agent.worklog_append_failed: did={:?} session={} step={} type=ReplyMessage err={}",
-                    self.did, trace.session_id, trace.step_idx, err
-                );
-            }
-        }
-    }
-
-    async fn append_action_record_worklogs(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-        tracking: &LLMTrackingInfo,
-        action_results: &ActionResultsMap,
-    ) {
-        if !Self::should_append_worklog_for_trace(trace) {
-            return;
-        }
-
-        for tool_record in &tracking.tool_trace {
-            let status = if tool_record.ok { "OK" } else { "FAILED" };
-            let payload = WorklogActionPayload {
-                action_type: "function".to_string(),
-                cmd_digest: Some(tool_record.tool_name.clone()),
-                tool_name: Some(tool_record.tool_name.clone()),
-                exec_id: Some(tool_record.call_id.clone()),
-                result_digest: Some(
-                    tool_record
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "ok".to_string()),
-                ),
-                exit_code: None,
-                cwd: None,
-                stderr_digest: tool_record.error.clone(),
-                tool_result: None,
-            };
-            self.append_worklog_action_record(session.clone(), trace, status, payload)
-                .await;
-        }
-
-        let mut exec_ids = action_results.keys().cloned().collect::<Vec<_>>();
-        exec_ids.sort();
-
-        for exec_id in exec_ids {
-            if is_internal_action_result(exec_id.as_str()) {
-                continue;
-            }
-            let Some(result) = action_results.get(exec_id.as_str()) else {
-                continue;
-            };
-            let status = match result.status {
-                AgentToolStatus::Error => "FAILED",
-                AgentToolStatus::Pending => "PENDING",
-                AgentToolStatus::Success => "OK",
-            };
-
-            let action_kind = action_result_kind(result).unwrap_or("action");
-            let action_type = match action_kind {
-                "exec" => "bash",
-                "call_tool" => "tool_call",
-                other => other,
-            };
-
-            let cmd_digest = action_result_cmd_digest(result);
-            let rendered = result.render_prompt();
-
-            let payload = crate::worklog::WorklogActionPayload {
-                action_type: action_type.to_string(),
-                cmd_digest: Some(compact_text_for_log(cmd_digest.as_str(), 220)),
-                tool_name: action_result_tool_name(result),
-                exec_id: Some(exec_id),
-                result_digest: Some(compact_text_for_log(rendered.as_str(), 220)),
-                exit_code: result.return_code,
-                cwd: extract_action_result_pwd(result),
-                stderr_digest: action_result_error_text(result)
-                    .map(|v| compact_text_for_log(v.as_str(), 220)),
-                tool_result: Some(result.clone()),
-            };
-            self.append_worklog_action_record(session.clone(), trace, status, payload)
-                .await;
-        }
-    }
-
-    async fn append_llm_step_record(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        trace: &SessionRuntimeContext,
-        step_num: u32,
-        step_started_ms: u64,
-        llm_completed_at_ms: u64,
-        action_completed_at_ms: u64,
-        input: &BehaviorExecInput,
-        tracking: Option<&LLMTrackingInfo>,
-        llm_result: &BehaviorLLMResult,
-        action_results: &ActionResultsMap,
-        error: Option<String>,
-    ) {
-        let new_msg = {
-            let guard = session.lock().await;
-            Self::collect_step_input_new_msgs_with_objects(guard.just_readed_input_msg.as_slice())
-                .await
-        };
-
-        let record = LLMStepRecord {
-            session_id: trace.session_id.clone(),
-            step_num,
-            step_index: trace.step_idx,
-            behavior_name: trace.behavior.clone(),
-            started_at_ms: step_started_ms,
-            llm_completed_at_ms,
-            action_completed_at_ms,
-            new_msg,
-            input: input.input_prompt.clone(),
-            llm_prompt: tracking
-                .map(|value| value.prompt_request.clone())
-                .unwrap_or_else(|| LLMStepRecord::default().llm_prompt),
-            llm_result: llm_result.clone(),
-            action_result: action_results.clone(),
-            error,
-        };
-
-        let mut guard = session.lock().await;
-        if let Err(err) = guard.append_llm_step_record(record).await {
-            warn!(
-                "agent.step_record_append_failed: did={:?} session={} step_num={} step_idx={} err={}",
-                self.did, trace.session_id, step_num, trace.step_idx, err
-            );
-        }
-    }
-
-    async fn persist_step_history_records(
-        &self,
-        session: Arc<Mutex<AgentSession>>,
-        session_id: &str,
-        reply_history: &[ReplyHistoryRecord],
-    ) {
-        let (just_readed_input_msg, creator_ui_session_id) = {
-            let guard = session.lock().await;
-            (
-                guard.just_readed_input_msg.clone(),
-                Self::creator_ui_session_id_from_meta(&guard.meta),
-            )
-        };
-        let reply_sync_ui_session_ids = Self::collect_reply_sync_ui_session_ids(
-            session_id,
-            creator_ui_session_id,
-            just_readed_input_msg.as_slice(),
-        );
-
-        for readed_input_item in &just_readed_input_msg {
-            let msg_record =
-                serde_json::from_slice::<SessionInputItem>(readed_input_item.as_slice())
-                    .ok()
-                    .and_then(|item| item.msg)
-                    .or_else(|| {
-                        serde_json::from_slice::<MsgRecord>(readed_input_item.as_slice()).ok()
-                    });
-            let Some(msg_record) = msg_record else {
-                warn!(
-                    "agent.persist_step_history_skip_invalid_input: did={:?} session={} payload_bytes={}",
-                    self.did,
-                    session_id,
-                    readed_input_item.len()
-                );
-                continue;
-            };
-            let history_record = MsgRecordWithObject {
-                record: msg_record,
-                msg: None,
-            };
-            self.persist_session_msg_history_record(session_id, &history_record)
-                .await;
-        }
-
-        for reply in reply_history {
-            self.persist_post_send_history(session_id, &reply.outbound, &reply.result)
-                .await;
-            for ui_session_id in &reply_sync_ui_session_ids {
-                self.persist_post_send_history(
-                    ui_session_id.as_str(),
-                    &reply.outbound,
-                    &reply.result,
-                )
-                .await;
-            }
-        }
-    }
-
-    async fn persist_session_msg_history_record(
-        &self,
-        session_id: &str,
-        record: &MsgRecordWithObject,
-    ) {
-        let session_id = session_id.trim();
-        if session_id.is_empty() {
-            return;
-        }
-        let session_id = session_id.to_string();
-        let msg_obj = if let Some(msg) = record.msg.clone() {
-            msg
-        } else {
-            match record.get_msg().await {
-                Ok(msg) => msg,
+        let Ok(task) = loaded else { return };
+        let task = if auto_started {
+            match crate::task_util::ensure_running(&task_mgr, task).await {
+                Ok(task) => task,
                 Err(err) => {
                     warn!(
-                        "agent.msg_history_load_msg_failed: did={:?} session={} record_id={} err={}",
-                        self.did, session_id, record.record.record_id, err
+                        "opendan.agent[{}]: start worksession task {} failed: {err:#}",
+                        self.agent_name, binding.task_id
                     );
                     return;
                 }
             }
+        } else {
+            task
         };
-        let mut msg_record = record.record.clone();
-        if msg_record
-            .from_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            let session_from_name = msg_obj.from.to_raw_host_name();
-            msg_record.from_name = AgentSession::resolve_msg_from_name(
-                &msg_record.from,
-                Some(session_from_name.as_str()),
-                Some(self.contact_mgr_owner_did()),
-            )
-            .await;
-        }
-
-        let session_dir = self.session_mgr.sessions_root().join(session_id.as_str());
-        let session_dir_str = session_dir.to_string_lossy().to_string();
-
-        if let Err(err) =
-            AgentSession::append_msg_record(session_dir_str.as_str(), msg_record, msg_obj).await
+        if let Err(err) = crate::task_util::report_progress_value(
+            &task_mgr,
+            task,
+            Some(data),
+            Some(message.to_string()),
+        )
+        .await
         {
             warn!(
-                "agent.msg_history_append_failed: did={:?} session={} session_dir={} record_id={} err={}",
-                self.did,
-                session_id,
-                session_dir.display(),
-                record.record.record_id,
-                err
+                "opendan.agent[{}]: update worksession task {} started failed: {err:#}",
+                self.agent_name, binding.task_id
             );
         }
     }
 
-    //TODO: 逻辑需要优化，有点复杂
-    async fn persist_post_send_history(
-        &self,
-        session_id: &str,
-        outbound: &MsgObject,
-        result: &PostSendResult,
-    ) {
-        let Some(msg_center) = self.deps.msg_center.as_ref() else {
-            return;
-        };
-        if result.deliveries.is_empty() {
-            return;
-        }
-
-        for delivery in &result.deliveries {
-            let mut record_with_obj = None::<MsgRecordWithObject>;
-            for attempt in 0..3 {
-                match msg_center
-                    .get_record(delivery.record_id.clone(), Some(true))
-                    .await
-                {
-                    Ok(Some(record)) => {
-                        record_with_obj = Some(record);
-                        break;
-                    }
-                    Ok(None) => {
-                        if attempt < 2 {
-                            sleep(Duration::from_millis(40)).await;
-                        } else {
-                            warn!(
-                                "agent.reply_history_record_missing: did={:?} session={} record_id={} msg_id={}",
-                                self.did, session_id, delivery.record_id, result.msg_id
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        warn!(
-                            "agent.reply_history_record_fetch_failed: did={:?} session={} record_id={} msg_id={} err={}",
-                            self.did, session_id, delivery.record_id, result.msg_id, err
-                        );
-                        break;
-                    }
-                }
-            }
-
-            if let Some(record) = record_with_obj {
-                self.persist_session_msg_history_record(session_id, &record)
-                    .await;
-                continue;
-            }
-
-            let synthetic = MsgRecordWithObject {
-                record: buckyos_api::MsgRecord {
-                    record_id: delivery.record_id.clone(),
-                    box_kind: BoxKind::Outbox,
-                    msg_id: result.msg_id.clone(),
-                    msg_kind: outbound.kind.clone(),
-                    state: MsgState::Sent,
-                    from: outbound.from.clone(),
-                    from_name: None,
-                    to: delivery
-                        .target_did
-                        .as_ref()
-                        .cloned()
-                        .or_else(|| outbound.to.first().cloned())
-                        .unwrap_or_else(|| outbound.from.clone()),
-                    created_at_ms: outbound.created_at_ms,
-                    updated_at_ms: now_ms(),
-                    route: None,
-                    delivery: None,
-                    ui_session_id: Some(session_id.to_string()),
-                    sort_key: now_ms(),
-                    tags: vec![],
-                },
-                msg: Some(outbound.clone()),
+    pub(crate) async fn allocate_workspace_id(&self, name: &str) -> String {
+        let base = sanitize_worksession_title(name);
+        let mut suffix = 1usize;
+        loop {
+            let candidate = if suffix == 1 {
+                base.clone()
+            } else {
+                format!("{base} {suffix}")
             };
-            self.persist_session_msg_history_record(session_id, &synthetic)
-                .await;
-        }
-    }
-
-    //behavior_name is full name like do:todo=T01:param2=abc
-    async fn load_behavior_config(&self, behavior_name: &str) -> Result<BehaviorConfig> {
-        let behavior_name = behavior_name.trim();
-        if behavior_name.is_empty() {
-            return Err(anyhow!("behavior name cannot be empty"));
-        }
-
-        let lookup_names = Self::build_behavior_lookup_names(behavior_name);
-
-        let mut last_err: Option<anyhow::Error> = None;
-        for lookup_name in &lookup_names {
-            match BehaviorConfig::load_from_roots(&self.behavior_roots, lookup_name).await {
-                Ok(loaded) => {
-                    let mut cache = self.behavior_cfg_cache.write().await;
-                    for alias in &lookup_names {
-                        cache.insert(alias.clone(), loaded.clone());
-                    }
-                    return Ok(loaded);
-                }
-                Err(err) => {
-                    last_err = Some(anyhow!(
-                        "lookup `{lookup_name}` failed while loading behavior `{behavior_name}`: {err}"
-                    ));
-                }
+            if !self.workspaces.workspace_dir(&candidate).exists() {
+                return candidate;
             }
+            suffix += 1;
         }
-
-        let looked_up = lookup_names.join(", ");
-        Err(last_err.unwrap_or_else(|| {
-            anyhow!(
-                "load behavior `{behavior_name}` failed: no matching behavior config found (tried: {looked_up})"
-            )
-        }))
     }
 
-    fn build_behavior_lookup_names(behavior_name: &str) -> Vec<String> {
-        let trimmed = behavior_name.trim();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-
-        let mut out = Vec::new();
-        out.push(trimmed.to_string());
-
-        //类似 DO:todo=t01:p2=3 这样的名字，有
-        //  DO:todo=t01:p2=3
-        //  DO:todo=t01
-        //  DO
-        //共计3个lookup name
-        let base = trimmed
-            .split_once(':')
-            .map(|(name, _)| name.trim())
-            .unwrap_or(trimmed);
-        if !base.is_empty() && !out.iter().any(|name| name == base) {
-            out.push(base.to_string());
-        }
-
-        let lower = base.to_ascii_lowercase();
-        if !lower.is_empty() && !out.iter().any(|name| name == &lower) {
-            out.push(lower);
-        }
-
-        out
-    }
-
-    pub fn did(&self) -> String {
-        self.did.to_string()
-    }
-
-    pub fn agent_env_root(&self) -> &Path {
-        &self.agent_env_root
-    }
-
-    fn contact_mgr_owner_did(&self) -> &DID {
-        self.contact_mgr_owner_did
-            .as_ref()
-            .unwrap_or(&self.msg_owner_did)
-    }
-
-    fn default_reply_audience(&self) -> Option<String> {
-        self.contact_mgr_owner_did
-            .as_ref()
-            .map(|did| did.to_string())
-    }
-
-    async fn resolve_preferred_reply_tunnel(&self, audience: Option<&str>) -> Option<DID> {
-        let audience = audience.map(str::trim).filter(|value| !value.is_empty())?;
-        let target_did = DID::from_str(audience).ok()?;
-        let msg_center = self.deps.msg_center.as_ref()?;
-        let binding = match msg_center
-            .get_preferred_binding(target_did, self.contact_mgr_owner_did.clone())
-            .await
-        {
-            Ok(binding) => binding,
-            Err(err) => {
-                debug!(
-                    "agent.reply_preferred_tunnel_lookup_failed: did={:?} audience={} err={}",
-                    self.did, audience, err
-                );
-                return None;
+    async fn allocate_worksession_id(&self, title: &str) -> String {
+        let date = Local::now().format("%Y-%m-%d").to_string();
+        let base = build_worksession_id(&date, title);
+        let mut suffix = 1usize;
+        loop {
+            let candidate = if suffix == 1 {
+                base.clone()
+            } else {
+                format!("{base} {suffix}")
+            };
+            let in_memory = self.sessions.lock().await.contains_key(&candidate);
+            if !in_memory && !self.config.layout.session_dir(&candidate).exists() {
+                return candidate;
             }
+            suffix += 1;
+        }
+    }
+
+    /// Forward a chat message from one session to another's pending queue.
+    /// Returns the synthetic `record_id` used for the forwarded entry so
+    /// the caller can include it in its tool response. Errors when:
+    ///   - target session doesn't exist or isn't a Work session
+    ///   - target session has already Ended
+    pub async fn forward_message(
+        &self,
+        target_session_id: &str,
+        source_session_id: &str,
+        text: &str,
+    ) -> Result<String> {
+        self.forward_ai_message(
+            target_session_id,
+            source_session_id,
+            text,
+            AiMessage::text(AiRole::User, text.trim().to_string()),
+        )
+        .await
+    }
+
+    pub async fn forward_ai_message(
+        &self,
+        target_session_id: &str,
+        source_session_id: &str,
+        text: &str,
+        mut ai_message: AiMessage,
+    ) -> Result<String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() && ai_message.content.is_empty() {
+            return Err(anyhow!("forward_message: text is empty"));
+        }
+        let target = {
+            let map = self.sessions.lock().await;
+            map.get(target_session_id).cloned()
         };
-        DID::from_str(binding.tunnel_id.as_str()).ok()
+        let Some(target) = target else {
+            return Err(anyhow!(
+                "forward_message: target session `{target_session_id}` not found"
+            ));
+        };
+        if !matches!(target.kind, SessionKind::Work) {
+            return Err(anyhow!(
+                "forward_message: target session `{target_session_id}` is not a work session"
+            ));
+        }
+        let status = target.meta.lock().await.status;
+        if matches!(status, SessionStatus::Ended) {
+            let summary = target.summary().await;
+            return Err(anyhow!("{}", ended_forward_message_guidance(&summary)));
+        }
+        let record_id = format!("forward:{source_session_id}:{}", mint_session_id("fwd"));
+        ai_message.role = AiRole::User;
+        let pending_text = if trimmed.is_empty() {
+            ai_message.text_content()
+        } else {
+            trimmed.to_string()
+        };
+        target
+            .enqueue_pending(PendingInput::Msg {
+                record_id: record_id.clone(),
+                from: source_session_id.to_string(),
+                from_did: None,
+                from_name: None,
+                tunnel_did: None,
+                text: pending_text,
+                ai_message,
+            })
+            .await?;
+        Ok(record_id)
     }
 
-    fn parse_owner_did_for_msg_center(&self) -> Option<DID> {
-        Some(self.msg_owner_did.clone())
-    }
-}
-
-fn build_work_session_id(
-    session_title: &str,
-    date_token: &str,
-    duplicate_suffix: Option<u32>,
-) -> String {
-    let date_token = date_token.trim();
-    let duplicate_suffix = duplicate_suffix.filter(|value| *value > 1);
-    let duplicate_suffix = duplicate_suffix
-        .map(|value| format!("-{value}"))
-        .unwrap_or_default();
-    let slug_budget = MAX_SESSION_ID_LEN.saturating_sub(
-        WORK_SESSION_ID_PREFIX.len() + date_token.len() + duplicate_suffix.len() + 1,
-    );
-    let title_slug = slugify_session_title(session_title, slug_budget);
-    let session_id = format!("{WORK_SESSION_ID_PREFIX}{title_slug}-{date_token}{duplicate_suffix}");
-
-    sanitize_session_id_for_path(session_id.as_str()).unwrap_or_else(|_| {
-        format!("{WORK_SESSION_ID_PREFIX}session-{date_token}{duplicate_suffix}")
-    })
-}
-
-fn slugify_session_title(title: &str, max_bytes: usize) -> String {
-    let mut slug = String::new();
-    let mut pending_separator = false;
-
-    for ch in title.trim().chars() {
-        if ch.is_alphanumeric() {
-            if pending_separator && !slug.is_empty() {
-                if slug.len() + 1 > max_bytes {
-                    break;
-                }
-                slug.push('-');
-            }
-            pending_separator = false;
-
-            for lower in ch.to_lowercase() {
-                if slug.len() + lower.len_utf8() > max_bytes {
-                    return finalize_session_title_slug(slug);
-                }
-                slug.push(lower);
-            }
-        } else if !slug.is_empty() {
-            pending_separator = true;
+    async fn stop_all_sessions(&self) {
+        let sessions = {
+            let map = self.sessions.lock().await;
+            map.values().cloned().collect::<Vec<_>>()
+        };
+        for s in sessions {
+            s.stop().await;
         }
     }
-
-    finalize_session_title_slug(slug)
 }
 
-fn finalize_session_title_slug(mut slug: String) -> String {
-    while slug.ends_with('-') {
-        slug.pop();
+fn ended_forward_message_guidance(summary: &SessionSummary) -> String {
+    let mut context = Vec::new();
+    if !summary.title.trim().is_empty() {
+        context.push(format!("title `{}`", summary.title.trim()));
     }
-    if slug.is_empty() {
-        "session".to_string()
-    } else {
-        slug
+    if !summary.objective.trim().is_empty() {
+        context.push(format!("objective `{}`", summary.objective.trim()));
     }
-}
-
-fn apply_session_behavior_transition(
-    session: &mut crate::agent_session::AgentSession,
-    default_behavior: &str,
-    step_limit: u32,
-    faild_back_behavior: Option<&str>,
-    next_behavior: Option<&str>,
-) -> StepTransition {
-    let mut behavior_switched = false;
-    let keep_running;
-
-    if let Some(next_behavior) = next_behavior
+    if let Some(workspace_id) = summary
+        .workspace_id
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        if next_behavior.eq_ignore_ascii_case("WAIT") {
-            if session.state != SessionState::WaitForMsg
-                && session.state != SessionState::WaitForEvent
-                && session.state != SessionState::End
-            {
-                session.state = SessionState::Wait;
-            }
-            keep_running = false;
-        } else if starts_with_ignore_ascii_case(next_behavior, "WAIT_FOR_MSG") {
-            session.state = SessionState::WaitForMsg;
-            keep_running = false;
-        } else if next_behavior.eq_ignore_ascii_case("END") {
-            //不切换behavior,但是当前behavior loop结束了
-            session.state = SessionState::End;
-            keep_running = false;
-        } else {
-            let previous_behavior = session.current_behavior.clone();
-            behavior_switched = !session.current_behavior.eq_ignore_ascii_case(next_behavior);
-            //session.state = SessionState::Running;
-            if behavior_switched {
-                session.current_behavior = next_behavior.to_string();
-                session.step_index = 0;
-                info!(
-                    "agent.session_behavior_switch: session={} from={} to={} reason=next_behavior",
-                    session.session_id, previous_behavior, session.current_behavior
-                );
-                keep_running = true;
-            } else {
-                keep_running = advance_session_step_or_apply_limit_fallback(
-                    session,
-                    default_behavior,
-                    step_limit,
-                    faild_back_behavior,
-                    &mut behavior_switched,
-                );
-            }
-        }
+        context.push(format!("workspace `{workspace_id}`"));
+    }
+    let context = if context.is_empty() {
+        String::new()
     } else {
-        keep_running = advance_session_step_or_apply_limit_fallback(
-            session,
-            default_behavior,
-            step_limit,
-            faild_back_behavior,
-            &mut behavior_switched,
-        );
-    }
-
-    StepTransition {
-        keep_running,
-        behavior_switched,
-    }
-}
-
-fn should_continue_with_rendered_input(result: &AgentTemplateRenderResult) -> bool {
-    let mut driver_tracked = false;
-
-    for key in ["new_msg", "new_event", "last_step"] {
-        if let Some(resolved) = result.resolved_vars.get(key) {
-            driver_tracked = true;
-            if *resolved {
-                return true;
-            }
-        }
-    }
-
-    if driver_tracked {
-        return false;
-    }
-
-    !result.rendered.trim().is_empty()
-}
-
-fn advance_session_step_or_apply_limit_fallback(
-    session: &mut crate::agent_session::AgentSession,
-    default_behavior: &str,
-    step_limit: u32,
-    faild_back_behavior: Option<&str>,
-    behavior_switched: &mut bool,
-) -> bool {
-    if session.state != SessionState::Running {
-        return false;
-    }
-
-    session.step_index = session.step_index.saturating_add(1);
-    if step_limit > 0 && session.step_index >= step_limit {
-        let fallback_behavior = faild_back_behavior
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(default_behavior);
-        let previous_behavior = session.current_behavior.clone();
-        *behavior_switched = !session
-            .current_behavior
-            .eq_ignore_ascii_case(fallback_behavior);
-        session.current_behavior = fallback_behavior.to_string();
-        session.step_index = 0;
-
-        if *behavior_switched {
-            info!(
-                "agent.session_behavior_switch: session={} from={} to={} reason=step_limit_fallback step_limit={}",
-                session.session_id, previous_behavior, session.current_behavior, step_limit
-            );
-            true
-        } else {
-            session.state = SessionState::Wait;
-            false
-        }
-    } else {
-        true
-    }
-}
-
-fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value
-        .get(..prefix.len())
-        .map(|head| head.eq_ignore_ascii_case(prefix))
-        .unwrap_or(false)
-}
-
-#[cfg(test)]
-fn render_action_results_for_prompt(results: &ActionResultsMap) -> String {
-    let mut keys = results.keys().cloned().collect::<Vec<_>>();
-    keys.sort();
-
-    let mut lines = vec![format!(
-        "ActionResults: {}",
-        action_results_summary(results)
-    )];
-    if let Some(pwd) = action_results_latest_pwd(results) {
-        lines.push(format!("pwd: {pwd}"));
-    }
-    for key in keys {
-        if is_internal_action_result(key.as_str()) {
-            continue;
-        }
-        let Some(result) = results.get(&key) else {
-            continue;
-        };
-        let prompt = result.render_prompt();
-        if prompt.trim().is_empty() {
-            continue;
-        }
-        let mut prompt_lines = prompt.lines();
-        if let Some(first) = prompt_lines.next() {
-            lines.push(format!("- {}", first));
-            for line in prompt_lines {
-                lines.push(line.to_string());
-            }
-        } else {
-            lines.push("-".to_string());
-        }
-    }
-    lines.join("\n")
-}
-
-fn merged_actions_from_llm_result(llm_result: &BehaviorLLMResult) -> DoActions {
-    let mut merged = DoActions {
-        mode: llm_result.actions.mode.clone(),
-        cmds: Vec::new(),
+        format!(" Previous context: {}.", context.join(", "))
     };
-    for command in &llm_result.shell_commands {
-        let command = command.trim();
-        if command.is_empty() {
-            continue;
-        }
-        merged.cmds.push(DoAction::Exec(command.to_string()));
-    }
-    merged.cmds.extend(llm_result.actions.cmds.clone());
-    merged
-}
-
-fn compact_action_cmd_line(tool_name: &str, args: &Json) -> String {
-    let Some(map) = args.as_object() else {
-        return tool_name.to_string();
-    };
-
-    if let Some(command) = map
-        .get("command")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        return command.to_string();
-    }
-
-    let mut parts = Vec::<String>::new();
-    for key in [
-        "path",
-        "range",
-        "first_chunk",
-        "name",
-        "workspace",
-        "workspace_id",
-        "mode",
-    ] {
-        let Some(value) = map.get(key) else {
-            continue;
-        };
-        if let Some(raw) = value.as_str() {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if key == "path" || key == "range" {
-                parts.push(trimmed.to_string());
-            } else {
-                parts.push(format!("{key}={trimmed}"));
-            }
-            continue;
-        }
-        if !value.is_null() {
-            parts.push(format!(
-                "{key}={}",
-                serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
-            ));
-        }
-    }
-
-    if parts.is_empty() {
-        return tool_name.to_string();
-    }
-    format!("{tool_name} {}", parts.join(" "))
-}
-
-fn should_record_llm_step_error(err: &LLMComputeError) -> bool {
-    match err {
-        LLMComputeError::Timeout | LLMComputeError::Cancelled | LLMComputeError::Provider(_) => {
-            true
-        }
-        LLMComputeError::Internal(msg) => {
-            let msg = msg.to_ascii_lowercase();
-            msg.contains("invalid behavior llm xml")
-                || msg.contains("tool loop exceeded max_tool_rounds")
-                || msg.contains("max_tool_calls_per_round")
-                || msg.contains("is not allowed for behavior")
-        }
-    }
-}
-
-fn classify_llm_step_error(err: &LLMComputeError) -> LLMStepErrorHandling {
-    if let Some(reply) = llm_step_error_reply(err) {
-        return LLMStepErrorHandling::ReplyAndWait { reply };
-    }
-
-    match err {
-        LLMComputeError::Timeout | LLMComputeError::Cancelled => LLMStepErrorHandling::RetryAfter {
-            wait_ms: LLM_STEP_TIMEOUT_RETRY_WAIT_MS,
-        },
-        LLMComputeError::Provider(_) => LLMStepErrorHandling::RetryAfter {
-            wait_ms: LLM_STEP_PROVIDER_RETRY_WAIT_MS,
-        },
-        LLMComputeError::Internal(_) if should_record_llm_step_error(err) => {
-            LLMStepErrorHandling::RetryAfter {
-                wait_ms: LLM_STEP_INTERNAL_RETRY_WAIT_MS,
-            }
-        }
-        LLMComputeError::Internal(_) => LLMStepErrorHandling::BubbleUp,
-    }
-}
-
-fn llm_step_error_reply(err: &LLMComputeError) -> Option<&'static str> {
-    let msg = match err {
-        LLMComputeError::Provider(msg) => msg.to_ascii_lowercase(),
-        _ => return None,
-    };
-
-    if msg.contains("no_provider_available")
-        || msg.contains("no provider instance supports requested capability")
-        || msg.contains("all candidate providers were filtered out by policy or requirements")
-        || msg.contains("model_alias_not_mapped")
-        || msg.contains("is not mapped for capability")
-    {
-        return Some(LLM_STEP_PROVIDER_UNAVAILABLE_REPLY);
-    }
-
-    if msg.contains("token_limit_exceeded") {
-        return Some(LLM_STEP_TOKEN_LIMIT_REPLY);
-    }
-
-    None
-}
-
-fn build_llm_step_retry_note(stage: &str, err: &LLMComputeError, wait_ms: u64) -> String {
-    compact_text_for_log(
-        format!("retry in {wait_ms}ms after {stage} failed: {err}").as_str(),
-        256,
+    format!(
+        "forward_message: target session `{}` has ended and cannot accept forwarded messages.{} Do not retry `forward_msg` for this session. Fork/select a replacement with `try_create_worksession` for the current user follow-up, then forward to the new session id returned in `followup_routing.target_worksession_id`.",
+        summary.session_id, context
     )
 }
 
-fn format_llm_step_error(stage: &str, err: &LLMComputeError) -> String {
-    compact_text_for_log(format!("{stage} failed: {err}").as_str(), 600)
+/// Parameters for [`AIAgent::create_work_session`]. Mirrors the §8.1
+/// `create_worksession` tool args, but in Rust-native form so non-LLM
+/// callers (CLI, tests) can build it directly.
+#[derive(Debug, Clone)]
+pub struct CreateWorkSessionParams {
+    pub title: String,
+    pub objective: String,
+    pub workspace_id: Option<String>,
+    pub behavior: Option<String>,
+    pub created_by_session_id: String,
+    pub reason_messages: Vec<String>,
+    pub task_binding: Option<AgentTaskBinding>,
+    pub task_id: Option<String>,
+    pub auto_start: bool,
+    pub bind_task: bool,
 }
 
-fn compact_action_error_for_prompt(err: &crate::agent_tool::AgentToolError) -> String {
-    match err {
-        crate::agent_tool::AgentToolError::ExecFailed(msg)
-        | crate::agent_tool::AgentToolError::InvalidArgs(msg)
-        | crate::agent_tool::AgentToolError::NotFound(msg)
-        | crate::agent_tool::AgentToolError::AlreadyExists(msg) => msg.trim().to_string(),
-        crate::agent_tool::AgentToolError::Timeout => "timeout".to_string(),
-    }
+/// Result of [`AIAgent::create_work_session`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CreateWorkSessionOutcome {
+    pub session_id: String,
+    pub title: String,
+    pub workspace_id: String,
+    /// Always `"created"` or `"reused"` so downstream tooling can branch
+    /// without parsing free-form text.
+    pub workspace_status: String,
+    pub behavior: String,
+    pub auto_started: bool,
+    pub task_id: Option<String>,
 }
 
-fn annotate_action_result(
-    result: &mut AgentToolResult,
-    _tool_name: Option<&str>,
-    _detail_action: &Json,
-    action_cmd_line: &str,
-) {
-    if result.cmd_name.is_none() && !action_cmd_line.trim().is_empty() {
-        *result = result
-            .clone()
-            .with_command_metadata_from_line(action_cmd_line.trim());
-    }
+fn normalize_task_id(task_id: Option<String>) -> Option<String> {
+    task_id
+        .map(|task_id| task_id.trim().to_string())
+        .filter(|task_id| !task_id.is_empty())
 }
 
-fn build_action_error_result(
-    tool_name: Option<&str>,
-    detail_action: &Json,
-    action_cmd_line: &str,
-    message: &str,
-) -> AgentToolResult {
-    let mut result = AgentToolResult::from_details(json!({}))
-        .with_is_agent_tool(true)
-        .with_status(AgentToolStatus::Error)
-        .with_result(message.trim().to_string())
-        .with_output(message.trim().to_string());
-    annotate_action_result(&mut result, tool_name, detail_action, action_cmd_line);
-    result
+struct WorkSessionTaskDefaults {
+    title: String,
+    objective: String,
+    workspace_id: Option<String>,
 }
 
-fn insert_skipped_action_result(results: &mut ActionResultsMap, count: usize, reason: &str) {
-    if count == 0 {
-        return;
-    }
-    let mut result = AgentToolResult::from_details(json!({
-        "kind": "skipped",
-        "skipped_count": count,
-        "reason": reason,
-    }))
-    .with_status(AgentToolStatus::Pending)
-    .with_result(format!("skipped {count} action(s)"));
-    result.pending_reason = None;
-    results.insert(ACTION_RESULTS_SKIPPED_KEY.to_string(), result);
-}
-
-fn is_internal_action_result(exec_id: &str) -> bool {
-    exec_id.starts_with("__")
-}
-
-fn action_result_kind(result: &AgentToolResult) -> Option<&str> {
-    result
-        .details
-        .get("kind")
-        .and_then(Json::as_str)
+fn work_session_defaults_from_task(task: &Task) -> WorkSessionTaskDefaults {
+    let data = agent_delegate_task_data(task);
+    let title = data
+        .as_ref()
+        .and_then(|data| data.request.title.as_deref())
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| task.name.clone());
+    let objective = data
+        .as_ref()
+        .and_then(|data| data.request.purpose.as_deref())
         .or_else(|| {
-            if result.is_agent_tool {
-                Some("call_tool")
-            } else {
-                Some("exec")
-            }
+            data.as_ref()
+                .and_then(|data| data.request.input.as_ref())
+                .and_then(|input| input.get("text"))
+                .and_then(serde_json::Value::as_str)
         })
-}
-
-fn action_result_tool_name(result: &AgentToolResult) -> Option<String> {
-    result
-        .cmd_name
-        .as_deref()
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| task.name.clone());
+    let workspace_id = data
+        .as_ref()
+        .and_then(|data| data.route.as_ref())
+        .and_then(|route| route.get("workspace_id"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            data.as_ref()
+                .and_then(|data| data.progress.as_ref())
+                .and_then(|progress| progress.execution.as_ref())
+                .and_then(|execution| execution.get("workspace_id"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            data.as_ref()
+                .and_then(|data| data.request.input.as_ref())
+                .and_then(|input| input.get("workspace_id"))
+                .and_then(serde_json::Value::as_str)
+        })
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+        .or_else(|| {
+            data.as_ref().and_then(|data| {
+                if data.request.workspace_hints.len() == 1 {
+                    data.request
+                        .workspace_hints
+                        .first()
+                        .and_then(workspace_id_from_task_hint)
+                } else {
+                    None
+                }
+            })
+        });
+    WorkSessionTaskDefaults {
+        title,
+        objective,
+        workspace_id,
+    }
 }
 
-fn action_result_cmd_digest(result: &AgentToolResult) -> String {
-    if let Some(cmd_line) = result.command_line_text() {
-        let cmd_line = cmd_line.trim().to_string();
-        if !cmd_line.is_empty() {
-            return cmd_line;
+fn agent_delegate_task_data(task: &Task) -> Option<AgentDelegateTaskData> {
+    match parse_typed_task_data(
+        crate::agent_task_executor::TASK_TYPE_AGENT_DELEGATE,
+        crate::task_util::task_payload(task),
+    )
+    .ok()?
+    {
+        TypedTaskData::AgentDelegate(data) => Some(data),
+        _ => None,
+    }
+}
+
+fn workspace_id_from_task_hint(value: &serde_json::Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("workspace_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            value
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+pub(crate) fn agent_task_binding_from_task(task: &Task) -> AgentTaskBinding {
+    // The executing agent now lives inside the task payload
+    // (progress.execution.runner); the binding keeps recording it under the
+    // same name so existing session meta stays readable.
+    let runner = agent_delegate_task_data(task)
+        .and_then(|data| {
+            data.progress
+                .as_ref()
+                .and_then(|progress| progress.execution.as_ref())
+                .and_then(|execution| execution.get("runner"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    AgentTaskBinding {
+        task_id: task.task_id.clone(),
+        root_id: task.root_id.clone(),
+        task_type: TASK_TYPE_AGENT_DELEGATE.to_string(),
+        runner,
+        task_name: task.name.clone(),
+        user_id: task.creator.user_id.clone(),
+        app_id: task.creator.app_id.clone(),
+        parent_id: task.parent_id.clone(),
+    }
+}
+
+/// Mint a stable, short id with a prefix. Uses uuid v4 so concurrent
+/// callers don't collide. The prefix is informational — it makes
+/// debugging easier (`ws-...`, `fwd-...`).
+pub fn mint_session_id(prefix: &str) -> String {
+    let short = uuid::Uuid::new_v4().simple().to_string();
+    // Keep only the first 12 hex chars — full uuid is 32, which is
+    // visually noisy in logs and meta files.
+    let short = short.get(..12).unwrap_or(&short).to_string();
+    format!("{prefix}-{short}")
+}
+
+fn build_worksession_id(date: &str, title: &str) -> String {
+    let readable_title = sanitize_worksession_title(title);
+    format!("{date} {readable_title}")
+}
+
+fn meaningful_workspace_name(title: &str, objective: &str) -> String {
+    let source = if title.trim().is_empty() {
+        objective
+    } else {
+        title
+    };
+    sanitize_worksession_title(source)
+}
+
+fn sanitize_worksession_title(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(80));
+    let mut prev_space = false;
+    for ch in raw.trim().chars() {
+        let replacement = if ch.is_control()
+            || matches!(ch, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*')
+        {
+            ' '
+        } else {
+            ch
+        };
+        if replacement.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+            continue;
+        }
+        out.push(replacement);
+        prev_space = false;
+    }
+    let trimmed = out.trim_matches([' ', '.']).to_string();
+    if trimmed.is_empty() {
+        "未命名任务".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Render the work-session readme. Captures title / objective / origin
+/// session / reason messages so a later reader can reconstruct context
+/// without grovelling through agent logs.
+fn write_worksession_readme(
+    session_dir: &std::path::Path,
+    title: &str,
+    objective: &str,
+    created_by: &str,
+    reason_messages: &[String],
+) {
+    let mut buf = String::new();
+    if !title.is_empty() {
+        buf.push_str(&format!("# {title}\n\n"));
+    } else {
+        buf.push_str("# Work session\n\n");
+    }
+    if !objective.is_empty() {
+        buf.push_str("## Objective\n");
+        buf.push_str(objective);
+        buf.push_str("\n\n");
+    }
+    buf.push_str(&format!("## Origin\nCreated by session `{created_by}`.\n"));
+    if !reason_messages.is_empty() {
+        buf.push_str("\n## Reason messages\n");
+        for (i, m) in reason_messages.iter().enumerate() {
+            buf.push_str(&format!("{}. {}\n", i + 1, m.trim()));
         }
     }
-    action_result_tool_name(result).unwrap_or_else(|| "action".to_string())
-}
-
-fn action_result_error_text(result: &AgentToolResult) -> Option<String> {
-    result
-        .output
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            (result.status == AgentToolStatus::Error)
-                .then(|| result.summary.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
-}
-
-fn next_behavior_after_action_results<'a>(
-    results: &ActionResultsMap,
-    next_behavior: Option<&'a str>,
-) -> Option<&'a str> {
-    if results
-        .values()
-        .any(|result| result.status == AgentToolStatus::Error)
-    {
-        None
-    } else {
-        next_behavior
+    let path = session_dir.join("readme.md");
+    if let Err(err) = std::fs::write(&path, buf) {
+        warn!("opendan.agent: write {} failed: {err}", path.display());
     }
 }
 
-#[cfg(test)]
-fn action_result_skipped_count(result: &AgentToolResult) -> usize {
-    result
-        .details
-        .get("skipped_count")
-        .and_then(Json::as_u64)
-        .map(|value| value as usize)
+fn sanitize_session_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("anon");
+    }
+    out
+}
+
+async fn remove_dir_all_if_exists(path: PathBuf) -> Result<()> {
+    match tokio::fs::remove_dir_all(&path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(anyhow!("remove {} failed: {err}", path.display())),
+    }
+}
+
+fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
-#[cfg(test)]
-fn action_results_summary(results: &ActionResultsMap) -> String {
-    let mut success = 0usize;
-    let mut failed = 0usize;
-    let mut skipped = 0usize;
+fn self_improve_state_path(agent_root: &Path) -> PathBuf {
+    agent_root.join(".meta").join("self_improve_scheduler.json")
+}
 
-    for result in results.values() {
-        let skipped_count = action_result_skipped_count(result);
-        if skipped_count > 0 {
-            skipped = skipped.saturating_add(skipped_count);
-            continue;
-        }
-        match result.status {
-            AgentToolStatus::Error => failed = failed.saturating_add(1),
-            AgentToolStatus::Pending | AgentToolStatus::Success => {
-                success = success.saturating_add(1)
-            }
-        }
-    }
-
-    if skipped > 0 {
-        format!("SUCCESS ({success}), FAILED ({failed}), SKIPPED ({skipped})")
-    } else {
-        format!("SUCCESS ({success}), FAILED ({failed})")
+async fn load_self_improve_scheduler_state(agent_root: &Path) -> SelfImproveSchedulerState {
+    let path = self_improve_state_path(agent_root);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => SelfImproveSchedulerState::default(),
     }
 }
 
-#[cfg(test)]
-fn action_results_latest_pwd(results: &ActionResultsMap) -> Option<String> {
-    let mut exec_ids = results.keys().cloned().collect::<Vec<_>>();
-    exec_ids.sort();
-    exec_ids
-        .into_iter()
-        .filter_map(|exec_id| results.get(exec_id.as_str()))
-        .filter_map(extract_action_result_pwd)
-        .last()
-}
-
-fn extract_action_result_pwd(result: &crate::agent_tool::AgentToolResult) -> Option<String> {
-    let _ = result;
-    None
-}
-
-fn serialize_session_kevent_subscriptions(
-    subscriptions: &HashMap<String, HashSet<String>>,
-) -> Json {
-    let mut patterns = subscriptions.keys().cloned().collect::<Vec<_>>();
-    patterns.sort();
-
-    let mut out = serde_json::Map::new();
-    for pattern in patterns {
-        let Some(session_ids) = subscriptions.get(pattern.as_str()) else {
-            continue;
-        };
-        let mut session_ids = session_ids
-            .iter()
-            .map(|value| Json::String(value.clone()))
-            .collect::<Vec<_>>();
-        session_ids.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
-        out.insert(pattern, Json::Array(session_ids));
+async fn write_self_improve_scheduler_state(agent_root: &Path, state: &SelfImproveSchedulerState) {
+    let path = self_improve_state_path(agent_root);
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
     }
-    Json::Object(out)
-}
-
-fn parse_session_kevent_subscriptions(value: &Json) -> HashMap<String, HashSet<String>> {
-    let Some(obj) = value.as_object() else {
-        return HashMap::new();
-    };
-
-    let mut out = HashMap::<String, HashSet<String>>::new();
-    for (pattern, raw_session_ids) in obj {
-        let pattern = pattern.trim();
-        if pattern.is_empty() {
-            continue;
-        }
-        if validate_pattern(pattern).is_err() {
-            continue;
-        }
-        let Some(items) = raw_session_ids.as_array() else {
-            continue;
-        };
-        let mut session_ids = HashSet::<String>::new();
-        for item in items {
-            let Some(session_id) = item.as_str().map(str::trim) else {
-                continue;
-            };
-            if session_id.is_empty() {
-                continue;
-            }
-            session_ids.insert(session_id.to_string());
-        }
-        if !session_ids.is_empty() {
-            out.insert(pattern.to_string(), session_ids);
-        }
-    }
-    out
-}
-
-fn collect_session_kevent_targets_from_subscriptions(
-    subscriptions: &HashMap<String, HashSet<String>>,
-    event_id: &str,
-) -> Vec<String> {
-    let mut out = HashSet::<String>::new();
-    for (pattern, session_ids) in subscriptions {
-        if !match_event_patterns(std::slice::from_ref(pattern), event_id) {
-            continue;
-        }
-        for session_id in session_ids {
-            out.insert(session_id.clone());
-        }
-    }
-    let mut out = out.into_iter().collect::<Vec<_>>();
-    out.sort();
-    out
-}
-
-async fn load_session_kevent_subscriptions(
-    agent_env_root: &Path,
-) -> Result<HashMap<String, HashSet<String>>> {
-    let path = agent_env_root.join(SESSION_KEVENT_SUBSCRIPTIONS_FILE);
-    let exists = fs::try_exists(&path).await.map_err(|err| {
-        anyhow!(
-            "check kevent subscriptions file failed: path={} err={}",
-            path.display(),
-            err
-        )
-    })?;
-    if !exists {
-        return Ok(HashMap::new());
-    }
-
-    let raw = fs::read_to_string(&path).await.map_err(|err| {
-        anyhow!(
-            "read kevent subscriptions file failed: path={} err={}",
-            path.display(),
-            err
-        )
-    })?;
-    let value: Json = serde_json::from_str(&raw).map_err(|err| {
-        anyhow!(
-            "parse kevent subscriptions file failed: path={} err={}",
-            path.display(),
-            err
-        )
-    })?;
-    Ok(parse_session_kevent_subscriptions(&value))
-}
-
-async fn resolve_agent_env_root(agent_root: &Path) -> Result<PathBuf> {
-    let root = agent_root.to_path_buf();
-    info!(
-        "agent.persist_entity_prepare: kind=agent_env_root path={}",
-        root.display()
-    );
-    fs::create_dir_all(&root).await.map_err(|err| {
-        anyhow!(
-            "create agent env root failed: path={} err={}",
-            root.display(),
-            err
-        )
-    })?;
-    Ok(root)
-}
-
-async fn resolve_default_behavior_name(behavior_roots: &[PathBuf]) -> Option<String> {
-    for candidate in [AGENT_BEHAVIOR_ROUTER_RESOLVE] {
-        if behavior_exists(behavior_roots, candidate).await {
-            return Some(candidate.to_string());
-        }
-    }
-
-    for behavior_root in behavior_roots {
-        let mut read_dir = match fs::read_dir(behavior_root).await {
-            Ok(read_dir) => read_dir,
-            Err(_) => continue,
-        };
-        while let Some(entry) = read_dir.next_entry().await.ok()? {
-            let path = entry.path();
-            let ext = path
-                .extension()
-                .and_then(|v| v.to_str())
-                .map(|v| v.to_ascii_lowercase());
-            if matches!(ext.as_deref(), Some("yaml") | Some("yml") | Some("json")) {
-                if let Some(stem) = path.file_stem().and_then(|v| v.to_str()) {
-                    let trimmed = stem.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_string());
-                    }
-                }
-            } else if path.is_dir() {
-                if let Some(name) = path.file_name().and_then(|v| v.to_str()) {
-                    let trimmed = name.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-async fn resolve_default_worker_behavior_name(
-    behavior_roots: &[PathBuf],
-    default_behavior: &str,
-) -> String {
-    for candidate in ["plan", "do", AGENT_BEHAVIOR_ROUTER_RESOLVE] {
-        if behavior_exists(behavior_roots, candidate).await {
-            return candidate.to_string();
-        }
-    }
-
-    default_behavior.to_string()
-}
-
-async fn behavior_exists(behavior_roots: &[PathBuf], behavior_name: &str) -> bool {
-    for behavior_root in behavior_roots {
-        let dir_path = behavior_root.join(behavior_name);
-        if fs::metadata(&dir_path)
-            .await
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-        {
-            return true;
-        }
-
-        for ext in ["yaml", "yml", "json"] {
-            let path = behavior_root.join(format!("{behavior_name}.{ext}"));
-            if fs::metadata(&path)
-                .await
-                .map(|meta| meta.is_file())
-                .unwrap_or(false)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-async fn load_agent_did(
-    cfg: &AIAgentConfig,
-    agent_root: &Path,
-    package_root: Option<&Path>,
-) -> Result<String> {
-    if let Some(did) = cfg
-        .agent_did
-        .as_ref()
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(did.to_string());
-    }
-
-    for root in [Some(agent_root), package_root].into_iter().flatten() {
-        for name in AGENT_DOC_CANDIDATES {
-            let path = root.join(name);
-            let Some(raw) = read_text_if_exists(&path).await? else {
-                continue;
-            };
-            let parsed: Json = serde_json::from_str(&raw)
-                .with_context(|| format!("parse agent document failed: path={}", path.display()))?;
-            if let Some(did) = parsed
-                .get("id")
-                .or_else(|| parsed.get("did"))
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                return Ok(did.to_string());
-            }
-        }
-    }
-
-    let instance_name = cfg.agent_instance_id.trim();
-    if !instance_name.is_empty() {
-        return Ok(format!("did:opendan:{instance_name}"));
-    }
-
-    let dir_name = agent_root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("agent");
-    Ok(format!("did:opendan:{dir_name}"))
-}
-
-async fn build_behavior_roots(
-    agent_root: &Path,
-    package_root: Option<&Path>,
-    dir_name: &str,
-) -> Result<Vec<PathBuf>> {
-    let mut roots = Vec::new();
-    let env_behaviors_dir = agent_root.join(dir_name);
-    if is_existing_dir(&env_behaviors_dir).await {
-        roots.push(env_behaviors_dir);
-    }
-
-    if let Some(package_root) = package_root {
-        let package_behaviors_dir = package_root.join(dir_name);
-        if is_existing_dir(&package_behaviors_dir).await {
-            roots.push(package_behaviors_dir);
-        }
-    }
-
-    if roots.is_empty() {
-        let fallback = agent_root.join(dir_name);
-        info!(
-            "agent.persist_entity_prepare: kind=behaviors_dir path={}",
-            fallback.display()
-        );
-        fs::create_dir_all(&fallback).await.map_err(|err| {
-            anyhow!(
-                "create behaviors dir failed: path={} err={}",
-                fallback.display(),
-                err
-            )
-        })?;
-        roots.push(fallback);
-    }
-
-    Ok(roots)
-}
-
-async fn load_overlay_text_resource(
-    agent_root: &Path,
-    package_root: Option<&Path>,
-    candidate_rel_paths: &[&str],
-    default_text: &str,
-) -> Result<(String, ResourceOverlayStatus)> {
-    let mut status = ResourceOverlayStatus {
-        selected_path: None,
-        env_path: None,
-        package_path: None,
-    };
-    let mut selected_content = None::<String>;
-
-    for rel_path in candidate_rel_paths {
-        let path = agent_root.join(rel_path);
-        if let Some(content) = read_text_if_exists(&path).await? {
-            status.env_path = Some(path);
-            selected_content = Some(content);
-            break;
-        }
-    }
-
-    if let Some(package_root) = package_root {
-        for rel_path in candidate_rel_paths {
-            let path = package_root.join(rel_path);
-            if let Some(content) = read_text_if_exists(&path).await? {
-                status.package_path = Some(path);
-                if selected_content.is_none() {
-                    selected_content = Some(content);
-                }
-                break;
-            }
-        }
-    }
-
-    status.selected_path = status
-        .env_path
-        .clone()
-        .or_else(|| status.package_path.clone());
-
-    Ok((
-        selected_content.unwrap_or_else(|| default_text.to_string()),
-        status,
-    ))
-}
-
-async fn load_overlay_json_resource(
-    agent_root: &Path,
-    package_root: Option<&Path>,
-    candidate_rel_paths: &[&str],
-) -> Result<(Option<Json>, ResourceOverlayStatus)> {
-    let mut status = ResourceOverlayStatus {
-        selected_path: None,
-        env_path: None,
-        package_path: None,
-    };
-    let mut selected_json = None::<Json>;
-
-    for rel_path in candidate_rel_paths {
-        let path = agent_root.join(rel_path);
-        let Some(content) = read_text_if_exists(&path).await? else {
-            continue;
-        };
-        let parsed = serde_json::from_str::<Json>(&content)
-            .with_context(|| format!("parse json resource failed: path={}", path.display()))?;
-        status.env_path = Some(path);
-        selected_json = Some(parsed);
-        break;
-    }
-
-    if let Some(package_root) = package_root {
-        for rel_path in candidate_rel_paths {
-            let path = package_root.join(rel_path);
-            let Some(content) = read_text_if_exists(&path).await? else {
-                continue;
-            };
-            let parsed = serde_json::from_str::<Json>(&content)
-                .with_context(|| format!("parse json resource failed: path={}", path.display()))?;
-            status.package_path = Some(path);
-            if selected_json.is_none() {
-                selected_json = Some(parsed);
-            }
-            break;
-        }
-    }
-
-    status.selected_path = status
-        .env_path
-        .clone()
-        .or_else(|| status.package_path.clone());
-
-    Ok((selected_json, status))
-}
-
-async fn load_local_agent_config_overrides(
-    agent_root: &Path,
-    package_root: Option<&Path>,
-) -> Result<(AgentLocalConfigOverrides, ResourceOverlayStatus)> {
-    let (raw_config, status) =
-        load_overlay_json_resource(agent_root, package_root, &AGENT_CONFIG_CANDIDATES).await?;
-    let overrides = match raw_config {
-        Some(config) => AgentLocalConfigOverrides::from_json(&config)
-            .map_err(|err| anyhow!("parse local agent config failed: {err}"))?,
-        None => AgentLocalConfigOverrides::default(),
-    };
-    Ok((overrides, status))
-}
-
-fn log_overlay_status(resource: &str, instance_id: &str, status: &ResourceOverlayStatus) {
-    info!(
-        "agent.loader.resource: instance={} resource={} selected={} env_override={} package_default={}",
-        instance_id,
-        resource,
-        status
-            .selected_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<builtin-default>".to_string()),
-        status.env_path.is_some(),
-        status.package_path.is_some()
-    );
-}
-
-async fn read_text_if_exists(path: &Path) -> Result<Option<String>> {
-    match fs::read_to_string(path).await {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(anyhow!(
-            "read file failed: path={} err={}",
-            path.display(),
-            err
-        )),
+    if let Ok(bytes) = serde_json::to_vec_pretty(state) {
+        let _ = tokio::fs::write(path, bytes).await;
     }
 }
 
-fn to_abs_path(path: &Path) -> Result<PathBuf> {
-    ::agent_tool::to_abs_path(path).map_err(|err| anyhow!(err.to_string()))
-}
-
-async fn is_existing_dir(path: &Path) -> bool {
-    fs::metadata(path)
-        .await
-        .map(|meta| meta.is_dir())
-        .unwrap_or(false)
-}
-
-fn compact_text_for_log(value: &str, max_chars: usize) -> String {
-    let escaped = value.replace('\n', "\\n").replace('\r', "\\r");
-    if escaped.chars().count() <= max_chars {
-        escaped
-    } else {
-        format!(
-            "{}...[TRUNCATED]",
-            escaped.chars().take(max_chars).collect::<String>()
-        )
-    }
-}
-
-fn is_reminder_memory_key(key: &str) -> bool {
-    let normalized = key.trim().to_ascii_lowercase();
-    normalized.contains("reminder") || normalized.contains("remind")
-}
-
-fn is_reminder_memory_content(value: &Json) -> bool {
-    match value {
-        Json::String(raw) => {
-            let normalized = raw.trim().to_ascii_lowercase();
-            normalized.contains("reminder") || normalized.contains("remind")
-        }
-        Json::Object(map) => {
-            for field in ["type", "kind", "title", "summary", "content"] {
-                let Some(raw) = map.get(field).and_then(Json::as_str) else {
-                    continue;
-                };
-                let normalized = raw.trim().to_ascii_lowercase();
-                if normalized.contains("reminder") || normalized.contains("remind") {
-                    return true;
-                }
-            }
-            false
-        }
-        _ => false,
-    }
-}
-
-fn parse_memory_content_for_self_check(content: &str) -> Json {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return Json::String(String::new());
-    }
-    serde_json::from_str::<Json>(trimmed).unwrap_or_else(|_| Json::String(trimmed.to_string()))
-}
-
-fn memory_has_self_check_explicit_time(
-    key: &str,
-    content: &Json,
-    current_time: DateTime<Utc>,
-) -> bool {
-    let key_match = match_self_check_memory_key(key, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
-    let value_match =
-        match_self_check_memory_value(content, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
-    key_match.has_explicit_time || value_match.has_explicit_time
-}
-
-fn self_check_last_trigger_ms(meta: &Json) -> Option<u64> {
-    meta.as_object()
-        .and_then(|map| map.get(SELF_CHECK_META_LAST_TRIGGER_MS))
-        .and_then(Json::as_u64)
-}
-
-fn build_self_check_trigger_event_data(
-    tick: u64,
-    current_time: DateTime<Utc>,
-    last_trigger_ms: u64,
-) -> Json {
-    let last_trigger_time = if last_trigger_ms == 0 {
-        Json::Null
-    } else {
-        Utc.timestamp_millis_opt(last_trigger_ms as i64)
-            .single()
-            .map(|value| Json::String(value.to_rfc3339()))
-            .unwrap_or(Json::Null)
-    };
-    let last_trigger_time_ms = if last_trigger_ms == 0 {
-        Json::Null
-    } else {
-        Json::from(last_trigger_ms)
-    };
-
-    json!({
-        "tick": tick,
-        "current_time": current_time.to_rfc3339(),
-        "current_time_ms": current_time.timestamp_millis().max(0) as u64,
-        "last_trigger_time": last_trigger_time,
-        "last_trigger_time_ms": last_trigger_time_ms,
-    })
-}
-
-fn set_self_check_last_trigger_ms(meta: &mut Json, trigger_ms: u64) {
-    if !meta.is_object() {
-        *meta = json!({});
-    }
-    if let Some(map) = meta.as_object_mut() {
-        map.insert(
-            SELF_CHECK_META_LAST_TRIGGER_MS.to_string(),
-            Json::from(trigger_ms),
-        );
-    }
-}
-
-fn match_self_check_memory_item(
-    item: &crate::agent_tool::MemoryRankItem,
-    current_time: DateTime<Utc>,
-    exact_window_ms: u64,
-) -> SelfCheckMemoryMatch {
-    let mut matched = match_self_check_memory_value(&item.content, current_time, exact_window_ms);
-    let key_matched = match_self_check_memory_key(item.key.as_str(), current_time, exact_window_ms);
-    matched.has_explicit_time |= key_matched.has_explicit_time;
-    matched.retained |= key_matched.retained;
-    matched.exact_time_hit |= key_matched.exact_time_hit;
-    matched.coarse_time_hit |= key_matched.coarse_time_hit;
-    matched
-}
-
-fn match_self_check_memory_value(
-    value: &Json,
-    current_time: DateTime<Utc>,
-    exact_window_ms: u64,
-) -> SelfCheckMemoryMatch {
-    let mut out = SelfCheckMemoryMatch::default();
-    match value {
-        Json::Object(map) => {
-            for (key, child) in map {
-                if is_self_check_time_field(key.as_str()) {
-                    let direct = match_self_check_time_field(child, current_time, exact_window_ms);
-                    out.has_explicit_time |= direct.has_explicit_time;
-                    out.retained |= direct.retained;
-                    out.exact_time_hit |= direct.exact_time_hit;
-                    out.coarse_time_hit |= direct.coarse_time_hit;
-                }
-                let nested = match_self_check_memory_value(child, current_time, exact_window_ms);
-                out.has_explicit_time |= nested.has_explicit_time;
-                out.retained |= nested.retained;
-                out.exact_time_hit |= nested.exact_time_hit;
-                out.coarse_time_hit |= nested.coarse_time_hit;
-            }
-        }
-        Json::Array(items) => {
-            for child in items {
-                let nested = match_self_check_memory_value(child, current_time, exact_window_ms);
-                out.has_explicit_time |= nested.has_explicit_time;
-                out.retained |= nested.retained;
-                out.exact_time_hit |= nested.exact_time_hit;
-                out.coarse_time_hit |= nested.coarse_time_hit;
-            }
-        }
-        Json::String(text) => {
-            let text_match = match_self_check_text(text.as_str(), current_time, exact_window_ms);
-            out.has_explicit_time |= text_match.has_explicit_time;
-            out.retained |= text_match.retained;
-            out.exact_time_hit |= text_match.exact_time_hit;
-            out.coarse_time_hit |= text_match.coarse_time_hit;
-        }
-        _ => {}
-    }
-    out
-}
-
-fn match_self_check_text(
-    text: &str,
-    current_time: DateTime<Utc>,
-    exact_window_ms: u64,
-) -> SelfCheckMemoryMatch {
-    let mut out = SelfCheckMemoryMatch::default();
-    let current_ms = current_time.timestamp_millis().max(0) as u64;
-
-    if let Some(ts_ms) = scan_text_for_absolute_timestamp_ms(text) {
-        out.has_explicit_time = true;
-        let hit = current_ms.abs_diff(ts_ms) <= exact_window_ms;
-        out.exact_time_hit |= hit;
-        out.retained |= hit;
-    }
-
-    if let Some((date, _, date_end)) = extract_self_check_date_span_from_text(text) {
-        out.has_explicit_time = true;
-        if let Some((hour, minute)) = extract_self_check_time_of_day_from_key(text, date_end) {
-            if let Some(ts_ms) = build_local_datetime_timestamp_ms(date, hour, minute) {
-                let hit = current_ms.abs_diff(ts_ms) <= exact_window_ms;
-                out.exact_time_hit |= hit;
-                out.retained |= hit;
-            } else {
-                out.coarse_time_hit = true;
-                out.retained = true;
-            }
-        } else {
-            out.coarse_time_hit = true;
-            out.retained = true;
-        }
-    }
-
-    out
-}
-
-fn scan_text_for_absolute_timestamp_ms(text: &str) -> Option<u64> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+fn choose_self_improve_trigger(
+    state: &SelfImproveSchedulerState,
+    pending_rounds: u64,
+    now: chrono::DateTime<Local>,
+) -> Option<SelfImproveTriggerKind> {
+    if pending_rounds == 0 {
         return None;
     }
-    if let Some(direct) = parse_self_check_exact_timestamp_ms(&Json::String(trimmed.to_string())) {
-        return Some(direct);
+    if pending_rounds
+        >= state
+            .last_threshold_trigger_pending_rounds
+            .saturating_add(SELF_IMPROVE_THRESHOLD_PENDING_ROUNDS)
+    {
+        return Some(SelfImproveTriggerKind::Threshold);
     }
-    let chars = trimmed.chars().collect::<Vec<_>>();
-    let len = chars.len();
-    let mut start = 0usize;
-    while start < len {
-        if chars[start].is_ascii_digit()
-            && start + 10 <= len
-            && chars[start + 4] == '-'
-            && chars[start + 7] == '-'
-        {
-            for window in [25usize, 19, 16, 10] {
-                if start + window > len {
-                    continue;
-                }
-                let candidate: String = chars[start..start + window].iter().collect();
-                if let Some(parsed) =
-                    parse_self_check_exact_timestamp_ms(&Json::String(candidate.clone()))
-                {
-                    return Some(parsed);
-                }
-            }
-        }
-        start += 1;
+    let today = local_date_string(now);
+    if now.hour() >= SELF_IMPROVE_DAILY_CHECK_HOUR && state.last_daily_check_date != today {
+        return Some(SelfImproveTriggerKind::Daily);
     }
     None
 }
 
-fn is_self_check_time_field(key: &str) -> bool {
-    matches!(
-        key.trim().to_ascii_lowercase().as_str(),
-        "trigger_at"
-            | "trigger_time"
-            | "time"
-            | "date"
-            | "datetime"
-            | "start_at"
-            | "start_time"
-            | "end_at"
-            | "end_time"
-            | "deadline"
-            | "deadline_at"
-            | "due_at"
-            | "due_time"
-            | "scheduled_at"
-            | "scheduled_for"
-            | "occur_at"
-            | "occur_time"
-            | "remind_at"
-            | "remind"
-            | "reminder_at"
-            | "reminder_time"
-            | "when"
-            | "at"
-            | "next_check"
-            | "next_check_at"
-            | "next_run"
-            | "next_run_at"
-            | "next_trigger"
-            | "next_reminder"
-            | "next_reminder_at"
-            | "timestamp"
-            | "ts"
+fn local_date_string(now: chrono::DateTime<Local>) -> String {
+    format!("{:04}-{:02}-{:02}", now.year(), now.month(), now.day())
+}
+
+fn next_self_improve_stage1_session_id(state: &SelfImproveSchedulerState) -> String {
+    format!(
+        "{}-{}",
+        SELF_IMPROVE_STAGE1_SESSION_PREFIX,
+        state.next_stage1_session_seq.saturating_add(1)
     )
 }
 
-fn match_self_check_time_field(
-    value: &Json,
-    current_time: DateTime<Utc>,
-    exact_window_ms: u64,
-) -> SelfCheckMemoryMatch {
-    if let Some(timestamp_ms) = parse_self_check_exact_timestamp_ms(value) {
-        let current_ms = current_time.timestamp_millis().max(0) as u64;
-        let delta = current_ms.abs_diff(timestamp_ms);
-        let hit = delta <= exact_window_ms;
-        return SelfCheckMemoryMatch {
-            has_explicit_time: true,
-            retained: hit,
-            exact_time_hit: hit,
-            coarse_time_hit: false,
+fn choose_self_improve_stage2_session_id(
+    state: &SelfImproveSchedulerState,
+    now_ms: u64,
+) -> SelfImproveStage2SessionChoice {
+    let existing = state.last_stage2_session_id.trim();
+    let reuse_existing = !existing.is_empty()
+        && now_ms.saturating_sub(state.last_stage2_triggered_at_ms)
+            <= SELF_IMPROVE_STAGE2_ROTATE_AFTER_MS;
+    if reuse_existing {
+        return SelfImproveStage2SessionChoice {
+            session_id: existing.to_string(),
+            rotated: false,
         };
     }
+    SelfImproveStage2SessionChoice {
+        session_id: format!(
+            "{}-{}",
+            SELF_IMPROVE_STAGE2_SESSION_PREFIX,
+            state.next_stage2_session_seq.saturating_add(1)
+        ),
+        rotated: true,
+    }
+}
 
-    if parse_self_check_coarse_date(value).is_some() {
-        return SelfCheckMemoryMatch {
-            has_explicit_time: true,
-            retained: true,
-            exact_time_hit: false,
-            coarse_time_hit: true,
+fn choose_self_improve_skill_stage2_session_id(
+    state: &SelfImproveSchedulerState,
+    now_ms: u64,
+) -> SelfImproveStage2SessionChoice {
+    let existing = state.last_skill_stage2_session_id.trim();
+    let reuse_existing = !existing.is_empty()
+        && now_ms.saturating_sub(state.last_skill_stage2_triggered_at_ms)
+            <= SELF_IMPROVE_STAGE2_ROTATE_AFTER_MS;
+    if reuse_existing {
+        return SelfImproveStage2SessionChoice {
+            session_id: existing.to_string(),
+            rotated: false,
         };
     }
-
-    SelfCheckMemoryMatch::default()
-}
-
-fn match_self_check_memory_key(
-    key: &str,
-    current_time: DateTime<Utc>,
-    exact_window_ms: u64,
-) -> SelfCheckMemoryMatch {
-    let Some((date, _, date_end)) = extract_self_check_date_span_from_text(key) else {
-        return SelfCheckMemoryMatch::default();
-    };
-    let time_of_day = extract_self_check_time_of_day_from_key(key, date_end);
-    if let Some((hour, minute)) = time_of_day {
-        let Some(timestamp_ms) = build_local_datetime_timestamp_ms(date, hour, minute) else {
-            return SelfCheckMemoryMatch::default();
-        };
-        let current_ms = current_time.timestamp_millis().max(0) as u64;
-        let delta = current_ms.abs_diff(timestamp_ms);
-        let hit = delta <= exact_window_ms;
-        return SelfCheckMemoryMatch {
-            has_explicit_time: true,
-            retained: hit,
-            exact_time_hit: hit,
-            coarse_time_hit: false,
-        };
-    }
-
-    SelfCheckMemoryMatch {
-        has_explicit_time: true,
-        retained: true,
-        exact_time_hit: false,
-        coarse_time_hit: true,
+    SelfImproveStage2SessionChoice {
+        session_id: format!(
+            "{}-{}",
+            SELF_IMPROVE_SKILL_STAGE2_SESSION_PREFIX,
+            state.next_skill_stage2_session_seq.saturating_add(1)
+        ),
+        rotated: true,
     }
 }
 
-fn parse_self_check_exact_timestamp_ms(value: &Json) -> Option<u64> {
-    if let Some(parsed) = value.as_u64() {
-        return Some(parsed);
+async fn self_improve_session_can_start(session: &AgentSession) -> bool {
+    let meta = session.meta.lock().await;
+    meta.internal_continuation.is_none()
+        && !matches!(
+            meta.status,
+            SessionStatus::Running | SessionStatus::WaitingTool
+        )
+}
+
+fn self_improve_trigger_label(trigger: SelfImproveTriggerKind) -> &'static str {
+    match trigger {
+        SelfImproveTriggerKind::Daily => "daily",
+        SelfImproveTriggerKind::Threshold => "threshold",
     }
-    if let Some(parsed) = value.as_i64() {
-        if parsed > 0 {
-            return Some(parsed as u64);
+}
+
+fn select_self_improve_batch(
+    targets: &[SelfImproveTargetSession],
+) -> Vec<SelfImproveTargetSession> {
+    let mut out = Vec::new();
+    let mut pending_rounds = 0_u64;
+    for target in targets {
+        if out.len() >= SELF_IMPROVE_MAX_TARGET_SESSIONS_PER_WAKE {
+            break;
         }
-    }
-    let raw = value.as_str()?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    if raw.parse::<u64>().ok().is_some() {
-        return raw.parse::<u64>().ok();
-    }
-    if raw
-        .parse::<i64>()
-        .ok()
-        .filter(|parsed| *parsed > 0)
-        .is_some()
-    {
-        return raw.parse::<i64>().ok().map(|parsed| parsed as u64);
-    }
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
-        return Some(parsed.timestamp_millis().max(0) as u64);
-    }
-    for format in [
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y/%m/%d %H:%M",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M",
-    ] {
-        if let Some(parsed) = parse_local_naive_datetime_to_utc(raw, format) {
-            return Some(parsed.timestamp_millis().max(0) as u64);
+        if !out.is_empty()
+            && pending_rounds.saturating_add(target.pending_rounds)
+                > SELF_IMPROVE_MAX_PENDING_ROUNDS_PER_WAKE
+        {
+            break;
         }
+        pending_rounds = pending_rounds.saturating_add(target.pending_rounds);
+        out.push(target.clone());
     }
-    None
+    out
 }
 
-fn parse_self_check_coarse_date(value: &Json) -> Option<NaiveDate> {
-    let raw = value.as_str()?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    for format in ["%Y-%m-%d", "%Y/%m/%d"] {
-        if let Ok(date) = NaiveDate::parse_from_str(raw, format) {
-            return Some(date);
-        }
-    }
-    None
+fn render_self_improve_stage2_prompt(
+    state: &SelfImproveSchedulerState,
+    session_id: &str,
+    rotated: bool,
+) -> String {
+    format!(
+        "Internal Agent State Self Improve Stage2 wakeup.\n\
+This wakeup is based on a persisted Stage1 completion state, not external user input.\n\
+stage2_session_id: {}\n\
+stage2_session_rotated: {}\n\
+last_stage1_completed_seq: {}\n\
+last_stage1_completed_at_ms: {}\n\
+last_stage2_triggered_at_ms: {}\n\
+\n\
+Condition satisfied: Stage1 has completed at least once and pending memory attention signals exist.\n\
+Run Stage2 now: Attention Signals -> Agent Memory Graph.\n\
+First call ListPendingAttentionSignals, then consume applicable non-skill-gap signals into Agent Memory and mark processed signals consumed.\n",
+        session_id,
+        rotated,
+        state.last_stage1_completed_seq,
+        state.last_stage1_completed_at_ms,
+        state.last_stage2_triggered_at_ms
+    )
 }
 
-fn parse_local_naive_datetime_to_utc(value: &str, format: &str) -> Option<DateTime<Utc>> {
-    let naive = NaiveDateTime::parse_from_str(value, format).ok()?;
-    match Local.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
-        chrono::LocalResult::Ambiguous(dt, _) => Some(dt.with_timezone(&Utc)),
-        chrono::LocalResult::None => None,
-    }
+fn render_self_improve_skill_stage2_prompt(
+    state: &SelfImproveSchedulerState,
+    session_id: &str,
+    rotated: bool,
+) -> String {
+    format!(
+        "Internal Agent State Self Improve Candidate Skill Miner wakeup.\n\
+This wakeup is based on a persisted Stage1 completion state, not external user input.\n\
+skill_stage2_session_id: {}\n\
+skill_stage2_session_rotated: {}\n\
+last_stage1_completed_seq: {}\n\
+last_stage1_completed_at_ms: {}\n\
+last_skill_stage2_triggered_at_ms: {}\n\
+\n\
+Condition satisfied: Stage1 has completed at least once and pending skill_coverage_gap attention signals exist.\n\
+Run Candidate Skill Miner now: Skill Coverage Gap Signals -> New Skill candidate decision.\n\
+First call ListPendingAttentionSignals, process only skill_coverage_gap signals, and mark only processed skill_coverage_gap signals consumed.\n",
+        session_id,
+        rotated,
+        state.last_stage1_completed_seq,
+        state.last_stage1_completed_at_ms,
+        state.last_skill_stage2_triggered_at_ms
+    )
 }
 
-fn build_local_datetime_timestamp_ms(date: NaiveDate, hour: u32, minute: u32) -> Option<u64> {
-    let naive = date.and_hms_opt(hour, minute, 0)?;
-    let local = match Local.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) => dt,
-        chrono::LocalResult::Ambiguous(dt, _) => dt,
-        chrono::LocalResult::None => return None,
-    };
-    Some(local.with_timezone(&Utc).timestamp_millis().max(0) as u64)
+fn render_self_improve_stage1_prompt(
+    trigger: SelfImproveTriggerKind,
+    total_pending_rounds: u64,
+    batch_pending_rounds: u64,
+    total_target_sessions: usize,
+    targets: &[SelfImproveTargetSession],
+    session_id: &str,
+) -> String {
+    let now = Utc::now().to_rfc3339();
+    let mut out = format!(
+        "Internal Agent State Self Improve trigger.\n\
+This is an internal Agent session, not an external user input.\n\
+stage1_session_id: {}\n\
+stage1_session_rotated: true\n\
+trigger_type: {}\n\
+triggered_at: {}\n\
+total_target_sessions: {}\n\
+batch_target_sessions: {}\n\
+total_pending_rounds: {}\n\
+batch_pending_rounds: {}\n\
+max_target_sessions_per_wake: {}\n\
+max_pending_rounds_per_wake: {}\n\
+\n\
+Run Stage1 first: session-history => attention/self-improve signals.\n\
+After Stage1, end this session. Stage2 is a separate internal session and is woken by persisted Stage1 completion plus pending signals.\n\
+Do not scan any self_improve session history.\n\
+This wakeup is a bounded batch. Process only the target sessions listed below; unlisted backlog remains for later wakeups.\n\
+\n\
+Target sessions:\n",
+        session_id,
+        self_improve_trigger_label(trigger),
+        now,
+        total_target_sessions,
+        targets.len(),
+        total_pending_rounds,
+        batch_pending_rounds,
+        SELF_IMPROVE_MAX_TARGET_SESSIONS_PER_WAKE,
+        SELF_IMPROVE_MAX_PENDING_ROUNDS_PER_WAKE
+    );
+    for target in targets {
+        out.push_str(&format!(
+            "- session_id: {}\n  owner: {}\n  committed_round_index: {}\n  latest_round_index: {}\n  pending_rounds: {}\n  window_start: after_round_{}\n  window_end: round_{}\n",
+            target.session_id,
+            if target.owner.trim().is_empty() { "system" } else { target.owner.as_str() },
+            target.committed_round_index,
+            target.latest_round_index,
+            target.pending_rounds,
+            target.committed_round_index,
+            target.latest_round_index
+        ));
+    }
+    out
 }
 
-fn extract_self_check_date_span_from_text(value: &str) -> Option<(NaiveDate, usize, usize)> {
-    let chars = value.chars().collect::<Vec<_>>();
-    for start in 0..chars.len() {
-        for len in [10usize] {
-            if start + len > chars.len() {
-                continue;
-            }
-            let candidate = chars[start..start + len].iter().collect::<String>();
-            for format in ["%Y-%m-%d", "%Y/%m/%d"] {
-                if let Ok(date) = NaiveDate::parse_from_str(candidate.as_str(), format) {
-                    return Some((date, start, start + len));
-                }
-            }
-        }
+fn truncate(s: &str, limit: usize) -> String {
+    if s.chars().count() <= limit {
+        return s.to_string();
     }
-    None
-}
-
-fn extract_self_check_time_of_day_from_key(value: &str, date_end: usize) -> Option<(u32, u32)> {
-    let suffix = value
-        .get(date_end..)?
-        .trim_start_matches(['_', '-', ' ', 'T']);
-    let chars = suffix.chars().collect::<Vec<_>>();
-    if chars.len() < 4 || !chars[0].is_ascii_digit() {
-        return None;
+    let mut acc = String::with_capacity(limit + 1);
+    for ch in s.chars().take(limit) {
+        acc.push(ch);
     }
-
-    let mut hour_end = 0usize;
-    while hour_end < chars.len() && chars[hour_end].is_ascii_digit() && hour_end < 2 {
-        hour_end += 1;
-    }
-    if hour_end == 0 {
-        return None;
-    }
-    let hour = chars[..hour_end]
-        .iter()
-        .collect::<String>()
-        .parse::<u32>()
-        .ok()?;
-    if hour >= 24 {
-        return None;
-    }
-
-    if hour_end >= chars.len() || !matches!(chars[hour_end], ':' | '-') {
-        return None;
-    }
-    let minute_start = hour_end + 1;
-    let minute_end = minute_start + 2;
-    if minute_end > chars.len() {
-        return None;
-    }
-    let minute = chars[minute_start..minute_end]
-        .iter()
-        .collect::<String>()
-        .parse::<u32>()
-        .ok()?;
-    if minute >= 60 {
-        return None;
-    }
-
-    Some((hour, minute))
-}
-
-fn now_ms() -> u64 {
-    ::agent_tool::now_ms()
-}
-
-struct SimpleTokenizer;
-
-impl Tokenizer for SimpleTokenizer {
-    fn count_tokens(&self, text: &str) -> u32 {
-        text.split_whitespace().count() as u32
-    }
+    acc.push('…');
+    acc
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
-
+    use crate::agent_session::WorksessionReportPhase;
+    use crate::worklog::{WorklogService, WorklogToolConfig};
     use async_trait::async_trait;
-    use serde_json::json;
-    use tempfile::tempdir;
-    use tokio::fs;
+    use buckyos_api::{
+        ActorRef, AiMethodRequest, AiMethodResponse, AiccClient, AiccHandler, CancelResponse,
+        CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetSubtasksReq,
+        GetTaskReq, ListTaskNotesReq, ListTasksReq, ReportProgressReq, ReportRunningReq,
+        ReportStartedReq, ReportWaitingReq, TaskControlProfile, TaskManagerClient,
+        TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage,
+    };
+    use kRPC::{RPCContext, RPCErrors};
+    use std::ops::Range;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
-    use crate::test_utils::MockTaskMgrHandler;
-
-    #[derive(Clone)]
-    struct TestMsgQueueState {
-        config: QueueConfig,
-        messages: Vec<Message>,
-        next_index: u64,
+    #[test]
+    fn normalize_task_id_omits_blank_values() {
+        assert_eq!(normalize_task_id(None), None);
+        assert_eq!(normalize_task_id(Some("".to_string())), None);
+        assert_eq!(normalize_task_id(Some("  ".to_string())), None);
+        assert_eq!(
+            normalize_task_id(Some(" t-1 ".to_string())),
+            Some("t-1".to_string())
+        );
     }
 
-    #[derive(Clone)]
-    struct TestSubscriptionState {
-        queue_urn: String,
-        cursor: u64,
+    #[test]
+    fn sanitizes_session_segment() {
+        assert_eq!(sanitize_session_segment("did:dev:alice"), "did_dev_alice");
+        assert_eq!(sanitize_session_segment(""), "anon");
     }
 
-    struct TestMsgQueue {
-        queues: Mutex<HashMap<String, TestMsgQueueState>>,
-        subscriptions: Mutex<HashMap<String, TestSubscriptionState>>,
-        next_subscription_id: AtomicU64,
+    #[test]
+    fn self_improve_stage1_session_id_always_advances() {
+        let mut state = SelfImproveSchedulerState::default();
+        assert_eq!(
+            next_self_improve_stage1_session_id(&state),
+            "self_improve_signals-1"
+        );
+        state.next_stage1_session_seq = state.next_stage1_session_seq.saturating_add(1);
+        assert_eq!(
+            next_self_improve_stage1_session_id(&state),
+            "self_improve_signals-2"
+        );
     }
 
-    impl TestMsgQueue {
-        fn new() -> Self {
-            Self {
-                queues: Mutex::new(HashMap::new()),
-                subscriptions: Mutex::new(HashMap::new()),
-                next_subscription_id: AtomicU64::new(1),
-            }
+    #[test]
+    fn self_improve_stage2_session_id_reuses_within_rotation_window() {
+        let mut state = SelfImproveSchedulerState {
+            next_stage2_session_seq: 1,
+            last_stage2_session_id: "self_improve_set_memory-1".to_string(),
+            last_stage2_triggered_at_ms: 10_000,
+            ..SelfImproveSchedulerState::default()
+        };
+        let choice = choose_self_improve_stage2_session_id(&state, 10_000 + 60_000);
+        assert_eq!(choice.session_id, "self_improve_set_memory-1");
+        assert!(!choice.rotated);
+
+        state.last_stage2_triggered_at_ms = 10_000;
+        let choice = choose_self_improve_stage2_session_id(
+            &state,
+            10_000 + SELF_IMPROVE_STAGE2_ROTATE_AFTER_MS + 1,
+        );
+        assert_eq!(choice.session_id, "self_improve_set_memory-2");
+        assert!(choice.rotated);
+    }
+
+    #[test]
+    fn self_improve_skill_stage2_session_id_reuses_within_rotation_window() {
+        let mut state = SelfImproveSchedulerState {
+            next_skill_stage2_session_seq: 1,
+            last_skill_stage2_session_id: "try_create_new_skill-1".to_string(),
+            last_skill_stage2_triggered_at_ms: 10_000,
+            ..SelfImproveSchedulerState::default()
+        };
+        let choice = choose_self_improve_skill_stage2_session_id(&state, 10_000 + 60_000);
+        assert_eq!(choice.session_id, "try_create_new_skill-1");
+        assert!(!choice.rotated);
+
+        state.last_skill_stage2_triggered_at_ms = 10_000;
+        let choice = choose_self_improve_skill_stage2_session_id(
+            &state,
+            10_000 + SELF_IMPROVE_STAGE2_ROTATE_AFTER_MS + 1,
+        );
+        assert_eq!(choice.session_id, "try_create_new_skill-2");
+        assert!(choice.rotated);
+    }
+
+    #[test]
+    fn builds_human_readable_worksession_id() {
+        assert_eq!(
+            build_worksession_id("2026-05-20", "开发网页版连连看小游戏"),
+            "2026-05-20 开发网页版连连看小游戏"
+        );
+    }
+
+    #[test]
+    fn sanitizes_worksession_title_for_directory_name() {
+        assert_eq!(
+            build_worksession_id("2026-05-20", "  a/b\\c:d*e? \n f  "),
+            "2026-05-20 a b c d e f"
+        );
+        assert_eq!(
+            build_worksession_id("2026-05-20", "../"),
+            "2026-05-20 未命名任务"
+        );
+    }
+
+    #[test]
+    fn meaningful_workspace_name_prefers_title_then_objective() {
+        assert_eq!(
+            meaningful_workspace_name("Frontend Snake Game", "ignored"),
+            "Frontend Snake Game"
+        );
+        assert_eq!(
+            meaningful_workspace_name("", "Build a pure front-end Snake mini-game"),
+            "Build a pure front-end Snake mini-game"
+        );
+    }
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hi", 10), "hi");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        assert_eq!(truncate("abcdefghij", 4), "abcd…");
+    }
+
+    #[test]
+    fn forward_route_selects_latest_waiting_work_session() {
+        let candidates = vec![
+            ForwardRouteCandidate {
+                session_id: "work-old".to_string(),
+                kind: SessionKind::Work,
+                status: SessionStatus::WaitingInput,
+                status_changed_at_ms: 10,
+            },
+            ForwardRouteCandidate {
+                session_id: "work-new".to_string(),
+                kind: SessionKind::Work,
+                status: SessionStatus::WaitingInput,
+                status_changed_at_ms: 20,
+            },
+            ForwardRouteCandidate {
+                session_id: "ui".to_string(),
+                kind: SessionKind::Ui,
+                status: SessionStatus::WaitingInput,
+                status_changed_at_ms: 30,
+            },
+        ];
+        assert_eq!(
+            decide_forward_route(
+                ForwardRouteStrategy::MostRecentWaitingInput,
+                None,
+                false,
+                &candidates
+            ),
+            ForwardRouteDecision::Forward("work-new".to_string())
+        );
+    }
+
+    #[test]
+    fn forward_route_does_not_implicit_forward_to_running_work() {
+        let candidates = vec![ForwardRouteCandidate {
+            session_id: "work-running".to_string(),
+            kind: SessionKind::Work,
+            status: SessionStatus::Running,
+            status_changed_at_ms: 20,
+        }];
+        assert_eq!(
+            decide_forward_route(
+                ForwardRouteStrategy::MostRecentWaitingInput,
+                None,
+                false,
+                &candidates
+            ),
+            ForwardRouteDecision::KeepInUi
+        );
+    }
+
+    #[test]
+    fn forward_route_interrupt_creates_new_work_session() {
+        assert_eq!(
+            decide_forward_route(
+                ForwardRouteStrategy::NewWorkSessionOnInterrupt,
+                None,
+                true,
+                &[]
+            ),
+            ForwardRouteDecision::CreateNewWorkSession
+        );
+    }
+
+    struct NoopAicc;
+
+    #[async_trait]
+    impl AiccHandler for NoopAicc {
+        async fn handle_method(
+            &self,
+            method: &str,
+            _request: AiMethodRequest,
+            _ctx: RPCContext,
+        ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+            Err(RPCErrors::UnknownMethod(method.to_string()))
         }
 
-        fn next_subscription_id(&self) -> String {
-            let id = self.next_subscription_id.fetch_add(1, Ordering::SeqCst);
-            format!("test-sub-{id}")
+        async fn handle_cancel(
+            &self,
+            task_id: &str,
+            _ctx: RPCContext,
+        ) -> std::result::Result<CancelResponse, RPCErrors> {
+            Ok(CancelResponse::new(task_id.to_string(), false))
+        }
+    }
+
+    fn ensure_test_task_runner_config(root: &PathBuf) {
+        std::fs::create_dir_all(root).expect("mkdir agent root");
+        let path = root.join("agent.toml");
+        if path.exists() {
+            return;
+        }
+        std::fs::write(
+            path,
+            r#"
+[runtime.task_executor]
+runner_id = "agent"
+"#,
+        )
+        .expect("write test agent.toml");
+    }
+
+    fn test_agent(root: PathBuf) -> Arc<AIAgent> {
+        ensure_test_task_runner_config(&root);
+        let worklog = WorklogService::new(WorklogToolConfig::with_db_path(root.join("worklog.db")))
+            .expect("create worklog");
+        let runtime = AgentRuntime::new(
+            Arc::new(AiccClient::new_in_process(Box::new(NoopAicc))),
+            Arc::new(worklog),
+        );
+        AIAgent::open(root, Arc::new(runtime)).expect("open test agent")
+    }
+
+    fn test_agent_with_task_mgr(root: PathBuf, task_mgr: MemoryTaskMgr) -> Arc<AIAgent> {
+        ensure_test_task_runner_config(&root);
+        let worklog = WorklogService::new(WorklogToolConfig::with_db_path(root.join("worklog.db")))
+            .expect("create worklog");
+        let runtime = AgentRuntime::new(
+            Arc::new(AiccClient::new_in_process(Box::new(NoopAicc))),
+            Arc::new(worklog),
+        )
+        .with_task_mgr(Arc::new(TaskManagerClient::new_in_process(Box::new(
+            task_mgr,
+        ))));
+        AIAgent::open(root, Arc::new(runtime)).expect("open test agent")
+    }
+
+    #[derive(Clone, Default)]
+    struct MemoryTaskMgr {
+        inner: Arc<MemoryTaskMgrInner>,
+    }
+
+    #[derive(Default)]
+    struct MemoryTaskMgrInner {
+        next_id: AtomicI64,
+        next_note_id: AtomicI64,
+        tasks: std::sync::Mutex<Vec<Task>>,
+        notes: std::sync::Mutex<Vec<TaskNote>>,
+    }
+
+    impl MemoryTaskMgr {
+        fn insert(&self, mut task: Task) -> Task {
+            if task.task_id.is_empty() {
+                let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+                task.task_id = format!("t-mem-{id}");
+            }
+            if task.root_id.is_empty() {
+                task.root_id = task.task_id.clone();
+            }
+            self.inner.tasks.lock().unwrap().push(task.clone());
+            task
+        }
+
+        fn task(&self, id: &str) -> Task {
+            self.inner
+                .tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|task| task.task_id == id)
+                .cloned()
+                .expect("task")
+        }
+
+        fn edit(&self, id: &str, edit: impl FnOnce(&mut Task)) -> Result<Task, RPCErrors> {
+            let mut guard = self.inner.tasks.lock().unwrap();
+            let task = guard
+                .iter_mut()
+                .find(|task| task.task_id == id)
+                .ok_or_else(|| RPCErrors::ReasonError(format!("task {id} not found")))?;
+            edit(task);
+            task.revision += 1;
+            Ok(task.clone())
+        }
+
+        fn summarize(task: &Task) -> TaskSummary {
+            TaskSummary {
+                task_id: task.task_id.clone(),
+                name: task.name.clone(),
+                parent_id: task.parent_id.clone(),
+                root_id: task.root_id.clone(),
+                schema_id: task.schema_id.clone(),
+                schema_version: task.schema_version,
+                creator: task.creator.clone(),
+                executor_kind: task.executor.kind(),
+                phase: task.phase,
+                wait_reason: task.wait_reason.clone(),
+                pending_control_action: task.pending_control.as_ref().map(|c| c.action),
+                outcome: task.outcome,
+                message: task.message.clone(),
+                revision: task.revision,
+                created_at: task.created_at,
+                updated_at: task.updated_at,
+                completed_at: task.completed_at,
+                archived_at: task.archived_at,
+            }
         }
     }
 
     #[async_trait]
-    impl buckyos_api::msg_queue::MsgQueueHandler for TestMsgQueue {
-        async fn handle_create_queue(
+    impl TaskManagerHandler for MemoryTaskMgr {
+        async fn handle_create_task(
             &self,
-            name: Option<&str>,
-            _appid: &str,
-            _app_owner: &str,
-            config: QueueConfig,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<String, kRPC::RPCErrors> {
-            let queue_urn = name
-                .map(str::to_string)
-                .ok_or_else(|| kRPC::RPCErrors::ReasonError("missing queue name".to_string()))?;
-            let mut queues = self.queues.lock().expect("lock queues");
-            if queues.contains_key(queue_urn.as_str()) {
-                return Err(kRPC::RPCErrors::ReasonError(format!(
-                    "Queue already exists: {queue_urn}"
-                )));
-            }
-            queues.insert(
-                queue_urn.clone(),
-                TestMsgQueueState {
-                    config,
-                    messages: Vec::new(),
-                    next_index: 1,
+            req: CreateTaskReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            let executor = match &req.executor {
+                CreateTaskExecutor::SelfApp { app_instance_id } => buckyos_api::TaskExecutor::App {
+                    target_id: None,
+                    app_id: "opendan".to_string(),
+                    app_instance_id: app_instance_id.clone(),
                 },
-            );
-            Ok(queue_urn)
+                CreateTaskExecutor::HumanSet { .. } => buckyos_api::TaskExecutor::HumanSet,
+            };
+            let phase = match executor {
+                buckyos_api::TaskExecutor::HumanSet => TaskPhase::Waiting,
+                _ => TaskPhase::Accepted,
+            };
+            let task = Task {
+                task_id: String::new(),
+                name: req.name.clone(),
+                parent_id: req.parent_id.clone(),
+                root_id: req.parent_id.clone().unwrap_or_default(),
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                schema_id: req.schema_id.clone(),
+                schema_version: 1,
+                input: req.input.clone(),
+                input_digest: buckyos_api::compute_task_input_digest(&req.input),
+                creator: ActorRef::new("user", "opendan"),
+                idempotency_key: req.idempotency_key.clone(),
+                origin_ref: None,
+                retry_of: None,
+                supersedes: None,
+                executor,
+                runner_epoch: 1,
+                assignees: None,
+                phase,
+                wait_reason: None,
+                pending_control: None,
+                control_profile: TaskControlProfile::baseline(1),
+                progress: None,
+                message: req.message.clone(),
+                outcome: None,
+                result: None,
+                error: None,
+                completed_by: None,
+                policy_preset: "collaborative-tree/v1".to_string(),
+                permission_boundary: false,
+                revision: 1,
+                data_scope: None,
+                created_at: 1,
+                updated_at: 1,
+                completed_at: None,
+                archived_at: None,
+            };
+            Ok(self.insert(task))
         }
 
-        async fn handle_delete_queue(
+        async fn handle_get_task(
             &self,
-            queue_urn: &str,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<(), kRPC::RPCErrors> {
-            let mut queues = self.queues.lock().expect("lock queues");
-            if queues.remove(queue_urn).is_none() {
-                return Err(kRPC::RPCErrors::ReasonError(format!(
-                    "Queue not found: {queue_urn}"
-                )));
-            }
-            Ok(())
+            req: GetTaskReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.inner
+                .tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|task| task.task_id == req.task_id)
+                .cloned()
+                .ok_or_else(|| RPCErrors::ReasonError(format!("task {} not found", req.task_id)))
         }
 
-        async fn handle_get_queue_stats(
+        async fn handle_list_tasks(
             &self,
-            queue_urn: &str,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<buckyos_api::msg_queue::QueueStats, kRPC::RPCErrors> {
-            let queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get(queue_urn).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
-            })?;
-            Ok(buckyos_api::msg_queue::QueueStats {
-                message_count: queue.messages.len() as u64,
-                first_index: queue.messages.first().map(|msg| msg.index).unwrap_or(0),
-                last_index: queue.messages.last().map(|msg| msg.index).unwrap_or(0),
-                size_bytes: queue
-                    .messages
-                    .iter()
-                    .map(|msg| msg.payload.len() as u64)
-                    .sum(),
+            req: ListTasksReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<TaskSummaryPage, RPCErrors> {
+            let tasks = self
+                .inner
+                .tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|task| {
+                    req.schema_id
+                        .as_deref()
+                        .map(|schema| task.schema_id == schema)
+                        .unwrap_or(true)
+                        && req.phase.map(|phase| task.phase == phase).unwrap_or(true)
+                })
+                .map(Self::summarize)
+                .collect();
+            Ok(TaskSummaryPage {
+                tasks,
+                next_cursor: None,
             })
         }
 
-        async fn handle_update_queue_config(
+        async fn handle_get_subtasks(
             &self,
-            queue_urn: &str,
-            config: QueueConfig,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<(), kRPC::RPCErrors> {
-            let mut queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
-            })?;
-            queue.config = config;
-            Ok(())
-        }
-
-        async fn handle_post_message(
-            &self,
-            queue_urn: &str,
-            mut message: Message,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<u64, kRPC::RPCErrors> {
-            let mut queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
-            })?;
-            let index = queue.next_index;
-            queue.next_index += 1;
-            message.index = index;
-            queue.messages.push(message);
-            Ok(index)
-        }
-
-        async fn handle_subscribe(
-            &self,
-            queue_urn: &str,
-            _user_id: &str,
-            _app_id: &str,
-            sub_id: Option<String>,
-            position: SubPosition,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<String, kRPC::RPCErrors> {
-            let queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get(queue_urn).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
-            })?;
-            let last_index = queue.messages.last().map(|msg| msg.index).unwrap_or(0);
-            let first_index = queue.messages.first().map(|msg| msg.index).unwrap_or(1);
-            drop(queues);
-
-            let cursor = match position {
-                SubPosition::Earliest => first_index,
-                SubPosition::Latest => last_index + 1,
-                SubPosition::At(index) => index,
-            };
-            let sub_id = sub_id.unwrap_or_else(|| self.next_subscription_id());
-            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
-            if subscriptions.contains_key(sub_id.as_str()) {
-                return Err(kRPC::RPCErrors::ReasonError(format!(
-                    "Subscription already exists: {sub_id}"
-                )));
-            }
-            subscriptions.insert(
-                sub_id.clone(),
-                TestSubscriptionState {
-                    queue_urn: queue_urn.to_string(),
-                    cursor,
-                },
-            );
-            Ok(sub_id)
-        }
-
-        async fn handle_unsubscribe(
-            &self,
-            sub_id: &str,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<(), kRPC::RPCErrors> {
-            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
-            if subscriptions.remove(sub_id).is_none() {
-                return Err(kRPC::RPCErrors::ReasonError(format!(
-                    "Subscription not found: {sub_id}"
-                )));
-            }
-            Ok(())
-        }
-
-        async fn handle_fetch_messages(
-            &self,
-            sub_id: &str,
-            length: usize,
-            auto_commit: bool,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<Vec<Message>, kRPC::RPCErrors> {
-            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
-            let subscription = subscriptions.get_mut(sub_id).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Subscription not found: {sub_id}"))
-            })?;
-            let queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get(subscription.queue_urn.as_str()).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {}", subscription.queue_urn))
-            })?;
-            let messages: Vec<Message> = queue
-                .messages
+            req: GetSubtasksReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<TaskSummaryPage, RPCErrors> {
+            let tasks = self
+                .inner
+                .tasks
+                .lock()
+                .unwrap()
                 .iter()
-                .filter(|msg| msg.index >= subscription.cursor)
-                .take(length)
-                .cloned()
+                .filter(|task| task.parent_id.as_deref() == Some(req.task_id.as_str()))
+                .map(Self::summarize)
                 .collect();
-            if auto_commit {
-                if let Some(last) = messages.last() {
-                    subscription.cursor = last.index + 1;
-                }
-            }
-            Ok(messages)
+            Ok(TaskSummaryPage {
+                tasks,
+                next_cursor: None,
+            })
         }
 
-        async fn handle_read_message(
+        async fn handle_report_started(
             &self,
-            queue_urn: &str,
-            cursor: u64,
-            length: usize,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<Vec<Message>, kRPC::RPCErrors> {
-            let queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get(queue_urn).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
+            req: ReportStartedReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Running;
+            })
+        }
+
+        async fn handle_report_running(
+            &self,
+            req: ReportRunningReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Running;
+                task.wait_reason = None;
+            })
+        }
+
+        async fn handle_report_waiting(
+            &self,
+            req: ReportWaitingReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.phase = TaskPhase::Waiting;
+                task.wait_reason = Some(req.reason.clone());
+            })
+        }
+
+        async fn handle_report_progress(
+            &self,
+            req: ReportProgressReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                if let Some(progress) = req.progress.clone() {
+                    task.progress = Some(progress);
+                }
+                if let Some(message) = req.message.clone() {
+                    task.message = Some(message);
+                }
+            })
+        }
+
+        async fn handle_commit_result(
+            &self,
+            req: CommitResultReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.task_id, |task| {
+                task.result = Some(req.result.clone());
+                task.outcome = Some(TaskOutcome::Succeeded);
+                task.phase = TaskPhase::Terminal;
+            })
+        }
+
+        async fn handle_fail_task(
+            &self,
+            req: FailTaskReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                task.error = Some(req.error.clone());
+                task.outcome = Some(TaskOutcome::Failed);
+                task.phase = TaskPhase::Terminal;
+            })
+        }
+
+        async fn handle_request_control(
+            &self,
+            req: buckyos_api::RequestControlReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<buckyos_api::RequestControlResult, RPCErrors> {
+            let task = self.edit(&req.task_id, |task| {
+                task.pending_control = Some(buckyos_api::TaskControlRequest {
+                    request_id: req.request_id.clone(),
+                    action: req.action,
+                    requested_by: ActorRef::new("user", "opendan"),
+                    requested_at: 1,
+                });
             })?;
-            Ok(queue
-                .messages
+            Ok(buckyos_api::RequestControlResult::Task { task })
+        }
+
+        async fn handle_ack_control(
+            &self,
+            req: buckyos_api::AckControlReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Task, RPCErrors> {
+            self.edit(&req.envelope.task_id, |task| {
+                let action = task.pending_control.take().map(|c| c.action);
+                if req.applied {
+                    match action {
+                        Some(buckyos_api::TaskControlAction::Cancel) => {
+                            task.outcome = Some(TaskOutcome::Canceled);
+                            task.phase = TaskPhase::Terminal;
+                        }
+                        Some(buckyos_api::TaskControlAction::Pause) => {
+                            task.phase = TaskPhase::Paused;
+                        }
+                        Some(buckyos_api::TaskControlAction::Resume) => {
+                            task.phase = TaskPhase::Running;
+                        }
+                        None => {}
+                    }
+                }
+            })
+        }
+
+        async fn handle_add_task_note(
+            &self,
+            req: buckyos_api::AddTaskNoteReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<TaskNote, RPCErrors> {
+            let id = self.inner.next_note_id.fetch_add(1, Ordering::Relaxed) + 1;
+            let note = TaskNote {
+                id,
+                task_id: req.task_id.clone(),
+                note_type: req.note_type.clone().unwrap_or_else(|| "human".to_string()),
+                content: req.content.clone(),
+                data: req.data.clone().unwrap_or_else(|| serde_json::json!({})),
+                author_user_id: "user".to_string(),
+                author_app_id: "opendan".to_string(),
+                created_at: 1,
+                updated_at: 1,
+            };
+            self.inner.notes.lock().unwrap().push(note.clone());
+            Ok(note)
+        }
+
+        async fn handle_list_task_notes(
+            &self,
+            req: ListTaskNotesReq,
+            _ctx: RPCContext,
+        ) -> std::result::Result<Vec<TaskNote>, RPCErrors> {
+            Ok(self
+                .inner
+                .notes
+                .lock()
+                .unwrap()
                 .iter()
-                .filter(|msg| msg.index >= cursor)
-                .take(length)
+                .filter(|note| note.task_id == req.task_id)
                 .cloned()
                 .collect())
         }
+    }
 
-        async fn handle_commit_ack(
-            &self,
-            sub_id: &str,
-            index: u64,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<(), kRPC::RPCErrors> {
-            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
-            let subscription = subscriptions.get_mut(sub_id).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Subscription not found: {sub_id}"))
-            })?;
-            subscription.cursor = index + 1;
-            Ok(())
-        }
-
-        async fn handle_seek(
-            &self,
-            sub_id: &str,
-            index: SubPosition,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<(), kRPC::RPCErrors> {
-            let mut subscriptions = self.subscriptions.lock().expect("lock subscriptions");
-            let subscription = subscriptions.get_mut(sub_id).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Subscription not found: {sub_id}"))
-            })?;
-            subscription.cursor = match index {
-                SubPosition::Earliest => 1,
-                SubPosition::Latest => {
-                    let queues = self.queues.lock().expect("lock queues");
-                    queues
-                        .get(subscription.queue_urn.as_str())
-                        .and_then(|queue| queue.messages.last().map(|msg| msg.index + 1))
-                        .unwrap_or(1)
+    fn merge_json_test(dst: &mut serde_json::Value, patch: &serde_json::Value) {
+        match (dst, patch) {
+            (serde_json::Value::Object(dst), serde_json::Value::Object(patch)) => {
+                for (key, value) in patch {
+                    merge_json_test(
+                        dst.entry(key.clone()).or_insert(serde_json::Value::Null),
+                        value,
+                    );
                 }
-                SubPosition::At(value) => value,
-            };
-            Ok(())
-        }
-
-        async fn handle_delete_message_before(
-            &self,
-            queue_urn: &str,
-            index: u64,
-            _ctx: kRPC::RPCContext,
-        ) -> std::result::Result<u64, kRPC::RPCErrors> {
-            let mut queues = self.queues.lock().expect("lock queues");
-            let queue = queues.get_mut(queue_urn).ok_or_else(|| {
-                kRPC::RPCErrors::ReasonError(format!("Queue not found: {queue_urn}"))
-            })?;
-            let before = queue.messages.len();
-            queue.messages.retain(|msg| msg.index >= index);
-            Ok((before - queue.messages.len()) as u64)
-        }
-    }
-
-    fn make_event(eventid: &str) -> Event {
-        Event {
-            eventid: eventid.to_string(),
-            source_node: "test-node".to_string(),
-            source_pid: 1,
-            ingress_node: None,
-            timestamp: 0,
-            data: json!({}),
+            }
+            (dst, patch) => *dst = patch.clone(),
         }
     }
 
     #[test]
-    fn msg_center_event_box_kind_parses_known_box() {
-        let event = make_event("/msg_center/agent.example/box/in/changed");
+    fn worksession_progress_targets_owner_ui_session() {
         assert_eq!(
-            AIAgent::msg_center_event_box_kind(&event),
-            Some(BoxKind::Inbox)
-        );
-    }
-
-    #[test]
-    fn msg_center_event_box_kind_accepts_extended_suffix() {
-        let event = make_event("/msg_center/agent.example/box/request/changed/v2");
-        assert_eq!(
-            AIAgent::msg_center_event_box_kind(&event),
-            Some(BoxKind::RequestBox)
-        );
-    }
-
-    #[test]
-    fn msg_center_event_box_kind_accepts_legacy_box_name() {
-        let event = make_event("/msg_center/agent.example/box/INBOX/changed");
-        assert_eq!(
-            AIAgent::msg_center_event_box_kind(&event),
-            Some(BoxKind::Inbox)
-        );
-    }
-
-    #[test]
-    fn msg_center_event_box_kind_accepts_legacy_path_without_box_segment() {
-        let event = make_event("/msg_center/agent.example/inbox/changed");
-        assert_eq!(
-            AIAgent::msg_center_event_box_kind(&event),
-            Some(BoxKind::Inbox)
-        );
-    }
-
-    #[test]
-    fn build_msg_center_event_patterns_include_legacy_aliases() {
-        let owner = DID::new("bns", "Agent.Example");
-        let patterns = AIAgent::build_msg_center_event_patterns(&owner);
-
-        assert!(patterns.contains(&"/msg_center/Agent.Example.bns.did/box/in/**".to_string()));
-        assert!(patterns.contains(&"/msg_center/Agent.Example.bns.did/box/INBOX/**".to_string()));
-        assert!(patterns.contains(&"/msg_center/Agent.Example.bns.did/inbox/**".to_string()));
-        assert!(patterns.contains(&"/msg_center/agent.example.bns.did/box/in/**".to_string()));
-    }
-
-    #[test]
-    fn collect_event_pull_targets_falls_back_for_unknown_msg_center_event() {
-        let event = make_event("/msg_center/agent.example/box/unknown/changed");
-        let mut msg_pull_boxes = Vec::new();
-        let mut pulled_events = Vec::new();
-
-        AIAgent::collect_event_pull_targets(event, &mut msg_pull_boxes, &mut pulled_events);
-
-        assert!(msg_pull_boxes.contains(&BoxKind::Inbox));
-        assert!(msg_pull_boxes.contains(&BoxKind::GroupInbox));
-        assert!(msg_pull_boxes.contains(&BoxKind::RequestBox));
-        assert!(pulled_events.is_empty());
-    }
-
-    #[test]
-    fn session_kevent_targets_match_wildcard_patterns() {
-        let mut subscriptions = HashMap::<String, HashSet<String>>::new();
-        subscriptions.insert(
-            "/taskmgr/**".to_string(),
-            HashSet::from(["work-alpha".to_string(), "work-beta".to_string()]),
-        );
-        subscriptions.insert(
-            "/system/*/done".to_string(),
-            HashSet::from(["work-gamma".to_string()]),
-        );
-
-        assert_eq!(
-            collect_session_kevent_targets_from_subscriptions(
-                &subscriptions,
-                "/taskmgr/new/task_001"
-            ),
-            vec!["work-alpha".to_string(), "work-beta".to_string()]
+            progress_status_session_id(SessionKind::Work, "work-1", "ui-1"),
+            "ui-1"
         );
         assert_eq!(
-            collect_session_kevent_targets_from_subscriptions(&subscriptions, "/system/job/done"),
-            vec!["work-gamma".to_string()]
-        );
-        assert!(
-            collect_session_kevent_targets_from_subscriptions(&subscriptions, "/other/path")
-                .is_empty()
+            progress_status_session_id(SessionKind::Ui, "ui-1", "owner"),
+            "ui-1"
         );
     }
 
-    #[test]
-    fn parse_session_kevent_subscriptions_skips_invalid_patterns() {
-        let parsed = parse_session_kevent_subscriptions(&json!({
-            "/taskmgr/**": ["work-one", "work-two"],
-            "bad/name": ["work-bad"],
-            "": ["work-empty"],
-            "/system/*/done": ["work-three", ""]
-        }));
+    fn delegate_task(id: &str, data: serde_json::Value) -> Task {
+        Task {
+            task_id: id.to_string(),
+            name: "delegate task".to_string(),
+            parent_id: None,
+            root_id: id.to_string(),
+            child_control_policy: Default::default(),
+            schema_id: crate::agent_task_executor::AGENT_DELEGATE_SCHEMA_ID.to_string(),
+            schema_version: 1,
+            input: data,
+            input_digest: String::new(),
+            creator: ActorRef::new("user", "opendan"),
+            idempotency_key: id.to_string(),
+            origin_ref: None,
+            retry_of: None,
+            supersedes: None,
+            executor: buckyos_api::TaskExecutor::App {
+                target_id: None,
+                app_id: "opendan".to_string(),
+                app_instance_id: None,
+            },
+            runner_epoch: 1,
+            assignees: None,
+            phase: TaskPhase::Accepted,
+            wait_reason: None,
+            pending_control: None,
+            control_profile: TaskControlProfile::baseline(1),
+            progress: None,
+            message: None,
+            outcome: None,
+            result: None,
+            error: None,
+            completed_by: None,
+            policy_preset: "collaborative-tree/v1".to_string(),
+            permission_boundary: false,
+            revision: 1,
+            data_scope: None,
+            created_at: 1,
+            updated_at: 1,
+            completed_at: None,
+            archived_at: None,
+        }
+    }
 
+    fn write_session_meta(agent: &AIAgent, mut meta: SessionMeta) {
+        let dir = agent
+            .config
+            .layout
+            .session_dir(&meta.session_id)
+            .join(".meta");
+        std::fs::create_dir_all(&dir).expect("mkdir meta");
+        if meta.status_changed_at_ms == 0 {
+            meta.status_changed_at_ms = 1;
+        }
+        std::fs::write(
+            dir.join("session.json"),
+            serde_json::to_vec_pretty(&meta).expect("encode meta"),
+        )
+        .expect("write meta");
+    }
+
+    #[tokio::test]
+    async fn session_accepts_pending_rejects_ended_disk_meta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "work-ended".to_string(),
+            SessionKind::Work,
+            "plan".to_string(),
+            "ui-1".to_string(),
+        );
+        meta.status = SessionStatus::Ended;
+        write_session_meta(&agent, meta);
+
+        assert!(!agent
+            .session_accepts_pending("work-ended")
+            .await
+            .expect("status check"));
+        assert!(agent
+            .session_accepts_pending("new-session")
+            .await
+            .expect("missing meta is acceptable"));
+    }
+
+    #[tokio::test]
+    async fn forward_message_ended_session_guides_new_worksession() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "work-ended".to_string(),
+            SessionKind::Work,
+            "work_default".to_string(),
+            "ui-1".to_string(),
+        );
+        meta.status = SessionStatus::Ended;
+        meta.title = "Old task".to_string();
+        meta.objective = "Finish the previous work".to_string();
+        meta.workspace_id = Some("old-workspace".to_string());
+        meta.bootstrap_done = true;
+        let session = agent
+            .clone()
+            .ensure_session_inner(
+                meta.session_id.clone(),
+                meta.kind,
+                meta.owner.clone(),
+                Some(meta.current_behavior.clone()),
+                Some(meta),
+            )
+            .await
+            .expect("mount ended session");
+        session.meta.lock().await.status = SessionStatus::Ended;
+
+        let err = agent
+            .forward_message("work-ended", "ui-1", "follow-up")
+            .await
+            .expect_err("ended session should reject forward");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("target session `work-ended` has ended"));
+        assert!(msg.contains("Do not retry `forward_msg` for this session"));
+        assert!(msg.contains("try_create_worksession"));
+        assert!(msg.contains("followup_routing.target_worksession_id"));
+        assert!(msg.contains("title `Old task`"));
+        assert!(msg.contains("workspace `old-workspace`"));
+    }
+
+    #[tokio::test]
+    async fn explicit_ui_session_initializes_missing_tunnel_binding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+
+        let resolved = agent
+            .resolve_msg_session_id("did:dev:alice", true, Some("tg-explicit".to_string()), None)
+            .await
+            .expect("resolve explicit session");
+
+        assert_eq!(resolved, "tg-explicit");
         assert_eq!(
-            collect_session_kevent_targets_from_subscriptions(&parsed, "/taskmgr/new/task_001"),
-            vec!["work-one".to_string(), "work-two".to_string()]
-        );
-        assert_eq!(
-            collect_session_kevent_targets_from_subscriptions(&parsed, "/system/job/done"),
-            vec!["work-three".to_string()]
-        );
-        assert!(collect_session_kevent_targets_from_subscriptions(&parsed, "bad/name").is_empty());
-    }
-
-    #[test]
-    fn merged_actions_executes_shell_commands_before_actions() {
-        let mut llm_result = BehaviorLLMResult::default();
-        llm_result.actions.mode = "all".to_string();
-        llm_result
-            .actions
-            .cmds
-            .push(DoAction::Exec("echo from-actions".to_string()));
-        llm_result.shell_commands = vec![
-            "echo from-shell-1".to_string(),
-            "  ".to_string(),
-            "echo from-shell-2".to_string(),
-        ];
-
-        let merged = merged_actions_from_llm_result(&llm_result);
-        assert_eq!(merged.mode, "all");
-        assert_eq!(merged.cmds.len(), 3);
-        assert_eq!(
-            merged.cmds,
-            vec![
-                DoAction::Exec("echo from-shell-1".to_string()),
-                DoAction::Exec("echo from-shell-2".to_string()),
-                DoAction::Exec("echo from-actions".to_string()),
-            ]
+            agent
+                .resolve_session_for_command("did:dev:alice")
+                .await
+                .expect("tunnel binding"),
+            "tg-explicit"
         );
     }
 
-    #[test]
-    fn recoverable_llm_step_error_accepts_invalid_xml_internal_error() {
-        assert!(should_record_llm_step_error(&LLMComputeError::Internal(
-            "invalid behavior llm xml: root tag must be <response>".to_string(),
-        )));
-    }
+    #[tokio::test]
+    async fn ui_command_bindings_override_stale_explicit_session_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let from = "did:dev:alice";
 
-    #[test]
-    fn recoverable_llm_step_error_rejects_runtime_internal_error() {
-        assert!(!should_record_llm_step_error(&LLMComputeError::Internal(
-            "load buckyos runtime failed: missing runtime".to_string(),
-        )));
-    }
-
-    #[test]
-    fn classify_llm_step_error_replies_when_provider_is_unavailable() {
+        agent.bind_tunnel_to_session(from, "ui-new").await;
         assert_eq!(
-            classify_llm_step_error(&LLMComputeError::Provider(
-                "no_provider_available: no provider instance supports requested capability"
-                    .to_string(),
-            )),
-            LLMStepErrorHandling::ReplyAndWait {
-                reply: LLM_STEP_PROVIDER_UNAVAILABLE_REPLY,
-            }
-        );
-    }
-
-    #[test]
-    fn classify_llm_step_error_replies_when_token_limit_is_hit() {
-        assert_eq!(
-            classify_llm_step_error(&LLMComputeError::Provider(
-                "TOKEN_LIMIT_EXCEEDED: llm token limit reached".to_string(),
-            )),
-            LLMStepErrorHandling::ReplyAndWait {
-                reply: LLM_STEP_TOKEN_LIMIT_REPLY,
-            }
-        );
-    }
-
-    #[test]
-    fn classify_llm_step_error_retries_transient_provider_failures() {
-        assert_eq!(
-            classify_llm_step_error(&LLMComputeError::Provider(
-                "upstream provider returned 503".to_string(),
-            )),
-            LLMStepErrorHandling::RetryAfter {
-                wait_ms: LLM_STEP_PROVIDER_RETRY_WAIT_MS,
-            }
-        );
-    }
-
-    #[test]
-    fn classify_llm_step_error_retries_recoverable_internal_failures() {
-        assert_eq!(
-            classify_llm_step_error(&LLMComputeError::Internal(
-                "invalid behavior llm xml: root tag must be <response>".to_string(),
-            )),
-            LLMStepErrorHandling::RetryAfter {
-                wait_ms: LLM_STEP_INTERNAL_RETRY_WAIT_MS,
-            }
-        );
-    }
-
-    #[test]
-    fn classify_llm_step_error_bubbles_runtime_internal_failures() {
-        assert_eq!(
-            classify_llm_step_error(&LLMComputeError::Internal(
-                "load buckyos runtime failed: missing runtime".to_string(),
-            )),
-            LLMStepErrorHandling::BubbleUp
-        );
-    }
-
-    #[test]
-    fn apply_behavior_transition_is_case_insensitive_for_same_behavior() {
-        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
-        session.state = SessionState::Running;
-
-        let transition =
-            apply_session_behavior_transition(&mut session, "plan", 8, None, Some("PLAN"));
-
-        assert!(!transition.behavior_switched);
-        assert!(transition.keep_running);
-        assert_eq!(session.current_behavior, "plan");
-        assert_eq!(session.step_index, 1);
-    }
-
-    #[test]
-    fn apply_behavior_transition_same_behavior_honors_step_limit_fallback() {
-        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
-        session.state = SessionState::Running;
-        session.step_index = 1;
-
-        let transition =
-            apply_session_behavior_transition(&mut session, "plan", 2, Some("PLAN"), Some("plan"));
-
-        assert!(!transition.behavior_switched);
-        assert!(!transition.keep_running);
-        assert_eq!(session.current_behavior, "PLAN");
-        assert_eq!(session.step_index, 0);
-        assert_eq!(session.state, SessionState::Wait);
-    }
-
-    #[test]
-    fn apply_behavior_transition_parses_wait_for_msg_case_insensitive() {
-        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
-        session.state = SessionState::Running;
-
-        let transition =
-            apply_session_behavior_transition(&mut session, "plan", 8, None, Some("wait_for_msg"));
-
-        assert!(!transition.behavior_switched);
-        assert!(!transition.keep_running);
-        assert_eq!(session.state, SessionState::WaitForMsg);
-    }
-
-    #[test]
-    fn apply_behavior_transition_step_limit_fallback_is_case_insensitive() {
-        let mut session = AgentSession::new("work-1", "did:test:agent", Some("plan"));
-        session.state = SessionState::Running;
-        session.step_index = 1;
-
-        let transition =
-            apply_session_behavior_transition(&mut session, "plan", 2, Some("PLAN"), None);
-
-        assert!(!transition.behavior_switched);
-        assert!(!transition.keep_running);
-        assert_eq!(session.current_behavior, "PLAN");
-        assert_eq!(session.step_index, 0);
-        assert_eq!(session.state, SessionState::Wait);
-    }
-
-    #[test]
-    fn next_behavior_is_ignored_when_any_action_failed() {
-        let results = HashMap::from([
-            (
-                "#0".to_string(),
-                AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Success),
-            ),
-            (
-                "#1".to_string(),
-                AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Error),
-            ),
-        ]);
-
-        assert_eq!(
-            next_behavior_after_action_results(&results, Some("END")),
-            None
+            agent
+                .resolve_msg_session_id(from, true, Some("tg-stale".to_string()), None)
+                .await
+                .expect("route after new"),
+            "ui-new"
         );
         assert_eq!(
-            next_behavior_after_action_results(&results, Some("CHECK")),
-            None
+            agent
+                .resolve_msg_session_id(from, true, None, Some("ui-derived".to_string()))
+                .await
+                .expect("route derived session after new"),
+            "ui-new"
         );
-        assert_eq!(next_behavior_after_action_results(&results, None), None);
-    }
 
-    #[test]
-    fn next_behavior_is_preserved_when_all_actions_succeeded() {
-        let results = HashMap::from([(
-            "#0".to_string(),
-            AgentToolResult::from_details(json!({})).with_status(AgentToolStatus::Success),
-        )]);
-
+        agent.bind_tunnel_to_session(from, "ui-switched").await;
         assert_eq!(
-            next_behavior_after_action_results(&results, Some("CHECK")),
-            Some("CHECK")
+            agent
+                .resolve_msg_session_id(from, true, Some("tg-stale".to_string()), None)
+                .await
+                .expect("route after switch"),
+            "ui-switched"
+        );
+
+        agent.unbind_tunnel_if_session(from, "ui-switched").await;
+        agent.bind_tunnel_to_session(from, "ui-clean").await;
+        assert_eq!(
+            agent
+                .resolve_msg_session_id(from, true, Some("tg-stale".to_string()), None)
+                .await
+                .expect("route after clean"),
+            "ui-clean"
         );
     }
 
-    #[test]
-    fn rendered_input_requires_at_least_one_driver_var_when_tracked() {
-        let result = AgentTemplateRenderResult {
-            rendered: "# Last Step\n# New Msg".to_string(),
-            env_expanded: 0,
-            env_not_found: 0,
-            content_loaded: 0,
-            content_failed: 0,
-            var_registered: 0,
-            var_failed: 2,
-            resolved_vars: HashMap::from([
-                ("last_step".to_string(), false),
-                ("new_msg".to_string(), false),
-                ("new_event".to_string(), false),
-            ]),
+    #[tokio::test]
+    async fn restore_session_routes_does_not_mount_workers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "ui-did_dev_alice".to_string(),
+            SessionKind::Ui,
+            "chat_route".to_string(),
+            "did:dev:alice".to_string(),
+        );
+        meta.status = SessionStatus::Idle;
+        write_session_meta(&agent, meta);
+
+        agent.clone().restore_session_routes().await;
+
+        assert!(agent.get_session("ui-did_dev_alice").await.is_none());
+        assert_eq!(
+            agent
+                .resolve_session_for_command("did:dev:alice")
+                .await
+                .unwrap(),
+            "ui-did_dev_alice"
+        );
+    }
+
+    #[tokio::test]
+    async fn compress_command_mounts_restored_ui_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "ui-did_dev_alice".to_string(),
+            SessionKind::Ui,
+            "chat_route".to_string(),
+            "did:dev:alice".to_string(),
+        );
+        meta.status = SessionStatus::Idle;
+        write_session_meta(&agent, meta);
+
+        agent.clone().restore_session_routes().await;
+        assert!(agent.get_session("ui-did_dev_alice").await.is_none());
+
+        let outcome = crate::command_dispatcher::run_command(
+            &agent,
+            &crate::command_dispatcher::CommandInvocation {
+                record_id: "local-command".to_string(),
+                from: "did:dev:alice".to_string(),
+                from_did: None,
+                tunnel_did: None,
+                command: "compress".to_string(),
+                args: String::new(),
+            },
+        )
+        .await
+        .expect("run compress command");
+
+        assert!(outcome
+            .reply
+            .contains("session `ui-did_dev_alice` has no saved context to compress"));
+        assert!(!outcome.reply.contains("no active session"));
+        let session = agent
+            .get_session("ui-did_dev_alice")
+            .await
+            .expect("session mounted by command");
+        session.abort_worker().await;
+    }
+
+    #[tokio::test]
+    async fn ui_session_creation_does_not_create_or_bind_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+
+        let session_id = agent
+            .clone()
+            .create_ui_session_for_tunnel("did:dev:alice", None, None)
+            .await
+            .expect("create ui session");
+        let session = agent.get_session(&session_id).await.expect("session");
+        assert_eq!(session.summary().await.workspace_id, None);
+        let meta = session.meta.lock().await;
+        let clock_sub = meta
+            .event_subscriptions
+            .iter()
+            .find(|sub| sub.pattern == UI_CLOCK_TIMER_EVENT_ID)
+            .expect("default ui clock subscription");
+        assert_eq!(
+            clock_sub.mode,
+            crate::session_model::EventSubscriptionMode::BackgroundOnly
+        );
+        drop(meta);
+        assert!(agent
+            .workspaces()
+            .list()
+            .await
+            .expect("list workspaces")
+            .is_empty());
+        assert!(!agent.workspaces().workspace_dir(&session_id).exists());
+
+        agent
+            .delete_session_physical(&session_id)
+            .await
+            .expect("delete session");
+    }
+
+    #[tokio::test]
+    async fn restore_session_routes_backfills_ui_clock_subscription() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "ui-did_dev_alice".to_string(),
+            SessionKind::Ui,
+            "chat_route".to_string(),
+            "did:dev:alice".to_string(),
+        );
+        meta.event_subscriptions.clear();
+        write_session_meta(&agent, meta);
+
+        agent.clone().restore_session_routes().await;
+
+        let meta_path = agent
+            .config
+            .layout
+            .session_dir("ui-did_dev_alice")
+            .join(".meta")
+            .join("session.json");
+        let restored: SessionMeta =
+            serde_json::from_slice(&std::fs::read(meta_path).expect("read restored session meta"))
+                .expect("decode restored session meta");
+        let clock_sub = restored
+            .event_subscriptions
+            .iter()
+            .find(|sub| sub.pattern == UI_CLOCK_TIMER_EVENT_ID)
+            .expect("default ui clock subscription");
+        assert_eq!(
+            clock_sub.mode,
+            crate::session_model::EventSubscriptionMode::BackgroundOnly
+        );
+    }
+
+    #[tokio::test]
+    async fn work_session_still_binds_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "work-1".to_string(),
+            SessionKind::Work,
+            "work_default".to_string(),
+            "ui-1".to_string(),
+        );
+        meta.workspace_id = Some("ws-1".to_string());
+
+        agent
+            .clone()
+            .ensure_session_inner(
+                "work-1".to_string(),
+                SessionKind::Work,
+                "ui-1".to_string(),
+                Some("work_default".to_string()),
+                Some(meta),
+            )
+            .await
+            .expect("create work session");
+        let session = agent.get_session("work-1").await.expect("session");
+        assert_eq!(
+            session.summary().await.workspace_id.as_deref(),
+            Some("ws-1")
+        );
+        let record = agent
+            .workspaces()
+            .load_record("ws-1")
+            .await
+            .expect("load workspace");
+        assert_eq!(record.current_session.as_deref(), Some("work-1"));
+
+        agent
+            .delete_session_physical("work-1")
+            .await
+            .expect("delete session");
+    }
+
+    #[tokio::test]
+    async fn work_session_final_report_does_not_enqueue_ui_pending_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let ui_session_id = agent
+            .clone()
+            .create_ui_session_for_tunnel("did:dev:alice", None, None)
+            .await
+            .expect("create ui session");
+        let ui = agent.get_session(&ui_session_id).await.expect("ui session");
+        ui.abort_worker().await;
+        agent.sessions.lock().await.remove(&ui_session_id);
+        assert!(agent.get_session(&ui_session_id).await.is_none());
+        let mut meta = SessionMeta::new(
+            "work-report".to_string(),
+            SessionKind::Work,
+            "work_default".to_string(),
+            ui_session_id.clone(),
+        );
+        meta.title = "draft report".to_string();
+        meta.objective = "finish the report".to_string();
+        meta.workspace_id = Some("ws-report".to_string());
+        agent
+            .clone()
+            .ensure_session_inner(
+                "work-report".to_string(),
+                SessionKind::Work,
+                ui_session_id.clone(),
+                Some("work_default".to_string()),
+                Some(meta),
+            )
+            .await
+            .expect("create work session");
+        let work = agent
+            .get_session("work-report")
+            .await
+            .expect("work session");
+        work.abort_worker().await;
+        let request = llm_context::request::LLMContextRequest {
+            owner: llm_context::request::ContextOwnerRef::Agent {
+                session_id: "work-report".to_string(),
+            },
+            trace: Some("trace-1".to_string()),
+            objective: "finish the report".to_string(),
+            behavior_name: "work_default".to_string(),
+            input: vec![],
+            model_policy: Default::default(),
+            tool_policy: Default::default(),
+            output: Default::default(),
+            budget: Default::default(),
+            human_policy: Default::default(),
+            error_policy: Default::default(),
+            forbid_next_behavior: false,
         };
+        let mut state = llm_context::state::LLMContextState::from_request(&request, 1);
+        state.last_report = Some("final answer".to_string());
+        let snapshot = llm_context::state::LLMContextSnapshot { request, state };
 
-        assert!(!should_continue_with_rendered_input(&result));
+        work.maybe_publish_worksession_report(
+            &snapshot,
+            WorksessionReportPhase::Final,
+            Some("END"),
+            "trace-1",
+        )
+        .await
+        .expect("publish report");
+        work.maybe_publish_worksession_report(
+            &snapshot,
+            WorksessionReportPhase::Final,
+            Some("END"),
+            "trace-1",
+        )
+        .await
+        .expect("second publish remains a no-op without msg-center");
+
+        let pending = ui.meta.lock().await.pending_inputs.clone();
+        assert!(pending.is_empty());
+        assert!(work.meta.lock().await.last_report_delivery.is_none());
+        assert!(agent.get_session(&ui_session_id).await.is_none());
+        let report_md = std::fs::read_to_string(work.session_dir.join("report.md"))
+            .expect("report.md should be written even when outbound is unavailable");
+        assert!(report_md.contains("final answer"));
+
+        agent
+            .delete_session_physical("work-report")
+            .await
+            .expect("delete work session");
+        agent
+            .delete_session_physical(&ui_session_id)
+            .await
+            .expect("delete ui session");
     }
 
-    #[test]
-    fn rendered_input_continues_when_any_driver_var_resolves() {
-        let result = AgentTemplateRenderResult {
-            rendered: "# Last Step\nstep record".to_string(),
-            env_expanded: 0,
-            env_not_found: 0,
-            content_loaded: 0,
-            content_failed: 0,
-            var_registered: 1,
-            var_failed: 1,
-            resolved_vars: HashMap::from([
-                ("last_step".to_string(), true),
-                ("new_msg".to_string(), false),
-                ("new_event".to_string(), false),
-            ]),
-        };
+    #[tokio::test]
+    async fn create_work_session_without_workspace_id_uses_meaningful_workspace_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
 
-        assert!(should_continue_with_rendered_input(&result));
+        let outcome = agent
+            .clone()
+            .create_work_session(CreateWorkSessionParams {
+                title: "Frontend Snake Game".to_string(),
+                objective: "Build the first pure front-end version".to_string(),
+                workspace_id: None,
+                behavior: None,
+                created_by_session_id: "ui-1".to_string(),
+                reason_messages: Vec::new(),
+                task_binding: None,
+                task_id: None,
+                auto_start: true,
+                bind_task: true,
+            })
+            .await
+            .expect("create work session");
+        assert_eq!(outcome.workspace_id, "Frontend Snake Game");
+        assert!(agent
+            .workspaces()
+            .workspace_dir("Frontend Snake Game")
+            .exists());
+
+        agent
+            .delete_session_physical(&outcome.session_id)
+            .await
+            .expect("delete session");
     }
 
-    #[test]
-    fn rendered_input_continues_when_new_event_resolves() {
-        let result = AgentTemplateRenderResult {
-            rendered: "# Event\n/taskmgr/new/task_001".to_string(),
-            env_expanded: 0,
-            env_not_found: 0,
-            content_loaded: 0,
-            content_failed: 0,
-            var_registered: 1,
-            var_failed: 1,
-            resolved_vars: HashMap::from([
-                ("last_step".to_string(), false),
-                ("new_msg".to_string(), false),
-                ("new_event".to_string(), true),
-            ]),
-        };
+    #[tokio::test]
+    async fn create_work_session_treats_empty_behavior_as_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
 
-        assert!(should_continue_with_rendered_input(&result));
+        let outcome = agent
+            .clone()
+            .create_work_session(CreateWorkSessionParams {
+                title: "Frontend Snake Game".to_string(),
+                objective: "Build the first pure front-end version".to_string(),
+                workspace_id: None,
+                behavior: Some("  ".to_string()),
+                created_by_session_id: "ui-1".to_string(),
+                reason_messages: Vec::new(),
+                task_binding: None,
+                task_id: None,
+                auto_start: true,
+                bind_task: true,
+            })
+            .await
+            .expect("create work session");
+        assert_eq!(outcome.behavior, "work_default");
+        let session = agent
+            .get_session(&outcome.session_id)
+            .await
+            .expect("session");
+        assert_eq!(session.summary().await.current_behavior, "work_default");
+
+        agent
+            .delete_session_physical(&outcome.session_id)
+            .await
+            .expect("delete session");
     }
 
-    #[test]
-    fn rendered_input_falls_back_to_text_when_no_driver_var_is_tracked() {
-        let result = AgentTemplateRenderResult {
-            rendered: "# Current TODO\nT001".to_string(),
-            env_expanded: 0,
-            env_not_found: 0,
-            content_loaded: 0,
-            content_failed: 0,
-            var_registered: 0,
-            var_failed: 0,
-            resolved_vars: HashMap::from([("step_index".to_string(), true)]),
-        };
+    #[tokio::test]
+    async fn create_work_session_can_skip_auto_start() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
 
-        assert!(should_continue_with_rendered_input(&result));
+        let outcome = agent
+            .clone()
+            .create_work_session(CreateWorkSessionParams {
+                title: "Deferred Work".to_string(),
+                objective: "Create the session without running it".to_string(),
+                workspace_id: None,
+                behavior: None,
+                created_by_session_id: "ui-1".to_string(),
+                reason_messages: Vec::new(),
+                task_binding: None,
+                task_id: None,
+                auto_start: false,
+                bind_task: true,
+            })
+            .await
+            .expect("create work session");
+        assert!(!outcome.auto_started);
+        let session = agent
+            .get_session(&outcome.session_id)
+            .await
+            .expect("session");
+        let meta = session.meta.lock().await;
+        assert_eq!(meta.status, SessionStatus::Idle);
+        assert!(!meta.bootstrap_done);
+        drop(meta);
+
+        agent
+            .delete_session_physical(&outcome.session_id)
+            .await
+            .expect("delete session");
     }
 
-    #[test]
-    fn self_check_memory_filter_requires_explicit_time_or_date() {
-        let current_time = match Local.with_ymd_and_hms(2026, 3, 24, 10, 0, 5) {
-            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
-            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
-            chrono::LocalResult::None => panic!("build local current time"),
-        };
-        let exact_hit = crate::agent_tool::MemoryRankItem {
-            key: "/reminder/owner/2026-03-24_10-00_dentist".to_string(),
-            ts: current_time.to_rfc3339(),
-            source: json!({}),
-            content: Json::String("Dentist appointment".to_string()),
-            importance: 0,
-            recency_hours: 0,
-            token_estimate: 0,
-            tags: vec![],
-            type_name: "reminder".to_string(),
-            summary: "exact hit".to_string(),
-            tag_score: 0,
-            ts_unix_ms: current_time.timestamp_millis(),
-        };
-        let exact_miss = crate::agent_tool::MemoryRankItem {
-            key: "/reminder/owner/2026-03-24_10-01_dentist".to_string(),
-            ts: current_time.to_rfc3339(),
-            source: json!({}),
-            content: Json::String("Dentist appointment".to_string()),
-            importance: 0,
-            recency_hours: 0,
-            token_estimate: 0,
-            tags: vec![],
-            type_name: "reminder".to_string(),
-            summary: "exact miss".to_string(),
-            tag_score: 0,
-            ts_unix_ms: current_time.timestamp_millis(),
-        };
-        let coarse_date = crate::agent_tool::MemoryRankItem {
-            key: "/reminder/owner/2026-03-24-dentist".to_string(),
-            ts: current_time.to_rfc3339(),
-            source: json!({}),
-            content: Json::String("Dentist appointment at 3pm".to_string()),
-            importance: 0,
-            recency_hours: 0,
-            token_estimate: 0,
-            tags: vec![],
-            type_name: "reminder".to_string(),
-            summary: "date only".to_string(),
-            tag_score: 0,
-            ts_unix_ms: current_time.timestamp_millis(),
-        };
-        let untimed = crate::agent_tool::MemoryRankItem {
-            key: "/demo/untimed".to_string(),
-            ts: current_time.to_rfc3339(),
-            source: json!({}),
-            content: json!({
-                "type": "note",
-                "summary": "no explicit time"
+    #[tokio::test]
+    async fn create_work_session_by_task_id_uses_task_data_and_binds_task() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let task_mgr = MemoryTaskMgr::default();
+        let task = task_mgr.insert(delegate_task(
+            "t-mem-41",
+            serde_json::json!({
+                "agent_delegate": {
+                    "title": "Task title",
+                    "purpose": "Complete the task objective",
+                    "execution": {
+                        "workspace_id": "existing-workspace"
+                    }
+                }
             }),
-            importance: 0,
-            recency_hours: 0,
-            token_estimate: 0,
-            tags: vec![],
-            type_name: "note".to_string(),
-            summary: "no explicit time".to_string(),
-            tag_score: 0,
-            ts_unix_ms: current_time.timestamp_millis(),
-        };
-
-        let exact_hit_match =
-            match_self_check_memory_item(&exact_hit, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
-        let exact_miss_match = match_self_check_memory_item(
-            &exact_miss,
-            current_time,
-            SELF_CHECK_EXACT_TIME_WINDOW_MS,
-        );
-        let coarse_date_match = match_self_check_memory_item(
-            &coarse_date,
-            current_time,
-            SELF_CHECK_EXACT_TIME_WINDOW_MS,
-        );
-        let untimed_match =
-            match_self_check_memory_item(&untimed, current_time, SELF_CHECK_EXACT_TIME_WINDOW_MS);
-
-        assert!(exact_hit_match.has_explicit_time);
-        assert!(exact_hit_match.retained);
-        assert!(exact_hit_match.exact_time_hit);
-        assert!(exact_miss_match.has_explicit_time);
-        assert!(!exact_miss_match.retained);
-        assert!(coarse_date_match.has_explicit_time);
-        assert!(coarse_date_match.retained);
-        assert!(coarse_date_match.coarse_time_hit);
-        assert!(!untimed_match.has_explicit_time);
-        assert!(!untimed_match.retained);
-    }
-
-    fn build_step_input_payload(record_id: &str, ui_session_id: Option<&str>) -> Vec<u8> {
-        let mut msg_record = json!({
-            "record_id": record_id,
-            "box_kind": "INBOX",
-            "msg_id": "sha256:11111111111111111111111111111111",
-            "msg_kind": "chat",
-            "state": "UNREAD",
-            "from": "did:web:alice.example.com",
-            "to": "did:web:agent.example.com",
-            "created_at_ms": 1000,
-            "updated_at_ms": 1000,
-            "sort_key": 1000,
-            "tags": []
-        });
-        if let Some(value) = ui_session_id {
-            msg_record
-                .as_object_mut()
-                .expect("msg record object")
-                .insert("ui_session_id".to_string(), Json::String(value.to_string()));
-        }
-        serde_json::to_vec(&json!({
-            "msg": msg_record,
-            "event_id": null
-        }))
-        .expect("serialize step input payload")
-    }
-
-    #[test]
-    fn collect_reply_sync_ui_session_ids_prefers_ui_sessions_only() {
-        let step_inputs = vec![
-            build_step_input_payload("r1", Some("ui-owner")),
-            build_step_input_payload("r2", Some("ui-extra")),
-            build_step_input_payload("r3", Some("work-should-skip")),
-            b"{\"msg\":\"invalid\"}".to_vec(),
-        ];
-
-        let targets = AIAgent::collect_reply_sync_ui_session_ids(
-            "work-abc",
-            Some("ui-owner".to_string()),
-            step_inputs.as_slice(),
-        );
-        assert_eq!(
-            targets,
-            vec!["ui-extra".to_string(), "ui-owner".to_string()]
-        );
-    }
-
-    #[test]
-    fn set_creator_ui_session_id_meta_keeps_existing_value() {
-        let mut meta = json!({
-            "creator_ui_session_id": "ui-first"
-        });
-        AIAgent::set_creator_ui_session_id_meta(&mut meta, "ui-second");
-        assert_eq!(
-            AIAgent::creator_ui_session_id_from_meta(&meta),
-            Some("ui-first".to_string())
-        );
-
-        let mut empty_meta = json!({});
-        AIAgent::set_creator_ui_session_id_meta(&mut empty_meta, "ui-owner");
-        assert_eq!(
-            AIAgent::creator_ui_session_id_from_meta(&empty_meta),
-            Some("ui-owner".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn load_agent_applies_local_agent_json_overrides() {
-        let temp = tempdir().expect("create tempdir");
-        let agent_root = temp.path().join("agent");
-        let package_root = temp.path().join("package");
-        fs::create_dir_all(package_root.join("behaviors"))
-            .await
-            .expect("create package behaviors dir");
-        fs::write(
-            package_root.join("agent.json"),
-            r#"{
-  "default_ui_behavior_name": "resolve_router",
-  "default_work_behavior_name": "do",
-  "self_check_timer": 0
-}"#,
-        )
-        .await
-        .expect("write local agent config");
-        fs::write(
-            package_root.join("behaviors/resolve_router.yaml"),
-            r#"
-system: "router behavior"
-"#,
-        )
-        .await
-        .expect("write resolve_router behavior");
-        fs::write(
-            package_root.join("behaviors/do.yaml"),
-            r#"
-system: "worker behavior"
-"#,
-        )
-        .await
-        .expect("write do behavior");
-
-        let mut cfg = AIAgentConfig::new(agent_root);
-        cfg.agent_did = Some("did:opendan:test-agent".to_string());
-        cfg.agent_package_root = Some(package_root);
-
-        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
-            MockTaskMgrHandler {
-                counter: Mutex::new(0),
-                tasks: Arc::new(Mutex::new(HashMap::new())),
-            },
-        )));
-        let agent = AIAgent::load(
-            cfg,
-            AIAgentDeps {
-                taskmgr,
-                msg_center: None,
-                msg_queue: None,
-            },
-        )
-        .await
-        .expect("load agent");
-
-        assert_eq!(agent.default_behavior, "resolve_router");
-        assert_eq!(agent.default_worker_behavior, "do");
-        assert_eq!(agent.cfg.self_check_timer_secs, 0);
-    }
-
-    #[tokio::test]
-    async fn self_check_tick_wakes_fixed_session_when_memory_exists() {
-        let temp = tempdir().expect("create tempdir");
-        let agent_root = temp.path().join("agent");
-        fs::create_dir_all(agent_root.join("behaviors"))
-            .await
-            .expect("create behaviors dir");
-        fs::write(
-            agent_root.join("behaviors/resolve_router.yaml"),
-            r#"
-system: "router behavior"
-"#,
-        )
-        .await
-        .expect("write resolve_router behavior");
-        fs::write(
-            agent_root.join("behaviors/self_check.yaml"),
-            r#"
-system: "self check behavior"
-"#,
-        )
-        .await
-        .expect("write self_check behavior");
-
-        let mut cfg = AIAgentConfig::new(agent_root);
-        cfg.agent_did = Some("did:opendan:test-agent".to_string());
-        cfg.agent_owner_did = Some("did:bns:alice".to_string());
-
-        let msg_queue = Arc::new(MsgQueueClient::new_in_process(
-            Box::new(TestMsgQueue::new()),
         ));
-        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
-            MockTaskMgrHandler {
-                counter: Mutex::new(0),
-                tasks: Arc::new(Mutex::new(HashMap::new())),
-            },
-        )));
-        let agent = AIAgent::load(
-            cfg,
-            AIAgentDeps {
-                taskmgr,
-                msg_center: None,
-                msg_queue: Some(msg_queue.clone()),
-            },
-        )
-        .await
-        .expect("load agent");
+        let agent = test_agent_with_task_mgr(dir.path().to_path_buf(), task_mgr.clone());
 
-        let current_time = Utc::now();
-        agent
-            .memory
-            .set_memory(
-                "self/check/demo",
-                format!(
-                    r#"{{"summary":"pending self-check item","importance":1,"trigger_at":"{}"}}"#,
-                    current_time.to_rfc3339()
-                )
-                .as_str(),
-                json!({
-                    "kind": "test",
-                    "name": "self-check",
-                    "retrieved_at": current_time.to_rfc3339(),
-                    "locator": "unit-test"
-                }),
-            )
-            .await
-            .expect("set memory");
-
-        agent
-            .run_self_check_timer_tick(1, current_time)
-            .await
-            .expect("run self-check tick");
-
-        let session = agent
-            .session_mgr
-            .get_session(SELF_CHECK_SESSION_ID)
-            .await
-            .expect("self-check session exists");
-        let guard = session.lock().await;
-        assert_eq!(guard.current_behavior, AGENT_BEHAVIOR_SELF_CHECK);
-        assert_eq!(guard.state, SessionState::Ready);
-        assert_eq!(guard.title, SELF_CHECK_SESSION_TITLE);
-        assert_eq!(guard.default_remote.as_deref(), Some("did:bns:alice"));
-        assert!(
-            self_check_last_trigger_ms(&guard.meta).unwrap_or_default()
-                >= current_time.timestamp_millis().max(0) as u64
-        );
-        drop(guard);
-
-        let binding = agent
-            .ensure_session_queue_binding(SELF_CHECK_SESSION_ID)
-            .await
-            .expect("ensure self-check queue binding")
-            .expect("self-check queue binding exists");
-        let queued_events = msg_queue
-            .fetch_messages(binding.event_sub_id.as_str(), 8, false)
-            .await
-            .expect("fetch self-check queued events");
-        assert_eq!(queued_events.len(), 1);
-
-        let queued_input = serde_json::from_slice::<SessionInputItem>(&queued_events[0].payload)
-            .expect("parse queued self-check input");
-        assert_eq!(
-            queued_input.event_id.as_deref(),
-            Some(SELF_CHECK_TRIGGER_EVENT_ID)
-        );
-        let event_data = queued_input
-            .event_data
-            .expect("self-check trigger should include event data");
-        assert_eq!(event_data["tick"], Json::from(1));
-        assert_eq!(
-            event_data["current_time"],
-            Json::from(current_time.to_rfc3339())
-        );
-        assert_eq!(event_data["last_trigger_time"], Json::Null);
-    }
-
-    #[tokio::test]
-    async fn self_check_tick_force_triggers_when_memory_not_empty() {
-        let temp = tempdir().expect("create tempdir");
-        let agent_root = temp.path().join("agent");
-        fs::create_dir_all(agent_root.join("behaviors"))
-            .await
-            .expect("create behaviors dir");
-        fs::write(
-            agent_root.join("behaviors/resolve_router.yaml"),
-            r#"
-system: "router behavior"
-"#,
-        )
-        .await
-        .expect("write resolve_router behavior");
-        fs::write(
-            agent_root.join("behaviors/self_check.yaml"),
-            r#"
-system: "self check behavior"
-"#,
-        )
-        .await
-        .expect("write self_check behavior");
-
-        let mut cfg = AIAgentConfig::new(agent_root);
-        cfg.agent_did = Some("did:opendan:test-agent".to_string());
-
-        let msg_queue = Arc::new(MsgQueueClient::new_in_process(
-            Box::new(TestMsgQueue::new()),
-        ));
-        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
-            MockTaskMgrHandler {
-                counter: Mutex::new(0),
-                tasks: Arc::new(Mutex::new(HashMap::new())),
-            },
-        )));
-        let agent = AIAgent::load(
-            cfg,
-            AIAgentDeps {
-                taskmgr,
-                msg_center: None,
-                msg_queue: Some(msg_queue.clone()),
-            },
-        )
-        .await
-        .expect("load agent");
-
-        agent
-            .memory
-            .set_memory(
-                "self/check/untimed",
-                r#"{"summary":"plain note without explicit time","importance":1}"#,
-                json!({
-                    "kind": "test",
-                    "name": "self-check",
-                    "retrieved_at": Utc::now().to_rfc3339(),
-                    "locator": "unit-test"
-                }),
-            )
-            .await
-            .expect("set untimed memory");
-
-        agent
-            .run_self_check_timer_tick(1, Utc::now())
-            .await
-            .expect("run self-check tick");
-
-        let session = agent
-            .session_mgr
-            .get_session(SELF_CHECK_SESSION_ID)
-            .await
-            .expect("self-check session should be force-triggered even without explicit time");
-        let guard = session.lock().await;
-        assert_eq!(guard.current_behavior, AGENT_BEHAVIOR_SELF_CHECK);
-        assert_eq!(guard.state, SessionState::Ready);
-        assert!(self_check_last_trigger_ms(&guard.meta).unwrap_or(0) > 0);
-    }
-
-    #[test]
-    fn self_check_text_match_handles_embedded_datetime() {
-        let current_time = match Local.with_ymd_and_hms(2026, 3, 24, 10, 0, 5) {
-            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
-            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
-            chrono::LocalResult::None => panic!("build local current time"),
-        };
-
-        let exact = match_self_check_text(
-            "reminder: dentist at 2026-03-24 10:00 please confirm",
-            current_time,
-            SELF_CHECK_EXACT_TIME_WINDOW_MS,
-        );
-        assert!(exact.has_explicit_time, "embedded YYYY-MM-DD HH:MM must count");
-        assert!(exact.retained);
-        assert!(exact.exact_time_hit);
-
-        let miss = match_self_check_text(
-            "reminder: dentist at 2026-03-24 10:02 please confirm",
-            current_time,
-            SELF_CHECK_EXACT_TIME_WINDOW_MS,
-        );
-        assert!(miss.has_explicit_time);
-        assert!(!miss.exact_time_hit);
-
-        let coarse = match_self_check_text(
-            "Dentist appointment on 2026-03-24, location downtown",
-            current_time,
-            SELF_CHECK_EXACT_TIME_WINDOW_MS,
-        );
-        assert!(coarse.has_explicit_time);
-        assert!(coarse.retained);
-        assert!(coarse.coarse_time_hit);
-
-        let none = match_self_check_text(
-            "remind me in 5 minutes to move around",
-            current_time,
-            SELF_CHECK_EXACT_TIME_WINDOW_MS,
-        );
-        assert!(!none.has_explicit_time);
-        assert!(!none.retained);
-    }
-
-    #[tokio::test]
-    #[ignore = "relies on agent_tool/tmux integration and is flaky in CI"]
-    async fn print_action_results_prompt_preview() {
-        let temp = tempdir().expect("create tempdir");
-        let agent_root = temp.path().join("agent");
-        fs::create_dir_all(agent_root.join("behaviors"))
-            .await
-            .expect("create behaviors dir");
-        fs::write(
-            agent_root.join("agent.json.doc"),
-            r#"{"id":"did:opendan:test-agent"}"#,
-        )
-        .await
-        .expect("write agent doc");
-        fs::write(
-            agent_root.join("behaviors/resolve_router.yaml"),
-            r#"
-system: "test behavior for action rendering"
-"#,
-        )
-        .await
-        .expect("write behavior config");
-
-        let taskmgr = Arc::new(buckyos_api::TaskManagerClient::new_in_process(Box::new(
-            MockTaskMgrHandler {
-                counter: Mutex::new(0),
-                tasks: Arc::new(Mutex::new(HashMap::new())),
-            },
-        )));
-        let agent = AIAgent::load(
-            AIAgentConfig::new(agent_root.clone()),
-            AIAgentDeps {
-                taskmgr,
-                msg_center: None,
-                msg_queue: None,
-            },
-        )
-        .await
-        .expect("load agent");
-        let runtime = crate::ai_runtime::AiRuntime::new(crate::ai_runtime::AiRuntimeConfig::new(
-            agent_root.join("runtime_agents"),
-        ))
-        .await
-        .expect("create runtime");
-        runtime
-            .register_tools(&agent.tool_mgr)
-            .await
-            .expect("register runtime tools");
-
-        let llm_tools = agent.tool_mgr.list_tool_specs();
-        let bash_tools = agent.tool_mgr.list_bash_cmd_specs();
-        let action_tools = agent.tool_mgr.list_action_tool_specs();
-        let mut all_tool_names = std::collections::HashSet::<String>::new();
-        all_tool_names.extend(llm_tools.iter().map(|s| s.name.clone()));
-        all_tool_names.extend(bash_tools.iter().map(|s| s.name.clone()));
-        all_tool_names.extend(action_tools.iter().map(|s| s.name.clone()));
-
-        println!(
-            "registered tools => llm={} bash={} action={} all={:?}",
-            llm_tools.len(),
-            bash_tools.len(),
-            action_tools.len(),
-            {
-                let mut names = all_tool_names.iter().cloned().collect::<Vec<_>>();
-                names.sort();
-                names
-            }
-        );
-
-        for expected in [
-            "exec",
-            "edit_file",
-            "write_file",
-            "read_file",
-            "todo",
-            "create_workspace",
-            "bind_workspace",
-            "load_memory",
-            "get_session",
-            "create_sub_agent",
-            "bind_external_workspace",
-            "list_external_workspaces",
-        ] {
-            assert!(
-                all_tool_names.contains(expected),
-                "missing expected tool in catalog: {expected}"
-            );
-        }
-
-        let session_id = format!("session-test-{}", now_ms());
-        let session = agent
-            .session_mgr
-            .ensure_session(
-                session_id.as_str(),
-                Some("Session Test".to_string()),
-                None,
-                Some("resolve_router"),
-            )
-            .await
-            .expect("ensure session");
-        {
-            let mut guard = session.lock().await;
-            guard.pwd = agent.agent_env_root.clone();
-        }
-        agent
-            .session_mgr
-            .save_session(session_id.as_str())
-            .await
-            .expect("save session");
-
-        fs::write(
-            agent.agent_env_root.join("prompt_preview.txt"),
-            "line-1\nline-2\nline-3\n",
-        )
-        .await
-        .expect("write preview file");
-        fs::write(
-            agent.agent_env_root.join("edit_preview.txt"),
-            "line-alpha\nline-beta\nline-gamma\n",
-        )
-        .await
-        .expect("write edit preview file");
-
-        let mut large_content = String::new();
-        for i in 0..20_000 {
-            large_content.push_str(format!("large-line-{i:05}\n").as_str());
-        }
-        let large_bytes = large_content.len();
-        fs::write(
-            agent.agent_env_root.join("large_preview.txt"),
-            large_content,
-        )
-        .await
-        .expect("write large preview file");
-
-        let tree_root = agent.agent_env_root.join("tree_preview");
-        for i in 0..8 {
-            let branch = tree_root.join(format!("dir-{i:02}"));
-            fs::create_dir_all(branch.join("nested"))
-                .await
-                .expect("create tree branch");
-            for j in 0..8 {
-                fs::write(
-                    branch.join(format!("file-{j:02}.txt")),
-                    format!("tree-file-{i}-{j}\n"),
-                )
-                .await
-                .expect("write tree file");
-            }
-            fs::write(
-                branch.join("nested").join("leaf.txt"),
-                format!("tree-leaf-{i}\n"),
-            )
-            .await
-            .expect("write nested tree file");
-        }
-
-        let curl_source = "curl-source-line\n".repeat(1024);
-        fs::write(agent.agent_env_root.join("curl_source.txt"), &curl_source)
-            .await
-            .expect("write curl source file");
-
-        let actions: DoActions = serde_json::from_value(json!({
-            "mode": "all",
-            "cmds": [
-                "echo step-summary-preview",
-                "cat missing_exec_preview.txt",
-                "create_workspace preview_ws \"Workspace structure preview for action rendering\"",
-                "todo clear",
-                "todo add \"Preview task\" --priority=3",
-                "todo next",
-                "todo start T001 \"start preview\"",
-                "todo done T001 \"done preview\"",
-                "todo start T999 \"missing preview\"",
-                "todo ls --all",
-                ["read_file", {"path":"prompt_preview.txt","range":"1-2"}],
-                ["read_file", {"path":"prompt_preview.txt","first_chunk":"line-2"}],
-                ["read_file", {"path":"large_preview.txt"}],
-                ["write_file", {"path":"write_preview.txt","content":"preview-write-line\n","mode":"new"}],
-                ["write_file", {"path":"write_preview.txt","content":"should-fail\n","mode":"new"}],
-                ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-beta","new_content":"line-beta-updated","mode":"replace"}],
-                ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-gamma","new_content":"\nline-gamma-after","mode":"after"}],
-                ["edit_file", {"path":"edit_preview.txt","pos_chunk":"line-alpha","new_content":"line-alpha-before\n","mode":"before"}],
-                "if command -v tree >/dev/null 2>&1; then tree tree_preview; else find tree_preview -print | sort; fi",
-                "sleep 1 && if command -v curl >/dev/null 2>&1 && curl -fsSL \"file://$(pwd)/curl_source.txt\" -o curl_download.txt; then echo curl_download_ok; else cp curl_source.txt curl_download.txt && echo curl_fallback_ok; fi && wc -c curl_download.txt",
-                "cd tree_preview/dir-03",
-                "read_file file-00.txt 1-1",
-                ["read_file", {"path":"missing-file.txt"}]
-            ]
-        }))
-        .expect("parse actions");
-        let trace = SessionRuntimeContext {
-            trace_id: "trace-preview".to_string(),
-            agent_name: "did:opendan:test-agent".to_string(),
-            behavior: "resolve_router".to_string(),
-            step_idx: 3,
-            wakeup_id: "wakeup-preview".to_string(),
-            session_id: session_id.clone(),
-        };
-
-        let results = agent.execute_actions(&trace, &actions).await;
-        let missing_exec = results
-            .values()
-            .find(|result| {
-                result.command_line_text().as_deref() == Some("cat missing_exec_preview.txt")
+        let outcome = agent
+            .clone()
+            .create_work_session(CreateWorkSessionParams {
+                title: String::new(),
+                objective: String::new(),
+                workspace_id: None,
+                behavior: None,
+                created_by_session_id: "ui-1".to_string(),
+                reason_messages: Vec::new(),
+                task_binding: None,
+                task_id: Some(task.task_id.clone()),
+                auto_start: false,
+                bind_task: true,
             })
-            .expect("missing exec result should exist");
-        let curl_exec = results
-            .values()
-            .find(|result| {
-                result
-                    .command_line_text()
-                    .map(|value| value.contains("curl_source.txt"))
-                    .unwrap_or(false)
+            .await
+            .expect("create work session by task");
+
+        assert_eq!(outcome.title, "Task title");
+        assert_eq!(outcome.workspace_id, "existing-workspace");
+        assert_eq!(outcome.task_id, Some(task.task_id.clone()));
+        let session = agent
+            .get_session(&outcome.session_id)
+            .await
+            .expect("session");
+        let meta = session.meta.lock().await;
+        assert_eq!(meta.objective, "Complete the task objective");
+        assert_eq!(
+            meta.task_binding
+                .as_ref()
+                .map(|binding| binding.task_id.clone()),
+            Some(task.task_id.clone())
+        );
+        drop(meta);
+
+        let updated = task_mgr.task(&task.task_id);
+        let updated_data = agent_delegate_task_data(&updated).expect("agent.delegate task data");
+        assert_eq!(updated.phase, TaskPhase::Accepted);
+        assert_eq!(
+            updated_data
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.execution.as_ref())
+                .and_then(|execution| execution.get("session_id"))
+                .and_then(serde_json::Value::as_str),
+            Some(outcome.session_id.as_str())
+        );
+        assert_eq!(
+            updated_data
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.execution.as_ref())
+                .and_then(|execution| execution.get("status"))
+                .and_then(serde_json::Value::as_str),
+            Some("idle")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_work_session_without_task_id_creates_bound_task() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let task_mgr = MemoryTaskMgr::default();
+        let agent = test_agent_with_task_mgr(dir.path().to_path_buf(), task_mgr.clone());
+
+        let outcome = agent
+            .clone()
+            .create_work_session(CreateWorkSessionParams {
+                title: "Generated task".to_string(),
+                objective: "Do generated work".to_string(),
+                workspace_id: None,
+                behavior: None,
+                created_by_session_id: "ui-1".to_string(),
+                reason_messages: Vec::new(),
+                task_binding: None,
+                task_id: None,
+                auto_start: true,
+                bind_task: true,
             })
-            .expect("curl exec result should exist");
-        let rendered = render_action_results_for_prompt(&results);
-        println!(
-            "\n=== Action Results Prompt Preview ===\n{}\n=== End Preview ===\n",
-            rendered
+            .await
+            .expect("create work session");
+
+        let task_id = outcome.task_id.expect("task id");
+        let task = task_mgr.task(&task_id);
+        assert_eq!(
+            task.schema_id,
+            crate::agent_task_executor::AGENT_DELEGATE_SCHEMA_ID
         );
-
-        assert_eq!(missing_exec.status, AgentToolStatus::Error);
-        assert_ne!(missing_exec.return_code, Some(0));
-        assert!(missing_exec
-            .command_line_text()
-            .map(|value| value.contains("missing_exec_preview.txt"))
-            .unwrap_or(false));
-        assert_eq!(curl_exec.status, AgentToolStatus::Success);
-        assert_eq!(curl_exec.return_code, Some(0));
-        assert!(rendered.contains("ActionResults:"));
-        assert!(rendered.contains("step-summary-preview"));
-        assert!(rendered.contains("cat missing_exec_preview.txt"));
-        assert!(rendered.contains("missing_exec_preview.txt"));
-        assert!(rendered.contains(
-            "create_workspace preview_ws \"Workspace structure preview for action rendering\""
-        ));
-        assert!(!rendered.contains("\"session_updated\""));
-        assert!(rendered.contains("todo clear"));
-        assert!(rendered.contains("todo add \"Preview task\" --priority=3"));
-        assert!(rendered.contains("todo next"));
-        assert!(rendered.contains("todo start T999 \"missing preview\""));
-        assert!(rendered.contains("todo ls --all"));
-        assert!(rendered.contains("read_file prompt_preview.txt range=1-2 => read"));
-        assert!(rendered.contains("read_file prompt_preview.txt first_chunk=\"line-2\" => read"));
-        assert!(rendered.contains("line-1"));
-        assert!(rendered.contains("line-2"));
-        assert!(rendered.contains("line-3"));
-        assert!(rendered.contains("first_chunk=\"line-2\""));
-        assert!(rendered.contains("read_file large_preview.txt => read"));
-        assert!(rendered.contains(format!("read {large_bytes} bytes").as_str()));
-        assert!(rendered
-            .contains("... [TRUNCATED FOR ACTION PREVIEW: Showing first 3000 lines only] ..."));
-        assert!(rendered.contains("write_file write_preview.txt mode=new content=\""));
-        assert!(
-            rendered.contains("write mode `new` requires target file not exist: write_preview.txt")
+        assert_eq!(task.phase, TaskPhase::Running);
+        assert_eq!(
+            task.input
+                .pointer("/request/input/session_id")
+                .and_then(serde_json::Value::as_str),
+            Some(outcome.session_id.as_str())
         );
-        assert!(rendered.contains("tree_preview/dir-03"));
-        assert!(rendered.contains("pos_chunk=\"line-beta\""));
-        assert!(rendered.contains("pos_chunk=\"line-gamma\""));
-        assert!(rendered.contains("pos_chunk=\"line-alpha\""));
-        assert!(rendered.contains("=> replace "));
-        assert!(rendered.contains("=> after "));
-        assert!(rendered.contains("=> before "));
-        assert!(!rendered.contains("- edit_file /"));
-        assert!(!rendered.contains("unsupported worklog type"));
-        assert!(rendered.contains("tree tree_preview"));
-        assert!(rendered.contains("tree_preview"));
-        assert!(rendered.contains("curl -fsSL"));
-        assert!(rendered.contains("read_file file-00.txt 1-1"));
-        assert!(!rendered.contains("\"abs_path\""));
-        assert!(rendered.contains("curl_download_ok") || rendered.contains("curl_fallback_ok"));
-        assert!(rendered.contains(
-            "read_file missing-file.txt => read file failed: No such file or directory (os error 2)"
-        ));
+        let data = agent_delegate_task_data(&task).expect("agent.delegate task data");
+        assert_eq!(data.request.purpose.as_deref(), Some("Do generated work"));
+        assert_eq!(
+            data.progress
+                .as_ref()
+                .and_then(|progress| progress.execution.as_ref())
+                .and_then(|execution| execution.get("session_id"))
+                .and_then(serde_json::Value::as_str),
+            Some(outcome.session_id.as_str())
+        );
+    }
 
-        let edited = fs::read_to_string(agent.agent_env_root.join("edit_preview.txt"))
+    #[tokio::test]
+    async fn allocate_workspace_id_adds_suffix_on_conflict() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        agent
+            .workspaces()
+            .create_or_open("Frontend Snake Game", "Frontend Snake Game", None)
             .await
-            .expect("read edited file");
-        assert!(edited.contains("line-alpha-before\nline-alpha\n"));
-        assert!(edited.contains("line-beta-updated"));
-        assert!(edited.contains("line-gamma\nline-gamma-after\n"));
-        let write_preview = fs::read_to_string(agent.agent_env_root.join("write_preview.txt"))
-            .await
-            .expect("read write preview file");
-        assert_eq!(write_preview, "preview-write-line\n");
+            .expect("create workspace");
 
-        let downloaded = fs::read_to_string(agent.agent_env_root.join("curl_download.txt"))
-            .await
-            .expect("read downloaded file");
-        assert_eq!(downloaded, curl_source);
-    }
-
-    #[test]
-    fn build_work_session_id_uses_title_slug_and_date() {
-        let session_id = build_work_session_id("Fix Control Panel Session Naming", "260322", None);
-        assert_eq!(session_id, "work-fix-control-panel-session-naming-260322");
-    }
-
-    #[test]
-    fn build_work_session_id_preserves_readable_unicode_when_available() {
-        let session_id = build_work_session_id("统一 Session 目录命名", "260322", None);
-        assert_eq!(session_id, "work-统一-session-目录命名-260322");
-    }
-
-    #[test]
-    fn build_work_session_id_falls_back_for_blank_title_and_stays_within_limit() {
-        let session_id = build_work_session_id("   ", "260322", None);
-        assert_eq!(session_id, "work-session-260322");
-        assert!(session_id.len() <= MAX_SESSION_ID_LEN);
-        assert!(sanitize_session_id_for_path(session_id.as_str()).is_ok());
-    }
-
-    #[test]
-    fn build_work_session_id_truncates_long_titles_to_session_id_limit() {
-        let title = "Very Long Session Title ".repeat(32);
-        let session_id = build_work_session_id(title.as_str(), "260322", None);
-        assert!(session_id.len() <= MAX_SESSION_ID_LEN);
-        assert!(session_id.starts_with("work-very-long-session-title"));
-        assert!(session_id.ends_with("-260322"));
-        assert!(sanitize_session_id_for_path(session_id.as_str()).is_ok());
+        let workspace_id = agent.allocate_workspace_id("Frontend Snake Game").await;
+        assert_eq!(workspace_id, "Frontend Snake Game 2");
     }
 }

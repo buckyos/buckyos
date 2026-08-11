@@ -1,0 +1,46 @@
+{
+  "did": "__APP_DID__",
+  "doc_type": "app",
+  "name": "__APP_ID__",
+  "version": "__VERSION__",
+  "show_name": "PIKG Script Host Fixture",
+  "author": "__OWNER_DID__",
+  "owner": "__OWNER_DID__",
+  "size": 0,
+  "content": "",
+  "categories": [
+    "dapp"
+  ],
+  "meta": {
+    "description": {
+      "detail": {
+        "en": "Portable Python HTTP service for PIKG host-script testing."
+      }
+    }
+  },
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 3000,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": false
+        }
+      }
+    }
+  },
+  "pkg_list": {
+    "script": {
+      "pkg_id": "__SCRIPT_PKG_ID__"
+    }
+  },
+  "deps": {
+    "__SCRIPT_PKG_NAME__": "__VERSION__"
+  }
+}

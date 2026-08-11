@@ -1,3 +1,4 @@
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -13,11 +14,453 @@ pub const MSG_CENTER_SERVICE_UNIQUE_ID: &str = "msg-center";
 pub const MSG_CENTER_SERVICE_NAME: &str = "msg-center";
 pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 
+/// Logical name of the msg-center rdb instance. The scheduler writes this into
+/// `services/msg-center/spec` and the msg-center service resolves it at start
+/// via `get_rdb_instance`.
+pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
+/// Version of the msg-center schema. Bump whenever the DDL below changes in a
+/// way that is not trivially re-idempotent.
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 8;
+pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
+pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
+pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
+pub const UI_SESSION_PLATFORM_TELEGRAM: &str = "tg";
+
+pub fn build_msg_tunnel_ui_session_id(
+    platform: &str,
+    account_id: &str,
+    tunnel_session_key: &str,
+) -> String {
+    format!(
+        "{}:{}:{}",
+        normalize_ui_session_id_part(platform),
+        normalize_ui_session_id_part(account_id),
+        normalize_ui_session_id_part(tunnel_session_key)
+    )
+}
+
+pub fn build_telegram_ui_session_id(bot_account_id: &str, chat_id: impl ToString) -> String {
+    build_msg_tunnel_ui_session_id(
+        UI_SESSION_PLATFORM_TELEGRAM,
+        bot_account_id,
+        &chat_id.to_string(),
+    )
+}
+
+fn normalize_ui_session_id_part(raw: &str) -> String {
+    let normalized = raw.trim().replace(':', "_");
+    if normalized.is_empty() {
+        "unknown".to_string()
+    } else {
+        normalized
+    }
+}
+
+/// Sqlite DDL for the msg-center database. Covers mailbox records, the
+/// delivery queue, the per-owner message-id index, and contact-manager tables.
+/// All mailbox rows carry an `owner` column so a single db file can serve
+/// every zone user. beta2.2 split the legacy `msg_records` table into
+/// `mailbox_records` + `delivery_records` (breaking change, no migration).
+pub const MSG_CENTER_RDB_SCHEMA_SQLITE: &str = r#"
+DROP TABLE IF EXISTS msg_records;
+
+CREATE TABLE IF NOT EXISTS mailbox_records (
+    owner            TEXT NOT NULL,
+    record_id        TEXT NOT NULL,
+    box_kind         TEXT NOT NULL,
+    msg_id           TEXT NOT NULL,
+    msg_from         TEXT,
+    msg_to           TEXT,
+    msg_kind         TEXT,
+    state            TEXT NOT NULL,
+    session_id       TEXT,
+    sort_key         INTEGER NOT NULL,
+    tags_json        TEXT NOT NULL,
+    ingress_json     TEXT,
+    created_at_ms    INTEGER NOT NULL,
+    updated_at_ms    INTEGER NOT NULL,
+    PRIMARY KEY (owner, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_sort
+    ON mailbox_records(owner, box_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_state_sort
+    ON mailbox_records(owner, box_kind, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_session_sort
+    ON mailbox_records(owner, session_id, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_updated
+    ON mailbox_records(owner, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS delivery_records (
+    delivery_id      TEXT NOT NULL PRIMARY KEY,
+    transport_did    TEXT NOT NULL,
+    msg_id           TEXT NOT NULL,
+    target_did       TEXT NOT NULL,
+    envelope_json    TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_retry_at_ms INTEGER,
+    external_msg_id  TEXT,
+    delivered_at_ms  INTEGER,
+    last_error_json  TEXT,
+    created_at_ms    INTEGER NOT NULL,
+    updated_at_ms    INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_idempotency
+    ON delivery_records(msg_id, target_did, transport_did);
+CREATE INDEX IF NOT EXISTS idx_delivery_executor_state_retry
+    ON delivery_records(transport_did, state, next_retry_at_ms);
+CREATE INDEX IF NOT EXISTS idx_delivery_msg_target
+    ON delivery_records(msg_id, target_did);
+
+CREATE TABLE IF NOT EXISTS ui_session_states (
+    session_id    TEXT NOT NULL,
+    state_key     TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, state_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ui_session_states_session
+    ON ui_session_states(session_id, state_key);
+
+CREATE TABLE IF NOT EXISTS msg_refs (
+    owner         TEXT NOT NULL,
+    msg_id        TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (owner, msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS msg_idempotency (
+    scope           TEXT NOT NULL,
+    owner_scope     TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    msg_id          TEXT,
+    retention_key   TEXT,
+    state           TEXT NOT NULL,
+    result_json     TEXT,
+    created_at_ms   INTEGER NOT NULL,
+    updated_at_ms   INTEGER NOT NULL,
+    expires_at_ms   INTEGER,
+    PRIMARY KEY (scope, owner_scope, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_idempotency_expire
+    ON msg_idempotency(expires_at_ms);
+CREATE INDEX IF NOT EXISTS idx_msg_idempotency_retention_expire
+    ON msg_idempotency(retention_key, expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS msg_tunnel_cursors (
+    tunnel_key    TEXT NOT NULL,
+    cursor_key    TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (tunnel_key, cursor_key)
+);
+
+CREATE TABLE IF NOT EXISTS contact_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    owner_key TEXT NOT NULL,
+    did       TEXT NOT NULL,
+    payload   TEXT NOT NULL,
+    PRIMARY KEY (owner_key, did)
+);
+
+CREATE TABLE IF NOT EXISTS group_subscribers (
+    owner_key        TEXT NOT NULL,
+    group_did        TEXT NOT NULL,
+    subscribers_json TEXT NOT NULL,
+    PRIMARY KEY (owner_key, group_did)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_key);
+CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owner_key);
+
+CREATE TABLE IF NOT EXISTS groups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    doc_json       TEXT NOT NULL,
+    settings_json  TEXT NOT NULL,
+    is_hosted      INTEGER NOT NULL DEFAULT 1,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did)
+);
+CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(host_owner_key);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    member_kind    TEXT NOT NULL,
+    record_json    TEXT NOT NULL,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, member_did)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_group
+    ON group_members(host_owner_key, group_did, state);
+CREATE INDEX IF NOT EXISTS idx_group_members_member
+    ON group_members(host_owner_key, member_did);
+
+CREATE TABLE IF NOT EXISTS group_member_proofs (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    proof_id       TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    issued_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, proof_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_member_proofs_member
+    ON group_member_proofs(host_owner_key, group_did, member_did);
+
+CREATE TABLE IF NOT EXISTS group_subgroups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    subgroup_id    TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    updated_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, subgroup_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_events (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    event_id       TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_events_group_time
+    ON group_events(host_owner_key, group_did, created_at_ms DESC, event_id DESC);
+
+CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    operation_id   TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, operation_id)
+);
+"#;
+
+/// Postgres DDL mirroring the sqlite schema above.
+pub const MSG_CENTER_RDB_SCHEMA_POSTGRES: &str = r#"
+DROP TABLE IF EXISTS msg_records;
+
+CREATE TABLE IF NOT EXISTS mailbox_records (
+    owner            TEXT NOT NULL,
+    record_id        TEXT NOT NULL,
+    box_kind         TEXT NOT NULL,
+    msg_id           TEXT NOT NULL,
+    msg_from         TEXT,
+    msg_to           TEXT,
+    msg_kind         TEXT,
+    state            TEXT NOT NULL,
+    session_id       TEXT,
+    sort_key         BIGINT NOT NULL,
+    tags_json        TEXT NOT NULL,
+    ingress_json     TEXT,
+    created_at_ms    BIGINT NOT NULL,
+    updated_at_ms    BIGINT NOT NULL,
+    PRIMARY KEY (owner, record_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_sort
+    ON mailbox_records(owner, box_kind, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_state_sort
+    ON mailbox_records(owner, box_kind, state, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_session_sort
+    ON mailbox_records(owner, session_id, sort_key DESC, record_id DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_owner_updated
+    ON mailbox_records(owner, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS delivery_records (
+    delivery_id      TEXT NOT NULL PRIMARY KEY,
+    transport_did    TEXT NOT NULL,
+    msg_id           TEXT NOT NULL,
+    target_did       TEXT NOT NULL,
+    envelope_json    TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_retry_at_ms BIGINT,
+    external_msg_id  TEXT,
+    delivered_at_ms  BIGINT,
+    last_error_json  TEXT,
+    created_at_ms    BIGINT NOT NULL,
+    updated_at_ms    BIGINT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_idempotency
+    ON delivery_records(msg_id, target_did, transport_did);
+CREATE INDEX IF NOT EXISTS idx_delivery_executor_state_retry
+    ON delivery_records(transport_did, state, next_retry_at_ms);
+CREATE INDEX IF NOT EXISTS idx_delivery_msg_target
+    ON delivery_records(msg_id, target_did);
+
+CREATE TABLE IF NOT EXISTS ui_session_states (
+    session_id    TEXT NOT NULL,
+    state_key     TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (session_id, state_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ui_session_states_session
+    ON ui_session_states(session_id, state_key);
+
+CREATE TABLE IF NOT EXISTS msg_refs (
+    owner         TEXT NOT NULL,
+    msg_id        TEXT NOT NULL,
+    created_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (owner, msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS msg_idempotency (
+    scope           TEXT NOT NULL,
+    owner_scope     TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    msg_id          TEXT,
+    retention_key   TEXT,
+    state           TEXT NOT NULL,
+    result_json     TEXT,
+    created_at_ms   BIGINT NOT NULL,
+    updated_at_ms   BIGINT NOT NULL,
+    expires_at_ms   BIGINT,
+    PRIMARY KEY (scope, owner_scope, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_idempotency_expire
+    ON msg_idempotency(expires_at_ms);
+CREATE INDEX IF NOT EXISTS idx_msg_idempotency_retention_expire
+    ON msg_idempotency(retention_key, expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS msg_tunnel_cursors (
+    tunnel_key    TEXT NOT NULL,
+    cursor_key    TEXT NOT NULL,
+    value_json    TEXT NOT NULL,
+    updated_at_ms BIGINT NOT NULL,
+    PRIMARY KEY (tunnel_key, cursor_key)
+);
+
+CREATE TABLE IF NOT EXISTS contact_metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+    owner_key TEXT NOT NULL,
+    did       TEXT NOT NULL,
+    payload   TEXT NOT NULL,
+    PRIMARY KEY (owner_key, did)
+);
+
+CREATE TABLE IF NOT EXISTS group_subscribers (
+    owner_key        TEXT NOT NULL,
+    group_did        TEXT NOT NULL,
+    subscribers_json TEXT NOT NULL,
+    PRIMARY KEY (owner_key, group_did)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_key);
+CREATE INDEX IF NOT EXISTS idx_group_subscribers_owner ON group_subscribers(owner_key);
+
+CREATE TABLE IF NOT EXISTS groups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    doc_json       TEXT NOT NULL,
+    settings_json  TEXT NOT NULL,
+    is_hosted      INTEGER NOT NULL DEFAULT 1,
+    updated_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did)
+);
+CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(host_owner_key);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    member_kind    TEXT NOT NULL,
+    record_json    TEXT NOT NULL,
+    updated_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, member_did)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_group
+    ON group_members(host_owner_key, group_did, state);
+CREATE INDEX IF NOT EXISTS idx_group_members_member
+    ON group_members(host_owner_key, member_did);
+
+CREATE TABLE IF NOT EXISTS group_member_proofs (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    proof_id       TEXT NOT NULL,
+    member_did     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    issued_at_ms   BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, proof_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_member_proofs_member
+    ON group_member_proofs(host_owner_key, group_did, member_did);
+
+CREATE TABLE IF NOT EXISTS group_subgroups (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    subgroup_id    TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    updated_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, subgroup_id)
+);
+
+CREATE TABLE IF NOT EXISTS group_events (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    event_id       TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_events_group_time
+    ON group_events(host_owner_key, group_did, created_at_ms DESC, event_id DESC);
+
+CREATE TABLE IF NOT EXISTS group_expansion_snapshots (
+    host_owner_key TEXT NOT NULL,
+    group_did      TEXT NOT NULL,
+    operation_id   TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,
+    created_at_ms  BIGINT NOT NULL,
+    PRIMARY KEY (host_owner_key, group_did, operation_id)
+);
+"#;
+
+/// Default rdb-instance config for the msg-center service. The scheduler drops
+/// this into `spec_config.rdb_instances` when bootstrapping the service.
+pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
+    let mut schema = HashMap::new();
+    schema.insert(RdbBackend::Sqlite, MSG_CENTER_RDB_SCHEMA_SQLITE.to_string());
+    schema.insert(
+        RdbBackend::Postgres,
+        MSG_CENTER_RDB_SCHEMA_POSTGRES.to_string(),
+    );
+    RdbInstanceConfig {
+        backend: RdbBackend::Sqlite,
+        version: MSG_CENTER_RDB_SCHEMA_VERSION,
+        schema,
+        // Empty -> rdb_mgr generates `sqlite://$appdata/msg-center-main.db` at
+        // resolve time.
+        connection: String::new(),
+    }
+}
+
 const METHOD_MSG_DISPATCH: &str = "msg.dispatch";
 const METHOD_MSG_POST_SEND: &str = "msg.post_send";
 const METHOD_MSG_GET_NEXT: &str = "msg.get_next";
+const METHOD_MSG_GET_NEXT_DELIVERY: &str = "msg.get_next_delivery";
 const METHOD_MSG_PEEK_BOX: &str = "msg.peek_box";
 const METHOD_MSG_LIST_BOX_BY_TIME: &str = "msg.list_box_by_time";
+const METHOD_MSG_LIST_SESSIONS: &str = "msg.list_sessions";
+const METHOD_MSG_LIST_SESSION: &str = "msg.list_session";
 const METHOD_MSG_UPDATE_RECORD_SESSION: &str = "msg.update_record_session";
 const METHOD_MSG_UPDATE_RECORD_STATE: &str = "msg.update_record_state";
 const METHOD_MSG_REPORT_DELIVERY: &str = "msg.report_delivery";
@@ -25,8 +468,16 @@ const METHOD_MSG_SET_READ_STATE: &str = "msg.set_read_state";
 const METHOD_MSG_LIST_READ_RECEIPTS: &str = "msg.list_read_receipts";
 const METHOD_MSG_GET_RECORD: &str = "msg.get_record";
 const METHOD_MSG_GET_MESSAGE: &str = "msg.get_message";
+const METHOD_UI_SESSION_UPDATE_STATE: &str = "ui_session.update_state";
+const METHOD_UI_SESSION_GET_STATE: &str = "ui_session.get_state";
+const METHOD_UI_SESSION_LIST_STATE: &str = "ui_session.list_state";
 
 const METHOD_CONTACT_RESOLVE_DID: &str = "contact.resolve_did";
+const METHOD_CONTACT_RESOLVE_ENDPOINT_DID: &str = "contact.resolve_endpoint_did";
+const METHOD_CONTACT_RESOLVE_TARGET: &str = "contact.resolve_target";
+const METHOD_CONTACT_RESOLVE_CONTACT_FOR_ENDPOINT: &str = "contact.resolve_contact_for_endpoint";
+const METHOD_CONTACT_RESOLVE_CANONICAL_DID: &str = "contact.resolve_canonical_did";
+const METHOD_CONTACT_LIST_ALIAS_DIDS: &str = "contact.list_alias_dids";
 const METHOD_CONTACT_GET_PREFERRED_BINDING: &str = "contact.get_preferred_binding";
 const METHOD_CONTACT_CHECK_ACCESS_PERMISSION: &str = "contact.check_access_permission";
 const METHOD_CONTACT_GRANT_TEMPORARY_ACCESS: &str = "contact.grant_temporary_access";
@@ -38,6 +489,28 @@ const METHOD_CONTACT_GET_CONTACT: &str = "contact.get_contact";
 const METHOD_CONTACT_LIST_CONTACTS: &str = "contact.list_contacts";
 const METHOD_CONTACT_GET_GROUP_SUBSCRIBERS: &str = "contact.get_group_subscribers";
 const METHOD_CONTACT_SET_GROUP_SUBSCRIBERS: &str = "contact.set_group_subscribers";
+
+// Self-host group methods (see doc/message_hub/Self-Host-Group.md, section 7.1).
+const METHOD_GROUP_CREATE: &str = "group.create";
+const METHOD_GROUP_GET_DOC: &str = "group.get_doc";
+const METHOD_GROUP_UPDATE_PROFILE: &str = "group.update_profile";
+const METHOD_GROUP_INVITE_MEMBER: &str = "group.invite_member";
+const METHOD_GROUP_SUBMIT_MEMBER_PROOF: &str = "group.submit_member_proof";
+const METHOD_GROUP_REQUEST_JOIN: &str = "group.request_join";
+const METHOD_GROUP_APPROVE_MEMBER: &str = "group.approve_member";
+const METHOD_GROUP_REJECT_MEMBER: &str = "group.reject_member";
+const METHOD_GROUP_REMOVE_MEMBER: &str = "group.remove_member";
+const METHOD_GROUP_UPDATE_MEMBER_ROLE: &str = "group.update_member_role";
+const METHOD_GROUP_LIST_MEMBERS: &str = "group.list_members";
+const METHOD_GROUP_CREATE_SUBGROUP: &str = "group.create_subgroup";
+const METHOD_GROUP_UPDATE_SUBGROUP: &str = "group.update_subgroup";
+const METHOD_GROUP_LIST_SUBGROUPS: &str = "group.list_subgroups";
+const METHOD_GROUP_UPDATE_COLLECTION_POLICY: &str = "group.update_collection_policy";
+const METHOD_GROUP_UPDATE_ATTRIBUTION_POLICY: &str = "group.update_attribution_policy";
+const METHOD_GROUP_EXPAND_MEMBERS: &str = "group.expand_members";
+const METHOD_GROUP_LIST_BY_MEMBER: &str = "group.list_by_member";
+const METHOD_GROUP_LIST_PARENTS: &str = "group.list_parents";
+const METHOD_GROUP_CHECK_ACCESS: &str = "group.check_access";
 
 fn parse_from_json<T: DeserializeOwned>(
     value: Value,
@@ -83,35 +556,49 @@ fn parse_optional_rpc_response<T: DeserializeOwned>(
     Ok(Some(parsed))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Mailbox kinds. `DELIVERY_QUEUE` is *not* a mailbox: delivery tasks live in
+/// their own `DeliveryRecord` table and are only visible to delivery executors.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum BoxKind {
+pub enum MailboxKind {
     Inbox,
-    Outbox,
+    /// Send history of the owner. A `SENT` record means "this message left my
+    /// mailbox", never "the delivery succeeded" — delivery progress lives in
+    /// `DeliveryRecord` and is surfaced through the session projection.
+    Sent,
     GroupInbox,
-    TunnelOutbox,
     RequestBox,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Owner-managed read state of a `MailboxRecord`.
+/// `SENT` records have no reading semantics and only use ARCHIVED / DELETED.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum MsgState {
+pub enum RecipientState {
     Unread,
     Reading,
-    Readed,
+    Read,
+    Archived,
+    Deleted,
+}
+
+/// Executor-driven state of a `DeliveryRecord`:
+/// `WAIT → SENDING → SENT`, `SENDING → FAILED → WAIT | DEAD`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DeliveryState {
     Wait,
     Sending,
     Sent,
     Failed,
     Dead,
-    Deleted,
-    Archived,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct IngressContext {
+    /// DID of the transport (tunnel instance / hub) that produced this ingress message.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tunnel_did: Option<DID>,
+    pub transport_did: Option<DID>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,148 +614,286 @@ pub struct IngressContext {
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct SendContext {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_id: Option<String>,
-    // Owner scope used for contact-manager lookups while building delivery plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contact_mgr_owner: Option<DID>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub preferred_tunnel: Option<DID>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra: Option<Value>,
+/// Which delivery executor family carries a `DeliveryEnvelope`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TransportKind {
+    /// MessageHub: native zone↔zone delivery of a shareable DID target.
+    Native,
+    /// MessageTunnel: external platform adapter addressed by a local shadow
+    /// endpoint DID (`did:msgtunnel:*`).
+    Tunnel {
+        platform: String,
+        tunnel_instance_id: String,
+    },
 }
 
+/// Resolved platform address snapshot for one delivery. Filled by `post_send`
+/// from the target DID + tunnel registry; executors must not guess missing
+/// fields (a tunnel delivery without its address is a hard failure).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct RouteInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tunnel_did: Option<DID>,
+pub struct DeliverySnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
+    pub account_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_did: Option<DID>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
+    pub address: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub ext_ids: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct DeliveryInfo {
+/// The envelope of one determined delivery: the result snapshot of `post_send`
+/// resolving one `msg.to` target. Immutable after creation — it is never an
+/// input to route selection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryEnvelope {
+    pub msg_id: ObjId,
+    pub target_did: DID,
+    /// Delivery executor: MessageHub service DID or a tunnel instance DID.
+    /// Owner key of the `DELIVERY_QUEUE`.
+    pub transport_did: DID,
+    pub transport: TransportKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<DeliverySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryError {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    pub message: String,
+    #[serde(default)]
+    pub retryable: bool,
+    /// Set when the transport outcome is unknown (timeout / crash re-take):
+    /// a retry may double-deliver.
+    #[serde(default)]
+    pub duplicate_risk: bool,
+}
+
+/// One entry of the `DELIVERY_QUEUE`: the delivery task, retries and result for
+/// a single (msg, target, executor) tuple. Never readable as chat history.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryRecord {
+    /// Idempotency-derived id: hash(msg_id + target_did + transport_did).
+    pub delivery_id: String,
+    pub envelope: DeliveryEnvelope,
+    pub state: DeliveryState,
     #[serde(default)]
     pub attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_retry_at_ms: Option<u64>,
+    /// External/remote message id once the transport accepted the message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_msg_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivered_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub extra: Option<Value>,
+    pub last_error: Option<DeliveryError>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
 }
 
+/// A mailbox owner's reference to one immutable `MsgObject`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MsgRecord {
+pub struct MailboxRecord {
     pub record_id: String,
-    pub box_kind: BoxKind,
+    pub owner: DID,
+    pub box_kind: MailboxKind,
     pub msg_id: ObjId,
     #[serde(default)]
     pub msg_kind: MsgObjKind,
-    pub state: MsgState,
+    pub state: RecipientState,
     pub from: DID,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_name: Option<String>,
     pub to: DID,
-    pub created_at_ms: u64,
-    pub updated_at_ms: u64,
+    /// Local session projection key (per owner). Derived at dispatch/post_send
+    /// time; a trusted backend/agent may re-classify it later.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub route: Option<RouteInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<DeliveryInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ui_session_id: Option<String>,
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub session_id: Option<String>,
+    pub session_id: Option<String>,
     pub sort_key: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Ingress delivery facts (audit/reply aid) for messages produced by a
+    /// transport. Not a routing input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingress: Option<IngressContext>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MsgRecordWithObject {
-    pub record: MsgRecord,
+pub struct MailboxRecordWithObject {
+    pub record: MailboxRecord,
     pub msg: Option<MsgObject>,
 }
 
-impl MsgRecordWithObject {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeliveryRecordWithObject {
+    pub record: DeliveryRecord,
+    pub msg: Option<MsgObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiSessionStateEntry {
+    pub session_id: String,
+    pub key: String,
+    pub value: Value,
+    pub updated_at_ms: u64,
+}
+
+async fn load_msg_from_named_store(msg_id: &ObjId) -> std::result::Result<MsgObject, RPCErrors> {
+    let runtime = get_buckyos_api_runtime()?;
+    let named_store = runtime.get_named_store().await?;
+    let msg_json = named_store.get_object(msg_id).await.map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "Failed to load message {} from named_store: {}",
+            msg_id.to_string(),
+            error
+        ))
+    })?;
+    serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "Failed to parse message {} from named_store: {}",
+            msg_id.to_string(),
+            error
+        ))
+    })
+}
+
+impl MailboxRecordWithObject {
     pub async fn get_msg(&self) -> std::result::Result<MsgObject, RPCErrors> {
         //如果msg已经包含了完整的消息对象，则直接返回，否则从named_store中加载消息对象
         if let Some(msg) = self.msg.as_ref() {
             return Ok(msg.clone());
         }
-
-        let msg_id = self.record.msg_id.clone();
-        let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await?;
-        let msg_json = named_store.get_object(&msg_id).await.map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "Failed to load message {} from named_store: {}",
-                msg_id.to_string(),
-                error
-            ))
-        })?;
-        serde_json::from_str::<MsgObject>(&msg_json).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "Failed to parse message {} from named_store: {}",
-                msg_id.to_string(),
-                error
-            ))
-        })
+        load_msg_from_named_store(&self.record.msg_id).await
     }
 
+    /// The DID a reply should target: group messages reply to the group `to`,
+    /// everything else replies to the source endpoint `from`.
     pub fn get_target_did(&self) -> DID {
         match self.record.msg_kind {
             MsgObjKind::GroupMsg => self.record.to.clone(),
             _ => self.record.from.clone(),
         }
     }
+}
 
-    pub fn get_msg_tunnel_ui_id(&self) -> String {
-        if let Some(route) = &self.record.route {
-            if let Some(tunnel_did) = &route.tunnel_did {
-                return tunnel_did.id.clone();
-            }
+impl DeliveryRecordWithObject {
+    pub async fn get_msg(&self) -> std::result::Result<MsgObject, RPCErrors> {
+        if let Some(msg) = self.msg.as_ref() {
+            return Ok(msg.clone());
         }
-
-        return "default".to_string();
+        load_msg_from_named_store(&self.record.envelope.msg_id).await
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct MsgRecordPage {
+pub struct MailboxRecordPage {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: Vec<MsgRecordWithObject>,
+    pub items: Vec<MailboxRecordWithObject>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor_sort_key: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor_record_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Session projection — the only read surface for UI/Agent conversation views.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionSummary {
+    pub session_id: String,
+    /// Latest mailbox record of the session (message object attached when the
+    /// caller asked for it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_record: Option<MailboxRecordWithObject>,
+    #[serde(default)]
+    pub unread_count: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SessionSummaryPage {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<SessionSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor_updated_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMessageDirection {
+    In,
+    Out,
+}
+
+/// Aggregated delivery progress of one outbound message:
+/// all targets SENT → delivered; any WAIT/SENDING → sending;
+/// some DEAD/FAILED → partial_failed; all DEAD → failed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionDeliveryOverall {
+    Sending,
+    Delivered,
+    PartialFailed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionDeliveryTarget {
+    pub target_did: DID,
+    pub state: DeliveryState,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_msg_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<DeliveryError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionDeliveryView {
+    pub overall: SessionDeliveryOverall,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub per_target: Vec<SessionDeliveryTarget>,
+}
+
+/// One timeline entry of `list_session`. Inbound entries carry the owner's
+/// `recipient_state`; outbound entries carry the aggregated delivery view. The
+/// UI never reads the delivery queue directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionMessageItem {
+    pub record_id: String,
+    pub msg_id: ObjId,
+    pub direction: SessionMessageDirection,
+    pub box_kind: MailboxKind,
+    pub sort_key: u64,
+    pub from: DID,
+    pub to: DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_state: Option<RecipientState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<SessionDeliveryView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg: Option<MsgObject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SessionMessagePage {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<SessionMessageItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor_sort_key: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,14 +942,10 @@ pub struct DispatchResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PostSendDelivery {
-    pub tunnel_did: DID,
-    pub record_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_did: Option<DID>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
+    pub delivery_id: String,
+    pub transport_did: DID,
+    pub target_did: DID,
+    pub transport: TransportKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -359,7 +980,18 @@ pub struct AccountBinding {
     pub platform: String,
     pub account_id: String,
     pub display_id: String,
-    pub tunnel_id: String,
+    /// Stable short tunnel instance id (e.g. `tg-main-tunnel`). This is NOT the
+    /// transport DID; it is the registry key embedded in shadow endpoint DIDs.
+    pub tunnel_instance_id: String,
+    /// Platform entity kind for the bound endpoint: `user`/`group`/`channel`/`addr`.
+    /// Empty for legacy/zone-user bindings that are not message-tunnel endpoints.
+    #[serde(default)]
+    pub account_type: String,
+    /// Local shadow endpoint DID
+    /// (`did:msgtunnel:<encoded_account_id>.<account_type>.<tunnel_instance_id>`).
+    /// `None` for bindings that do not project a tunnel endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_did: Option<DID>,
     pub last_active_at: u64,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub meta: HashMap<String, String>,
@@ -540,20 +1172,13 @@ impl MsgCenterDispatchReq {
 pub struct MsgCenterPostSendReq {
     pub msg: MsgObject,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub send_ctx: Option<SendContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
 }
 
 impl MsgCenterPostSendReq {
-    pub fn new(
-        msg: MsgObject,
-        send_ctx: Option<SendContext>,
-        idempotency_key: Option<String>,
-    ) -> Self {
+    pub fn new(msg: MsgObject, idempotency_key: Option<String>) -> Self {
         Self {
             msg,
-            send_ctx,
             idempotency_key,
         }
     }
@@ -566,9 +1191,9 @@ impl MsgCenterPostSendReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterGetNextReq {
     pub owner: DID,
-    pub box_kind: BoxKind,
+    pub box_kind: MailboxKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state_filter: Option<Vec<MsgState>>,
+    pub state_filter: Option<Vec<RecipientState>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_on_take: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -578,8 +1203,8 @@ pub struct MsgCenterGetNextReq {
 impl MsgCenterGetNextReq {
     pub fn new(
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
     ) -> Self {
@@ -597,12 +1222,37 @@ impl MsgCenterGetNextReq {
     }
 }
 
+/// Executor-only: take the next due delivery task from a transport's
+/// DELIVERY_QUEUE (`WAIT` whose retry time has come, CAS to `SENDING`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterGetNextDeliveryReq {
+    pub transport_did: DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_on_take: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_object: Option<bool>,
+}
+
+impl MsgCenterGetNextDeliveryReq {
+    pub fn new(transport_did: DID, lock_on_take: Option<bool>, with_object: Option<bool>) -> Self {
+        Self {
+            transport_did,
+            lock_on_take,
+            with_object,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterGetNextDeliveryReq")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterPeekBoxReq {
     pub owner: DID,
-    pub box_kind: BoxKind,
+    pub box_kind: MailboxKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state_filter: Option<Vec<MsgState>>,
+    pub state_filter: Option<Vec<RecipientState>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -612,8 +1262,8 @@ pub struct MsgCenterPeekBoxReq {
 impl MsgCenterPeekBoxReq {
     pub fn new(
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         with_object: Option<bool>,
     ) -> Self {
@@ -634,9 +1284,9 @@ impl MsgCenterPeekBoxReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterListBoxByTimeReq {
     pub owner: DID,
-    pub box_kind: BoxKind,
+    pub box_kind: MailboxKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state_filter: Option<Vec<MsgState>>,
+    pub state_filter: Option<Vec<RecipientState>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -652,8 +1302,8 @@ pub struct MsgCenterListBoxByTimeReq {
 impl MsgCenterListBoxByTimeReq {
     pub fn new(
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
@@ -678,6 +1328,83 @@ impl MsgCenterListBoxByTimeReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterListSessionsReq {
+    pub owner: DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_updated_at_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_object: Option<bool>,
+}
+
+impl MsgCenterListSessionsReq {
+    pub fn new(
+        owner: DID,
+        limit: Option<usize>,
+        cursor_updated_at_ms: Option<u64>,
+        cursor_session_id: Option<String>,
+        with_object: Option<bool>,
+    ) -> Self {
+        Self {
+            owner,
+            limit,
+            cursor_updated_at_ms,
+            cursor_session_id,
+            with_object,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListSessionsReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterListSessionReq {
+    pub owner: DID,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_sort_key: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_record_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with_object: Option<bool>,
+}
+
+impl MsgCenterListSessionReq {
+    pub fn new(
+        owner: DID,
+        session_id: String,
+        limit: Option<usize>,
+        cursor_sort_key: Option<u64>,
+        cursor_record_id: Option<String>,
+        descending: Option<bool>,
+        with_object: Option<bool>,
+    ) -> Self {
+        Self {
+            owner,
+            session_id,
+            limit,
+            cursor_sort_key,
+            cursor_record_id,
+            descending,
+            with_object,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListSessionReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterUpdateRecordSessionReq {
     pub record_id: String,
     pub session_id: String,
@@ -697,19 +1424,68 @@ impl MsgCenterUpdateRecordSessionReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterUpdateUiSessionStateReq {
+    pub session_id: String,
+    pub key: String,
+    pub value: Value,
+}
+
+impl MsgCenterUpdateUiSessionStateReq {
+    pub fn new(session_id: String, key: String, value: Value) -> Self {
+        Self {
+            session_id,
+            key,
+            value,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterUpdateUiSessionStateReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterGetUiSessionStateReq {
+    pub session_id: String,
+    pub key: String,
+}
+
+impl MsgCenterGetUiSessionStateReq {
+    pub fn new(session_id: String, key: String) -> Self {
+        Self { session_id, key }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterGetUiSessionStateReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterListUiSessionStateReq {
+    pub session_id: String,
+}
+
+impl MsgCenterListUiSessionStateReq {
+    pub fn new(session_id: String) -> Self {
+        Self { session_id }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListUiSessionStateReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterUpdateRecordStateReq {
     pub record_id: String,
-    pub new_state: MsgState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub new_state: RecipientState,
 }
 
 impl MsgCenterUpdateRecordStateReq {
-    pub fn new(record_id: String, new_state: MsgState, reason: Option<String>) -> Self {
+    pub fn new(record_id: String, new_state: RecipientState) -> Self {
         Self {
             record_id,
             new_state,
-            reason,
         }
     }
 
@@ -720,13 +1496,16 @@ impl MsgCenterUpdateRecordStateReq {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterReportDeliveryReq {
-    pub record_id: String,
+    pub delivery_id: String,
     pub result: DeliveryReportResult,
 }
 
 impl MsgCenterReportDeliveryReq {
-    pub fn new(record_id: String, result: DeliveryReportResult) -> Self {
-        Self { record_id, result }
+    pub fn new(delivery_id: String, result: DeliveryReportResult) -> Self {
+        Self {
+            delivery_id,
+            result,
+        }
     }
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
@@ -868,6 +1647,131 @@ impl MsgCenterResolveDidReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         parse_from_json(value, "MsgCenterResolveDidReq")
+    }
+}
+
+/// Construct (or look up) the local shadow endpoint DID for a platform account.
+/// Deterministic: same `(platform, account_id, account_type, tunnel_instance_id)`
+/// always yields the same `did:msgtunnel:*`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterResolveEndpointDidReq {
+    pub platform: String,
+    pub account_id: String,
+    pub account_type: String,
+    pub tunnel_instance_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
+}
+
+impl MsgCenterResolveEndpointDidReq {
+    pub fn new(
+        platform: String,
+        account_id: String,
+        account_type: String,
+        tunnel_instance_id: String,
+        contact_mgr_owner: Option<DID>,
+    ) -> Self {
+        Self {
+            platform,
+            account_id,
+            account_type,
+            tunnel_instance_id,
+            contact_mgr_owner,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterResolveEndpointDidReq")
+    }
+}
+
+/// UI/contact-view helper: pick the endpoint DID for a canonical contact DID +
+/// selector (tunnel_instance_id, then platform). Fails when the selector does
+/// not match exactly one binding — no fallback. This is a construction-time
+/// aid for explicit user selection; it is never part of the send path
+/// (`post_send` only accepts already-determined DIDs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterResolveTargetReq {
+    pub contact_did: DID,
+    pub selector: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
+}
+
+impl MsgCenterResolveTargetReq {
+    pub fn new(contact_did: DID, selector: String, contact_mgr_owner: Option<DID>) -> Self {
+        Self {
+            contact_did,
+            selector,
+            contact_mgr_owner,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterResolveTargetReq")
+    }
+}
+
+/// Reverse lookup: which canonical/contact DID owns this endpoint DID?
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterResolveContactForEndpointReq {
+    pub endpoint_did: DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
+}
+
+impl MsgCenterResolveContactForEndpointReq {
+    pub fn new(endpoint_did: DID, contact_mgr_owner: Option<DID>) -> Self {
+        Self {
+            endpoint_did,
+            contact_mgr_owner,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterResolveContactForEndpointReq")
+    }
+}
+
+/// Resolve a (possibly merged-away/alias) DID to its current canonical DID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterResolveCanonicalDidReq {
+    pub did: DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
+}
+
+impl MsgCenterResolveCanonicalDidReq {
+    pub fn new(did: DID, contact_mgr_owner: Option<DID>) -> Self {
+        Self {
+            did,
+            contact_mgr_owner,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterResolveCanonicalDidReq")
+    }
+}
+
+/// List all alias DIDs (merged-away sources) that now resolve to a canonical DID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterListAliasDidsReq {
+    pub canonical_did: DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_mgr_owner: Option<DID>,
+}
+
+impl MsgCenterListAliasDidsReq {
+    pub fn new(canonical_did: DID, contact_mgr_owner: Option<DID>) -> Self {
+        Self {
+            canonical_did,
+            contact_mgr_owner,
+        }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListAliasDidsReq")
     }
 }
 
@@ -1193,18 +2097,15 @@ impl MsgCenterClient {
     pub async fn post_send(
         &self,
         msg: MsgObject,
-        send_ctx: Option<SendContext>,
         idempotency_key: Option<String>,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
-                handler
-                    .handle_post_send(msg, send_ctx, idempotency_key, ctx)
-                    .await
+                handler.handle_post_send(msg, idempotency_key, ctx).await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterPostSendReq::new(msg, send_ctx, idempotency_key);
+                let req = MsgCenterPostSendReq::new(msg, idempotency_key);
                 let req_json = serialize_to_json(&req, "MsgCenterPostSendReq")?;
                 let result = client.call(METHOD_MSG_POST_SEND, req_json).await?;
                 parse_rpc_response(result, "PostSendResult")
@@ -1215,11 +2116,11 @@ impl MsgCenterClient {
     pub async fn get_next(
         &self,
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
-    ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
+    ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -1244,7 +2145,32 @@ impl MsgCenterClient {
                 );
                 let req_json = serialize_to_json(&req, "MsgCenterGetNextReq")?;
                 let result = client.call(METHOD_MSG_GET_NEXT, req_json).await?;
-                parse_optional_rpc_response(result, "MsgRecordWithObject")
+                parse_optional_rpc_response(result, "MailboxRecordWithObject")
+            }
+        }
+    }
+
+    /// Executor-only: take the next due delivery task from `transport_did`'s
+    /// DELIVERY_QUEUE. `lock_on_take` (default true) CAS-moves WAIT → SENDING.
+    pub async fn get_next_delivery(
+        &self,
+        transport_did: DID,
+        lock_on_take: Option<bool>,
+        with_object: Option<bool>,
+    ) -> std::result::Result<Option<DeliveryRecordWithObject>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_get_next_delivery(transport_did, lock_on_take, with_object, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req =
+                    MsgCenterGetNextDeliveryReq::new(transport_did, lock_on_take, with_object);
+                let req_json = serialize_to_json(&req, "MsgCenterGetNextDeliveryReq")?;
+                let result = client.call(METHOD_MSG_GET_NEXT_DELIVERY, req_json).await?;
+                parse_optional_rpc_response(result, "DeliveryRecordWithObject")
             }
         }
     }
@@ -1252,11 +2178,11 @@ impl MsgCenterClient {
     pub async fn peek_box(
         &self,
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         with_object: Option<bool>,
-    ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors> {
+    ) -> std::result::Result<Vec<MailboxRecordWithObject>, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -1269,7 +2195,7 @@ impl MsgCenterClient {
                     MsgCenterPeekBoxReq::new(owner, box_kind, state_filter, limit, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterPeekBoxReq")?;
                 let result = client.call(METHOD_MSG_PEEK_BOX, req_json).await?;
-                parse_rpc_response(result, "Vec<MsgRecordWithObject>")
+                parse_rpc_response(result, "Vec<MailboxRecordWithObject>")
             }
         }
     }
@@ -1277,14 +2203,14 @@ impl MsgCenterClient {
     pub async fn list_box_by_time(
         &self,
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
         with_object: Option<bool>,
-    ) -> std::result::Result<MsgRecordPage, RPCErrors> {
+    ) -> std::result::Result<MailboxRecordPage, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -1315,7 +2241,91 @@ impl MsgCenterClient {
                 );
                 let req_json = serialize_to_json(&req, "MsgCenterListBoxByTimeReq")?;
                 let result = client.call(METHOD_MSG_LIST_BOX_BY_TIME, req_json).await?;
-                parse_rpc_response(result, "MsgRecordPage")
+                parse_rpc_response(result, "MailboxRecordPage")
+            }
+        }
+    }
+
+    /// Session projection: list the owner's sessions ordered by last activity.
+    pub async fn list_sessions(
+        &self,
+        owner: DID,
+        limit: Option<usize>,
+        cursor_updated_at_ms: Option<u64>,
+        cursor_session_id: Option<String>,
+        with_object: Option<bool>,
+    ) -> std::result::Result<SessionSummaryPage, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_list_sessions(
+                        owner,
+                        limit,
+                        cursor_updated_at_ms,
+                        cursor_session_id,
+                        with_object,
+                        ctx,
+                    )
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterListSessionsReq::new(
+                    owner,
+                    limit,
+                    cursor_updated_at_ms,
+                    cursor_session_id,
+                    with_object,
+                );
+                let req_json = serialize_to_json(&req, "MsgCenterListSessionsReq")?;
+                let result = client.call(METHOD_MSG_LIST_SESSIONS, req_json).await?;
+                parse_rpc_response(result, "SessionSummaryPage")
+            }
+        }
+    }
+
+    /// Session projection: one merged timeline (inbound + outbound + aggregated
+    /// delivery state) for a single session. The only conversation read a UI
+    /// needs.
+    pub async fn list_session(
+        &self,
+        owner: DID,
+        session_id: String,
+        limit: Option<usize>,
+        cursor_sort_key: Option<u64>,
+        cursor_record_id: Option<String>,
+        descending: Option<bool>,
+        with_object: Option<bool>,
+    ) -> std::result::Result<SessionMessagePage, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_list_session(
+                        owner,
+                        session_id,
+                        limit,
+                        cursor_sort_key,
+                        cursor_record_id,
+                        descending,
+                        with_object,
+                        ctx,
+                    )
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterListSessionReq::new(
+                    owner,
+                    session_id,
+                    limit,
+                    cursor_sort_key,
+                    cursor_record_id,
+                    descending,
+                    with_object,
+                );
+                let req_json = serialize_to_json(&req, "MsgCenterListSessionReq")?;
+                let result = client.call(METHOD_MSG_LIST_SESSION, req_json).await?;
+                parse_rpc_response(result, "SessionMessagePage")
             }
         }
     }
@@ -1323,23 +2333,22 @@ impl MsgCenterClient {
     pub async fn update_record_state(
         &self,
         record_id: String,
-        new_state: MsgState,
-        reason: Option<String>,
-    ) -> std::result::Result<MsgRecord, RPCErrors> {
+        new_state: RecipientState,
+    ) -> std::result::Result<MailboxRecord, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_update_record_state(record_id, new_state, reason, ctx)
+                    .handle_update_record_state(record_id, new_state, ctx)
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterUpdateRecordStateReq::new(record_id, new_state, reason);
+                let req = MsgCenterUpdateRecordStateReq::new(record_id, new_state);
                 let req_json = serialize_to_json(&req, "MsgCenterUpdateRecordStateReq")?;
                 let result = client
                     .call(METHOD_MSG_UPDATE_RECORD_STATE, req_json)
                     .await?;
-                parse_rpc_response(result, "MsgRecord")
+                parse_rpc_response(result, "MailboxRecord")
             }
         }
     }
@@ -1348,7 +2357,7 @@ impl MsgCenterClient {
         &self,
         record_id: String,
         session_id: String,
-    ) -> std::result::Result<MsgRecord, RPCErrors> {
+    ) -> std::result::Result<MailboxRecord, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -1362,28 +2371,28 @@ impl MsgCenterClient {
                 let result = client
                     .call(METHOD_MSG_UPDATE_RECORD_SESSION, req_json)
                     .await?;
-                parse_rpc_response(result, "MsgRecord")
+                parse_rpc_response(result, "MailboxRecord")
             }
         }
     }
 
     pub async fn report_delivery(
         &self,
-        record_id: String,
+        delivery_id: String,
         result_payload: DeliveryReportResult,
-    ) -> std::result::Result<MsgRecord, RPCErrors> {
+    ) -> std::result::Result<DeliveryRecord, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_report_delivery(record_id, result_payload, ctx)
+                    .handle_report_delivery(delivery_id, result_payload, ctx)
                     .await
             }
             Self::KRPC(client) => {
-                let req = MsgCenterReportDeliveryReq::new(record_id, result_payload);
+                let req = MsgCenterReportDeliveryReq::new(delivery_id, result_payload);
                 let req_json = serialize_to_json(&req, "MsgCenterReportDeliveryReq")?;
                 let result = client.call(METHOD_MSG_REPORT_DELIVERY, req_json).await?;
-                parse_rpc_response(result, "MsgRecord")
+                parse_rpc_response(result, "DeliveryRecord")
             }
         }
     }
@@ -1444,7 +2453,7 @@ impl MsgCenterClient {
         &self,
         record_id: String,
         with_object: Option<bool>,
-    ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors> {
+    ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
         match self {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
@@ -1454,7 +2463,7 @@ impl MsgCenterClient {
                 let req = MsgCenterGetRecordReq::new(record_id, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterGetRecordReq")?;
                 let result = client.call(METHOD_MSG_GET_RECORD, req_json).await?;
-                parse_optional_rpc_response(result, "MsgRecordWithObject")
+                parse_optional_rpc_response(result, "MailboxRecordWithObject")
             }
         }
     }
@@ -1473,6 +2482,69 @@ impl MsgCenterClient {
                 let req_json = serialize_to_json(&req, "MsgCenterGetMessageReq")?;
                 let result = client.call(METHOD_MSG_GET_MESSAGE, req_json).await?;
                 parse_optional_rpc_response(result, "MsgObject")
+            }
+        }
+    }
+
+    pub async fn update_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        value: Value,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_update_ui_session_state(session_id, key, value, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterUpdateUiSessionStateReq::new(session_id, key, value);
+                let req_json = serialize_to_json(&req, "MsgCenterUpdateUiSessionStateReq")?;
+                let result = client
+                    .call(METHOD_UI_SESSION_UPDATE_STATE, req_json)
+                    .await?;
+                parse_rpc_response(result, "UiSessionStateEntry")
+            }
+        }
+    }
+
+    pub async fn get_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_get_ui_session_state(session_id, key, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterGetUiSessionStateReq::new(session_id, key);
+                let req_json = serialize_to_json(&req, "MsgCenterGetUiSessionStateReq")?;
+                let result = client.call(METHOD_UI_SESSION_GET_STATE, req_json).await?;
+                parse_optional_rpc_response(result, "UiSessionStateEntry")
+            }
+        }
+    }
+
+    pub async fn list_ui_session_state(
+        &self,
+        session_id: String,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_list_ui_session_state(session_id, ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterListUiSessionStateReq::new(session_id);
+                let req_json = serialize_to_json(&req, "MsgCenterListUiSessionStateReq")?;
+                let result = client.call(METHOD_UI_SESSION_LIST_STATE, req_json).await?;
+                parse_rpc_response(result, "Vec<UiSessionStateEntry>")
             }
         }
     }
@@ -1501,6 +2573,142 @@ impl MsgCenterClient {
                 let req_json = serialize_to_json(&req, "MsgCenterResolveDidReq")?;
                 let result = client.call(METHOD_CONTACT_RESOLVE_DID, req_json).await?;
                 parse_rpc_response(result, "DID")
+            }
+        }
+    }
+
+    /// Construct/look up the local shadow endpoint DID for a platform account.
+    pub async fn resolve_endpoint_did(
+        &self,
+        platform: String,
+        account_id: String,
+        account_type: String,
+        tunnel_instance_id: String,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<DID, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_resolve_endpoint_did(
+                        platform,
+                        account_id,
+                        account_type,
+                        tunnel_instance_id,
+                        contact_mgr_owner,
+                        ctx,
+                    )
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterResolveEndpointDidReq::new(
+                    platform,
+                    account_id,
+                    account_type,
+                    tunnel_instance_id,
+                    contact_mgr_owner,
+                );
+                let req_json = serialize_to_json(&req, "MsgCenterResolveEndpointDidReq")?;
+                let result = client
+                    .call(METHOD_CONTACT_RESOLVE_ENDPOINT_DID, req_json)
+                    .await?;
+                parse_rpc_response(result, "DID")
+            }
+        }
+    }
+
+    /// Construction-time resolver: canonical contact DID + selector -> endpoint DID.
+    pub async fn resolve_target(
+        &self,
+        contact_did: DID,
+        selector: String,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<DID, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_resolve_target(contact_did, selector, contact_mgr_owner, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterResolveTargetReq::new(contact_did, selector, contact_mgr_owner);
+                let req_json = serialize_to_json(&req, "MsgCenterResolveTargetReq")?;
+                let result = client.call(METHOD_CONTACT_RESOLVE_TARGET, req_json).await?;
+                parse_rpc_response(result, "DID")
+            }
+        }
+    }
+
+    /// Reverse lookup: endpoint DID -> owning canonical/contact DID (if any).
+    pub async fn resolve_contact_for_endpoint(
+        &self,
+        endpoint_did: DID,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<Option<DID>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_resolve_contact_for_endpoint(endpoint_did, contact_mgr_owner, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req =
+                    MsgCenterResolveContactForEndpointReq::new(endpoint_did, contact_mgr_owner);
+                let req_json = serialize_to_json(&req, "MsgCenterResolveContactForEndpointReq")?;
+                let result = client
+                    .call(METHOD_CONTACT_RESOLVE_CONTACT_FOR_ENDPOINT, req_json)
+                    .await?;
+                parse_optional_rpc_response(result, "DID")
+            }
+        }
+    }
+
+    /// Resolve a (possibly merged-away alias) DID to its current canonical DID.
+    pub async fn resolve_canonical_did(
+        &self,
+        did: DID,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<DID, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_resolve_canonical_did(did, contact_mgr_owner, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterResolveCanonicalDidReq::new(did, contact_mgr_owner);
+                let req_json = serialize_to_json(&req, "MsgCenterResolveCanonicalDidReq")?;
+                let result = client
+                    .call(METHOD_CONTACT_RESOLVE_CANONICAL_DID, req_json)
+                    .await?;
+                parse_rpc_response(result, "DID")
+            }
+        }
+    }
+
+    /// List all alias DIDs (merged-away sources) resolving to a canonical DID.
+    pub async fn list_alias_dids(
+        &self,
+        canonical_did: DID,
+        contact_mgr_owner: Option<DID>,
+    ) -> std::result::Result<Vec<DID>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_list_alias_dids(canonical_did, contact_mgr_owner, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterListAliasDidsReq::new(canonical_did, contact_mgr_owner);
+                let req_json = serialize_to_json(&req, "MsgCenterListAliasDidsReq")?;
+                let result = client
+                    .call(METHOD_CONTACT_LIST_ALIAS_DIDS, req_json)
+                    .await?;
+                parse_rpc_response(result, "Vec<DID>")
             }
         }
     }
@@ -1752,6 +2960,374 @@ impl MsgCenterClient {
         }
     }
 
+    pub async fn group_create(
+        &self,
+        req: crate::group_mgr::GroupCreateReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_create(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupCreateReq")?;
+                let result = client.call(METHOD_GROUP_CREATE, req_json).await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_get_doc(
+        &self,
+        req: crate::group_mgr::GroupGetDocReq,
+    ) -> std::result::Result<Option<crate::group_mgr::GroupDoc>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_get_doc(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupGetDocReq")?;
+                let result = client.call(METHOD_GROUP_GET_DOC, req_json).await?;
+                parse_optional_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_update_profile(
+        &self,
+        req: crate::group_mgr::GroupUpdateProfileReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_profile(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateProfileReq")?;
+                let result = client.call(METHOD_GROUP_UPDATE_PROFILE, req_json).await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_invite_member(
+        &self,
+        req: crate::group_mgr::GroupInviteMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_invite_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupInviteMemberReq")?;
+                let result = client.call(METHOD_GROUP_INVITE_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_submit_member_proof(
+        &self,
+        req: crate::group_mgr::GroupSubmitMemberProofReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_submit_member_proof(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupSubmitMemberProofReq")?;
+                let result = client
+                    .call(METHOD_GROUP_SUBMIT_MEMBER_PROOF, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_request_join(
+        &self,
+        req: crate::group_mgr::GroupRequestJoinReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_request_join(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupRequestJoinReq")?;
+                let result = client.call(METHOD_GROUP_REQUEST_JOIN, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_approve_member(
+        &self,
+        req: crate::group_mgr::GroupApproveMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_approve_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupApproveMemberReq")?;
+                let result = client.call(METHOD_GROUP_APPROVE_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_reject_member(
+        &self,
+        req: crate::group_mgr::GroupRejectMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_reject_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupRejectMemberReq")?;
+                let result = client.call(METHOD_GROUP_REJECT_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_remove_member(
+        &self,
+        req: crate::group_mgr::GroupRemoveMemberReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_remove_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupRemoveMemberReq")?;
+                let result = client.call(METHOD_GROUP_REMOVE_MEMBER, req_json).await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_update_member_role(
+        &self,
+        req: crate::group_mgr::GroupUpdateMemberRoleReq,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_member_role(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateMemberRoleReq")?;
+                let result = client
+                    .call(METHOD_GROUP_UPDATE_MEMBER_ROLE, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupMemberRecord")
+            }
+        }
+    }
+
+    pub async fn group_list_members(
+        &self,
+        req: crate::group_mgr::GroupListMembersReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupMemberRecord>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_members(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListMembersReq")?;
+                let result = client.call(METHOD_GROUP_LIST_MEMBERS, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupMemberRecord>")
+            }
+        }
+    }
+
+    pub async fn group_create_subgroup(
+        &self,
+        req: crate::group_mgr::GroupCreateSubgroupReq,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_create_subgroup(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupCreateSubgroupReq")?;
+                let result = client.call(METHOD_GROUP_CREATE_SUBGROUP, req_json).await?;
+                parse_rpc_response(result, "GroupSubgroup")
+            }
+        }
+    }
+
+    pub async fn group_update_subgroup(
+        &self,
+        req: crate::group_mgr::GroupUpdateSubgroupReq,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_subgroup(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateSubgroupReq")?;
+                let result = client.call(METHOD_GROUP_UPDATE_SUBGROUP, req_json).await?;
+                parse_rpc_response(result, "GroupSubgroup")
+            }
+        }
+    }
+
+    pub async fn group_list_subgroups(
+        &self,
+        req: crate::group_mgr::GroupListSubgroupsReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSubgroup>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_subgroups(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListSubgroupsReq")?;
+                let result = client.call(METHOD_GROUP_LIST_SUBGROUPS, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupSubgroup>")
+            }
+        }
+    }
+
+    pub async fn group_update_collection_policy(
+        &self,
+        req: crate::group_mgr::GroupUpdateCollectionPolicyReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_collection_policy(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateCollectionPolicyReq")?;
+                let result = client
+                    .call(METHOD_GROUP_UPDATE_COLLECTION_POLICY, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_update_attribution_policy(
+        &self,
+        req: crate::group_mgr::GroupUpdateAttributionPolicyReq,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_update_attribution_policy(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupUpdateAttributionPolicyReq")?;
+                let result = client
+                    .call(METHOD_GROUP_UPDATE_ATTRIBUTION_POLICY, req_json)
+                    .await?;
+                parse_rpc_response(result, "GroupDoc")
+            }
+        }
+    }
+
+    pub async fn group_expand_members(
+        &self,
+        req: crate::group_mgr::GroupExpandMembersReq,
+    ) -> std::result::Result<crate::group_mgr::GroupExpansionSnapshot, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_expand_members(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupExpandMembersReq")?;
+                let result = client.call(METHOD_GROUP_EXPAND_MEMBERS, req_json).await?;
+                parse_rpc_response(result, "GroupExpansionSnapshot")
+            }
+        }
+    }
+
+    pub async fn group_list_by_member(
+        &self,
+        req: crate::group_mgr::GroupListByMemberReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_by_member(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListByMemberReq")?;
+                let result = client.call(METHOD_GROUP_LIST_BY_MEMBER, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupSummary>")
+            }
+        }
+    }
+
+    pub async fn group_list_parents(
+        &self,
+        req: crate::group_mgr::GroupListParentsReq,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_list_parents(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupListParentsReq")?;
+                let result = client.call(METHOD_GROUP_LIST_PARENTS, req_json).await?;
+                parse_rpc_response(result, "Vec<GroupSummary>")
+            }
+        }
+    }
+
+    pub async fn group_check_access(
+        &self,
+        req: crate::group_mgr::GroupCheckAccessReq,
+    ) -> std::result::Result<crate::group_mgr::GroupAccessDecision, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_group_check_access(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req_json = serialize_to_json(&req, "GroupCheckAccessReq")?;
+                let result = client.call(METHOD_GROUP_CHECK_ACCESS, req_json).await?;
+                parse_rpc_response(result, "GroupAccessDecision")
+            }
+        }
+    }
+
     pub async fn set_group_subscribers(
         &self,
         group_id: DID,
@@ -1791,7 +3367,6 @@ pub trait MsgCenterHandler: Send + Sync {
     async fn handle_post_send(
         &self,
         msg: MsgObject,
-        send_ctx: Option<SendContext>,
         idempotency_key: Option<String>,
         ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors>;
@@ -1799,57 +3374,86 @@ pub trait MsgCenterHandler: Send + Sync {
     async fn handle_get_next(
         &self,
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
         ctx: RPCContext,
-    ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors>;
+    ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors>;
+
+    async fn handle_get_next_delivery(
+        &self,
+        transport_did: DID,
+        lock_on_take: Option<bool>,
+        with_object: Option<bool>,
+        ctx: RPCContext,
+    ) -> std::result::Result<Option<DeliveryRecordWithObject>, RPCErrors>;
 
     async fn handle_peek_box(
         &self,
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         with_object: Option<bool>,
         ctx: RPCContext,
-    ) -> std::result::Result<Vec<MsgRecordWithObject>, RPCErrors>;
+    ) -> std::result::Result<Vec<MailboxRecordWithObject>, RPCErrors>;
 
     async fn handle_list_box_by_time(
         &self,
         owner: DID,
-        box_kind: BoxKind,
-        state_filter: Option<Vec<MsgState>>,
+        box_kind: MailboxKind,
+        state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         cursor_sort_key: Option<u64>,
         cursor_record_id: Option<String>,
         descending: Option<bool>,
         with_object: Option<bool>,
         ctx: RPCContext,
-    ) -> std::result::Result<MsgRecordPage, RPCErrors>;
+    ) -> std::result::Result<MailboxRecordPage, RPCErrors>;
+
+    async fn handle_list_sessions(
+        &self,
+        owner: DID,
+        limit: Option<usize>,
+        cursor_updated_at_ms: Option<u64>,
+        cursor_session_id: Option<String>,
+        with_object: Option<bool>,
+        ctx: RPCContext,
+    ) -> std::result::Result<SessionSummaryPage, RPCErrors>;
+
+    async fn handle_list_session(
+        &self,
+        owner: DID,
+        session_id: String,
+        limit: Option<usize>,
+        cursor_sort_key: Option<u64>,
+        cursor_record_id: Option<String>,
+        descending: Option<bool>,
+        with_object: Option<bool>,
+        ctx: RPCContext,
+    ) -> std::result::Result<SessionMessagePage, RPCErrors>;
 
     async fn handle_update_record_state(
         &self,
         record_id: String,
-        new_state: MsgState,
-        reason: Option<String>,
+        new_state: RecipientState,
         ctx: RPCContext,
-    ) -> std::result::Result<MsgRecord, RPCErrors>;
+    ) -> std::result::Result<MailboxRecord, RPCErrors>;
 
     async fn handle_update_record_session(
         &self,
         record_id: String,
         session_id: String,
         ctx: RPCContext,
-    ) -> std::result::Result<MsgRecord, RPCErrors>;
+    ) -> std::result::Result<MailboxRecord, RPCErrors>;
 
     async fn handle_report_delivery(
         &self,
-        record_id: String,
+        delivery_id: String,
         result_payload: DeliveryReportResult,
         ctx: RPCContext,
-    ) -> std::result::Result<MsgRecord, RPCErrors>;
+    ) -> std::result::Result<DeliveryRecord, RPCErrors>;
 
     async fn handle_set_read_state(
         &self,
@@ -1877,13 +3481,57 @@ pub trait MsgCenterHandler: Send + Sync {
         record_id: String,
         with_object: Option<bool>,
         ctx: RPCContext,
-    ) -> std::result::Result<Option<MsgRecordWithObject>, RPCErrors>;
+    ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors>;
 
     async fn handle_get_message(
         &self,
         msg_id: ObjId,
         ctx: RPCContext,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors>;
+
+    async fn handle_update_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        value: Value,
+        ctx: RPCContext,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors>;
+
+    async fn handle_get_ui_session_state(
+        &self,
+        session_id: String,
+        key: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors>;
+
+    async fn handle_list_ui_session_state(
+        &self,
+        session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors>;
+
+    async fn handle_get_tunnel_cursor(
+        &self,
+        _tunnel_key: String,
+        _cursor_key: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<Value>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "msg_center.get_tunnel_cursor".to_string(),
+        ))
+    }
+
+    async fn handle_update_tunnel_cursor(
+        &self,
+        _tunnel_key: String,
+        _cursor_key: String,
+        _value: Value,
+        _ctx: RPCContext,
+    ) -> std::result::Result<(), RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "msg_center.update_tunnel_cursor".to_string(),
+        ))
+    }
 
     async fn handle_resolve_did(
         &self,
@@ -1893,6 +3541,65 @@ pub trait MsgCenterHandler: Send + Sync {
         contact_mgr_owner: Option<DID>,
         ctx: RPCContext,
     ) -> std::result::Result<DID, RPCErrors>;
+
+    async fn handle_resolve_endpoint_did(
+        &self,
+        _platform: String,
+        _account_id: String,
+        _account_type: String,
+        _tunnel_instance_id: String,
+        _contact_mgr_owner: Option<DID>,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DID, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "contact.resolve_endpoint_did".to_string(),
+        ))
+    }
+
+    async fn handle_resolve_target(
+        &self,
+        _contact_did: DID,
+        _selector: String,
+        _contact_mgr_owner: Option<DID>,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DID, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "contact.resolve_target".to_string(),
+        ))
+    }
+
+    async fn handle_resolve_contact_for_endpoint(
+        &self,
+        _endpoint_did: DID,
+        _contact_mgr_owner: Option<DID>,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<DID>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "contact.resolve_contact_for_endpoint".to_string(),
+        ))
+    }
+
+    async fn handle_resolve_canonical_did(
+        &self,
+        _did: DID,
+        _contact_mgr_owner: Option<DID>,
+        _ctx: RPCContext,
+    ) -> std::result::Result<DID, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "contact.resolve_canonical_did".to_string(),
+        ))
+    }
+
+    async fn handle_list_alias_dids(
+        &self,
+        _canonical_did: DID,
+        _contact_mgr_owner: Option<DID>,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<DID>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "contact.list_alias_dids".to_string(),
+        ))
+    }
 
     async fn handle_get_preferred_binding(
         &self,
@@ -1980,6 +3687,185 @@ pub trait MsgCenterHandler: Send + Sync {
         contact_mgr_owner: Option<DID>,
         ctx: RPCContext,
     ) -> std::result::Result<SetGroupSubscribersResult, RPCErrors>;
+
+    // -------------------------------------------------------------------
+    // Self-host group APIs (see doc/message_hub/Self-Host-Group.md §7).
+    //
+    // Default impls return `UnknownMethod` so existing handlers (tests,
+    // alternate backends) keep compiling without picking up group state.
+    // -------------------------------------------------------------------
+
+    async fn handle_group_create(
+        &self,
+        _req: crate::group_mgr::GroupCreateReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.create".to_string()))
+    }
+
+    async fn handle_group_get_doc(
+        &self,
+        _req: crate::group_mgr::GroupGetDocReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<crate::group_mgr::GroupDoc>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.get_doc".to_string()))
+    }
+
+    async fn handle_group_update_profile(
+        &self,
+        _req: crate::group_mgr::GroupUpdateProfileReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.update_profile".to_string()))
+    }
+
+    async fn handle_group_invite_member(
+        &self,
+        _req: crate::group_mgr::GroupInviteMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.invite_member".to_string()))
+    }
+
+    async fn handle_group_submit_member_proof(
+        &self,
+        _req: crate::group_mgr::GroupSubmitMemberProofReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.submit_member_proof".to_string(),
+        ))
+    }
+
+    async fn handle_group_request_join(
+        &self,
+        _req: crate::group_mgr::GroupRequestJoinReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.request_join".to_string()))
+    }
+
+    async fn handle_group_approve_member(
+        &self,
+        _req: crate::group_mgr::GroupApproveMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.approve_member".to_string()))
+    }
+
+    async fn handle_group_reject_member(
+        &self,
+        _req: crate::group_mgr::GroupRejectMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.reject_member".to_string()))
+    }
+
+    async fn handle_group_remove_member(
+        &self,
+        _req: crate::group_mgr::GroupRemoveMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.remove_member".to_string()))
+    }
+
+    async fn handle_group_update_member_role(
+        &self,
+        _req: crate::group_mgr::GroupUpdateMemberRoleReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupMemberRecord, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_member_role".to_string(),
+        ))
+    }
+
+    async fn handle_group_list_members(
+        &self,
+        _req: crate::group_mgr::GroupListMembersReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupMemberRecord>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_members".to_string()))
+    }
+
+    async fn handle_group_create_subgroup(
+        &self,
+        _req: crate::group_mgr::GroupCreateSubgroupReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.create_subgroup".to_string(),
+        ))
+    }
+
+    async fn handle_group_update_subgroup(
+        &self,
+        _req: crate::group_mgr::GroupUpdateSubgroupReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupSubgroup, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_subgroup".to_string(),
+        ))
+    }
+
+    async fn handle_group_list_subgroups(
+        &self,
+        _req: crate::group_mgr::GroupListSubgroupsReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSubgroup>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_subgroups".to_string()))
+    }
+
+    async fn handle_group_update_collection_policy(
+        &self,
+        _req: crate::group_mgr::GroupUpdateCollectionPolicyReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_collection_policy".to_string(),
+        ))
+    }
+
+    async fn handle_group_update_attribution_policy(
+        &self,
+        _req: crate::group_mgr::GroupUpdateAttributionPolicyReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupDoc, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "group.update_attribution_policy".to_string(),
+        ))
+    }
+
+    async fn handle_group_expand_members(
+        &self,
+        _req: crate::group_mgr::GroupExpandMembersReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupExpansionSnapshot, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.expand_members".to_string()))
+    }
+
+    async fn handle_group_list_by_member(
+        &self,
+        _req: crate::group_mgr::GroupListByMemberReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_by_member".to_string()))
+    }
+
+    async fn handle_group_list_parents(
+        &self,
+        _req: crate::group_mgr::GroupListParentsReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Vec<crate::group_mgr::GroupSummary>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.list_parents".to_string()))
+    }
+
+    async fn handle_group_check_access(
+        &self,
+        _req: crate::group_mgr::GroupCheckAccessReq,
+        _ctx: RPCContext,
+    ) -> std::result::Result<crate::group_mgr::GroupAccessDecision, RPCErrors> {
+        Err(RPCErrors::UnknownMethod("group.check_access".to_string()))
+    }
 }
 
 pub struct MsgCenterServerHandler<T: MsgCenterHandler>(pub T);
@@ -2019,12 +3905,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let post_send_req = MsgCenterPostSendReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_post_send(
-                        post_send_req.msg,
-                        post_send_req.send_ctx,
-                        post_send_req.idempotency_key,
-                        ctx,
-                    )
+                    .handle_post_send(post_send_req.msg, post_send_req.idempotency_key, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -2036,6 +3917,19 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         next_req.owner,
                         next_req.box_kind,
                         next_req.state_filter,
+                        next_req.lock_on_take,
+                        next_req.with_object,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_GET_NEXT_DELIVERY | "get_next_delivery" => {
+                let next_req = MsgCenterGetNextDeliveryReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_get_next_delivery(
+                        next_req.transport_did,
                         next_req.lock_on_take,
                         next_req.with_object,
                         ctx,
@@ -2076,6 +3970,38 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
+            METHOD_MSG_LIST_SESSIONS | "list_sessions" => {
+                let list_req = MsgCenterListSessionsReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_list_sessions(
+                        list_req.owner,
+                        list_req.limit,
+                        list_req.cursor_updated_at_ms,
+                        list_req.cursor_session_id,
+                        list_req.with_object,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_LIST_SESSION | "list_session" => {
+                let list_req = MsgCenterListSessionReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_list_session(
+                        list_req.owner,
+                        list_req.session_id,
+                        list_req.limit,
+                        list_req.cursor_sort_key,
+                        list_req.cursor_record_id,
+                        list_req.descending,
+                        list_req.with_object,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
             METHOD_MSG_UPDATE_RECORD_SESSION | "update_record_session" => {
                 let update_req = MsgCenterUpdateRecordSessionReq::from_json(req.params)?;
                 let result = self
@@ -2088,12 +4014,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let update_req = MsgCenterUpdateRecordStateReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_update_record_state(
-                        update_req.record_id,
-                        update_req.new_state,
-                        update_req.reason,
-                        ctx,
-                    )
+                    .handle_update_record_state(update_req.record_id, update_req.new_state, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -2101,7 +4022,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let report_req = MsgCenterReportDeliveryReq::from_json(req.params)?;
                 let result = self
                     .0
-                    .handle_report_delivery(report_req.record_id, report_req.result, ctx)
+                    .handle_report_delivery(report_req.delivery_id, report_req.result, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -2149,6 +4070,35 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let result = self.0.handle_get_message(get_req.msg_id, ctx).await?;
                 RPCResult::Success(json!(result))
             }
+            METHOD_UI_SESSION_UPDATE_STATE => {
+                let update_req = MsgCenterUpdateUiSessionStateReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_update_ui_session_state(
+                        update_req.session_id,
+                        update_req.key,
+                        update_req.value,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_UI_SESSION_GET_STATE => {
+                let get_req = MsgCenterGetUiSessionStateReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_get_ui_session_state(get_req.session_id, get_req.key, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_UI_SESSION_LIST_STATE => {
+                let list_req = MsgCenterListUiSessionStateReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_list_ui_session_state(list_req.session_id, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
             METHOD_CONTACT_RESOLVE_DID | "resolve_did" => {
                 let resolve_req = MsgCenterResolveDidReq::from_json(req.params)?;
                 let result = self
@@ -2158,6 +4108,70 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                         resolve_req.account_id,
                         resolve_req.profile_hint,
                         resolve_req.contact_mgr_owner,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_CONTACT_RESOLVE_ENDPOINT_DID | "resolve_endpoint_did" => {
+                let endpoint_req = MsgCenterResolveEndpointDidReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_resolve_endpoint_did(
+                        endpoint_req.platform,
+                        endpoint_req.account_id,
+                        endpoint_req.account_type,
+                        endpoint_req.tunnel_instance_id,
+                        endpoint_req.contact_mgr_owner,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_CONTACT_RESOLVE_TARGET | "resolve_target" => {
+                let target_req = MsgCenterResolveTargetReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_resolve_target(
+                        target_req.contact_did,
+                        target_req.selector,
+                        target_req.contact_mgr_owner,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_CONTACT_RESOLVE_CONTACT_FOR_ENDPOINT | "resolve_contact_for_endpoint" => {
+                let endpoint_req = MsgCenterResolveContactForEndpointReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_resolve_contact_for_endpoint(
+                        endpoint_req.endpoint_did,
+                        endpoint_req.contact_mgr_owner,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_CONTACT_RESOLVE_CANONICAL_DID | "resolve_canonical_did" => {
+                let canonical_req = MsgCenterResolveCanonicalDidReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_resolve_canonical_did(
+                        canonical_req.did,
+                        canonical_req.contact_mgr_owner,
+                        ctx,
+                    )
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_CONTACT_LIST_ALIAS_DIDS | "list_alias_dids" => {
+                let alias_req = MsgCenterListAliasDidsReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_list_alias_dids(
+                        alias_req.canonical_did,
+                        alias_req.contact_mgr_owner,
                         ctx,
                     )
                     .await?;
@@ -2297,6 +4311,138 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
+            METHOD_GROUP_CREATE => {
+                let parsed: crate::group_mgr::GroupCreateReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupCreateReq")?;
+                let result = self.0.handle_group_create(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_GET_DOC => {
+                let parsed: crate::group_mgr::GroupGetDocReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupGetDocReq")?;
+                let result = self.0.handle_group_get_doc(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_PROFILE => {
+                let parsed: crate::group_mgr::GroupUpdateProfileReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupUpdateProfileReq")?;
+                let result = self.0.handle_group_update_profile(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_INVITE_MEMBER => {
+                let parsed: crate::group_mgr::GroupInviteMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupInviteMemberReq")?;
+                let result = self.0.handle_group_invite_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_SUBMIT_MEMBER_PROOF => {
+                let parsed: crate::group_mgr::GroupSubmitMemberProofReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupSubmitMemberProofReq")?;
+                let result = self.0.handle_group_submit_member_proof(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_REQUEST_JOIN => {
+                let parsed: crate::group_mgr::GroupRequestJoinReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupRequestJoinReq")?;
+                let result = self.0.handle_group_request_join(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_APPROVE_MEMBER => {
+                let parsed: crate::group_mgr::GroupApproveMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupApproveMemberReq")?;
+                let result = self.0.handle_group_approve_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_REJECT_MEMBER => {
+                let parsed: crate::group_mgr::GroupRejectMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupRejectMemberReq")?;
+                let result = self.0.handle_group_reject_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_REMOVE_MEMBER => {
+                let parsed: crate::group_mgr::GroupRemoveMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupRemoveMemberReq")?;
+                let result = self.0.handle_group_remove_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_MEMBER_ROLE => {
+                let parsed: crate::group_mgr::GroupUpdateMemberRoleReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupUpdateMemberRoleReq")?;
+                let result = self.0.handle_group_update_member_role(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_MEMBERS => {
+                let parsed: crate::group_mgr::GroupListMembersReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListMembersReq")?;
+                let result = self.0.handle_group_list_members(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_CREATE_SUBGROUP => {
+                let parsed: crate::group_mgr::GroupCreateSubgroupReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupCreateSubgroupReq")?;
+                let result = self.0.handle_group_create_subgroup(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_SUBGROUP => {
+                let parsed: crate::group_mgr::GroupUpdateSubgroupReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupUpdateSubgroupReq")?;
+                let result = self.0.handle_group_update_subgroup(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_SUBGROUPS => {
+                let parsed: crate::group_mgr::GroupListSubgroupsReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListSubgroupsReq")?;
+                let result = self.0.handle_group_list_subgroups(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_COLLECTION_POLICY => {
+                let parsed: crate::group_mgr::GroupUpdateCollectionPolicyReq =
+                    crate::group_mgr::parse_group_request(
+                        req.params,
+                        "GroupUpdateCollectionPolicyReq",
+                    )?;
+                let result = self
+                    .0
+                    .handle_group_update_collection_policy(parsed, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_UPDATE_ATTRIBUTION_POLICY => {
+                let parsed: crate::group_mgr::GroupUpdateAttributionPolicyReq =
+                    crate::group_mgr::parse_group_request(
+                        req.params,
+                        "GroupUpdateAttributionPolicyReq",
+                    )?;
+                let result = self
+                    .0
+                    .handle_group_update_attribution_policy(parsed, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_EXPAND_MEMBERS => {
+                let parsed: crate::group_mgr::GroupExpandMembersReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupExpandMembersReq")?;
+                let result = self.0.handle_group_expand_members(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_BY_MEMBER => {
+                let parsed: crate::group_mgr::GroupListByMemberReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListByMemberReq")?;
+                let result = self.0.handle_group_list_by_member(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_LIST_PARENTS => {
+                let parsed: crate::group_mgr::GroupListParentsReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupListParentsReq")?;
+                let result = self.0.handle_group_list_parents(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_GROUP_CHECK_ACCESS => {
+                let parsed: crate::group_mgr::GroupCheckAccessReq =
+                    crate::group_mgr::parse_group_request(req.params, "GroupCheckAccessReq")?;
+                let result = self.0.handle_group_check_access(parsed, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
             _ => return Err(RPCErrors::UnknownMethod(req.method.clone())),
         };
 
@@ -2322,4 +4468,36 @@ pub fn generate_msg_center_service_doc() -> AppDoc {
     .selector_type(SelectorType::Single)
     .build()
     .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_telegram_ui_session_id_uses_canonical_parts() {
+        assert_eq!(
+            build_telegram_ui_session_id("lzc_jarvis", 5_397_330_802_i64),
+            "tg:lzc_jarvis:5397330802"
+        );
+    }
+
+    #[test]
+    fn build_msg_tunnel_ui_session_id_normalizes_delimiters() {
+        assert_eq!(
+            build_msg_tunnel_ui_session_id(" tg ", "bot:one", " chat:1 "),
+            "tg:bot_one:chat_1"
+        );
+    }
+
+    #[test]
+    fn schema_v8_scopes_idempotency_and_has_durable_tunnel_cursors() {
+        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 8);
+        for schema in [MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_RDB_SCHEMA_POSTGRES] {
+            assert!(schema.contains("owner_scope     TEXT NOT NULL"));
+            assert!(schema.contains("PRIMARY KEY (scope, owner_scope, idempotency_key)"));
+            assert!(schema.contains("CREATE TABLE IF NOT EXISTS msg_tunnel_cursors"));
+            assert!(schema.contains("PRIMARY KEY (tunnel_key, cursor_key)"));
+        }
+    }
 }

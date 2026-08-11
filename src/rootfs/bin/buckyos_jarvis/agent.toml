@@ -1,0 +1,208 @@
+[identity]
+display_name = "Jarvis"
+
+[runtime]
+cancel_reason = "user requested cancel"
+language = "zh"
+preserve_attachment_tag_in_egress = false
+filesystem_policy = "unrestricted"
+
+[runtime.task_executor]
+enabled = true
+
+[runtime.task_route]
+enabled = true
+
+[[channel]]
+type = "msg_center"
+
+[[channel]]
+type = "kevent"
+filters = ["task_mgr/**", "kvdoc/**", "timer.hard_barrier", "timer.reminder_check", "timer.scheduled_task_check"]
+
+[dispatch]
+default_class = "ui"
+
+[[dispatch.rule]]
+on = "msg.group"
+session_class = "group"
+
+[[dispatch.rule]]
+on = "msg.chat"
+session_class = "ui"
+
+[[dispatch.rule]]
+on = "task_mgr.*"
+session_class = "work"
+
+[[dispatch.rule]]
+on = "kvdoc.*"
+session_class = "work"
+
+[[dispatch.rule]]
+on = "timer.*"
+session_class = "self_check"
+
+[session.ui]
+kind = "ui"
+loop_mode = "agent"
+default_behavior = "chat_route"
+session_id_strategy = "per_peer"
+process_stack_limit = 4
+
+[session.ui.driver]
+switch_mode = "normal"
+inject_background_environment = true
+report_delivery = "final_only"
+
+[session.ui.driver.on_init]
+filter = "all"
+pull_msg = "none"
+pull_event = "none"
+
+[session.ui.driver.on_behavior_switch]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"
+
+[session.ui.driver.on_behavior_step_ob]
+filter = "none"
+pull_msg = "none"
+pull_event = "none"
+
+[session.ui.driver.on_wakeup]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"
+load_background_hits = "all"
+
+[session.group]
+kind = "ui"
+loop_mode = "agent"
+default_behavior = "groupchat_route"
+session_id_strategy = "per_group"
+process_stack_limit = 4
+
+[session.group.driver]
+switch_mode = "normal"
+inject_background_environment = true
+report_delivery = "final_only"
+
+[session.group.driver.on_init]
+filter = "all"
+pull_msg = "none"
+pull_event = "none"
+
+[session.group.driver.on_behavior_switch]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"
+
+[session.group.driver.on_behavior_step_ob]
+filter = "none"
+pull_msg = "none"
+pull_event = "none"
+
+[session.group.driver.on_wakeup]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"
+load_background_hits = "all"
+
+[session.work]
+kind = "work"
+loop_mode = "behavior"
+default_behavior = "plan"
+session_id_strategy = "per_event_session"
+process_stack_limit = 8
+
+[session.work.driver]
+switch_mode = "fork"
+inject_background_environment = false
+report_delivery = "top_level"
+
+[session.work.driver.on_init]
+filter = "all"
+pull_msg = "none"
+pull_event = "none"
+
+[session.work.driver.on_behavior_switch]
+filter = "top"
+pull_msg = "all"
+pull_event = "all"
+
+[session.work.driver.on_behavior_step_ob]
+filter = "top"
+pull_msg = "all"
+pull_event = "all"
+
+[session.work.driver.on_wakeup]
+filter = "top"
+pull_msg = "one"
+pull_event = "none"
+
+[session.self_check]
+enabled = true
+kind = "self_check"
+loop_mode = "behavior"
+default_behavior = "self_check"
+session_id_strategy = "singleton"
+process_stack_limit = 2
+
+[session.self_check.driver]
+switch_mode = "normal"
+inject_background_environment = true
+report_delivery = "final_only"
+
+[session.self_check.driver.on_init]
+filter = "all"
+pull_msg = "none"
+pull_event = "timer.*"
+
+[session.self_check.driver.on_behavior_switch]
+filter = "top"
+pull_msg = "none"
+pull_event = "timer.*"
+
+[session.self_check.driver.on_behavior_step_ob]
+filter = "none"
+pull_msg = "none"
+pull_event = "none"
+
+[session.self_check.driver.on_wakeup]
+filter = "top"
+pull_msg = "all"
+pull_event = "timer.*"
+
+[session.self_improve]
+enabled = true
+kind = "self_improve"
+loop_mode = "behavior"
+default_behavior = "self_improve_signals"
+session_id_strategy = "singleton"
+process_stack_limit = 2
+
+[session.self_improve.driver]
+switch_mode = "normal"
+inject_background_environment = false
+report_delivery = "final_only"
+
+[session.self_improve.driver.on_init]
+filter = "all"
+pull_msg = "none"
+pull_event = "none"
+
+[session.self_improve.driver.on_behavior_switch]
+filter = "top"
+pull_msg = "none"
+pull_event = "none"
+
+[session.self_improve.driver.on_behavior_step_ob]
+filter = "none"
+pull_msg = "none"
+pull_event = "none"
+
+[session.self_improve.driver.on_wakeup]
+filter = "none"
+pull_msg = "none"
+pull_event = "none"

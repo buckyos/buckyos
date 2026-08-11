@@ -5,7 +5,7 @@ use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, fs::File};
 use time::macros::format_description;
@@ -14,7 +14,7 @@ use tokio::sync::RwLock;
 use clap::{Arg, ArgMatches, Command};
 use futures::prelude::*;
 use log::*;
-use named_store::NamedStoreMgr;
+use named_store::NamedDataMgr;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value, json, Value};
 use simplelog::*;
@@ -22,6 +22,7 @@ use toml;
 
 use buckyos_api::*;
 use buckyos_kit::*;
+use cyfs_gateway_api::{SnClient, SnZoneInfoResp};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use name_client::*;
@@ -31,11 +32,25 @@ use package_lib::*;
 
 use crate::active_server::*;
 use crate::app_mgr::*;
+use crate::boot::{
+    build_boot_node_gateway_info, build_keep_tunnel_targets, dedup_keep_tunnel_targets,
+    discover_oods_in_lan, extract_keep_tunnel_targets_from_gateway_info,
+    merge_keep_tunnel_into_gateway_config, read_local_gateway_keep_tunnel_targets,
+    write_boot_node_gateway_config, write_boot_node_gateway_info, NodeRole,
+};
+use crate::finder::{add_discovered_device_cache, DiscoveredNode, NodeFinder, NodeFinderClient};
 use crate::frame_service_mgr::*;
+use crate::gateway_name_provider::register_node_gateway_name_provider;
+use crate::gateway_tunnel_probe::probe_key_tunnels_via_gateway;
 use crate::kernel_mgr::*;
+use crate::kevent_server::*;
 use crate::local_app_mgr::LocalAppRunItem;
 use crate::run_item::*;
 use crate::service_pkg::*;
+use crate::sn_zone_info::{load_sn_zone_info, relay_node_for_keep_tunnel, save_sn_zone_info};
+use crate::zone_boot_resolve::{
+    boot_resolve_zone_document, install_local_owner_trust, register_zone_resolver_cache,
+};
 use buckyos_api::*;
 use thiserror::Error;
 
@@ -53,111 +68,11 @@ enum NodeDaemonErrors {
 
 type Result<T> = std::result::Result<T, NodeDaemonErrors>;
 
-async fn looking_zone_boot_config(node_identity: &NodeIdentityConfig) -> Result<ZoneBootConfig> {
-    //If local files exist, priority loads local files
-    let etc_dir = get_buckyos_system_etc_dir();
-    let json_config_path = etc_dir.join(format!(
-        "{}.zone.json",
-        node_identity.zone_did.to_raw_host_name()
-    ));
-    info!(
-        "check  {} is exist for debug ...",
-        json_config_path.display()
-    );
-    let mut zone_boot_config: ZoneBootConfig;
-    //在离线环境中，可以利用下面机制来绕开DNS查询
-    if json_config_path.exists() {
-        info!(
-            "try load zone boot config from {} for debug",
-            json_config_path.display()
-        );
-        let json_config = std::fs::read_to_string(json_config_path.clone());
-        if json_config.is_ok() {
-            let zone_boot_config_result = serde_json::from_str(&json_config.unwrap());
-            if zone_boot_config_result.is_ok() {
-                warn!(
-                    "debug load zone boot config from {} success!",
-                    json_config_path.display()
-                );
-                zone_boot_config = zone_boot_config_result.unwrap();
-            } else {
-                error!(
-                    "parse debug zone boot config {} failed! {}",
-                    json_config_path.display(),
-                    zone_boot_config_result.err().unwrap()
-                );
-                return Err(NodeDaemonErrors::ReasonError(
-                    "parse debug zone boot config from local file failed!".to_string(),
-                ));
-            }
-        } else {
-            return Err(NodeDaemonErrors::ReasonError(
-                "parse debug zone boot config from local file failed!".to_string(),
-            ));
-        }
-    } else {
-        let mut zone_did = node_identity.zone_did.clone();
-        info!(
-            "node_identity.owner_public_key: {:?}",
-            node_identity.owner_public_key
-        );
-        let owner_public_key =
-            DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
-                error!("parse owner public key failed! {}", err);
-                return NodeDaemonErrors::ReasonError("parse owner public key failed!".to_string());
-            })?;
+const SN_ZONE_INFO_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
-        //owner zone is a NAME, need query NameInfo to get DID
-        // info!("owner zone is a NAME, try nameclient.query to get did");
-        // let zone_jwt = resolve(node_identity.zone_did.as_str(),RecordType::from_str("DID")).await
-        //     .map_err(|err| {
-        //         error!("query zone config by nameclient failed! {}", err);
-        //         return NodeDaemonErrors::ReasonError("query zone config failed!".to_string());
-        //     })?;
-        // let owner_from_resolve = zone_jwt.get_owner_pk();
-        // if owner_from_resolve.is_some() {
-        //     let owner_from_resolve = owner_from_resolve.unwrap();
-        //     //if owner_public_key != owner_from_resolve {
-        //     //    error!("owner public key from resolve is not match!");
-        //     //    return Err(NodeDaemonErrors::ReasonError("owner public key from resolve is not match!".to_string()));
-        //     //}
-        // }
-        // if zone_jwt.did_document.is_none() {
-        //     error!("get zone jwt failed!");
-        //     return Err(NodeDaemonErrors::ReasonError("get zone jwt failed!".to_string()));
-        // }
-        // let zone_jwt = zone_jwt.did_document.unwrap();
-        // info!("zone_jwt: {:?}",zone_jwt);
-
-        let zone_doc = resolve_did(&node_identity.zone_did, Some("boot"))
-            .await
-            .map_err(|err| {
-                error!("resolve zone did failed! {}", err);
-                return NodeDaemonErrors::ReasonError("resolve zone did failed!".to_string());
-            })?;
-
-        zone_boot_config =
-            ZoneBootConfig::decode(&zone_doc, Some(&owner_public_key)).map_err(|err| {
-                error!("parse zone config failed! {}", err);
-                return NodeDaemonErrors::ReasonError("parse zone config failed!".to_string());
-            })?;
-    }
-
-    zone_boot_config.id = Some(node_identity.zone_did.clone());
-    if zone_boot_config.owner.is_some() {
-        if zone_boot_config.owner.as_ref().unwrap() != &node_identity.owner_did {
-            error!("zone boot config's owner is not match node_identity's owner_did!");
-            return Err(NodeDaemonErrors::ReasonError(
-                "zone owner is not match!".to_string(),
-            ));
-        }
-    } else {
-        zone_boot_config.owner = Some(node_identity.owner_did.clone());
-    }
-    zone_boot_config.owner_key = Some(node_identity.owner_public_key.clone());
-
-    return Ok(zone_boot_config);
-}
+// Zone Document 的 Boot 阶段解析（resolve + accept 状态机、Last Known Good
+// State、smooth upgrade 检查）在 zone_boot_resolve.rs，设计依据
+// doc/arch/BuckyOS Booting阶段 resolve-did-document的特殊处理说明.md。
 
 async fn load_app_info(
     app_id: &str,
@@ -304,7 +219,7 @@ fn resolve_static_dir_pkg_id(app_info: &serde_json::Map<String, Value>) -> Resul
 async fn index_static_dir_pkg_meta_from_named_store(
     pkg_env_path: &Path,
     resolved_pkg_id: &str,
-    store_mgr: &NamedStoreMgr,
+    store_mgr: &NamedDataMgr,
 ) -> Result<bool> {
     let package_id = PackageId::parse(resolved_pkg_id).map_err(|err| {
         NodeDaemonErrors::ReasonError(format!(
@@ -616,46 +531,193 @@ async fn do_boot_upgreade() -> std::result::Result<(), String> {
     Ok(())
 }
 
-async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
+async fn load_zone_peer_devices(
+    self_node_id: &str,
+    system_config_client: &SystemConfigClient,
+) -> HashMap<String, DeviceInfo> {
+    let mut peers: HashMap<String, DeviceInfo> = HashMap::new();
+    let names = match system_config_client.list("devices").await {
+        Ok(names) => names,
+        Err(err) => {
+            warn!("list zone devices for network observation failed: {}", err);
+            return peers;
+        }
+    };
+    for name in names {
+        if name == self_node_id {
+            continue;
+        }
+        let key = format!("devices/{}/info", name);
+        match system_config_client.get(key.as_str()).await {
+            Ok(value) => match serde_json::from_str::<DeviceInfo>(value.value.as_str()) {
+                Ok(info) => {
+                    peers.insert(name, info);
+                }
+                Err(err) => {
+                    warn!("parse peer device_info {} failed: {}", key, err);
+                }
+            },
+            Err(err) => {
+                warn!("read peer device_info {} failed: {}", key, err);
+            }
+        }
+    }
+    peers
+}
+
+async fn populate_network_observation(
+    observer: &mut NetworkObserver,
+    device_info: &mut DeviceInfo,
+    system_config_client: &SystemConfigClient,
+) {
+    let peers =
+        load_zone_peer_devices(device_info.device_doc.name.as_str(), system_config_client).await;
+    let mut observation = observer
+        .observe(&device_info.device_doc, &device_info.all_ip, &peers)
+        .await;
+
+    // Augment the TCP-level direct probes with cyfs-gateway tunnel_mgr's
+    // view of the same peers, so consumers can see end-to-end RTCP tunnel
+    // health (keep_tunnel/business_connect/fresh_probe) instead of only a
+    // raw TCP connect result. Best-effort; silently skipped when the
+    // gateway control endpoint is not yet reachable (e.g. boot phase).
+    let zone_host = device_info
+        .device_doc
+        .zone_did
+        .as_ref()
+        .map(|did| did.to_host_name());
+    let gateway_probes = probe_key_tunnels_via_gateway(
+        device_info.device_doc.name.as_str(),
+        zone_host.as_deref(),
+        &peers,
+    )
+    .await;
+    if !gateway_probes.is_empty() {
+        observation.direct_probe.extend(gateway_probes);
+        observation.direct_probe.sort_by(|a, b| {
+            (a.target_node.as_deref(), a.kind.as_deref())
+                .cmp(&(b.target_node.as_deref(), b.kind.as_deref()))
+        });
+    }
+
+    match serde_json::to_value(&observation) {
+        Ok(value) => {
+            device_info
+                .device_doc
+                .extra_info
+                .insert(NETWORK_OBSERVATION_KEY.to_string(), value);
+        }
+        Err(err) => {
+            warn!("serialize network_observation failed: {}", err);
+        }
+    }
+}
+
+async fn update_device_info_checked(
+    device_info: &DeviceInfo,
+    syste_config_client: &SystemConfigClient,
+) -> std::result::Result<(), String> {
     let device_key = format!("devices/{}/info", device_info.name.as_str());
     let device_info_str = serde_json::to_string(&device_info).unwrap();
-    let put_result = syste_config_client
+    syste_config_client
         .set(device_key.as_str(), device_info_str.as_str())
-        .await;
-    if put_result.is_err() {
-        error!(
-            "update device info to system_config failed! {}",
-            put_result.err().unwrap()
+        .await
+        .map_err(|err| format!("update device info to system_config failed! {}", err))?;
+    info!(
+        "update {} info to system_config success!",
+        device_info.name.as_str()
+    );
+    Ok(())
+}
+
+async fn update_device_info(device_info: &DeviceInfo, syste_config_client: &SystemConfigClient) {
+    if let Err(err) = update_device_info_checked(device_info, syste_config_client).await {
+        error!("{}", err);
+    }
+}
+
+async fn register_boot_device(
+    device_doc_jwt: &str,
+    device_doc: &DeviceDocument,
+    system_config_client: &SystemConfigClient,
+) -> std::result::Result<(), String> {
+    let device_doc_key = format!("devices/{}/doc", device_doc.name.as_str());
+    system_config_client
+        .set(device_doc_key.as_str(), device_doc_jwt)
+        .await
+        .map_err(|err| format!("register device doc to system_config failed! {}", err))?;
+    info!(
+        "register {} device doc to system_config success!",
+        device_doc.name.as_str()
+    );
+
+    let mut device_info = DeviceInfo::from_device_doc(device_doc);
+    device_info
+        .auto_fill_by_system_info()
+        .await
+        .map_err(|err| format!("auto fill device info failed! {}", err))?;
+    let mut boot_observer = NetworkObserver::new(NetworkObserverConfig::default());
+    populate_network_observation(&mut boot_observer, &mut device_info, system_config_client).await;
+    update_device_info_checked(&device_info, system_config_client).await
+}
+
+static KEVENT_SERVICE: OnceLock<Arc<kevent::KEventService>> = OnceLock::new();
+
+fn get_kevent_service(source_node: &str) -> Arc<kevent::KEventService> {
+    KEVENT_SERVICE
+        .get_or_init(|| Arc::new(kevent::KEventService::new(source_node.to_string())))
+        .clone()
+}
+
+async fn publish_device_info_kevent(device_info: &DeviceInfo) {
+    let Some(service) = KEVENT_SERVICE.get() else {
+        warn!(
+            "kevent service not initialized, skip publishing device info for {}",
+            device_info.name.as_str()
+        );
+        return;
+    };
+    let eventid = format!("/devices/{}/info", device_info.name.as_str());
+    let event_data = serde_json::to_value(device_info).unwrap();
+
+    if let Err(err) = service
+        .publish_local_global(eventid.as_str(), event_data)
+        .await
+    {
+        warn!(
+            "publish device info kevent failed for {}: {}",
+            device_info.name.as_str(),
+            err
         );
     } else {
         info!(
-            "update {} info to system_config success!",
-            device_info.name.as_str()
+            "published device info kevent: device={}, eventid={}",
+            device_info.name.as_str(),
+            eventid
         );
     }
+}
+
+fn device_info_report_ip(device_info: &DeviceInfo) -> String {
+    if let Some(ip) = device_info.all_ip.first() {
+        return ip.to_string();
+    }
+    if let Some(ip) = device_info.ips.first() {
+        return ip.to_string();
+    }
+    "127.0.0.1".to_string()
 }
 
 //if register OK then return sn's real URL for this user
 async fn report_ood_info_to_sn(
     device_info: &DeviceInfo,
-    device_token_jwt: &str,
-    zone_config: &ZoneConfig,
+    device_private_key: &EncodingKey,
+    zone_config: &ZoneDocument,
 ) -> std::result::Result<(), String> {
-    let mut need_sn = false;
-    let mut sn_url = zone_config.get_sn_api_url();
-    if sn_url.is_some() {
-        need_sn = true;
-    } else {
-        if device_info.ddns_sn_url.is_some() {
-            need_sn = true;
-            sn_url = device_info.ddns_sn_url.clone();
-        }
-    }
-    if !need_sn {
+    let device_doc = &device_info.device_doc;
+    let Some(sn_url) = sn_api_url_for_device(device_doc, zone_config) else {
         return Ok(());
-    }
-
-    let sn_url = sn_url.unwrap();
+    };
 
     if zone_config
         .oods
@@ -673,14 +735,23 @@ async fn report_ood_info_to_sn(
         return Err(String::from("zone config owner_did is not set!"));
     }
 
-    sn_update_device_info(
-        sn_url.as_str(),
-        Some(device_token_jwt.to_string()),
-        &owner_did.id,
-        device_info.name.as_str(),
-        &device_info,
-    )
-    .await;
+    let (device_key_did, device_token_jwt) =
+        generate_sn_device_credentials(device_doc, device_private_key, zone_config)?;
+
+    let device_info_value = serde_json::to_value(device_info)
+        .map_err(|err| format!("serialize device info failed: {}", err))?;
+    let req = SnDeviceOnlineReportReq {
+        device_name: device_info.name.clone(),
+        device_did: Some(device_key_did),
+        device_ip: device_info_report_ip(device_info),
+        device_info: device_info_value,
+        endpoints: Vec::new(),
+        report_seq: None,
+        ttl: None,
+    };
+    sn_update_device_online(sn_url.as_str(), device_token_jwt, req)
+        .await
+        .map_err(|err| format!("update device online info to sn failed: {}", err))?;
 
     info!(
         "update {}'s info to sn {} success!",
@@ -688,6 +759,92 @@ async fn report_ood_info_to_sn(
         sn_url.as_str()
     );
     Ok(())
+}
+
+fn ood_device_names(zone_document: &ZoneDocument) -> Vec<String> {
+    zone_document
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect()
+}
+
+fn first_ood_name(zone_document: &ZoneDocument) -> Option<&str> {
+    zone_document
+        .oods
+        .iter()
+        .find(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.as_str())
+}
+
+fn is_first_ood(zone_document: &ZoneDocument, device_name: &str) -> bool {
+    first_ood_name(zone_document)
+        .map(|first_ood| first_ood == device_name)
+        .unwrap_or(false)
+}
+
+async fn missing_ood_device_infos(
+    zone_document: &ZoneDocument,
+    system_config_client: &SystemConfigClient,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    for ood_name in ood_device_names(zone_document) {
+        let info_key = format!("devices/{}/info", ood_name);
+        match system_config_client.get(info_key.as_str()).await {
+            Ok(value) => match serde_json::from_str::<DeviceInfo>(value.value.as_str()) {
+                Ok(device_info) => {
+                    if device_info.name != ood_name && device_info.device_doc.name != ood_name {
+                        warn!(
+                            "OOD device_info {} has mismatched name: info.name={}, doc.name={}",
+                            info_key,
+                            device_info.name.as_str(),
+                            device_info.device_doc.name.as_str()
+                        );
+                        missing.push(ood_name);
+                    }
+                }
+                Err(err) => {
+                    warn!("parse OOD device_info {} failed: {}", info_key, err);
+                    missing.push(ood_name);
+                }
+            },
+            Err(SystemConfigError::KeyNotFound(_)) => {
+                missing.push(ood_name);
+            }
+            Err(err) => {
+                warn!("read OOD device_info {} failed: {}", info_key, err);
+                missing.push(ood_name);
+            }
+        }
+    }
+    missing
+}
+
+async fn wait_ood_device_infos_before_boot_schedule(
+    zone_document: &ZoneDocument,
+    system_config_client: &SystemConfigClient,
+) {
+    let ood_names = ood_device_names(zone_document);
+    if ood_names.len() <= 1 {
+        return;
+    }
+
+    loop {
+        let missing = missing_ood_device_infos(zone_document, system_config_client).await;
+        if missing.is_empty() {
+            info!(
+                "all OOD device_info updated before boot schedule: {:?}",
+                ood_names
+            );
+            return;
+        }
+        warn!(
+            "wait OOD device_info before boot schedule, missing={:?}, expected={:?}",
+            missing, ood_names
+        );
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    }
 }
 
 async fn do_boot_schedule() -> std::result::Result<(), String> {
@@ -718,7 +875,7 @@ async fn wait_sysmte_config_sync() -> std::result::Result<(), String> {
 
 async fn keep_system_config_service(
     node_id: &str,
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
     is_restart: bool,
 ) -> std::result::Result<(), String> {
@@ -770,12 +927,12 @@ async fn keep_system_config_service(
 
 async fn keep_cyfs_gateway_service(
     node_id: &str,
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     node_private_key: &EncodingKey,
-    sn: Option<String>,
     is_reload: bool,
+    is_restart: bool,
 ) -> std::result::Result<(), String> {
-    //TODO: 需要区分boot模式和正常模式
+    let _ = (node_id, node_private_key);
     let mut cyfs_gateway_service_pkg =
         ServicePkg::new("cyfs-gateway".to_string(), get_buckyos_system_bin_dir());
 
@@ -798,10 +955,19 @@ async fn keep_cyfs_gateway_service(
             return Err(String::from("install cyfs_gateway service pkg failed!"));
         } else {
             info!("install cyfs_gateway service pkg success");
+            running_state = ServiceInstanceState::Stopped;
         }
     }
 
-    if is_reload && running_state == ServiceInstanceState::Started {
+    if is_restart && running_state == ServiceInstanceState::Started {
+        info!("cyfs_gateway keep_tunnel changed, will restart service ...");
+        cyfs_gateway_service_pkg.stop(None).await.map_err(|err| {
+            error!("stop cyfs_gateway service failed! {}", err);
+            return String::from("stop cyfs_gateway service failed!");
+        })?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        running_state = ServiceInstanceState::Stopped;
+    } else if is_reload && running_state == ServiceInstanceState::Started {
         info!("cyfs_gateway service pkg loaded, will do reload ...");
         let params = vec!["reload".to_string()];
         cyfs_gateway_service_pkg
@@ -818,41 +984,11 @@ async fn keep_cyfs_gateway_service(
 
     if running_state == ServiceInstanceState::Stopped {
         warn!("check cyfs_gateway is stopped,try to start cyfs_gateway");
-        //params: boot cyfs-gateway configs, identiy_etc folder, keep_tunnel list
-        //  ood: keep tunnel to other ood, keep tunnel to gateway
-        //  gateway_config: port_forward for system_config service
-        let params: Vec<String>;
-        let mut need_keep_tunnel_to_sn = false;
-        if sn.is_some() {
-            need_keep_tunnel_to_sn = true;
-            // wan and wan_dyn are publicly reachable routes and should not keep tunnel to SN.
-            if let Some(net_id) = device_doc.net_id.as_ref() {
-                if net_id.starts_with("wan") {
-                    need_keep_tunnel_to_sn = false;
-                }
-            }
-        }
 
-        if need_keep_tunnel_to_sn {
-            let device_did = device_doc.id.to_string();
-            let sn_host_name = get_real_sn_host_name(sn.as_ref().unwrap(), device_did.as_str())
-                .await
-                .map_err(|err| {
-                    error!("get sn host name failed! {}", err);
-                    return String::from("get sn host name failed!");
-                })?;
-            params = vec!["--keep_tunnel".to_string(), sn_host_name.clone()];
-        } else {
-            params = Vec::new();
-        }
-
-        let start_result = cyfs_gateway_service_pkg
-            .start(Some(&params))
-            .await
-            .map_err(|err| {
-                error!("start cyfs_gateway failed! {}", err);
-                return String::from("start cyfs_gateway failed!");
-            })?;
+        let start_result = cyfs_gateway_service_pkg.start(None).await.map_err(|err| {
+            error!("start cyfs_gateway failed! {}", err);
+            return String::from("start cyfs_gateway failed!");
+        })?;
 
         info!(
             "start cyfs_gateway OK!,result:{}. wait 2 seconds...",
@@ -863,6 +999,62 @@ async fn keep_cyfs_gateway_service(
     }
 
     Ok(())
+}
+
+fn sn_api_url_for_device(
+    device_doc: &DeviceDocument,
+    zone_document: &ZoneDocument,
+) -> Option<String> {
+    zone_document
+        .get_sn_api_url()
+        .or_else(|| device_doc.ddns_sn_url.clone())
+}
+
+fn generate_sn_device_credentials(
+    device_doc: &DeviceDocument,
+    device_private_key: &EncodingKey,
+    zone_document: &ZoneDocument,
+) -> std::result::Result<(String, String), String> {
+    let default_key = device_doc
+        .get_default_key()
+        .ok_or_else(|| String::from("device doc has no default verification key"))?;
+    let device_key_x = get_x_from_jwk(&default_key)
+        .map_err(|err| format!("extract device key x failed: {}", err))?;
+    let device_key_did = format!("did:dev:{}", device_key_x);
+    let device_scoped_did = if device_doc.id.method != "dev" {
+        device_doc.id.to_string()
+    } else {
+        format!(
+            "did:{}:{}.{}",
+            zone_document.id.method, device_doc.name, zone_document.id.id
+        )
+    };
+    let device_token = generate_sn_device_token(
+        device_key_did.as_str(),
+        device_scoped_did.as_str(),
+        None,
+        device_private_key,
+    )
+    .map_err(|err| format!("generate sn device token failed: {}", err))?;
+    Ok((device_key_did, device_token))
+}
+
+async fn refresh_sn_zone_info(
+    device_doc: &DeviceDocument,
+    device_private_key: &EncodingKey,
+    zone_document: &ZoneDocument,
+) -> std::result::Result<Option<SnZoneInfoResp>, String> {
+    let Some(sn_url) = sn_api_url_for_device(device_doc, zone_document) else {
+        return Ok(None);
+    };
+    let (_, device_token) =
+        generate_sn_device_credentials(device_doc, device_private_key, zone_document)?;
+    let zone_info = SnClient::new_krpc(sn_url.as_str(), Some(device_token))
+        .get_zone_info()
+        .await
+        .map_err(|err| format!("get zone info from SN {} failed: {}", sn_url, err))?;
+    save_sn_zone_info(&zone_info)?;
+    Ok(Some(zone_info))
 }
 
 async fn desktop_daemon_main(skip_app_ids: &Vec<String>) -> Result<()> {
@@ -938,7 +1130,7 @@ async fn node_main(
     is_ood: bool,
     is_desktop: bool,
     buckyos_api_client: &SystemConfigClient,
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
 ) -> Result<bool> {
     //control replica instance to target state
     let node_config = load_node_config(node_host_name, buckyos_api_client)
@@ -1077,6 +1269,23 @@ async fn node_daemon_main_loop(
     let mut last_register_time = 0;
     let mut node_gateway_config_id: Option<ObjId> = None;
     let mut node_gateway_info_id: Option<ObjId> = None;
+    let mut keep_tunnel_config_id: Option<ObjId> = None;
+    let mut network_observer = NetworkObserver::new(NetworkObserverConfig::default());
+    let mut last_zone_info_refresh: Option<Instant> = None;
+    let mut sn_zone_info = match load_sn_zone_info() {
+        Ok(zone_info) => zone_info,
+        Err(err) => {
+            warn!("load cached SN zone info failed: {}", err);
+            None
+        }
+    };
+
+    // 进入正常工作状态后，把本机 cyfs-gateway 的 system_config 转发口
+    // (http://127.0.0.1:3180/) 注册为 gateway 自己的 name provider；这样
+    // gateway 内部 resolve 时能拿到 device 上报到 system_config 的 IP。
+    // 失败时下一轮继续重试；gateway 重启后需要重新注册（providers 仅在
+    // 进程内存中保留），因此在 need_restart=true 时清掉这个标记。
+    let mut name_provider_registered = false;
 
     loop {
         let reaped = reap_exited_children_nonblocking();
@@ -1106,7 +1315,41 @@ async fn node_daemon_main_loop(
         let system_config_client = system_config_client.unwrap();
         let device_doc = buckyos_runtime.device_config.as_ref().unwrap();
         let zone_config = buckyos_runtime.zone_config.as_ref().unwrap();
+        let zone_document = zone_config.zone_document().map_err(|err| {
+            error!("decode zone document from zone config failed! {}", err);
+            NodeDaemonErrors::SystemConfigError(
+                "decode zone document from zone config failed!".to_string(),
+            )
+        })?;
         let device_private_key = buckyos_runtime.device_private_key.as_ref().unwrap();
+        if last_zone_info_refresh
+            .as_ref()
+            .is_none_or(|last_refresh| last_refresh.elapsed() >= SN_ZONE_INFO_REFRESH_INTERVAL)
+        {
+            last_zone_info_refresh = Some(Instant::now());
+            let previous_relay_node = relay_node_for_keep_tunnel(
+                device_doc.net_id.as_deref(),
+                zone_document.sn.as_deref(),
+                sn_zone_info.as_ref(),
+            );
+            match refresh_sn_zone_info(device_doc, device_private_key, &zone_document).await {
+                Ok(new_zone_info) => {
+                    let new_relay_node = relay_node_for_keep_tunnel(
+                        device_doc.net_id.as_deref(),
+                        zone_document.sn.as_deref(),
+                        new_zone_info.as_ref(),
+                    );
+                    if previous_relay_node != new_relay_node {
+                        info!(
+                            "SN relay node changed: {:?} -> {:?}",
+                            previous_relay_node, new_relay_node
+                        );
+                    }
+                    sn_zone_info = new_zone_info;
+                }
+                Err(err) => warn!("refresh SN zone info failed: {}", err),
+            }
+        }
         let now = buckyos_get_unix_timestamp();
         if now - last_register_time > 30 {
             let mut device_info = DeviceInfo::from_device_doc(device_doc);
@@ -1118,16 +1361,17 @@ async fn node_daemon_main_loop(
                 );
                 break;
             }
-            let device_info_str = serde_json::to_string(&device_info).unwrap();
+            populate_network_observation(
+                &mut network_observer,
+                &mut device_info,
+                &system_config_client,
+            )
+            .await;
             debug!("update device info: {:?}", device_info);
-            unsafe {
-                std::env::set_var("BUCKYOS_THIS_DEVICE_INFO", device_info_str);
-            }
             update_device_info(&device_info, &system_config_client).await;
+            publish_device_info_kevent(&device_info).await;
             //TODO：SN的上报频率不用那么快
-            let device_session_token_jwt = buckyos_runtime.get_session_token().await;
-            report_ood_info_to_sn(&device_info, device_session_token_jwt.as_str(), zone_config)
-                .await;
+            report_ood_info_to_sn(&device_info, device_private_key, &zone_document).await;
             last_register_time = now;
         }
 
@@ -1153,15 +1397,29 @@ async fn node_daemon_main_loop(
 
         if main_result.is_err() {
             error!("node_main failed! {}", main_result.err().unwrap());
+            if let Err(err) =
+                keep_cyfs_gateway_service(node_id, device_doc, device_private_key, false, false)
+                    .await
+            {
+                warn!(
+                    "keep cyfs_gateway service after node_main failure failed! {}",
+                    err
+                );
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         } else {
             is_running = main_result.unwrap();
             if !is_running {
                 break;
             }
+            let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
+            let gateway_info_path =
+                buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
             let new_node_gateway_info =
                 load_node_gateway_info(node_host_name, &system_config_client).await;
             if let Ok(new_node_gateway_info) = new_node_gateway_info {
+                gateway_info_keep_tunnels =
+                    extract_keep_tunnel_targets_from_gateway_info(&new_node_gateway_info);
                 let (new_node_gateway_info_id_value, new_node_gateway_info_str) =
                     build_named_object_by_json("node_gateway_info", &new_node_gateway_info);
                 let need_write = match node_gateway_info_id.as_ref() {
@@ -1175,13 +1433,18 @@ async fn node_daemon_main_loop(
                 } else if need_write {
                     node_gateway_info_id = Some(new_node_gateway_info_id_value);
                     info!("node gateway_info changed, will write to node_gateway_info.json");
-                    let gateway_info_path =
-                        buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
                     std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
                         .unwrap();
                 }
             } else {
                 error!("load node gateway_info from system_config failed!");
+                if let Some(local_gateway_info) = std::fs::read_to_string(&gateway_info_path)
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<Value>(content.as_str()).ok())
+                {
+                    gateway_info_keep_tunnels =
+                        extract_keep_tunnel_targets_from_gateway_info(&local_gateway_info);
+                }
             }
 
             info!("node_main OK, load node gateway config ...");
@@ -1190,7 +1453,45 @@ async fn node_daemon_main_loop(
 
             if new_node_gateway_config.is_ok() {
                 let mut need_reload = false;
+                let mut need_restart = false;
                 let new_node_gateway_config = new_node_gateway_config.unwrap();
+                let sn = zone_document.sn.clone();
+                let relay_node = relay_node_for_keep_tunnel(
+                    device_doc.net_id.as_deref(),
+                    sn.as_deref(),
+                    sn_zone_info.as_ref(),
+                );
+                info!(
+                    "*** keep cyfs-gateway service with sn: {:?}, relay_node: {:?}",
+                    sn, relay_node
+                );
+                let mut keep_tunnels = gateway_info_keep_tunnels;
+                if let Some(relay_node) = relay_node {
+                    keep_tunnels.push(relay_node);
+                }
+                dedup_keep_tunnel_targets(&mut keep_tunnels);
+
+                let keep_tunnels_value = serde_json::to_value(&keep_tunnels).unwrap_or(json!([]));
+                let (new_keep_tunnel_config_id, _) =
+                    build_named_object_by_json("gateway_keep_tunnel", &keep_tunnels_value);
+                if let Some(old_id) = keep_tunnel_config_id.as_ref() {
+                    if old_id != &new_keep_tunnel_config_id {
+                        need_restart = true;
+                    }
+                } else {
+                    let old_keep_tunnels = read_local_gateway_keep_tunnel_targets();
+                    let old_keep_tunnels_value =
+                        serde_json::to_value(&old_keep_tunnels).unwrap_or(json!([]));
+                    let (old_keep_tunnel_config_id, _) =
+                        build_named_object_by_json("gateway_keep_tunnel", &old_keep_tunnels_value);
+                    if old_keep_tunnel_config_id != new_keep_tunnel_config_id {
+                        need_restart = true;
+                    }
+                }
+                keep_tunnel_config_id = Some(new_keep_tunnel_config_id);
+
+                let new_node_gateway_config =
+                    merge_keep_tunnel_into_gateway_config(new_node_gateway_config, &keep_tunnels);
                 let (new_node_gateway_config_id, new_node_gateway_config_str) =
                     build_named_object_by_json("nodeconfig", &new_node_gateway_config);
                 if node_gateway_config_id.is_none() {
@@ -1216,13 +1517,26 @@ async fn node_daemon_main_loop(
                         .unwrap();
                 }
 
-                let sn = buckyos_runtime.zone_config.as_ref().unwrap().sn.clone();
-                info!("*** keep cyfs-gateway service with sn: {:?}", sn);
-                keep_cyfs_gateway_service(node_id, device_doc, device_private_key, sn, need_reload)
-                    .await
-                    .map_err(|err| {
-                        error!("keep cyfs_gateway service failed! {}", err);
-                    });
+                let keep_result = keep_cyfs_gateway_service(
+                    node_id,
+                    device_doc,
+                    device_private_key,
+                    need_reload,
+                    need_restart,
+                )
+                .await
+                .map_err(|err| {
+                    error!("keep cyfs_gateway service failed! {}", err);
+                });
+
+                if need_restart {
+                    name_provider_registered = false;
+                }
+                if keep_result.is_ok() && !name_provider_registered {
+                    if register_node_gateway_name_provider().await {
+                        name_provider_registered = true;
+                    }
+                }
             } else {
                 error!("load node gateway_cconfig from system_config failed!");
             }
@@ -1232,7 +1546,7 @@ async fn node_daemon_main_loop(
 }
 
 async fn generate_device_session_token(
-    device_doc: &DeviceConfig,
+    device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
     is_boot: bool,
 ) -> std::result::Result<String, String> {
@@ -1249,12 +1563,12 @@ async fn generate_device_session_token(
         token_type: kRPC::RPCSessionTokenType::Normal,
         appid: Some("node-daemon".to_string()),
         jti: Some(login_jti),
-        session: Some(timestamp),
         sub: Some(userid),
         aud: None,
         exp: Some(timestamp + 60 * 15),
         iss: Some(device_doc.name.clone()),
         token: None,
+        sudo: false,
         extra: HashMap::new(),
     };
 
@@ -1293,7 +1607,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     //load node identity config
     let node_identity_file = get_buckyos_system_etc_dir().join("node_identity.json");
-    let mut node_identity = NodeIdentityConfig::load_node_identity_config(&node_identity_file);
+    let mut node_identity = load_local_node_identity_config(&node_identity_file);
     if node_identity.is_err() {
         let desktop_task = if is_desktop {
             info!("start desktop daemon...");
@@ -1331,90 +1645,179 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         node_identity.zone_did.to_string(),
         node_identity.owner_did.to_string()
     );
-    //verify device_doc by owner_public_key (skip now)
-    // {
-    //     //let owner_name = node_identity.owner_did.to_string();
-    //     let owner_config = resolve_did(&node_identity.owner_did,None).await;
-    //     match owner_config {
-    //         Ok(owner_config) => {
-    //             let owner_config = OwnerConfig::decode(&owner_config,None);
-    //             if owner_config.is_ok() {
-    //                 let owner_config = owner_config.unwrap();
-    //                 let default_key = owner_config.get_default_key();
-    //                 if default_key.is_none() {
-    //                     warn!("owner public key not defined in owner_config! ");
-    //                     return Err("owner public key not defined in owner_config!".to_string());
-    //                 }
 
-    //                 let default_key = default_key.unwrap();
-    //                 if default_key != node_identity.owner_public_key {
-    //                     warn!("owner_config's default key not match to node_identity's owner_public_key! ");
-    //                     return Err("owner_config's default key not match to node_identity's owner_public_key!".to_string());
-    //                 }
-    //             }
-    //         }
-    //         Err(err) => {
-    //             info!("skip resolve owner_config. {} ", err);
-    //         }
-    //     }
-    // }
+    // Boot 阶段的 Root Trust 只来自激活时写入的 node_identity，永不在线 resolve
+    // Owner Document（Boot 文档 §12/§13）。把本地 Owner 注入 name-client 的
+    // local authority override，让后续一切 owner 递归验签在本地闭环。
+    if let Err(err) = install_local_owner_trust(&node_identity) {
+        warn!("install local owner trust failed: {}", err);
+    }
 
-    let device_doc_json = decode_json_from_jwt_with_default_pk(
-        &node_identity.device_doc_jwt,
-        &node_identity.owner_public_key,
-    )
-    .map_err(|err| {
-        error!("decode device doc failed! {}", err);
-        return String::from("decode device doc from jwt failed!");
-    })?;
-    let device_doc: DeviceConfig = serde_json::from_value(device_doc_json).map_err(|err| {
-        error!("parse device doc failed! {}", err);
-        return String::from("parse device doc failed!");
-    })?;
+    let (device_doc_jwt, device_doc) =
+        load_local_device_config(&node_identity, true).map_err(|err| {
+            error!("load device doc from identity root failed! {}", err);
+            return String::from("load device doc from identity root failed!");
+        })?;
     info!("current node's device doc: {:?}", device_doc);
 
-    //load device private key
-    let device_private_key_file = get_buckyos_system_etc_dir().join("node_private_key.pem");
-    let device_private_key = load_private_key(&device_private_key_file).map_err(|error| {
-        error!(
-            "load device private key from node_private_key.pem failed! {}",
-            error
-        );
-        return String::from("load device private key failed!");
-    })?;
+    let device_private_key =
+        load_local_device_private_key(&node_identity.device_did).map_err(|error| {
+            error!(
+                "load device private key from identity root failed! {}",
+                error
+            );
+            return String::from("load device private key failed!");
+        })?;
+    save_node_gateway_params(&get_buckyos_system_etc_dir(), &node_identity.device_did).map_err(
+        |error| {
+            error!("write node_gateway_params.json failed! {}", error);
+            return String::from("write node_gateway_params.json failed!");
+        },
+    )?;
 
     //lookup zone config
     info!(
-        "looking {} zone_boot_config...",
+        "looking {} zone document...",
         node_identity.zone_did.to_host_name()
     );
-    let zone_boot_config = looking_zone_boot_config(&node_identity)
+    let zone_document = boot_resolve_zone_document(&node_identity)
         .await
         .map_err(|err| {
-            error!("looking zone config failed! {}", err);
-            String::from("looking zone config failed!")
+            error!("boot resolve zone document failed! {}", err);
+            String::from("boot resolve zone document failed!")
         })?;
-    let zone_config_json_str = serde_json::to_string_pretty(&zone_boot_config).unwrap();
-    info!("Load zone_boot_config OK, {}", zone_config_json_str);
+    let zone_config_json_str = serde_json::to_string_pretty(&zone_document).unwrap();
+    info!("Load zone document OK, {}", zone_config_json_str);
 
     //verify node_name is this device's hostname
-    let is_ood = zone_boot_config.device_is_ood(&device_doc.name);
     let device_name = device_doc.name.clone();
-    //CURRENT_ZONE_CONFIG.set(zone_config).unwrap();
-    if is_ood {
-        info!("Booting OOD {} ...", device_doc.name.as_str());
-    } else {
-        info!("Booting Node {} ...", device_doc.name.as_str());
+    let role = NodeRole::from_zone_document(&zone_document, &device_name);
+    let is_ood = matches!(role, NodeRole::Ood);
+    let this_is_first_ood = is_first_ood(&zone_document, &device_name);
+    info!("Booting {} as {} ...", device_name, role.as_str());
+
+    let multi_ood = zone_document
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .count()
+        > 1;
+
+    // OOD 在多 OOD 部署下作为 finder server 提供 LAN 发现应答；非 OOD 角色不提供应答。
+    // OOD 启动 finder server 后会在 boot 完成时被显式停止（doc 角色启动流程要求）。
+    let mut finder_server: Option<NodeFinder> = None;
+    if is_ood && multi_ood {
+        let owner_public_key =
+            DecodingKey::from_jwk(&node_identity.owner_public_key).map_err(|err| {
+                error!("parse owner public key for finder failed! {}", err);
+                String::from("parse owner public key for finder failed!")
+            })?;
+        match NodeFinder::new_for_zone(
+            device_doc_jwt.clone(),
+            device_private_key.clone(),
+            zone_document.clone(),
+            owner_public_key,
+        ) {
+            Ok(finder) => {
+                if let Err(err) = finder.run_udp_server().await {
+                    warn!("start OOD finder udp server failed: {}", err);
+                } else {
+                    finder_server = Some(finder);
+                }
+            }
+            Err(err) => {
+                warn!("init OOD finder udp server failed: {}", err);
+            }
+        }
     }
+
+    // 三类角色都可受益的"在局域网找 OOD"：
+    //  - OOD 多机部署：发现兄弟 OOD 以便建立 keep_tunnel；
+    //  - 非 OOD ZoneGateway / 普通 Node：发现 LAN OOD 以便 system-config 路由走 RTCP direct。
+    // 单 OOD 部署不需要 LAN 发现（也没有兄弟 OOD 可找）。
+    let want_discovery = match role {
+        NodeRole::Ood => multi_ood,
+        NodeRole::ZoneGateway | NodeRole::Node => true,
+    };
+    let discovered_oods: HashMap<String, DiscoveredNode> = if want_discovery {
+        let owner_public_key_for_finder = DecodingKey::from_jwk(&node_identity.owner_public_key)
+            .map_err(|err| {
+                error!("parse owner public key for finder client failed! {}", err);
+                String::from("parse owner public key for finder client failed!")
+            })?;
+        discover_oods_in_lan(
+            device_doc_jwt.clone(),
+            device_private_key.clone(),
+            zone_document.clone(),
+            owner_public_key_for_finder,
+            role,
+        )
+        .await
+    } else {
+        HashMap::new()
+    };
+
+    add_discovered_device_cache(&discovered_oods);
+
+    let sn_zone_info = match load_sn_zone_info() {
+        Ok(zone_info) => zone_info,
+        Err(err) => {
+            warn!("load cached SN zone info for boot failed: {}", err);
+            None
+        }
+    };
+    let sn_host_name = relay_node_for_keep_tunnel(
+        device_doc.net_id.as_deref(),
+        zone_document.sn.as_deref(),
+        sn_zone_info.as_ref(),
+    );
+
+    // 在启动 cyfs-gateway 前，写入 boot 期 node_gateway_info.json：
+    //  - service_info.system_config 让 boot_gateway.yaml 能把 /kapi/system_config 转发到 OOD；
+    //  - node_route_map / routes 提供 OOD / ZoneGateway / SN-relay 的显式候选；
+    // 这样 cyfs-gateway 起来时本机 3180 就已经能访问 system-config 了。
+    let zone_host = node_identity.zone_did.to_host_name();
+    let boot_gateway_info = build_boot_node_gateway_info(
+        &device_name,
+        zone_host.as_str(),
+        &zone_document,
+        &discovered_oods,
+        sn_host_name.as_deref(),
+    );
+    if let Err(err) = write_boot_node_gateway_info(&boot_gateway_info) {
+        warn!("write boot node_gateway_info.json failed: {}", err);
+    }
+
+    // cyfs-gateway node_rtcp.keep_tunnel config targets.
+    let mut keep_tunnels = build_keep_tunnel_targets(
+        role,
+        &device_doc,
+        &zone_document,
+        zone_host.as_str(),
+        sn_host_name.as_deref(),
+    );
+    dedup_keep_tunnel_targets(&mut keep_tunnels);
+    if let Err(err) = write_boot_node_gateway_config(&keep_tunnels) {
+        warn!("write boot node_gateway.json failed: {}", err);
+    }
+
+    keep_cyfs_gateway_service(
+        node_id.as_str(),
+        &device_doc,
+        &device_private_key,
+        false,
+        true,
+    )
+    .await
+    .map_err(|err| {
+        error!("start cyfs_gateway for boot failed: {}", err);
+        String::from("start cyfs_gateway for boot failed!")
+    })?;
 
     unsafe {
         std::env::set_var(
-            "BUCKY_ZONE_OWNER",
-            serde_json::to_string(&node_identity.owner_public_key).unwrap(),
-        );
-        std::env::set_var(
-            "BUCKYOS_ZONE_BOOT_CONFIG",
-            serde_json::to_string(&zone_boot_config).unwrap(),
+            "BUCKYOS_ZONE_DOC",
+            serde_json::to_string(&zone_document).unwrap(),
         );
         std::env::set_var(
             "BUCKYOS_THIS_DEVICE",
@@ -1422,14 +1825,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         );
     }
 
-    info!("set env var BUCKY_ZONE_OWNER,BUCKYOS_ZONE_BOOT_CONFIG,BUCKYOS_THIS_DEVICE OK!");
-
-    // uncomment this when cyfs-gateway support etcd
-    // keep_cyfs_gateway_service(node_id.as_str(),&device_doc, &device_private_key,
-    //     zone_boot_config.sn.clone(),false).await.map_err(|err| {
-    //         error!("init cyfs_gateway service failed! {}", err);
-    //         return String::from("init cyfs_gateway service failed!");
-    // })?;
+    info!("set env var BUCKYOS_ZONE_DOC,BUCKYOS_THIS_DEVICE OK!");
 
     let device_session_token_jwt =
         generate_device_session_token(&device_doc, &device_private_key, true)
@@ -1457,26 +1853,29 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
         //This is ood, so we MUST connect to localhost's system_config_service
         syc_cfg_client = SystemConfigClient::new(None, Some(device_session_token_jwt.as_str()));
-        let mut device_info = DeviceInfo::from_device_doc(&device_doc);
-        let fill_result = device_info.auto_fill_by_system_info().await;
-        if fill_result.is_err() {
-            error!(
-                "auto fill device info failed! {}",
-                fill_result.err().unwrap()
-            );
-            return Err(String::from("auto fill device info failed!"));
-        }
-        update_device_info(&device_info, &syc_cfg_client).await;
+        register_boot_device(device_doc_jwt.as_str(), &device_doc, &syc_cfg_client).await?;
 
         while boot_config_result_str.is_empty() {
             let get_result = syc_cfg_client.get("boot/config").await;
             match get_result {
                 buckyos_api::SytemConfigResult::Err(SystemConfigError::KeyNotFound(_)) => {
+                    if !this_is_first_ood {
+                        warn!(
+                            "boot/config is not ready and this OOD {} is not first OOD {:?}; wait first OOD boot scheduler.",
+                            device_name.as_str(),
+                            first_ood_name(&zone_document)
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
                     warn!("BuckyOS is started for the first time, enter the BOOT_INIT process...");
                     warn!("Check and upgrade BuckyOS to latest version...");
                     //repo-server is not running, so we need to check and upgrade system by SN.
                     //Here is the only chance to upgrade system to latest version use SN.
                     do_boot_upgreade().await?;
+
+                    wait_ood_device_infos_before_boot_schedule(&zone_document, &syc_cfg_client)
+                        .await;
 
                     warn!("Do boot schedule to generate all system configs...");
                     unsafe {
@@ -1523,7 +1922,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         unsafe {
             std::env::set_var("BUCKYOS_ZONE_CONFIG", boot_config_result_str);
         }
-        info!("--------------------------------");
+        info!("-------------BuckyOS Booted-----------------");
 
         let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
         runtime.fill_policy_by_load_config().await.map_err(|err| {
@@ -1533,7 +1932,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
         runtime.device_config = Some(device_doc);
         runtime.device_private_key = Some(device_private_key);
-        runtime.device_info = Some(device_info);
         runtime.zone_id = node_identity.zone_did.clone();
         runtime.zone_config = Some(zone_config);
         runtime.session_token = Arc::new(RwLock::new(device_session_token_jwt.clone()));
@@ -1543,24 +1941,60 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             String::from("register global runtime failed!")
         })?;
     } else {
-        //this node is not ood: try connect to system_config_service
+        // 非 OOD（ZoneGateway 或普通 Node）：boot 阶段已经先把 cyfs-gateway 拉起来，
+        // 这样 RPC 客户端默认指向的 `127.0.0.1:3180/kapi/system_config` 才能被
+        // boot routes 转发到 OOD。
+        info!(
+            "non-ood role {} boot: cyfs-gateway is ready with {} keep_tunnel target(s) before login.",
+            role.as_str(),
+            keep_tunnels.len()
+        );
         let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::Kernel)
             .await
             .map_err(|e| {
                 error!("init_buckyos_api_runtime failed: {:?}", e);
                 return String::from("init_buckyos_api_runtime failed!");
             })?;
+        // 让 runtime.get_system_config_url() 走"非 OOD Kernel -> 本机 3180"分支
+        // （buckyos-api/runtime.rs 的 get_system_config_url 已识别该 case）。
+        runtime.force_https = false;
+        runtime.device_private_key = Some(device_private_key.clone());
+        {
+            let mut session_token = runtime.session_token.write().await;
+            *session_token = device_session_token_jwt.clone();
+        }
 
+        // 重试 login。两类失败都会进入 retry：
+        //  1) cyfs-gateway 还没就绪：连 127.0.0.1:3180 拒连；
+        //  2) 路由到 OOD 但 OOD 还没启动 system-config：RPC 错误。
+        let mut attempt = 0u32;
         loop {
-            let login_result = runtime.login().await.map_err(|e| {
-                error!("buckyos-api-runtime::login failed: {:?}", e);
-                return String::from("buckyos-api-runtime::login failed!");
-            });
-
-            if login_result.is_ok() {
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                break;
+            attempt += 1;
+            match runtime.login().await {
+                Ok(_) => {
+                    info!("non-ood boot login OK after {} attempt(s).", attempt);
+                    break;
+                }
+                Err(e) => {
+                    warn!(
+                        "non-ood boot login failed (attempt {}): {:?}, retry in 5s",
+                        attempt, e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
             }
+        }
+
+        let zone_config = runtime.zone_config.as_ref().ok_or_else(|| {
+            error!("non-ood boot login OK but zone_config is missing");
+            String::from("non-ood boot login OK but zone_config is missing")
+        })?;
+        let zone_config_str = serde_json::to_string(zone_config).map_err(|err| {
+            error!("serialize non-ood zone config failed! {}", err);
+            String::from("serialize non-ood zone config failed!")
+        })?;
+        unsafe {
+            std::env::set_var("BUCKYOS_ZONE_CONFIG", zone_config_str);
         }
         set_buckyos_api_runtime(runtime).map_err(|err| {
             error!("register global runtime failed: {}", err);
@@ -1568,11 +2002,29 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         })?;
     }
 
+    // doc 角色启动流程要求：boot 成功后立刻停掉 OOD 的 finder server。
+    // LAN 内 OOD 已经互相建立 keep_tunnel，无需继续应答 finder 广播。
+    if let Some(finder) = finder_server {
+        finder.stop_udp_server().await;
+        info!("OOD finder server stopped after boot.");
+    }
+
+    // boot 完成后确认本机 3180（cyfs-gateway）作为独立 zone resolver cache。
+    // zone 内 did 命中时在本地闭环；unknown 时回落到 local cache + method provider 链。
+    register_zone_resolver_cache(&node_identity.zone_did).await;
+
     info!(
         "{}@{} boot OK, enter node daemon main loop.",
         &device_name,
         node_identity.zone_did.to_host_name()
     );
+
+    let kevent_service = get_kevent_service(&device_name);
+    tokio::task::spawn(async move {
+        start_node_kevent_service(kevent_service).await;
+        warn!("kevent service returned, node_daemon will continue without kevent http endpoint");
+    });
+
     node_daemon_main_loop(node_id, &device_name, is_ood, is_desktop)
         .await
         .map_err(|err| {
@@ -1603,6 +2055,11 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    const TEST_OWNER_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
+-----END PRIVATE KEY-----"#;
+    const TEST_OWNER_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
+
     fn create_temp_pkg_env_path(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1615,6 +2072,182 @@ mod tests {
 
     fn cleanup_temp_pkg_env_path(path: &Path) {
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    struct EmptyNameProvider;
+
+    #[async_trait::async_trait]
+    impl name_client::NsProvider for EmptyNameProvider {
+        fn get_id(&self) -> String {
+            "empty-test-provider".to_string()
+        }
+
+        async fn query(
+            &self,
+            name: &str,
+            _record_type: Option<name_client::RecordType>,
+            _from_ip: Option<std::net::IpAddr>,
+        ) -> name_lib::NSResult<name_client::NameInfo> {
+            Ok(name_client::NameInfo::new(name))
+        }
+
+        async fn query_did(
+            &self,
+            did: &DID,
+            doc_type: Option<name_client::DidDocType>,
+            _from_ip: Option<std::net::IpAddr>,
+        ) -> name_lib::NSResult<EncodedDocument> {
+            Err(name_lib::NSError::NotFound(format!(
+                "{}#{}",
+                did.to_string(),
+                doc_type
+                    .as_ref()
+                    .map(name_client::DidDocType::as_str)
+                    .unwrap_or("")
+            )))
+        }
+    }
+
+    async fn ensure_name_client_for_tests() {
+        if name_client::GLOBAL_NAME_CLIENT.get().is_none() {
+            let client = name_client::NameClient::new(name_client::NameClientConfig {
+                enable_cache: true,
+                cache_backend: name_client::CacheBackend::Memory,
+                ..Default::default()
+            });
+            let _ = name_client::GLOBAL_NAME_CLIENT.set(client);
+            let _ = name_client::IS_NAME_LIB_INITED.set(true);
+        }
+        let client = name_client::GLOBAL_NAME_CLIENT.get().unwrap();
+        client
+            .add_provider(Box::new(EmptyNameProvider), Some(-100))
+            .await;
+        client
+            .add_method_supplement("bns", Box::new(EmptyNameProvider))
+            .await;
+        client.set_local_authority_override(
+            DID::new("bns", "alice"),
+            DidDocType::Owner,
+            test_owner_document(),
+            "node-daemon-test",
+            None,
+        );
+    }
+
+    fn unique_test_id(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}-{}", prefix, nanos)
+    }
+
+    fn test_owner_key() -> Jwk {
+        serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc"
+        }))
+        .unwrap()
+    }
+
+    fn test_cache_owner_key() -> Jwk {
+        serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": TEST_OWNER_PUBLIC_X
+        }))
+        .unwrap()
+    }
+
+    fn test_owner_document() -> EncodedDocument {
+        let owner = OwnerDocument::new(
+            DID::new("bns", "alice"),
+            "alice".to_string(),
+            "alice@test".to_string(),
+            test_cache_owner_key(),
+        );
+        owner
+            .encode(Some(
+                &EncodingKey::from_ed_pem(TEST_OWNER_PRIVATE_KEY.as_bytes()).unwrap(),
+            ))
+            .unwrap()
+    }
+
+    fn test_zone_with_oods(oods: Vec<OODDescriptionString>) -> ZoneDocument {
+        let mut zone_document = ZoneDocument::new(
+            DID::new("web", "test-zone"),
+            DID::new("bns", "test-owner"),
+            test_owner_key(),
+        );
+        zone_document.oods = oods;
+        zone_document
+    }
+
+    #[test]
+    fn first_ood_ignores_gateway_entries() {
+        let zone_document = test_zone_with_oods(vec![
+            OODDescriptionString::new("gate1".to_string(), DeviceNodeType::Gateway, None, None),
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
+        ]);
+
+        assert_eq!(first_ood_name(&zone_document), Some("ood1"));
+        assert!(is_first_ood(&zone_document, "ood1"));
+        assert!(!is_first_ood(&zone_document, "ood2"));
+        assert_eq!(
+            ood_device_names(&zone_document),
+            vec!["ood1".to_string(), "ood2".to_string()]
+        );
+    }
+
+    #[test]
+    fn first_ood_treats_ood_only_as_ood() {
+        let zone_document = test_zone_with_oods(vec![
+            OODDescriptionString::new("gate1".to_string(), DeviceNodeType::Gateway, None, None),
+            OODDescriptionString::new("ood-only".to_string(), DeviceNodeType::OODOnly, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
+        ]);
+
+        assert_eq!(first_ood_name(&zone_document), Some("ood-only"));
+        assert!(is_first_ood(&zone_document, "ood-only"));
+        assert_eq!(
+            ood_device_names(&zone_document),
+            vec!["ood-only".to_string(), "ood2".to_string()]
+        );
+    }
+
+    fn discovered_node_for_cache(peer_did: DID, endpoint_ip: std::net::IpAddr) -> DiscoveredNode {
+        let mut device_doc = DeviceDocument::new(
+            "ood2",
+            "Bb325f2ed0XSxrPS5sKQaX7ylY9Jh9rfevXiidKA1zc".to_string(),
+        );
+        device_doc.id = peer_did;
+        device_doc.zone_did = Some(DID::new("bns", "alice"));
+        device_doc.owner = DID::new("bns", "alice");
+        let mut device_info = DeviceInfo::from_device_doc(&device_doc);
+        device_info.arch.clear();
+        device_info.os.clear();
+        device_info.update_time = buckyos_get_unix_timestamp();
+        device_info.device_doc.ips.push(endpoint_ip);
+        device_info.all_ip.push(endpoint_ip);
+        let device_doc_jwt = device_doc
+            .encode(Some(
+                &EncodingKey::from_ed_pem(TEST_OWNER_PRIVATE_KEY.as_bytes()).unwrap(),
+            ))
+            .unwrap()
+            .to_string();
+
+        DiscoveredNode {
+            node_id: "ood2".to_string(),
+            device_doc,
+            device_info,
+            device_doc_jwt,
+            addr: std::net::SocketAddr::new(endpoint_ip, 2980),
+            rtcp_port: 2980,
+            last_seen: buckyos_get_unix_timestamp(),
+            from_cache: false,
+        }
     }
 
     fn index_test_pkg(pkg_env_path: &Path, unique_name: &str, version: &str) -> (String, String) {
@@ -1660,21 +2293,21 @@ mod tests {
         })
     }
 
-    async fn create_test_store_mgr(base_dir: &Path) -> NamedStoreMgr {
+    async fn create_test_store_mgr(base_dir: &Path) -> NamedDataMgr {
         let store = NamedLocalStore::get_named_store_by_path(base_dir.join("named_store"))
             .await
             .unwrap();
         let store_id = store.store_id().to_string();
         let store_ref = Arc::new(tokio::sync::Mutex::new(store));
 
-        let store_mgr = NamedStoreMgr::new();
+        let store_mgr = NamedDataMgr::new();
         store_mgr.register_store(store_ref).await;
         store_mgr
             .add_layout(StoreLayout::new(
                 1,
                 vec![StoreTarget {
                     store_id,
-                    device_did: None,
+                    device_did: String::new(),
                     capacity: None,
                     used: None,
                     readonly: false,
@@ -1687,6 +2320,48 @@ mod tests {
             .await;
 
         store_mgr
+    }
+
+    #[tokio::test]
+    async fn test_discovered_device_cache_updates_resolve_did_and_ips() {
+        ensure_name_client_for_tests().await;
+        let peer_name = format!("{}.alice", unique_test_id("node-daemon-peer"));
+        let peer_did = DID::new("bns", peer_name.as_str());
+        let endpoint_ip = "192.168.1.22".parse().unwrap();
+        let node = discovered_node_for_cache(peer_did.clone(), endpoint_ip);
+        let mut discovered = HashMap::new();
+        discovered.insert(node.node_id.clone(), node);
+
+        assert!(name_client::resolve_ips(peer_did.to_string().as_str())
+            .await
+            .is_err());
+
+        add_discovered_device_cache(&discovered);
+
+        assert_eq!(
+            name_client::resolve_ips(peer_did.to_string().as_str())
+                .await
+                .unwrap(),
+            vec![endpoint_ip]
+        );
+        let resolved_doc = name_client::resolve_did(&peer_did, Some(DidDocType::Device))
+            .await
+            .unwrap();
+        let resolved_device_doc = DeviceDocument::decode(&resolved_doc, None).unwrap();
+        assert_eq!(resolved_device_doc.id, peer_did);
+
+        let resolved_info = name_client::resolve_did_ex(
+            &peer_did,
+            Some(name_client::DOC_TYPE_INFO),
+            name_client::ResolvePolicy::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved_info.document_metadata.buckyos.document_status,
+            None
+        );
+        assert_eq!(resolved_info.document_metadata.deactivated, None);
     }
 
     #[tokio::test]

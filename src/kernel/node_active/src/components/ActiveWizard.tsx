@@ -23,7 +23,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const [completedUrl, setCompletedUrl] = useState("");
   const walletInfoReady =
     !isWalletRuntime ||
-    (!!walletUser?.sn_username && !!walletUser?.public_key);
+    (!!walletUser?.sn_username && !!walletUser?.owner_document);
   const stepOrder = useMemo<StepKey[]>(
     () =>
       isWalletRuntime
@@ -52,14 +52,13 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
           }
           const data = await createInitialWizardData({
             is_wallet_runtime: true,
-            owner_user_name: (walletUser.user_name || "").toLowerCase(),
-            owner_public_key: walletUser.public_key,
+            owner_document: walletUser.owner_document,
+            evm_address: walletUser.owner_document.wallets?.main?.address || "",
             sn_user_name: (walletUser.sn_username || "").toLowerCase(),
             sn_active_code: null,
             enabled_features: {
               llm_router: true,
             },
-            admin_password_hash: walletUser.password_hash || "",
           });
           if (!cancelled) setWizardData(data);
           return;
@@ -92,7 +91,26 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
     [t]
   );
 
-  const handleUpdate = (partial: Partial<WizardData>) => setWizardData((prev) => prev ? ({ ...prev, ...partial }) : null);
+  const handleUpdate = (partial: Partial<WizardData>) =>
+    setWizardData((prev) => {
+      if (!prev) return null;
+      const invalidatesDocuments = [
+        "gatewy_type",
+        "port_mapping_mode",
+        "rtcp_port",
+        "use_self_domain",
+        "self_domain",
+        "owner_document",
+        "device_public_key",
+      ].some((key) => key in partial);
+      return {
+        ...prev,
+        ...partial,
+        ...(invalidatesDocuments && !("prepared_documents" in partial)
+          ? { prepared_documents: null, signed_documents: null }
+          : {}),
+      };
+    });
 
   const goNext = () => setActiveStep((prev) => Math.min(prev + 1, stepOrder.length - 1));
   const goBack = () => setActiveStep((prev) => Math.max(prev - 1, 0));
@@ -142,8 +160,6 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             wizardData={wizardData}
             onUpdate={handleUpdate}
             onNext={goNext}
-            isWalletRuntime={isWalletRuntime}
-            walletUser={walletUser}
           />
         );
       case "gateway":

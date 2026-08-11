@@ -28,8 +28,7 @@ sysinfo ={ workspace = true }
 chrono = { workspace = true }
 if-addrs ={ workspace = true }
 anyhow={ workspace = true }
-server-runner = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
 buckyos-kit = { workspace = true }
 name-lib = { workspace = true }
 name-client = { workspace = true }
@@ -43,9 +42,11 @@ hyper = "1.8.1"
 zip = { workspace = true }
 image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
 base64 = { workspace = true }
+rand = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 named_store = { workspace = true }

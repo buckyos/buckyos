@@ -1,4 +1,5 @@
 includes:
+- path: node_gateway_params.json
 - path: user_gateway.yaml
 - path: boot_gateway.yaml
 - path: node_gateway.json

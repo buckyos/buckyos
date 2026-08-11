@@ -1,18 +1,110 @@
-#[allow(non_snake_case)]
-pub mod agent;
-pub mod agent_bash;
-pub mod agent_config;
-pub mod agent_environment;
-pub mod agent_session;
-pub mod agent_tool;
-pub mod ai_runtime;
-pub mod behavior;
-pub mod buildin_tool;
-pub mod skill_tool;
-pub mod step_record;
+// opendan crate — see notepads/NewOpenDANRuntime.md
+// Module layout follows §9 checklist order: bottom-up dependencies first.
 
-#[cfg(test)]
-pub mod test_utils;
+// §9 step 2 — LLMContextDeps assembly (LlmClient / ToolManager / PolicyEngine /
+//             WorklogSink / TurnHook adapters over aicc + agent_tool).
+pub mod ai_runtime;
+
+// §9 step 3 — config layer.
+//   agent_config: agent-level config (agent.toml, default behavior, subscribed
+//                 event types, etc.).
+//   behavior_cfg: single-behavior TOML parsing (BehaviorCfg, tool whitelist,
+//                 parser/renderer choice, switch_mode, ...).
+pub mod agent_config;
+pub mod behavior_cfg;
+
+// HookPoint = `{ mode, ...params }` config shape reused by behavior
+// `[on_xxx]` bypass switches, dispatcher rule strategies, and session-id
+// strategies. The seam future revisions plug a script engine into without
+// touching consumer call sites.
+pub mod behavior_hooks;
+pub mod hook_point;
+// v0 dispatcher + session-id evaluators (FixedRulesDispatch /
+// EnumSessionIdStrategy). Consumed by `agent.rs::dispatch_inbound`.
+pub mod dispatch;
+
+// §9 step 4 — AgentSession worker loop, build_or_resume_context, handle_outcome,
+//             switch_behavior (normal / fork / independent).
+pub mod agent_session;
+pub mod round_history;
+pub mod session_model;
+
+// §9 step 4 — LLMContext switching primitives (rebuild_with_inherit / build_fresh)
+//             that AgentSession uses to implement switch / fork / independent.
+//             Will be promoted to llm_context crate once stable.
+pub mod llm_context_helper;
+
+// Phase-1 PromptRenderEngine integration (variable contract +
+// AgentSessionValueLoader). See
+// `doc/opendan/Agent Enviroment.md` §15.1.
+pub mod prompt_env;
+
+// Agent-local i18n dictionaries used for runtime-facing status text.
+pub mod i18n;
+
+// §9 step 5 — UI-session default tool wiring; exec_bash + session /bin scripts.
+pub mod agent_bash;
+
+// §9.2 — single source of truth for the BuckyOS path layout (4 bin layers,
+//        agent_id / session_id splicing, BUCKYOS_ROOT env-driven dev fallback).
+pub mod paths;
+
+// §9.2 — tool-plan loader + Session Exec Bin renderer (Agent tools hard-link
+//        + tombstone stubs, mtime-driven resync, plan resolution dump).
+pub mod tool_plan;
+
+// §9 step 6 — AIAgent::run, msg/event dispatch, session restoration, subscriptions.
+pub mod agent;
+pub mod agent_task_executor;
+pub mod dispatch_adapter;
+pub mod task_event_pump;
+
+// §9 step 6 — msg-center / kevent inbound pump that feeds AIAgent::inbox().
+pub mod msg_center_pump;
+
+// §9 step 6 — per-session kevent subscription pump (routes Inbound::Event to
+// the right session based on AgentSession.event_subscriptions).
+pub mod session_event_pump;
+
+// §9 step 7 — workspace data model (BehaviorLoop deps stripped; session binding
+//             owned by AgentSession).
+pub mod local_workspace;
+
+// §9 step 8 — task_mgr / contact_mgr skeletons.
+//   contact     : ContactLookup for from_name enrichment + forward_msg helpers.
+//   task_dispatch: TaskDispatch wraps TaskManagerClient for async-tool dispatch
+//                  (consumed when the §9.4 PendingTool outcome wires through).
+pub mod contact;
+pub mod task_dispatch;
+pub mod task_util;
+
+// Session-topic storage / recall primitives used by the non-CLI tool entry.
+pub mod hint_recall;
+pub mod session_topic;
+// §8 — non-CLI session tools (worksession control + update_session_topic).
+pub mod worksession_tools;
+
+// Worklog SQLite service (unchanged from beta2.x — consumed by ai_runtime's
+// OpenDanWorklogSink).
 pub mod worklog;
-pub mod workspace;
-pub mod workspace_path;
+
+// Placeholder for future builtin-tool wiring (Agent/Session bin layers in the
+// 4-layer AgentToolManager). Currently empty; will be populated alongside
+// agent_bash / ai_runtime.
+pub mod buildin_tool;
+
+// §2.2.2 — egress-time attachment validation policy. Sits between
+// agent_session and llm_context::msg_parser; enforces the workspace
+// whitelist on outbound `<attachment path=…>` and the (placeholder)
+// ACL hook on `<attachment obj_id=…>` references.
+pub mod attachment_policy;
+
+// §2.2.2 — local-path materialization at egress. Pairs with
+// attachment_policy: once a path is approved, this resolver registers
+// the file with NamedStore in LocalLink mode and surfaces a
+// content-addressed ObjId for the standard RefItem::DataObj lane.
+pub mod attachment_resolver;
+
+// §3 — slash-command dispatcher. Maps the strict `/<name>` whitelist
+// (parsed by llm_context::msg_parser) to opendan-side handlers.
+pub mod command_dispatcher;

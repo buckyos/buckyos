@@ -701,9 +701,9 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        AgentTool, AgentToolManager, BindExternalWorkspaceTool, BindWorkspaceTool,
-        CreateWorkspaceTool, ListExternalWorkspacesTool, SessionRuntimeContext,
-        TOOL_BIND_EXTERNAL_WORKSPACE, TOOL_BIND_WORKSPACE, TOOL_LIST_EXTERNAL_WORKSPACES,
+        AgentToolManager, BindExternalWorkspaceTool, BindWorkspaceTool, CreateWorkspaceTool,
+        ListExternalWorkspacesTool, SessionRuntimeContext, TOOL_BIND_EXTERNAL_WORKSPACE,
+        TOOL_BIND_WORKSPACE, TOOL_LIST_EXTERNAL_WORKSPACES,
     };
 
     #[derive(Default)]
@@ -863,6 +863,7 @@ mod tests {
             step_idx: 0,
             wakeup_id: "wakeup-1".to_string(),
             session_id: session_id.to_string(),
+            read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,
         }
     }
 
@@ -876,10 +877,10 @@ mod tests {
         let backend = Arc::new(ManagedWorkspaceToolBackend::new(runtime.clone()));
         let tool_mgr = AgentToolManager::new();
         tool_mgr
-            .register_tool(CreateWorkspaceTool::new(backend.clone()))
+            .register_typed_tool(CreateWorkspaceTool::new(backend.clone()))
             .expect("register create tool");
         tool_mgr
-            .register_tool(BindWorkspaceTool::new(backend))
+            .register_typed_tool(BindWorkspaceTool::new(backend))
             .expect("register bind tool");
 
         let create_result = tool_mgr
@@ -891,7 +892,7 @@ mod tests {
             .expect("create workspace tool call")
             .expect("tool matched");
 
-        assert!(create_result.is_agent_tool);
+        assert_eq!(create_result.agent_tool_protocol, "1");
         assert_eq!(create_result["ok"], true);
         let workspace_id = create_result["workspace"]["workspace_id"]
             .as_str()
@@ -939,7 +940,7 @@ mod tests {
             state: Arc::new(tokio::sync::Mutex::new(FakeWorkspaceState::default())),
         });
         let backend = Arc::new(ManagedWorkspaceToolBackend::new(runtime.clone()));
-        let tool = BindWorkspaceTool::new(backend);
+        let tool = crate::TypedToolHandle::with_null_host(BindWorkspaceTool::new(backend));
 
         {
             let mut guard = runtime.state.lock().await;
@@ -960,10 +961,14 @@ mod tests {
                 .insert("session-1".to_string(), "ws-old".to_string());
         }
 
-        let err = tool
-            .exec(&call_ctx("session-1"), "bind_workspace ws-demo", None)
-            .await
-            .expect_err("rebind should fail");
+        let err = crate::AgentTool::exec(
+            &tool,
+            &call_ctx("session-1"),
+            "bind_workspace ws-demo",
+            None,
+        )
+        .await
+        .expect_err("rebind should fail");
         assert!(err
             .to_string()
             .contains("already bound local workspace `ws-old`"));
@@ -972,7 +977,7 @@ mod tests {
     #[tokio::test]
     async fn external_workspace_tools_bind_and_list_from_agent_tool_backend() {
         let temp = tempdir().expect("create tempdir");
-        let agent_root = temp.path().join("agents/jarvis");
+        let agent_root = temp.path().join("agents/buckyos_jarvis");
         let external_workspace = temp.path().join("external-workspace");
         fs::create_dir_all(&agent_root)
             .await
@@ -994,10 +999,10 @@ mod tests {
 
         let tool_mgr = AgentToolManager::new();
         tool_mgr
-            .register_tool(BindExternalWorkspaceTool::new(backend.clone()))
+            .register_typed_tool(BindExternalWorkspaceTool::new(backend.clone()))
             .expect("register bind external tool");
         tool_mgr
-            .register_tool(ListExternalWorkspacesTool::new(backend))
+            .register_typed_tool(ListExternalWorkspacesTool::new(backend))
             .expect("register list external tool");
 
         let bind_result = tool_mgr
@@ -1015,7 +1020,7 @@ mod tests {
             .await
             .expect("bind external workspace");
 
-        assert!(bind_result.is_agent_tool);
+        assert_eq!(bind_result.agent_tool_protocol, "1");
         let mount_path = bind_result["binding"]["mount"]
             .as_str()
             .expect("mount path");
@@ -1034,7 +1039,7 @@ mod tests {
             )
             .await
             .expect("list external workspaces");
-        assert!(list_result.is_agent_tool);
+        assert_eq!(list_result.agent_tool_protocol, "1");
         let workspaces = list_result["workspaces"]
             .as_array()
             .expect("workspaces array");

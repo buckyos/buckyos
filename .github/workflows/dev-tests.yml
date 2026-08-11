@@ -42,6 +42,11 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Install cargo test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
       - name: Run cargo test
         working-directory: ./src
         run: cargo test -- --test-threads=1
@@ -58,7 +63,7 @@ jobs:
       - quick-unit-tests
     if: ${{ always() && (needs.quick-unit-tests.result == 'success' || needs.quick-unit-tests.result == 'skipped') }}
     runs-on: ${{ fromJSON((matrix.platform_key == 'macos' && matrix.arch == 'aarch64' && vars.DEVTESTS_MACOS_ARM64_RUNNER_JSON) || (matrix.platform_key == 'macos' && matrix.arch == 'x86_64' && vars.DEVTESTS_MACOS_X64_RUNNER_JSON) || matrix.runner_json) }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -67,8 +72,10 @@ jobs:
             runner_json: '["ubuntu-24.04"]'
             platform_key: linux
             arch: x86_64
-            rust_target: x86_64-unknown-linux-musl
-            needs_musl: true
+            rust_target: x86_64-unknown-linux-gnu
+            build_target_arg: --target=x86_64-unknown-linux-gnu
+            package_rust_target_args: --rust-target x86_64-unknown-linux-gnu
+            needs_musl: false
             needs_tauri: false
             needs_nsis: false
           - name: Linux ARM64 Dev Test
@@ -76,6 +83,8 @@ jobs:
             platform_key: linux
             arch: aarch64
             rust_target: aarch64-unknown-linux-gnu
+            build_target_arg: ""
+            package_rust_target_args: ""
             needs_musl: false
             needs_tauri: false
             needs_nsis: false
@@ -84,6 +93,8 @@ jobs:
             platform_key: macos
             arch: aarch64
             rust_target: aarch64-apple-darwin
+            build_target_arg: ""
+            package_rust_target_args: ""
             needs_musl: false
             needs_tauri: true
             needs_nsis: false
@@ -92,6 +103,8 @@ jobs:
             platform_key: macos
             arch: x86_64
             rust_target: x86_64-apple-darwin
+            build_target_arg: ""
+            package_rust_target_args: ""
             needs_musl: false
             needs_tauri: true
             needs_nsis: false
@@ -100,6 +113,8 @@ jobs:
             platform_key: windows
             arch: x86_64
             rust_target: x86_64-pc-windows-msvc
+            build_target_arg: ""
+            package_rust_target_args: ""
             needs_musl: false
             needs_tauri: true
             needs_nsis: true
@@ -111,12 +126,17 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10.13.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -128,6 +148,9 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.rust_target }}
+
+      - name: Ensure Rust target for repository toolchain
+        run: rustup target add ${{ matrix.rust_target }}
 
       - name: Setup MSVC
         if: ${{ runner.os == 'Windows' }}
@@ -217,11 +240,11 @@ jobs:
           New-Item -ItemType Directory -Path $env:BUCKYOS_ROOT -Force | Out-Null
 
       - name: Clone cyfs-gateway
-        run: git clone --depth 1 https://github.com/buckyos/cyfs-gateway.git ../cyfs-gateway
+        run: git clone --depth 1 --branch beta2.2 https://github.com/buckyos/cyfs-gateway.git ../cyfs-gateway
 
       - name: Clone BuckyOSApp
         if: ${{ matrix.needs_tauri }}
-        run: git clone --depth 1 https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
+        run: git clone --depth 1 --branch beta2.2 https://github.com/buckyos/BuckyOSApp.git ../BuckyOSApp
 
       - name: Install BuckyOSApp dependencies (Unix)
         if: ${{ matrix.needs_tauri && runner.os != 'Windows' }}
@@ -267,12 +290,12 @@ jobs:
           }
 
           pushd ../cyfs-gateway/src
-          buckyos-build
+          buckyos-build ${{ matrix.build_target_arg }}
           buckyos-install --all
           popd
 
           pushd src
-          buckyos-build
+          buckyos-build ${{ matrix.build_target_arg }}
           buckyos-install --all
           sudo HOME="$HOME" PATH="$PATH" BUCKYOS_ROOT="$BUCKYOS_ROOT" "$PYTHON_BIN" start.py --all
           wait_for_port "node gateway" 127.0.0.1 3180
@@ -374,12 +397,12 @@ jobs:
           Clear-RequiredPorts -Ports @(3180, 80, 443)
 
           Push-Location ..\cyfs-gateway\src
-          buckyos-build
+          buckyos-build ${{ matrix.build_target_arg }}
           buckyos-install --all
           Pop-Location
 
           Push-Location .\src
-          buckyos-build
+          buckyos-build ${{ matrix.build_target_arg }}
           buckyos-install --all
           python .\start.py --all
           Wait-ForPort -Name "node gateway" -TargetHost "127.0.0.1" -Port 3180
@@ -414,7 +437,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$LOCAL_PKG_DIR"
-          python3 ./make_local_pkg.py build-pkg --arch ${{ matrix.arch }} --out-dir "$LOCAL_PKG_DIR"
+          python3 ./make_local_pkg.py build-pkg --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir "$LOCAL_PKG_DIR"
 
       - name: Build local package (Windows)
         if: ${{ runner.os == 'Windows' }}
@@ -422,7 +445,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Path $env:LOCAL_PKG_DIR -Force | Out-Null
-          python .\make_local_pkg.py build-pkg --arch ${{ matrix.arch }} --out-dir $env:LOCAL_PKG_DIR
+          python .\make_local_pkg.py build-pkg --arch ${{ matrix.arch }} ${{ matrix.package_rust_target_args }} --out-dir $env:LOCAL_PKG_DIR
 
       - name: Capture package path (Unix)
         id: package_unix

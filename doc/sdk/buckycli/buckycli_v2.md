@@ -54,11 +54,11 @@
 - `apps.version.list`
 
 6. 配置访问
-- `sys_config.get/set/list/tree`
+- control_panel 不再封装 SystemConfig；配置读写通过 `system_config_service` / `SystemConfigClient` / buckycli 的系统配置命令直接访问。
 
 7. 文件系统能力
-- Files/Share 实际上主要走 `/api/resources*`、`/api/share*`、`/api/upload/session*`、`/api/public/*`
-- 文件浏览、上传、预览、分享、收藏、最近、回收站已具备较完整 HTTP 面
+- Files/Share 已从 control_panel 拆出，独立服务协议待定。
+- 旧 `/api/resources*`、`/api/share*`、`/api/upload/session*`、`/api/public/*` 不再视作 control_panel API。
 
 8. 前端已接上真实数据的页面
 - Desktop shell

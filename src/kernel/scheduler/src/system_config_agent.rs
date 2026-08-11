@@ -5,24 +5,29 @@ use anyhow::Result;
 use buckyos_api::{AppType, SelectorType};
 use log::*;
 use package_lib::PackageId;
-use rbac::DEFAULT_POLICY;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::app::*;
 use crate::scheduler::*;
 use crate::service::*;
+use crate::system_config_builder::{
+    derive_sn_ai_provider_endpoints, reconcile_managed_sn_ai_provider,
+};
+use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
     get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
-    ServiceInstanceReportInfo, ServiceState, UserSettings, UserType as ApiUserType,
-    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT,
+    SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
+    UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
+    CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
 use name_client::*;
-use name_lib::{get_x_from_jwk, DeviceInfo, ZoneConfig};
+use name_lib::{get_x_from_jwk, DeviceInfo, ZoneDocument};
 
 const SYSTEM_CONFIG_SERVICE_PORT: u16 = 3200;
 const FIXED_SERVICE_WEIGHT: u32 = 100;
+const DEFAULT_REQUIRED_CPU_MHZ: u32 = 50;
 const DEFAULT_REQUIRED_MEMORY: u64 = 32 * 1024 * 1024;
 
 fn map_api_user_type(user_type: &ApiUserType) -> UserType {
@@ -64,8 +69,9 @@ fn create_service_spec_by_app_config(
     app_config: &AppServiceSpec,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(app_config.state.clone());
+    let is_agent = app_config.app_doc.get_app_type() == AppType::Agent;
 
-    let mut need_container = app_config.app_doc.get_app_type() == AppType::Agent;
+    let mut need_container = is_agent;
     if !need_container {
         need_container = true;
         if app_config
@@ -82,17 +88,21 @@ fn create_service_spec_by_app_config(
         }
     }
 
-    let service_ports_config = app_config.install_config.to_service_ports_config();
+    let service_ports_config = app_config.spec_config.to_service_ports_config();
     ServiceSpec {
         id: full_app_id.to_string(),
         app_index: app_config.app_index,
         app_id: app_config.app_id().to_string(),
         owner_id: owner_user_id.to_string(),
-        spec_type: ServiceSpecType::App,
+        spec_type: if is_agent {
+            ServiceSpecType::Agent
+        } else {
+            ServiceSpecType::App
+        },
         state: spec_state,
         need_container,
         best_instance_count: app_config.expected_instance_count,
-        required_cpu_mhz: 200,
+        required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
         required_memory: DEFAULT_REQUIRED_MEMORY,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,
@@ -107,7 +117,7 @@ fn create_service_spec_by_service_config(
     service_config: &KernelServiceSpec,
 ) -> ServiceSpec {
     let spec_state = ServiceSpecState::from(service_config.state.clone());
-    let service_ports_config = service_config.install_config.to_service_ports_config();
+    let service_ports_config = service_config.spec_config.to_service_ports_config();
     ServiceSpec {
         id: service_name.to_string(),
         app_id: service_name.to_string(),
@@ -117,7 +127,7 @@ fn create_service_spec_by_service_config(
         state: spec_state,
         need_container: false,
         best_instance_count: service_config.expected_instance_count,
-        required_cpu_mhz: 300,
+        required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
         required_memory: DEFAULT_REQUIRED_MEMORY,
         required_gpu_tflops: 0.0,
         required_gpu_mem: 0,
@@ -174,13 +184,16 @@ pub fn create_scheduler_by_system_config(
                 }
             } else if key.ends_with("/settings") {
                 let parts: Vec<&str> = key.split('/').collect();
-                if parts.len() >= 3 {
+                if parts.len() == 3 {
                     let user_id = parts[1];
                     let user_settings: UserSettings = serde_json::from_str(value.as_str())
                         .map_err(|e| {
                             error!("UserSettings serde_json::from_str failed: {:?}", e);
                             e
                         })?;
+                    if !matches!(user_settings.state, UserState::Active) {
+                        continue;
+                    }
                     let user_item = UserItem {
                         userid: user_id.to_string(),
                         res_pool_id: None,
@@ -294,7 +307,8 @@ pub(crate) fn schedule_action_to_tx_actions(
     }
     let zone_config = zone_config.unwrap();
     let zone_config: ZoneConfig = serde_json::from_str(zone_config.as_str())?;
-    let zone_gateway = zone_config.get_default_zone_gateway();
+    let zone_document = zone_config.zone_document()?;
+    let zone_gateway = zone_document.get_default_zone_gateway();
     match action {
         SchedulerAction::ChangeNodeStatus(node_id, node_status) => {
             let key = format!("nodes/{}/config", node_id);
@@ -311,7 +325,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
             let service_spec = service_spec.unwrap();
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     let set_state_action =
                         set_app_service_state(spec_id.as_str(), spec_status, input_config)?;
                     info!(
@@ -340,7 +354,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             let service_spec = service_spec.unwrap();
             need_update_gateway_node_list.insert(new_instance.node_id.clone());
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     let instance_action =
                         instance_app_service(new_instance, &device_list, &input_config)?;
                     info!("will instance app pod: {}", new_instance.spec_id);
@@ -395,7 +409,7 @@ pub(crate) fn schedule_action_to_tx_actions(
                     }
                 });
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     info!("will uninstance app service: {}", instance.spec_id);
                     let uninstance_action = uninstance_app_service(&instance)?;
                     result.extend(uninstance_action);
@@ -417,7 +431,7 @@ pub(crate) fn schedule_action_to_tx_actions(
             }
             let service_spec = service_spec_opt.unwrap();
             match service_spec.spec_type {
-                ServiceSpecType::App => {
+                ServiceSpecType::App | ServiceSpecType::Agent => {
                     let update_action = update_app_service_instance(instance)?;
                     info!("will update app service instance: {}", instance.spec_id);
                     result.extend(update_action);
@@ -520,7 +534,7 @@ fn should_skip_app_service_info_deletion(
     Ok(is_legacy_docker_app_service(&app_spec) && is_service_info_empty)
 }
 
-pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneConfig> {
+pub fn get_boot_config(input_system_config: &HashMap<String, String>) -> Result<ZoneConfig> {
     let key = "boot/config";
     let zone_config = input_system_config.get(key);
     if zone_config.is_none() {
@@ -532,6 +546,10 @@ pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<
         e
     })?;
     Ok(zone_config)
+}
+
+pub fn get_zone_config(input_system_config: &HashMap<String, String>) -> Result<ZoneDocument> {
+    Ok(get_boot_config(input_system_config)?.zone_document()?)
 }
 
 pub fn get_zone_gateway_settings(
@@ -595,7 +613,7 @@ fn build_web_app_servers(
     let mut web_app_servers = HashMap::new();
 
     for web_app in get_web_app_list(input_system_config)? {
-        if !web_app.install_config.expose_config.contains_key("www") {
+        if !web_app.spec_config.expose_config.contains_key("www") {
             continue;
         }
 
@@ -682,6 +700,10 @@ struct NodeGatewayInfo {
     app_info: HashMap<String, NodeGatewayAppEntry>,
     service_info: HashMap<String, NodeGatewayServiceInfoEntry>,
     node_route_map: HashMap<String, String>,
+    #[serde(default)]
+    routes: HashMap<String, Vec<NodeGatewayRouteCandidate>>,
+    #[serde(default)]
+    did_ip_hints: HashMap<String, Vec<DidIpHint>>,
     trust_key: HashMap<String, String>,
 }
 
@@ -797,10 +819,21 @@ fn build_app_host_entry(
     }?;
 
     let port = select_gateway_port(&pick_instance.service_ports, service_name)?;
+    let access_mode = if app_spec
+        .spec_config
+        .expose_config
+        .get(service_name)
+        .map(|config| config.allow_guest)
+        .unwrap_or(false)
+    {
+        NodeGatewayAccessMode::Public
+    } else {
+        NodeGatewayAccessMode::Private
+    };
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
         sdk_version: parse_sdk_version(app_spec),
-        access_mode: NodeGatewayAccessMode::Private,
+        access_mode,
         node_id: Some(pick_instance.node_id.clone()),
         port: Some(port),
         dir_pkg_id: None,
@@ -832,10 +865,21 @@ fn build_app_host_entry_from_persisted_service_info(
         .min_by(|left, right| left.0.cmp(right.0))?;
 
     let port = select_gateway_port(&node_info.service_port, service_name)?;
+    let access_mode = if app_spec
+        .spec_config
+        .expose_config
+        .get(service_name)
+        .map(|config| config.allow_guest)
+        .unwrap_or(false)
+    {
+        NodeGatewayAccessMode::Public
+    } else {
+        NodeGatewayAccessMode::Private
+    };
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
         sdk_version: parse_sdk_version(app_spec),
-        access_mode: NodeGatewayAccessMode::Private,
+        access_mode,
         node_id: Some(node_id.clone()),
         port: Some(port),
         dir_pkg_id: None,
@@ -900,12 +944,13 @@ fn insert_trust_key(
 
 fn build_trust_keys(
     node_id: &str,
-    zone_config: &ZoneConfig,
+    boot_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     device_list: &HashMap<String, DeviceInfo>,
 ) -> HashMap<String, String> {
     let mut trust_key = HashMap::new();
 
-    if let Some(verify_hub_info) = zone_config.verify_hub_info.as_ref() {
+    if let Some(verify_hub_info) = boot_config.verify_hub_info.as_ref() {
         insert_trust_key(&mut trust_key, "verify-hub", &verify_hub_info.public_key);
     }
 
@@ -930,7 +975,7 @@ fn build_trust_keys(
 }
 
 fn build_fixed_selector_from_oods(
-    zone_config: &ZoneConfig,
+    zone_config: &ZoneDocument,
     port: u16,
 ) -> HashMap<String, NodeGatewaySelectorTarget> {
     let mut selector = HashMap::new();
@@ -951,10 +996,12 @@ pub(crate) async fn update_node_gateway_info(
     scheduler_ctx: &NodeScheduler,
     input_system_config: &HashMap<String, String>,
 ) -> Result<HashMap<String, KVAction>> {
-    let zone_config = get_zone_config(input_system_config)?;
+    let boot_config = get_boot_config(input_system_config)?;
+    let zone_config = boot_config.zone_document()?;
     let zone_gateway_settings = get_zone_gateway_settings(input_system_config)?;
     let device_list = get_device_list(input_system_config)?;
     let zone_host = zone_config.id.to_host_name();
+    let forward_plan = build_forward_plan(node_id, &zone_config, &zone_host, &device_list);
 
     let mut node_gateway_info = NodeGatewayInfo {
         node_info: NodeGatewayNodeInfo {
@@ -964,7 +1011,9 @@ pub(crate) async fn update_node_gateway_info(
         app_info: HashMap::new(),
         service_info: HashMap::new(),
         node_route_map: build_node_route_map(node_id, &zone_host, &device_list),
-        trust_key: build_trust_keys(node_id, &zone_config, &device_list),
+        routes: forward_plan.routes,
+        did_ip_hints: forward_plan.did_ip_hints,
+        trust_key: build_trust_keys(node_id, &boot_config, &zone_config, &device_list),
     };
 
     for (service_info_id, service_info) in scheduler_ctx.service_infos.iter() {
@@ -986,7 +1035,7 @@ pub(crate) async fn update_node_gateway_info(
             if spec_id.contains('@') {
                 if let Ok(app_spec) = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)
                 {
-                    if let Some(expose_config) = app_spec.install_config.expose_config.get("www") {
+                    if let Some(expose_config) = app_spec.spec_config.expose_config.get("www") {
                         let app_entry =
                             build_app_host_entry(&app_spec, service_info, service_name.as_str())
                                 .or_else(|| {
@@ -1010,7 +1059,7 @@ pub(crate) async fn update_node_gateway_info(
                                     .app_info
                                     .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
                             }
-                            for host in expose_config.sub_hostname.iter() {
+                            for host in expose_config.sub_hostname() {
                                 node_gateway_info.app_info.insert(
                                     host.clone(),
                                     NodeGatewayAppEntry::App(app_entry.clone()),
@@ -1039,7 +1088,7 @@ pub(crate) async fn update_node_gateway_info(
 
     for web_app in get_web_app_list(input_system_config)? {
         let full_app_id = format!("{}@{}", web_app.app_id(), web_app.user_id);
-        let Some(expose_config) = web_app.install_config.expose_config.get("www") else {
+        let Some(expose_config) = web_app.spec_config.expose_config.get("www") else {
             continue;
         };
         let Some(app_entry) = build_static_web_app_host_entry(&web_app) else {
@@ -1051,7 +1100,7 @@ pub(crate) async fn update_node_gateway_info(
                 .app_info
                 .insert(host, NodeGatewayAppEntry::App(app_entry.clone()));
         }
-        for host in expose_config.sub_hostname.iter() {
+        for host in expose_config.sub_hostname() {
             node_gateway_info
                 .app_info
                 .insert(host.clone(), NodeGatewayAppEntry::App(app_entry.clone()));
@@ -1131,6 +1180,7 @@ pub(crate) async fn update_node_gateway_config(
 ) -> Result<HashMap<String, KVAction>> {
     let zone_config = get_zone_config(input_system_config)?;
     let web_app_servers = build_web_app_servers(input_system_config)?;
+    let device_list = get_device_list(input_system_config)?;
     let mut result = HashMap::new();
 
     for node_id in need_update_gateway_node_list.iter() {
@@ -1138,6 +1188,11 @@ pub(crate) async fn update_node_gateway_config(
 
         if let Some(sn_host) = zone_config.sn.as_ref() {
             info!("SN enabled, add acme/tls stack for node {}", node_id);
+            let device_info = device_list
+                .get(node_id)
+                .ok_or_else(|| anyhow::anyhow!("device info {} not found", node_id))?;
+            let identity_paths = buckyos_api::device_identity_paths(&device_info.device_doc.id)
+                .map_err(|err| anyhow::anyhow!("build device identity paths failed: {}", err))?;
             let sn_url = format!("https://{}/kapi/sn", sn_host);
             let zone_hostname = zone_config.id.to_host_name();
             let wildcard_zone_domain = format!("*.{}", zone_hostname);
@@ -1146,27 +1201,30 @@ pub(crate) async fn update_node_gateway_config(
                     "dns_providers": {
                         "sn-dns": {
                             "sn": sn_url,
-                            "key_path": "./node_private_key.pem",
-                            "device_config_path": "./node_device_config.json"
+                            "key_path": identity_paths.authentication_private_key.display().to_string(),
+                            "device_config_path": identity_paths.did_json.display().to_string()
                         }
-                    }
+                    },
+                    "hosts": [
+                        {
+                            "host": wildcard_zone_domain.clone(),
+                            "challenge_type": "dns-01",
+                            "dns_provider": "sn-dns"
+                        },
+                        {
+                            "host": zone_hostname.clone(),
+                            "challenge_type": "dns-01",
+                            "dns_provider": "sn-dns"
+                        }
+                    ]
                 },
                 "stacks": {
                     "zone_tls": {
-                        "bind": "0.0.0.0:443",
+                        "bind": "[::]:443",
                         "protocol": "tls",
-                        "certs": [
-                            {
-                                "domain": wildcard_zone_domain,
-                                "acme_type": "dns-01",
-                                "dns_provider": "sn-dns"
-                            },
-                            {
-                                "domain": zone_hostname
-                            },
-                            {
-                                "domain": "*"
-                            }
+                        "hosts": [
+                            wildcard_zone_domain,
+                            zone_hostname
                         ],
                         "hook_point": {
                             "main": {
@@ -1205,14 +1263,13 @@ async fn update_rbac(
     input_config: &HashMap<String, String>,
     scheduler_ctx: &NodeScheduler,
 ) -> Result<HashMap<String, KVAction>> {
-    let basic_rbac_policy = input_config.get("system/rbac/base_policy");
     let current_rbac_policy = input_config.get("system/rbac/policy");
     let mut rbac_policy = String::new();
-    if basic_rbac_policy.is_none() {
-        warn!("basic_rbac_policy is not set, use default policy");
-        rbac_policy = DEFAULT_POLICY.to_string();
-    } else {
-        rbac_policy = basic_rbac_policy.unwrap().clone();
+    fn push_policy_line(policy: &mut String, line: String) {
+        if !policy.is_empty() {
+            policy.push('\n');
+        }
+        policy.push_str(line.as_str());
     }
 
     for (user_id, user_item) in scheduler_ctx.users.iter() {
@@ -1221,13 +1278,33 @@ async fn update_rbac(
         }
         match user_item.user_type {
             crate::scheduler::UserType::Admin => {
-                rbac_policy.push_str(&format!("\ng, {}, admin", user_id));
+                info!("add admin rbac policy for user {}", user_id);
+                push_policy_line(&mut rbac_policy, format!("g, {}, admin", user_id));
+                push_policy_line(&mut rbac_policy, format!("g, su_{}, su_admin", user_id));
             }
             crate::scheduler::UserType::User => {
-                rbac_policy.push_str(&format!("\ng, {}, user", user_id));
+                info!("add users rbac policy for user {}", user_id);
+                push_policy_line(&mut rbac_policy, format!("g, {}, users", user_id));
+                let sudo_user_id = format!("su_{}", user_id);
+                push_policy_line(&mut rbac_policy, format!("g, {}, su_users", sudo_user_id));
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!(
+                        "p, {}, obj://config/users/{}/settings, read|write,allow",
+                        sudo_user_id, user_id
+                    ),
+                );
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!(
+                        "p, {}, obj://config/users/{}/doc, read|write,allow",
+                        sudo_user_id, user_id
+                    ),
+                );
             }
             crate::scheduler::UserType::Limited => {
-                rbac_policy.push_str(&format!("\ng, {}, limited", user_id));
+                info!("add limited rbac policy for user {}", user_id);
+                push_policy_line(&mut rbac_policy, format!("g, {}, limited", user_id));
             }
             _ => {
                 continue;
@@ -1238,10 +1315,10 @@ async fn update_rbac(
     for (node_id, node_item) in scheduler_ctx.nodes.iter() {
         match node_item.node_type {
             NodeType::OOD => {
-                rbac_policy.push_str(&format!("\ng, {}, ood", node_id));
+                push_policy_line(&mut rbac_policy, format!("g, {}, ood", node_id));
             }
             NodeType::Server => {
-                rbac_policy.push_str(&format!("\ng, {}, server", node_id));
+                push_policy_line(&mut rbac_policy, format!("g, {}, node", node_id));
             }
             _ => {
                 continue;
@@ -1252,14 +1329,25 @@ async fn update_rbac(
     for (spec_id, service_spec) in scheduler_ctx.specs.iter() {
         match service_spec.spec_type {
             ServiceSpecType::App => {
-                rbac_policy.push_str(&format!("\ng, {}, app", service_spec.app_id));
+                push_policy_line(&mut rbac_policy, format!("g, {}, app", service_spec.app_id));
+            }
+            ServiceSpecType::Agent => {
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!("g, {}, agent", service_spec.app_id),
+                );
             }
             ServiceSpecType::Service => {
-                rbac_policy.push_str(&format!("\ng, {}, service", service_spec.app_id));
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!("g, {}, system", service_spec.app_id),
+                );
             }
             ServiceSpecType::Kernel => {
-                //kernel service already set in basic_policy
-                rbac_policy.push_str(&format!("\ng, {}, kernel", service_spec.app_id));
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!("g, {}, kernel", service_spec.app_id),
+                );
             }
         }
     }
@@ -1291,6 +1379,84 @@ fn collect_tx_action_keys(tx_actions: &HashMap<String, KVAction>) -> Vec<String>
     let mut keys = tx_actions.keys().cloned().collect::<Vec<_>>();
     keys.sort();
     keys
+}
+
+async fn load_scheduler_input_config(
+    system_config_client: &SystemConfigClient,
+) -> Result<HashMap<String, String>> {
+    let input_system_config = system_config_client.dump_configs_for_scheduler().await?;
+    let input_system_config = serde_json::from_value(input_system_config)?;
+    Ok(input_system_config)
+}
+
+fn update_managed_sn_ai_provider(
+    input_system_config: &HashMap<String, String>,
+) -> Result<HashMap<String, KVAction>> {
+    const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
+    let Some(current_settings) = input_system_config.get(AICC_SETTINGS_KEY) else {
+        return Ok(HashMap::new());
+    };
+    let current_settings: Value = serde_json::from_str(current_settings)?;
+    if current_settings.get("sn-ai-provider").is_none() {
+        return Ok(HashMap::new());
+    }
+
+    let endpoints = (|| -> Result<_> {
+        let boot_config = input_system_config
+            .get("boot/config")
+            .ok_or_else(|| anyhow::anyhow!("boot/config is missing"))?;
+        let zone_config: ZoneConfig = serde_json::from_str(boot_config)?;
+        let zone_document = zone_config
+            .zone_document()
+            .map_err(|err| anyhow::anyhow!("decode ZoneDocument from boot/config failed: {err}"))?;
+        derive_sn_ai_provider_endpoints(zone_document.sn.as_deref())
+    })();
+
+    let reconciled = match &endpoints {
+        Ok(endpoints) => reconcile_managed_sn_ai_provider(&current_settings, Ok(endpoints))?,
+        Err(err) => {
+            warn!(
+                "disable managed SN AI provider because Zone SN endpoint is invalid: {}",
+                err
+            );
+            reconcile_managed_sn_ai_provider(&current_settings, Err(err))?
+        }
+    };
+    let Some(reconciled) = reconciled else {
+        return Ok(HashMap::new());
+    };
+
+    let mut actions = HashMap::new();
+    actions.insert(
+        AICC_SETTINGS_KEY.to_string(),
+        KVAction::Update(serde_json::to_string_pretty(&reconciled)?),
+    );
+    Ok(actions)
+}
+
+pub(crate) async fn refresh_rbac() -> Result<SchedulerRefreshRbacResponse> {
+    let buckyos_api_runtime = get_buckyos_api_runtime()?;
+    let system_config_client = buckyos_api_runtime.get_system_config_client().await?;
+    let input_system_config = load_scheduler_input_config(&system_config_client).await?;
+    let (scheduler_ctx, _) = create_scheduler_by_system_config(&input_system_config)?;
+    let tx_actions = update_rbac(&input_system_config, &scheduler_ctx).await?;
+    let tx_action_count = tx_actions.len();
+
+    if tx_action_count > 0 {
+        let tx_action_keys = collect_tx_action_keys(&tx_actions);
+        system_config_client.exec_tx(tx_actions, None).await?;
+        info!(
+            "refresh_rbac applied {} actions, keys={:?}",
+            tx_action_count, tx_action_keys
+        );
+    } else {
+        info!("refresh_rbac skipped, RBAC policy is already current");
+    }
+
+    Ok(SchedulerRefreshRbacResponse {
+        updated: tx_action_count > 0,
+        tx_action_count,
+    })
 }
 
 pub(crate) async fn build_schedule_plan(
@@ -1375,6 +1541,9 @@ pub(crate) async fn build_schedule_plan(
         extend_kv_action_map(&mut tx_actions, &update_gateway_config_actions);
     }
 
+    let aicc_actions = update_managed_sn_ai_provider(input_system_config)?;
+    extend_kv_action_map(&mut tx_actions, &aicc_actions);
+
     let need_persist_snapshot =
         scheduler_ctx.needs_snapshot_persist(last_schedule_snapshot.as_ref());
 
@@ -1414,26 +1583,15 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
                 error!("get_system_config_client failed: {:?}", e);
                 e
             })?;
-        let input_system_config = system_config_client.dump_configs_for_scheduler().await;
+        let input_system_config = load_scheduler_input_config(&system_config_client).await;
         if input_system_config.is_err() {
             error!(
-                "dump_configs_for_scheduler failed: {:?}",
+                "load_scheduler_input_config failed: {:?}",
                 input_system_config.err().unwrap()
             );
             continue;
         }
         let input_system_config = input_system_config.unwrap();
-        //cover value to hashmap
-        let input_system_config: Result<HashMap<String, String>, _> =
-            serde_json::from_value(input_system_config);
-        if input_system_config.is_err() {
-            error!(
-                "serde_json::from_value failed: {:?}",
-                input_system_config.err().unwrap()
-            );
-            continue;
-        }
-        let input_system_config: HashMap<String, String> = input_system_config.unwrap();
         info!(
             "schedule loop step:{} loaded {} config entries",
             loop_step,
@@ -1510,12 +1668,12 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstallConfig,
-        ServiceInstanceState, ServiceState, SubPkgDesc,
+        AppDocBuilder, AppServiceSpec, AppType, ServiceExposeConfig, ServiceInstanceState,
+        ServiceSpecConfig, ServiceState, SubPkgDesc,
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
-    use name_lib::{DeviceConfig, DeviceNodeType, OODDescriptionString, VerifyHubInfo, DID};
+    use name_lib::{DeviceDocument, DeviceNodeType, OODDescriptionString, VerifyHubInfo, DID};
 
     fn create_test_replica_instance(
         spec_id: &str,
@@ -1540,20 +1698,22 @@ mod tests {
     fn create_test_device_info(name: &str, rtcp_port: Option<u32>) -> DeviceInfo {
         let (_, public_key_jwk) = generate_ed25519_key_pair();
         let public_key_jwk: Jwk = serde_json::from_value(public_key_jwk).unwrap();
-        let pkx = get_x_from_jwk(&public_key_jwk).unwrap();
-        let mut device = DeviceConfig::new(name, pkx);
+        let zone_did = DID::new("web", "test.buckyos.io");
+        let device_did = buckyos_api::build_device_did(name, &zone_did).unwrap();
+        let mut device =
+            buckyos_api::new_device_config_by_jwk_with_did(name, public_key_jwk, &device_did)
+                .unwrap();
         device.rtcp_port = rtcp_port;
         device.owner = DID::new("bns", "owner");
+        device.zone_did = Some(zone_did);
         DeviceInfo::from_device_doc(&device)
     }
 
-    fn create_test_zone_config() -> ZoneConfig {
+    fn create_test_zone_config() -> ZoneDocument {
         let (_, owner_key_jwk) = generate_ed25519_key_pair();
         let owner_key_jwk: Jwk = serde_json::from_value(owner_key_jwk).unwrap();
-        let (_, verify_hub_key_jwk) = generate_ed25519_key_pair();
-        let verify_hub_key_jwk: Jwk = serde_json::from_value(verify_hub_key_jwk).unwrap();
 
-        let mut zone_config = ZoneConfig::new(
+        let mut zone_config = ZoneDocument::new(
             DID::new("web", "test.buckyos.io"),
             DID::new("bns", "owner"),
             owner_key_jwk,
@@ -1562,10 +1722,26 @@ mod tests {
             OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
             OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OOD, None, None),
         ];
-        zone_config.verify_hub_info = Some(VerifyHubInfo {
-            public_key: verify_hub_key_jwk,
-        });
         zone_config
+    }
+
+    fn create_test_verify_hub_info() -> VerifyHubInfo {
+        VerifyHubInfo {
+            public_key: serde_json::from_value(serde_json::json!({
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "x": "5WPZHtFb3k_vYXr3Oq97MOPrIC7rekoCuGRPCOYYgSU"
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn create_test_boot_config(zone_config: &ZoneDocument) -> ZoneConfig {
+        ZoneConfig::from_zone_document(zone_config, Some(create_test_verify_hub_info())).unwrap()
+    }
+
+    fn serialize_test_boot_config(zone_config: &ZoneDocument) -> String {
+        serde_json::to_string(&create_test_boot_config(zone_config)).unwrap()
     }
 
     fn create_test_app_spec() -> AppServiceSpec {
@@ -1582,23 +1758,21 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut install_config = ServiceInstallConfig::default();
+        let mut install_config = ServiceSpecConfig::default();
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec!["files".to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec!["files".to_string()], String::new(), false),
         );
 
         AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         }
     }
 
@@ -1612,7 +1786,7 @@ mod tests {
         let owner = DID::new("bns", "owner");
         let app_doc = AppDocBuilder::new(
             AppType::Agent,
-            "jarvis",
+            "buckyos_jarvis",
             "0.1.0",
             "did:web:buckyos.ai",
             &owner,
@@ -1623,23 +1797,21 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut install_config = ServiceInstallConfig::default();
+        let mut install_config = ServiceSpecConfig::default();
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec!["jarvis".to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec!["jarvis".to_string()], String::new(), false),
         );
 
         AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 2,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
         }
     }
 
@@ -1656,23 +1828,88 @@ mod tests {
         .build()
         .unwrap();
 
-        let mut install_config = ServiceInstallConfig::default();
+        let mut install_config = ServiceSpecConfig::default();
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig {
-                sub_hostname: vec!["portal".to_string()],
-                ..Default::default()
-            },
+            ServiceExposeConfig::web(vec!["portal".to_string()], String::new(), false),
         );
 
         AppServiceSpec {
+            permission: app_doc.permissions.clone(),
             app_doc,
             app_index: 3,
             user_id: "alice".to_string(),
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
-            install_config,
+            spec_config: install_config,
+        }
+    }
+
+    fn create_expected_node_gateway_info_for_files_app(
+        zone_config: &ZoneDocument,
+        input_system_config: &HashMap<String, String>,
+    ) -> NodeGatewayInfo {
+        let zone_host = zone_config.id.to_host_name();
+        let device_list = get_device_list(input_system_config).unwrap();
+        let boot_config = create_test_boot_config(zone_config);
+        let control_panel_selector = HashMap::from([(
+            "ood1".to_string(),
+            NodeGatewaySelectorTarget {
+                port: 4020,
+                weight: FIXED_SERVICE_WEIGHT,
+            },
+        )]);
+        let system_config_selector =
+            build_fixed_selector_from_oods(zone_config, SYSTEM_CONFIG_SERVICE_PORT);
+
+        let mut service_info = HashMap::new();
+        service_info.insert(
+            "control-panel".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: control_panel_selector.clone(),
+            },
+        );
+        service_info.insert(
+            "system_config".to_string(),
+            NodeGatewayServiceInfoEntry {
+                selector: system_config_selector,
+            },
+        );
+
+        let files_entry = NodeGatewayAppEntry::App(NodeGatewayAppInfoEntry {
+            app_id: "files".to_string(),
+            sdk_version: 10,
+            access_mode: NodeGatewayAccessMode::Private,
+            node_id: Some("ood2".to_string()),
+            port: Some(10160),
+            dir_pkg_id: None,
+            dir_pkg_objid: None,
+            block_services: vec![],
+        });
+        let control_panel_entry = NodeGatewayAppEntry::Service(NodeGatewayAppServiceInfoEntry {
+            service_id: "control-panel".to_string(),
+            selector: control_panel_selector,
+        });
+
+        let mut app_info = HashMap::new();
+        app_info.insert("files".to_string(), files_entry);
+        app_info.insert("sys".to_string(), control_panel_entry.clone());
+        app_info.insert("_".to_string(), control_panel_entry.clone());
+        app_info.insert("www".to_string(), control_panel_entry);
+
+        let forward_plan = build_forward_plan("ood1", zone_config, &zone_host, &device_list);
+        NodeGatewayInfo {
+            node_info: NodeGatewayNodeInfo {
+                this_node_id: "ood1".to_string(),
+                this_zone_host: zone_host.clone(),
+            },
+            app_info,
+            service_info,
+            node_route_map: build_node_route_map("ood1", &zone_host, &device_list),
+            routes: forward_plan.routes,
+            did_ip_hints: forward_plan.did_ip_hints,
+            trust_key: build_trust_keys("ood1", &boot_config, zone_config, &device_list),
         }
     }
 
@@ -1686,7 +1923,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -1731,16 +1968,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_scheduler_by_system_config_loads_agent_specs() {
+    #[tokio::test]
+    async fn test_build_schedule_plan_generates_current_user_rbac_groups() {
         let zone_config = create_test_zone_config();
         let device_ood1 = create_test_device_info("ood1", None);
-        let agent_spec = create_test_agent_spec();
-
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -1751,27 +1986,181 @@ mod tests {
             serde_json::to_string(&json!({
                 "type": "admin",
                 "user_id": "alice",
-                "show_name": "alice",
                 "password": "hashed",
                 "state": "active",
-                "res_pool_id": "default"
+                "res_pool_id": "default",
+                "is_local": true
             }))
             .unwrap(),
         );
         input_system_config.insert(
-            "users/alice/agents/jarvis/spec".to_string(),
+            "users/bob/settings".to_string(),
+            serde_json::to_string(&json!({
+                "type": "user",
+                "user_id": "bob",
+                "password": "hashed",
+                "state": "active",
+                "res_pool_id": "default",
+                "is_local": true
+            }))
+            .unwrap(),
+        );
+        input_system_config.insert(
+            "users/carol/settings".to_string(),
+            serde_json::to_string(&json!({
+                "type": "limited",
+                "user_id": "carol",
+                "password": "hashed",
+                "state": "active",
+                "res_pool_id": "default",
+                "is_local": true
+            }))
+            .unwrap(),
+        );
+
+        let plan = build_schedule_plan(&input_system_config, true)
+            .await
+            .expect("boot plan should build");
+        let policy = match plan.tx_actions.get("system/rbac/policy").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected rbac kv action: {:?}", other),
+        };
+
+        assert!(policy.contains("g, alice, admin"));
+        assert!(policy.contains("g, su_alice, su_admin"));
+        assert!(policy.contains("g, bob, users"));
+        assert!(policy.contains("g, su_bob, su_users"));
+        assert!(policy.contains("p, su_bob, obj://config/users/bob/settings, read|write,allow"));
+        assert!(policy.contains("p, su_bob, obj://config/users/bob/doc, read|write,allow"));
+        assert!(policy.contains("g, carol, limited"));
+        assert!(!policy.contains("zone_users"));
+        assert!(!policy.lines().any(|line| line.trim() == "g, bob, user"));
+    }
+
+    #[tokio::test]
+    async fn test_build_schedule_plan_generates_agent_rbac_group() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serialize_test_boot_config(&zone_config),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/settings".to_string(),
+            serde_json::to_string(&json!({
+                "type": "admin",
+                "user_id": "alice",
+                "password": "hashed",
+                "state": "active",
+                "res_pool_id": "default",
+                "is_local": true
+            }))
+            .unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/agents/buckyos_jarvis/spec".to_string(),
+            serde_json::to_string(&create_test_agent_spec()).unwrap(),
+        );
+
+        let plan = build_schedule_plan(&input_system_config, true)
+            .await
+            .expect("boot plan should build");
+        let policy = match plan.tx_actions.get("system/rbac/policy").unwrap() {
+            KVAction::Update(value) => value,
+            other => panic!("unexpected rbac kv action: {:?}", other),
+        };
+
+        assert!(policy.contains("g, buckyos_jarvis, agent"));
+        assert!(!policy.contains("g, buckyos_jarvis, app"));
+    }
+
+    #[test]
+    fn test_create_scheduler_by_system_config_loads_agent_specs() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+        let agent_spec = create_test_agent_spec();
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serialize_test_boot_config(&zone_config),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/settings".to_string(),
+            serde_json::to_string(&json!({
+                "type": "admin",
+                "user_id": "alice",
+                "password": "hashed",
+                "state": "active",
+                "res_pool_id": "default",
+                "is_local": true
+            }))
+            .unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/agents/buckyos_jarvis/spec".to_string(),
             serde_json::to_string(&agent_spec).unwrap(),
         );
 
         let (scheduler_ctx, _) = create_scheduler_by_system_config(&input_system_config).unwrap();
         let spec = scheduler_ctx
-            .get_service_spec("jarvis@alice")
+            .get_service_spec("buckyos_jarvis@alice")
             .expect("agent spec should be loaded");
 
-        assert_eq!(spec.app_id, "jarvis");
+        assert_eq!(spec.app_id, "buckyos_jarvis");
         assert_eq!(spec.owner_id, "alice");
-        assert_eq!(spec.spec_type, ServiceSpecType::App);
+        assert_eq!(spec.spec_type, ServiceSpecType::Agent);
         assert!(spec.need_container);
+    }
+
+    #[test]
+    fn test_create_scheduler_by_system_config_ignores_nested_user_settings() {
+        let zone_config = create_test_zone_config();
+        let device_ood1 = create_test_device_info("ood1", None);
+
+        let mut input_system_config = HashMap::new();
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serialize_test_boot_config(&zone_config),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/settings".to_string(),
+            serde_json::to_string(&json!({
+                "type": "admin",
+                "user_id": "alice",
+                "password": "hashed",
+                "state": "active",
+                "res_pool_id": "default",
+                "is_local": true
+            }))
+            .unwrap(),
+        );
+        input_system_config.insert(
+            "users/alice/apps/files/settings".to_string(),
+            serde_json::to_string(&json!({
+                "homepage": "/",
+                "theme": "dark"
+            }))
+            .unwrap(),
+        );
+
+        let (scheduler_ctx, _) = create_scheduler_by_system_config(&input_system_config).unwrap();
+
+        assert!(scheduler_ctx.users.contains_key("alice"));
+        assert_eq!(scheduler_ctx.users.len(), 1);
     }
 
     #[test]
@@ -1786,7 +2175,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -1814,28 +2203,28 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
             serde_json::to_string(&device_ood1).unwrap(),
         );
         input_system_config.insert(
-            "users/alice/agents/jarvis/spec".to_string(),
+            "users/alice/agents/buckyos_jarvis/spec".to_string(),
             serde_json::to_string(&agent_spec).unwrap(),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
         scheduler_ctx.add_service_spec(ServiceSpec {
-            id: "jarvis@alice".to_string(),
-            app_id: "jarvis".to_string(),
+            id: "buckyos_jarvis@alice".to_string(),
+            app_id: "buckyos_jarvis".to_string(),
             app_index: 2,
             owner_id: "alice".to_string(),
             spec_type: ServiceSpecType::App,
             state: ServiceSpecState::Deployed,
             need_container: true,
             best_instance_count: 1,
-            required_cpu_mhz: 200,
+            required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
             required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
@@ -1848,8 +2237,8 @@ mod tests {
         device_list.insert("ood1".to_string(), device_ood1);
 
         let action = SchedulerAction::InstanceReplica(create_test_replica_instance(
-            "jarvis@alice",
-            "jarvis@alice@ood1",
+            "buckyos_jarvis@alice",
+            "buckyos_jarvis@alice@ood1",
             "ood1",
             &[("www", 11080)],
         ));
@@ -1873,12 +2262,12 @@ mod tests {
         match node_action {
             KVAction::SetByJsonPath(paths) => {
                 let value = paths
-                    .get("/apps/jarvis@alice@ood1")
+                    .get("/apps/buckyos_jarvis@alice@ood1")
                     .and_then(|value| value.as_ref())
                     .expect("agent instance should be written under node apps");
                 let instance: buckyos_api::AppServiceInstanceConfig =
                     serde_json::from_value(value.clone()).expect("parse instance config");
-                assert_eq!(instance.app_spec.app_id(), "jarvis");
+                assert_eq!(instance.app_spec.app_id(), "buckyos_jarvis");
                 assert_eq!(instance.app_spec.user_id, "alice");
             }
             other => panic!("unexpected kv action: {:?}", other),
@@ -1892,20 +2281,20 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
         scheduler_ctx.add_service_spec(ServiceSpec {
-            id: "jarvis@alice".to_string(),
-            app_id: "jarvis".to_string(),
+            id: "buckyos_jarvis@alice".to_string(),
+            app_id: "buckyos_jarvis".to_string(),
             app_index: 2,
             owner_id: "alice".to_string(),
             spec_type: ServiceSpecType::App,
             state: ServiceSpecState::Deleted,
             need_container: true,
             best_instance_count: 1,
-            required_cpu_mhz: 200,
+            required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
             required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
@@ -1915,8 +2304,8 @@ mod tests {
         });
 
         let instance = create_test_replica_instance(
-            "jarvis@alice",
-            "jarvis@alice@ood1",
+            "buckyos_jarvis@alice",
+            "buckyos_jarvis@alice@ood1",
             "ood1",
             &[("www", 11080)],
         );
@@ -1927,8 +2316,8 @@ mod tests {
 
         let tx_actions = schedule_action_to_tx_actions(
             &SchedulerAction::RemoveInstance(
-                "jarvis@alice".to_string(),
-                "jarvis@alice@ood1".to_string(),
+                "buckyos_jarvis@alice".to_string(),
+                "buckyos_jarvis@alice@ood1".to_string(),
                 "ood1".to_string(),
             ),
             &scheduler_ctx,
@@ -1946,14 +2335,14 @@ mod tests {
         match node_action {
             KVAction::SetByJsonPath(paths) => {
                 assert_eq!(
-                    paths.get("/apps/jarvis@alice@ood1/target_state"),
+                    paths.get("/apps/buckyos_jarvis@alice@ood1/target_state"),
                     Some(&Some(json!(ServiceInstanceState::Stopped)))
                 );
                 assert_eq!(
-                    paths.get("/apps/jarvis@alice@ood1/app_spec/state"),
+                    paths.get("/apps/buckyos_jarvis@alice@ood1/app_spec/state"),
                     Some(&Some(json!(ServiceState::Deleted)))
                 );
-                assert!(!paths.contains_key("/apps/jarvis@alice@ood1"));
+                assert!(!paths.contains_key("/apps/buckyos_jarvis@alice@ood1"));
             }
             other => panic!("unexpected kv action: {:?}", other),
         }
@@ -1966,20 +2355,20 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
         scheduler_ctx.add_service_spec(ServiceSpec {
-            id: "jarvis@alice".to_string(),
-            app_id: "jarvis".to_string(),
+            id: "buckyos_jarvis@alice".to_string(),
+            app_id: "buckyos_jarvis".to_string(),
             app_index: 2,
             owner_id: "alice".to_string(),
             spec_type: ServiceSpecType::App,
             state: ServiceSpecState::Deleted,
             need_container: true,
             best_instance_count: 1,
-            required_cpu_mhz: 200,
+            required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
             required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
@@ -1993,8 +2382,8 @@ mod tests {
 
         let tx_actions = schedule_action_to_tx_actions(
             &SchedulerAction::RemoveInstance(
-                "jarvis@alice".to_string(),
-                "jarvis@alice@ood1".to_string(),
+                "buckyos_jarvis@alice".to_string(),
+                "buckyos_jarvis@alice@ood1".to_string(),
                 "ood1".to_string(),
             ),
             &scheduler_ctx,
@@ -2012,11 +2401,11 @@ mod tests {
         match node_action {
             KVAction::SetByJsonPath(paths) => {
                 assert_eq!(
-                    paths.get("/apps/jarvis@alice@ood1/target_state"),
+                    paths.get("/apps/buckyos_jarvis@alice@ood1/target_state"),
                     Some(&Some(json!(ServiceInstanceState::Stopped)))
                 );
                 assert_eq!(
-                    paths.get("/apps/jarvis@alice@ood1/app_spec/state"),
+                    paths.get("/apps/buckyos_jarvis@alice@ood1/app_spec/state"),
                     Some(&Some(json!(ServiceState::Deleted)))
                 );
             }
@@ -2031,20 +2420,20 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
         scheduler_ctx.add_service_spec(ServiceSpec {
-            id: "jarvis@alice".to_string(),
-            app_id: "jarvis".to_string(),
+            id: "buckyos_jarvis@alice".to_string(),
+            app_id: "buckyos_jarvis".to_string(),
             app_index: 2,
             owner_id: "alice".to_string(),
             spec_type: ServiceSpecType::App,
             state: ServiceSpecState::Disable,
             need_container: true,
             best_instance_count: 1,
-            required_cpu_mhz: 200,
+            required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
             required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
@@ -2054,8 +2443,8 @@ mod tests {
         });
 
         let mut instance = create_test_replica_instance(
-            "jarvis@alice",
-            "jarvis@alice@ood1",
+            "buckyos_jarvis@alice",
+            "buckyos_jarvis@alice@ood1",
             "ood1",
             &[("www", 11080)],
         );
@@ -2081,14 +2470,14 @@ mod tests {
         match node_action {
             KVAction::SetByJsonPath(paths) => {
                 assert_eq!(
-                    paths.get("/apps/jarvis@alice@ood1/target_state"),
+                    paths.get("/apps/buckyos_jarvis@alice@ood1/target_state"),
                     Some(&Some(json!(ServiceInstanceState::Stopped)))
                 );
                 assert_eq!(
-                    paths.get("/apps/jarvis@alice@ood1/app_spec/state"),
+                    paths.get("/apps/buckyos_jarvis@alice@ood1/app_spec/state"),
                     Some(&Some(json!(ServiceState::Stopped)))
                 );
-                assert!(!paths.contains_key("/apps/jarvis@alice@ood1"));
+                assert!(!paths.contains_key("/apps/buckyos_jarvis@alice@ood1"));
             }
             other => panic!("unexpected kv action: {:?}", other),
         }
@@ -2102,7 +2491,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "users/alice/apps/files/spec".to_string(),
@@ -2119,7 +2508,7 @@ mod tests {
             state: ServiceSpecState::Deployed,
             need_container: true,
             best_instance_count: 1,
-            required_cpu_mhz: 200,
+            required_cpu_mhz: DEFAULT_REQUIRED_CPU_MHZ,
             required_memory: DEFAULT_REQUIRED_MEMORY,
             required_gpu_tflops: 0.0,
             required_gpu_mem: 0,
@@ -2180,7 +2569,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2228,7 +2617,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2270,7 +2659,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2318,7 +2707,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2369,38 +2758,11 @@ mod tests {
             KVAction::Update(value) => value,
             other => panic!("unexpected kv action: {:?}", other),
         };
-        println!("gateway_info_str: {}", gateway_info_str);
         let gateway_info: NodeGatewayInfo = serde_json::from_str(gateway_info_str).unwrap();
+        let expected_gateway_info =
+            create_expected_node_gateway_info_for_files_app(&zone_config, &input_system_config);
 
-        assert_eq!(gateway_info.node_info.this_node_id, "ood1");
-        assert_eq!(gateway_info.node_info.this_zone_host, "test.buckyos.io");
-        assert_eq!(
-            gateway_info.node_route_map.get("ood2").unwrap(),
-            "rtcp://ood2.test.buckyos.io:2981/"
-        );
-        assert!(gateway_info.trust_key.contains_key("verify-hub"));
-        assert!(gateway_info.trust_key.contains_key("ood1"));
-
-        let system_config = gateway_info.service_info.get("system_config").unwrap();
-        assert_eq!(system_config.selector.get("ood1").unwrap().port, 3200);
-        assert_eq!(system_config.selector.get("ood2").unwrap().port, 3200);
-
-        let files = match gateway_info.app_info.get("files").unwrap() {
-            NodeGatewayAppEntry::App(entry) => entry,
-            _ => panic!("files should resolve to an app entry"),
-        };
-        assert_eq!(files.app_id, "files");
-        assert_eq!(files.node_id.as_deref(), Some("ood2"));
-        assert_eq!(files.port, Some(10160));
-        assert_eq!(files.dir_pkg_id, None);
-        assert_eq!(files.sdk_version, 10);
-
-        let sys = match gateway_info.app_info.get("sys").unwrap() {
-            NodeGatewayAppEntry::Service(entry) => entry,
-            _ => panic!("sys should resolve to a service entry"),
-        };
-        assert_eq!(sys.service_id, "control-panel");
-        assert_eq!(sys.selector.get("ood1").unwrap().port, 4020);
+        assert_eq!(gateway_info, expected_gateway_info);
     }
 
     #[tokio::test]
@@ -2426,7 +2788,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2467,13 +2829,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_node_gateway_config_keeps_acme_and_zone_tls() {
+    async fn test_update_node_gateway_config_keeps_acme_and_zone_tls_hosts() {
         let mut input_system_config = HashMap::new();
         let mut zone_config = create_test_zone_config();
         zone_config.sn = Some("sn.test.buckyos.io".to_string());
+        let device_ood1 = create_test_device_info("ood1", None);
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
+        );
+        input_system_config.insert(
+            "devices/ood1/info".to_string(),
+            serde_json::to_string(&device_ood1).unwrap(),
         );
 
         let mut nodes = HashSet::new();
@@ -2492,7 +2859,40 @@ mod tests {
             gateway_config["acme"]["dns_providers"]["sn-dns"]["sn"],
             "https://sn.test.buckyos.io/kapi/sn"
         );
-        assert_eq!(gateway_config["stacks"]["zone_tls"]["bind"], "0.0.0.0:443");
+        let expected_identity_paths =
+            buckyos_api::device_identity_paths(&device_ood1.device_doc.id).unwrap();
+        assert_eq!(
+            gateway_config["acme"]["dns_providers"]["sn-dns"]["key_path"],
+            expected_identity_paths
+                .authentication_private_key
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            gateway_config["acme"]["dns_providers"]["sn-dns"]["device_config_path"],
+            expected_identity_paths.did_json.display().to_string()
+        );
+        assert_eq!(
+            gateway_config["acme"]["hosts"],
+            json!([
+                {
+                    "host": "*.test.buckyos.io",
+                    "challenge_type": "dns-01",
+                    "dns_provider": "sn-dns"
+                },
+                {
+                    "host": "test.buckyos.io",
+                    "challenge_type": "dns-01",
+                    "dns_provider": "sn-dns"
+                }
+            ])
+        );
+        assert_eq!(gateway_config["stacks"]["zone_tls"]["bind"], "[::]:443");
+        assert_eq!(
+            gateway_config["stacks"]["zone_tls"]["hosts"],
+            json!(["*.test.buckyos.io", "test.buckyos.io"])
+        );
+        assert!(gateway_config["stacks"]["zone_tls"]["certs"].is_null());
         assert_eq!(
             gateway_config["stacks"]["zone_tls"]["hook_point"]["main"]["blocks"]["default"]
                 ["block"],
@@ -2508,7 +2908,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "users/alice/apps/portal/spec".to_string(),
@@ -2550,7 +2950,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2594,7 +2994,7 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
@@ -2627,23 +3027,23 @@ mod tests {
         let mut input_system_config = HashMap::new();
         input_system_config.insert(
             "boot/config".to_string(),
-            serde_json::to_string(&zone_config).unwrap(),
+            serialize_test_boot_config(&zone_config),
         );
         input_system_config.insert(
             "devices/ood1/info".to_string(),
             serde_json::to_string(&device_ood1).unwrap(),
         );
         input_system_config.insert(
-            "users/alice/agents/jarvis/spec".to_string(),
+            "users/alice/agents/buckyos_jarvis/spec".to_string(),
             serde_json::to_string(&agent_spec).unwrap(),
         );
 
         let mut scheduler_ctx = NodeScheduler::new_empty(1);
         scheduler_ctx.service_infos.insert(
-            "jarvis@alice".to_string(),
+            "buckyos_jarvis@alice".to_string(),
             ServiceInfo::SingleInstance(create_test_replica_instance(
-                "jarvis@alice",
-                "jarvis@alice@ood1",
+                "buckyos_jarvis@alice",
+                "buckyos_jarvis@alice@ood1",
                 "ood1",
                 &[("www", 11080)],
             )),
@@ -2662,7 +3062,7 @@ mod tests {
             NodeGatewayAppEntry::App(entry) => entry,
             _ => panic!("jarvis should resolve to an app entry"),
         };
-        assert_eq!(jarvis.app_id, "jarvis");
+        assert_eq!(jarvis.app_id, "buckyos_jarvis");
         assert_eq!(jarvis.node_id.as_deref(), Some("ood1"));
         assert_eq!(jarvis.port, Some(11080));
         assert_eq!(jarvis.dir_pkg_id, None);

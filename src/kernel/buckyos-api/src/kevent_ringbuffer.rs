@@ -132,6 +132,7 @@ struct ConsumeInner {
     region_ptr: *mut SharedRegion,
     my_ring_id: usize,
     cursors: HashMap<usize, RingCursor>,
+    primed_existing_rings: bool,
 }
 
 // SAFETY: the mmap region is process-wide; sharing the pointer across
@@ -176,6 +177,7 @@ impl SharedKEventRingBuffer {
                 region_ptr,
                 my_ring_id,
                 cursors: HashMap::new(),
+                primed_existing_rings: false,
             }),
         })
     }
@@ -198,12 +200,19 @@ impl SharedKEventRingBuffer {
     // Publish path  (lock-free on the shared-memory side)
     // -----------------------------------------------------------------------
 
+    /// Largest encoded record a slot can carry. Callers that must tell
+    /// "this event will never fit" (an input error) apart from "the ring is
+    /// unavailable right now" (a droppable transport error) check this first.
+    pub const fn max_payload_size() -> usize {
+        SLOT_DATA_SIZE
+    }
+
     pub fn publish_event<T: Serialize>(&self, event: &T) -> Result<(), String> {
         let bytes = serde_json::to_vec(event).map_err(|e| format!("encode event failed: {}", e))?;
         self.publish_payload(&bytes)
     }
 
-    fn publish_payload(&self, payload: &[u8]) -> Result<(), String> {
+    pub fn publish_payload(&self, payload: &[u8]) -> Result<(), String> {
         if payload.is_empty() {
             return Ok(());
         }
@@ -285,10 +294,8 @@ impl SharedKEventRingBuffer {
     /// Snapshot currently active producer rings into the local cursor table.
     ///
     /// This is used when a new reader subscribes to global events: we want
-    /// the next event published by already-active producers to be observable,
-    /// even if the ShmDispatch thread has not drained those rings yet.
-    /// Missing cursors start at the producer's current head, so existing
-    /// backlog is skipped and only future publishes are observed.
+    /// existing producer rings to skip backlog, while producer rings that
+    /// appear later should still deliver their first event.
     pub fn prime_cursors(&self) {
         let mut inner = match self.consume.lock() {
             Ok(g) => g,
@@ -320,6 +327,7 @@ impl SharedKEventRingBuffer {
         my_entry
             .last_heartbeat_ms
             .store(now_millis(), Ordering::Relaxed);
+        inner.primed_existing_rings = true;
     }
 
     fn drain_payloads(&self, max_events: usize) -> Vec<Vec<u8>> {
@@ -360,16 +368,20 @@ impl SharedKEventRingBuffer {
 
             let generation = entry.generation.load(Ordering::Acquire);
             let ring = &region.rings[ring_id];
+            let primed_existing_rings = inner.primed_existing_rings;
             let cursor = inner.cursors.entry(ring_id).or_insert_with(|| RingCursor {
                 generation,
-                read_seq: ring.head_seq.load(Ordering::Acquire),
+                read_seq: initial_read_seq(
+                    ring.head_seq.load(Ordering::Acquire),
+                    primed_existing_rings,
+                ),
             });
 
             // Generation changed → ring was recycled; reset cursor
             if cursor.generation != generation {
                 cursor.generation = generation;
-                cursor.read_seq = ring.head_seq.load(Ordering::Acquire);
-                continue;
+                cursor.read_seq =
+                    initial_read_seq(ring.head_seq.load(Ordering::Acquire), primed_existing_rings);
             }
 
             while out.len() < max_events {
@@ -765,6 +777,14 @@ fn ringbuffer_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_RINGBUFFER_PATH))
 }
 
+fn initial_read_seq(head_seq: u64, primed_existing_rings: bool) -> u64 {
+    if primed_existing_rings {
+        head_seq.saturating_sub(1)
+    } else {
+        head_seq
+    }
+}
+
 fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -791,6 +811,48 @@ fn is_process_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 fn is_process_alive(_pid: u32) -> bool {
     true
+}
+
+// ---------------------------------------------------------------------------
+// Test support
+// ---------------------------------------------------------------------------
+
+/// Shared by every test (in this crate) that opens the shared-memory ring.
+///
+/// The ring file is selected through a process-global env var
+/// (`BUCKYOS_KEVENT_RINGBUFFER_PATH`). Tests run on parallel threads inside a
+/// single test binary, so two tests pointing that var at different files would
+/// clobber each other — a publisher and a subscriber could end up attached to
+/// different ring files and never exchange events. This module serializes such
+/// tests and hands each one a fresh, isolated ring file.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::DEFAULT_RINGBUFFER_PATH_ENV;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard};
+
+    static SHM_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Acquire the shared-ring test lock and repoint the ring path at a fresh,
+    /// empty file unique to this test. Keep the returned guard alive until every
+    /// client has been constructed — the env var is only read at `open()` time,
+    /// but holding it for the whole test body keeps the invariant trivial.
+    pub(crate) fn lock_with_fresh_ring() -> MutexGuard<'static, ()> {
+        // Recover from a poisoned lock so one panicking test doesn't cascade
+        // into failures for every later shm test.
+        let guard = SHM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "buckyos_kevent_ringbuffer_test_{}_{}.shm",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var(DEFAULT_RINGBUFFER_PATH_ENV, &path);
+        guard
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -912,5 +974,26 @@ mod tests {
 
         region.header.version = 999;
         assert!(!header_matches(&region));
+    }
+
+    #[test]
+    fn test_prime_cursors_keeps_first_event_from_new_ring() {
+        let _ring_guard = super::test_support::lock_with_fresh_ring();
+
+        let consumer = SharedKEventRingBuffer::open().unwrap();
+        consumer.prime_cursors();
+
+        let producer = SharedKEventRingBuffer::open().unwrap();
+        producer
+            .publish_event(&TestEvent {
+                id: "first".to_string(),
+                seq: 1,
+            })
+            .unwrap();
+
+        let events = consumer.drain_events::<TestEvent>(8);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "first");
+        assert_eq!(events[0].seq, 1);
     }
 }

@@ -1,3 +1,9 @@
+// TODO(stage 5/12): split this file into trait.rs / envelope.rs / host.rs /
+// manager.rs / tools/*.rs (target ≤600 lines per file). Deferred from the
+// initial cleanup pass because the AgentToolResult/MCPTool/manager blocks
+// share several private helpers (`truncate_text`, `compact_json_text`,
+// history constants) that need coordinated relocation.
+
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
@@ -5,41 +11,109 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
-use chrono::Utc;
+use llm_context::{ToolResultStatusView, ToolResultView};
 use log::{info, warn};
+use schemars::JsonSchema;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value as Json};
 use tokio::time::{timeout, Duration};
 
-pub mod cli;
+pub mod agent_attention_signal;
+pub mod agent_memory;
+pub mod agent_notebook;
+pub mod dcrontab_tool;
 pub mod file_tools;
+pub mod glob_tool;
+pub mod grep_tool;
 pub mod json_args;
-pub mod memory;
+pub mod llm_bash;
+pub mod llm_compress;
+pub mod llm_explore;
+pub mod llm_tool_carft;
+pub mod llm_understand_media;
+pub mod local_llm_context;
 pub mod path_utils;
-pub mod runtime_utils;
-pub mod todo;
+pub mod run_local_llm;
+pub mod runtime_context;
+pub mod skills_mgr;
+pub mod todo_tools;
+pub mod tool;
 pub mod workspace;
 
+pub use tool::{
+    BasicToolHost, CallingConventions, CliInvocation, ContentInput, NullToolHost, ToolCtx,
+    ToolHost, TypedTool, TypedToolHandle,
+};
+
+pub use agent_attention_signal::{
+    AgentAttentionSignalStage1Runner, AgentAttentionSignalStore, AttentionSignal,
+    AttentionSignalConfig, AttentionSignalError, AttentionSignalExtractionInput,
+    AttentionSignalExtractor, AttentionSignalHistoryEntry, AttentionSignalHistoryReader,
+    AttentionSignalPayload, AttentionSignalSessionWindow, AttentionSignalStage1RunReport,
+    AttentionSignalStoreConfig, AttentionSignalTimeWindow, AttentionSignalToolRuntime,
+    AttentionSignalWriteResult, DiscoverEventTool, DiscoverObjectObservationTool,
+    DiscoverRelationshipTool, DiscoverSkillCoverageGapTool, ExtractionWindow, MarkScannedInput,
+    ScanCheckpoint, TOOL_DISCOVER_EVENT, TOOL_DISCOVER_OBJECT_OBSERVATION,
+    TOOL_DISCOVER_RELATIONSHIP, TOOL_DISCOVER_SKILL_COVERAGE_GAP,
+};
+pub use agent_memory::{
+    AgentMemory, AgentMemoryConfig, AgentMemoryError, Envelope as AgentMemoryEnvelope, LoadItem,
+    LoadOptions, MemoryHint, MemoryHintBudget, MemoryHintType, MemoryRecallOptions, Preamble,
+    VerifyReport,
+};
+pub use dcrontab_tool::{DcrontabTool, TOOL_DCRONTAB};
 pub use file_tools::{
     parse_read_file_bash_args, rewrite_read_file_path_with_shell_cwd, EditFileTool, FileToolConfig,
     FileWriteAuditBackend, FileWriteAuditRecord, NoopFileWriteAudit, ReadFileTool, WriteFileTool,
     TOOL_EDIT_FILE, TOOL_READ_FILE, TOOL_WRITE_FILE,
 };
+pub use glob_tool::{GlobTool, TOOL_GLOB};
+pub use grep_tool::{GrepTool, TOOL_GREP};
 pub use json_args::{
     optional_string_arg, optional_trimmed_string_arg, optional_u64_arg, read_bool_from_map,
     read_string_from_map, read_u64_from_map, require_string_arg, require_trimmed_string_arg,
     u64_to_usize_arg,
 };
-pub use memory::{AgentMemory, AgentMemoryConfig, MemoryRankItem};
+pub use llm_bash::{
+    BashRunOutput, BashRunRequest, BashRunner, BashTarget, BashTargetSpec, BinOverlayConfig,
+    ExecBashTool, LlmBashConfig, LocalProcessBashRunner, TOOL_EXEC_BASH,
+};
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
-    sanitize_session_id_for_path, session_record_path, to_abs_path, MAX_SESSION_ID_LEN,
+    rewrite_path_with_shell_cwd, sanitize_session_id_for_path, session_record_path, to_abs_path,
+    MAX_SESSION_ID_LEN,
 };
-pub use runtime_utils::now_ms;
-pub use todo::{
-    get_next_ready_todo_code, get_next_ready_todo_text, get_session_todo_text_by_ref,
-    TodoAdminListItem, TodoAdminListOptions, TodoAdminListResult, TodoTool, TodoToolConfig,
+pub use runtime_context::{
+    AgentIdentity, RuntimeContext, RuntimeContextSource, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
+    OPENDAN_AGENT_ROOT_ENV, OPENDAN_SESSION_ID_ENV, OPENDAN_TRACE_ID_ENV,
+};
+pub use skills_mgr::{
+    CreateCandidateInput as SkillCreateCandidateInput, InstallResult as SkillInstallResult,
+    LifecycleState as SkillLifecycleState, ListSkillsInput, OwnerScope as SkillOwnerScope,
+    PromptFragment as SkillPromptFragment, RenderSelectedInput as SkillRenderSelectedInput,
+    RiskLevel as SkillRiskLevel, SelectedSkillSet, SkillHint, SkillPackageFile,
+    SkillPackageSummary, SkillSelectionValidation, SkillSourceType, SkillTaskResult, SkillType,
+    SkillUsage, SkillUsageCost, SkillsMgr, SkillsMgrConfig, SkillsMgrError, UsageMode,
+    UserFeedback, ValidateSelectionInput as SkillValidateSelectionInput, VerificationStatus,
+};
+pub use todo_tools::{
+    DelegateTaskArgs, DelegateTaskOutput, DelegateTaskTool, StubTaskDelegator, TaskDelegator,
+    TaskEntry, TaskListItem, TodoArgs, TodoListItem, TodoOutput, TodoRecord, TodoStatus, TodoTool,
+    TodoToolConfig, TodoView, TOOL_DELEGATE_TASK, TOOL_TODO,
+};
+pub fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+pub use llm_compress::{compress, LlmSummarizeCompressor, DEFAULT_KEEP_RECENT_MESSAGES};
+pub use llm_understand_media::{LlmUnderstandMediaTool, TOOL_LLM_UNDERSTAND_MEDIA};
+pub use local_llm_context::{
+    Compressor, FileSnapshotStore, LocalLLMContext, OneShotRequest, RunMetaState, RunStatus,
+    SnapshotStore, SuspendKind, DEFAULT_CONTEXT_YIELD_RATIO, DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
 pub use workspace::{
     ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
@@ -57,9 +131,28 @@ pub struct SessionRuntimeContext {
     pub step_idx: u32,
     pub wakeup_id: String,
     pub session_id: String,
+    #[serde(default = "default_read_token_limit")]
+    pub read_token_limit: u32,
+}
+
+pub const DEFAULT_READ_TOKEN_LIMIT: u32 = 20 * 1024;
+
+fn default_read_token_limit() -> u32 {
+    DEFAULT_READ_TOKEN_LIMIT
+}
+
+impl SessionRuntimeContext {
+    pub fn effective_read_token_limit(&self) -> u32 {
+        if self.read_token_limit == 0 {
+            DEFAULT_READ_TOKEN_LIMIT
+        } else {
+            self.read_token_limit
+        }
+    }
 }
 
 pub const TOOL_GET_SESSION: &str = "get_session";
+pub const TOOL_READ: &str = "read";
 pub const TOOL_LIST_SESSION: &str = "list_session";
 pub const TOOL_LIST_EXTERNAL_WORKSPACES: &str = "list_external_workspaces";
 pub const TOOL_BIND_EXTERNAL_WORKSPACE: &str = "bind_external_workspace";
@@ -287,8 +380,7 @@ pub enum AgentHistoryShowLevel {
 
 const HISTORY_COMPACT_CMD_MAX_CHARS: usize = 96;
 const HISTORY_STD_DETAILS_MAX_CHARS: usize = 1600;
-const HISTORY_BASH_OUTPUT_MINI_LINES: usize = 8;
-const HISTORY_BASH_OUTPUT_FULL_LINES: usize = 512;
+const HISTORY_OUTPUT_FULL_LINES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -310,8 +402,13 @@ pub enum AgentToolPendingReason {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentToolResult {
-    #[serde(default)]
-    pub is_agent_tool: bool,
+    #[serde(deserialize_with = "deserialize_agent_tool_protocol")]
+    pub agent_tool_protocol: String,
+    /// Logical tool name when the result is the rendered output of a
+    /// registered agent tool. Used by the CLI front-end and surfaces in
+    /// downstream consumers; absent for raw bash results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd_name: Option<String>,
     #[serde(default)]
@@ -325,12 +422,13 @@ pub struct AgentToolResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_wait: Option<String>,
 
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
     #[serde(default)]
     pub summary: String,
-    #[serde(rename = "detail", default = "default_json_object")]
+    #[serde(rename = "detail", default = "default_result_detail")]
     pub details: Json,
 
-    //下面的都是is_agent_tool = false 的属性
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd_args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,23 +440,32 @@ pub struct AgentToolResult {
     pub output: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CliStatus {
-    Success,
-    Error,
-    Pending,
+/// Current `agent_tool_protocol` schema version emitted in the AgentToolResult JSON.
+pub const AGENT_TOOL_PROTOCOL_VERSION: &str = "1";
+
+fn default_agent_tool_protocol() -> String {
+    AGENT_TOOL_PROTOCOL_VERSION.to_string()
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CliPendingReason {
-    LongRunning,
-    UserApproval,
-    #[serde(alias = "external_callback")]
-    WaitForInstall,
+fn default_result_detail() -> Json {
+    json!({})
 }
 
+fn deserialize_agent_tool_protocol<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value == AGENT_TOOL_PROTOCOL_VERSION {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(format!(
+            "unsupported agent_tool_protocol `{value}`"
+        )))
+    }
+}
+
+/// Output of running an agent tool through the CLI front-end.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CliRunOutput {
     pub exit_code: i32,
@@ -366,35 +473,16 @@ pub struct CliRunOutput {
     pub stderr: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct CliResultEnvelope {
-    #[serde(default)]
-    pub is_agent_tool: bool,
-    pub status: CliStatus,
-    pub summary: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cmd_line: Option<String>,
-    pub detail: Json,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub return_code: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_reason: Option<CliPendingReason>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_wait: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub check_after: Option<u64>,
-}
-
 pub const CLI_EXIT_SUCCESS: i32 = 0;
 pub const CLI_EXIT_ERROR: i32 = 1;
 pub const CLI_EXIT_USAGE: i32 = 2;
 pub const CLI_EXIT_COMMAND_NOT_FOUND: i32 = 127;
+
+/// Subcommand the bash `command_not_found_handle` hook proxies to. Lives here
+/// (not in `agent_tool_cli_dev`) because both ends — the shell-side hook
+/// injected by `opendan::agent_bash::build_exec_script` and the CLI-side
+/// dispatcher in `agent_tool_cli_dev` — must spell it the same way.
+pub const CLI_COMMAND_NOT_FOUND_SUBCOMMAND: &str = "__command_not_found__";
 
 const PROMPT_STDIO_MAX_LINES: usize = 3000;
 
@@ -433,8 +521,10 @@ fn truncate_prompt_stream_lines(content: &str, max_lines: usize) -> String {
 impl AgentToolResult {
     pub fn from_details(details: Json) -> Self {
         Self {
-            is_agent_tool: false,
+            agent_tool_protocol: default_agent_tool_protocol(),
+            tool: None,
             status: AgentToolStatus::Success,
+            title: String::new(),
             summary: String::new(),
             details,
             return_code: None,
@@ -449,13 +539,21 @@ impl AgentToolResult {
         }
     }
 
-    pub fn with_status(mut self, status: AgentToolStatus) -> Self {
-        self.status = status;
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
         self
     }
 
-    pub fn with_is_agent_tool(mut self, is_agent_tool: bool) -> Self {
-        self.is_agent_tool = is_agent_tool;
+    /// Tag the result with the registered tool name. Empty/whitespace
+    /// inputs clear the field.
+    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
+        let tool = tool.into();
+        self.tool = (!tool.trim().is_empty()).then_some(tool);
+        self
+    }
+
+    pub fn with_status(mut self, status: AgentToolStatus) -> Self {
+        self.status = status;
         self
     }
 
@@ -576,19 +674,11 @@ impl AgentToolResult {
     }
 
     pub fn render_for_level(&self, level: AgentHistoryShowLevel) -> String {
-        if self.is_agent_tool {
-            self.render_agent_tool_for_level(level)
-        } else {
-            self.render_bash_result_for_level(level)
-        }
+        self.render_protocol_result_for_level(level)
     }
 
     pub fn render_for_last_step(&self) -> String {
-        if self.is_agent_tool {
-            self.render_agent_tool_for_last_step()
-        } else {
-            self.render_bash_result_for_last_step()
-        }
+        self.render_protocol_result_for_last_step()
     }
 
     pub fn command_line_text(&self) -> Option<String> {
@@ -605,124 +695,105 @@ impl AgentToolResult {
         })
     }
 
-    fn render_agent_tool_for_level(&self, level: AgentHistoryShowLevel) -> String {
+    pub fn to_tool_result_view(&self) -> ToolResultView {
+        ToolResultView {
+            agent_tool_protocol: Some(self.agent_tool_protocol.clone()),
+            status: match self.status {
+                AgentToolStatus::Success => ToolResultStatusView::Success,
+                AgentToolStatus::Error => ToolResultStatusView::Error,
+                AgentToolStatus::Pending => ToolResultStatusView::Pending,
+            },
+            cmd_name: self.cmd_name.clone(),
+            cmd_args: self.cmd_args.clone(),
+            title: self.title.clone(),
+            summary: self.summary.clone(),
+            output: self.output.clone(),
+            detail: match &self.details {
+                Json::Null => None,
+                Json::Object(map) if map.is_empty() => None,
+                value => Some(value.clone()),
+            },
+            return_code: self.return_code,
+            task_id: self.task_id.clone(),
+            partial_output: self.partial_output.clone(),
+            pending_reason: self
+                .pending_reason
+                .map(history_pending_reason_label)
+                .map(str::to_string),
+            check_after: self.check_after,
+        }
+    }
+
+    pub fn refresh_default_title(mut self) -> Self {
+        self.title = derive_default_title(&self);
+        self
+    }
+
+    fn render_protocol_result_for_level(&self, level: AgentHistoryShowLevel) -> String {
         match level {
             AgentHistoryShowLevel::Min => {
-                self.render_command_with_status(self.history_compact_command_text())
+                let title = self.title.trim();
+                if title.is_empty() {
+                    self.render_command_with_status(self.history_compact_command_text())
+                } else {
+                    title.to_string()
+                }
             }
             AgentHistoryShowLevel::Mini | AgentHistoryShowLevel::Medium => {
                 let summary = self.summary.trim();
                 if summary.is_empty() {
-                    self.render_command_with_status(self.history_compact_command_text())
+                    let title = self.title.trim();
+                    if title.is_empty() {
+                        self.render_command_with_status(self.history_compact_command_text())
+                    } else {
+                        title.to_string()
+                    }
                 } else {
                     summary.to_string()
                 }
             }
-            AgentHistoryShowLevel::Full => {
-                let command = self
-                    .history_compact_command_text()
-                    .or_else(|| self.command_line_text())
-                    .unwrap_or_else(|| "action".to_string());
-                let mut lines = vec![command];
-                let mut body = vec![self.history_result_text()];
-                if let Some(details) = self.render_agent_tool_details_block() {
-                    body.push(details);
-                }
-                lines.push("```result".to_string());
-                lines.push(body.join("\n"));
-                lines.push("```".to_string());
-                lines.join("\n")
-            }
+            AgentHistoryShowLevel::Full => self.render_protocol_full(false),
         }
     }
 
-    fn render_agent_tool_for_last_step(&self) -> String {
+    fn render_protocol_result_for_last_step(&self) -> String {
+        self.render_protocol_full(true)
+    }
+
+    fn render_protocol_full(&self, uncompressed: bool) -> String {
         let command = self
             .command_line_text()
             .or_else(|| self.history_compact_command_text())
             .unwrap_or_else(|| "action".to_string());
-        let mut lines = vec![command, "```result".to_string(), self.history_result_text()];
-        if let Some(details) = self.render_agent_tool_details_block_uncompressed() {
+        let mut lines = vec![command];
+        let mut has_body = false;
+        if let Some(output) = self
+            .output
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push("```output".to_string());
+            lines.push(if uncompressed {
+                output.to_string()
+            } else {
+                take_head_lines(output, HISTORY_OUTPUT_FULL_LINES)
+            });
+            lines.push("```".to_string());
+            has_body = true;
+        }
+        if let Some(details) = if uncompressed {
+            self.render_details_block_uncompressed()
+        } else {
+            self.render_details_block()
+        } {
+            lines.push("```json".to_string());
             lines.push(details);
-        }
-        lines.push("```".to_string());
-
-        if let Some(output) = self
-            .output
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            lines.push("```output".to_string());
-            lines.push(output.to_string());
             lines.push("```".to_string());
+            has_body = true;
         }
-
-        lines.join("\n")
-    }
-
-    fn render_bash_result_for_level(&self, level: AgentHistoryShowLevel) -> String {
-        let command = match level {
-            AgentHistoryShowLevel::Min | AgentHistoryShowLevel::Mini => {
-                self.history_compact_command_text()
-            }
-            AgentHistoryShowLevel::Medium | AgentHistoryShowLevel::Full => self
-                .command_line_text()
-                .or_else(|| self.history_compact_command_text()),
-        };
-        let mut lines = vec![self.render_command_with_status(command)];
-
-        let excerpt = match level {
-            AgentHistoryShowLevel::Min => None,
-            AgentHistoryShowLevel::Mini => match self.status {
-                AgentToolStatus::Error => {
-                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES)
-                }
-                _ => None,
-            },
-            AgentHistoryShowLevel::Medium => match self.status {
-                AgentToolStatus::Error => {
-                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_MINI_LINES)
-                }
-                AgentToolStatus::Success => {
-                    self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_MINI_LINES)
-                }
-                AgentToolStatus::Pending => None,
-            },
-            AgentHistoryShowLevel::Full => match self.status {
-                AgentToolStatus::Error => {
-                    self.render_output_excerpt(false, HISTORY_BASH_OUTPUT_FULL_LINES)
-                }
-                AgentToolStatus::Success => {
-                    self.render_output_excerpt(true, HISTORY_BASH_OUTPUT_FULL_LINES)
-                }
-                AgentToolStatus::Pending => None,
-            },
-        };
-
-        if let Some(excerpt) = excerpt {
-            lines.push("```output".to_string());
-            lines.push(excerpt);
-            lines.push("```".to_string());
+        if !has_body {
+            lines.push(self.history_result_text());
         }
-        lines.join("\n")
-    }
-
-    fn render_bash_result_for_last_step(&self) -> String {
-        let command = self
-            .command_line_text()
-            .or_else(|| self.history_compact_command_text());
-        let mut lines = vec![self.render_command_with_status(command)];
-
-        if let Some(output) = self
-            .output
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            lines.push("```output".to_string());
-            lines.push(output.to_string());
-            lines.push("```".to_string());
-        }
-
         lines.join("\n")
     }
 
@@ -775,7 +846,7 @@ impl AgentToolResult {
             })
     }
 
-    fn render_agent_tool_details_block(&self) -> Option<String> {
+    fn render_details_block(&self) -> Option<String> {
         match &self.details {
             Json::Null => None,
             Json::Object(map) if map.is_empty() => None,
@@ -788,26 +859,13 @@ impl AgentToolResult {
         }
     }
 
-    fn render_agent_tool_details_block_uncompressed(&self) -> Option<String> {
+    fn render_details_block_uncompressed(&self) -> Option<String> {
         match &self.details {
             Json::Null => None,
             Json::Object(map) if map.is_empty() => None,
             value => {
                 Some(serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()))
             }
-        }
-    }
-
-    fn render_output_excerpt(&self, head: bool, max_lines: usize) -> Option<String> {
-        let output = self
-            .output
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        if head {
-            Some(take_head_lines(output, max_lines))
-        } else {
-            Some(take_tail_lines(output, max_lines))
         }
     }
 }
@@ -831,10 +889,32 @@ pub(crate) fn build_builtin_tool_result(
     cmd_line: impl Into<String>,
     summary: impl Into<String>,
 ) -> AgentToolResult {
-    AgentToolResult::from_details(details)
-        .with_is_agent_tool(true)
+    let cmd_line = cmd_line.into();
+    let summary = summary.into();
+    let mut result = AgentToolResult::from_details(details)
         .with_cmd_line(cmd_line)
-        .with_result(summary)
+        .with_result(summary);
+    if result.title.trim().is_empty() {
+        result.title = derive_default_title(&result);
+    }
+    result
+}
+
+pub(crate) fn derive_default_title(result: &AgentToolResult) -> String {
+    let cmd = result
+        .command_line_text()
+        .map(|value| truncate_text(value.trim(), HISTORY_COMPACT_CMD_MAX_CHARS))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "action".to_string());
+    let status_text = match result.status {
+        AgentToolStatus::Success => "success".to_string(),
+        AgentToolStatus::Error => "error".to_string(),
+        AgentToolStatus::Pending => match result.pending_reason {
+            Some(reason) => format!("pending ({})", history_pending_reason_label(reason)),
+            None => "pending".to_string(),
+        },
+    };
+    format!("{cmd} => {status_text}")
 }
 
 fn history_pending_reason_label(reason: AgentToolPendingReason) -> &'static str {
@@ -874,115 +954,80 @@ fn take_head_lines(content: &str, max_lines: usize) -> String {
     out
 }
 
-fn take_tail_lines(content: &str, max_lines: usize) -> String {
-    if max_lines == 0 {
-        return String::new();
+/// Decorate an `AgentToolResult` produced by a tool with the CLI-specific
+/// defaults (fill in the tool name and a default summary/title when missing).
+pub fn cli_result_from_tool_result(
+    tool_name: &str,
+    mut result: AgentToolResult,
+) -> AgentToolResult {
+    if result.summary.trim().is_empty() {
+        result.summary = "completed".to_string();
     }
-    let lines = content.lines().collect::<Vec<_>>();
-    if lines.len() <= max_lines {
-        return content.to_string();
+    if !tool_name.trim().is_empty() {
+        result.tool = Some(tool_name.to_string());
     }
-    let start = lines.len().saturating_sub(max_lines);
-    let mut out = String::from("... [TRUNCATED: showing last ");
-    out.push_str(max_lines.to_string().as_str());
-    out.push_str(" lines only] ...\n");
-    out.push_str(lines[start..].join("\n").as_str());
-    out
+    if result.title.trim().is_empty() {
+        result.title = derive_default_title(&result);
+    }
+    result
 }
 
-impl CliResultEnvelope {
-    pub fn from_tool_result(tool_name: &str, result: AgentToolResult) -> Self {
-        let detail = result.details.clone();
-        Self {
-            is_agent_tool: true,
-            status: result.status.into(),
-            summary: if result.summary.trim().is_empty() {
-                "completed".to_string()
-            } else {
-                result.summary.clone()
-            },
-            tool: Some(tool_name.to_string()),
-            cmd_line: result.command_line_text(),
-            detail,
-            output: result.output,
-            return_code: result.return_code,
-            pending_reason: result.pending_reason.map(Into::into),
-            task_id: result.task_id,
-            estimated_wait: result.estimated_wait,
-            check_after: result.check_after,
-        }
-    }
-
-    pub fn error(tool_name: Option<&str>, err: &AgentToolError) -> Self {
-        let message = err.to_string();
-        Self {
-            is_agent_tool: true,
-            status: CliStatus::Error,
-            summary: message.clone(),
-            tool: tool_name.map(|value| value.to_string()),
-            cmd_line: None,
-            detail: json!({}),
-            output: Some(message.clone()),
-            return_code: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        }
-    }
-
-    pub fn success(tool: Option<String>, detail: Json, summary: impl Into<String>) -> Self {
-        Self {
-            is_agent_tool: true,
-            status: CliStatus::Success,
-            summary: summary.into(),
-            tool,
-            cmd_line: None,
-            detail,
-            output: None,
-            return_code: None,
-            pending_reason: None,
-            task_id: None,
-            estimated_wait: None,
-            check_after: None,
-        }
-    }
-
-    pub fn into_tool_result(self) -> AgentToolResult {
-        let Self {
-            is_agent_tool,
-            status,
-            summary,
-            tool: _tool,
-            cmd_line,
-            detail,
-            output,
-            return_code,
-            pending_reason,
-            task_id,
-            estimated_wait,
-            check_after,
-        } = self;
-        let mut result = AgentToolResult::from_details(detail)
-            .with_is_agent_tool(is_agent_tool)
-            .with_status(status.into())
-            .with_result(summary);
-        if let Some(cmd_line) = cmd_line.as_deref() {
-            result = result.with_command_metadata_from_line(cmd_line);
-        }
-        result.output = result.output.or(output);
-        result.return_code = result.return_code.or(return_code);
-        result.task_id = task_id;
-        result.check_after = check_after;
-        result.pending_reason = pending_reason.map(Into::into);
-        result.estimated_wait = estimated_wait;
-        result
+/// Build the CLI result returned when a tool errors out before
+/// producing a result of its own.
+pub fn cli_error_result(tool_name: Option<&str>, err: &AgentToolError) -> AgentToolResult {
+    let message = err.to_string();
+    let title = match tool_name {
+        Some(name) => format!("{name} => error"),
+        None => "error".to_string(),
+    };
+    AgentToolResult {
+        agent_tool_protocol: default_agent_tool_protocol(),
+        tool: tool_name.map(|value| value.to_string()),
+        cmd_name: None,
+        status: AgentToolStatus::Error,
+        task_id: None,
+        pending_reason: None,
+        check_after: None,
+        estimated_wait: None,
+        title,
+        summary: message.clone(),
+        details: json!({}),
+        cmd_args: None,
+        return_code: None,
+        partial_output: None,
+        output: Some(message),
     }
 }
 
-pub fn render_cli_output(payload: &CliResultEnvelope, exit_code: i32) -> CliRunOutput {
-    let stdout = serde_json::to_string(&payload.clone().into_tool_result()).unwrap_or_else(|_| {
-        "{\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
+/// Build the CLI result returned for synthetic success messages such
+/// as `--help`, where there is no underlying tool execution.
+pub fn cli_success_result(
+    tool: Option<String>,
+    detail: Json,
+    summary: impl Into<String>,
+) -> AgentToolResult {
+    AgentToolResult {
+        agent_tool_protocol: default_agent_tool_protocol(),
+        tool,
+        cmd_name: None,
+        status: AgentToolStatus::Success,
+        task_id: None,
+        pending_reason: None,
+        check_after: None,
+        estimated_wait: None,
+        title: String::new(),
+        summary: summary.into(),
+        details: detail,
+        cmd_args: None,
+        return_code: None,
+        partial_output: None,
+        output: None,
+    }
+}
+
+pub fn render_cli_output(payload: &AgentToolResult, exit_code: i32) -> CliRunOutput {
+    let stdout = serde_json::to_string(payload).unwrap_or_else(|_| {
+        "{\"agent_tool_protocol\":\"1\",\"status\":\"error\",\"summary\":\"serialize cli result failed\",\"detail\":{}}"
             .to_string()
     });
     CliRunOutput {
@@ -1001,53 +1046,24 @@ pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
     }
 }
 
-impl From<AgentToolStatus> for CliStatus {
-    fn from(value: AgentToolStatus) -> Self {
-        match value {
-            AgentToolStatus::Success => CliStatus::Success,
-            AgentToolStatus::Error => CliStatus::Error,
-            AgentToolStatus::Pending => CliStatus::Pending,
-        }
-    }
-}
-
-impl From<CliStatus> for AgentToolStatus {
-    fn from(value: CliStatus) -> Self {
-        match value {
-            CliStatus::Success => AgentToolStatus::Success,
-            CliStatus::Error => AgentToolStatus::Error,
-            CliStatus::Pending => AgentToolStatus::Pending,
-        }
-    }
-}
-
-impl From<AgentToolPendingReason> for CliPendingReason {
-    fn from(value: AgentToolPendingReason) -> Self {
-        match value {
-            AgentToolPendingReason::LongRunning => CliPendingReason::LongRunning,
-            AgentToolPendingReason::UserApproval => CliPendingReason::UserApproval,
-            AgentToolPendingReason::WaitForInstall => CliPendingReason::WaitForInstall,
-        }
-    }
-}
-
-impl From<CliPendingReason> for AgentToolPendingReason {
-    fn from(value: CliPendingReason) -> Self {
-        match value {
-            CliPendingReason::LongRunning => AgentToolPendingReason::LongRunning,
-            CliPendingReason::UserApproval => AgentToolPendingReason::UserApproval,
-            CliPendingReason::WaitForInstall => AgentToolPendingReason::WaitForInstall,
-        }
-    }
-}
-
+/// Type-erased dispatch trait used internally by [`AgentToolManager`].
+///
+/// **Prefer [`TypedTool`] for new tools** — it gives you typed
+/// `Args`/`Output`, automatic JSON (de)serialization and removes the
+/// `spec()` boilerplate. The manager wraps every `TypedTool` into a
+/// `TypedToolHandle` that implements this trait, so registering a
+/// typed tool via [`AgentToolManager::register_typed_tool`] is the
+/// idiomatic path.
+///
+/// Implement this trait directly only when the tool needs to produce
+/// non-trivial [`AgentToolResult`] variants the typed pipeline cannot
+/// express (e.g. `Pending` long-running tasks with `task_id`,
+/// `partial_output`, custom `pending_reason`).
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
 
-    fn support_bash(&self) -> bool;
-    fn support_action(&self) -> bool;
-    fn support_llm_tool_call(&self) -> bool;
+    fn calling(&self) -> CallingConventions;
 
     async fn call(
         &self,
@@ -1070,6 +1086,27 @@ pub trait AgentTool: Send + Sync {
         let args = parse_default_bash_exec_args(&tokens[1..])?;
         self.call(ctx, args).await
     }
+
+    /// Convert a CLI argv (after the tool name) into a dispatch
+    /// invocation. Default treats it as bash form. Tools whose CLI
+    /// uses `--flag value` syntax override this; the override lives
+    /// next to the tool definition rather than in `cli.rs`.
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<crate::tool::CliInvocation, AgentToolError> {
+        Ok(crate::tool::CliInvocation::Bash {
+            line: build_bash_cli_line(self.spec().name.as_str(), tokens),
+        })
+    }
+
+    /// True for tools that emit a single text payload the CLI should
+    /// stream out raw (no JSON wrapper) when stdout is non-interactive.
+    /// Currently only `read_file` opts in.
+    fn cli_plain_text_stdout(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait]
@@ -1088,422 +1125,147 @@ impl GetSessionTool {
     }
 }
 
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetSessionArgs {
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
 #[async_trait]
-impl AgentTool for GetSessionTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_GET_SESSION.to_string(),
-            description:
-                "Read current session state and status. Used by runtime before each LLM round."
-                    .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "session_id": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "session": { "type": "object" }
+impl TypedTool for GetSessionTool {
+    type Args = GetSessionArgs;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        TOOL_GET_SESSION
+    }
+    fn description(&self) -> &str {
+        "Read current session state and status. Used by runtime before each LLM round."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn usage(&self) -> Option<String> {
+        Some("get_session [session_id]".to_string())
+    }
+
+    fn parse_bash_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        if tokens.is_empty() {
+            return Ok(json!({}));
+        }
+        if tokens.len() == 1 && !tokens[0].contains('=') {
+            return Ok(json!({ "session_id": tokens[0].trim() }));
+        }
+        parse_default_bash_exec_args(tokens)
+    }
+
+    fn parse_cli_args(
+        &self,
+        tokens: &[String],
+        _shell_cwd: Option<&Path>,
+    ) -> Result<crate::CliInvocation, AgentToolError> {
+        // Accept `--session-id <v>`, `session_id=<v>`, or one positional;
+        // otherwise rebuild a bash line and let `parse_bash_args` handle it.
+        let mut session_id: Option<String> = None;
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            match tokens[idx].as_str() {
+                "--session-id" => {
+                    idx += 1;
+                    session_id = Some(
+                        tokens
+                            .get(idx)
+                            .ok_or_else(|| {
+                                AgentToolError::InvalidArgs(
+                                    "missing value for `--session-id` (get_session)".to_string(),
+                                )
+                            })?
+                            .clone(),
+                    );
                 }
-            }),
-            usage: Some("get_session [session_id]".to_string()),
+                token if token.starts_with("--") => {
+                    return Err(AgentToolError::InvalidArgs(format!(
+                        "unsupported flag `{token}` (get_session)"
+                    )));
+                }
+                token if token.contains('=') => {
+                    let (key, value) = token.split_once('=').unwrap();
+                    match key {
+                        "session_id" | "session" => session_id = Some(value.to_string()),
+                        _ => {
+                            return Err(AgentToolError::InvalidArgs(format!(
+                                "unsupported arg `{key}` (get_session)"
+                            )))
+                        }
+                    }
+                }
+                value => {
+                    if session_id.is_some() {
+                        return Err(AgentToolError::InvalidArgs(format!(
+                            "unexpected positional arg `{value}` (get_session)"
+                        )));
+                    }
+                    session_id = Some(value.to_string());
+                }
+            }
+            idx += 1;
+        }
+
+        let mut forwarded = Vec::new();
+        if let Some(id) = session_id {
+            forwarded.push(format!("session_id={id}"));
+        }
+        Ok(crate::CliInvocation::Bash {
+            line: build_bash_cli_line(TOOL_GET_SESSION, &forwarded),
+        })
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        match args
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            Some(id) => Some(format!("{TOOL_GET_SESSION} {id}")),
+            None => Some(TOOL_GET_SESSION.to_string()),
         }
     }
 
-    fn support_bash(&self) -> bool {
-        true
-    }
-
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
         let session_id = args
-            .get("session_id")
-            .and_then(Json::as_str)
+            .session_id
+            .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| ctx.session_id.trim());
+            .map(str::to_string)
+            .unwrap_or_else(|| ctx.session().session_id.trim().to_string());
         if session_id.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "session_id is required".to_string(),
             ));
         }
-        let session = self.backend.session_view(session_id).await?;
-        Ok(build_builtin_tool_result(
-            json!({
-            "ok": true,
-            "session": session
-            }),
-            format!("{TOOL_GET_SESSION} {session_id}"),
-            "ok",
-        ))
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        _shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-        if tokens.len() == 1 {
-            return self.call(ctx, json!({})).await;
-        }
-        if tokens.len() == 2 && !tokens[1].contains('=') {
-            return self
-                .call(ctx, json!({ "session_id": tokens[1].trim() }))
-                .await;
-        }
-        let args = parse_default_bash_exec_args(&tokens[1..])?;
-        self.call(ctx, args).await
+        let session = self.backend.session_view(session_id.as_str()).await?;
+        Ok(json!({ "ok": true, "session": session }))
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MemoryLoadPreview {
-    pub rendered: String,
-    pub item_count: usize,
-}
-
-#[async_trait]
-pub trait MemoryLoadBackend: Send + Sync {
-    async fn load_memory_preview(
-        &self,
-        token_limit: Option<u32>,
-        tags: Vec<String>,
-        current_time: Option<String>,
-    ) -> Result<MemoryLoadPreview, AgentToolError>;
-}
-
-#[async_trait]
-pub trait MemoryMutationBackend: Send + Sync {
-    async fn set_memory(
-        &self,
-        key: String,
-        content: String,
-        source: Json,
-    ) -> Result<Json, AgentToolError>;
-    async fn remove_memory(&self, key: String, source: Json) -> Result<Json, AgentToolError>;
-}
-
-#[derive(Clone)]
-pub struct LoadMemoryTool {
-    backend: Arc<dyn MemoryLoadBackend>,
-}
-
-impl LoadMemoryTool {
-    pub fn new(backend: Arc<dyn MemoryLoadBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-#[async_trait]
-impl AgentTool for LoadMemoryTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_LOAD_MEMORY.to_string(),
-            description: "Read memory summary using default retrieval strategy.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "token_limit": {"type":"number"},
-                    "tags": {
-                        "type":"array",
-                        "items": {"type":"string"}
-                    },
-                    "current_time": {"type":"string"}
-                }
-            }),
-            output_schema: json!({
-                "type":"string"
-            }),
-            usage: None,
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        true
-    }
-
-    async fn call(
-        &self,
-        _ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let token_limit = args
-            .get("token_limit")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.min(u32::MAX as u64) as u32);
-        let tags = args
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<String>>()
-            })
-            .unwrap_or_default();
-        let current_time = args
-            .get("current_time")
-            .and_then(|v| v.as_str())
-            .map(|raw| raw.to_string());
-
-        let preview = self
-            .backend
-            .load_memory_preview(token_limit, tags, current_time)
-            .await?;
-        Ok(build_builtin_tool_result(
-            Json::String(preview.rendered),
-            TOOL_LOAD_MEMORY.to_string(),
-            format!("loaded {} memory item(s)", preview.item_count),
-        ))
-    }
-}
-
-#[derive(Clone)]
-pub struct SetMemoryTool {
-    backend: Arc<dyn MemoryMutationBackend>,
-}
-
-impl SetMemoryTool {
-    pub fn new(backend: Arc<dyn MemoryMutationBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-#[async_trait]
-impl AgentTool for SetMemoryTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_SET_MEMORY.to_string(),
-            description: "Store a memory entry by key and content.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "key": {"type":"string"},
-                    "content": {"type":"string"}
-                },
-                "required": ["key", "content"]
-            }),
-            output_schema: json!({
-                "type":"object"
-            }),
-            usage: Some(
-                "set_memory <key> <content> | set_memory key=<key> content=<content>".to_string(),
-            ),
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        true
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let key = args
-            .get("key")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| AgentToolError::InvalidArgs("key is required".to_string()))?
-            .to_string();
-        let content = args
-            .get("content")
-            .and_then(Json::as_str)
-            .ok_or_else(|| AgentToolError::InvalidArgs("content is required".to_string()))?
-            .to_string();
-        let source = json!({
-            "kind": "tool",
-            "name": TOOL_SET_MEMORY,
-            "retrieved_at": Utc::now().to_rfc3339(),
-            "locator": {
-                "trace_id": ctx.trace_id,
-                "session_id": ctx.session_id,
-                "agent_name": ctx.agent_name,
-                "behavior": ctx.behavior,
-                "step_idx": ctx.step_idx,
-                "wakeup_id": ctx.wakeup_id
-            }
-        });
-
-        let details = self
-            .backend
-            .set_memory(key.clone(), content, source)
-            .await?;
-        Ok(build_builtin_tool_result(
-            details,
-            format!("{TOOL_SET_MEMORY} {key}"),
-            "ok",
-        ))
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        _shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-        if tokens.len() >= 3 && !tokens[1].contains('=') {
-            let content = tokens[2..].join(" ");
-            return self
-                .call(
-                    ctx,
-                    json!({
-                        "key": tokens[1].trim(),
-                        "content": content
-                    }),
-                )
-                .await;
-        }
-        let args = parse_default_bash_exec_args(&tokens[1..])?;
-        self.call(ctx, args).await
-    }
-}
-
-#[derive(Clone)]
-pub struct RemoveMemoryTool {
-    backend: Arc<dyn MemoryMutationBackend>,
-}
-
-impl RemoveMemoryTool {
-    pub fn new(backend: Arc<dyn MemoryMutationBackend>) -> Self {
-        Self { backend }
-    }
-}
-
-#[async_trait]
-impl AgentTool for RemoveMemoryTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_REMOVE_MEMORY.to_string(),
-            description: "Remove a memory entry by key and delete its stored file.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "key": {"type":"string"}
-                },
-                "required": ["key"]
-            }),
-            output_schema: json!({
-                "type":"object"
-            }),
-            usage: Some("remove_memory <key> | remove_memory key=<key>".to_string()),
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        true
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let key = args
-            .get("key")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| AgentToolError::InvalidArgs("key is required".to_string()))?
-            .to_string();
-        let source = json!({
-            "kind": "tool",
-            "name": TOOL_REMOVE_MEMORY,
-            "retrieved_at": Utc::now().to_rfc3339(),
-            "locator": {
-                "trace_id": ctx.trace_id,
-                "session_id": ctx.session_id,
-                "agent_name": ctx.agent_name,
-                "behavior": ctx.behavior,
-                "step_idx": ctx.step_idx,
-                "wakeup_id": ctx.wakeup_id
-            }
-        });
-
-        let details = self.backend.remove_memory(key.clone(), source).await?;
-        Ok(build_builtin_tool_result(
-            details,
-            format!("{TOOL_REMOVE_MEMORY} {key}"),
-            "ok",
-        ))
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        _shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "empty bash command line".to_string(),
-            ));
-        }
-        if tokens.len() == 1 {
-            return Err(AgentToolError::InvalidArgs("key is required".to_string()));
-        }
-        if tokens.len() == 2 && !tokens[1].contains('=') {
-            return self.call(ctx, json!({ "key": tokens[1].trim() })).await;
-        }
-        let args = parse_default_bash_exec_args(&tokens[1..])?;
-        self.call(ctx, args).await
-    }
-}
+// NOTE(beta2.2): the legacy MemoryLoadBackend / MemoryMutationBackend traits
+// and their `LoadMemoryTool` / `SetMemoryTool` / `RemoveMemoryTool` wrappers
+// were removed in the v2.10 Memory Graph rewrite. Agents now invoke the `agent-memory`
+// CLI via the standard bash tool; the in-process API lives in
+// `crate::agent_memory`. The TOOL_*_MEMORY constants above are kept only as
+// stable command names for prompt scaffolding.
 
 #[async_trait]
 pub trait WorklogActionBackend: Send + Sync {
@@ -1559,93 +1321,112 @@ impl CreateWorkspaceTool {
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct CreateWorkspaceArgs {
+    pub name: String,
+    pub summary: String,
+}
+
 #[async_trait]
-impl AgentTool for CreateWorkspaceTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_CREATE_WORKSPACE.to_string(),
-            description: "创建session的wrokspace并设置为session的default workspace".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string" },
-                    "summary": { "type": "string" }
-                },
-                "required": ["name", "summary"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "workspace": { "type": "object" },
-                    "binding": { "type": "object" },
-                    "summary_path": { "type": "string" },
-                    "session_id": { "type": "string" },
-                    "session_updated": { "type": "boolean" }
-                }
-            }),
-            usage: Some("create_workspace <name> <summary>".to_string()),
-        }
+impl TypedTool for CreateWorkspaceTool {
+    type Args = CreateWorkspaceArgs;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        TOOL_CREATE_WORKSPACE
+    }
+    fn description(&self) -> &str {
+        "创建session的wrokspace并设置为session的default workspace"
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn usage(&self) -> Option<String> {
+        Some("create_workspace <name> <summary>".to_string())
     }
 
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    fn parse_bash_args(
         &self,
-        _ctx: &SessionRuntimeContext,
-        _args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        Err(AgentToolError::InvalidArgs(
-            "not support: create_workspace only supports bash mode".to_string(),
-        ))
-    }
 
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
+        tokens: &[String],
+
         _shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.len() < 3 {
+    ) -> Result<Json, AgentToolError> {
+        if tokens.len() < 2 {
             return Err(AgentToolError::InvalidArgs(
                 "missing required arguments: <name> <summary>".to_string(),
             ));
         }
-        if tokens.len() > 3 {
+        if tokens.len() > 2 {
             return Err(AgentToolError::InvalidArgs(
                 "create_workspace only supports arguments: <name> <summary>".to_string(),
             ));
         }
-
-        let name = tokens[1].trim();
+        let name = tokens[0].trim();
         if name.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "workspace name cannot be empty".to_string(),
             ));
         }
-        let summary = tokens[2].trim();
+        let summary = tokens[1].trim();
         if summary.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "workspace summary cannot be empty".to_string(),
             ));
         }
+        Ok(json!({ "name": name, "summary": summary }))
+    }
 
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        Some(format!(
+            "{TOOL_CREATE_WORKSPACE} {} {}",
+            args.name, args.summary
+        ))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        let workspace = output
+            .get("workspace_id")
+            .or_else(|| output.pointer("/workspace/workspace_id"))
+            .or_else(|| output.get("id"))
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("workspace");
+        format!("created workspace {workspace}")
+    }
+
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
+        let workspace = output
+            .get("workspace_id")
+            .or_else(|| output.pointer("/workspace/workspace_id"))
+            .or_else(|| output.get("id"))
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("workspace");
+        Some(format!("{TOOL_CREATE_WORKSPACE} {workspace} => created"))
+    }
+
+    async fn execute(
+        &self,
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let name = args.name.trim();
+        let summary = args.summary.trim();
+        if name.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace name cannot be empty".to_string(),
+            ));
+        }
+        if summary.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace summary cannot be empty".to_string(),
+            ));
+        }
         self.backend
-            .create_workspace(ctx, name.to_string(), summary.to_string())
+            .create_workspace(ctx.session(), name.to_string(), summary.to_string())
             .await
-            .map(|details| build_builtin_tool_result(details, line.trim().to_string(), "ok"))
     }
 }
 
@@ -1683,69 +1464,93 @@ impl BindExternalWorkspaceTool {
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BindExternalWorkspaceArgs {
+    /// Local mount name.
+    pub name: String,
+    /// Absolute or relative source workspace path.
+    pub workspace_path: String,
+    /// Optional target agent DID. Defaults to current agent DID.
+    #[serde(default)]
+    pub agent_did: Option<String>,
+}
+
 #[async_trait]
-impl AgentTool for BindExternalWorkspaceTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
-            description:
-                "Bind an external workspace directory so this agent can access it from runtime."
-                    .to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Local mount name." },
-                    "workspace_path": { "type": "string", "description": "Absolute or relative source workspace path." },
-                    "agent_did": { "type": "string", "description": "Optional target agent DID. Defaults to current agent DID." }
-                },
-                "required": ["name", "workspace_path"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "binding": { "type": "object" }
-                }
-            }),
-            usage: None,
+impl TypedTool for BindExternalWorkspaceTool {
+    type Args = BindExternalWorkspaceArgs;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        TOOL_BIND_EXTERNAL_WORKSPACE
+    }
+    fn description(&self) -> &str {
+        "Bind an external workspace directory so this agent can access it from runtime."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        let agent = args.agent_did.as_deref().map(str::trim).unwrap_or("");
+        let mut out = format!(
+            "{TOOL_BIND_EXTERNAL_WORKSPACE} {} {}",
+            args.name.trim(),
+            args.workspace_path.trim()
+        );
+        if !agent.is_empty() {
+            out.push_str(format!(" agent_did={agent}").as_str());
         }
+        Some(out)
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn build_summary(&self, output: &Self::Output) -> String {
+        let name = output
+            .pointer("/binding/name")
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("external workspace");
+        format!("bound external workspace {name}")
     }
 
-    fn support_action(&self) -> bool {
-        false
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
+        let name = output
+            .pointer("/binding/name")
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("external workspace");
+        Some(format!("{TOOL_BIND_EXTERNAL_WORKSPACE} {name} => bound"))
     }
 
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let agent_did =
-            optional_trimmed_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
-        let name = require_trimmed_string_arg(&args, "name")?;
-        let workspace_path = require_trimmed_string_arg(&args, "workspace_path")?;
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let name = args.name.trim();
+        let workspace_path = args.workspace_path.trim();
+        if name.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `name`".to_string(),
+            ));
+        }
+        if workspace_path.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "missing required arg `workspace_path`".to_string(),
+            ));
+        }
+        let agent_did = args
+            .agent_did
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| ctx.session().agent_name.clone());
         let binding = self
             .backend
-            .bind_external_workspace(agent_did.as_str(), name.as_str(), workspace_path.as_str())
+            .bind_external_workspace(agent_did.as_str(), name, workspace_path)
             .await?;
-
-        Ok(build_builtin_tool_result(
-            json!({
-                "ok": true,
-                "binding": binding
-            }),
-            TOOL_BIND_EXTERNAL_WORKSPACE.to_string(),
-            "ok",
-        ))
+        Ok(json!({ "ok": true, "binding": binding }))
     }
 }
 
@@ -1760,134 +1565,115 @@ impl ListExternalWorkspacesTool {
     }
 }
 
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListExternalWorkspacesArgs {
+    /// Optional agent DID. Defaults to current agent DID.
+    #[serde(default)]
+    pub agent_did: Option<String>,
+}
+
 #[async_trait]
-impl AgentTool for ListExternalWorkspacesTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
-            description: "List bound external workspaces visible to current agent.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "agent_did": { "type": "string", "description": "Optional agent DID. Defaults to current agent DID." }
-                },
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "workspaces": { "type": "array", "items": { "type": "object" } }
-                }
-            }),
-            usage: None,
+impl TypedTool for ListExternalWorkspacesTool {
+    type Args = ListExternalWorkspacesArgs;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        TOOL_LIST_EXTERNAL_WORKSPACES
+    }
+    fn description(&self) -> &str {
+        "List bound external workspaces visible to current agent."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        let mut out = TOOL_LIST_EXTERNAL_WORKSPACES.to_string();
+        if let Some(agent) = args
+            .agent_did
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            out.push_str(format!(" agent_did={agent}").as_str());
         }
+        Some(out)
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn build_summary(&self, output: &Self::Output) -> String {
+        let count = output
+            .get("workspaces")
+            .and_then(Json::as_array)
+            .map(|arr| arr.len())
+            .unwrap_or(0);
+        format!("listed {count} external workspace(s)")
     }
 
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let agent_did =
-            optional_trimmed_string_arg(&args, "agent_did")?.unwrap_or(ctx.agent_name.clone());
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let agent_did = args
+            .agent_did
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| ctx.session().agent_name.clone());
         let workspaces = self
             .backend
             .list_external_workspaces(agent_did.as_str())
             .await?;
-        Ok(build_builtin_tool_result(
-            json!({
-                "ok": true,
-                "workspaces": workspaces
-            }),
-            TOOL_LIST_EXTERNAL_WORKSPACES.to_string(),
-            "ok",
-        ))
+        Ok(json!({ "ok": true, "workspaces": workspaces }))
     }
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct BindWorkspaceArgs {
+    pub workspace: String,
+}
+
 #[async_trait]
-impl AgentTool for BindWorkspaceTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_BIND_WORKSPACE.to_string(),
-            description: "设置agent_session的当前workspace".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "workspace": { "type": "string" }
-                },
-                "required": ["workspace"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "binding": { "type": "object" },
-                    "session_id": { "type": "string" },
-                    "session_updated": { "type": "boolean" }
-                }
-            }),
-            usage: Some("bind_workspace <workspace_id|workspace_path>".to_string()),
-        }
+impl TypedTool for BindWorkspaceTool {
+    type Args = BindWorkspaceArgs;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        TOOL_BIND_WORKSPACE
+    }
+    fn description(&self) -> &str {
+        "设置agent_session的当前workspace"
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn usage(&self) -> Option<String> {
+        Some("bind_workspace <workspace_id|workspace_path>".to_string())
     }
 
-    fn support_action(&self) -> bool {
-        false
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
+    fn parse_bash_args(
         &self,
-        _ctx: &SessionRuntimeContext,
-        _args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        Err(AgentToolError::InvalidArgs(
-            "not support: bind_workspace only supports bash mode".to_string(),
-        ))
-    }
 
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let tokens = tokenize_bash_command_line(line)?;
-        if tokens.len() < 2 {
+        tokens: &[String],
+
+        _shell_cwd: Option<&Path>,
+    ) -> Result<Json, AgentToolError> {
+        if tokens.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "missing workspace argument".to_string(),
             ));
         }
-        if tokens.len() > 2 {
+        if tokens.len() > 1 {
             return Err(AgentToolError::InvalidArgs(
                 "bind_workspace only supports one argument: <workspace_id|workspace_path>"
                     .to_string(),
             ));
         }
-
-        let raw_arg = tokens[1].trim();
-        let workspace_ref = if let Some((key, value)) = raw_arg.split_once('=') {
+        let raw_arg = tokens[0].trim();
+        let workspace = if let Some((key, value)) = raw_arg.split_once('=') {
             match key.trim() {
                 "workspace" | "workspace_id" | "workspace_path" | "local_workspace_id" => {
                     value.trim()
@@ -1901,127 +1687,180 @@ impl AgentTool for BindWorkspaceTool {
         } else {
             raw_arg
         };
+        if workspace.is_empty() {
+            return Err(AgentToolError::InvalidArgs(
+                "workspace argument cannot be empty".to_string(),
+            ));
+        }
+        Ok(json!({ "workspace": workspace }))
+    }
 
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        Some(format!("{TOOL_BIND_WORKSPACE} {}", args.workspace.trim()))
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        let workspace = output
+            .get("workspace_id")
+            .or_else(|| output.get("local_workspace_id"))
+            .or_else(|| output.pointer("/binding/local_workspace_id"))
+            .or_else(|| output.get("workspace"))
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("workspace");
+        format!("bound session to workspace {workspace}")
+    }
+
+    fn build_title(&self, output: &Self::Output) -> Option<String> {
+        let workspace = output
+            .get("workspace_id")
+            .or_else(|| output.get("local_workspace_id"))
+            .or_else(|| output.pointer("/binding/local_workspace_id"))
+            .or_else(|| output.get("workspace"))
+            .and_then(Json::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("workspace");
+        Some(format!("{TOOL_BIND_WORKSPACE} {workspace} => bound"))
+    }
+
+    async fn execute(
+        &self,
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let workspace_ref = args.workspace.trim();
         if workspace_ref.is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "workspace argument cannot be empty".to_string(),
             ));
         }
-        if ctx.session_id.trim().is_empty() {
+        let session = ctx.session();
+        if session.session_id.trim().is_empty() {
             return Err(AgentToolError::InvalidArgs(
                 "session_id is required".to_string(),
             ));
         }
-
         let workspace_id = self
             .backend
-            .resolve_workspace_id(workspace_ref, shell_cwd)
+            .resolve_workspace_id(workspace_ref, ctx.shell_cwd())
             .await?;
         self.backend
-            .bind_workspace(ctx, ctx.session_id.as_str(), workspace_id.as_str())
+            .bind_workspace(session, session.session_id.as_str(), workspace_id.as_str())
             .await
-            .map(|details| build_builtin_tool_result(details, line.trim().to_string(), "ok"))
     }
 }
 
 #[async_trait]
-impl AgentTool for WorklogTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_WORKLOG_MANAGE.to_string(),
-            description: "Structured workspace worklog with event records, step summary and prompt-safe rendering.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": [
-                            "append_worklog",
-                            "append_step_summary",
-                            "mark_step_committed",
-                            "list_worklog",
-                            "get_worklog",
-                            "list_step",
-                            "build_prompt_worklog",
-                            "append",
-                            "list",
-                            "get",
-                            "render_for_prompt"
-                        ]
-                    },
-                    "record": { "type": "object" },
-                    "log_id": { "type": "string" },
-                    "id": { "type": "string" },
-                    "step_id": { "type": "string" },
-                    "owner_session_id": { "type": "string" },
-                    "workspace_id": { "type": "string" },
-                    "todo_id": { "type": "string" },
-                    "type": {
-                        "type": "string",
-                        "enum": [
-                            "GetMessage",
-                            "ReplyMessage",
-                            "FunctionRecord",
-                            "ActionRecord",
-                            "CreateSubAgent",
-                            "StepSummary"
-                        ]
-                    },
-                    "status": { "type": "string" },
-                    "tag": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1 },
-                    "offset": { "type": "integer", "minimum": 0 },
-                    "token_budget": { "type": "integer", "minimum": 1 }
+impl TypedTool for WorklogTool {
+    type Args = Json;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        TOOL_WORKLOG_MANAGE
+    }
+    fn description(&self) -> &str {
+        "Append-only audit log of agent runtime events. Used for debugging and post-hoc analysis; does not feed into prompts."
+    }
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH
+    }
+
+    fn args_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "append_worklog",
+                        "list_worklog",
+                        "get_worklog"
+                    ]
                 },
-                "required": ["action"],
-                "additionalProperties": true
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "action": { "type": "string" },
-                    "record": { "type": "object" },
-                    "records": { "type": "array", "items": { "type": "object" } },
-                    "total": { "type": "integer" },
-                    "text": { "type": "string" },
-                    "prompt_text": { "type": "string" },
-                    "updated": { "type": "integer" }
-                }
-            }),
-            usage: None,
-        }
+                "record": { "type": "object" },
+                "id": { "type": "string" },
+                "step_id": { "type": "string" },
+                "owner_session_id": { "type": "string" },
+                "workspace_id": { "type": "string" },
+                "type": { "type": "string" },
+                "status": { "type": "string" },
+                "keyword": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 1 },
+                "offset": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["action"],
+            "additionalProperties": true
+        })
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn output_schema(&self) -> Json {
+        json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "action": { "type": "string" },
+                "record": { "type": "object" },
+                "records": { "type": "array", "items": { "type": "object" } },
+                "total": { "type": "integer" }
+            }
+        })
     }
 
-    fn support_action(&self) -> bool {
-        false
+    fn build_cmd_line(&self, args: &Self::Args) -> Option<String> {
+        let action = args.get("action").and_then(Json::as_str).unwrap_or("");
+        Some(build_worklog_manage_cmd_line(action, args))
     }
 
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let details = self.backend.execute_action(ctx, args).await?;
-        let action = details
+    fn build_summary(&self, output: &Self::Output) -> String {
+        output
             .get("action")
             .and_then(Json::as_str)
-            .unwrap_or("worklog")
-            .to_string();
-        Ok(build_builtin_tool_result(
-            details,
-            TOOL_WORKLOG_MANAGE.to_string(),
-            action,
-        ))
+            .filter(|value| !value.is_empty())
+            .unwrap_or("ok")
+            .to_string()
     }
+
+    async fn execute(
+        &self,
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        self.backend.execute_action(ctx.session(), args).await
+    }
+}
+
+fn build_worklog_manage_cmd_line(action: &str, args: &Json) -> String {
+    let mut out = TOOL_WORKLOG_MANAGE.to_string();
+    if !action.is_empty() {
+        out.push_str(format!(" {action}").as_str());
+    }
+    for key in [
+        "id",
+        "step_id",
+        "owner_session_id",
+        "workspace_id",
+        "type",
+        "status",
+        "keyword",
+    ] {
+        if let Some(value) = args
+            .get(key)
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            out.push_str(format!(" {key}={value}").as_str());
+        }
+    }
+    if let Some(limit) = args.get("limit").and_then(Json::as_u64) {
+        out.push_str(format!(" limit={limit}").as_str());
+    }
+    if let Some(offset) = args.get("offset").and_then(Json::as_u64) {
+        if offset > 0 {
+            out.push_str(format!(" offset={offset}").as_str());
+        }
+    }
+    out
 }
 
 pub struct MCPTool {
@@ -2092,28 +1931,58 @@ impl MCPTool {
 }
 
 #[async_trait]
-impl AgentTool for MCPTool {
-    fn spec(&self) -> ToolSpec {
-        self.spec.clone()
+impl TypedTool for MCPTool {
+    type Args = Json;
+    type Output = Json;
+
+    fn name(&self) -> &str {
+        self.spec.name.as_str()
     }
 
-    fn support_bash(&self) -> bool {
-        true
+    fn description(&self) -> &str {
+        self.spec.description.as_str()
     }
 
-    fn support_action(&self) -> bool {
-        true
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::BASH | CallingConventions::ACTION
     }
 
-    fn support_llm_tool_call(&self) -> bool {
-        false
+    fn args_schema(&self) -> Json {
+        self.spec.args_schema.clone()
     }
 
-    async fn call(
+    fn output_schema(&self) -> Json {
+        self.spec.output_schema.clone()
+    }
+
+    fn build_cmd_line(&self, _args: &Self::Args) -> Option<String> {
+        Some(self.spec.name.clone())
+    }
+
+    fn build_summary(&self, output: &Self::Output) -> String {
+        let content_count = output
+            .get("content")
+            .and_then(Json::as_array)
+            .map(|items| items.len());
+        match content_count {
+            Some(count) => format!(
+                "mcp {} completed with {count} content item(s)",
+                self.spec.name
+            ),
+            None => format!("mcp {} completed", self.spec.name),
+        }
+    }
+
+    fn build_title(&self, _output: &Self::Output) -> Option<String> {
+        Some(format!("mcp {} => success", self.spec.name))
+    }
+
+    async fn execute(
         &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
+        ctx: &ToolCtx<'_>,
+        args: Self::Args,
+    ) -> Result<Self::Output, AgentToolError> {
+        let ctx = ctx.session();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": format!(
@@ -2174,9 +2043,7 @@ impl AgentTool for MCPTool {
             )));
         }
 
-        Ok(AgentToolResult::from_details(result)
-            .with_cmd_line(self.spec.name.clone())
-            .with_result("OK"))
+        Ok(result)
     }
 }
 
@@ -2221,60 +2088,27 @@ fn compact_json_text(value: &Json, max_chars: usize) -> String {
     truncate_text(rendered.as_str(), max_chars)
 }
 
-struct RegisteredTool {
-    spec: ToolSpec,
-    inner: Arc<dyn AgentTool>,
-    support_bash: bool,
-    support_action: bool,
-    support_llm_tool_call: bool,
-}
-
-#[async_trait]
-impl AgentTool for RegisteredTool {
-    fn spec(&self) -> ToolSpec {
-        self.spec.clone()
-    }
-
-    fn support_bash(&self) -> bool {
-        self.support_bash
-    }
-
-    fn support_action(&self) -> bool {
-        self.support_action
-    }
-
-    fn support_llm_tool_call(&self) -> bool {
-        self.support_llm_tool_call
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        self.inner.call(ctx, args).await
-    }
-
-    async fn exec(
-        &self,
-        ctx: &SessionRuntimeContext,
-        line: &str,
-        shell_cwd: Option<&Path>,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        self.inner.exec(ctx, line, shell_cwd).await
-    }
-}
-
 #[derive(Default)]
 struct ToolNamespaceRegistry {
-    all_tools: HashMap<String, Arc<dyn AgentTool>>,
-    llm_tools: HashMap<String, Arc<dyn AgentTool>>,
-    bash_cmds: HashMap<String, Arc<dyn AgentTool>>,
+    tools: HashMap<String, Arc<dyn AgentTool>>,
+}
+
+fn registered_tool_spec(name: &str, tool: &dyn AgentTool) -> ToolSpec {
+    let mut spec = tool.spec();
+    spec.name = name.to_string();
+    spec.usage = spec
+        .usage
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    spec
 }
 
 #[derive(Clone)]
 pub struct AgentToolManager {
     namespaces: Arc<StdRwLock<ToolNamespaceRegistry>>,
+    host: Arc<dyn ToolHost>,
 }
 
 impl Default for AgentToolManager {
@@ -2285,9 +2119,26 @@ impl Default for AgentToolManager {
 
 impl AgentToolManager {
     pub fn new() -> Self {
+        Self::with_host(Arc::new(NullToolHost))
+    }
+
+    pub fn with_host(host: Arc<dyn ToolHost>) -> Self {
         Self {
             namespaces: Arc::new(StdRwLock::new(ToolNamespaceRegistry::default())),
+            host,
         }
+    }
+
+    /// Currently configured `ToolHost`. Stage 3 will start consuming
+    /// this for typed-tool registrations; for now it is exposed so
+    /// embedders can share a single host between manager-managed and
+    /// ad-hoc tool invocations.
+    pub fn host(&self) -> Arc<dyn ToolHost> {
+        self.host.clone()
+    }
+
+    pub fn set_host(&mut self, host: Arc<dyn ToolHost>) {
+        self.host = host;
     }
 
     pub fn register_tool<T>(&self, tool: T) -> Result<(), AgentToolError>
@@ -2297,8 +2148,19 @@ impl AgentToolManager {
         self.register_tool_arc(Arc::new(tool))
     }
 
+    /// Register a `TypedTool` implementation. The manager wraps it
+    /// into a `TypedToolHandle` capturing the current host so the
+    /// tool gets `ctx.host()` access at call time.
+    pub fn register_typed_tool<T>(&self, tool: T) -> Result<(), AgentToolError>
+    where
+        T: TypedTool,
+    {
+        let handle = TypedToolHandle::new(tool, self.host.clone());
+        self.register_tool_arc(Arc::new(handle))
+    }
+
     pub fn register_tool_arc(&self, tool: Arc<dyn AgentTool>) -> Result<(), AgentToolError> {
-        let mut spec = tool.spec();
+        let spec = tool.spec();
         let original_name = spec.name.trim().to_string();
         if original_name.is_empty() {
             return Err(AgentToolError::InvalidArgs(
@@ -2312,51 +2174,22 @@ impl AgentToolManager {
                 original_name
             )));
         }
-        spec.name = normalized_name.clone();
-        spec.usage = spec
-            .usage
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string());
-        let support_bash = tool.support_bash();
-        let support_action = tool.support_action();
-        let support_llm_tool_call = tool.support_llm_tool_call();
-        if !support_bash && !support_action && !support_llm_tool_call {
+        let calling = tool.calling();
+        if calling.is_empty() {
             return Err(AgentToolError::InvalidArgs(format!(
                 "tool `{}` must support at least one namespace",
                 normalized_name
             )));
         }
 
-        let registered: Arc<dyn AgentTool> = Arc::new(RegisteredTool {
-            spec,
-            inner: tool,
-            support_bash,
-            support_action,
-            support_llm_tool_call,
-        });
-
         let mut guard = self
             .namespaces
             .write()
             .map_err(|_| AgentToolError::ExecFailed("tool namespace lock poisoned".to_string()))?;
-        if guard.all_tools.contains_key(&normalized_name) {
+        if guard.tools.contains_key(&normalized_name) {
             return Err(AgentToolError::AlreadyExists(normalized_name));
         }
-        guard
-            .all_tools
-            .insert(normalized_name.clone(), registered.clone());
-        if support_llm_tool_call {
-            guard
-                .llm_tools
-                .insert(normalized_name.clone(), registered.clone());
-        }
-        if support_bash {
-            guard
-                .bash_cmds
-                .insert(normalized_name.clone(), registered.clone());
-        }
+        guard.tools.insert(normalized_name.clone(), tool);
         if normalized_name != original_name {
             warn!(
                 "tool name normalized by trimming: original={} normalized={}",
@@ -2367,7 +2200,7 @@ impl AgentToolManager {
     }
 
     pub fn register_mcp_tool(&self, cfg: MCPToolConfig) -> Result<(), AgentToolError> {
-        self.register_tool(MCPTool::new(cfg)?)
+        self.register_typed_tool(MCPTool::new(cfg)?)
     }
 
     pub fn unregister_tool(&self, name: &str) -> bool {
@@ -2378,57 +2211,60 @@ impl AgentToolManager {
         let Ok(mut guard) = self.namespaces.write() else {
             return false;
         };
-        let removed = guard.all_tools.remove(normalized_name.as_str()).is_some();
-        if !removed {
-            return false;
-        }
-
-        guard.llm_tools.remove(normalized_name.as_str());
-        guard.bash_cmds.remove(normalized_name.as_str());
-        true
+        guard.tools.remove(normalized_name.as_str()).is_some()
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        let Ok(guard) = self.namespaces.read() else {
-            return false;
-        };
-        guard.llm_tools.contains_key(name)
+        self.get_tool(name).is_some()
     }
 
     pub fn get_tool(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
-        let Ok(guard) = self.namespaces.read() else {
-            return None;
-        };
-        guard.llm_tools.get(name).cloned()
+        self.get_tool_by_calling(name, CallingConventions::LLM)
     }
 
-    pub fn get_bash_cmd(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
-        let Ok(guard) = self.namespaces.read() else {
+    fn get_tool_by_calling(
+        &self,
+        name: &str,
+        calling: CallingConventions,
+    ) -> Option<Arc<dyn AgentTool>> {
+        let normalized_name = normalize_tool_name(name);
+        if normalized_name.is_empty() {
             return None;
-        };
-        guard.bash_cmds.get(name).cloned()
-    }
-
-    pub fn get_action(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        }
         let Ok(guard) = self.namespaces.read() else {
             return None;
         };
         guard
-            .all_tools
-            .get(name)
-            .filter(|tool| tool.support_action())
+            .tools
+            .get(normalized_name.as_str())
+            .filter(|tool| tool.calling().contains(calling))
             .cloned()
     }
 
+    pub fn get_bash_cmd(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        self.get_tool_by_calling(name, CallingConventions::BASH)
+    }
+
+    pub fn get_action(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        self.get_tool_by_calling(name, CallingConventions::ACTION)
+    }
+
     pub fn get_tool_spec(&self, name: &str) -> Option<ToolSpec> {
-        self.get_tool(name).map(|tool| tool.spec())
+        let normalized_name = normalize_tool_name(name);
+        self.get_tool(normalized_name.as_str())
+            .map(|tool| registered_tool_spec(normalized_name.as_str(), tool.as_ref()))
     }
 
     pub fn list_tool_specs(&self) -> Vec<ToolSpec> {
         let Ok(guard) = self.namespaces.read() else {
             return vec![];
         };
-        let mut specs: Vec<ToolSpec> = guard.llm_tools.values().map(|tool| tool.spec()).collect();
+        let mut specs: Vec<ToolSpec> = guard
+            .tools
+            .iter()
+            .filter(|(_, tool)| tool.calling().supports_llm_tool_call())
+            .map(|(name, tool)| registered_tool_spec(name, tool.as_ref()))
+            .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
     }
@@ -2437,7 +2273,12 @@ impl AgentToolManager {
         let Ok(guard) = self.namespaces.read() else {
             return vec![];
         };
-        let mut specs: Vec<ToolSpec> = guard.bash_cmds.values().map(|tool| tool.spec()).collect();
+        let mut specs: Vec<ToolSpec> = guard
+            .tools
+            .iter()
+            .filter(|(_, tool)| tool.calling().supports_bash())
+            .map(|(name, tool)| registered_tool_spec(name, tool.as_ref()))
+            .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
     }
@@ -2447,10 +2288,10 @@ impl AgentToolManager {
             return vec![];
         };
         let mut specs: Vec<ToolSpec> = guard
-            .all_tools
-            .values()
-            .filter(|tool| tool.support_action())
-            .map(|tool| tool.spec())
+            .tools
+            .iter()
+            .filter(|(_, tool)| tool.calling().supports_action())
+            .map(|(name, tool)| registered_tool_spec(name, tool.as_ref()))
             .collect();
         specs.sort_by(|a, b| a.name.cmp(&b.name));
         specs
@@ -2475,8 +2316,10 @@ impl AgentToolManager {
             return None;
         };
         guard
-            .bash_cmds
-            .contains_key(normalized.as_str())
+            .tools
+            .get(normalized.as_str())
+            .filter(|tool| tool.calling().supports_bash())
+            .is_some()
             .then_some(normalized)
     }
 
@@ -2507,7 +2350,7 @@ impl AgentToolManager {
         let Some(tool) = self.get_bash_cmd(tool_name.as_str()) else {
             return Ok(None);
         };
-        let spec = tool.spec();
+        let spec = registered_tool_spec(tool_name.as_str(), tool.as_ref());
         let usage = render_bash_tool_usage(&spec);
         if is_help_flag(&tokens[1..]) {
             return Ok(Some(build_builtin_tool_result(
@@ -2586,11 +2429,41 @@ impl AgentToolManager {
     }
 
     fn get_registered_tool(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        let normalized_name = normalize_tool_name(name);
+        if normalized_name.is_empty() {
+            return None;
+        }
         let Ok(guard) = self.namespaces.read() else {
             return None;
         };
-        guard.all_tools.get(name).cloned()
+        guard.tools.get(normalized_name.as_str()).cloned()
     }
+
+    /// Public lookup that ignores namespace (bash/llm/action). The CLI
+    /// dispatcher uses this since it picks between `call`/`exec` based on
+    /// the parsed command shape, not on which namespace the tool advertises.
+    pub fn get_any_tool(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        self.get_registered_tool(name)
+    }
+}
+
+/// Stitch a tool name plus argv tokens back into a bash command line,
+/// shell-quoting each token. Used by tools whose CLI form is "just the
+/// bash form" so they can produce the line their `exec` consumes.
+pub fn build_bash_cli_line(tool_name: &str, tokens: &[String]) -> String {
+    let mut line = String::from(tool_name);
+    for token in tokens {
+        line.push(' ');
+        line.push_str(&shell_quote_token(token));
+    }
+    line
+}
+
+fn shell_quote_token(raw: &str) -> String {
+    if raw.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
 pub fn tokenize_bash_command_line(line: &str) -> Result<Vec<String>, AgentToolError> {
@@ -2769,16 +2642,8 @@ mod tests {
             }
         }
 
-        fn support_bash(&self) -> bool {
-            true
-        }
-
-        fn support_action(&self) -> bool {
-            true
-        }
-
-        fn support_llm_tool_call(&self) -> bool {
-            true
+        fn calling(&self) -> CallingConventions {
+            CallingConventions::ALL
         }
 
         async fn call(
@@ -2802,6 +2667,7 @@ mod tests {
             step_idx: 3,
             wakeup_id: "wake-1".to_string(),
             session_id: "session-1".to_string(),
+            read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,
         }
     }
 
@@ -2868,7 +2734,7 @@ mod tests {
             .expect("bash help succeeds")
             .expect("tool matched");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, AGENT_TOOL_PROTOCOL_VERSION);
         assert_eq!(result.summary, "show usage");
         assert_eq!(
             result.command_line_text().as_deref(),
@@ -2880,12 +2746,16 @@ mod tests {
     #[tokio::test]
     async fn get_session_tool_marks_result_as_builtin_tool() {
         let tool = GetSessionTool::new(Arc::new(StaticSessionBackend));
-        let result = tool
-            .call(&test_call_ctx(), json!({ "session_id": "session-9" }))
-            .await
-            .expect("get session");
+        let handle = TypedToolHandle::with_null_host(tool);
+        let result = AgentTool::call(
+            &handle,
+            &test_call_ctx(),
+            json!({ "session_id": "session-9" }),
+        )
+        .await
+        .expect("get session");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, AGENT_TOOL_PROTOCOL_VERSION);
         assert_eq!(result.summary, "ok");
         assert_eq!(
             result.command_line_text().as_deref(),
@@ -2897,16 +2767,20 @@ mod tests {
     #[tokio::test]
     async fn worklog_tool_marks_result_as_builtin_tool() {
         let tool = WorklogTool::new(Arc::new(StaticWorklogBackend));
-        let result = tool
-            .call(&test_call_ctx(), json!({ "action": "list_worklog" }))
-            .await
-            .expect("worklog call");
+        let handle = TypedToolHandle::with_null_host(tool);
+        let result = AgentTool::call(
+            &handle,
+            &test_call_ctx(),
+            json!({ "action": "list_worklog" }),
+        )
+        .await
+        .expect("worklog call");
 
-        assert!(result.is_agent_tool);
+        assert_eq!(result.agent_tool_protocol, AGENT_TOOL_PROTOCOL_VERSION);
         assert_eq!(result.summary, "list_worklog");
         assert_eq!(
             result.command_line_text().as_deref(),
-            Some("worklog_manage")
+            Some("worklog_manage list_worklog")
         );
         assert_eq!(result["action"], "list_worklog");
     }
@@ -2930,13 +2804,36 @@ mod tests {
     }
 
     #[test]
+    fn agent_tool_result_deserialize_requires_protocol_marker() {
+        assert!(serde_json::from_value::<AgentToolResult>(json!({
+            "agent_tool_protocol": "1",
+            "status": "success",
+            "summary": "ok",
+            "detail": {}
+        }))
+        .is_ok());
+        assert!(serde_json::from_value::<AgentToolResult>(json!({
+            "is_agent_tool": true,
+            "status": "success",
+            "summary": "ok",
+            "detail": {}
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<AgentToolResult>(json!({
+            "status": "success",
+            "summary": "ok",
+            "detail": {}
+        }))
+        .is_err());
+    }
+
+    #[test]
     fn render_for_level_standard_agent_tool_uses_summary_and_details() {
         let result = AgentToolResult::from_details(json!({
             "ok": true,
             "path": "demo.txt",
             "bytes": 12
         }))
-        .with_is_agent_tool(true)
         .with_cmd_line("read_file demo.txt range=1-2")
         .with_result("read 12 bytes");
 
@@ -2947,27 +2844,50 @@ mod tests {
         assert!(min.contains("read_file demo.txt range=1-2 => success"));
         assert_eq!(mini, "read 12 bytes");
         assert!(full.contains("read_file demo.txt range=1-2"));
-        assert!(full.contains("```result"));
+        assert!(full.contains("```json"));
         assert!(full.contains("\"path\": \"demo.txt\""));
     }
 
     #[test]
-    fn render_for_level_non_agent_tool_shows_tail_on_failure() {
+    fn render_for_level_bash_result_uses_summary_for_compressed_levels() {
         let result = AgentToolResult::from_details(json!({}))
             .with_cmd_line("cargo test --package demo")
             .with_status(AgentToolStatus::Error)
             .with_return_code(1)
+            .with_result("cargo test failed with exit code 1")
             .with_output("line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nline-8\nline-9");
 
         let mini = result.render_for_level(AgentHistoryShowLevel::Mini);
         let full = result.render_for_level(AgentHistoryShowLevel::Full);
 
-        assert!(mini.contains("cargo test --package demo => failed (line-9)"));
-        assert!(mini.contains("```output"));
-        assert!(mini.contains("line-9"));
-        assert!(full.contains("cargo test --package demo => failed (line-9)"));
+        assert_eq!(mini, "cargo test failed with exit code 1");
+        assert!(full.contains("cargo test --package demo"));
+        assert!(full.contains("```output"));
         assert!(full.contains("line-1"));
         assert!(full.contains("line-9"));
+    }
+
+    #[test]
+    fn tool_result_view_preserves_protocol_fields() {
+        let view = AgentToolResult::from_details(json!({"rows": [1, 2]}))
+            .with_cmd_line("read file:///demo.txt")
+            .with_status(AgentToolStatus::Pending)
+            .with_result("waiting for task")
+            .with_title("read file:///demo.txt => pending")
+            .with_task_id("task-9")
+            .with_pending_reason(AgentToolPendingReason::LongRunning)
+            .with_check_after(5000)
+            .with_partial_output("partial")
+            .to_tool_result_view();
+
+        assert_eq!(view.status, ToolResultStatusView::Pending);
+        assert_eq!(view.cmd_name.as_deref(), Some("read"));
+        assert_eq!(view.summary, "waiting for task");
+        assert_eq!(view.task_id.as_deref(), Some("task-9"));
+        assert_eq!(view.pending_reason.as_deref(), Some("long_running"));
+        assert_eq!(view.check_after, Some(5000));
+        assert_eq!(view.partial_output.as_deref(), Some("partial"));
+        assert!(view.detail.is_some());
     }
 
     #[test]
@@ -2999,7 +2919,7 @@ mod tests {
             .render_for_last_step();
 
         assert!(rendered.contains("sed -n"));
-        assert!(rendered.contains("demo.log => success"));
+        assert!(rendered.contains("demo.log"));
         assert!(rendered.contains("line-01"));
         assert!(rendered.contains("line-30"));
         assert!(!rendered.contains("TRUNCATED"));

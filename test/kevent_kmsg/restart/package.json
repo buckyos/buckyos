@@ -1,0 +1,11 @@
+{
+  "name": "kevent-kmsg-restart-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "deno run --config deno.json --allow-net --allow-read --allow-write --allow-env --allow-run --unsafely-ignore-certificate-errors kevent_kmsg_restart_dv.ts"
+  },
+  "dependencies": {
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
+  }
+}

@@ -38,18 +38,31 @@ except ModuleNotFoundError:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parent
 SRC_DIR = REPO_ROOT / "src"
 PUBLISH_DIR = SRC_DIR / "publish"
-VERSION_FILE = SRC_DIR / "VERSION"
-CYFS_SRC_DIR = REPO_ROOT.parent / "cyfs-gateway" / "src"
 DESKTOP_APP_REPO_DIR = REPO_ROOT.parent / "BuckyOSApp"
 IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
+PROJECT_CONFIG_NAMES = ("bucky_project.yaml", "bucky_project.yml", "bucky_project.json")
+PLATFORM_PUBLISH_KEYS = (
+    ("linux", "linux_pkg"),
+    ("macos", "macos_pkg"),
+    ("windows", "win_pkg"),
+)
 
 
 @dataclass(frozen=True)
 class TargetScript:
     platform_key: str
+    package_format: str | None
     script_path: Path
     architecture: str
     build_root: Path
+
+
+@dataclass(frozen=True)
+class PublishDependency:
+    key: str
+    dep_type: str
+    source_dir: Path
+    project_file: Path
 
 
 def _require_yaml() -> Any:
@@ -85,6 +98,27 @@ def _load_project_config(path: Path) -> dict[str, Any]:
     if suffix == ".json":
         return _json_load_file(path)
     raise RuntimeError(f"unsupported project config format: {path}")
+
+
+def _parse_bool(value: Any, *, field_name: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "yes", "1", "on"):
+            return True
+        if normalized in ("false", "no", "0", "off"):
+            return False
+    raise RuntimeError(f"{field_name} must be a boolean value")
+
+
+def _parse_component_type(value: Any, *, field_name: str) -> str:
+    kind = str(value or "app").strip()
+    if kind not in ("app", "bundle"):
+        raise RuntimeError(f"{field_name} must be one of: app, bundle")
+    return kind
 
 
 def _expand_project_vars(raw: str, *, build_root: Path) -> str:
@@ -285,18 +319,6 @@ def _build_install_projects_from_config(
     return install_projects
 
 
-def _find_cyfs_project_file() -> Path | None:
-    candidates = [
-        CYFS_SRC_DIR / "bucky_project.yaml",
-        CYFS_SRC_DIR / "bucky_project.yml",
-        CYFS_SRC_DIR / "bucky_project.json",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
-    return None
-
-
 def _resolve_component_source(
     *,
     component_key: str,
@@ -309,6 +331,134 @@ def _resolve_component_source(
             return src_path
         return app_publish_dir / component_key / component_src
     return app_publish_dir / component_key
+
+
+def _resolve_project_relative_path(raw_path: str, *, project_file: Path) -> Path:
+    expanded = os.path.expandvars(os.path.expanduser(raw_path))
+    path = Path(expanded)
+    if path.is_absolute():
+        return path.resolve()
+    return (project_file.parent / path).resolve()
+
+
+def _find_project_config_file(source: Path, *, field_name: str) -> Path:
+    if source.is_file():
+        return source.resolve()
+    for name in PROJECT_CONFIG_NAMES:
+        candidate = source / name
+        if candidate.exists():
+            return candidate.resolve()
+    raise RuntimeError(
+        f"{field_name} must point to a buckyos project directory or config file. "
+        f"Expected one of {', '.join(PROJECT_CONFIG_NAMES)} under: {source}"
+    )
+
+
+def _publish_apps_for_platform(data: dict[str, Any], *, platform_key: str) -> dict[str, Any]:
+    publish_key = dict(PLATFORM_PUBLISH_KEYS).get(platform_key)
+    if publish_key is None:
+        raise RuntimeError(f"unsupported platform key: {platform_key}")
+    publish = data.get("publish", {}) or {}
+    if not isinstance(publish, dict):
+        raise RuntimeError("publish must be a map")
+    platform_cfg = publish.get(publish_key, {}) or {}
+    if not isinstance(platform_cfg, dict):
+        raise RuntimeError(f"publish.{publish_key} must be a map")
+    apps = platform_cfg.get("apps", {}) or {}
+    if not isinstance(apps, dict):
+        raise RuntimeError(f"publish.{publish_key}.apps must be a map")
+    return apps
+
+
+def _publish_dependencies_from_component(
+    *,
+    project_file: Path,
+    platform_key: str,
+    component_key: str,
+    component_cfg: dict[str, Any],
+) -> list[PublishDependency]:
+    deps_raw = component_cfg.get("deps", {}) or {}
+    if not isinstance(deps_raw, dict):
+        raise RuntimeError(f"publish.{platform_key}.apps.{component_key}.deps must be a map")
+
+    deps: list[PublishDependency] = []
+    for dep_key, dep_cfg_raw in deps_raw.items():
+        dep_cfg = dep_cfg_raw or {}
+        if not isinstance(dep_cfg, dict):
+            raise RuntimeError(f"publish.{platform_key}.apps.{component_key}.deps.{dep_key} must be a map")
+        dep_type = str(dep_cfg.get("type", "")).strip()
+        if not dep_type:
+            raise RuntimeError(f"publish.{platform_key}.apps.{component_key}.deps.{dep_key}.type is required")
+        source_raw = str(dep_cfg.get("source", "")).strip()
+        if not source_raw:
+            raise RuntimeError(f"publish.{platform_key}.apps.{component_key}.deps.{dep_key}.source is required")
+        if dep_type != "buckyos_project":
+            raise RuntimeError(
+                f"unsupported dependency type for publish.{platform_key}.apps.{component_key}.deps.{dep_key}: {dep_type}"
+            )
+        source_dir = _resolve_project_relative_path(source_raw, project_file=project_file)
+        project_config = _find_project_config_file(
+            source_dir,
+            field_name=f"publish.{platform_key}.apps.{component_key}.deps.{dep_key}.source",
+        )
+        deps.append(
+            PublishDependency(
+                key=str(dep_key),
+                dep_type=dep_type,
+                source_dir=project_config.parent,
+                project_file=project_config,
+            )
+        )
+    return deps
+
+
+def _record_publish_dependency(target_project: dict[str, Any], dep: PublishDependency, *, platform_key: str) -> None:
+    records = target_project.setdefault("publish_deps", [])
+    for record in records:
+        if (
+            record.get("key") == dep.key
+            and record.get("type") == dep.dep_type
+            and record.get("project_path") == str(dep.project_file)
+        ):
+            platforms = record.setdefault("platforms", [])
+            if platform_key not in platforms:
+                platforms.append(platform_key)
+            return
+    records.append(
+        {
+            "key": dep.key,
+            "type": dep.dep_type,
+            "source_dir": str(dep.source_dir),
+            "project_path": str(dep.project_file),
+            "platforms": [platform_key],
+        }
+    )
+
+
+def _merge_publish_dependency(
+    target_project: dict[str, Any],
+    dep: PublishDependency,
+    *,
+    build_root: Path,
+    publish_root: Path,
+    platform_key: str,
+) -> None:
+    dep_data = _load_project_config(dep.project_file)
+    dep_projects = _build_install_projects_from_config(
+        project_file=dep.project_file,
+        data=dep_data,
+        build_root=build_root,
+        publish_root=publish_root,
+    )
+    dep_project = dep_projects.get(dep.key)
+    if dep_project is None:
+        raise RuntimeError(f"dependency app '{dep.key}' not found in {dep.project_file}")
+
+    target_source_rootfs = Path(
+        str(target_project.get("source_rootfs") or publish_root / str(target_project["key"]))
+    ).resolve()
+    _merge_install_project_items(target_project, dep_project, source_rootfs=target_source_rootfs)
+    _record_publish_dependency(target_project, dep, platform_key=platform_key)
 
 
 def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish_dir: Path | None = None) -> dict[str, Any]:
@@ -329,35 +479,10 @@ def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish
         "windows": {"component_keys": []},
     }
 
-    cyfs_project_file = _find_cyfs_project_file()
-    if cyfs_project_file is not None:
-        cyfs_data = _load_project_config(cyfs_project_file)
-        cyfs_projects = _build_install_projects_from_config(
-            project_file=cyfs_project_file,
-            data=cyfs_data,
-            build_root=build_root,
-            publish_root=publish_root,
-        )
-        cyfs_buckyos = cyfs_projects.get("cyfs-gateway")
-        if cyfs_buckyos is not None and "buckyos" in install_projects:
-            target_source_root = Path(str(install_projects["buckyos"].get("source_rootfs", publish_root / "buckyos"))).resolve()
-            _merge_install_project_items(install_projects["buckyos"], cyfs_buckyos, source_rootfs=target_source_root)
-            merged_sources = install_projects["buckyos"].setdefault("merged_from_projects", [])
-            merged_sources.append(
-                {
-                    "project_name": str(cyfs_data.get("name", cyfs_project_file.stem)),
-                    "project_path": str(cyfs_project_file),
-                    "app_key": "cyfs-gateway",
-                }
-            )
-
-    platform_publish = {
-        "macos": (((data.get("publish", {}) or {}).get("macos_pkg", {}) or {}).get("apps", {}) or {}),
-        "windows": (((data.get("publish", {}) or {}).get("win_pkg", {}) or {}).get("apps", {}) or {}),
-    }
+    platform_publish: dict[str, Any] = {}
+    for platform_key, _publish_key in PLATFORM_PUBLISH_KEYS:
+        platform_publish[platform_key] = _publish_apps_for_platform(data, platform_key=platform_key)
     for platform_key, components in platform_publish.items():
-        if not isinstance(components, dict):
-            raise RuntimeError(f"publish.{platform_key}.apps must be a map")
         for component_key, component_cfg_raw in components.items():
             platform_manifest[platform_key]["component_keys"].append(str(component_key))
             component_cfg = component_cfg_raw or {}
@@ -381,7 +506,26 @@ def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish
                 },
             )
 
-            component_kind = str(component_cfg.get("type", "app") or "app")
+            component_kind = _parse_component_type(
+                component_cfg.get("type", "app"),
+                field_name=f"publish.{platform_key}.apps.{component_key}.type",
+            )
+            deps = _publish_dependencies_from_component(
+                project_file=project_file,
+                platform_key=platform_key,
+                component_key=str(component_key),
+                component_cfg=component_cfg,
+            )
+            if deps and component_kind != "app":
+                raise RuntimeError(f"publish.{platform_key}.apps.{component_key}.deps is only supported for app components")
+            for dep in deps:
+                _merge_publish_dependency(
+                    project_record,
+                    dep,
+                    build_root=build_root,
+                    publish_root=publish_root,
+                    platform_key=platform_key,
+                )
             app_key = project_record.get("app_key")
             if component_kind == "app" and app_key is None and project_key in install_projects and install_projects[project_key].get("app_key"):
                 app_key = project_key
@@ -389,11 +533,18 @@ def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish
             default_target_raw = str(component_cfg.get("default_target", "")).strip()
             if not default_target_raw:
                 raise RuntimeError(f"publish.{platform_key}.apps.{component_key} missing default_target")
-            system_service_raw = component_cfg.get("system_service", False)
-            if isinstance(system_service_raw, str):
-                system_service = system_service_raw.lower().strip().rstrip(",") == "true"
-            else:
-                system_service = bool(system_service_raw)
+            optional = _parse_bool(
+                component_cfg.get("optional", False),
+                field_name=f"publish.{platform_key}.apps.{component_key}.optional",
+            )
+            default_selected = _parse_bool(
+                component_cfg.get("default_selected", False),
+                field_name=f"publish.{platform_key}.apps.{component_key}.default_selected",
+            )
+            system_service = _parse_bool(
+                component_cfg.get("system_service", False),
+                field_name=f"publish.{platform_key}.apps.{component_key}.system_service",
+            )
 
             project_record["kind"] = component_kind
             project_record["name"] = str(component_cfg.get("name", project_record.get("name", component_key)))
@@ -401,7 +552,8 @@ def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish
                 "key": project_key,
                 "name": str(component_cfg.get("name", component_key)),
                 "kind": component_kind,
-                "optional": bool(component_cfg.get("optional", False)),
+                "optional": optional,
+                "default_selected": default_selected,
                 "src": component_src,
                 "source_path": str(
                     _resolve_component_source(
@@ -416,7 +568,7 @@ def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish
             }
 
     linux_target = _expand_project_vars("${BUCKYOS_ROOT}", build_root=build_root)
-    if "buckyos" in install_projects:
+    if "buckyos" in install_projects and not platform_manifest["linux"]["component_keys"]:
         platform_manifest["linux"]["component_keys"] = ["buckyos"]
         install_projects["buckyos"]["platforms"].setdefault(
             "linux",
@@ -425,6 +577,7 @@ def _build_project_manifest(project_path: Path, *, build_root: Path, app_publish
                 "name": str(install_projects["buckyos"].get("name", "buckyos")),
                 "kind": "app",
                 "optional": False,
+                "default_selected": True,
                 "src": None,
                 "source_path": str(publish_root / "buckyos"),
                 "default_target_raw": "${BUCKYOS_ROOT}",
@@ -489,34 +642,49 @@ def _normalize_arch(raw_arch: str, platform_key: str) -> str:
     if arch in ("x86_64", "amd64"):
         return "amd64"
     if arch in ("arm64", "aarch64"):
-        return "aarch64" if platform_key == "macos" else "arm64"
+        return "arm64"
     raise RuntimeError(f"unsupported architecture '{raw_arch}' for {platform_key}")
 
 
-def detect_target(arch_override: str | None = None, build_root_override: str | None = None) -> TargetScript:
+def detect_target(
+    arch_override: str | None = None,
+    build_root_override: str | None = None,
+    package_format: str | None = None,
+) -> TargetScript:
     platform_key = _detect_platform_key()
     raw_arch = arch_override or platform.machine()
     architecture = _normalize_arch(raw_arch, platform_key)
 
-    script_name = {
-        "macos": "make_local_osx_pkg.py",
-        "linux": "make_local_deb.py",
-        "windows": "make_local_win_installer.py",
-    }[platform_key]
+    normalized_format: str | None = None
+    if platform_key == "linux":
+        normalized_format = (package_format or "deb").strip().lower()
+        if normalized_format not in ("deb", "rpm"):
+            raise RuntimeError("--format must be deb or rpm on Linux")
+        script_name = "make_local_rpm.py" if normalized_format == "rpm" else "make_local_deb.py"
+    else:
+        if package_format:
+            raise RuntimeError("--format is only supported for Linux targets")
+        script_name = {
+            "macos": "make_local_osx_pkg.py",
+            "windows": "make_local_win_installer.py",
+        }[platform_key]
     build_root = Path(build_root_override).expanduser() if build_root_override else _default_build_root(platform_key)
     return TargetScript(
         platform_key=platform_key,
+        package_format=normalized_format,
         script_path=PUBLISH_DIR / script_name,
         architecture=architecture,
         build_root=build_root,
     )
 
 
-def _default_version() -> str:
-    base_version = VERSION_FILE.read_text(encoding="utf-8").strip()
-    if not base_version:
-        raise RuntimeError(f"empty version file: {VERSION_FILE}")
-    return f"{base_version}+build{datetime.now().strftime('%y%m%d')}"
+def _infer_package_format_from_path(pkg_path: str) -> str | None:
+    suffix = Path(pkg_path).suffix.lower()
+    if suffix == ".deb":
+        return "deb"
+    if suffix == ".rpm":
+        return "rpm"
+    return None
 
 
 def _node_daemon_candidates(build_root: Path, target: TargetScript) -> list[Path]:
@@ -637,6 +805,28 @@ def _run_checked(cmd: list[str], *, cwd: Path | None = None, dry_run: bool = Fal
     rc = _run(cmd, cwd=cwd, dry_run=dry_run)
     if rc != 0:
         raise RuntimeError(f"command failed with exit code {rc}: {' '.join(cmd)}")
+
+
+def _timings_subdir(timings_dir: str | None, target: TargetScript, project_key: str) -> Path | None:
+    if not timings_dir:
+        return None
+    return Path(timings_dir).expanduser() / target.platform_key / target.architecture / project_key
+
+
+def _buckyos_build_command(
+    *,
+    app_keys: list[str],
+    rust_target: str | None,
+    timings_dir: Path | None,
+) -> list[str]:
+    cmd = ["buckyos-build"]
+    for app_key in app_keys:
+        cmd.append(f"--app={app_key}")
+    if rust_target:
+        cmd.append(f"--target={rust_target}")
+    if timings_dir is not None:
+        cmd.append(f"--timings-dir={timings_dir}")
+    return cmd
 
 
 def _remove_tree(path: Path, *, dry_run: bool) -> None:
@@ -825,17 +1015,67 @@ def _stage_desktop_app(
     )
 
 
-def _prepare_common_build_root(
+def _prepare_publish_dependencies(
     *,
+    project_path: Path,
     target: TargetScript,
     dry_run: bool,
     skip_cargo_update: bool,
-    skip_cyfs_gateway: bool,
+    rust_target: str | None,
+    timings_dir: str | None = None,
+) -> None:
+    project_file = project_path.expanduser().resolve()
+    data = _load_project_config(project_file)
+    components = _publish_apps_for_platform(data, platform_key=target.platform_key)
+    prepared: set[tuple[str, str]] = set()
+
+    for component_key, component_cfg_raw in components.items():
+        component_cfg = component_cfg_raw or {}
+        if not isinstance(component_cfg, dict):
+            raise RuntimeError(f"publish.{target.platform_key}.apps.{component_key} must be a map")
+        deps = _publish_dependencies_from_component(
+            project_file=project_file,
+            platform_key=target.platform_key,
+            component_key=str(component_key),
+            component_cfg=component_cfg,
+        )
+        for dep in deps:
+            dep_id = (dep.key, str(dep.project_file))
+            if dep_id in prepared:
+                continue
+            prepared.add(dep_id)
+            if dep.dep_type != "buckyos_project":
+                raise RuntimeError(f"unsupported dependency type for {dep.key}: {dep.dep_type}")
+
+            target_rootfs = target.build_root / str(component_key)
+            if not dry_run:
+                target_rootfs.mkdir(parents=True, exist_ok=True)
+            if not skip_cargo_update:
+                _run_checked(["cargo", "update"], cwd=dep.source_dir, dry_run=dry_run)
+            dep_build_cmd = _buckyos_build_command(
+                app_keys=[dep.key],
+                rust_target=rust_target,
+                timings_dir=_timings_subdir(timings_dir, target, dep.key),
+            )
+            _run_checked(dep_build_cmd, cwd=dep.source_dir, dry_run=dry_run)
+            _run_checked(
+                ["buckyos-install", "--all", f"--target-rootfs={target_rootfs}", f"--app={dep.key}"],
+                cwd=dep.source_dir,
+                dry_run=dry_run,
+            )
+
+
+def _prepare_common_build_root(
+    *,
+    project_path: Path,
+    target: TargetScript,
+    dry_run: bool,
+    skip_cargo_update: bool,
     desktop_app: str | None,
     skip_desktop_app_build: bool,
     rust_target: str | None = None,
+    timings_dir: str | None = None,
 ) -> None:
-    python_exe = _python_executable()
     buckyos_root = target.build_root / "buckyos"
     buckycli_root = target.build_root / "buckycli"
 
@@ -846,30 +1086,22 @@ def _prepare_common_build_root(
     _remove_tree(buckyos_root, dry_run=dry_run)
     _remove_tree(buckycli_root, dry_run=dry_run)
 
-    if (not skip_cyfs_gateway) and CYFS_SRC_DIR.exists():
-        if not dry_run:
-            buckyos_root.mkdir(parents=True, exist_ok=True)
-        if not skip_cargo_update:
-            _run_checked(["cargo", "update"], cwd=CYFS_SRC_DIR, dry_run=dry_run)
-        cyfs_build_cmd = ["buckyos-build"]
-        if rust_target:
-            cyfs_build_cmd.append(f"--target={rust_target}")
-        _run_checked(cyfs_build_cmd, cwd=CYFS_SRC_DIR, dry_run=dry_run)
-        _run_checked(
-            ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=cyfs-gateway"],
-            cwd=CYFS_SRC_DIR,
-            dry_run=dry_run,
-        )
-    elif skip_cyfs_gateway:
-        print("[prepare] skip cyfs-gateway by request")
-    else:
-        print(f"[prepare] skip cyfs-gateway, repo not found: {CYFS_SRC_DIR}")
+    _prepare_publish_dependencies(
+        project_path=project_path,
+        target=target,
+        dry_run=dry_run,
+        skip_cargo_update=skip_cargo_update,
+        rust_target=rust_target,
+        timings_dir=timings_dir,
+    )
 
     if not skip_cargo_update:
         _run_checked(["cargo", "update"], cwd=SRC_DIR, dry_run=dry_run)
-    buckyos_build_cmd = ["buckyos-build"]
-    if rust_target:
-        buckyos_build_cmd.append(f"--target={rust_target}")
+    buckyos_build_cmd = _buckyos_build_command(
+        app_keys=["buckycli", "buckyos"],
+        rust_target=rust_target,
+        timings_dir=_timings_subdir(timings_dir, target, "buckyos"),
+    )
     _run_checked(buckyos_build_cmd, cwd=SRC_DIR, dry_run=dry_run)
     _run_checked(
         ["buckyos-install", "--all", f"--target-rootfs={buckycli_root}", "--app=buckycli"],
@@ -882,7 +1114,11 @@ def _prepare_common_build_root(
         dry_run=dry_run,
     )
     _ensure_executable(buckyos_root / "bin" / "stop_osx.sh", dry_run=dry_run)
-    _run_checked([python_exe, "make_config.py", "release", f"--rootfs={buckyos_root}"], cwd=SRC_DIR, dry_run=dry_run)
+    _run_checked(
+        ["deno", "task", "make_config", "release", "--rootfs", str(buckyos_root)],
+        cwd=SRC_DIR,
+        dry_run=dry_run,
+    )
 
     _stage_desktop_app(
         target,
@@ -895,6 +1131,7 @@ def _prepare_common_build_root(
 def prepare_root(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="make_local_pkg.py prepare-root")
     parser.add_argument("--arch", default=None, help="Override detected architecture")
+    parser.add_argument("--project", default=str(SRC_DIR / "bucky_project.yaml"))
     parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
     parser.add_argument("--app-publish-dir", default=None, help="Alias of --build-root for compatibility")
     parser.add_argument("--desktop-app", default=None, help="Path to BuckyOS desktop app bundle/exe to stage")
@@ -904,21 +1141,26 @@ def prepare_root(argv: list[str]) -> int:
         help="Do not auto-build desktop app from ../BuckyOSApp",
     )
     parser.add_argument("--skip-cargo-update", action="store_true", help="Skip cargo update in shared build steps")
-    parser.add_argument("--skip-cyfs-gateway", action="store_true", help="Skip cyfs-gateway staging")
     parser.add_argument("--rust-target", default=None, help="Pass explicit --target to internal buckyos-build commands")
+    parser.add_argument(
+        "--timings-dir",
+        default=None,
+        help="Collect devkit cargo timing reports under this directory",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
     args = parser.parse_args(argv)
 
     build_root_override = args.build_root or args.app_publish_dir
     target = detect_target(args.arch, build_root_override)
     _prepare_common_build_root(
+        project_path=Path(args.project),
         target=target,
         dry_run=bool(args.dry_run),
         skip_cargo_update=bool(args.skip_cargo_update),
-        skip_cyfs_gateway=bool(args.skip_cyfs_gateway),
         desktop_app=args.desktop_app,
         skip_desktop_app_build=bool(args.skip_desktop_app_build),
         rust_target=args.rust_target,
+        timings_dir=args.timings_dir,
     )
     return 0
 
@@ -930,6 +1172,7 @@ def build_pkg(argv: list[str]) -> int:
     parser.add_argument("--project", default=str(SRC_DIR / "bucky_project.yaml"))
     parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
     parser.add_argument("--app-publish-dir", default=None, help="Alias of --build-root for compatibility")
+    parser.add_argument("--format", choices=("deb", "rpm"), default=None, help="Linux package format (default: deb)")
     parser.add_argument("--out-dir", default=str(REPO_ROOT / "publish"))
     parser.add_argument("--desktop-app", default=None, help="Path to BuckyOS desktop app bundle/exe to stage")
     parser.add_argument(
@@ -939,24 +1182,28 @@ def build_pkg(argv: list[str]) -> int:
     )
     parser.add_argument("--skip-prepare", action="store_true", help="Assume BUCKYOS_BUILD_ROOT is already staged")
     parser.add_argument("--skip-cargo-update", action="store_true", help="Skip cargo update in shared build steps")
-    parser.add_argument("--skip-cyfs-gateway", action="store_true", help="Skip cyfs-gateway staging")
     parser.add_argument("--rust-target", default=None, help="Pass explicit --target to internal buckyos-build commands")
-    parser.add_argument("--no-sync-scripts", action="store_true")
+    parser.add_argument(
+        "--timings-dir",
+        default=None,
+        help="Collect devkit cargo timing reports under this directory",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args, forwarded = parser.parse_known_args(argv)
 
     build_root_override = args.build_root or args.app_publish_dir
-    target = detect_target(args.arch, build_root_override)
+    target = detect_target(args.arch, build_root_override, args.format)
 
     if not args.skip_prepare:
         _prepare_common_build_root(
+            project_path=Path(args.project),
             target=target,
             dry_run=bool(args.dry_run),
             skip_cargo_update=bool(args.skip_cargo_update),
-            skip_cyfs_gateway=bool(args.skip_cyfs_gateway),
             desktop_app=args.desktop_app,
             skip_desktop_app_build=bool(args.skip_desktop_app_build),
             rust_target=args.rust_target,
+            timings_dir=args.timings_dir,
         )
     else:
         print("[prepare] skipped by --skip-prepare")
@@ -988,8 +1235,6 @@ def build_pkg(argv: list[str]) -> int:
             "--out-dir",
             args.out_dir,
         ]
-        if args.no_sync_scripts:
-            cmd.append("--no-sync-scripts")
         if args.dry_run:
             cmd.append("--dry-run")
         cmd += forwarded
@@ -1004,10 +1249,21 @@ def verify_pkg(argv: list[str]) -> int:
     parser.add_argument("pkg", help="Path to package file")
     parser.add_argument("--arch", default=None, help="Override detected architecture")
     parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
+    parser.add_argument(
+        "--format",
+        choices=("deb", "rpm"),
+        default=None,
+        help="Linux package format (default: infer from .deb/.rpm, otherwise deb)",
+    )
     parser.add_argument("--project", default=str(SRC_DIR / "bucky_project.yaml"))
     args, forwarded = parser.parse_known_args(argv)
 
-    target = detect_target(args.arch, args.build_root)
+    suffix_format = _infer_package_format_from_path(args.pkg)
+    if args.format and suffix_format and args.format != suffix_format:
+        raise RuntimeError(f"--format {args.format} conflicts with package extension .{suffix_format}: {args.pkg}")
+    package_format = args.format or suffix_format
+
+    target = detect_target(args.arch, args.build_root, package_format)
     manifest_path = _write_project_manifest(
         project_path=Path(args.project),
         build_root=target.build_root,
@@ -1089,10 +1345,13 @@ def show_target(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="make_local_pkg.py show-target")
     parser.add_argument("--arch", default=None, help="Override detected architecture")
     parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
+    parser.add_argument("--format", choices=("deb", "rpm"), default=None, help="Linux package format (default: deb)")
     args = parser.parse_args(argv)
 
-    target = detect_target(args.arch, args.build_root)
+    target = detect_target(args.arch, args.build_root, args.format)
     print(f"platform={target.platform_key}")
+    if target.package_format:
+        print(f"format={target.package_format}")
     print(f"arch={target.architecture}")
     print(f"build_root={target.build_root}")
     print(f"script={target.script_path}")
@@ -1103,12 +1362,13 @@ def show_manifest(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="make_local_pkg.py show-manifest")
     parser.add_argument("--arch", default=None, help="Override detected architecture")
     parser.add_argument("--build-root", default=None, help="Override BUCKYOS_BUILD_ROOT")
+    parser.add_argument("--format", choices=("deb", "rpm"), default=None, help="Linux package format (default: deb)")
     parser.add_argument("--app-publish-dir", default=None, help="Override app publish dir in generated manifest")
     parser.add_argument("--project", default=str(SRC_DIR / "bucky_project.yaml"))
     parser.add_argument("--out", default=None, help="Write manifest JSON to file instead of stdout")
     args = parser.parse_args(argv)
 
-    target = detect_target(args.arch, args.build_root)
+    target = detect_target(args.arch, args.build_root, args.format)
     app_publish_dir = Path(args.app_publish_dir).expanduser() if args.app_publish_dir else target.build_root
     if args.out:
         manifest_path = _write_project_manifest(
@@ -1142,6 +1402,7 @@ def main(argv: list[str]) -> int:
             "  update         Local update helper (macOS/Linux only)\n"
             "  uninstall      Local uninstall helper (macOS/Linux only)\n"
             "  show-target    Print the detected platform/script mapping\n"
+            "  show-plan      Print the generated project manifest JSON\n"
             "  show-manifest  Print the generated project manifest JSON\n"
         )
         return 0
@@ -1160,6 +1421,8 @@ def main(argv: list[str]) -> int:
             return local_action(command, argv[2:])
         if command == "show-target":
             return show_target(argv[2:])
+        if command == "show-plan":
+            return show_manifest(argv[2:])
         if command == "show-manifest":
             return show_manifest(argv[2:])
         raise RuntimeError(f"unknown command: {command}")

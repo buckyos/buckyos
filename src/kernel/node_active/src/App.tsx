@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Box,
   Container,
   CssBaseline,
@@ -14,6 +15,7 @@ import {
 } from "@mui/material";
 import { useTranslation } from "react-i18next";
 import { buckyos, RuntimeType } from "buckyos";
+import { validateOwnerDocument } from "../active_lib";
 import ActiveWizard from "./components/ActiveWizard";
 import LanguageSwitch from "./components/LanguageSwitch";
 import ThemeToggle from "./components/ThemeToggle";
@@ -34,20 +36,6 @@ function normalizeWalletPublicKey(value: unknown) {
     }
   }
   return undefined;
-}
-
-function normalizeWalletPasswordHash(user: Record<string, unknown>): string {
-  const candidates = [
-    user.user_password_hash,
-    user.password_hash,
-    user.pwd_hash,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate.trim();
-    }
-  }
-  return "";
 }
 
 const App = () => {
@@ -89,22 +77,29 @@ const App = () => {
 
         // Wallet runtime: wait wallet user result BEFORE rendering wizard.
         const user = await buckyos.getCurrentWalletUser?.();
-        if (!user) {
-          // If wallet user is unavailable, fall back to non-wallet flow.
-          return;
-        }
+        if (!user) return;
 
         const normalizedUser = user as Record<string, unknown>;
+        const snUsername =
+          typeof normalizedUser.sn_username === "string"
+            ? normalizedUser.sn_username.trim().toLowerCase()
+            : "";
+        if (!snUsername) throw new Error("Wallet user is missing sn_username");
+        if (!normalizedUser.owner_document) {
+          throw new Error("Wallet user is missing owner_document");
+        }
+        const bridgePublicKey = normalizeWalletPublicKey(normalizedUser.public_key);
+        const ownerDocument = validateOwnerDocument(
+          normalizedUser.owner_document,
+          snUsername,
+          bridgePublicKey,
+        );
 
         if (cancelled) return;
         setWalletUser({
-          user_name: String(normalizedUser.user_name || normalizedUser.username || "").toLowerCase(),
-          user_id: typeof normalizedUser.did === "string" ? normalizedUser.did : undefined,
-          public_key: normalizeWalletPublicKey(
-            normalizedUser.owner_public_key || normalizedUser.public_key || normalizedUser.user_owner_key,
-          ),
-          sn_username: String(normalizedUser.sn_username || "").toLowerCase(),
-          password_hash: normalizeWalletPasswordHash(normalizedUser),
+          owner_document: ownerDocument,
+          public_key: bridgePublicKey,
+          sn_username: snUsername,
         });
         setIsWalletRuntime(true);
       } catch (err: any) {
@@ -199,7 +194,7 @@ const App = () => {
             >
               <Box sx={{ minWidth: 0, width: { xs: "100%", sm: "auto" } }}>
                 <Typography variant="h4">{t("active_title")}</Typography>
-                {isWalletRuntime && walletUser?.user_name && (
+                {isWalletRuntime && walletUser?.owner_document.name && (
                   <Stack
                     direction="row"
                     spacing={1}
@@ -211,7 +206,7 @@ const App = () => {
                     <Chip
                       size="small"
                       label={t("wallet_device_owner", {
-                        user_name: walletUser.user_name,
+                        user_name: walletUser.owner_document.name,
                         public_key: walletPubKeyDisplay,
                       })}
                       sx={{
@@ -264,6 +259,8 @@ const App = () => {
                   </Typography>
                 ) : null}
               </Box>
+            ) : initError ? (
+              <Alert severity="error">{initError}</Alert>
             ) : (
               <ActiveWizard isWalletRuntime={isWalletRuntime} walletUser={walletUser || undefined} />
             )}

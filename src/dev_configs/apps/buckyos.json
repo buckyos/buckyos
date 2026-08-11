@@ -2,18 +2,17 @@
   "name": "buckyos",
   "version": "0.6.0",
   "directories": {
-      "source": "/opt/buckyos",
+      "source": "/opt/buckyosvm/current",
       "target": "/opt/buckyos",
-      "source_bin": "./rootfs/bin",
+      "source_bin": "/opt/buckyosvm/base/bin",
       "target_bin": "/opt/buckyos/bin"
   },
   "commands": {
     "build": [
-      "echo 'MAKE sure you already build the linux version of buckyos (result store in rootfs/bin)'"
+      "echo 'Run uv run ./build_for_vm_test.py before buckyos-devtest install/update'"
     ],
     "build_all": [
-      "uv run buckyos-install --all --app=buckyos",
-      "uv run ./make_config.py {{buckyos.node_group}}"
+      "uv run ./build_for_vm_test.py --skip-build --skip-install --node-group {{buckyos.node_group}}"
     ],
     "update":[
       "echo 'update buckyos'"
@@ -26,6 +25,12 @@
     ],
     "start": ["sudo nohup /opt/buckyos/bin/node-daemon/node_daemon --enable_active > /dev/null 2>&1 &"],
     "stop": ["sudo python3 /opt/buckyos/bin/stop.py"],
+    "uninstall": [
+      "sudo python3 /opt/buckyos/bin/stop.py || true",
+      "sudo rm -f /usr/local/share/ca-certificates/buckyos_ca.crt",
+      "if command -v update-ca-certificates >/dev/null 2>&1; then sudo update-ca-certificates; fi",
+      "sudo rm -rf /opt/buckyos"
+    ],
     "check_dns": ["cat {{sn.ip}}"]
   }
 }

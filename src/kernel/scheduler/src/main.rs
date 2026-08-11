@@ -5,6 +5,8 @@ mod scheduler_server;
 mod service;
 mod system_config_agent;
 mod system_config_builder;
+mod thunk_runner;
+mod zone_route_builder;
 
 #[cfg(test)]
 mod scheduler_test;
@@ -14,6 +16,7 @@ use log::*;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::exit;
 //use upon::Engine;
 
@@ -21,21 +24,37 @@ use anyhow::Result;
 use app::*;
 use buckyos_api::*;
 use buckyos_api::*;
+use buckyos_http_server::*;
 use buckyos_kit::*;
 use name_client::*;
 use name_lib::*;
 use scheduler_server::*;
-use server_runner::*;
 use service::*;
 use std::sync::Arc;
 use system_config_agent::schedule_loop;
 use system_config_builder::{StartConfigSummary, SystemConfigBuilder};
 
+const BUCKYOS_ZONE_DOC_ENV: &str = "BUCKYOS_ZONE_DOC";
+
+fn boot_ood_names(zone_document: &ZoneDocument) -> Vec<String> {
+    zone_document
+        .oods
+        .iter()
+        .filter(|ood| ood.node_type.is_ood())
+        .map(|ood| ood.name.clone())
+        .collect()
+}
+
+// buckyos_root 显式传入：get_buckyos_root_dir() 的进程级缓存会被并行/先行调用者
+// 固定住，测试无法用 env 覆盖，导致读到宿主机安装目录下的旧模板。
 async fn create_init_list_by_template(
-    zone_boot_config: &ZoneBootConfig,
+    zone_document: &ZoneDocument,
+    zone_document_str: &str,
+    buckyos_root_dir: &Path,
 ) -> Result<HashMap<String, String>> {
     //load start_parms from active_service.
-    let start_params_file_path = get_buckyos_system_etc_dir().join("start_config.json");
+    let etc_dir = buckyos_root_dir.join("etc");
+    let start_params_file_path = etc_dir.join("start_config.json");
     info!(
         "load start_params from :{}",
         start_params_file_path.to_string_lossy()
@@ -43,7 +62,7 @@ async fn create_init_list_by_template(
     let start_params_str = tokio::fs::read_to_string(start_params_file_path).await?;
     let mut start_params: serde_json::Value = serde_json::from_str(&start_params_str)?;
     // 将Windows路径中的反斜杠转换为正斜杠，避免TOML转义问题
-    let buckyos_root = get_buckyos_root_dir()
+    let buckyos_root = buckyos_root_dir
         .to_string_lossy()
         .to_string()
         .replace('\\', "/");
@@ -56,9 +75,7 @@ async fn create_init_list_by_template(
         .map_err(|e| anyhow::anyhow!("invalid jwk: {}", e))?;
 
     //load boot.template
-    let template_file_path = get_buckyos_system_etc_dir()
-        .join("scheduler")
-        .join("boot.template.toml");
+    let template_file_path = etc_dir.join("scheduler").join("boot.template.toml");
     let template_str = match tokio::fs::read_to_string(&template_file_path).await {
         Ok(content) => content,
         Err(err) => {
@@ -84,26 +101,17 @@ async fn create_init_list_by_template(
         ));
     }
     let mut boot_config: HashMap<String, String> = toml::from_str(&result)?;
-    if !boot_config.contains_key("system/rbac/base_policy") {
-        boot_config.insert(
-            "system/rbac/base_policy".to_string(),
-            rbac::DEFAULT_POLICY.to_string(),
-        );
-    }
-    if !boot_config.contains_key("system/rbac/model") {
-        boot_config.insert(
-            "system/rbac/model".to_string(),
-            rbac::DEFAULT_MODEL.to_string(),
-        );
+
+    let ood_names = boot_ood_names(zone_document);
+    if ood_names.is_empty() {
+        return Err(anyhow::anyhow!("zone document has no OOD nodes"));
     }
 
-    let ood_name = zone_boot_config.oods.first().unwrap().name.as_str();
     let mut builder = SystemConfigBuilder::new(boot_config);
     builder
-        .add_boot_config(&start_config, &verify_hub_public_key, zone_boot_config)?
+        .add_boot_config(&start_config, &verify_hub_public_key, zone_document_str)?
         .add_user_doc(&start_config)?
         .add_default_accounts(&start_config)?
-        .add_device_doc(ood_name, &start_config)?
         .add_system_defaults()?
         .add_verify_hub(&private_key_pem)
         .await?
@@ -115,9 +123,11 @@ async fn create_init_list_by_template(
         .await?
         .add_repo_service()
         .await?
-        .add_aicc(&start_config)
+        .add_aicc(&start_config, zone_document.sn.as_deref())
         .await?
         .add_msg_center(&start_config)
+        .await?
+        .add_workflow()
         .await?
         .add_control_panel()
         .await?;
@@ -129,8 +139,10 @@ async fn create_init_list_by_template(
         .await?
         .add_default_agents(&start_config)
         .await?
-        .add_gateway_settings(&start_config)?
-        .add_node(ood_name)?;
+        .add_gateway_settings(&start_config)?;
+    for ood_name in ood_names.iter() {
+        builder.add_node(ood_name.as_str())?;
+    }
     let mut config = builder.build();
 
     Ok(config)
@@ -138,19 +150,20 @@ async fn create_init_list_by_template(
 
 async fn do_boot_scheduler() -> Result<()> {
     let mut init_list: HashMap<String, String> = HashMap::new();
-    let zone_boot_config_str = std::env::var("BUCKYOS_ZONE_BOOT_CONFIG");
+    let zone_document_str = std::env::var(BUCKYOS_ZONE_DOC_ENV);
 
-    if zone_boot_config_str.is_err() {
-        warn!("BUCKYOS_ZONE_BOOT_CONFIG is not set, use default zone config");
-        return Err(anyhow::anyhow!("BUCKYOS_ZONE_BOOT_CONFIG is not set"));
+    if zone_document_str.is_err() {
+        warn!("{} is not set", BUCKYOS_ZONE_DOC_ENV);
+        return Err(anyhow::anyhow!("{} is not set", BUCKYOS_ZONE_DOC_ENV));
     }
 
     info!(
-        "zone_boot_config_str:{}",
-        zone_boot_config_str.as_ref().unwrap()
+        "{}:{}",
+        BUCKYOS_ZONE_DOC_ENV,
+        zone_document_str.as_ref().unwrap()
     );
-    let zone_boot_config_json = zone_boot_config_str.unwrap();
-    let zone_boot_config: ZoneBootConfig = serde_json::from_str(&zone_boot_config_json).unwrap();
+    let zone_document_str = zone_document_str.unwrap();
+    let zone_document: ZoneDocument = serde_json::from_str(&zone_document_str).unwrap();
     let rpc_session_token_str = std::env::var("SCHEDULER_SESSION_TOKEN");
 
     if rpc_session_token_str.is_err() {
@@ -166,12 +179,16 @@ async fn do_boot_scheduler() -> Result<()> {
         ));
     }
 
-    let mut init_list = create_init_list_by_template(&zone_boot_config)
-        .await
-        .map_err(|e| {
-            error!("create_init_list_by_template failed: {:?}", e);
-            e
-        })?;
+    let mut init_list = create_init_list_by_template(
+        &zone_document,
+        &zone_document_str,
+        get_buckyos_root_dir().as_path(),
+    )
+    .await
+    .map_err(|e| {
+        error!("create_init_list_by_template failed: {:?}", e);
+        e
+    })?;
 
     let boot_config_str = init_list.get("boot/config");
     if boot_config_str.is_none() {
@@ -179,16 +196,10 @@ async fn do_boot_scheduler() -> Result<()> {
     }
     let boot_config_str = boot_config_str.unwrap();
     info!("after boot_config_str: {}", boot_config_str);
-    let mut zone_config: ZoneConfig =
-        serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
-            error!("load ZoneConfig from boot/config failed: {:?}", e);
-            e
-        })?;
-    zone_config.init_by_boot_config(&zone_boot_config, &zone_boot_config_json);
-    init_list.insert(
-        "boot/config".to_string(),
-        serde_json::to_string_pretty(&zone_config).unwrap(),
-    );
+    let _zone_config: ZoneConfig = serde_json::from_str(boot_config_str.as_str()).map_err(|e| {
+        error!("load ZoneConfig from boot/config failed: {:?}", e);
+        e
+    })?;
     //info!("use init list from template {} to do boot scheduler",template_type_str);
     //write to system_config
     for (key, value) in init_list.iter() {
@@ -320,7 +331,7 @@ mod test {
         NameClient, NameClientConfig, NameInfo, NsProvider, RecordType, GLOBAL_NAME_CLIENT,
     };
     use name_lib::{
-        DeviceConfig, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
+        DeviceDocument, DeviceInfo, EncodedDocument, NSError, OODDescriptionString,
         DEFAULT_EXPIRE_TIME,
     };
     use package_lib::PackageId;
@@ -366,20 +377,36 @@ mod test {
         write_boot_template(temp_root.path());
         init_static_name_client().await;
 
-        let zone_boot_config = prepare_scheduler_test_configs(temp_root.path()).await;
-        let mut init_map = create_init_list_by_template(&zone_boot_config)
-            .await
-            .expect("init list generation should succeed");
+        let zone_document = prepare_scheduler_test_configs(temp_root.path()).await;
+        let zone_document_str = serde_json::to_string(&zone_document).unwrap();
+        let mut init_map =
+            create_init_list_by_template(&zone_document, &zone_document_str, temp_root.path())
+                .await
+                .expect("init list generation should succeed");
+        let start_config_value: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(temp_root.path().join("etc").join("start_config.json"))
+                .expect("failed to read start_config"),
+        )
+        .expect("start_config should be valid json");
+        let start_config = StartConfigSummary::from_value(&start_config_value)
+            .expect("start_config summary should parse");
         ensure_device_info_entry(
             &mut init_map,
-            zone_boot_config
-                .owner_key
+            start_config
+                .ood_jwt
+                .as_deref()
+                .expect("start_config ood_jwt missing"),
+            zone_document
+                .get_default_key()
                 .as_ref()
                 .expect("owner key missing"),
         )
         .expect("device info generation failed");
 
         assert!(init_map.contains_key("boot/config"));
+        assert!(init_map.contains_key("security/verify-hub/key"));
+        assert!(!init_map.contains_key("system/verify-hub/key"));
+        assert!(!init_map.contains_key(&format!("devices/{}/doc", TEST_DEVICE_NAME)));
         assert!(init_map.contains_key("services/verify-hub/spec"));
         assert!(init_map.contains_key("services/scheduler/spec"));
         assert!(init_map.contains_key("services/task-manager/spec"));
@@ -390,6 +417,16 @@ mod test {
         assert!(init_map.contains_key("services/aicc/spec"));
         assert!(init_map.contains_key("services/msg-center/spec"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
+        assert!(init_map.contains_key(&format!("users/{}/profile", TEST_USERNAME)));
+        let user_settings: serde_json::Value = serde_json::from_str(
+            init_map
+                .get(&format!("users/{}/settings", TEST_USERNAME))
+                .expect("user settings should exist"),
+        )
+        .expect("user settings should be valid json");
+        assert_eq!(user_settings["is_local"], true);
+        assert!(user_settings.get("show_name").is_none());
+        assert!(user_settings.get("contact").is_none());
 
         for (key, value) in init_map.iter() {
             println!("#{} ==> {}", key, value);
@@ -409,6 +446,56 @@ mod test {
             .schedule_snapshot
             .service_infos
             .contains_key("scheduler"));
+
+        let mut multi_ood_zone_document = zone_document.clone();
+        multi_ood_zone_document.oods = vec![
+            OODDescriptionString::new(
+                "zone-gateway".to_string(),
+                DeviceNodeType::Gateway,
+                None,
+                None,
+            ),
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None),
+            OODDescriptionString::new("ood2".to_string(), DeviceNodeType::OODOnly, None, None),
+        ];
+        let multi_ood_zone_document_str = serde_json::to_string(&multi_ood_zone_document).unwrap();
+        let multi_ood_init_map = create_init_list_by_template(
+            &multi_ood_zone_document,
+            &multi_ood_zone_document_str,
+            temp_root.path(),
+        )
+        .await
+        .expect("multi OOD init list generation should succeed");
+        assert!(multi_ood_init_map.contains_key("nodes/ood1/config"));
+        assert!(multi_ood_init_map.contains_key("nodes/ood2/config"));
+        assert!(!multi_ood_init_map.contains_key("nodes/zone-gateway/config"));
+        assert!(!multi_ood_init_map.contains_key("devices/ood1/doc"));
+        assert!(!multi_ood_init_map.contains_key("devices/ood2/doc"));
+
+        let gateway_only_zone_document = {
+            let mut document = zone_document.clone();
+            document.oods = vec![OODDescriptionString::new(
+                "zone-gateway".to_string(),
+                DeviceNodeType::Gateway,
+                None,
+                None,
+            )];
+            document
+        };
+        let gateway_only_zone_document_str =
+            serde_json::to_string(&gateway_only_zone_document).unwrap();
+        let gateway_only_init_result = create_init_list_by_template(
+            &gateway_only_zone_document,
+            &gateway_only_zone_document_str,
+            temp_root.path(),
+        )
+        .await
+        .err()
+        .expect("gateway-only init list should fail");
+        assert!(gateway_only_init_result
+            .to_string()
+            .contains("zone document has no OOD nodes"));
+
         unsafe {
             std::env::remove_var("BUCKYOS_ROOT");
         }
@@ -424,6 +511,8 @@ mod test {
     "pre_install_apps": {
         "buckyos_filebrowser": {
             "app_doc": {
+                "did": "did:bns:buckyos_filebrowser.buckyos.ai",
+                "doc_type": "app",
                 "name": "buckyos_filebrowser",
                 "version": "0.5.1",
                 "meta": {
@@ -437,11 +526,22 @@ mod test {
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS File Browser",
                 "selector_type": "single",
-                "install_config_tips": {
-                    "data_mount_point": ["/srv/", "/database/", "/config/"],
-                    "local_cache_mount_point": [],
-                    "service_ports": {
-                        "www": 80
+                "service_config_tips": {
+                    "data_mount_points": {
+                        "/srv/": null,
+                        "/database/": null,
+                        "/config/": null
+                    },
+                    "local_cache_mount_points": {},
+                    "service_endpoints": {
+                        "www": {
+                            "protocol": "http",
+                            "inner_port": 80,
+                            "required": true,
+                            "expose": {
+                                "route": {"type": "web"}
+                            }
+                        }
                     }
                 },
                 "pkg_list": {
@@ -464,21 +564,37 @@ mod test {
                     }
                 }
             },
-            "data_mount_point": {
-                "root": "/root"
+            "service_config": {
+                "www": {
+                    "protocol": "http",
+                    "inner_port": 80
+                }
             },
-            "cache_mount_point": [
-            ],
-            "local_cache_mount_point": [
-            ],
-            "bind_address": "0.0.0.0",
-            "service_ports": {
-                "http": 80
+            "data_mount_point": {
+                "/root": {
+                    "target_path": "/root",
+                    "access": "read_write"
+                }
+            },
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "expose_config": {
+                "www": {
+                    "route": {
+                        "type": "web",
+                        "sub_hostname": ["filebrowser"]
+                    },
+                    "scope": "",
+                    "allow_guest": false,
+                    "bind_address": "0.0.0.0"
+                }
             },
             "res_pool_id": "default"
         },
         "buckyos_systest": {
             "app_doc": {
+                "did": "did:bns:buckyos_systest.buckyos.ai",
+                "doc_type": "app",
                 "name": "buckyos_systest",
                 "version": "0.5.1",
                 "meta": {
@@ -492,7 +608,7 @@ mod test {
                 "owner": "did:web:buckyos.ai",
                 "show_name": "BuckyOS System Test",
                 "selector_type": "static",
-                "install_config_tips": {},
+                "service_config_tips": {},
                 "pkg_list": {
                     "web": {
                         "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
@@ -500,79 +616,29 @@ mod test {
                 }
             },
             "data_mount_point": {},
-            "cache_mount_point": [],
-            "local_cache_mount_point": [],
+            "local_cache_mount_point": {},
+            "external_mount_point": {},
+            "service_config": {},
+            "expose_config": {
+                "www": {
+                    "route": {
+                        "type": "web",
+                        "sub_hostname": ["buckyos_systest"]
+                    },
+                    "scope": "",
+                    "allow_guest": true
+                }
+            },
             "res_pool_id": "default"
         }
     }
 }
 """
-"system/rbac/base_policy" = """
-p, kernel, /config/*, read|write,allow
-p, kernel, dfs://*, read|write,allow
-p, kernel, ndn://*, read|write,allow
-
-p, root, /config/*, read|write,allow
-p, root, dfs://*, read|write,allow
-p, root, ndn://*, read|write,allow
-
-p, ood,/config/*,read,allow
-p, ood,/config/users/*/apps/*,read|write,allow
-p, ood,/config/users/*/agents/*,read|write,allow
-p, ood,/config/devices/{device}/*,read|write,allow
-p, ood,/config/nodes/{device}/*,read|write,allow
-p, ood,/config/services/*,read|write,allow
-p, ood,/config/system/rbac/policy,read|write,allow
-
-p, client, /config/boot/*, read,allow
-p, client,/config/devices/{device}/*,read,allow
-p, client,/config/devices/{device}/info,read|write,allow
-
-p, service, /config/boot/*, read,allow
-p, service,/config/services/{service}/*,read|write,allow
-p, service,/config/services/*/info,read,allow
-p, service,/config/users*,read,allow
-p, service,/config/users/*/*,read,allow
-p, service,/config/system/*,read,allow
-p, service,dfs://system/data/{service}/*,read|write,allow
-p, service,dfs://system/cache/{service}/*,read|write,allow
-
-p, app, /config/boot/*, read,allow
-p, app, /config/users/*/apps/{app}/settings,read|write,allow
-p, app, /config/users/*/apps/{app}/config,read,allow
-p, app, /config/users/*/apps/{app}/info,read,allow
-p, app, dfs://users/*/appdata/{app}/*, read|write,allow
-p, app, dfs://users/*/cache/{app}/*, read|write,allow
-p, admin, /config/boot/*, read,allow
-p, admin,/config/users/{user}/*,read|write,allow
-p, admin,dfs://users/{user}/*,read|write,allow
-p, admin,/config/services/*,read|write,allow
-p, admin,dfs://library/*,read|write,allow
-p, user, /config/boot/*, read,allow
-p, user,/config/users/{user}/*,read,allow
-p, user,/config/users/{user}/apps/*/*,read|write,allow
-p, user,dfs://users/{user}/*,read|write,allow
-p, user,dfs://users/{user}/home/*,read|write,allow
-p, user,dfs://library/*,read,allow
-
-g, node-daemon, kernel
-g, scheduler, kernel
-g, system-config, kernel
-g, verify-hub, kernel
-g, task-manager, kernel
-g, kmsg, kernel
-g, repo-service, kernel
-g, aicc, kernel
-g, msg-center, kernel
-g, control-panel, kernel
-g, buckycli, kernel
-g, cyfs-gateway, kernel
-"""
 "#;
         fs::write(scheduler_dir.join("boot.template.toml"), template).unwrap();
     }
 
-    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneBootConfig {
+    async fn prepare_scheduler_test_configs(root: &Path) -> ZoneDocument {
         let output_dir = root.join("dev_env");
         fs::create_dir_all(&output_dir).unwrap();
         let output_dir_str = output_dir.to_string_lossy().to_string();
@@ -604,13 +670,6 @@ g, cyfs-gateway, kernel
         fs::copy(start_config_src, etc_dir.join("start_config.json"))
             .expect("failed to copy start_config");
 
-        let zone_config_file = format!("{}.zone.json", TEST_HOSTNAME);
-        let zone_boot_path = output_dir.join(zone_config_file);
-        let mut zone_boot_config: ZoneBootConfig = serde_json::from_str(
-            &fs::read_to_string(zone_boot_path).expect("failed to read zone boot config"),
-        )
-        .expect("failed to parse zone boot config");
-
         let owner_config_path = output_dir.join("user_config.json");
         let owner_config_value: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(owner_config_path).expect("failed to read owner config"),
@@ -624,28 +683,30 @@ g, cyfs-gateway, kernel
             .expect("owner public key not found");
         let owner_key: Jwk = serde_json::from_value(owner_key_value).expect("invalid owner jwk");
 
-        zone_boot_config.owner_key = Some(owner_key);
-        zone_boot_config.owner = Some(DID::new("bns", TEST_USERNAME));
-        zone_boot_config.id = Some(DID::new("web", TEST_HOSTNAME));
-
-        zone_boot_config
+        let mut zone_document = ZoneDocument::new(
+            DID::new("web", TEST_HOSTNAME),
+            DID::new("bns", TEST_USERNAME),
+            owner_key,
+        );
+        zone_document.oods = vec![OODDescriptionString::new(
+            TEST_DEVICE_NAME.to_string(),
+            DeviceNodeType::OOD,
+            None,
+            None,
+        )];
+        zone_document
     }
 
     fn ensure_device_info_entry(
         init_map: &mut HashMap<String, String>,
+        device_doc_jwt: &str,
         owner_key: &Jwk,
     ) -> Result<(), String> {
-        let doc_key = format!("devices/{}/doc", TEST_DEVICE_NAME);
-        let doc_value = init_map
-            .get(&doc_key)
-            .ok_or_else(|| format!("{} not found in init map", doc_key))?
-            .clone();
-
-        let encoded_doc = EncodedDocument::from_str(doc_value)
+        let encoded_doc = EncodedDocument::from_str(device_doc_jwt.to_string())
             .map_err(|e| format!("invalid encoded doc: {:?}", e))?;
         let decoding_key =
             DecodingKey::from_jwk(owner_key).map_err(|e| format!("invalid owner jwk: {}", e))?;
-        let device_config = DeviceConfig::decode(&encoded_doc, Some(&decoding_key))
+        let device_config = DeviceDocument::decode(&encoded_doc, Some(&decoding_key))
             .map_err(|e| format!("failed to decode device document: {}", e))?;
         let mut device_info = serde_json::to_value(DeviceInfo::from_device_doc(&device_config))
             .map_err(|e| format!("serialize device info: {}", e))?;
@@ -703,15 +764,22 @@ g, cyfs-gateway, kernel
     "owner": "did:web:buckyos.ai",
     "show_name": "BuckyOS File Browser",
     "selector_type": "single",
-    "install_config_tips": {
-      "data_mount_point": [
-        "/srv/",
-        "/database/",
-        "/config/"
-      ],
-      "local_cache_mount_point": [],
-      "service_ports": {
-        "www": 80
+    "service_config_tips": {
+      "data_mount_points": {
+        "/srv/": null,
+        "/database/": null,
+        "/config/": null
+      },
+      "local_cache_mount_points": {},
+      "service_endpoints": {
+        "www": {
+          "protocol": "http",
+          "inner_port": 80,
+          "required": true,
+          "expose": {
+            "route": {"type": "web"}
+          }
+        }
       }
     },
     "pkg_list": {
@@ -771,7 +839,7 @@ g, cyfs-gateway, kernel
         async fn query_did(
             &self,
             did: &DID,
-            _fragment: Option<&str>,
+            _doc_type: Option<name_client::DidDocType>,
             _from_ip: Option<IpAddr>,
         ) -> name_lib::NSResult<EncodedDocument> {
             let host = did.to_host_name();

@@ -1,8 +1,14 @@
 {
+    "app_configs": {
+      "web3-gateway": "../../cyfs-gateway/src/dev_configs/apps/web3-gateway.json"
+    },
     "nodes": {
       "sn": {
         "node_id": "sn",
         "vm_template": "ubuntu_sn",
+        "vm_params": {
+          "disk": "8G"
+        },
         "network": {
           "lan_id": "wan",
           "type": "bridge"
@@ -14,12 +20,14 @@
         },
         "init_commands": [
           "sudo hostnamectl set-hostname sn",
-          "sudo chmod 777 /opt/",
+          "sudo mkdir -p /opt/web3-gateway",
+          "sudo chown -R ubuntu:ubuntu /opt/web3-gateway",
           "sudo iptables -I INPUT -p udp --dport 53 -j ACCEPT",
           "sudo iptables -I INPUT -p tcp --dport 53 -j ACCEPT"
         ],
         "instance_commands": [
-            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\""
+            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
+            "sudo sh -c \"echo '{{sn.ip}} web3.devtests.org' >> /etc/hosts\""
           ],
         "directories": {
           "logs": "/opt/buckyos/logs"
@@ -29,6 +37,9 @@
       "alice-ood1": {
         "node_id": "alice_ood1",
         "vm_template": "ubuntu_basic",
+        "vm_params": {
+          "disk": "10G"
+        },
         "network": {
           "lan_id": "lan",
           "type": "nat"
@@ -40,14 +51,14 @@
         },
         "init_commands": [
           "hostnamectl set-hostname alice-ood1",
-          "sudo chmod 777 /opt/",
+          "sudo mkdir -p /opt/buckyos",
+          "sudo chown -R ubuntu:ubuntu /opt/buckyos",
           "sudo iptables -I INPUT 1 -i lo -j ACCEPT",
           "sudo iptables -I INPUT 2 ! -i lo -p tcp -m multiport --dports 80,443,2980 -j REJECT"
         ],
         "instance_commands": [
-            "sudo sh -c \"echo '{{sn.ip}} sn.devtests.org' >> /etc/hosts\"",
             "sudo mkdir -p /etc/systemd/resolved.conf.d",
-            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
+            "sudo sh -c \"echo '[Resolve]\\nDNS={{sn.ip}}\\nDomains=~devtests.org\\nFallbackDNS=8.8.8.8 1.1.1.1' > /etc/systemd/resolved.conf.d/buckyos-dns.conf\"",
             "sudo systemctl restart systemd-resolved"
         ],
         "directories": {
@@ -57,5 +68,3 @@
     },
     "instance_order": ["sn", "alice-ood1"]
   }
-  
-  

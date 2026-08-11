@@ -1,13 +1,18 @@
+use buckyos_api::{
+    build_device_did, new_device_config_by_jwk_with_did,
+    save_local_device_identity_for_buckyos_root, LocalNodeIdentityConfig,
+};
 use buckyos_kit::get_buckyos_system_etc_dir;
 use clap::ArgMatches;
 use jsonwebtoken::EncodingKey;
 use name_lib::{
-    generate_ed25519_key_pair, DIDDocumentTrait, DeviceConfig, DeviceMiniConfig,
-    NodeIdentityConfig, OwnerConfig, ZoneBootConfig, DID,
+    generate_ed25519_key_pair, DIDDocumentTrait, DeviceMiniDocument, OwnerDocument,
+    ZoneBootDocument, DID,
 };
 use ndn_lib::named_obj_to_jwt;
 use std::fs::File;
 use std::io::Write;
+use std::path::Path;
 
 pub(crate) async fn sign_json_data(
     matches: &ArgMatches,
@@ -154,7 +159,7 @@ fn did_create_user_config(name: &str, owner_jwk: &str) {
     let owner_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(owner_jwk.clone()).unwrap();
 
     // Create user configuration object
-    let owner_config = OwnerConfig::new(
+    let owner_config = OwnerDocument::new(
         user_did.clone(),
         user_name.clone(),
         user_name.clone(),
@@ -192,23 +197,15 @@ fn did_create_device_config(
     let device_name = "ood1";
 
     // Create device public/private key pair
-    let (privete_key, public_key) = generate_ed25519_key_pair();
-    // Save device private key
-    let private_file_name = format!("device_{}_private_key.pem", device_name);
-    let mut device_private_key_file = File::create(private_file_name.clone()).unwrap();
-    device_private_key_file
-        .write_all(privete_key.as_bytes())
-        .unwrap();
-    // Save device public key
-    let public_file_name = format!("device_{}_public_key.pem", device_name);
-    let mut device_public_key_file = File::create(public_file_name.clone()).unwrap();
-    device_public_key_file
-        .write_all(public_key.to_string().as_bytes())
-        .unwrap();
+    let (private_key, public_key) = generate_ed25519_key_pair();
 
     // Create device configuration
     let device_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(public_key.clone()).unwrap();
-    let device_config = DeviceConfig::new_by_jwk(device_name, device_jwk);
+    let device_did = build_device_did(device_name, &zone_did).unwrap();
+    let mut device_config =
+        new_device_config_by_jwk_with_did(device_name, device_jwk, &device_did).unwrap();
+    device_config.owner = user_did.clone();
+    device_config.zone_did = Some(zone_did.clone());
 
     // Read user private key and create encoding key
     let user_private_key = std::fs::read_to_string(user_private_key).unwrap();
@@ -216,27 +213,29 @@ fn did_create_device_config(
     println!("user_private_key: {}", user_private_key);
     let encode_key = EncodingKey::from_ed_pem(user_private_key.as_bytes()).unwrap();
     let device_jwt = device_config.encode(Some(&encode_key)).unwrap();
-    let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+    let device_mini_config = DeviceMiniDocument::new_by_device_document(&device_config);
     let device_mini_doc_jwt = device_mini_config.to_jwt(&encode_key).unwrap();
     // Create node identity configuration
-    let node_identity_config = NodeIdentityConfig {
-        zone_did: zone_did,
-        owner_public_key: owner_jwk.clone(),
-        owner_did: user_did,
-        device_doc_jwt: device_jwt.to_string(),
-        device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
-        zone_iat: now as u32,
-    };
-    // Serialize and save node identity configuration
-    let node_identity_config_json_str =
-        serde_json::to_string_pretty(&node_identity_config).unwrap();
-    let mut node_identity_file = std::fs::File::create("node_identity.json").unwrap();
-    node_identity_file
-        .write_all(node_identity_config_json_str.as_bytes())
-        .unwrap();
+    let node_identity_config = LocalNodeIdentityConfig::new(
+        zone_did,
+        user_did,
+        owner_jwk.clone(),
+        device_name.to_string(),
+        device_did,
+        now as u32,
+    );
+    save_local_device_identity_for_buckyos_root(
+        Path::new("."),
+        Path::new("."),
+        &node_identity_config,
+        &device_config,
+        device_jwt.to_string().as_str(),
+        device_mini_doc_jwt.to_string().as_str(),
+        private_key.as_str(),
+    )
+    .unwrap();
     println!(
-        "create OK! Generate {}, {},  node_identity.json files in current dir",
-        private_file_name, public_file_name
+        "create OK! Generate node_identity.json, local/identity and security files in current dir"
     );
 }
 
@@ -248,7 +247,7 @@ fn did_create_zoneboot(oods: Vec<String>, sn_host: Option<String>) {
         .as_secs();
     let exp = now + 3600 * 24 * 365 * 10;
 
-    let zone_boot_config = ZoneBootConfig {
+    let zone_boot_config = ZoneBootDocument {
         id: None,
         oods: oods.into_iter().map(|ood| ood.parse().unwrap()).collect(),
         sn: sn_host,

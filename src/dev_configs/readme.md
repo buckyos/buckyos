@@ -1,136 +1,154 @@
-# dev_config目录介绍
+# Overview of the `dev_configs` Directory
 
-每个典型环境是一个目录，该目录下保存了一个典型的“分布式测试环境“所需要的全部信息和配置。
-- nodes.json 定义了该环境下有多少个vm,格式是vm_name->vm_config,vm_config中可以引用vm模版(mutilpass格式)
-- apps目录 重要，里面有$appname.json ,定义了一组app的基本行为
-- $vm_template.yaml 用于初始化的模版
-注意当前开发机是ood1@test.buckyos.io, 总是以无SN WAN节点的角色存在的
+Each typical environment is a directory that holds all information and configuration needed for a typical "distributed test environment".
+- `nodes.json` defines how many VMs exist in this environment. Format: `vm_name -> vm_config`. A `vm_config` can reference a VM template (Multipass format).
+- `apps` directory (important): contains `$appname.json` files that define basic behavior for a set of apps.
+- `$vm_template.yaml` is the template used for initialization.
+Note: the current development machine is `ood1@test.buckyos.io`, and it always acts as a WAN node without SN.
 
-- 2zone_sn : 最常用的环境，包含3个虚拟机节点 SN + Alice.ood1(端口映射) + bob.ood1(LAN)
+- `2zone_sn`: the most commonly used environment, with 3 VM nodes: SN + Alice.ood1 (port mapping) + bob.ood1 (LAN)
 
-## VM 环境
+## VM Environment
 
-### 硬件环境配置（通常可以有多套）
-- vm_config.json (配置vm环境)
-- vm_init.yaml 
+### Hardware environment config (usually multiple sets can exist)
+- `vm_config.json` (VM environment config)
+- `vm_init.yaml`
 
-### 基础软件环境
-- 有一些配置依赖已经创建的VM的ip地址，因此顺序上需要等vm node instance先启动得到ip后才能继续
-- 构造iptable规则
-- 预安装的ca证书 也可以生成 
+### Base software environment
+- Some configs depend on IPs of already-created VMs, so you must wait until VM node instances start and get IPs before continuing
+- Build iptables rules
+- Pre-installed CA certificates (can also be generated)
 
-## 部署软件（开发环境相关)
-### 理解app_list.json
+## Deploy Software (dev-environment related)
+### Understanding `app_list.json`
 
-### Step1. 构建
-### Step2. 根据node-name，构造配置(rootfs)
-### Step3. 推送到目标node
+### Step1. Build
+### Step2. Build config (rootfs) based on node-name
+### Step3. Push to the target node
 
-结束环境构造，此时得到一组运行中的虚拟机 （处于Init状态)
+Environment setup is complete; you now have a set of running VMs (in Init state).
 
+```
 main.py $group_name clean_vms
 main.py $group_name create_vms
+```
 
 
------------------ 开发循环 ----------------
-`利用虚拟机的快照优势提高开发速度`
+----------------- Dev Loop ----------------
+`Use VM snapshots to speed up development`
 
-1. 创建未部署软件的快照点 init
+1. Create a snapshot before software is deployed: `init`
+```
 main.py $group_name snapshot init
- 
-2. 部署最新版本的软件，测试用例和配置 installed
+```
+
+2. Deploy the latest software, test cases, and config: `installed`
+```
 main.py $group_name install --all
 main.py $group_name snapshot installed
-3. 按测试需要启动软件 started
+```
+3. Start software as needed for tests: `started`
+```
 main.py $group_name start --all
 main.py $group_name snapshot started
+```
 
 loop:
-    4.1 回滚到快照started
+```
+    4.1 Restore to the `started` snapshot
     main.py $group_name restore started
-    4.2 执行测试用例
+    4.2 Run test cases
     main.py #groupname run $node_id /opt/testcases/xxx.py
+```
 
 
-### 更新软件
-main.py $group_name update --all 
+### Update software
+```
+main.py $group_name update --all
+```
 
-### 更新配置（重装）
+### Update config (reinstall)
+```
 main.py $group_name restore init
 main.py $group_name install --all
 main.py $group_name snapshot installed
+```
 
 
-## 构造并运行测试用例
-- 不同的测试用例有不同的基础软件需求
+## Build and Run Test Cases
+- Different test cases have different base software requirements
 
-## 收集日志
+## Collect Logs
+```
 main.py #$group_name clog
+```
 
-## 查看app状态
+## Check App Status
+```
 main.py $group_name info
+```
 
 
-## 一些典型的用户设计（尽量用最少的用户覆盖典型情况）
+## Typical User Designs (cover typical cases with as few users as possible)
 
-### ood1@test.buckyos.io (owner did:bns:devtest) 
-- 开发机（不会被部署在虚拟机中)
-- 公网节点，完全不依赖SN
+### ood1@test.buckyos.io (owner did:bns:devtest)
+- Development machine (not deployed inside a VM)
+- Public WAN node, fully independent of SN
 - netid: wan
 
 ### sn_server@sn.devtests.org (owner did:bns:devtests)
-- SN 服务，并不运行完整的buckyos
+- SN service; does not run a full BuckyOS stack
 
-### ood1@devtests.org (owner: did:bns:devtests),这个节点通常叫sn_web
-- devtests的标准OOD，
-- 提供Repo source服务
+### ood1@devtests.org (owner: did:bns:devtests), commonly called `sn_web`
+- Standard OOD for `devtests`
+- Provides Repo source service
 
 ### node1@test.buckyos.io (owner did:bns:devtest)
-- 非OOD节点
-- 在NAT后 (netid:nat)
-- 需要SN
+- Non-OOD node
+- Behind NAT (`netid:nat`)
+- Requires SN
 
 ### ood1@alice.web3.devtests.org (owner did:bns:alice)
-- 标准的内网nat节点 （流量全转发）,netid:nat
-- 在zone_boot中配置sn : sn.devtests.org
-- 需要SN
+- Standard LAN NAT node (all traffic forwarded), `netid:nat`
+- Configures `sn: sn.devtests.org` in `zone_boot`
+- Requires SN
 
 ### ood1@bob.web3.devtests.org (owner did:bns:bob)
-- 打开了443、80、2980 的标准端口映射 （D-DNS）
-- 在zone_boot中没有配置sn
-- 在ood1的device_doc中，配置了ddns_sn_url : sn.devtests.org
-- ood1的netid为wan_dyn
-- 需要SN
+- Standard port mapping for 443, 80, and 2980 (D-DNS)
+- No SN configured in `zone_boot`
+- In ood1's `device_doc`, configures `ddns_sn_url: sn.devtests.org`
+- ood1's netid is `wan_dyn`
+- Requires SN
 
 ### ood1@charlie.me (owner did:bns:charlie)
-- 使用自有域名，使用自定义的2981端口映射 （D-DNS,rtcp流量不转发，其它转发）
-- 在zone_boot中配置了sn : sn.devtests.org
-- device_mini_config的rtcp_port位置为2981
-- ood1的netid为portmap
-- 需要SN
+- Uses a custom domain and custom port mapping on 2981 (D-DNS; RTCP traffic is not forwarded, other traffic is)
+- Configures `sn: sn.devtests.org` in `zone_boot`
+- Sets `rtcp_port` to 2981 in `device_mini_config`
+- ood1's netid is `portmap`
+- Requires SN
 
-### 缺少的一种情况：
-OOD的netid是WAN，但是使用sn的二级域名 （这种是极端情况，有vps的人没域名 ...)
-在合适的时候调用register_device_to_sn / update_device_info_to_sn 即可
+### Missing case:
+OOD netid is WAN, but it uses an SN second-level domain (an extreme case: someone has a VPS but no domain).
+Just call `register_device_to_sn` / `update_device_info_to_sn` at the appropriate time.
 
-## 访问zone的逻辑
-### 通过https访问
-- DNS解析，通过域名的NS记录是否指向SN判断 （如果是*.web的二级域名，必然走SN）
-- SN 判断是该zone 是否需要中转http流量（net_id是wan，返回设备的ip,否则返回sn ip）
-- DNS解析返回的地址，如果是SN，则走流量中转，否则就是 公网IP或端口映射
+## Zone Access Logic
+### Access via HTTPS
+- DNS resolution: decide based on whether the domain's NS records point to SN (if it is a `*.web` second-level domain, it always goes through SN)
+- SN decides whether this zone needs HTTP traffic relay (`net_id` is `wan` → return device IP; otherwise return SN IP)
+- If DNS returns an SN address, traffic is relayed; otherwise it is a public IP or port mapping
 
-### 通过rtcp访问 （目前还没实现)
-- resolve_did,得到zone_boot_config
-- 当OOD net_id是wan或portmap时，直连：(rtcp://device_did/xxxx)  
-- 当OOD net_id不是waln,且有SN时，中转(rtcp://sn/device_did/xxxx)
+### Access via RTCP (not implemented yet)
+- `resolve_did` to get `zone_boot_config`
+- When OOD `net_id` is `wan` or `portmap`, connect directly: `(rtcp://device_did/xxxx)`
+- When OOD `net_id` is not `wan` and SN exists, relay: `(rtcp://sn/device_did/xxxx)`
 
-### 通过rtcp访问zone内任意节点（目前未实现）
+### Access any node in the zone via RTCP (not implemented yet)
 
-## 一些和通信模型有关的代码
+## Code Related to the Communication Model
 ```rust
-// node_daemon 判断是否需要和sn keep-tunnel
+// node_daemon decides whether it needs to keep a tunnel to SN
 let mut need_keep_tunnel_to_sn = false;
-if sn.is_some() { //sn来自zone_config
+if sn.is_some() { // sn comes from zone_config
     need_keep_tunnel_to_sn = true;
     if device_doc.net_id.is_some() {
         let net_id = device_doc.net_id.as_ref().unwrap();
@@ -141,19 +159,17 @@ if sn.is_some() { //sn来自zone_config
 }
 
 if need_keep_tunnel_to_sn {
-    let device_did = device_doc.id.to_string();
-    let sn_host_name = get_real_sn_host_name(sn.as_ref().unwrap(),device_did.as_str()).await
-        .map_err(|err| {
-            error!("get sn host name failed! {}", err);
-            return String::from("get sn host name failed!");
-        })?;
-    params = vec!["--keep_tunnel".to_string(),sn_host_name.clone()];
+    let zone_info = load_sn_zone_info()?;
+    let relay_node = zone_info
+        .and_then(|info| info.relay_sn)
+        .or_else(|| sn.clone());
+    params = relay_node.into_iter().collect();
 } else {
     params = Vec::new();
 }
 ```
 ```rust
-//node_daemon 判断是否需要上报device_info
+// node_daemon decides whether it needs to report device_info
 async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,zone_config: &ZoneConfig) -> std::result::Result<(),String> {
     let mut need_sn = false;
     let mut sn_url = zone_config.get_sn_api_url();
@@ -172,7 +188,7 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
 ```
 
 ```rust
-// active-server构造device_info
+// active-server builds device_info
    async fn handel_do_active(&self,req:RPCRequest) -> Result<RPCResponse,RPCErrors> {
         let gateway_type = req.params.get("gateway_type");
         let sn_url_param = req.params.get("sn_url");
@@ -229,16 +245,29 @@ async fn report_ood_info_to_sn(device_info: &DeviceInfo, device_token_jwt: &str,
             
             let mut device_info = DeviceInfo::from_device_doc(&device_config);
             device_info.auto_fill_by_system_info().await.unwrap();
-            let device_info_json = serde_json::to_string(&device_info).unwrap();
-            let device_ip = device_info.ip.unwrap().to_string();
-            let mini_config_jwt = "todo".to_string();
+            let device_info_json = serde_json::to_value(&device_info).unwrap();
+            let device_ip = device_info
+                .all_ip
+                .first()
+                .or_else(|| device_info.ips.first())
+                .map(|ip| ip.to_string())
+                .unwrap_or_else(|| "127.0.0.1".to_string());
             
-            let sn_result = sn_register_device(sn_url.as_str(), Some(user_rpc_token), 
-                user_name, "ood1", &device_did.to_string(), &device_ip, device_info_json.as_str(),&mini_config_jwt).await;
+            let sn_result = sn_register_device_online(
+                sn_url.as_str(),
+                user_rpc_token,
+                SnDeviceOnlineReportReq {
+                    device_name: "ood1".to_string(),
+                    device_did: Some(device_did.to_string()),
+                    device_ip,
+                    device_info: device_info_json,
+                    endpoints: Vec::new(),
+                    report_seq: None,
+                    ttl: None,
+                },
+            ).await;
             if sn_result.is_err() {
                 return Err(RPCErrors::ReasonError(format!("Failed to register device to sn: {}",sn_result.err().unwrap())));
             }
         }
 ```
-
-

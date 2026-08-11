@@ -135,10 +135,10 @@ schedule_loop(is_boot):
 
 ## RBAC 由 scheduler 生成/刷新（但存在传播延迟）
 
-RBAC 的 model/base_policy 初始化发生在 boot 阶段，随后 policy 通常由 scheduler 构造/刷新：
+RBAC 的稳定 model/policy 是 API runtime 内置配置，`system/rbac/policy` 是 scheduler 构造/刷新的动态尾部：
 - 概念说明：`new_doc/ref/notepads/rbac.md`
-- boot 写入 base_policy/model：`src/kernel/scheduler/src/main.rs`
-- 常规循环更新 policy：`src/kernel/scheduler/src/system_config_agent.rs`（`update_rbac()`）
+- boot 写入初始动态 policy 尾部：`src/kernel/scheduler/src/main.rs`、`src/kernel/scheduler/src/system_config_builder.rs`
+- 常规循环更新动态 policy 尾部：`src/kernel/scheduler/src/system_config_agent.rs`（`update_rbac()`）
 
 ## 常见坑（与当前实现强相关）
 

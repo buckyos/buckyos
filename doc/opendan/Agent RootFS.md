@@ -1,537 +1,607 @@
-# OpenDAN Workspace FS Path 规范
-
-本文档定义 OpenDAN 在开发阶段采用的确定性 Workspace 文件系统布局与路径读取规则。目标是消除 `collect_workspace_path_candidates` 这一类“枚举多个 key + 向上探测祖先目录”的弹性解析，改为单一规范。
-
-## 1. 术语
-
-- `agent_env_root`
-  Agent 的文件系统根目录。对应 `AgentWorkshopConfig.agent_env_root`，也是未绑定本地 workspace 时 session 的默认工作目录。
-- `local_workspace_root`
-  某个 workspace 的根目录，必须位于 `agent_env_root/workspaces/<workspace_id>`。
-- `session workspace root`
-  当前 session 的工作区根目录。
-  如果 session 已绑定本地 workspace，则等于 `local_workspace_root`。
-  如果 session 未绑定本地 workspace，则等于 `agent_env_root`。
-
-## 2. 标准目录树
-
-`agent_env_root` 必须满足以下布局：
-
-```text
-<agent_env_root>/
-  agent.app.json
-  agent.json.doc
-  index.json
-  role.md
-  self.md
-  behaviors/
-  skills/
-  sessions/
-  workspaces/
-    session_workspace_bindings.json
-    <workspace_id>/
-      skills/
-      worklog/
-        worklog.db
-  todo/
-    todo.db
-  worklog/
-    worklog.db
-  tools/
-  artifacts/
-  memory/
-```
-
-其中：
-
-- `agent.app.json` 是启动后缓存到本地的 agent spec 快照。
-- `agent.json.doc` 是启动后缓存到本地的 agent instance doc 快照。
-- `index.json` 是 workshop 级 workspace 索引。
-- `role.md`、`self.md`、`behaviors/` 是 agent 核心提示词与行为配置的 overlay 根；优先从 `agent_env_root` 读取，再回退到 agent package。
-- `todo/todo.db` 是 workshop 级 todo 数据库。
-- `worklog/worklog.db` 是 workshop 级 worklog 数据库。
-- `workspaces/session_workspace_bindings.json` 记录 session 到本地 workspace 的绑定关系。
-- `workspaces/<workspace_id>/worklog/worklog.db` 是 workspace 级 worklog 数据库。
-
-说明：
-
-- `agent_env_root` 顶层基础目录会在启动时被预创建。
-- `todo.db`、`worklog.db`、workspace 下的 `worklog/` 等文件/子目录允许按首次访问延迟创建；本规范描述的是稳定的逻辑布局，不要求所有文件在首次启动时全部物化。
-
-## 3. Session 绑定对象
-
-session 绑定本地 workspace 后，`workspace_info.binding` 必须至少包含以下字段：
-
-```json
-{
-  "binding": {
-    "session_id": "sess-demo",
-    "local_workspace_id": "ws-demo",
-    "workspace_path": "/abs/path/to/agent_env_root/workspaces/ws-demo",
-    "workspace_rel_path": "workspaces/ws-demo",
-    "agent_env_root": "/abs/path/to/agent_env_root",
-    "bound_at_ms": 1710000000000
-  }
-}
-```
-
-字段定义：
-
-- `binding.session_id`
-  当前绑定关系所属的 session id。
-- `binding.local_workspace_id`
-  当前绑定的 workspace id。
-- `binding.workspace_path`
-  当前绑定的 workspace 根目录绝对路径。
-- `binding.workspace_rel_path`
-  workspace 根目录相对于 `agent_env_root` 的相对路径。当前固定为 `workspaces/<workspace_id>`。
-- `binding.agent_env_root`
-  当前 session 所属的 `agent_env_root` 绝对路径。
-- `binding.bound_at_ms`
-  绑定建立时间戳（毫秒）。
-
-## 4. 确定性读取规则
-
-路径解析必须遵循以下顺序，禁止再做“候选 key 列表 + 祖先扫描”：
-
-### 4.1 读取 session workspace root
-
-只读取：
-
-- `workspace_info.binding.workspace_path`
-- 否则回退到 `session_cwd`
-
-### 4.2 读取 agent_env_root
-
-只读取：
-
-- `workspace_info.binding.agent_env_root`
-- 否则回退到 `session_cwd`
-
-### 4.3 读取 local workspace root
-
-只允许两种方式：
-
-- 当前绑定 workspace：直接使用 `workspace_info.binding.workspace_path`
-- 已知 `workspace_id` 且已知 `agent_env_root`：
-  `agent_env_root/workspaces/<workspace_id>`
-
-### 4.4 读取数据库路径
-
-- agent env todo DB：
-  `<agent_env_root>/todo/todo.db`
-- agent env worklog DB：
-  `<agent_env_root>/worklog/worklog.db`
-- local workspace worklog DB：
-  `<local_workspace_root>/worklog/worklog.db`
-
-## 5. 禁止项
-
-以下行为从本规范开始视为不再允许的新实现：
-
-- 同时兼容 `/workspace_root`、`/workspace/root`、`/path`、`/root_path` 等多个 JSON key
-- 从任意 `cwd` 开始向上遍历祖先目录，猜测哪个目录是 agent_env_root
-- 通过“某目录下是否存在 `todo.db` / `worklog.db` / `index.json`”来反推出根目录语义
-
-## 6. Agent 核心配置
-
-当前实现里，Agent 的核心配置分成三层：
-
-### 6.1 启动层配置（`src/frame/opendan/src/main.rs`）
-
-启动层负责确定当前实例的：
-
-- `agent_id`
-- `agent_env_root`
-- `agent_package_root`
-- `agent_did`
-- `agent_owner_did`
-- `service_port`
-
-其中 `agent_env_root` 的来源优先级是：
-
-1. CLI 参数 `--agent-env`
-2. 环境变量 `OPENDAN_AGENT_ENV` / `AGENT_ENV` / `AGENT_ROOT`
-3. agent spec 中的显式字段
-4. agent doc 中的显式字段
-5. agent spec 的 `install_config.data_mount_point[root|agent_root|agent_env|workspace]`
-6. 默认回退到 `<buckyos_root>/agents/<agent_id>`
-
-`agent_package_root` 的来源与此类似，优先使用 CLI / 环境变量 / spec / doc 中的显式字段，否则根据 agent package 名推导安装目录。
-
-### 6.2 Workshop 层配置（`AgentWorkshopConfig`）
-
-`AgentWorkshopConfig` 定义 workshop/runtime 的基础运行参数，核心字段包括：
-
-- `agent_env_root`
-- `agent_did`
-- `bash_path`
-- `default_timeout_ms`
-- `max_output_bytes`
-- `default_max_diff_lines`
-- `default_max_file_write_bytes`
-- `tools_json_rel_path`，默认是 `tools/tools.json`
-- `local_workspace_lock_ttl_ms`
-
-如果 `tools/tools.json` 不存在，则使用内置默认工具集：
-
-- `exec_bash`
-- `edit_file`
-- `write_file`
-- `read_file`
-- `todo_manage`
-- `create_workspace`
-- `bind_workspace`
-
-### 6.3 Agent 层配置（`AIAgentConfig`）
-
-`AIAgentConfig` 定义 Agent 自身行为加载与循环执行参数，默认值包括：
-
-- `agent_root = agent_env_root`
-- `behaviors_dir_name = behaviors`
-- `role_file_name = role.md`
-- `self_file_name = self.md`
-- `worklog_file_rel_path = worklog/agent-loop.jsonl`
-- `session_worker_threads = 1`
-
-另外还包含 `max_steps_per_wakeup`、`max_behavior_hops`、`max_walltime_ms`、sleep/hp/memory 限制等运行控制参数。
-
-Agent package / env root 下的本地 `agent.json` 还可以覆盖部分运行时默认值：
-
-- `default_ui_behavior_name`
-  UI session 的默认 behavior 名称；未设置时继续按现有逻辑自动选择，优先 `resolve_router`。
-- `default_work_behavior_name`
-  work session 的默认 behavior 名称；未设置时继续按现有逻辑自动选择，优先 `plan` / `do`。
-- `self_check_timer`
-  agent 自检定时器周期，单位秒；默认 `10`。设置为 `0` 表示关闭。当前版本只会启动线程并输出日志，后续再补真实自检行为。
-
-## 7. Agent 加载逻辑
-
-### 7.1 启动器到 opendan 进程
-
-本地部署流程里，`node_daemon` 启动 agent 时会：
-
-- 先解析 agent package 根目录
-- 取 app data 目录作为 `agent_env_root`
-- 通过 `--agent-id`、`--agent-env`、`--agent-bin`、`--service-port` 启动 `opendan`
-
-因此在正常部署链路中，`agent_env_root` 的首选来源是 loader 传入的 `--agent-env`，而不是运行时自行猜测。
-
-### 7.2 启动时的元数据加载
-
-`opendan` 启动后会先读取两类上游元数据：
-
-- agent instance doc：`agents/<agent_id>/doc`
-- agent spec：`users/<owner>/agents/<agent_id>/spec`
-
-解析完成后，会把它们分别缓存为：
-
-- `<agent_env_root>/agent.json.doc`
-- `<agent_env_root>/agent.app.json`
-
-这样后续排障时，只看 `agent_env_root` 就能知道该实例启动时拿到的上游配置快照。
-
-### 7.3 RootFS / workshop 初始化
-
-确定 `agent_env_root` 之后，运行时会先做绝对路径归一化，然后确保以下顶层目录存在：
-
-- `memory/`
-- `skills/`
-- `sessions/`
-- `workspaces/`
-- `worklog/`
-- `todo/`
-- `tools/`
-- `artifacts/`
-
-随后：
-
-- `AgentWorkshop::new/create_workshop/load_workshop` 会初始化 workshop
-- `LocalWorkspaceManager` 会创建或加载 `index.json`
-- 若存在 `workspaces/session_workspace_bindings.json`，则会恢复 session 绑定表
-
-其中：
-
-- `create_workshop` 在 `index.json` 缺失时会创建新索引
-- `load_workshop` 要求 `index.json` 已存在，否则报错
-
-### 7.4 Session 与本地 workspace 绑定恢复
-
-当 session 绑定到本地 workspace 时，会同时持久化两份信息：
-
-- workshop 级绑定表：`workspaces/session_workspace_bindings.json`
-- session 自身的 `workspace_info.binding`
-
-`binding` 中至少包括：
-
-- `local_workspace_id`
-- `workspace_path`
-- `workspace_rel_path`
-- `agent_env_root`
-- `bound_at_ms`
-
-绑定成功后，session 的运行态会同步更新：
-
-- `local_workspace_id`
-- `pwd = binding.workspace_path`
-- `workspace_info.workspace_id`
-- `workspace_info.local_workspace_id`
-- `workspace_info.workspace_type = local`
-- `workspace_info.binding`
-
-因此后续路径解析只需要读取 session 当前状态，不再需要通过目录结构反推。
-
-### 7.5 行为、提示词与 package overlay
-
-Agent 核心资源的加载顺序是“环境根优先，package 回退”：
-
-- `role.md`：先读 `<agent_env_root>/role.md`，再回退 package 内同名文件或 `prompts/role.md`
-- `self.md`：先读 `<agent_env_root>/self.md`，再回退 package 内同名文件或 `prompts/self.md`
-- `behaviors/`：先读 `<agent_env_root>/behaviors/`，再追加 package 下的 `behaviors/`
-
-如果两边都没有 `behaviors/`，运行时会在 `<agent_env_root>/behaviors/` 下创建空目录作为 fallback 根。
-
-### 7.6 Workshop 默认数据库与路径
-
-若工具配置没有覆盖默认路径，则当前实现固定使用：
-
-- workshop todo DB：`<agent_env_root>/todo/todo.db`
-- workshop worklog DB：`<agent_env_root>/worklog/worklog.db`
-- local workspace worklog DB：`<local_workspace_root>/worklog/worklog.db`
-
-这些路径与第 4 节的确定性读取规则保持一致。
-
-## 8. 兼容性与边界
-
-需要区分两个阶段：
-
-- 启动阶段：为了兼容历史部署数据，`opendan main` 仍会从多个 CLI/env/spec/doc 字段里解析 `agent_env_root` 与 `agent_package_root`
-- 运行阶段：一旦实例已经启动，session/workspace/todo/worklog 的路径解析必须遵守本文第 3、4、5 节，不再做祖先扫描或多 key 猜测
-
-因此：
-
-- 本规范不保留运行期路径解析的向前兼容
-- 历史字段兼容只允许保留在启动入口，不应扩散到 workshop/session/path resolver 的新实现中
-
-
-## 9. COW
-
-```text
-Agent RootFS = OverlayFS(Package[RO], Data[RW])
-```
-
-每个 Agent 运行时看到一个统一的文件系统视图，由两层 overlay 合并而成：
-
-- `Package`：不可变发布包，只读
-- `Data`：Agent 实例的全部可写状态
-
-`Data` 包含：
-
-- self-improve 产物
-- 覆盖后的 `role.md` / `self.md` / `behaviors/`
-- `sessions/`
-- `todo/`
-- `worklog/`
-- 本地 workspace
-- 运行时缓存文件
-
-本节的目标不是让 host 直接管理 OverlayFS，而是定义一个 **Docker-first COW** 方案：host 只负责启动容器和提供持久卷，OverlayFS 由容器内的 Linux 运行时负责。
+# OpenDAN AgentRootFS 与配置文件改进计划
+
+> **本文性质**：改进计划，不是最终 spec。落盘节奏跟 beta2.2 / beta2.3 的 breaking change 一起走。
+>
+> **上游心智**：[OpenDAN Agent 配置开发指导](./OpenDAN%20Agent配置开发指导.md) ——
+> Agent Runtime（Gateway）/ Session / Behavior 三层心智，是本计划要让"配置文件长成什么样"对齐的总锚。
+>
+> **下游事实**：当前实现在 [agent_config.rs](../../src/frame/opendan/src/agent_config.rs) /
+> [behavior_cfg.rs](../../src/frame/opendan/src/behavior_cfg.rs) /
+> [agent_session.rs](../../src/frame/opendan/src/agent_session.rs) /
+> [agent.rs](../../src/frame/opendan/src/agent.rs) ——本文用"现状 vs 改进"的格式给出迁移路径。
 
 ---
 
-### 9.1 为什么采用 Docker-first
+## 0. 这是什么、不是什么
 
-host 大部分情况下是 Windows / macOS，直接在 host 上统一做 OverlayFS 生命周期管理，跨平台成本高且行为不稳定。
-
-因此采用以下边界：
-
-- host / `node_daemon`：
-  负责 `docker run`、卷挂载、端口、环境变量、实例生命周期
-- container：
-  负责把 `Package + Data` 挂成统一的 `agent_env_root`
-- `opendan`：
-  只消费已经准备好的 `--agent-env` 与 `--agent-bin`
-
-这样可以保持 `opendan` 的路径契约不变，同时把 COW 对内核能力的依赖收敛到 Docker 容器内部。
-
----
-
-### 9.2 为什么必须用 OS 层 OverlayFS
-
-在应用层用 `open_file()` / `list_dir()` 模拟 overlay 有一个无法修补的问题：Bash、shell 脚本、第三方工具直接走内核 syscall，绕过 API。结果就是 Agent 代码看到的文件系统和 Bash 看到的不一致。
-
-OverlayFS 在内核层完成合并，`open()`、`readdir()`、`stat()` 全部自动生效，任何进程看到的视图完全一致。这一点对 OpenDAN 当前大量依赖 bash/tooling 的执行模型是必要条件。
-
----
-
-### 9.3 四路径模型
-
-实现时必须区分 4 个路径，而不是把 merged root 和 upperdir 视为同一路径：
-
-| 角色 | 容器内示例路径 | 说明 |
-|------|----------------|------|
-| `package_root` | `/opt/agent/package` | lowerdir，只读镜像内容或只读挂载 |
-| `data_upper` | `/opt/agent/data` | upperdir，全部可写状态落在这里 |
-| `overlay_work` | `/opt/agent/data/.overlay_work` | OverlayFS workdir，必须与 upperdir 同文件系统 |
-| `agent_env_root` | `/opt/agent/rootfs` | merged root，运行时统一视图，也是传给 `--agent-env` 的路径 |
-
-关键约束：
-
-- `data_upper` 不是 `agent_env_root`
-- `agent_env_root` 是挂载点，不是持久数据目录
-- `overlay_work` 不应暴露给 Agent 作为业务目录使用
-
----
-
-### 9.4 目录语义
-
-在 merged root 里，OpenDAN 仍然看到第 2 节定义的标准布局，但这些路径的真实来源分成两类：
-
-- 来自 `Package`
-- 来自 `Data`
-
-推荐约定如下：
-
-- `role.md` / `self.md` / `behaviors/`
-  默认来自 `Package`，一旦修改则 copy-up 到 `Data`
-- `sessions/`、`todo/`、`worklog/`、`artifacts/`、`memory/`
-  实际上应长期驻留在 `Data`
-- `workspaces/local/`
-  本地 workspace 根
-- `external_workspaces/`
-  外部 workspace 挂载点或链接目录
-
-说明：
-
-- 当前实现里 local workspace 与 external workspace 都复用了 `workspaces/`
-- Docker 化前，建议把语义收敛为：
-  - `workspaces/local/` 给 workshop/local workspace
-  - `external_workspaces/` 给 runtime external bindings
-
-这是一个目标设计；代码当前尚未完成该拆分。
-
----
-
-### 9.5 OverlayFS 行为速查
-
-| 操作 | 行为 |
+| | |
 |---|---|
-| 读文件 | 优先读 `Data`，没有则透到 `Package` |
-| 写文件（Package 中已有） | 自动 copy-up 到 `Data` 后再写 |
-| 写新文件 | 直接写入 `Data` |
-| 删除 Package 文件 | 在 `Data` 中生成 whiteout |
-| 列目录 | 内核自动合并两层视图 |
-| Package 升级 | 只对未被 copy-up / whiteout 的路径生效 |
+| ✅ 本文给出 | AgentRootFS 目录契约（增量调整）、`agent.toml` 新 schema、`behaviors/<name>` 新 schema、配置 DSL 的最小动词集、迁移路径 |
+| ❌ 本文不给 | 具体解析器实现、Rust 数据结构最终签名、脚本引擎选型、UI / msg-center 接口变更 |
 
 ---
 
-### 9.6 与当前 OpenDAN 启动协议的关系
+## 1. 立论：为什么现在动配置格式
 
-当前 `opendan` 启动入口接受的关键参数是：
+三个驱动：
 
-- `--agent-id`
-- `--agent-env`
-- `--agent-bin`
-- `--service-port`
+1. **指导文档新立心智** —— Gateway / Session / Behavior 三层已经定下来，但当前 `agent.toml` 太薄
+   （5 个字段），Gateway 行为（事件接入、dispatcher）与 Session 类定义都没有显式落盘，全部硬编码在
+   `AIAgent::resolve_ui_session` 等地方。Session 类多一种（比如邮件、群、tunnel-A），都得动 Rust。
+2. **Action 集合已经在 beta2.2 重新固化为 v2 七元集**（见 [Agent Actions](./Agent%20Actions.md)），
+   Behavior 配置应当围绕"事件 → action"组织，而不是 v1 的"prompt + tool_whitelist"。
+3. **异常路径需要显式落盘** —— `ContextLimitReached` / provider 失败 / suspend-resume 当前散落在 Rust
+   逻辑里，指导文档 §3.3 明确"响应方式跟当前在干什么强相关，写在 Behavior 里"，需要 schema 支撑。
 
-因此 COW 方案不应改写 `opendan` 的核心启动接口，而应让 container entrypoint 先完成 overlay 挂载，再以现有协议启动 `opendan`：
+判据（贯穿全文）：
 
-- `--agent-env = agent_env_root`
-- `--agent-bin = package_root`
-
-对应到当前实现，`node_daemon` 未来需要从“直接起本地进程”切换为“启动容器并传同等实例参数”，但 `opendan` 本身不需要理解 Docker 细节。
+- **配置层级 ∝ 改动频率**。framework 不许 leak 到 behavior，business 不许 leak 到 agent.toml。
+- **显式大于隐式**。"何时停 / 切到哪 / 上下文满了怎么办"必须在配置里看得到。
+- **配置即架构**。读 `agent.toml` + 数 `behaviors/` 目录，应当能复述 Agent 的对外形态与全部分支。
 
 ---
 
-### 9.7 Docker 容器内实现
+## 2. 三层落盘对照（决策表）
 
-#### entrypoint.sh
+| 心智层 | 改动频率 | 配置载体 | 物理路径 |
+|---|---|---|---|
+| Identity + Runtime | 🟦 极少 | `[identity]` `[runtime]` `[[channel]]` | `<agent_root>/agent.toml` |
+| Dispatcher（事件 → Session） | 🟦 极少 | `[dispatch]` `[[dispatch.rule]]` | `<agent_root>/agent.toml` |
+| Session 类 | 🟨 偶尔 | `[session.<class>]` | `<agent_root>/agent.toml` |
+| Behavior（业务） | 🟥 经常 | 每 behavior 一份 | `<agent_root>/behaviors/<name>.toml` 或 `<name>/behavior.toml` |
+| Tool plan | 🟥 经常 | 策略文件 | `<agent_root>/tool_plans/<plan>.toml` |
+| Skills / Tools 声明 | 🟥 经常 | 见 §6 4 层 Bin | `<agent_root>/tools/` / `<agent_root>/skills/` |
 
-```bash
-#!/bin/sh
-set -eu
+**改谁查这一张表，不要靠记忆。**
 
-PACKAGE_ROOT=/opt/agent/package
-DATA_UPPER=/opt/agent/data
-OVERLAY_WORK=/opt/agent/data/.overlay_work
-AGENT_ENV_ROOT=/opt/agent/rootfs
+---
 
-mkdir -p "$DATA_UPPER" "$OVERLAY_WORK" "$AGENT_ENV_ROOT"
+## 3. AgentRootFS 目录布局（增量调整）
 
-mount -t overlay overlay \
-  -o lowerdir="$PACKAGE_ROOT",upperdir="$DATA_UPPER",workdir="$OVERLAY_WORK" \
-  "$AGENT_ENV_ROOT"
-
-exec /opt/agent/opendan \
-  --agent-id "${OPENDAN_AGENT_ID}" \
-  --agent-env "$AGENT_ENV_ROOT" \
-  --agent-bin "$PACKAGE_ROOT" \
-  --service-port "${OPENDAN_SERVICE_PORT}"
+```text
+<agent_root>/
+  agent.toml                          # ⬅ 改 schema（§4）
+  role.md                             # 自我介绍片段，按约定文件名由 behavior 提示词模板 include 引入
+  self.md                             # 内部能力 / 边界声明，同上
+  .meta/
+    rootfs_sync.json                  # 启动期 package → root 同步 manifest（sha256，保护本地修改）
+  users/
+    <user_id>.md                      # 按 from_did 选择的系统提示词片段
+    group_<gid>.md
+  memory/                             # AgentMemory 初始化目录
+  notepads/<notepad_name>/
+  skills/<category>/<skill_dir>/
+  tools/                              # Agent Bin 层（见 §6）
+  tool_plans/<plan_name>.toml         # behavior 引用（见 §6.3）
+  i18n/<language>.toml                # runtime-facing 短文案，如 session one-line status
+  behaviors/
+    <name>.toml                       # ⬅ 扁平形态（§5）
+    <name>/                           # ⬅ 新增结构化形态（§5.5）
+      behavior.toml
+      system.md                       # [prompt].on_init 模板
+      input_msg.md                    # [prompt].on_input_msg 模板（可缺）
+      input_event.md                  # [prompt].on_input_event 模板（可缺）
+  workspace/<workspace_id>/
+  sessions/<session_id>/
+  archive/
+    skills/
+    sessions/<session_id>/
+    workspace/<workspace_id>/
+    worklog.db
 ```
 
-说明：
+**仍然有效的硬约束**（与当前实现一致，不变）：
 
-- 这里只是示意启动协议，不代表最终镜像路径必须完全一致
-- 如果容器内不允许 `mount -t overlay`，可以退化为 `fuse-overlayfs`
-- 如果连 `fuse-overlayfs` 也不可用，entrypoint 应退化为把 `package_root` 递归播种到 `data_upper`
-- 这个递归播种不应保留目录时间戳等元数据，否则在 macOS/OrbStack 一类卷后端上可能因 `utimens` 被拒绝而启动失败
-- entrypoint 的职责是“准备 RootFS 并启动 opendan”，不是重新定义 workspace 启动接口
+- AgentRootFS 内禁止任何二进制可执行文件（ELF / Mach-O / PE / `.so` / `.dylib` / `.dll`），通过 4 层
+  Bin 的执行视图来承载二进制。
+- `sessions/<id>/` 内不放 `./bin/`，执行视图渲染到 App Instance Volume 下的
+  `<instance_volume>/tools/<agent_id>/<session_id>/`。Docker 正式环境中通常是
+  `/opt/buckyos/instance/tools/<agent_id>/<session_id>/`。
+- 路径解析单一来源 [`paths.rs`](../../src/frame/opendan/src/paths.rs)，禁止"候选 key 列表 + 祖先扫描"。
 
----
+**新增约束**：
 
-### 9.8 Host / node_daemon 的职责
-
-在 Docker-first 方案中，host 不负责 OverlayFS 挂载，只负责：
-
-- 准备只读 Package 来源
-- 准备 Agent 实例级 Data volume
-- 注入 `agent_id`、`service_port` 等实例参数
-- 管理容器启停、日志、健康检查
-
-也就是说，`node_daemon` 的改造重点是 Docker 编排，而不是跨平台 mount 细节。
-
-容器启动后，entrypoint 负责生成真正的 `agent_env_root`，再把该路径传给 `opendan`。
+- `behaviors/<name>/` 与 `behaviors/<name>.toml` **互斥**——同名同时存在视为配置错误，启动期拒绝加载。
+- `behaviors/<name>/behavior.toml` 内的 `[prompt].on_init` / `on_input_msg` / `on_input_event` 引用
+  的文件路径**必须解析到同目录之下**——禁止跨目录引用。要共享 prompt 片段（比如 `role.md` /
+  `self.md`）只能通过模板引擎的 `include` 机制，由 prompt compiler 处理，见
+  [Agent Prompt Compiler](./Agent%20Prompt%20Compiler.md)。
 
 ---
 
-### 9.9 docker run 示意
+## 4. `agent.toml` 新 schema —— Gateway + Session classes
 
-```bash
-docker run \
-  --cap-add SYS_ADMIN \
-  -e OPENDAN_AGENT_ID=jarvis \
-  -e OPENDAN_SERVICE_PORT=3180 \
-  -v jarvis_data:/opt/agent/data \
-  opendan/agent-runtime:latest
+### 4.1 现状（5 字段，[agent_config.rs](../../src/frame/opendan/src/agent_config.rs)）
+
+```toml
+agent_did              = ""
+display_name           = ""
+default_ui_behavior    = ""
+default_work_behavior  = ""
+subscribe_events       = []
+cancel_reason          = ""
+preserve_attachment_tag_in_egress = false
 ```
 
-如果 `Package` 放在镜像内，则不必额外挂只读卷；如果需要把 `Package` 与镜像解耦，也可以额外挂只读 volume 到 `/opt/agent/package`。
+问题：Gateway 行为不可表达、session 类不可表达、订阅是扁平数组不挂在具体 session 类上、dispatcher
+完全隐式（在 `AIAgent::dispatch_inbound` 里硬编码）。
 
-`--cap-add SYS_ADMIN` 是容器内直接使用内核 OverlayFS 的最小权限要求。若安全策略不允许，可评估：
+### 4.2 改进 schema 草案
 
-- `fuse-overlayfs`
-- 预先在镜像构建期生成基础层，运行期只做 volume 覆盖
+```toml
+# ─── Identity ────────────────────────────────────────────────
+[identity]
+agent_did    = ""                       # 空 ⇒ 启动期从 system_config 拉的 AgentDocument 回填
+display_name = ""                       # 空 ⇒ 从目录名推断
+# role.md / self.md 不在这里声明——它们是约定俗成的文件名，由具体 behavior 的
+# system prompt 模板通过 prompt compiler 的 `{{ include "role.md" }}` 显式引入。
+# agent.toml 不掺合"哪个 behavior 用哪段身份描述"。
 
-但这两种都属于兼容实现，不是主设计。
+# ─── Runtime ─────────────────────────────────────────────────
+[runtime]
+cancel_reason = "user requested cancel" # Observation::Cancelled 文案兜底
+language = "en"                         # 选择 i18n/<language>.toml，空值等同 en
+# 支持 zh / zh-TW / en / es / fr / de / ko / ja / ru；zh-CN、en-US 等 alias 会归一化。
+preserve_attachment_tag_in_egress = false
+filesystem_policy = "workspace"         # workspace / unrestricted
+
+# ─── Channels：Gateway 监听的事件源 ──────────────────────────
+[[channel]]
+type = "msg_center"
+# msg_center 上来的所有 inbound Msg 都进 dispatcher
+[[channel]]
+type    = "kevent"
+filters = ["task_mgr/**", "kvdoc/**"]    # 订阅前缀
+
+# ─── Dispatcher：事件类型 → Session class ───────────────────
+# v0 故意做"窄"：纯事件类型过滤器到 session class 的固定映射。
+# 没有 when 表达式、没有 session_id 模板，没有任何"基于事件字段计算"的能力。
+# 复杂分发等积累完真实需求再考虑升级（见 §10 开放问题 #X）。
+[dispatch]
+default_class = "ui"                    # 没有任何 rule 命中时的兜底 session 类
+
+[[dispatch.rule]]
+on            = "msg.chat"              # 单事件类型，允许尾部通配 `msg.*`
+session_class = "ui"
+
+[[dispatch.rule]]
+on            = "msg.group"
+session_class = "group"
+
+[[dispatch.rule]]
+on            = "task_mgr.*"            # task_mgr 下所有事件
+session_class = "work"
+
+# ─── Session 类 ──────────────────────────────────────────────
+[session.ui]
+loop_mode           = "agent"           # 普通 Agent Loop，default behavior 固定
+default_behavior    = "ui_default"
+subscribe_events    = ["msg.incoming"]  # 这个 class 默认订阅的 kevent 通配
+session_id_strategy = "per_peer"        # 见下方枚举
+switch_mode         = "normal"          # behavior 切换语义；agent loop 下不会触发，写出来仅为对称
+process_stack_limit = 4
+keep_alive          = true              # 永远算 active，重启后 restore
+inject_background_environment = true    # 每轮 user input 前注入 <background_environment>
+
+[session.group]
+loop_mode           = "agent"
+default_behavior    = "group_default"
+session_id_strategy = "per_group"
+switch_mode         = "normal"
+keep_alive          = true
+
+[session.work]
+loop_mode           = "behavior"        # Behavior Loop，状态机
+default_behavior    = "work_default"
+subscribe_events    = ["task_mgr.*", "kvdoc.*"]
+session_id_strategy = "per_event_session"
+switch_mode         = "normal"          # "normal" | "fork" | "independent"，整个 class 统一
+process_stack_limit = 8
+keep_alive          = false             # status != Ended 才算 active
+inject_background_environment = false   # worksession 通常只用 prompt 模板里的 session/workspace 变量
+report_delivery     = "final_only"      # "final_only" | "top_level" | "all"
+```
+
+**`session_id_strategy` 枚举**（v0 固化、不可扩展）：
+
+| 策略 | session_id 形态 | 适用 |
+|---|---|---|
+| `per_peer` | `<class>-<event.from_did>` | 一个对话方一个 session（UI 类典型） |
+| `per_group` | `<class>-<event.group_id>` | 一个群一个 session |
+| `per_event_session` | `<event.session_id>` | event 自带 session_id（task_mgr 完成事件、worksession 路由） |
+| `singleton` | `<class>` | 整个 class 全局只有一个 session（系统级、调度类） |
+
+策略选择由 session class 决定，**不由 dispatcher rule 决定**——这是 §1 立论里"配置层级 ∝ 改动频率"
+的具体落地：dispatcher 想加新 rule 不应当被迫想清楚 session_id 怎么取。
+
+未命中策略所需字段（如 `per_peer` 收到一条没有 `from_did` 的 event）⇒ drop + warn。
+
+### 4.3 改进点与现状映射
+
+| 现状字段 | 新位置 | 说明 |
+|---|---|---|
+| `agent_did` / `display_name` | `[identity]` | 同语义，分组到 identity 段 |
+| `default_ui_behavior` | `[session.ui].default_behavior` | session 类拥有自己的 default |
+| `default_work_behavior` | `[session.work].default_behavior` | 同上 |
+| `subscribe_events` | `[session.<class>].subscribe_events` | 订阅挂在 session 类上，而不是 Agent 全局 |
+| `cancel_reason` | `[runtime].cancel_reason` | 同语义 |
+| `preserve_attachment_tag_in_egress` | `[runtime]` | 同语义 |
+| — | `[runtime].filesystem_policy` | **新增**，控制 read / attachment 的本地文件路径策略 |
+| — | `[[channel]]` | **新增**，Gateway 接入显式化 |
+| — | `[dispatch]` | **新增**，dispatcher 显式化（当前硬编码在 `AIAgent::dispatch_inbound`） |
+| — | `[session.<class>].loop_mode` | **新增**，对齐指导文档 "UI Session 是 loop_mode=agent 的特例" |
+| — | `[session.<class>].session_id_strategy` | **新增**，固化 session_id 派生策略 |
+| — | `[session.<class>].switch_mode` | **新增**（从 behavior 上提），整个 class 统一 |
+| — | `[session.<class>].keep_alive` | **新增**，固化"UI 永远活、Work 看状态"的差异 |
+| — | `[session.<class>].inject_background_environment` | **新增**，控制是否在每轮输入前动态注入 `<background_environment>` |
+| — | `[session.<class>].report_delivery` | **新增**，控制 WorkSession report 上行到 UI session 的默认范围 |
+
+### 4.4 兼容性
+
+- beta2.2 启动期：若 `agent.toml` 包含旧字段，runtime 做一次内存映射（warn + 提示运行
+  `opendan migrate-config`），不再向新代码扩散。
+- beta3.0：旧字段不再识别，启动期拒绝。
+- `agent_did` 留 empty 由 runtime 回填的现有契约保留不变。
 
 ---
 
-### 9.10 Package 更新语义
+## 5. Behavior 配置 —— 从 "prompt + tools" 到 "event + action"
 
-Package 更新的推荐合同应收敛为：
+### 5.1 现状（[behavior_cfg.rs](../../src/frame/opendan/src/behavior_cfg.rs)）
 
-- **默认语义：下次容器重启生效**
+```toml
+name = "explorer"
+objective = "..."
+system_prompt_template = "..."
+tool_whitelist = ["exec_bash", "..."]
+approval_required = []
+tool_plan = "minimal_safe"
+mode = "behavior"
+parser = "xml"
+renderer = "xml"
+parser_strict = false
+[renderer_cfg]   ...
+output = { ... }
+max_rounds = 16
+max_consecutive_errors = 3
+switch_mode = "normal"
+[model]   ...
+[budget]  ...
+```
 
-也就是说：
+问题：**事件不见了，action 不见了，next 不见了**。Behavior 看起来像一份 LLM 调用模板，而不是
+指导文档说的"对一组事件的响应表 + 状态机的一个节点"。
 
-- 更新 `Package` 后，新容器实例会看到最新 lowerdir
-- 已 copy-up 到 `Data` 的文件继续优先使用实例自己的版本
-- 不承诺“运行中立刻热切换到新 Package”
+### 5.2 改进 schema 草案
 
-如果未来需要在线热切换，应单独定义 remount / restart 策略，而不是把它作为当前基础合同的一部分。
+Behavior 配置的心智模型很简单：**走到这里，session 已经决定要推理了**，behavior 只关心三件事——
+**渲染什么提示词、能用什么能力、异常路径有没有打开**。状态机的边、事件过滤、switch_mode 都不在
+behavior 里：
+
+- "什么事件触发推理" 是 session 类的事（见 §4.2 `[session.<class>].subscribe_events`）
+- "下一个 behavior 是哪个" 由 LLM 在 `<next_behavior>` 输出端决定，runtime 不预先约束
+- "切的时候用 normal / fork / independent" 是 session 类的事（见 §4.2 `[session.<class>].switch_mode`）
+
+```toml
+# ─── meta ───────────────────────────────────────────────────
+[meta]
+name      = "explorer"
+objective = "explore unknown territory"
+
+# ─── prompt 渲染：三个时机，三段模板 ───────────────────────
+# 模板引擎（Agent Prompt Compiler）在每个时机都能访问当前 session / behavior / 环境状态，
+# 具体可见变量见 Render_Prompt_Template_Variables.md。
+[prompt]
+# 进入这个 behavior 的瞬间，渲染 system 段
+on_init        = "system.md"
+
+# 收到一条 user/peer message，即将拼进本轮 input 时渲染
+# 缺省 ⇒ 走 runtime 内建的最小消息模板（仅原文 + 发送者）
+on_input_msg   = "input_msg.md"
+
+# 收到一条业务 event，即将拼进本轮 input 时渲染
+# 缺省 ⇒ 走 runtime 内建的最小事件模板（type + 关键字段）
+on_input_event = "input_event.md"
+
+parser = "xml"                          # LLM 输出 parse 方式；renderer 等细节全部走默认值
+
+# ─── 能力声明（占位，§5.3 详述）────────────────────────────
+# behavior 在这次推理中能用到的能力，三类合在一起：
+#   - v2 内建 Action（exec_bash / write_file / ... / subscribe_event）
+#   - skills bundle（<agent_root>/skills/ 下加载的成套能力）
+#   - 传统 function-call tool（ToolManager 注册的命名函数）
+# 详细 schema 待 §5.3 收敛；当前 5.2 草案先占位，不写细节字段。
+[capabilities]
+# TODO
+
+# ─── Budget / Model ─────────────────────────────────────────
+[budget]
+max_rounds              = 16
+max_consecutive_errors  = 3
+max_total_tokens        = 200_000
+
+[model]
+preferred   = "claude-opus-4-7"
+
+
+# ─── 旁路 LLM 逻辑（异常路径的开关）─────────────────────────
+# 这一段的作用是"一眼看出来哪些旁路打开了"。v0 不追求灵活性，每个 on_xxx 就是一个固定模式：
+# 写出来 ⇒ 旁路启用，按固定策略执行；删掉 ⇒ 旁路关闭，命中时按 runtime 默认（通常是结束 process）。
+# 想调策略细节先改 src/，等真有第二种合理策略再扩 schema。
+[on_context_limit_reached]
+mode = "compress_then_continue"         # 唯一支持的模式；填上即启用
+
+[on_llm_message_compress]
+mode = "context_window_ratio"           # 一轮完成后按 context window 使用率触发
+trigger_ratio = 0.80
+target_ratio = 0.50
+hard_limit_ratio = 0.95
+min_turns_between_compress = 2
+preserve_cache_stability = true
+
+[on_provider_failed]
+mode   = "fallback_behavior"
+target = "explorer_safe_mode"
+
+[on_interrupt_graceful]
+mode = "cancel_pending_tools_then_continue"
+```
+
+### 5.3 `[capabilities]` 段：待收敛的占位
+
+这是当前最不确定的一段，先讲清楚边界：
+
+- **v2 内建 Action**（[Agent Actions](./Agent%20Actions.md) §1）是**提示词耦合的固化集合**——
+  prompt 模板里见过哪些标签 LLM 才会输出。这部分天然要在 behavior 层声明（不同 behavior 可能屏蔽
+  不同 action）。
+- **Skills**（`<agent_root>/skills/` 下加载的成套能力）是 self-improvable 的业务能力包，每个 bundle
+  自带 prompt 片段、tool 注册、可能还有自己的 sub-behavior。behavior 要做的是"声明本次推理把哪些
+  bundle 挂进来"。
+- **传统 function-call tool**（ToolManager 注册的命名函数，走 provider native tool_calls 通道）
+  是 v2 Action 的并存通道——`exec_bash` 之外的工具调用要么走 shim 进 bash，要么走这条 native tool
+  通道。behavior 要声明白名单。
+
+三类都需要一个"上层引用 + 下层细节定义"的解耦：
+
+| 类别 | 上层引用 | 下层细节定义 |
+|---|---|---|
+| v2 内建 Action | `[capabilities].actions = [...]`（待定） | runtime 内建，schema 在 Agent Actions.md |
+| Skill bundle | `[capabilities].skills = [...]`（待定） | `<agent_root>/skills/<category>/<bundle>/` |
+| Function tool | `[capabilities].tools = [...]` 或预设名 | ToolManager 注册 + tool_plan |
+
+**5.2 草案有意只写 `[capabilities] # TODO`**——把三类如何统一表达留作单独的设计点。现状 `BehaviorCfg`
+里的 `tool_whitelist` / `tool_plan` 字段在新 schema 里都进 `[capabilities]`，但具体 key 名要等
+skill / function tool 配置一起定。Open question #X 跟踪。
+
+### 5.4 改进点与现状映射
+
+| 现状字段 | 新位置 | 备注 |
+|---|---|---|
+| `name` / `objective` | `[meta]` | — |
+| `mode` | `[session.<class>].loop_mode` | **上提到 session 类**：agent loop vs behavior loop 是 session 决定的 |
+| `system_prompt_template` | `[prompt].on_init` | 渲染时机命名化 |
+| `parser` | `[prompt].parser` | — |
+| `renderer` / `parser_strict` / `renderer_cfg` | 不再配置 | 走默认值，要调直接改 src |
+| `output` | `[prompt].output` | 没变（不常用，按需保留） |
+| `tool_whitelist` / `approval_required` / `tool_plan` | `[capabilities]`（待收敛） | 见 §5.3 |
+| `max_rounds` / `max_consecutive_errors` / `budget` | `[budget]` | — |
+| `switch_mode` | `[session.<class>].switch_mode` | **上提到 session 类** |
+| `model` | `[model]` | — |
+| — | `[prompt].on_input_msg` / `on_input_event` | **新增**：消息/事件渲染时机的模板槽 |
+| — | `[on_xxx]` 旁路开关 | **新增**：异常路径从 Rust 默认逻辑里提出来做成可见开关 |
+
+### 5.5 文件物理形态
+
+**扁平**（适合简单 behavior，单文件 < 200 行）：
+```
+behaviors/explorer.toml
+```
+
+**结构化**（适合 prompt 模板需要拆三段、内容较长时）：
+```
+behaviors/explorer/
+  behavior.toml
+  system.md             # [prompt].on_init 指向
+  input_msg.md          # [prompt].on_input_msg 指向（可缺）
+  input_event.md        # [prompt].on_input_event 指向（可缺）
+  notes.md              # 自由文档（不被 runtime 读，给开发者看）
+```
+
+加载顺序：先看 `behaviors/<name>/behavior.toml`，没有再看 `behaviors/<name>.toml`。同时存在 → error。
+
+### 5.6 `[on_xxx]` 与 LLM 输出 `<actions>` 的层级澄清
+
+| | 谁决定 | 出现时机 | 例子 |
+|---|---|---|---|
+| `[on_xxx]`（**配置**） | 配置开发者 | LLMContext 抛出异常事件 | "上下文满了 ⇒ 压缩后继续" |
+| `<action>`（**LLM 输出**） | LLM 在一轮推理内 | LLM 决定本轮要写一个文件 | "本轮输出 `<write_file>`" |
+
+`[on_xxx]` 是**旁路开关**（异常路径打不打开、按哪个固定策略走），`<actions>` 是 LLM 在正常推理内
+的**输出**（这一轮想做什么）。两者属于不同维度，不冲突也不重叠。
+
+**正常路径下"什么事件触发推理"不在 behavior 里**——那是 session 类 `subscribe_events` 决定的（§4.2）。
+behavior 永远是"已经决定推理，正在准备这一轮"的状态。
+
+---
+
+## 6. 4 层 Bin / Tool Plan（保留现有契约，简述）
+
+完整描述见原 §3。本节只复述硬约束，方便单文件阅读。
+
+| 层 | 物理路径 | 持久化 |
+|---|---|---|
+| System Bin | `<buckyos_root>/tools/store/` | ExtTool 共享只读卷 |
+| Runtime Bin | `<instance_volume>/tools/bin/` | App Instance Volume |
+| Agent Bin | `<agent_root>/tools/` | AgentRootFS 持久化 |
+| Session Bin 声明 | `<agent_root>/sessions/<sid>/tools/` | AgentRootFS 持久化 |
+| Session Bin 执行视图 | `<instance_volume>/tools/<agent_id>/<sid>/` | App Instance Volume |
+
+Docker 正式环境中:
+
+- `<buckyos_root>` 固定为 `/opt/buckyos`。
+- `<instance_volume>` 来自 `BUCKYOS_INSTANCE_VOLUME`,当前 worker 容器内为 `/opt/buckyos/instance`。
+- `/opt/buckyos/tools` 是 `buckyos-exttool` 共享只读卷。OpenDAN 只能读取其中的 `store/`、预热 cache 等内容,不能在该目录下创建 session-bin。
+- Runtime Bin 和 Session Bin 都必须落在 `/opt/buckyos/instance/tools/...`,避免写入只读 ExtTool 卷。
+
+### 6.1 PATH overlay
+```
+PATH = SessionExecBin : AgentBin : RuntimeBin : SystemBin : <inherited>
+```
+
+### 6.2 Session `./tools/` 硬约束
+- 只放文本（脚本源码、`tool.toml`、prompts、schema），禁止二进制。
+- 单文件建议 ≤ 64 KB，整目录文件数建议 ≤ 几百（hot path，每次 `exec_bash` 起手要做 mtime 同步）。
+
+### 6.3 Tool Plan
+位置：`<agent_root>/tool_plans/<plan>.toml`；schema 与渲染时机不变。
+
+**改进点（与 behavior schema 联动）**：
+- `tool_plan` 字段从 behavior 顶层移到 `[actions].tool_plan`，强调 "tool plan 是 action 配套，不是
+  behavior 独立维度"。
+
+---
+
+## 7. DSL 设计 —— v0 故意不开表达式
+
+### 7.1 原则（v0）
+
+1. **完全没有表达式**。整份配置里**所有**字符串字段要么是事件类型 / 文件路径，要么是固定枚举常量。
+   不存在 `when = "msg.kind == 'chat'"` 这种写法、也不存在 `session_id = "ui-${msg.from_did}"` 这种
+   模板插值。一旦哪天觉得不够表达，**直接整体跳到完整的 process-chain DSL**，而不是"小步演进"——
+   小步加表达式的代价是产生第二种半成品语义层，跟将来的完整 DSL 不兼容。
+2. **配置字段全是枚举或字面量**。整份 schema 里 runtime 需要"解释"的部分只有：dispatcher 的事件
+   类型字符串（含尾部通配）、各种 enum、文件路径、命名引用（behavior 名 / tool plan 名 / skill 名）。
+   不存在条件判断、不存在算术、不存在变量替换。
+3. **事件类型只支持尾部通配**。`msg.chat` 精确匹配，`msg.*` 匹配 `msg.` 任一后缀。**没有**中间通配
+   （禁止 `*.completed`），没有交集 / 并集，没有否定。
+4. **session_id 派生是 4 选 1 的枚举**（见 §4.2 `session_id_strategy`），不是表达式。
+5. **旁路只做"开/关 + 唯一策略"**。`[on_xxx]` 每段只允许一个固定 `mode`（§7.2），不允许 `if/else` /
+   多策略并列。要第二种策略 ⇒ 写第二个 `[on_xxx]` 段（但当前 schema 没给）。
+6. **分支判断让 LLM 决定**。"下一个 behavior 是谁" / "走哪条业务路径" 由 LLM 在 `<next_behavior>` /
+   `<report>` / 其它输出端表达——这是 prompt 工程的职责，不是配置 DSL 的职责。
+7. **未来升级路径**：见 §10 开放问题 #1。**不允许小步加 `when`**——要升级就一次性引入完整的
+   process-chain DSL 替换本节，确保只有一种表达层语义。
+
+### 7.2 旁路 `mode` 清单（v0 固化）
+
+整份配置里 v0 唯一的"枚举值字段"集中在 behavior `[on_xxx]` 旁路开关上。每个 `[on_xxx]` section
+都对应一个固定的 `mode`，写出来即启用：
+
+| `[on_xxx]` 段 | 允许的 `mode` | 含义 |
+|---|---|---|
+| `[on_context_limit_reached]` | `compress_then_continue` | 上下文满 ⇒ 压缩后继续 |
+| `[on_llm_message_compress]` | `context_window_ratio` | 一轮完成后按 context window 使用率自动压缩；不写则不启用自动压缩 |
+| `[on_provider_failed]` | `fallback_behavior`（带 `target = "<name>"`） | provider 失败 ⇒ 切到 target |
+| `[on_interrupt_graceful]` | `cancel_pending_tools_then_continue` | 收到 graceful 中断 ⇒ 注入 Cancelled 后继续 |
+| `[on_interrupt_discard]` | `end` | 收到 discard 中断 ⇒ 直接结束 process |
+
+每个 `[on_xxx]` 段当前**只允许一种 mode**——这是"先做开关，不做策略灵活性"原则的具体体现。需要
+第二种合理策略时再扩；不预先开口子。`[on_llm_message_compress]` 的可调参数是该固定策略的阈值：
+`trigger_ratio`、`target_ratio`、`hard_limit_ratio`、`min_turns_between_compress`、
+`preserve_cache_stability`，以及调试/兜底用的 `context_window_tokens`。生产环境应优先依赖
+AICC `models.list` 返回的 `capabilities.max_context_tokens`。**未列出的 section 或 mode ⇒ parse error**。
+
+其它枚举字段（`loop_mode` / `switch_mode` / `session_id_strategy` / dispatcher `on` 通配 / `mode = "agent"|"behavior"`）
+分散在各自的 schema 段中，本节不重复罗列。
+
+### 7.3 留白：把"想写代码"的诉求踢给注释
+
+需要表达 v0 动词集合覆盖不到的逻辑时，**唯一允许的形式是 Rust 风格注释**——它对 runtime 完全
+透明，只是给读配置的人看：
+
+```toml
+[on_error.context_limit_reached]
+verb   = "compress_then_continue"
+keep_n = 6
+# NOTE: 真要做"先看 pending_inputs 多不多再决定压几轮"这种逻辑，
+#       目前的去处是直接改 src/frame/opendan/src/llm_context_helper.rs::compact_history，
+#       不要在这里加 when / script。等 process-chain DSL 上线再统一搬过来。
+```
+
+**这一节是故意没给"小型脚本钩子"的**。前一版本草案里有 `script = "handlers.rhai::..."` 留白，
+被砍掉了——原因：留个半残钩子比不留更糟，社区会基于它写一堆"半 DSL 配置"，等真要升级到完整
+process-chain DSL 时就尾大不掉。要么不要，要么一次性全要。
+
+---
+
+## 8. 部署 / FS / COW（保留现有契约，简述）
+
+完整版见 git 历史。这里只列**不变事实**，方便单文件阅读：
+
+- **数据 / 运行时分离**：AgentRootFS 在宿主机普通文件系统；AgentRuntime 在 Linux 容器内。
+- **跨平台契约只落在 AgentRootFS**：目录结构、配置、session 数据平台无关；执行视图（PATH 里的 bin、
+  tmux pane、临时挂载）允许纯 Linux 形态。
+- **`agent_root` 来源**：`opendan` 启动 BuckyOS AppService runtime 后，用 runtime 解析出的
+  `app_id` / `owner_id` 调 `get_buckyos_app_data_dir(app_id, owner_id)` 取得当前 app 数据目录。
+- **Docker 中的 `agent_root`**：容器内为 `/home/<owner>/.local/share/<agent_id>`,host 侧对应
+  `$BUCKYOS_ROOT/data/home/<owner>/.local/share/<agent_id>`。它是 AgentRootFS/user app data,不承载
+  session-bin。
+- **Docker 中的可写执行层**：`BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance`,OpenDAN 的 Runtime Bin 和
+  Session Exec Bin 都渲染到 `/opt/buckyos/instance/tools/...`。
+- **Docker 中的 ExtTool 层**：`BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools`,由 `buckyos-exttool` 共享只读卷提供,
+  OpenDAN 只把 `/opt/buckyos/tools/store` 作为 System Bin 读取。
+- **COW 由容器内 OverlayFS 实现**：`OverlayFS(Package[RO], Data[RW])`，host 不做 overlay 生命周期。
+- **`opendan` 进程不理解 Docker**，只消费 BuckyOS runtime 解析出的 app 数据目录。
+
+确定性读取规则（不变）：
+
+- 不允许从 cwd 向上扫祖先目录推 `agent_root`。
+- 不允许"哪个目录有 `worklog.db` 就是根"这类反推。
+- session workspace root：绑定 ⇒ `<agent_root>/workspace/<id>/`；未绑定 ⇒ `<agent_root>`。
+
+
+
+---
+
+## 10. 待定事项（Open questions）
+
+按优先级排：
+
+1. **何时升级到完整 process-chain DSL**：v0 dispatcher 是纯"事件类型 → session class"映射，
+   behavior 不带 `[on.*]` / `[next.rule]` / `when`。这套窄到底的设计有意识地拒绝"小步加表达式"——
+   见 §7.1。升级触发条件（提前定下来避免临时拍）：
+   - 同一事件类型需要按 payload 字段路由到不同 session class（例如 `msg.chat` 按
+     `recipient_group_id` 分发到不同 group session）；
+   - 收到事件需要根据 payload 决定要不要触发推理（例如 "from blacklist 的 user_msg 直接丢"）；
+   - behavior 切换需要 runtime 自动判定，不再让 LLM 在 `<next_behavior>` 里决定。
+
+   三类需求都不出现就不引入表达式。一旦其中两类同时变现实需求，**一次性**用完整 process-chain DSL
+   替换 §4.2 / §5.2 / §7 的窄设计，不在 v0 上叠加 `when`。
+
+2. **`[capabilities]` 的最终 schema**：§5.3 留空。需要在同一个段下表达三类能力（v2 内建 Action /
+   skill bundle / 传统 function-call tool），且每类都有"上层引用 + 下层细节定义"的解耦诉求。需要
+   等 [Agent Skill](./Agent%20Skill.md) 与 ToolManager 的配置形态一起定下来再收敛。在那之前 §5.2
+   草案里这段就只是占位。
+
+3. **session class 内多 behavior 时的事件路由**：dispatcher 把事件送进 session，session 把事件交给
+   `current_behavior`，behavior 通过 prompt 表达自己的反应——不需要"event → behavior"的二级路由。
+   等真有"同一 session class 内多个 behavior 长期共存且都要被外部直接寻址"的场景再回头处理。
+
+4. **`subscribe_event` 静态 vs 动态**：v2 Action 集合里有 `subscribe_event` / `unsubscribe_event`
+   （LLM 主动注册），而 `[session.<class>].subscribe_events` 是配置静态注册。两者关系明确：静态订阅
+   在 session 一启动就生效；动态订阅在 SessionMeta 里持久化、重启后从 meta 还原。**两条路径都走
+   `session_event_pump`**，配置语义不冲突。
+
+5. **`process_stack_limit` 超限语义**：当前
+   [`SessionMeta.process_stack`](../../src/frame/opendan/src/session_model.rs) 无上限，新 schema 加上
+   limit 后需要决定超限语义（拒绝 fork / 拒绝 independent switch / 自动 unwind）。
+
+6. **`AgentLayout` 兼容扁平 + 结构化两种 behavior 形态**：`layout.behavior_path()` 当前签名只返回
+   `.toml`，需要扩到 enum 或返回候选列表，并把"两种形态同名存在"的错误检查放在加载入口。
+
+7. **Channel 类型的对外接口**：`type = "msg_center" | "kevent" | "http" | ...` 的清单需要定一个准入
+   表，跟 [Agent Session 的事件订阅](./Agent%20Session的事件订阅.md) §2 三种模式对齐。
+
+8. **prompt 三段模板的默认值**：`[prompt].on_input_msg` / `on_input_event` 缺省走 runtime 内建的
+   最小模板——这两个内建模板的具体形态需要跟 [Render_Prompt_Template_Variables](./Render_Prompt_Template_Variables.md)
+   一起定，并明确"自定义模板可以访问哪些上下文变量"的清单。
 
 ---
 
 ## 一句话总结
 
-> COW 主要依靠 Docker 容器内的 Linux OverlayFS 实现。host 只负责编排容器；container 内把 `Package[RO] + Data[RW]` 挂成独立的 `agent_env_root`，再按现有 `opendan --agent-env/--agent-bin` 协议启动。
+> **`agent.toml` 承载 Gateway + Session 类骨架（事件类型 → session class 的固定映射、loop / switch /
+> session_id 派生策略全归 session 类）；`behaviors/<name>/` 承载"已经决定要推理之后，渲染哪段提示词、
+> 能用哪些能力、有没有打开异常旁路"——三段 prompt 模板（on_init / on_input_msg / on_input_event）+
+> `[capabilities]` + `[on_xxx]` 开关。v0 整份配置不带表达式，要表达式就一次性升级到完整
+> process-chain DSL。**

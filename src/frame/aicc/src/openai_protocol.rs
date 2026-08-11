@@ -1,5 +1,5 @@
 use crate::aicc::ProviderError;
-use buckyos_api::{features, AiToolSpec, CompleteRequest, RespFormat};
+use buckyos_api::{features, AiMethodRequest, AiToolSpec, RespFormat};
 use serde_json::{json, Map, Value};
 
 const OPENAI_OPTION_ALLOWLIST: &[&str] = &[
@@ -40,6 +40,13 @@ const OPENAI_BUILTIN_TOOL_TYPES: &[&str] = &[
     "image_generation",
     "code_interpreter",
     "mcp",
+];
+const AICC_CONTROL_OPTION_KEYS: &[&str] = &[
+    "owner_session_id",
+    "root_id",
+    "rootid",
+    "session_id",
+    "session_overlay",
 ];
 
 fn is_valid_openai_function_name(value: &str) -> bool {
@@ -85,8 +92,9 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
     };
     let name = validate_openai_function_name(raw_name, format!("tools[{}].name", idx).as_str())?;
 
-    let parameters = tool
+    let mut parameters = tool
         .get("args_schema")
+        .or_else(|| tool.get("args_json_schema"))
         .cloned()
         .unwrap_or_else(default_tool_parameters);
     if !parameters.is_object() {
@@ -95,6 +103,7 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
             idx
         )));
     }
+    ensure_object_typed_parameters(&mut parameters);
 
     let mut normalized = Map::new();
     normalized.insert(
@@ -117,6 +126,20 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
     Ok(Value::Object(normalized))
 }
 
+/// OpenAI tool `parameters` (and Claude `input_schema`) must declare
+/// `"type":"object"` at the top level. Tool authors who hand-write the
+/// schema sometimes forget — fill it in here so the upstream API doesn't
+/// reject the whole request with the cryptic
+/// `schema must be a JSON Schema of 'type:"object"', got 'type:"None"'`.
+fn ensure_object_typed_parameters(parameters: &mut Value) {
+    let Some(map) = parameters.as_object_mut() else {
+        return;
+    };
+    if !map.contains_key("type") {
+        map.insert("type".to_string(), Value::String("object".to_string()));
+    }
+}
+
 fn normalize_openai_function_tool(
     tool: &Map<String, Value>,
     idx: usize,
@@ -135,6 +158,7 @@ fn normalize_openai_function_tool(
                 function_obj.get("description").cloned(),
                 function_obj
                     .get("parameters")
+                    .or_else(|| function_obj.get("args_json_schema"))
                     .cloned()
                     .unwrap_or_else(default_tool_parameters),
                 function_obj
@@ -154,6 +178,7 @@ fn normalize_openai_function_tool(
                 raw_name,
                 tool.get("description").cloned(),
                 tool.get("parameters")
+                    .or_else(|| tool.get("args_json_schema"))
                     .cloned()
                     .unwrap_or_else(default_tool_parameters),
                 tool.get("strict").cloned(),
@@ -167,6 +192,8 @@ fn normalize_openai_function_tool(
             idx
         )));
     }
+    let mut parameters = parameters;
+    ensure_object_typed_parameters(&mut parameters);
 
     let mut normalized = Map::new();
     normalized.insert(
@@ -399,6 +426,9 @@ pub(crate) fn merge_options(
         if key == "model" || key == "messages" || key == "input" {
             continue;
         }
+        if AICC_CONTROL_OPTION_KEYS.contains(&key.as_str()) {
+            continue;
+        }
         if key == "protocol" || key == "process_name" || key == "tool_messages" {
             ignored.push(key.clone());
             continue;
@@ -442,20 +472,43 @@ pub(crate) fn merge_options(
     Ok(ignored)
 }
 
+pub(crate) fn apply_provider_model_defaults(target: &mut Map<String, Value>, provider_model: &str) {
+    let model = provider_model.trim().to_ascii_lowercase();
+    if !(model.starts_with("gpt-5-nano") || model.starts_with("gpt-5-nono")) {
+        return;
+    }
+
+    if !target.contains_key("reasoning") {
+        target.insert("reasoning".to_string(), json!({ "effort": "minimal" }));
+    }
+
+    if target.contains_key("verbosity") {
+        return;
+    }
+    match target.entry("text".to_string()) {
+        serde_json::map::Entry::Vacant(entry) => {
+            entry.insert(json!({ "verbosity": "low" }));
+        }
+        serde_json::map::Entry::Occupied(mut entry) => {
+            if let Some(text_obj) = entry.get_mut().as_object_mut() {
+                text_obj
+                    .entry("verbosity".to_string())
+                    .or_insert_with(|| Value::String("low".to_string()));
+            }
+        }
+    }
+}
+
 pub(crate) fn merge_requirements_response_format(
     target: &mut Map<String, Value>,
-    req: &CompleteRequest,
+    req: &AiMethodRequest,
 ) {
     if has_text_format(target) {
         return;
     }
 
-    let json_output_required = req.requirements.resp_foramt == RespFormat::Json
-        || req
-            .requirements
-            .must_features
-            .iter()
-            .any(|feature| feature == features::JSON_OUTPUT);
+    let json_output_required = req.requirements.resp_format == RespFormat::Json
+        || req.requirements.requires_feature(features::JSON_OUTPUT);
     if json_output_required {
         let _ = set_text_format(target, json!({ "type": "json_object" }));
     }
@@ -504,9 +557,9 @@ mod tests {
     };
     use serde_json::json;
 
-    fn base_request() -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn base_request() -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new("llm.default".to_string(), None),
             Requirements::default(),
             AiPayload::default(),
@@ -649,6 +702,84 @@ mod tests {
                 .pointer("/reasoning/effort")
                 .and_then(|value| value.as_str()),
             Some("low")
+        );
+    }
+
+    #[test]
+    fn merge_options_silently_consumes_aicc_control_options() {
+        let options = json!({
+            "rootid": "session-1",
+            "session_id": "session-1",
+            "owner_session_id": "session-1",
+            "session_overlay": {},
+            "temperature": 0.2
+        });
+
+        let mut target = Map::new();
+        let ignored = merge_options(&mut target, &options).expect("merge options should work");
+
+        assert!(ignored.is_empty());
+        assert!(!target.contains_key("rootid"));
+        assert!(!target.contains_key("session_id"));
+        assert!(!target.contains_key("owner_session_id"));
+        assert!(!target.contains_key("session_overlay"));
+        assert_eq!(target.get("temperature"), Some(&json!(0.2)));
+    }
+
+    #[test]
+    fn apply_provider_model_defaults_sets_gpt5_nano_low_reasoning_defaults() {
+        let mut target = Map::new();
+
+        apply_provider_model_defaults(&mut target, "gpt-5-nano-2025-08-07");
+        let target_value = Value::Object(target);
+
+        assert_eq!(
+            target_value
+                .pointer("/reasoning/effort")
+                .and_then(|value| value.as_str()),
+            Some("minimal")
+        );
+        assert_eq!(
+            target_value
+                .pointer("/text/verbosity")
+                .and_then(|value| value.as_str()),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn apply_provider_model_defaults_preserves_explicit_gpt5_nano_options() {
+        let mut target = json!({
+            "reasoning": {"effort": "high"},
+            "text": {
+                "format": {"type": "json_object"},
+                "verbosity": "high"
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("object");
+
+        apply_provider_model_defaults(&mut target, "gpt-5-nano");
+        let target_value = Value::Object(target);
+
+        assert_eq!(
+            target_value
+                .pointer("/reasoning/effort")
+                .and_then(|value| value.as_str()),
+            Some("high")
+        );
+        assert_eq!(
+            target_value
+                .pointer("/text/verbosity")
+                .and_then(|value| value.as_str()),
+            Some("high")
+        );
+        assert_eq!(
+            target_value
+                .pointer("/text/format/type")
+                .and_then(Value::as_str),
+            Some("json_object")
         );
     }
 
@@ -798,7 +929,7 @@ mod tests {
     fn merge_requirements_response_format_sets_json_object_for_json() {
         let mut target = Map::new();
         let mut req = base_request();
-        req.requirements.resp_foramt = RespFormat::Json;
+        req.requirements.resp_format = RespFormat::Json;
 
         merge_requirements_response_format(&mut target, &req);
 
@@ -844,7 +975,7 @@ mod tests {
             }),
         );
         let mut req = base_request();
-        req.requirements.resp_foramt = RespFormat::Json;
+        req.requirements.resp_format = RespFormat::Json;
 
         merge_requirements_response_format(&mut target, &req);
 

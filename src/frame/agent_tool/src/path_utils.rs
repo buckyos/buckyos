@@ -4,6 +4,25 @@ use crate::AgentToolError;
 
 pub const MAX_SESSION_ID_LEN: usize = 180;
 
+/// Expand a leading `~` / `~/...` into `$HOME`. Returns the input unchanged
+/// for anything else (including `~user/...`, which would require a passwd
+/// lookup and is intentionally out of scope). When `$HOME` is unset the
+/// input is also returned unchanged so the caller surfaces a normal
+/// "not found" error rather than a confusing one.
+pub fn expand_home(raw: &str) -> String {
+    if raw != "~" && !raw.starts_with("~/") {
+        return raw.to_string();
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return raw.to_string();
+    };
+    if raw == "~" {
+        return home.to_string_lossy().into_owned();
+    }
+    let home = Path::new(&home);
+    home.join(&raw[2..]).to_string_lossy().into_owned()
+}
+
 pub fn normalize_abs_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -18,6 +37,22 @@ pub fn normalize_abs_path(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+/// Resolve a CLI-provided raw path against the shell's working
+/// directory, canonicalizing if possible. Used by `write_file` /
+/// `edit_file` CLI parsers to expand relative paths the user typed.
+pub fn rewrite_path_with_shell_cwd(raw_path: String, current_dir: &Path) -> String {
+    let path = Path::new(raw_path.trim());
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        current_dir.join(path)
+    };
+    std::fs::canonicalize(&absolute)
+        .unwrap_or_else(|_| normalize_abs_path(&absolute))
+        .to_string_lossy()
+        .to_string()
 }
 
 pub fn to_abs_path(path: &Path) -> Result<PathBuf, AgentToolError> {

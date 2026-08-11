@@ -29,3 +29,14 @@ OOD/设备启动的时候，首先就是要知道自己所在的zone情况
         
 
 
+## sudo机制
+
+SUDO 机制是由 Verify-Hub 提供的,通过一个特殊的提权对话框，要求管理员用户输入密码。在输入密码之后Verify-Hub  会签发一个 SUDO Session Token.
+
+后续在发起请求时，就可以在请求中带上这个 Session Token。这就是 SUDO 的基本机制。Verify-Hub 的 Sudo 授权 token 通常都是时间比较短的（3分钟）,而且在 Sudo 的时候，可能会有明确的操作边界（填写aud)
+
+sudo 的执行权限一样会受到 AppID 的限制。也就是说，其实对于非系统类的应用来讲，申请调用这个权限的意义不太大，因为它还是会被 AppID 限制住。
+
+所以说，一般都是在类似于 Control Panel 这种系统 UI 中，即它的 AppID 本来就具有大权限的情况下，给 sudo 才有意义。
+
+

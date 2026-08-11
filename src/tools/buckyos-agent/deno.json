@@ -1,0 +1,31 @@
+{
+  "imports": {
+    "buckyos": "../../apps/sys_test/dist/buckyos-websdk/dist/node.mjs"
+  },
+  "tasks": {
+    "run": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts",
+    "gen_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts gen_image",
+    "edit_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts edit_image",
+    "inpaint_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts inpaint_image",
+    "upscale_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts upscale_image",
+    "remove_bg": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts remove_bg",
+    "ocr_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ocr_image",
+    "caption_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts caption_image",
+    "detect_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts detect_image",
+    "segment_image": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts segment_image",
+    "text_to_speech": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts text_to_speech",
+    "speech_to_text": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts speech_to_text",
+    "gen_music": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts gen_music",
+    "enhance_audio": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts enhance_audio",
+    "gen_video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts gen_video",
+    "img2video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts img2video",
+    "video2video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts video2video",
+    "extend_video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts extend_video",
+    "upscale_video": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts upscale_video",
+    "ai_provider": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_provider",
+    "ai_quota": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts ai_quota"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom", "esnext"]
+  }
+}

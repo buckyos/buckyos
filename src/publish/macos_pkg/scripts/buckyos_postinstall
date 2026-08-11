@@ -152,6 +152,10 @@ if [ -d "$DEFAULTS_DIR" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/etc/post_gateway.yaml")"
     cp -p "$DEFAULTS_DIR/etc/post_gateway.yaml" "$BUCKYOS_ROOT/etc/post_gateway.yaml"
   fi
+  if [ ! -e "$BUCKYOS_ROOT/etc/node_gateway_params.json" ] && [ -e "$DEFAULTS_DIR/etc/node_gateway_params.json" ]; then
+    mkdir -p "$(dirname "$BUCKYOS_ROOT/etc/node_gateway_params.json")"
+    cp -p "$DEFAULTS_DIR/etc/node_gateway_params.json" "$BUCKYOS_ROOT/etc/node_gateway_params.json"
+  fi
   if [ ! -e "$BUCKYOS_ROOT/etc/node_gateway.json" ] && [ -e "$DEFAULTS_DIR/etc/node_gateway.json" ]; then
     mkdir -p "$(dirname "$BUCKYOS_ROOT/etc/node_gateway.json")"
     cp -p "$DEFAULTS_DIR/etc/node_gateway.json" "$BUCKYOS_ROOT/etc/node_gateway.json"

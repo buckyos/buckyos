@@ -8,18 +8,21 @@ authors = ["BuckyOS DAO","@alexsunxl","@waterflier"]
 async-trait = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-rusqlite = { workspace = true }
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 lazy_static = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 
 
-server-runner = { workspace = true }
+buckyos-http-server = { workspace = true }
 kRPC = { workspace = true }
+rbac = { workspace = true }
 buckyos-kit = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
@@ -31,3 +34,4 @@ url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+jsonwebtoken = { workspace = true }

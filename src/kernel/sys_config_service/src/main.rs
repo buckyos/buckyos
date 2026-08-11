@@ -17,21 +17,24 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use ::kRPC::*;
-use buckyos_kit::*;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_api::{build_current_rbac_config, ZoneConfig};
+use buckyos_http_server::*;
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::*;
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use kv_provider::KVStoreProvider;
 use name_lib::*;
 use rbac::*;
-use server_runner::*;
 use sled_provider::SledStore;
 
 use crate::zone_did_resolver::ZoneDidResolver;
+
+const SYS_CONFIG_URI_PERFIX: &str = "obj://config/";
 
 lazy_static! {
     static ref TRUST_KEYS: Arc<Mutex<HashMap<String, DecodingKey>>> = {
@@ -46,30 +49,93 @@ lazy_static! {
 }
 
 const INTERNAL_META_PREFIX: &str = "__meta/";
+const RESOLVER_CACHE_KEY_PREFIX: &str = "resolver/cache/";
+
+// resolver/cache/* 是 zone 解析控制面（zone_did_resolver 消费的 override 登记，
+// 见 zone_did_resolver.rs 文件头）。写权限由 RBAC allow-list 承担（kernel/system
+// 角色与 root/su_admin），这里补需求要求的审计日志；强负状态（revoked/tombstoned/
+// missing）会屏蔽该名字的后续解析，用 warn 级别突出。
+fn value_carries_strong_negative_status(value: &str) -> bool {
+    serde_json::from_str::<Value>(value)
+        .ok()
+        .and_then(|v| {
+            v.get("document_status")
+                .and_then(|s| s.as_str())
+                .map(|s| matches!(s, "revoked" | "tombstoned" | "missing"))
+        })
+        .unwrap_or(false)
+}
+
+fn audit_resolver_cache_write(
+    op: &str,
+    real_key_path: &str,
+    value: Option<&str>,
+    userid: &str,
+    appid: &str,
+) {
+    if !real_key_path.starts_with(RESOLVER_CACHE_KEY_PREFIX) {
+        return;
+    }
+    if value
+        .map(value_carries_strong_negative_status)
+        .unwrap_or(false)
+    {
+        warn!(
+            "AUDIT resolver-cache {} (strong negative document_status): key={} userid={} appid={}",
+            op, real_key_path, userid, appid
+        );
+    } else {
+        info!(
+            "AUDIT resolver-cache {}: key={} userid={} appid={}",
+            op, real_key_path, userid, appid
+        );
+    }
+}
+
+fn strip_config_key_prefix(key_path: &str) -> &str {
+    let mut key = key_path.trim_start_matches(SYS_CONFIG_URI_PERFIX);
+    if key.starts_with("/config/") {
+        key = &key[8..];
+    }
+    key.trim_start_matches('/').trim_start_matches('\\')
+}
 
 fn is_internal_meta_key(key_path: &str) -> bool {
-    let key = key_path
-        .trim_start_matches("/config/")
-        .trim_start_matches('/')
-        .trim_start_matches('\\');
-    key.starts_with(INTERNAL_META_PREFIX)
+    strip_config_key_prefix(key_path).starts_with(INTERNAL_META_PREFIX)
 }
 
 fn get_full_res_path(key_path: &str) -> Result<(String, String)> {
-    let mut real_key_path = key_path;
-    if key_path.starts_with("/config/") {
-        real_key_path = &key_path[8..];
-    }
-
-    let key = real_key_path
-        .trim_start_matches('/')
-        .trim_start_matches('\\');
+    let key = strip_config_key_prefix(key_path);
     let normalized_path = normalize_path(key);
 
     return Ok((
-        format!("/config/{}", normalized_path.as_str()),
+        format!("{}{}", SYS_CONFIG_URI_PERFIX, normalized_path),
         normalized_path,
     ));
+}
+
+fn get_sudo_mode(session_token: &RPCSessionToken, userid: &str) -> Option<SudoMode> {
+    if session_token.sudo {
+        Some(SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(
+            userid,
+        )))
+    } else {
+        None
+    }
+}
+
+fn require_session_identity(session_token: &RPCSessionToken) -> Result<(&str, &str)> {
+    let userid = session_token
+        .sub
+        .as_deref()
+        .filter(|userid| !userid.trim().is_empty())
+        .ok_or_else(|| RPCErrors::ParseRequestError("Missing userid".to_string()))?;
+    let appid = session_token
+        .appid
+        .as_deref()
+        .filter(|appid| !appid.trim().is_empty())
+        .ok_or_else(|| RPCErrors::ParseRequestError("Missing appid".to_string()))?;
+    Ok((userid, appid))
 }
 
 async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -91,19 +157,21 @@ async fn handle_get(params: Value, session_token: &RPCSessionToken) -> Result<Va
         ));
     }
 
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
-
-    let appid = session_token.appid.as_deref().unwrap_or("kernel");
+    let (userid, appid) = require_session_identity(session_token)?;
 
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     info!(
         "GET: full_res_path:{},real_key_path:{:?},appid:{},userid:{}",
         full_res_path, real_key_path, appid, userid
     );
-    let is_allowed = enforce(userid, Some(appid), full_res_path.as_str(), "read").await;
+    let is_allowed = enforce(
+        userid,
+        appid,
+        full_res_path.as_str(),
+        "read",
+        get_sudo_mode(session_token, userid),
+    )
+    .await;
     if !is_allowed {
         warn!("No read permission");
         return Err(RPCErrors::NoPermission("No read permission".to_string()));
@@ -145,24 +213,20 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
 
     //check access control
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
+    let (userid, appid) = require_session_identity(session_token)?;
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        appid,
         full_res_path.as_str(),
         "write",
+        get_sudo_mode(session_token, userid),
     )
     .await
     {
         warn!(
             "set denied: appid={} userid={} key={}",
-            session_token.appid.as_deref().unwrap_or("kernel"),
-            userid,
-            full_res_path
+            appid, userid, full_res_path
         );
         return Err(RPCErrors::NoPermission(format!(
             "No write permission for key: {}",
@@ -171,6 +235,13 @@ async fn handle_set(params: Value, session_token: &RPCSessionToken) -> Result<Va
     }
 
     //do business logic
+    audit_resolver_cache_write(
+        "set",
+        real_key_path.as_str(),
+        Some(new_value),
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     info!("Set key:[{}], value_len={}", key, new_value.len());
     store
@@ -211,24 +282,20 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //check access control
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
+    let (userid, appid) = require_session_identity(session_token)?;
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        appid,
         full_res_path.as_str(),
         "write",
+        get_sudo_mode(session_token, userid),
     )
     .await
     {
         warn!(
             "create denied: appid={} userid={} key={}",
-            session_token.appid.as_deref().unwrap_or("kernel"),
-            userid,
-            full_res_path
+            appid, userid, full_res_path
         );
         return Err(RPCErrors::NoPermission(format!(
             "No write permission for key: {}",
@@ -237,6 +304,13 @@ async fn handle_create(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //do business logic
+    audit_resolver_cache_write(
+        "create",
+        real_key_path.as_str(),
+        Some(new_value),
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     info!("Create key:[{}], value_len={}", key, new_value.len());
     store
@@ -272,24 +346,20 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //check access control
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
+    let (userid, appid) = require_session_identity(session_token)?;
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        appid,
         full_res_path.as_str(),
         "write",
+        get_sudo_mode(session_token, userid),
     )
     .await
     {
         warn!(
             "delete denied: appid={} userid={} key={}",
-            session_token.appid.as_deref().unwrap_or("kernel"),
-            userid,
-            full_res_path
+            appid, userid, full_res_path
         );
         return Err(RPCErrors::NoPermission(format!(
             "No write permission for key: {}",
@@ -298,6 +368,7 @@ async fn handle_delete(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //do business logic
+    audit_resolver_cache_write("delete", real_key_path.as_str(), None, userid, appid);
     let store = SYS_STORE.lock().await;
     info!("Delete key:[{}]", key);
     store
@@ -337,24 +408,20 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //check access control
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
+    let (userid, appid) = require_session_identity(session_token)?;
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        appid,
         full_res_path.as_str(),
         "write",
+        get_sudo_mode(session_token, userid),
     )
     .await
     {
         warn!(
             "append denied: appid={} userid={} key={}",
-            session_token.appid.as_deref().unwrap_or("kernel"),
-            userid,
-            full_res_path
+            appid, userid, full_res_path
         );
         return Err(RPCErrors::NoPermission(format!(
             "No write permission for key: {}",
@@ -363,6 +430,13 @@ async fn handle_append(params: Value, session_token: &RPCSessionToken) -> Result
     }
 
     //read and append
+    audit_resolver_cache_write(
+        "append",
+        real_key_path.as_str(),
+        Some(append_value),
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     let result = store
         .get(real_key_path.clone())
@@ -413,24 +487,20 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     let json_path = json_path.as_str().unwrap();
 
     //check access control
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
+    let (userid, appid) = require_session_identity(session_token)?;
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        appid,
         full_res_path.as_str(),
         "write",
+        get_sudo_mode(session_token, userid),
     )
     .await
     {
         warn!(
             "set_by_json_path denied: appid={} userid={} key={}",
-            session_token.appid.as_deref().unwrap_or("kernel"),
-            userid,
-            full_res_path
+            appid, userid, full_res_path
         );
         return Err(RPCErrors::NoPermission(format!(
             "No write permission for key: {}",
@@ -439,6 +509,13 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
     }
 
     //do business logic
+    audit_resolver_cache_write(
+        "set_by_json_path",
+        real_key_path.as_str(),
+        None,
+        userid,
+        appid,
+    );
     let store = SYS_STORE.lock().await;
     store
         .set_by_path(real_key_path, String::from(json_path), &new_value)
@@ -457,7 +534,10 @@ async fn handle_set_by_json_path(params: Value, session_token: &RPCSessionToken)
 }
 
 fn should_reload_security_state(full_res_path: &str) -> bool {
-    full_res_path == "/config/boot/config" || full_res_path.starts_with("/config/system/rbac/")
+    if let Some(key) = full_res_path.strip_prefix(SYS_CONFIG_URI_PERFIX) {
+        return key == "boot/config" || key.starts_with("system/rbac/");
+    }
+    false
 }
 
 async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -474,11 +554,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
     }
 
     // Check access control for all keys
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
-    let appid = session_token.appid.as_deref().unwrap_or("kernel");
+    let (userid, appid) = require_session_identity(session_token)?;
 
     let mut tx_actions = HashMap::new();
     let mut need_reload_security_state = false;
@@ -494,9 +570,10 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         let (full_res_path, real_key_path) = get_full_res_path(key)?;
         if !enforce(
             userid,
-            session_token.appid.as_deref(),
+            appid,
             full_res_path.as_str(),
             "write",
+            get_sudo_mode(session_token, userid),
         )
         .await
         {
@@ -573,6 +650,13 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
                 )))
             }
         };
+        audit_resolver_cache_write(
+            action_type,
+            real_key_path.as_str(),
+            action.get("value").and_then(|v| v.as_str()),
+            userid,
+            appid,
+        );
         tx_actions.insert(real_key_path.clone(), kv_action);
     }
     let mut real_main_key = None;
@@ -615,22 +699,18 @@ async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<V
     }
 
     //check access control
-    if session_token.sub.is_none() {
-        return Err(RPCErrors::NoPermission("No sub(userid)".to_string()));
-    }
-    let userid = session_token.sub.as_ref().unwrap();
+    let (userid, appid) = require_session_identity(session_token)?;
     let (full_res_path, real_key_path) = get_full_res_path(key)?;
     info!(
         "full_res_path: {},userid: {},appid: {}",
-        full_res_path,
-        userid,
-        session_token.appid.as_deref().unwrap()
+        full_res_path, userid, appid
     );
     if !enforce(
         userid,
-        session_token.appid.as_deref(),
+        appid,
         full_res_path.as_str(),
         "read",
+        get_sudo_mode(session_token, userid),
     )
     .await
     {
@@ -663,6 +743,10 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
                     error!("Failed to parse zone config from boot/config: {}", err);
                     RPCErrors::ReasonError(err.to_string())
                 })?;
+            let zone_document = zone_config.zone_document().map_err(|err| {
+                error!("Failed to parse zone document from boot/config: {}", err);
+                RPCErrors::ReasonError(err.to_string())
+            })?;
 
             if zone_config.verify_hub_info.is_some() {
                 let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
@@ -683,9 +767,9 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
             } else {
                 error!("Missing verify_hub_info from zone_config");
             }
-            if zone_config.owner.is_valid() {
-                let owner_did = zone_config.owner.clone();
-                if let Some(owner_key) = zone_config.get_default_key() {
+            if zone_document.owner.is_valid() {
+                let owner_did = zone_document.owner.clone();
+                if let Some(owner_key) = zone_document.get_default_key() {
                     let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
                         error!("Failed to parse owner_public_key from zone_config: {}", err);
                         RPCErrors::ReasonError(err.to_string())
@@ -707,7 +791,7 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
     let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
-        let device_doc: DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
+        let device_doc: DeviceDocument = serde_json::from_str(&device_doc_str).unwrap();
         //device_doc.iss
         let devcie_key = device_doc.get_default_key();
 
@@ -733,36 +817,18 @@ async fn handle_refresh_trust_keys() -> Result<Value> {
         error!("Missing BUCKYOS_THIS_DEVICE");
     }
 
-    let rbac_model = store.get("system/rbac/model".to_string()).await;
     let rbac_policy = store.get("system/rbac/policy".to_string()).await;
-    let mut set_rbac = false;
-    if rbac_model.is_ok() && rbac_policy.is_ok() {
-        let rbac_model = rbac_model.unwrap();
-        let rbac_policy = rbac_policy.unwrap();
-        if rbac_model.is_some() && rbac_policy.is_some() {
-            info!(
-                "model config loaded, bytes={}",
-                rbac_model.clone().unwrap().len()
-            );
-            info!(
-                "policy config loaded, bytes={}",
-                rbac_policy.clone().unwrap().len()
-            );
-            rbac::create_enforcer(
-                Some(rbac_model.unwrap().trim()),
-                Some(rbac_policy.unwrap().trim()),
-            )
-            .await
-            .unwrap();
-            set_rbac = true;
-            info!("load rbac model and policy from kv store successfully!");
-        }
-    }
-
-    if !set_rbac {
-        rbac::create_enforcer(None, None).await.unwrap();
-        info!("load rbac model and policy default setting successfully!");
-    }
+    let rbac_policy = rbac_policy.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+    let rbac_config = build_current_rbac_config(rbac_policy.as_deref());
+    info!(
+        "rbac config loaded, model_bytes={}, policy_tail_bytes={}, policy_bytes={}",
+        rbac_config.model.len(),
+        rbac_config.policy_tail.len(),
+        rbac_config.policy.len()
+    );
+    rbac::create_enforcer(rbac_config.model.as_str(), rbac_config.policy.as_str())
+        .await
+        .unwrap();
 
     Ok(Value::Null)
 }
@@ -771,7 +837,7 @@ async fn dump_configs_for_scheduler(
     _params: Value,
     session_token: &RPCSessionToken,
 ) -> Result<Value> {
-    let appid = session_token.appid.as_deref().unwrap();
+    let (_userid, appid) = require_session_identity(session_token)?;
     if appid != "scheduler" && appid != "node-daemon" {
         return Err(RPCErrors::NoPermission("No permission".to_string()));
     }
@@ -865,6 +931,7 @@ impl SystemConfigServer {
                     return dump_configs_for_scheduler(param, &rpc_session_token).await;
                 }
                 "sys_refresh_trust_keys" => {
+                    let _ = require_session_identity(&rpc_session_token)?;
                     return handle_refresh_trust_keys().await;
                 }
                 // Add more methods here
@@ -926,7 +993,7 @@ impl HttpServer for SystemConfigServer {
     }
 }
 
-async fn load_device_doc(device_name: &str) -> Result<DeviceConfig> {
+async fn load_device_doc(device_name: &str) -> Result<DeviceDocument> {
     let store = SYS_STORE.lock().await;
     let device_doc = store
         .get(format!("devices/{}/doc", device_name))
@@ -941,7 +1008,7 @@ async fn load_device_doc(device_name: &str) -> Result<DeviceConfig> {
     let device_doc_str = device_doc.unwrap();
     let device_doc: EncodedDocument = EncodedDocument::from_str(device_doc_str.clone())
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-    let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+    let device_doc: DeviceDocument = DeviceDocument::decode(&device_doc, None)
         .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
     return Ok(device_doc);
 }
@@ -969,7 +1036,7 @@ fn user_has_privileged_role_in_policy(policy: &str, user_name: &str) -> bool {
     })
 }
 
-async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerConfig> {
+async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerDocument> {
     let store = SYS_STORE.lock().await;
     let mut is_privileged = false;
 
@@ -1018,7 +1085,7 @@ async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerConfig> {
         owner_doc.ok_or_else(|| RPCErrors::KeyNotExist(format!("users/{}/doc", user_name)))?;
     let encoded_doc = EncodedDocument::from_str(owner_doc)
         .map_err(|err| RPCErrors::ReasonError(format!("parse owner doc failed: {}", err)))?;
-    let owner_config = OwnerConfig::decode(&encoded_doc, None)
+    let owner_config = OwnerDocument::decode(&encoded_doc, None)
         .map_err(|err| RPCErrors::ReasonError(format!("decode owner doc failed: {}", err)))?;
     Ok(owner_config)
 }
@@ -1144,7 +1211,7 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<RPCSessionToken> {
 
 // }
 
-async fn init_by_boot_config() -> Result<()> {
+async fn init_by_boot_document() -> Result<()> {
     let r = handle_refresh_trust_keys().await;
     if r.is_err() {
         error!("Failed to refresh trust keys: {}", r.err().unwrap());
@@ -1153,7 +1220,7 @@ async fn init_by_boot_config() -> Result<()> {
     let device_doc_str = std::env::var("BUCKYOS_THIS_DEVICE");
     if device_doc_str.is_ok() {
         let device_doc_str = device_doc_str.unwrap();
-        let device_doc: DeviceConfig = serde_json::from_str(&device_doc_str).unwrap();
+        let device_doc: DeviceDocument = serde_json::from_str(&device_doc_str).unwrap();
         //device_doc.iss
         let devcie_key = device_doc.get_default_key();
 
@@ -1191,7 +1258,7 @@ async fn service_main() {
     //std::env::set_var("BUCKY_LOG","debug");
     init_logging("system_config_service", true);
     info!("Starting system config service............................");
-    init_by_boot_config().await.unwrap();
+    init_by_boot_document().await.unwrap();
 
     let server = SystemConfigServer::new();
     const SYSTEM_CONFIG_SERVICE_MAIN_PORT: u16 = 3200;
@@ -1221,6 +1288,116 @@ mod test {
     use tokio::{task, time::sleep};
 
     use super::*;
+
+    fn test_session_token(sub: Option<&str>, appid: Option<&str>) -> RPCSessionToken {
+        RPCSessionToken {
+            sub: sub.map(|value| value.to_string()),
+            appid: appid.map(|value| value.to_string()),
+            exp: None,
+            token_type: RPCSessionTokenType::Normal,
+            token: None,
+            iss: None,
+            jti: None,
+            aud: None,
+            sudo: false,
+            extra: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn require_session_identity_rejects_missing_or_blank_fields() {
+        let missing_userid = test_session_token(None, Some("test"));
+        assert!(matches!(
+            require_session_identity(&missing_userid),
+            Err(RPCErrors::ParseRequestError(message)) if message == "Missing userid"
+        ));
+
+        let blank_userid = test_session_token(Some("  "), Some("test"));
+        assert!(matches!(
+            require_session_identity(&blank_userid),
+            Err(RPCErrors::ParseRequestError(message)) if message == "Missing userid"
+        ));
+
+        let missing_appid = test_session_token(Some("alice"), None);
+        assert!(matches!(
+            require_session_identity(&missing_appid),
+            Err(RPCErrors::ParseRequestError(message)) if message == "Missing appid"
+        ));
+
+        let blank_appid = test_session_token(Some("alice"), Some(""));
+        assert!(matches!(
+            require_session_identity(&blank_appid),
+            Err(RPCErrors::ParseRequestError(message)) if message == "Missing appid"
+        ));
+
+        let valid = test_session_token(Some("alice"), Some("control-panel"));
+        assert_eq!(
+            require_session_identity(&valid).unwrap(),
+            ("alice", "control-panel")
+        );
+    }
+
+    #[test]
+    fn get_full_res_path_builds_config_uri_and_storage_key() {
+        assert_eq!(
+            get_full_res_path("users/alice/settings").unwrap(),
+            (
+                "obj://config/users/alice/settings".to_string(),
+                "users/alice/settings".to_string()
+            )
+        );
+        assert_eq!(
+            get_full_res_path("/config/system/rbac/policy").unwrap(),
+            (
+                "obj://config/system/rbac/policy".to_string(),
+                "system/rbac/policy".to_string()
+            )
+        );
+        assert_eq!(
+            get_full_res_path("obj://config/boot/config").unwrap(),
+            (
+                "obj://config/boot/config".to_string(),
+                "boot/config".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn security_state_reload_uses_config_uri() {
+        assert!(should_reload_security_state("obj://config/boot/config"));
+        assert!(should_reload_security_state(
+            "obj://config/system/rbac/policy"
+        ));
+        assert!(!should_reload_security_state("/config/system/rbac/policy"));
+        assert!(!should_reload_security_state(
+            "obj://config/users/alice/settings"
+        ));
+    }
+
+    #[test]
+    fn strong_negative_resolver_state_detection() {
+        assert!(value_carries_strong_negative_status(
+            r#"{"document_status":"revoked","updated_by":"admin"}"#
+        ));
+        assert!(value_carries_strong_negative_status(
+            r#"{"document_status":"missing"}"#
+        ));
+        assert!(!value_carries_strong_negative_status(
+            r#"{"document_status":"active"}"#
+        ));
+        assert!(!value_carries_strong_negative_status("not json"));
+        assert!(!value_carries_strong_negative_status(r#"{"other":1}"#));
+    }
+
+    #[test]
+    fn internal_meta_key_accepts_config_uri() {
+        assert!(is_internal_meta_key("obj://config/__meta/revision"));
+        assert!(is_internal_meta_key("/config/__meta/revision"));
+        assert!(is_internal_meta_key("/__meta/revision"));
+        assert!(!is_internal_meta_key("obj://config/users/__meta/revision"));
+    }
+
+    #[allow(dead_code)]
     //#[tokio::test(flavor = "current_thread")]
     async fn test_server_interface() {
         {
@@ -1263,8 +1440,8 @@ mod test {
             token: None,
             iss: Some("{owner}".to_string()),
             jti: None,
-            session: None,
             aud: None,
+            sudo: false,
             extra: HashMap::new(),
         };
         let jwt = token.generate_jwt(None, &private_key).unwrap();
@@ -1360,6 +1537,7 @@ mod test {
         drop(server);
     }
 
+    #[allow(dead_code)]
     //#[tokio::test(flavor = "current_thread")]
     async fn test_transaction_processing() {
         // Setup trust keys like in the existing test
@@ -1404,7 +1582,7 @@ mod test {
             token: None,
             iss: Some("alice".to_string()),
             jti: None,
-            session: None,
+            sudo: false,
             extra: HashMap::new(),
         };
         let jwt = token.generate_jwt(None, &private_key).unwrap();

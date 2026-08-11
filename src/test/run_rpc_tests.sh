@@ -49,6 +49,3 @@ wait_for_port "control_panel" 127.0.0.1 4020
 
 echo "[run] cargo run -p test_rbac"
 cargo run -p test_rbac
-
-echo "[run] cargo run -p test_control_panel_rpc"
-cargo run -p test_control_panel_rpc

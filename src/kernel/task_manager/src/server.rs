@@ -1,846 +1,1845 @@
-use crate::download_executor::{
-    build_download_task_data, build_download_task_name, infer_objid_from_url,
-    merge_download_source_patch, shared_download_executor, should_enqueue_download_task,
-    spec_from_task, task_has_download_url, task_has_objid, DownloadTaskStore, DOWNLOAD_TASK_TYPE,
+//! TaskMgr 2.0 Task Core service: command-style state writes, control
+//! requests, tree policy and permission computation (doc §12/§13).
+//!
+//! Layering: `task_store` owns the transactional invariants (CAS, one-shot
+//! result, epoch fencing), `acl` owns policy computation, and this module
+//! owns authentication, per-command authorization, protocol validation and
+//! post-commit KEvent fan-out.
+
+use crate::acl::{
+    compute_permission, summarize_task, trim_task, Principal, TaskPermission,
+    SYSTEM_ROLE_ZONE_TRUSTED,
 };
-use crate::task::{new_task, Task, TaskScope, TaskStatus};
-use crate::task_db::DB_MANAGER;
+use crate::json_schema::validate_json_schema;
+use crate::task_store::{now_ms, CreateTaskArgs, MutationOutcome, TaskStore};
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::*;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
-    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
-    StreamInfo,
+use buckyos_http_server::{
+    serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
+    ServerResult, StreamInfo,
 };
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
-use ndn_lib::ObjId;
 use serde_json::{json, Value};
-use server_runner::*;
-use std::ops::Range;
 use std::sync::Arc;
 
+/// Recursive control requests refuse to walk unbounded trees (doc §15.8).
+const MAX_RECURSIVE_CONTROL_NODES: usize = 512;
+
+// The built-in schema ids (`RAW_TASK_SCHEMA_ID`, `HUMAN_APPROVAL_SCHEMA_ID`,
+// ...) and their definitions live in buckyos-api next to the `TaskDataType`
+// catalog they were migrated from; this module seeds and enforces them.
+
+/// The caller identity resolved from the *verified* session token.
+///
+/// `zone_trusted` marks callers whose token was signed by the zone owner key
+/// or a device key (kernel/frame services and the owner themselves) — the
+/// zone's trusted computing base. Tokens issued by verify-hub (interactive
+/// sessions) are never zone-trusted.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub user_id: String,
     pub app_id: String,
+    pub zone_trusted: bool,
+    pub sudo: bool,
 }
 
 impl RequestContext {
-    pub fn empty() -> Self {
-        Self {
-            user_id: "".to_string(),
-            app_id: "".to_string(),
+    pub fn principal(&self) -> Principal {
+        let mut roles = Vec::new();
+        if self.zone_trusted {
+            roles.push(SYSTEM_ROLE_ZONE_TRUSTED.to_string());
+        }
+        Principal {
+            user_id: self.user_id.clone(),
+            app_id: self.app_id.clone(),
+            roles,
+            sudo: self.sudo,
+            view_gate: Default::default(),
+        }
+    }
+
+    pub fn actor_ref(&self) -> ActorRef {
+        ActorRef {
+            user_id: self.user_id.clone(),
+            app_id: self.app_id.clone(),
+            app_instance_id: None,
         }
     }
 }
 
-fn request_context_from_source(user_id: Option<&str>, app_id: Option<&str>) -> RequestContext {
-    RequestContext {
-        user_id: user_id.unwrap_or_default().to_string(),
-        app_id: app_id.unwrap_or_default().to_string(),
-    }
+/// Verifies the raw session token of a request. Production delegates to
+/// buckyos-api's standard trusted-session-token verifier; tests inject a
+/// verifier with a fixed key.
+#[async_trait]
+pub trait SessionTokenVerifier: Send + Sync {
+    async fn verify(&self, token: &str) -> Result<RPCSessionToken>;
 }
 
-fn request_context_from_rpc(ctx: &RPCContext) -> RequestContext {
-    let Some(token) = ctx.token.as_ref() else {
-        return RequestContext::empty();
-    };
-    let Ok(session_token) = RPCSessionToken::from_string(token.as_str()) else {
-        return RequestContext::empty();
-    };
-    let Ok((user_id, app_id)) = session_token.get_subs() else {
-        return RequestContext::empty();
-    };
-    RequestContext { user_id, app_id }
-}
+pub struct RuntimeSessionTokenVerifier;
 
-fn request_context_from_source_or_rpc(
-    user_id: Option<&str>,
-    app_id: Option<&str>,
-    ctx: &RPCContext,
-) -> RequestContext {
-    let mut request_ctx = request_context_from_source(user_id, app_id);
-    if !request_ctx.user_id.is_empty() && !request_ctx.app_id.is_empty() {
-        return request_ctx;
+#[async_trait]
+impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
+    async fn verify(&self, token: &str) -> Result<RPCSessionToken> {
+        get_buckyos_api_runtime()?
+            .verify_trusted_session_token(token)
+            .await
     }
-
-    let rpc_ctx = request_context_from_rpc(ctx);
-    if request_ctx.user_id.is_empty() {
-        request_ctx.user_id = rpc_ctx.user_id;
-    }
-    if request_ctx.app_id.is_empty() {
-        request_ctx.app_id = rpc_ctx.app_id;
-    }
-    request_ctx
-}
-
-fn parse_root_id_from_task_data(data: &Value) -> Option<String> {
-    for pointer in ["/root_id", "/rootid", "/meta/root_id", "/meta/rootid"] {
-        let value = data
-            .pointer(pointer)
-            .and_then(|item| item.as_str())
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-            .map(|item| item.to_string());
-        if value.is_some() {
-            return value;
-        }
-    }
-    None
-}
-
-fn unique_task_name_conflict(err: &RPCErrors) -> bool {
-    matches!(
-        err,
-        RPCErrors::ReasonError(message)
-            if message.contains("UNIQUE constraint failed")
-                || message.contains("idx_task_name_scope")
-    )
 }
 
 #[derive(Clone)]
-struct TaskManagerService {
+pub struct TaskManagerService {
+    store: Arc<TaskStore>,
     kevent_client: KEventClient,
+    token_verifier: Arc<dyn SessionTokenVerifier>,
 }
 
 impl TaskManagerService {
-    pub fn new() -> Self {
+    pub fn new(
+        store: Arc<TaskStore>,
+        kevent_client: KEventClient,
+        token_verifier: Arc<dyn SessionTokenVerifier>,
+    ) -> Self {
         TaskManagerService {
-            kevent_client: KEventClient::new_full(TASK_MANAGER_SERVICE_NAME, None),
+            store,
+            kevent_client,
+            token_verifier,
         }
     }
 
-    fn is_system_app(app_id: &str) -> bool {
-        app_id == "kernel" || app_id == "system"
+    pub fn store(&self) -> Arc<TaskStore> {
+        self.store.clone()
     }
 
-    fn task_status_event_id(task_id: i64) -> String {
-        format!("/task_mgr/{}", task_id)
-    }
-
-    async fn publish_task_status_changed_event(
-        &self,
-        before: &Task,
-        after: &Task,
-        source_method: &str,
-    ) {
-        if before.status == after.status {
-            return;
-        }
-
-        let event_id = Self::task_status_event_id(after.id);
-        let payload = json!({
-            "task_id": after.id,
-            "root_id": after.root_id,
-            "parent_id": after.parent_id,
-            "user_id": after.user_id,
-            "app_id": after.app_id,
-            "task_type": after.task_type,
-            "from_status": before.status.to_string(),
-            "to_status": after.status.to_string(),
-            "progress": after.progress,
-            "message": after.message,
-            "updated_at": after.updated_at,
-            "source_method": source_method,
-        });
-
-        if let Err(err) = self
-            .kevent_client
-            .pub_event(event_id.as_str(), payload)
-            .await
-        {
-            warn!(
-                "task_mgr.publish_task_status_changed_event failed: event_id={} task_id={} err={}",
-                event_id, after.id, err
-            );
-        }
-    }
-
-    fn can_read_task(&self, ctx: &RequestContext, task: &Task) -> bool {
-        if ctx.user_id.is_empty() && ctx.app_id.is_empty() {
-            return true;
-        }
-        if task.user_id.is_empty() {
-            return task.app_id.is_empty() || task.app_id == ctx.app_id;
-        }
-
-        match task.permissions.read {
-            TaskScope::Private => task.user_id == ctx.user_id && task.app_id == ctx.app_id,
-            TaskScope::User => task.user_id == ctx.user_id,
-            TaskScope::System => Self::is_system_app(ctx.app_id.as_str()),
-        }
-    }
-
-    fn can_write_task(&self, ctx: &RequestContext, task: &Task) -> bool {
-        if ctx.user_id.is_empty() && ctx.app_id.is_empty() {
-            return true;
-        }
-        if task.user_id.is_empty() {
-            return task.app_id.is_empty() || task.app_id == ctx.app_id;
-        }
-
-        match task.permissions.write {
-            TaskScope::Private => task.user_id == ctx.user_id && task.app_id == ctx.app_id,
-            TaskScope::User => task.user_id == ctx.user_id,
-            TaskScope::System => Self::is_system_app(ctx.app_id.as_str()),
-        }
-    }
-
-    async fn load_task(&self, id: i64) -> Result<Task> {
-        let db_manager = DB_MANAGER.lock().await;
-        let task = db_manager
-            .get_task(id)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        task.ok_or_else(|| RPCErrors::ReasonError(format!("Task {} not found", id)))
-    }
-
-    async fn list_download_tasks_for_request(
-        &self,
-        request_ctx: &RequestContext,
-    ) -> Result<Vec<Task>> {
-        let user_id =
-            (!request_ctx.user_id.trim().is_empty()).then_some(request_ctx.user_id.as_str());
-        let app_id = (!request_ctx.app_id.trim().is_empty()).then_some(request_ctx.app_id.as_str());
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .list_tasks_filtered(app_id, Some(DOWNLOAD_TASK_TYPE), None, None, None, user_id)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))
-    }
-
-    async fn update_task_and_publish(
-        &self,
-        id: i64,
-        status: Option<TaskStatus>,
-        progress: Option<f32>,
-        message: Option<String>,
-        data_patch: Option<Value>,
-        source_method: &'static str,
-    ) -> std::result::Result<Task, String> {
-        let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        {
-            let db_manager = DB_MANAGER.lock().await;
-            db_manager
-                .update_task(id, status, progress, message, data_patch)
-                .await
-                .map_err(|err| err.to_string())?;
-        }
-
-        let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        if before_task.status != after_task.status {
-            self.publish_task_status_changed_event(&before_task, &after_task, source_method)
-                .await;
-        }
-        Ok(after_task)
-    }
-
-    async fn update_task_error_and_publish(
-        &self,
-        id: i64,
-        error_message: &str,
-        source_method: &'static str,
-    ) -> std::result::Result<Task, String> {
-        let before_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        {
-            let db_manager = DB_MANAGER.lock().await;
-            db_manager
-                .update_task_error(id, error_message)
-                .await
-                .map_err(|err| err.to_string())?;
-        }
-
-        let after_task = self.load_task(id).await.map_err(|err| err.to_string())?;
-        self.publish_task_status_changed_event(&before_task, &after_task, source_method)
-            .await;
-        Ok(after_task)
-    }
-}
-
-#[async_trait]
-impl DownloadTaskStore for TaskManagerService {
-    async fn load_task(&self, task_id: i64) -> std::result::Result<Task, String> {
-        TaskManagerService::load_task(self, task_id)
-            .await
-            .map_err(|err| err.to_string())
-    }
-
-    async fn update_task(
-        &self,
-        task_id: i64,
-        status: Option<TaskStatus>,
-        progress: Option<f32>,
-        message: Option<String>,
-        data_patch: Option<Value>,
-        source_method: &'static str,
-    ) -> std::result::Result<Task, String> {
-        self.update_task_and_publish(
-            task_id,
-            status,
-            progress,
-            message,
-            data_patch,
-            source_method,
-        )
-        .await
-    }
-
-    async fn mark_failed(
-        &self,
-        task_id: i64,
-        error_message: String,
-        source_method: &'static str,
-    ) -> std::result::Result<Task, String> {
-        self.update_task_error_and_publish(task_id, error_message.as_str(), source_method)
-            .await
-    }
-}
-
-#[async_trait]
-impl TaskManagerHandler for TaskManagerService {
-    async fn handle_create_task(
-        &self,
-        name: &str,
-        task_type: &str,
-        data: Option<Value>,
-        opts: CreateTaskOptions,
-        user_id: &str,
-        app_id: &str,
-        ctx: RPCContext,
-    ) -> Result<Task> {
-        let request_ctx = request_context_from_source_or_rpc(Some(user_id), Some(app_id), &ctx);
-        let permissions = opts.permissions.unwrap_or_default();
-        let data = data.unwrap_or_else(|| json!({}));
-
-        let mut task = new_task(
-            name.to_string(),
-            task_type.to_string(),
-            request_ctx.user_id.clone(),
-            request_ctx.app_id.clone(),
-            opts.parent_id,
-            permissions,
-            data,
-        );
-
-        if let Some(parent_id) = task.parent_id {
-            let parent = self.load_task(parent_id).await?;
-            if !self.can_write_task(&request_ctx, &parent) {
-                return Err(RPCErrors::NoPermission(
-                    "No permission to create subtasks".to_string(),
-                ));
-            }
-            task.root_id = parent.root_id;
-        } else if let Some(root_id) = opts
-            .root_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string())
-        {
-            task.root_id = root_id;
-        } else if let Some(root_id) = parse_root_id_from_task_data(&task.data) {
-            task.root_id = root_id;
-        }
-
-        let db_manager = DB_MANAGER.lock().await;
-        let task_id = db_manager
-            .create_task(&task)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        if task.root_id.trim().is_empty() {
-            let root_id = task_id.to_string();
-            db_manager
-                .set_root_id(task_id, root_id.as_str())
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-            task.root_id = root_id;
-        }
-
-        task.id = task_id;
-        Ok(task)
-    }
-
-    async fn handle_create_download_task(
-        &self,
-        download_url: &str,
-        objid: Option<ObjId>,
-        download_options: Option<Value>,
-        parent_id: Option<i64>,
-        mut opts: CreateTaskOptions,
-        user_id: &str,
-        app_id: &str,
-        ctx: RPCContext,
-    ) -> Result<TaskId> {
-        let download_url = download_url.trim();
-        if download_url.is_empty() {
-            return Err(RPCErrors::ParseRequestError(
-                "download_url is required".to_string(),
-            ));
-        }
-
-        if opts.parent_id.is_none() {
-            opts.parent_id = parent_id;
-        }
-
-        let request_ctx = request_context_from_source_or_rpc(Some(user_id), Some(app_id), &ctx);
-        let resolved_objid = objid.or_else(|| infer_objid_from_url(download_url));
-        let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
-
-        let existing_task = resolved_objid
-            .as_ref()
-            .and_then(|objid| {
-                scoped_tasks
-                    .iter()
-                    .find(|task| task_has_objid(task, objid))
-                    .cloned()
-            })
-            .or_else(|| {
-                scoped_tasks
-                    .iter()
-                    .find(|task| task_has_download_url(task, download_url))
-                    .cloned()
-            });
-
-        if let Some(existing_task) = existing_task {
-            let mut task = existing_task;
-            if let Some(data_patch) = merge_download_source_patch(
-                &task.data,
-                download_url,
-                resolved_objid.as_ref(),
-                download_options.as_ref(),
-            ) {
-                {
-                    let db_manager = DB_MANAGER.lock().await;
-                    db_manager
-                        .update_task(task.id, None, None, None, Some(data_patch))
-                        .await
-                        .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-                }
-                task = self.load_task(task.id).await?;
-            }
-
-            if should_enqueue_download_task(&task) {
-                if let Some(spec) = spec_from_task(&task) {
-                    let _ = shared_download_executor()
-                        .enqueue(Arc::new(self.clone()), spec)
-                        .await;
-                }
-            }
-            return Ok(task.id);
-        }
-
-        let task_name = build_download_task_name(download_url, resolved_objid.as_ref());
-        let task_data =
-            build_download_task_data(download_url, resolved_objid.as_ref(), download_options);
-
-        let task = match self
-            .handle_create_task(
-                task_name.as_str(),
-                DOWNLOAD_TASK_TYPE,
-                Some(task_data),
-                opts,
-                user_id,
-                app_id,
-                ctx.clone(),
-            )
-            .await
-        {
-            Ok(task) => task,
-            Err(err) if unique_task_name_conflict(&err) => {
-                let scoped_tasks = self.list_download_tasks_for_request(&request_ctx).await?;
-                scoped_tasks
-                    .into_iter()
-                    .find(|task| task.name == task_name)
-                    .ok_or(err)?
-            }
-            Err(err) => return Err(err),
-        };
-
-        if let Some(spec) = spec_from_task(&task) {
-            let _ = shared_download_executor()
-                .enqueue(Arc::new(self.clone()), spec)
-                .await;
-        }
-
-        Ok(task.id)
-    }
-
-    async fn handle_get_task(&self, id: i64, _ctx: RPCContext) -> Result<Task> {
-        let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_read_task(&request_ctx, &task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to read task".to_string(),
-            ));
-        }
-
-        Ok(task)
-    }
-
-    async fn handle_list_tasks(
-        &self,
-        filter: TaskFilter,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        _ctx: RPCContext,
-    ) -> Result<Vec<Task>> {
-        let request_ctx = request_context_from_source(source_user_id, source_app_id);
-        let db_manager = DB_MANAGER.lock().await;
-        let tasks = db_manager
-            .list_tasks_filtered(
-                filter.app_id.as_deref(),
-                filter.task_type.as_deref(),
-                filter.status,
-                filter.parent_id,
-                filter.root_id.as_deref(),
-                None,
-            )
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        let filtered = tasks
-            .into_iter()
-            .filter(|task| self.can_read_task(&request_ctx, task))
-            .collect();
-
-        Ok(filtered)
-    }
-
-    async fn handle_list_tasks_by_time_range(
-        &self,
-        app_id: Option<&str>,
-        task_type: Option<&str>,
-        source_user_id: Option<&str>,
-        source_app_id: Option<&str>,
-        time_range: Range<u64>,
-        _ctx: RPCContext,
-    ) -> Result<Vec<Task>> {
-        let request_ctx = request_context_from_source(source_user_id, source_app_id);
-        let db_manager = DB_MANAGER.lock().await;
-        let tasks = db_manager
-            .list_tasks_filtered(app_id, task_type, None, None, None, None)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        let filtered = tasks
-            .into_iter()
-            .filter(|task| {
-                task.created_at >= time_range.start
-                    && task.created_at < time_range.end
-                    && self.can_read_task(&request_ctx, task)
-            })
-            .collect();
-
-        Ok(filtered)
-    }
-
-    async fn handle_update_task(
-        &self,
-        id: i64,
-        status: Option<TaskStatus>,
-        progress: Option<f32>,
-        message: Option<String>,
-        data: Option<Value>,
-        _ctx: RPCContext,
-    ) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let before_task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &before_task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to update task".to_string(),
-            ));
-        }
-
-        {
-            let db_manager = DB_MANAGER.lock().await;
-            db_manager
-                .update_task(id, status, progress, message, data)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        }
-
-        if status.is_some() {
-            match self.load_task(id).await {
-                Ok(after_task) => {
-                    self.publish_task_status_changed_event(
-                        &before_task,
-                        &after_task,
-                        "update_task",
-                    )
-                    .await;
-                }
-                Err(err) => {
-                    warn!(
-                        "task_mgr.update_task status changed but failed to reload task {} for event publish: {}",
-                        id, err
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_cancel_task(&self, id: i64, recursive: bool, _ctx: RPCContext) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to cancel task".to_string(),
-            ));
-        }
-
-        if recursive {
-            let root_id = if task.root_id.trim().is_empty() {
-                task.id.to_string()
-            } else {
-                task.root_id.clone()
-            };
-
-            let before_tasks = {
-                let db_manager = DB_MANAGER.lock().await;
-                let before_tasks = db_manager
-                    .list_tasks_filtered(None, None, None, None, Some(root_id.as_str()), None)
-                    .await
-                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-                db_manager
-                    .update_task_status_by_root_id(root_id.as_str(), TaskStatus::Canceled)
-                    .await
-                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-                before_tasks
-            };
-
-            for before_task in before_tasks
-                .into_iter()
-                .filter(|existing| existing.status != TaskStatus::Canceled)
-            {
-                match self.load_task(before_task.id).await {
-                    Ok(after_task) => {
-                        self.publish_task_status_changed_event(
-                            &before_task,
-                            &after_task,
-                            "cancel_task_recursive",
-                        )
-                        .await;
-                    }
-                    Err(err) => {
-                        warn!(
-                            "task_mgr.cancel_task recursive failed to reload task {} for event publish: {}",
-                            before_task.id, err
-                        );
-                    }
-                }
-            }
-        } else {
-            let before_task = task.clone();
-            {
-                let db_manager = DB_MANAGER.lock().await;
-                db_manager
-                    .update_task_status(id, TaskStatus::Canceled)
-                    .await
-                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-            }
-
-            if before_task.status != TaskStatus::Canceled {
-                match self.load_task(id).await {
-                    Ok(after_task) => {
-                        self.publish_task_status_changed_event(
-                            &before_task,
-                            &after_task,
-                            "cancel_task",
-                        )
-                        .await;
-                    }
-                    Err(err) => {
-                        warn!(
-                            "task_mgr.cancel_task failed to reload task {} for event publish: {}",
-                            id, err
-                        );
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_get_subtasks(&self, parent_id: i64, _ctx: RPCContext) -> Result<Vec<Task>> {
-        let request_ctx = request_context_from_source(None, None);
-        let db_manager = DB_MANAGER.lock().await;
-        let tasks = db_manager
-            .list_tasks_filtered(None, None, None, Some(parent_id), None, None)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        let filtered = tasks
-            .into_iter()
-            .filter(|task| self.can_read_task(&request_ctx, task))
-            .collect();
-        Ok(filtered)
-    }
-
-    async fn handle_update_task_status(
-        &self,
-        id: i64,
-        status: TaskStatus,
-        _ctx: RPCContext,
-    ) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let before_task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &before_task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to update task".to_string(),
-            ));
-        }
-
-        {
-            let db_manager = DB_MANAGER.lock().await;
-            db_manager
-                .update_task_status(id, status)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        }
-
-        if before_task.status != status {
-            match self.load_task(id).await {
-                Ok(after_task) => {
-                    self.publish_task_status_changed_event(
-                        &before_task,
-                        &after_task,
-                        "update_task_status",
-                    )
-                    .await;
-                }
-                Err(err) => {
-                    warn!(
-                        "task_mgr.update_task_status failed to reload task {} for event publish: {}",
-                        id, err
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_update_task_progress(
-        &self,
-        id: i64,
-        completed_items: u64,
-        total_items: u64,
-        _ctx: RPCContext,
-    ) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to update task".to_string(),
-            ));
-        }
-
-        let progress = if total_items > 0 {
-            (completed_items as f32 / total_items as f32) * 100.0
-        } else {
-            0.0
-        };
-
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task_progress(id, progress, completed_items as i32, total_items as i32)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        let data_patch = json!({
-            "completed_items": completed_items,
-            "total_items": total_items
-        });
-        db_manager
-            .update_task(id, None, Some(progress), None, Some(data_patch))
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-
-        Ok(())
-    }
-
-    async fn handle_update_task_error(
-        &self,
-        id: i64,
-        error_message: &str,
-        _ctx: RPCContext,
-    ) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let before_task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &before_task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to update task".to_string(),
-            ));
-        }
-
-        {
-            let db_manager = DB_MANAGER.lock().await;
-            db_manager
-                .update_task_error(id, error_message)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        }
-
-        match self.load_task(id).await {
-            Ok(after_task) => {
-                self.publish_task_status_changed_event(
-                    &before_task,
-                    &after_task,
-                    "update_task_error",
-                )
-                .await;
-            }
-            Err(err) => {
-                warn!(
-                    "task_mgr.update_task_error failed to reload task {} for event publish: {}",
-                    id, err
+    /// Seed the first-party schema catalog so a clean zone can create the
+    /// production tasks (workflow, opendan, aicc, app install, ...) before any
+    /// service has published a contract of its own.
+    ///
+    /// Per-entry failures are logged and skipped rather than aborting startup:
+    /// one bad contract must not take the whole Task Core offline, and the
+    /// affected schema simply degrades to `task_schema_not_found` on create.
+    pub async fn ensure_builtin_schemas(&self) -> Result<()> {
+        for definition in builtin_task_schemas() {
+            if let Err(err) = self.store.register_schema(&definition).await {
+                error!(
+                    "task-manager: seeding built-in schema {} failed: {:?}",
+                    definition.schema_id, err
                 );
             }
         }
         Ok(())
     }
 
-    async fn handle_update_task_data(&self, id: i64, data: Value, _ctx: RPCContext) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to update task".to_string(),
+    /// Resolve the caller identity from the request's session token.
+    /// Fail closed: no token / bad signature => NoPermission. Identity is
+    /// never taken from the request payload.
+    async fn authenticate(&self, ctx: &RPCContext) -> Result<RequestContext> {
+        let token = ctx
+            .token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                RPCErrors::NoPermission("task-manager requires a session token".to_string())
+            })?;
+        let verified = self.token_verifier.verify(token).await?;
+        let (user_id, app_id) = verified.get_subs()?;
+        if user_id.trim().is_empty() {
+            return Err(RPCErrors::InvalidToken(
+                "session token has an empty subject".to_string(),
             ));
         }
+        if app_id.trim().is_empty() {
+            return Err(RPCErrors::InvalidToken(
+                "session token has an empty app id".to_string(),
+            ));
+        }
+        let zone_trusted = verified.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID);
+        Ok(RequestContext {
+            user_id,
+            app_id,
+            zone_trusted,
+            sudo: verified.sudo,
+        })
+    }
 
-        let data_str =
-            serde_json::to_string(&data).map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .update_task_data(id, data_str.as_str())
-            .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+    fn require_zone_trusted(request_ctx: &RequestContext, what: &str) -> Result<()> {
+        if !request_ctx.zone_trusted {
+            return Err(task_mgr_error(
+                TASK_ERR_PERMISSION_DENIED,
+                format!("{} requires a zone-trusted service identity", what),
+            ));
+        }
         Ok(())
     }
 
-    async fn handle_delete_task(&self, id: i64, _ctx: RPCContext) -> Result<()> {
-        let request_ctx = request_context_from_source(None, None);
-        let task = self.load_task(id).await?;
-        if !self.can_write_task(&request_ctx, &task) {
-            return Err(RPCErrors::NoPermission(
-                "No permission to delete task".to_string(),
+    async fn publish_outcome(&self, outcome: &MutationOutcome) {
+        let event = &outcome.event;
+        let payload = json!({
+            "event_id": event.event_id,
+            "task_id": event.task_id,
+            "root_id": event.root_id,
+            "revision": event.task_revision,
+            "event_type": event.event_type,
+            "actor": event.actor,
+            "phase": outcome.task.phase,
+            "outcome": outcome.task.outcome,
+            "wait_reason": outcome.task.wait_reason.as_ref().map(|r| &r.kind),
+            "pending_control": outcome.task.pending_control.as_ref().map(|c| c.action),
+            "created_at": event.created_at,
+        });
+        let task_path = task_mgr_task_event_path(&event.task_id);
+        if let Err(err) = self
+            .kevent_client
+            .pub_event(&task_path, payload.clone())
+            .await
+        {
+            warn!(
+                "task_mgr.publish event failed: path={} err={}",
+                task_path, err
+            );
+        }
+        if event.root_id != event.task_id {
+            let tree_path = task_mgr_tree_event_path(&event.root_id);
+            if let Err(err) = self.kevent_client.pub_event(&tree_path, payload).await {
+                warn!(
+                    "task_mgr.publish tree event failed: path={} err={}",
+                    tree_path, err
+                );
+            }
+        }
+    }
+
+    async fn load_task(&self, task_id: &str) -> Result<Task> {
+        self.store
+            .get_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))
+    }
+
+    /// Load + compute permission; absent ReadMeta uniformly reports
+    /// `task_not_found` so callers cannot enumerate invisible tasks.
+    async fn load_visible(
+        &self,
+        request_ctx: &RequestContext,
+        task_id: &str,
+    ) -> Result<(Task, TaskPermission)> {
+        let task = self.load_task(task_id).await?;
+        let principal = request_ctx.principal();
+        let permission = compute_permission(&self.store, &principal, &task).await?;
+        if !permission.visible() {
+            return Err(task_mgr_error(TASK_ERR_NOT_FOUND, task_id));
+        }
+        Ok((task, permission))
+    }
+
+    async fn require_action(
+        &self,
+        request_ctx: &RequestContext,
+        task_id: &str,
+        action: TaskAction,
+    ) -> Result<(Task, TaskPermission)> {
+        let (task, permission) = self.load_visible(request_ctx, task_id).await?;
+        if !permission.allows(action) {
+            return Err(task_mgr_error(
+                TASK_ERR_PERMISSION_DENIED,
+                format!("missing {:?} on task {}", action, task_id),
+            ));
+        }
+        Ok((task, permission))
+    }
+
+    /// Resolve + validate the frozen schema for a create request.
+    async fn resolve_schema(
+        &self,
+        schema_id: &str,
+        schema_version: Option<u32>,
+        input: &Value,
+        executor_kind: TaskExecutorKind,
+    ) -> Result<TaskSchemaDefinition> {
+        let schema = self.store.get_schema(schema_id, schema_version).await?;
+        if !schema.enabled {
+            return Err(task_mgr_error(
+                TASK_ERR_SCHEMA_NOT_FOUND,
+                format!("schema {} is disabled", schema_id),
+            ));
+        }
+        if !schema.allowed_executor_kinds.contains(&executor_kind) {
+            return Err(task_mgr_error(
+                TASK_ERR_INPUT_SCHEMA_MISMATCH,
+                format!(
+                    "schema {} does not allow executor kind {:?}",
+                    schema_id, executor_kind
+                ),
+            ));
+        }
+        validate_json_schema(&schema.input_schema, input)
+            .map_err(|violation| task_mgr_error(TASK_ERR_INPUT_SCHEMA_MISMATCH, violation))?;
+        Ok(schema)
+    }
+
+    fn verify_app_runner_write(
+        request_ctx: &RequestContext,
+        task: &Task,
+        envelope: &RunnerWriteEnvelope,
+    ) -> Result<()> {
+        let TaskExecutor::App {
+            app_id,
+            app_instance_id,
+            ..
+        } = &task.executor
+        else {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                "task has no App executor",
+            ));
+        };
+        if *app_id != request_ctx.app_id {
+            return Err(task_mgr_error(
+                TASK_ERR_PERMISSION_DENIED,
+                format!(
+                    "caller app {} is not the bound runner {}",
+                    request_ctx.app_id, app_id
+                ),
+            ));
+        }
+        if let Some(bound_instance) = app_instance_id {
+            if envelope.app_instance_id.as_deref() != Some(bound_instance.as_str()) {
+                return Err(task_mgr_error(
+                    TASK_ERR_STALE_RUNNER_EPOCH,
+                    format!(
+                        "instance {:?} is not the bound instance {}",
+                        envelope.app_instance_id, bound_instance
+                    ),
+                ));
+            }
+        }
+        if envelope.runner_epoch != task.runner_epoch {
+            return Err(task_mgr_error(
+                TASK_ERR_STALE_RUNNER_EPOCH,
+                format!(
+                    "runner epoch {} != current {}",
+                    envelope.runner_epoch, task.runner_epoch
+                ),
+            ));
+        }
+        if task.phase.is_terminal() {
+            return Err(task_mgr_error(
+                TASK_ERR_ALREADY_COMPLETED,
+                "task already terminal",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Record (or replay/supersede) one control request on a single task.
+    async fn request_control_single(
+        &self,
+        request_ctx: &RequestContext,
+        task: &Task,
+        action: TaskControlAction,
+        request_id: &str,
+        expected_revision: Option<u64>,
+    ) -> Result<MutationOutcome> {
+        // Idempotent replay of the same request id returns the current task.
+        if let Some(pending) = &task.pending_control {
+            if pending.request_id == request_id {
+                return Ok(MutationOutcome {
+                    task: task.clone(),
+                    event: TaskEvent {
+                        event_id: String::new(),
+                        task_id: task.task_id.clone(),
+                        root_id: task.root_id.clone(),
+                        task_revision: task.revision,
+                        event_type: TaskEventType::ControlRequested,
+                        actor: Some(request_ctx.actor_ref()),
+                        payload: json!({"replayed": true}),
+                        created_at: now_ms(),
+                    },
+                });
+            }
+        }
+        if task.phase.is_terminal() {
+            return Err(task_mgr_error(
+                TASK_ERR_ALREADY_COMPLETED,
+                "task already terminal",
             ));
         }
 
-        let db_manager = DB_MANAGER.lock().await;
-        db_manager
-            .delete_task(id)
+        // Direct-close paths that need no runner acknowledgement (doc §6.2):
+        // HumanSet cancel, and unbound tasks with no promise owner.
+        if action == TaskControlAction::Cancel {
+            match &task.executor {
+                TaskExecutor::HumanSet => {
+                    return self
+                        .cancel_direct(request_ctx, task, expected_revision, "human_set")
+                        .await;
+                }
+                TaskExecutor::Unbound if task.origin_ref.is_none() => {
+                    return self
+                        .cancel_direct(request_ctx, task, expected_revision, "unbound")
+                        .await;
+                }
+                _ => {}
+            }
+        }
+
+        match action {
+            TaskControlAction::Pause => {
+                if !matches!(task.control_profile.pause, ControlAvailability::Available) {
+                    return Err(task_mgr_error(
+                        TASK_ERR_CONTROL_NOT_AVAILABLE,
+                        "runner does not currently support pause",
+                    ));
+                }
+            }
+            TaskControlAction::Resume => {
+                if task.phase != TaskPhase::Paused {
+                    return Err(task_mgr_error(
+                        TASK_ERR_INVALID_PHASE,
+                        "resume requires a Paused task",
+                    ));
+                }
+                if !matches!(task.control_profile.resume, ControlAvailability::Available) {
+                    return Err(task_mgr_error(
+                        TASK_ERR_CONTROL_NOT_AVAILABLE,
+                        "runner does not currently support resume",
+                    ));
+                }
+            }
+            TaskControlAction::Cancel => {
+                if matches!(
+                    task.control_profile.cancel,
+                    CancelCapability::Unavailable { .. }
+                ) && matches!(task.executor, TaskExecutor::App { .. })
+                {
+                    return Err(task_mgr_error(
+                        TASK_ERR_CONTROL_NOT_AVAILABLE,
+                        "runner does not currently support cancel",
+                    ));
+                }
+            }
+        }
+
+        // Cancel atomically supersedes an unfinished pause/resume; any other
+        // overlap is rejected, and a pending cancel is never overridden.
+        let (event_type, payload) = match &task.pending_control {
+            Some(pending) if pending.action == TaskControlAction::Cancel => {
+                return Err(task_mgr_error(
+                    TASK_ERR_CONTROL_ALREADY_PENDING,
+                    "a cancel request is already pending",
+                ));
+            }
+            Some(pending) if action == TaskControlAction::Cancel => (
+                TaskEventType::ControlSuperseded,
+                json!({
+                    "superseded_request_id": pending.request_id,
+                    "superseded_action": pending.action,
+                    "action": action,
+                    "request_id": request_id,
+                }),
+            ),
+            Some(pending) => {
+                return Err(task_mgr_error(
+                    TASK_ERR_CONTROL_ALREADY_PENDING,
+                    format!("pending {} request {}", pending.action, pending.request_id),
+                ));
+            }
+            None => (
+                TaskEventType::ControlRequested,
+                json!({"action": action, "request_id": request_id}),
+            ),
+        };
+
+        let request = TaskControlRequest {
+            request_id: request_id.to_string(),
+            action,
+            requested_by: request_ctx.actor_ref(),
+            requested_at: now_ms(),
+        };
+        let actor = request_ctx.actor_ref();
+        self.store
+            .mutate_task(
+                &task.task_id,
+                Some(&actor),
+                event_type,
+                payload,
+                expected_revision,
+                move |current| {
+                    if current.phase.is_terminal() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    current.pending_control = Some(request);
+                    Ok(())
+                },
+            )
             .await
-            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
-        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Trusted in-process control plane (co-deployed dispatcher)
+    // -----------------------------------------------------------------
+    //
+    // The Dispatch Center shares this process and TCB; it calls these
+    // directly instead of looping a token through kRPC. The RPC-facing
+    // handlers wrap the same implementations behind `require_zone_trusted`,
+    // so remote trusted control planes get identical semantics.
+
+    pub(crate) async fn trusted_create_promised_task(
+        &self,
+        req: CreatePromisedTaskReq,
+        actor: &ActorRef,
+    ) -> Result<Task> {
+        if req.name.trim().is_empty() || req.idempotency_key.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "name and idempotency_key are required".into(),
+            ));
+        }
+        if req.creator.user_id.trim().is_empty() || req.creator.app_id.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "delegated creator envelope is incomplete".into(),
+            ));
+        }
+        if let Some(expected) = req.expected_input_digest.as_deref() {
+            let actual = compute_task_input_digest(&req.input);
+            if actual != expected {
+                return Err(task_mgr_error(
+                    TASK_ERR_INPUT_SCHEMA_MISMATCH,
+                    "input digest does not match the control plane's frozen copy",
+                ));
+            }
+        }
+        let schema = self
+            .resolve_schema(
+                &req.schema_id,
+                req.schema_version,
+                &req.input,
+                TaskExecutorKind::Unbound,
+            )
+            .await?;
+        let wait_reason = req
+            .wait_reason
+            .clone()
+            .or_else(|| Some(TaskWaitReason::new(TaskWaitReasonKind::Dispatch)));
+        let _ = actor;
+        let outcome = self
+            .store
+            .create_task(CreateTaskArgs {
+                name: req.name.clone(),
+                schema_id: schema.schema_id.clone(),
+                schema_version: schema.schema_version,
+                input: req.input.clone(),
+                creator: req.creator.clone(),
+                idempotency_key: req.idempotency_key.clone(),
+                origin_ref: req.origin_ref.clone(),
+                parent_id: req.parent_id.clone(),
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                policy_preset: req
+                    .policy_preset
+                    .clone()
+                    .unwrap_or_else(|| TASK_POLICY_PRESET_COLLABORATIVE_TREE_V1.to_string()),
+                permission_boundary: req.permission_boundary,
+                retry_of: None,
+                supersedes: None,
+                executor: TaskExecutor::Unbound,
+                assignees: Vec::new(),
+                phase: TaskPhase::Promised,
+                wait_reason,
+                message: req.message.clone(),
+            })
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    pub(crate) async fn trusted_set_promise_wait(
+        &self,
+        req: SetPromiseWaitReq,
+        actor: &ActorRef,
+    ) -> Result<Task> {
+        let reason = req.wait_reason.clone();
+        let reason_kind = reason.kind;
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(actor),
+                TaskEventType::WaitReasonChanged,
+                json!({"kind": reason_kind}),
+                Some(req.expected_revision),
+                move |current| {
+                    if current.phase != TaskPhase::Promised {
+                        return Err(task_mgr_error(
+                            TASK_ERR_INVALID_PHASE,
+                            "set_promise_wait requires a Promised task",
+                        ));
+                    }
+                    current.wait_reason = Some(reason);
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    pub(crate) async fn trusted_bind_app_executor(
+        &self,
+        req: BindAppExecutorReq,
+        actor: &ActorRef,
+    ) -> Result<Task> {
+        let req_target = req.target_id.clone();
+        let req_app = req.app_id.clone();
+        let req_instance = req.app_instance_id.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(actor),
+                TaskEventType::RunnerBound,
+                json!({
+                    "target_id": req.target_id,
+                    "app_id": req.app_id,
+                    "app_instance_id": req.app_instance_id,
+                    "delivery_id": req.delivery_id,
+                }),
+                Some(req.expected_revision),
+                move |current| {
+                    match &current.executor {
+                        TaskExecutor::Unbound => {
+                            if current.phase != TaskPhase::Promised {
+                                return Err(task_mgr_error(
+                                    TASK_ERR_INVALID_PHASE,
+                                    "bind requires a Promised/Unbound task",
+                                ));
+                            }
+                        }
+                        TaskExecutor::App {
+                            target_id: bound_target,
+                            app_instance_id: bound_instance,
+                            ..
+                        } => {
+                            // Rebind within the same frozen logical target
+                            // after a release (doc §10.1).
+                            if bound_instance.is_some() {
+                                return Err(task_mgr_error(
+                                    TASK_ERR_INVALID_PHASE,
+                                    "task already has a bound instance",
+                                ));
+                            }
+                            if bound_target.as_deref() != req_target.as_deref() {
+                                return Err(task_mgr_error(
+                                    TASK_ERR_INVALID_PHASE,
+                                    "logical target is frozen after the first bind",
+                                ));
+                            }
+                        }
+                        TaskExecutor::HumanSet => {
+                            return Err(task_mgr_error(
+                                TASK_ERR_INVALID_PHASE,
+                                "cannot bind an App executor on a HumanSet task",
+                            ));
+                        }
+                    }
+                    if current.phase.is_terminal() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    current.executor = TaskExecutor::App {
+                        target_id: req_target,
+                        app_id: req_app,
+                        app_instance_id: Some(req_instance),
+                    };
+                    current.runner_epoch += 1;
+                    current.phase = TaskPhase::Accepted;
+                    current.wait_reason = None;
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    pub(crate) async fn trusted_release_app_executor(
+        &self,
+        req: ReleaseAppExecutorReq,
+        actor: &ActorRef,
+    ) -> Result<Task> {
+        let reason = req.reason.clone();
+        let reason_kind = reason.kind;
+        let expected_instance = req.expected_instance_id.clone();
+        let expected_epoch = req.expected_runner_epoch;
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(actor),
+                TaskEventType::RunnerReleased,
+                json!({"instance_id": expected_instance, "reason": reason_kind}),
+                Some(req.expected_revision),
+                move |current| {
+                    let TaskExecutor::App {
+                        target_id,
+                        app_id,
+                        app_instance_id,
+                    } = current.executor.clone()
+                    else {
+                        return Err(task_mgr_error(
+                            TASK_ERR_INVALID_PHASE,
+                            "task has no App executor",
+                        ));
+                    };
+                    if current.phase.is_terminal() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    if app_instance_id.as_deref() != Some(req.expected_instance_id.as_str()) {
+                        return Err(task_mgr_error(
+                            TASK_ERR_STALE_RUNNER_EPOCH,
+                            "bound instance does not match",
+                        ));
+                    }
+                    if current.runner_epoch != expected_epoch {
+                        return Err(task_mgr_error(
+                            TASK_ERR_STALE_RUNNER_EPOCH,
+                            "runner epoch does not match",
+                        ));
+                    }
+                    current.executor = TaskExecutor::App {
+                        target_id,
+                        app_id,
+                        app_instance_id: None,
+                    };
+                    current.runner_epoch += 1;
+                    current.phase = TaskPhase::Waiting;
+                    current.wait_reason = Some(req.reason.clone());
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    pub(crate) async fn trusted_finish_promise_failure(
+        &self,
+        req: FinishPromiseFailureReq,
+        actor: &ActorRef,
+    ) -> Result<Task> {
+        let completed_by = actor.clone();
+        let error = req.error.clone();
+        let error_code = error.code.clone();
+        let error_message = error.message.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(actor),
+                TaskEventType::TaskFailed,
+                json!({"code": error_code, "message": error_message, "path": "promise"}),
+                Some(req.expected_revision),
+                move |current| {
+                    if current.executor.kind() != TaskExecutorKind::Unbound {
+                        return Err(task_mgr_error(
+                            TASK_ERR_INVALID_PHASE,
+                            "finish_promise_failure requires an Unbound task",
+                        ));
+                    }
+                    if current.phase.is_terminal() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    let now = now_ms();
+                    current.error = Some(error);
+                    current.outcome = Some(TaskOutcome::Failed);
+                    current.phase = TaskPhase::Terminal;
+                    current.pending_control = None;
+                    current.wait_reason = None;
+                    current.completed_by = Some(completed_by);
+                    current.completed_at = Some(now);
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    pub(crate) async fn trusted_cancel_promised_task(
+        &self,
+        req: CancelPromisedTaskReq,
+        actor: &ActorRef,
+    ) -> Result<Task> {
+        let completed_by = actor.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(actor),
+                TaskEventType::TaskCanceled,
+                json!({"cancel_mode": "interrupt", "path": "promise"}),
+                Some(req.expected_revision),
+                move |current| {
+                    if current.executor.kind() != TaskExecutorKind::Unbound {
+                        return Err(task_mgr_error(
+                            TASK_ERR_INVALID_PHASE,
+                            "cancel_promised_task requires an Unbound task",
+                        ));
+                    }
+                    if current.phase.is_terminal() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    let now = now_ms();
+                    current.phase = TaskPhase::Terminal;
+                    current.outcome = Some(TaskOutcome::Canceled);
+                    current.pending_control = None;
+                    current.wait_reason = None;
+                    current.completed_by = Some(completed_by);
+                    current.completed_at = Some(now);
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    pub(crate) async fn trusted_get_task(&self, task_id: &str) -> Result<Option<Task>> {
+        self.store.get_task(task_id).await
+    }
+
+    pub(crate) async fn trusted_get_schema(
+        &self,
+        schema_id: &str,
+        schema_version: Option<u32>,
+    ) -> Result<TaskSchemaDefinition> {
+        self.store.get_schema(schema_id, schema_version).await
+    }
+
+    /// CAS-close a task without runner involvement. Guarantee level is
+    /// interrupt: no side-effect rollback promise.
+    async fn cancel_direct(
+        &self,
+        request_ctx: &RequestContext,
+        task: &Task,
+        expected_revision: Option<u64>,
+        mode: &str,
+    ) -> Result<MutationOutcome> {
+        let actor = request_ctx.actor_ref();
+        let completed_by = actor.clone();
+        self.store
+            .mutate_task(
+                &task.task_id,
+                Some(&actor),
+                TaskEventType::TaskCanceled,
+                json!({"cancel_mode": "interrupt", "path": mode}),
+                expected_revision,
+                move |current| {
+                    if current.phase.is_terminal() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    if current.result.is_some() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "result already committed",
+                        ));
+                    }
+                    let now = now_ms();
+                    current.phase = TaskPhase::Terminal;
+                    current.outcome = Some(TaskOutcome::Canceled);
+                    current.pending_control = None;
+                    current.wait_reason = None;
+                    current.completed_by = Some(completed_by);
+                    current.completed_at = Some(now);
+                    Ok(())
+                },
+            )
+            .await
     }
 }
+
+// ---------------------------------------------------------------------------
+// Handler implementation
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl TaskManagerHandler for TaskManagerService {
+    async fn handle_create_task(&self, req: CreateTaskReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        if req.name.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError("task name is required".into()));
+        }
+        if req.idempotency_key.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "idempotency_key is required".into(),
+            ));
+        }
+
+        // A plain create may only bind the authenticated caller itself or a
+        // human set (doc §13.1).
+        let (executor, assignees, phase, wait_reason) = match &req.executor {
+            CreateTaskExecutor::SelfApp { app_instance_id } => (
+                TaskExecutor::App {
+                    target_id: None,
+                    app_id: request_ctx.app_id.clone(),
+                    app_instance_id: app_instance_id.clone(),
+                },
+                Vec::new(),
+                TaskPhase::Accepted,
+                None,
+            ),
+            CreateTaskExecutor::HumanSet { assignees } => {
+                let cleaned: Vec<String> = assignees
+                    .iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if cleaned.is_empty() {
+                    return Err(RPCErrors::ParseRequestError(
+                        "a HumanSet task needs at least one assignee".into(),
+                    ));
+                }
+                (
+                    TaskExecutor::HumanSet,
+                    cleaned,
+                    TaskPhase::Waiting,
+                    Some(TaskWaitReason::new(TaskWaitReasonKind::HumanInput)),
+                )
+            }
+        };
+
+        let schema = self
+            .resolve_schema(
+                &req.schema_id,
+                req.schema_version,
+                &req.input,
+                executor.kind(),
+            )
+            .await?;
+
+        if let Some(parent_id) = req.parent_id.as_deref() {
+            let (_parent, permission) = self.load_visible(&request_ctx, parent_id).await?;
+            if !permission.allows(TaskAction::CreateChild) {
+                return Err(task_mgr_error(
+                    TASK_ERR_PERMISSION_DENIED,
+                    format!("missing CreateChild on parent {}", parent_id),
+                ));
+            }
+        }
+
+        let outcome = self
+            .store
+            .create_task(CreateTaskArgs {
+                name: req.name.clone(),
+                schema_id: schema.schema_id.clone(),
+                schema_version: schema.schema_version,
+                input: req.input.clone(),
+                creator: ActorRef {
+                    user_id: request_ctx.user_id.clone(),
+                    app_id: request_ctx.app_id.clone(),
+                    app_instance_id: match &req.executor {
+                        CreateTaskExecutor::SelfApp { app_instance_id } => app_instance_id.clone(),
+                        _ => None,
+                    },
+                },
+                idempotency_key: req.idempotency_key.clone(),
+                origin_ref: None,
+                parent_id: req.parent_id.clone(),
+                child_control_policy: req.child_control_policy.unwrap_or_default(),
+                policy_preset: req
+                    .policy_preset
+                    .clone()
+                    .unwrap_or_else(|| TASK_POLICY_PRESET_COLLABORATIVE_TREE_V1.to_string()),
+                permission_boundary: req.permission_boundary,
+                retry_of: req.retry_of.clone(),
+                supersedes: req.supersedes.clone(),
+                executor,
+                assignees,
+                phase,
+                wait_reason,
+                message: req.message.clone(),
+            })
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_get_task(&self, req: GetTaskReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let (task, permission) = self.load_visible(&request_ctx, &req.task_id).await?;
+        Ok(trim_task(task, &permission))
+    }
+
+    async fn handle_list_tasks(
+        &self,
+        req: ListTasksReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSummaryPage> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let principal = request_ctx.principal();
+        let (tasks, next_cursor) = self.store.list_tasks(&req).await?;
+        let mut summaries = Vec::new();
+        for task in tasks {
+            let permission = compute_permission(&self.store, &principal, &task).await?;
+            if permission.visible() {
+                summaries.push(summarize_task(&task));
+            }
+        }
+        Ok(TaskSummaryPage {
+            tasks: summaries,
+            next_cursor,
+        })
+    }
+
+    async fn handle_get_task_tree(
+        &self,
+        req: GetTaskTreeReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSummaryPage> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let principal = request_ctx.principal();
+        let limit = req.limit.unwrap_or(200).clamp(1, 500);
+        let (tasks, next_cursor) = self
+            .store
+            .list_tree(&req.root_id, req.cursor.as_deref(), limit)
+            .await?;
+        let mut summaries = Vec::new();
+        for task in tasks {
+            let permission = compute_permission(&self.store, &principal, &task).await?;
+            if permission.visible() {
+                summaries.push(summarize_task(&task));
+            }
+        }
+        Ok(TaskSummaryPage {
+            tasks: summaries,
+            next_cursor,
+        })
+    }
+
+    async fn handle_get_subtasks(
+        &self,
+        req: GetSubtasksReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSummaryPage> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let principal = request_ctx.principal();
+        // The parent must at least be visible.
+        self.load_visible(&request_ctx, &req.task_id).await?;
+        let limit = req.limit.unwrap_or(100).clamp(1, 500);
+        let (tasks, next_cursor) = self
+            .store
+            .list_children(&req.task_id, req.cursor.as_deref(), limit)
+            .await?;
+        let mut summaries = Vec::new();
+        for task in tasks {
+            let permission = compute_permission(&self.store, &principal, &task).await?;
+            if permission.visible() {
+                summaries.push(summarize_task(&task));
+            }
+        }
+        Ok(TaskSummaryPage {
+            tasks: summaries,
+            next_cursor,
+        })
+    }
+
+    async fn handle_archive_task(&self, req: ArchiveTaskReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let (task, _) = self
+            .require_action(&request_ctx, &req.task_id, TaskAction::Archive)
+            .await?;
+        if !task.phase.is_terminal() {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                "only terminal tasks can be archived",
+            ));
+        }
+        let actor = request_ctx.actor_ref();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(&actor),
+                TaskEventType::TaskArchived,
+                json!({}),
+                Some(req.expected_revision),
+                |current| {
+                    if current.archived_at.is_none() {
+                        current.archived_at = Some(now_ms());
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_request_control(
+        &self,
+        req: RequestControlReq,
+        ctx: RPCContext,
+    ) -> Result<RequestControlResult> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        if req.request_id.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "request_id is required".into(),
+            ));
+        }
+        let (task, _) = self
+            .require_action(&request_ctx, &req.task_id, TaskAction::Control)
+            .await?;
+
+        if !req.recursive {
+            let outcome = self
+                .request_control_single(
+                    &request_ctx,
+                    &task,
+                    req.action,
+                    &req.request_id,
+                    req.expected_revision,
+                )
+                .await?;
+            self.publish_outcome(&outcome).await;
+            return Ok(RequestControlResult::Task { task: outcome.task });
+        }
+
+        // Tree-level fan-out: per-edge control policy + per-task ACL, and
+        // per-task requests only — no batch final-state write (doc §6.3).
+        let principal = request_ctx.principal();
+        let subtree = self
+            .store
+            .collect_subtree(&task, MAX_RECURSIVE_CONTROL_NODES)
+            .await?;
+        let mut result = BatchControlResult::default();
+        for node in subtree {
+            let is_request_root = node.task_id == task.task_id;
+            if !is_request_root && !node.child_control_policy.follows(req.action) {
+                result.skipped_by_policy.push(node.task_id.clone());
+                continue;
+            }
+            if node.phase.is_terminal() {
+                result.already_terminal.push(node.task_id.clone());
+                continue;
+            }
+            let permission = compute_permission(&self.store, &principal, &node).await?;
+            if !permission.allows(TaskAction::Control) {
+                result.denied.push(node.task_id.clone());
+                continue;
+            }
+            let request_id = if is_request_root {
+                req.request_id.clone()
+            } else {
+                format!("{}:{}", req.request_id, node.task_id)
+            };
+            match self
+                .request_control_single(&request_ctx, &node, req.action, &request_id, None)
+                .await
+            {
+                Ok(outcome) => {
+                    self.publish_outcome(&outcome).await;
+                    result.requested.push(node.task_id.clone());
+                }
+                Err(err) => match task_mgr_error_code(&err) {
+                    Some(TASK_ERR_ALREADY_COMPLETED) => {
+                        result.already_terminal.push(node.task_id.clone())
+                    }
+                    Some(TASK_ERR_CONTROL_NOT_AVAILABLE)
+                    | Some(TASK_ERR_CONTROL_ALREADY_PENDING)
+                    | Some(TASK_ERR_INVALID_PHASE) => {
+                        result.skipped_by_policy.push(node.task_id.clone())
+                    }
+                    Some(TASK_ERR_PERMISSION_DENIED) => result.denied.push(node.task_id.clone()),
+                    _ => return Err(err),
+                },
+            }
+        }
+        Ok(RequestControlResult::Batch { result })
+    }
+
+    async fn handle_update_assignees(
+        &self,
+        req: UpdateAssigneesReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        self.require_action(&request_ctx, &req.task_id, TaskAction::Reassign)
+            .await?;
+        let actor = request_ctx.actor_ref();
+        let add: Vec<String> = req
+            .add
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let remove: Vec<String> = req
+            .remove
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let outcome = self
+            .store
+            .update_assignees(&req.task_id, &actor, &add, &remove, req.expected_revision)
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_grant_task_access(
+        &self,
+        req: GrantTaskAccessReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        self.require_action(&request_ctx, &req.task_id, TaskAction::Grant)
+            .await?;
+        if req.grant.actions.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "a grant needs at least one action".into(),
+            ));
+        }
+        let actor = request_ctx.actor_ref();
+        let (outcome, _grant) = self
+            .store
+            .insert_grant(&req.task_id, &actor, &req.grant, req.expected_revision)
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_revoke_task_access(
+        &self,
+        req: RevokeTaskAccessReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        self.require_action(&request_ctx, &req.task_id, TaskAction::Grant)
+            .await?;
+        let actor = request_ctx.actor_ref();
+        let outcome = self
+            .store
+            .revoke_grant(&req.task_id, &actor, &req.grant_id, req.expected_revision)
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_list_task_access(
+        &self,
+        req: ListTaskAccessReq,
+        ctx: RPCContext,
+    ) -> Result<ListTaskAccessResult> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        self.require_action(&request_ctx, &req.task_id, TaskAction::Grant)
+            .await?;
+        let grants = self.store.all_grants_for_task(&req.task_id).await?;
+        Ok(ListTaskAccessResult { grants })
+    }
+
+    async fn handle_report_started(&self, req: ReportStartedReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        if task.phase != TaskPhase::Accepted {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                format!("report_started requires Accepted, found {}", task.phase),
+            ));
+        }
+        let actor = request_ctx.actor_ref();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                TaskEventType::PhaseChanged,
+                json!({"from": "Accepted", "to": "Running", "via": "report_started"}),
+                Some(req.envelope.expected_revision),
+                |current| {
+                    current.phase = TaskPhase::Running;
+                    current.wait_reason = None;
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_report_progress(
+        &self,
+        req: ReportProgressReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        let actor = request_ctx.actor_ref();
+        let progress = req.progress.clone();
+        let message = req.message.clone();
+        let message_for_event = message.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                TaskEventType::ProgressReported,
+                json!({"message": message_for_event}),
+                Some(req.envelope.expected_revision),
+                move |current| {
+                    if let Some(progress) = progress {
+                        current.progress = Some(progress);
+                    }
+                    if let Some(message) = message {
+                        current.message = Some(message);
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_report_waiting(&self, req: ReportWaitingReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        if !matches!(task.phase, TaskPhase::Accepted | TaskPhase::Running) {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                format!(
+                    "report_waiting requires Accepted/Running, found {}",
+                    task.phase
+                ),
+            ));
+        }
+        let actor = request_ctx.actor_ref();
+        let reason = req.reason.clone();
+        let reason_kind = reason.kind;
+        let from_phase = task.phase;
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                TaskEventType::WaitReasonChanged,
+                json!({"from": from_phase.to_string(), "kind": reason_kind}),
+                Some(req.envelope.expected_revision),
+                move |current| {
+                    current.phase = TaskPhase::Waiting;
+                    current.wait_reason = Some(reason);
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_report_running(&self, req: ReportRunningReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        if !matches!(task.phase, TaskPhase::Waiting | TaskPhase::Accepted) {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                format!(
+                    "report_running requires Waiting/Accepted, found {}",
+                    task.phase
+                ),
+            ));
+        }
+        let actor = request_ctx.actor_ref();
+        let from_phase = task.phase;
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                TaskEventType::PhaseChanged,
+                json!({"from": from_phase.to_string(), "to": "Running", "via": "report_running"}),
+                Some(req.envelope.expected_revision),
+                |current| {
+                    current.phase = TaskPhase::Running;
+                    current.wait_reason = None;
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_update_control_profile(
+        &self,
+        req: UpdateControlProfileReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        let actor = request_ctx.actor_ref();
+        let mut profile = req.profile.clone();
+        profile.updated_at = now_ms();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                TaskEventType::ControlProfileChanged,
+                json!({}),
+                Some(req.envelope.expected_revision),
+                move |current| {
+                    current.control_profile = profile;
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_ack_control(&self, req: AckControlReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        let Some(pending) = task.pending_control.clone() else {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                "no pending control request",
+            ));
+        };
+        if pending.request_id != req.request_id {
+            return Err(task_mgr_error(
+                TASK_ERR_INVALID_PHASE,
+                format!(
+                    "pending request is {}, not {}",
+                    pending.request_id, req.request_id
+                ),
+            ));
+        }
+        let actor = request_ctx.actor_ref();
+        let applied = req.applied;
+        let action = pending.action;
+        let event_type = if applied {
+            match action {
+                TaskControlAction::Cancel => TaskEventType::TaskCanceled,
+                _ => TaskEventType::ControlApplied,
+            }
+        } else {
+            TaskEventType::ControlRejected
+        };
+        let cancel_mode = match task.control_profile.cancel {
+            CancelCapability::Safe => "safe",
+            _ => "interrupt",
+        };
+        let payload = if applied {
+            json!({"action": action, "request_id": req.request_id, "cancel_mode": cancel_mode})
+        } else {
+            json!({"action": action, "request_id": req.request_id, "reject_reason": req.reject_reason})
+        };
+        let completed_by = actor.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                event_type,
+                payload,
+                Some(req.envelope.expected_revision),
+                move |current| {
+                    current.pending_control = None;
+                    if applied {
+                        match action {
+                            TaskControlAction::Pause => {
+                                current.phase = TaskPhase::Paused;
+                            }
+                            TaskControlAction::Resume => {
+                                current.phase = TaskPhase::Running;
+                                current.wait_reason = None;
+                            }
+                            TaskControlAction::Cancel => {
+                                if current.result.is_some() {
+                                    return Err(task_mgr_error(
+                                        TASK_ERR_ALREADY_COMPLETED,
+                                        "result already committed",
+                                    ));
+                                }
+                                current.phase = TaskPhase::Terminal;
+                                current.outcome = Some(TaskOutcome::Canceled);
+                                current.wait_reason = None;
+                                current.completed_by = Some(completed_by);
+                                current.completed_at = Some(now_ms());
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_commit_result(&self, req: CommitResultReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.task_id).await?;
+
+        // Identity check by executor mode (doc §9.3/§10).
+        match &task.executor {
+            TaskExecutor::App { .. } => {
+                let runner_epoch = req.runner_epoch.ok_or_else(|| {
+                    RPCErrors::ParseRequestError(
+                        "runner_epoch is required for App runner commits".into(),
+                    )
+                })?;
+                let envelope = RunnerWriteEnvelope {
+                    task_id: req.task_id.clone(),
+                    app_instance_id: req.app_instance_id.clone(),
+                    runner_epoch,
+                    expected_revision: req.expected_revision,
+                };
+                Self::verify_app_runner_write(&request_ctx, &task, &envelope)?;
+            }
+            TaskExecutor::HumanSet => {
+                let assignees = self.store.active_assignees(&req.task_id).await?;
+                if !assignees.iter().any(|user| user == &request_ctx.user_id) {
+                    return Err(task_mgr_error(
+                        TASK_ERR_PERMISSION_DENIED,
+                        format!("{} is not an active assignee", request_ctx.user_id),
+                    ));
+                }
+                if task.phase.is_terminal() {
+                    return Err(task_mgr_error(
+                        TASK_ERR_ALREADY_COMPLETED,
+                        "task already terminal",
+                    ));
+                }
+            }
+            TaskExecutor::Unbound => {
+                return Err(task_mgr_error(
+                    TASK_ERR_INVALID_PHASE,
+                    "an unbound task has no committer",
+                ));
+            }
+        }
+
+        let schema = self
+            .store
+            .get_schema(&task.schema_id, Some(task.schema_version))
+            .await?;
+        validate_json_schema(&schema.output_schema, &req.result)
+            .map_err(|violation| task_mgr_error(TASK_ERR_RESULT_SCHEMA_MISMATCH, violation))?;
+
+        let actor = request_ctx.actor_ref();
+        let completed_by = actor.clone();
+        let result = req.result.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.task_id,
+                Some(&actor),
+                TaskEventType::ResultCommitted,
+                json!({}),
+                Some(req.expected_revision),
+                move |current| {
+                    if current.phase.is_terminal() || current.result.is_some() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "result already committed or task terminal",
+                        ));
+                    }
+                    let now = now_ms();
+                    current.result = Some(result);
+                    current.outcome = Some(TaskOutcome::Succeeded);
+                    current.phase = TaskPhase::Terminal;
+                    current.pending_control = None;
+                    current.wait_reason = None;
+                    current.completed_by = Some(completed_by);
+                    current.completed_at = Some(now);
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    async fn handle_fail_task(&self, req: FailTaskReq, ctx: RPCContext) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let task = self.load_task(&req.envelope.task_id).await?;
+        Self::verify_app_runner_write(&request_ctx, &task, &req.envelope)?;
+        let actor = request_ctx.actor_ref();
+        let completed_by = actor.clone();
+        let error = req.error.clone();
+        let error_code = error.code.clone();
+        let error_message = error.message.clone();
+        let outcome = self
+            .store
+            .mutate_task(
+                &req.envelope.task_id,
+                Some(&actor),
+                TaskEventType::TaskFailed,
+                json!({"code": error_code, "message": error_message}),
+                Some(req.envelope.expected_revision),
+                move |current| {
+                    if current.phase.is_terminal() || current.result.is_some() {
+                        return Err(task_mgr_error(
+                            TASK_ERR_ALREADY_COMPLETED,
+                            "task already terminal",
+                        ));
+                    }
+                    let now = now_ms();
+                    current.error = Some(error);
+                    current.outcome = Some(TaskOutcome::Failed);
+                    current.phase = TaskPhase::Terminal;
+                    current.pending_control = None;
+                    current.wait_reason = None;
+                    current.completed_by = Some(completed_by);
+                    current.completed_at = Some(now);
+                    Ok(())
+                },
+            )
+            .await?;
+        self.publish_outcome(&outcome).await;
+        Ok(outcome.task)
+    }
+
+    // --- Trusted promise/executor control plane (doc §13.4) ---
+
+    async fn handle_create_promised_task(
+        &self,
+        req: CreatePromisedTaskReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "create_promised_task")?;
+        self.trusted_create_promised_task(req, &request_ctx.actor_ref())
+            .await
+    }
+
+    async fn handle_set_promise_wait(
+        &self,
+        req: SetPromiseWaitReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "set_promise_wait")?;
+        self.trusted_set_promise_wait(req, &request_ctx.actor_ref())
+            .await
+    }
+
+    async fn handle_bind_app_executor(
+        &self,
+        req: BindAppExecutorReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "bind_app_executor")?;
+        self.trusted_bind_app_executor(req, &request_ctx.actor_ref())
+            .await
+    }
+
+    async fn handle_release_app_executor(
+        &self,
+        req: ReleaseAppExecutorReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        // The frozen target's own control plane is zone-trusted; other
+        // callers need an explicit Reassign grant.
+        if !request_ctx.zone_trusted {
+            self.require_action(&request_ctx, &req.task_id, TaskAction::Reassign)
+                .await?;
+        }
+        self.trusted_release_app_executor(req, &request_ctx.actor_ref())
+            .await
+    }
+
+    async fn handle_finish_promise_failure(
+        &self,
+        req: FinishPromiseFailureReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "finish_promise_failure")?;
+        self.trusted_finish_promise_failure(req, &request_ctx.actor_ref())
+            .await
+    }
+
+    async fn handle_cancel_promised_task(
+        &self,
+        req: CancelPromisedTaskReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "cancel_promised_task")?;
+        self.trusted_cancel_promised_task(req, &request_ctx.actor_ref())
+            .await
+    }
+
+    // --- Schema registry ---
+
+    async fn handle_register_task_schema(
+        &self,
+        req: RegisterTaskSchemaReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSchemaDefinition> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let def = &req.definition;
+        if def.schema_id.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError("schema_id is required".into()));
+        }
+        if def.allowed_executor_kinds.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "allowed_executor_kinds must not be empty".into(),
+            ));
+        }
+        // Apps publish their own schemas; publishing for another app needs a
+        // zone-trusted identity.
+        if !request_ctx.zone_trusted && def.publisher_app_id != request_ctx.app_id {
+            return Err(task_mgr_error(
+                TASK_ERR_PERMISSION_DENIED,
+                "publisher_app_id must match the caller app",
+            ));
+        }
+        self.store.register_schema(def).await
+    }
+
+    async fn handle_get_task_schema(
+        &self,
+        req: GetTaskSchemaReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSchemaDefinition> {
+        self.authenticate(&ctx).await?;
+        self.store
+            .get_schema(&req.schema_id, req.schema_version)
+            .await
+    }
+
+    async fn handle_list_task_schemas(
+        &self,
+        req: ListTaskSchemasReq,
+        ctx: RPCContext,
+    ) -> Result<ListTaskSchemasResult> {
+        self.authenticate(&ctx).await?;
+        let schemas = self
+            .store
+            .list_schemas(req.user_creatable_only, req.include_disabled)
+            .await?;
+        Ok(ListTaskSchemasResult { schemas })
+    }
+
+    async fn handle_set_task_schema_enabled(
+        &self,
+        req: SetTaskSchemaEnabledReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSchemaDefinition> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "set_task_schema_enabled")?;
+        self.store
+            .set_schema_enabled(&req.schema_id, req.schema_version, req.enabled)
+            .await
+    }
+
+    // --- Events & notes ---
+
+    async fn handle_list_task_events(
+        &self,
+        req: ListTaskEventsReq,
+        ctx: RPCContext,
+    ) -> Result<ListTaskEventsResult> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        // Visibility is anchored on the referenced task (or tree root).
+        let anchor = req
+            .task_id
+            .as_deref()
+            .or(req.root_id.as_deref())
+            .ok_or_else(|| {
+                RPCErrors::ParseRequestError("task_id or root_id is required".into())
+            })?;
+        self.load_visible(&request_ctx, anchor).await?;
+        let events = self
+            .store
+            .list_events(
+                req.task_id.as_deref(),
+                req.root_id.as_deref(),
+                req.after_event_id.as_deref(),
+                req.limit.unwrap_or(100),
+            )
+            .await?;
+        let next_cursor = events.last().map(|e| e.event_id.clone());
+        Ok(ListTaskEventsResult {
+            events,
+            next_cursor,
+        })
+    }
+
+    async fn handle_add_task_note(&self, req: AddTaskNoteReq, ctx: RPCContext) -> Result<TaskNote> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        let content = req.content.trim();
+        if content.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "note content is required".into(),
+            ));
+        }
+        self.load_visible(&request_ctx, &req.task_id).await?;
+        let now = now_ms();
+        let note = TaskNote {
+            id: 0,
+            task_id: req.task_id.clone(),
+            note_type: req
+                .note_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or("human")
+                .to_string(),
+            content: content.to_string(),
+            data: req.data.clone().unwrap_or_else(|| json!({})),
+            author_user_id: request_ctx.user_id.clone(),
+            author_app_id: request_ctx.app_id.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        self.store.add_task_note(&note).await
+    }
+
+    async fn handle_list_task_notes(
+        &self,
+        req: ListTaskNotesReq,
+        ctx: RPCContext,
+    ) -> Result<Vec<TaskNote>> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        self.load_visible(&request_ctx, &req.task_id).await?;
+        self.store.list_task_notes(&req.task_id).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP wiring
+// ---------------------------------------------------------------------------
+
 pub struct TaskManagerHttpServer<T: TaskManagerHandler> {
     rpc_handler: buckyos_api::TaskManagerServerHandler<T>,
 }
@@ -896,6 +1895,7 @@ pub async fn start_task_manager_service() -> Result<()> {
             err
         )));
     }
+    const TASK_MANAGER_SERVICE_MAIN_PORT: u16 = 3380;
     runtime
         .set_main_service_port(TASK_MANAGER_SERVICE_MAIN_PORT)
         .await;
@@ -903,15 +1903,61 @@ pub async fn start_task_manager_service() -> Result<()> {
         RPCErrors::ReasonError(format!("register task manager runtime failed: {}", err))
     })?;
 
-    let handler = TaskManagerService::new();
+    let store = TaskStore::open_from_service_spec()
+        .await
+        .map_err(RPCErrors::ReasonError)?;
+    info!("task-manager database initialized (schema v7)");
+
+    let kevent_client = get_buckyos_api_runtime()
+        .map_err(|err| RPCErrors::ReasonError(format!("api runtime unavailable: {}", err)))?
+        .get_kevent_client()
+        .await?;
+    let store = Arc::new(store);
+    let handler = TaskManagerService::new(
+        store.clone(),
+        kevent_client,
+        Arc::new(RuntimeSessionTokenVerifier),
+    );
+    handler.ensure_builtin_schemas().await?;
+    let service_for_dispatcher = handler.clone();
     let server = TaskManagerHttpServer::new(handler);
 
-    info!("start node task manager service...");
-    const TASK_MANAGER_SERVICE_MAIN_PORT: u16 = 3380;
+    info!("start task manager 2.0 service...");
     let runner = Runner::new(TASK_MANAGER_SERVICE_MAIN_PORT);
     if let Err(err) = runner.add_http_server("/kapi/task-manager".to_string(), Arc::new(server)) {
         error!("failed to add task manager http server: {:?}", err);
     }
+
+    // Task Dispatch Center: same process/port, second kapi path, independent
+    // store and authorization. The task service must keep working when the
+    // dispatcher fails to start (missing rdb instance config on older
+    // zones), so this is strictly best-effort.
+    match crate::dispatcher::start_task_dispatcher(
+        Arc::new(RuntimeSessionTokenVerifier),
+        service_for_dispatcher,
+    )
+    .await
+    {
+        Ok(dispatcher_service) => {
+            let dispatcher_server =
+                crate::dispatcher::TaskDispatcherHttpServer::new(dispatcher_service);
+            if let Err(err) = runner.add_http_server(
+                "/kapi/task-dispatcher".to_string(),
+                Arc::new(dispatcher_server),
+            ) {
+                error!("failed to add task dispatcher http server: {:?}", err);
+            } else {
+                info!("task dispatch center mounted at /kapi/task-dispatcher");
+            }
+        }
+        Err(err) => {
+            warn!(
+                "task dispatch center not started (task manager keeps running): {:?}",
+                err
+            );
+        }
+    }
+
     if let Err(err) = runner.run().await {
         error!("task manager runner exited with error: {:?}", err);
     }
@@ -919,484 +1965,1220 @@ pub async fn start_task_manager_service() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::task_db::TaskDb;
-    use serde_json::json;
-    use std::net::IpAddr;
-    use std::str::FromStr;
-    use std::sync::Once;
+    use crate::task_store::TaskStore;
+    use jsonwebtoken::{DecodingKey, EncodingKey};
+    use std::collections::HashMap;
     use tempfile::tempdir;
-    use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 
-    lazy_static::lazy_static! {
-        static ref TEST_MUTEX: AsyncMutex<()> = AsyncMutex::new(());
+    // Fixed ed25519 test keypair (same material as the node_daemon tests).
+    const TEST_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
+-----END PRIVATE KEY-----"#;
+    const TEST_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
+
+    /// Verifies against the fixed test key: the real signature/exp path runs,
+    /// only the trust-key lookup is replaced.
+    struct StaticKeyVerifier {
+        key: DecodingKey,
     }
-    static INIT_LOGGING: Once = Once::new();
 
-    fn create_rpc_request(method: &str, params: Value) -> RPCRequest {
-        RPCRequest {
-            method: method.to_string(),
-            params,
-            seq: 1,
-            token: Some("".to_string()),
-            trace_id: Some("".to_string()),
+    #[async_trait]
+    impl SessionTokenVerifier for StaticKeyVerifier {
+        async fn verify(&self, token: &str) -> Result<RPCSessionToken> {
+            let mut parsed = RPCSessionToken::from_string(token)?;
+            parsed.verify_by_key(&self.key)?;
+            Ok(parsed)
         }
     }
 
-    async fn setup_test_environment() -> (
-        buckyos_api::TaskManagerServerHandler<TaskManagerService>,
-        tempfile::TempDir,
-        MutexGuard<'static, ()>,
-    ) {
-        let guard = TEST_MUTEX.lock().await;
-        INIT_LOGGING.call_once(|| {
-            buckyos_kit::init_logging("test_task_manager", false);
-        });
+    fn test_encoding_key() -> EncodingKey {
+        EncodingKey::from_ed_pem(TEST_PRIVATE_KEY.as_bytes()).unwrap()
+    }
+
+    fn signed_token(issuer: &str, user_id: &str, app_id: &str) -> String {
+        let now = buckyos_kit::buckyos_get_unix_timestamp();
+        let session_token = RPCSessionToken {
+            token_type: RPCSessionTokenType::JWT,
+            token: None,
+            aud: None,
+            exp: Some(now + 3600),
+            iss: Some(issuer.to_string()),
+            jti: None,
+            sub: Some(user_id.to_string()),
+            appid: Some(app_id.to_string()),
+            sudo: false,
+            extra: HashMap::new(),
+        };
+        session_token
+            .generate_jwt(None, &test_encoding_key())
+            .unwrap()
+    }
+
+    /// Zone-trusted service token (issuer != verify-hub).
+    fn service_ctx(user_id: &str, app_id: &str) -> RPCContext {
+        RPCContext {
+            token: Some(signed_token("ood1", user_id, app_id)),
+            ..Default::default()
+        }
+    }
+
+    /// Interactive (verify-hub issued) session token: never zone-trusted.
+    fn user_ctx(user_id: &str, app_id: &str) -> RPCContext {
+        RPCContext {
+            token: Some(signed_token(VERIFY_HUB_UNIQUE_ID, user_id, app_id)),
+            ..Default::default()
+        }
+    }
+
+    // Shared with the dispatcher test module.
+    pub(crate) fn service_ctx_pub(user_id: &str, app_id: &str) -> RPCContext {
+        service_ctx(user_id, app_id)
+    }
+
+    pub(crate) fn user_ctx_pub(user_id: &str, app_id: &str) -> RPCContext {
+        user_ctx(user_id, app_id)
+    }
+
+    pub(crate) fn static_verifier() -> Arc<dyn SessionTokenVerifier> {
+        Arc::new(StaticKeyVerifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+        })
+    }
+
+    pub(crate) async fn setup_service() -> (TaskManagerService, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        let db_path_str = db_path.to_str().unwrap();
-
-        let mut db = TaskDb::new();
-        db.connect(db_path_str).unwrap();
-        db.init_db().await.unwrap();
-        *crate::task_db::DB_MANAGER.lock().await = db;
-
-        let server = buckyos_api::TaskManagerServerHandler::new(TaskManagerService::new());
-        (server, temp_dir, guard)
-    }
-
-    async fn clean_test_environment(_temp_dir: tempfile::TempDir) {}
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_create_and_get_task() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        let create_params = json!({
-            "name": "test_task",
-            "task_type": "test_type",
-            "app_name": "test_app",
-            "data": {"key": "value"}
-        });
-
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-
-        if let RPCResult::Success(result) = create_resp.result {
-            let task_id = result["task_id"].as_i64().unwrap();
-            assert!(task_id > 0);
-
-            let get_params = json!({
-                "id": task_id
-            });
-
-            let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-
-            if let RPCResult::Success(result) = get_resp.result {
-                assert_eq!(result["task"]["name"], "test_task");
-                assert_eq!(result["task"]["task_type"], "test_type");
-                assert_eq!(result["task"]["app_id"], "test_app");
-            } else {
-                panic!("Failed to get task");
-            }
-        } else {
-            panic!("Failed to create task");
-        }
-        clean_test_environment(_temp_dir).await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_create_task_uses_data_rootid_for_record_root_id() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        let create_params = json!({
-            "name": "grouped_task",
-            "task_type": "test_type",
-            "app_name": "test_app",
-            "data": {
-                "rootid": "session-alpha"
-            }
-        });
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            assert_eq!(result["task"]["root_id"], "session-alpha");
-            result["task_id"]
-                .as_i64()
-                .expect("task_id should be present")
-        } else {
-            panic!("Failed to create task");
+        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let store = TaskStore::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
+        let verifier = StaticKeyVerifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
         };
+        let service = TaskManagerService::new(
+            Arc::new(store),
+            KEventClient::new_local(TASK_MANAGER_SERVICE_NAME),
+            Arc::new(verifier),
+        );
+        service.ensure_builtin_schemas().await.unwrap();
+        (service, temp_dir)
+    }
 
-        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "session-alpha" }));
-        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
-        if let RPCResult::Success(result) = list_resp.result {
-            let tasks = result["tasks"].as_array().expect("tasks should be array");
-            assert_eq!(tasks.len(), 1);
-            assert_eq!(tasks[0]["id"], task_id);
-            assert_eq!(tasks[0]["root_id"], "session-alpha");
-        } else {
-            panic!("Failed to list tasks by root_id");
+    fn raw_create_req(name: &str, key: &str) -> CreateTaskReq {
+        CreateTaskReq {
+            name: name.to_string(),
+            schema_id: RAW_TASK_SCHEMA_ID.to_string(),
+            schema_version: None,
+            input: json!({"payload": name}),
+            executor: CreateTaskExecutor::SelfApp {
+                app_instance_id: None,
+            },
+            parent_id: None,
+            child_control_policy: None,
+            policy_preset: None,
+            permission_boundary: false,
+            idempotency_key: key.to_string(),
+            retry_of: None,
+            supersedes: None,
+            message: None,
+        }
+    }
+
+    fn envelope(task: &Task) -> RunnerWriteEnvelope {
+        RunnerWriteEnvelope {
+            task_id: task.task_id.clone(),
+            app_instance_id: None,
+            runner_epoch: task.runner_epoch,
+            expected_revision: task.revision,
+        }
+    }
+
+    /// A clean zone must be able to create every first-party production task
+    /// without the owning service having published anything yet. Seeding
+    /// swallows per-entry errors, so assert the rows actually landed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn builtin_schemas_are_seeded_on_a_clean_store() {
+        let (service, _tmp) = setup_service().await;
+        let store = service.store();
+        for definition in builtin_task_schemas() {
+            let stored = store
+                .get_schema(&definition.schema_id, None)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("built-in schema {} not seeded: {:?}", definition.schema_id, err)
+                });
+            assert!(stored.enabled, "{} seeded disabled", definition.schema_id);
+            assert_eq!(stored.allowed_executor_kinds, definition.allowed_executor_kinds);
         }
 
-        clean_test_environment(_temp_dir).await;
+        // Re-running the bootstrap is a no-op, not an idempotency conflict.
+        service.ensure_builtin_schemas().await.unwrap();
+
+        // And a production schema is usable end to end on that clean store.
+        let ctx = user_ctx("alice", "workflow");
+        let task = service
+            .handle_create_task(
+                CreateTaskReq {
+                    name: "run tree".into(),
+                    schema_id: WORKFLOW_RUN_TREE_TASK_SCHEMA_ID.to_string(),
+                    schema_version: None,
+                    input: json!({"request": {"run_id": "r1"}}),
+                    executor: CreateTaskExecutor::SelfApp {
+                        app_instance_id: None,
+                    },
+                    parent_id: None,
+                    child_control_policy: None,
+                    policy_preset: None,
+                    permission_boundary: false,
+                    idempotency_key: "wf-run-r1".into(),
+                    retry_of: None,
+                    supersedes: None,
+                    message: None,
+                },
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.schema_id, WORKFLOW_RUN_TREE_TASK_SCHEMA_ID);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_create_task_uses_request_root_id_field() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+    async fn create_self_app_task_and_run_to_success() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
 
-        let create_params = json!({
-            "name": "grouped_task_req_root",
-            "task_type": "test_type",
-            "app_name": "test_app",
-            "root_id": "session-beta",
-            "data": {
-                "rootid": "session-alpha"
+        let task = service
+            .handle_create_task(raw_create_req("job1", "k1"), ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Accepted);
+        assert_eq!(task.runner_epoch, 1);
+        assert_eq!(task.creator.user_id, "alice");
+        assert!(task.task_id.starts_with("t-"));
+        assert_eq!(task.root_id, task.task_id);
+
+        let task = service
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: envelope(&task),
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Running);
+
+        let task = service
+            .handle_report_progress(
+                ReportProgressReq {
+                    envelope: envelope(&task),
+                    progress: Some(json!({"percent": 50})),
+                    message: Some("halfway".into()),
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.progress, Some(json!({"percent": 50})));
+
+        let task = service
+            .handle_commit_result(
+                CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: json!({"ok": true}),
+                    app_instance_id: None,
+                    runner_epoch: Some(task.runner_epoch),
+                    expected_revision: task.revision,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Terminal);
+        assert_eq!(task.outcome, Some(TaskOutcome::Succeeded));
+        assert_eq!(task.result, Some(json!({"ok": true})));
+        assert_eq!(task.completed_by.as_ref().unwrap().user_id, "alice");
+
+        // Result is one-shot; terminal is absorbing.
+        let err = service
+            .handle_commit_result(
+                CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: json!({"ok": false}),
+                    app_instance_id: None,
+                    runner_epoch: Some(task.runner_epoch),
+                    expected_revision: task.revision,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_ALREADY_COMPLETED));
+
+        // Events were journaled, one per revision.
+        let events = service
+            .handle_list_task_events(
+                ListTaskEventsReq {
+                    task_id: Some(task.task_id.clone()),
+                    root_id: None,
+                    after_event_id: None,
+                    limit: None,
+                },
+                ctx,
+            )
+            .await
+            .unwrap()
+            .events;
+        assert_eq!(events.len(), 4); // created, started, progress, committed
+        assert_eq!(events[0].event_type, TaskEventType::TaskCreated);
+        assert_eq!(events.last().unwrap().event_type, TaskEventType::ResultCommitted);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idempotent_create_replays_and_conflicts() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+
+        let first = service
+            .handle_create_task(raw_create_req("job", "same-key"), ctx.clone())
+            .await
+            .unwrap();
+        let replay = service
+            .handle_create_task(raw_create_req("job", "same-key"), ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(first.task_id, replay.task_id);
+
+        // Same key, different immutable input -> idempotency_conflict.
+        let mut conflicting = raw_create_req("job", "same-key");
+        conflicting.input = json!({"payload": "different"});
+        let err = service
+            .handle_create_task(conflicting, ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_IDEMPOTENCY_CONFLICT)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_runner_epoch_and_revision_cas_are_fenced() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let task = service
+            .handle_create_task(raw_create_req("fence", "kf"), ctx.clone())
+            .await
+            .unwrap();
+
+        // Wrong epoch.
+        let mut bad_epoch = envelope(&task);
+        bad_epoch.runner_epoch = 99;
+        let err = service
+            .handle_report_started(ReportStartedReq { envelope: bad_epoch }, ctx.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_STALE_RUNNER_EPOCH));
+
+        // Stale revision.
+        let mut stale_rev = envelope(&task);
+        stale_rev.expected_revision = task.revision + 5;
+        let err = service
+            .handle_report_started(ReportStartedReq { envelope: stale_rev }, ctx.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_REVISION_CONFLICT));
+
+        // Another app cannot write runner state at all.
+        let err = service
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: envelope(&task),
+                },
+                user_ctx("alice", "other-app"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_PERMISSION_DENIED));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn human_set_concurrent_commit_single_winner() {
+        let (service, _tmp) = setup_service().await;
+        let creator = user_ctx("alice", "app-a");
+        let mut req = raw_create_req("approval", "kh");
+        req.executor = CreateTaskExecutor::HumanSet {
+            assignees: vec!["bob".into(), "carol".into()],
+        };
+        let task = service.handle_create_task(req, creator).await.unwrap();
+        assert_eq!(task.phase, TaskPhase::Waiting);
+        assert_eq!(
+            task.wait_reason.as_ref().unwrap().kind,
+            TaskWaitReasonKind::HumanInput
+        );
+        assert_eq!(task.assignees.as_ref().unwrap().len(), 2);
+
+        // Both assignees race a commit against the same revision.
+        let bob = service.handle_commit_result(
+            CommitResultReq {
+                task_id: task.task_id.clone(),
+                result: json!({"by": "bob"}),
+                app_instance_id: None,
+                runner_epoch: None,
+                expected_revision: task.revision,
+            },
+            user_ctx("bob", "ui"),
+        );
+        let carol = service.handle_commit_result(
+            CommitResultReq {
+                task_id: task.task_id.clone(),
+                result: json!({"by": "carol"}),
+                app_instance_id: None,
+                runner_epoch: None,
+                expected_revision: task.revision,
+            },
+            user_ctx("carol", "ui"),
+        );
+        let (bob_result, carol_result) = tokio::join!(bob, carol);
+        let winners = [bob_result.is_ok(), carol_result.is_ok()];
+        assert_eq!(winners.iter().filter(|w| **w).count(), 1, "exactly one commit wins");
+
+        // A non-assignee cannot commit.
+        let final_task = service.store().get_task(&task.task_id).await.unwrap().unwrap();
+        assert_eq!(final_task.outcome, Some(TaskOutcome::Succeeded));
+        let err = service
+            .handle_commit_result(
+                CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: json!({"by": "mallory"}),
+                    app_instance_id: None,
+                    runner_epoch: None,
+                    expected_revision: final_task.revision,
+                },
+                user_ctx("mallory", "ui"),
+            )
+            .await
+            .unwrap_err();
+        assert!(task_mgr_error_code(&err).is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn assignee_update_races_commit_via_same_cas() {
+        let (service, _tmp) = setup_service().await;
+        let creator = user_ctx("alice", "app-a");
+        let mut req = raw_create_req("handoff", "kr");
+        req.executor = CreateTaskExecutor::HumanSet {
+            assignees: vec!["bob".into()],
+        };
+        let task = service.handle_create_task(req, creator.clone()).await.unwrap();
+
+        // bob hands the task to carol (bob keeps Reassign as assignee).
+        let task = service
+            .handle_update_assignees(
+                UpdateAssigneesReq {
+                    task_id: task.task_id.clone(),
+                    add: vec!["carol".into()],
+                    remove: vec!["bob".into()],
+                    expected_revision: task.revision,
+                },
+                user_ctx("bob", "ui"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.assignees.as_ref().unwrap(), &vec!["carol".to_string()]);
+
+        // bob lost commit rights with the handoff.
+        let err = service
+            .handle_commit_result(
+                CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: json!({}),
+                    app_instance_id: None,
+                    runner_epoch: None,
+                    expected_revision: task.revision,
+                },
+                user_ctx("bob", "ui"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_PERMISSION_DENIED));
+
+        // Removing the last assignee is rejected.
+        let err = service
+            .handle_update_assignees(
+                UpdateAssigneesReq {
+                    task_id: task.task_id.clone(),
+                    add: vec![],
+                    remove: vec!["carol".into()],
+                    expected_revision: task.revision,
+                },
+                user_ctx("carol", "ui"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_INVALID_PHASE));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_protocol_pause_ack_cancel_supersede() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let task = service
+            .handle_create_task(raw_create_req("ctl", "kc"), ctx.clone())
+            .await
+            .unwrap();
+        let task = service
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: envelope(&task),
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+
+        // Runner declares pause support.
+        let task = service
+            .handle_update_control_profile(
+                UpdateControlProfileReq {
+                    envelope: envelope(&task),
+                    profile: TaskControlProfile {
+                        pause: ControlAvailability::Available,
+                        resume: ControlAvailability::Available,
+                        cancel: CancelCapability::Safe,
+                        updated_at: 0,
+                    },
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+
+        // Creator requests pause: recorded, not applied.
+        let result = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: task.task_id.clone(),
+                    action: TaskControlAction::Pause,
+                    request_id: "req-pause".into(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = result else {
+            panic!("expected single-task result")
+        };
+        assert_eq!(task.phase, TaskPhase::Running);
+        assert_eq!(
+            task.pending_control.as_ref().unwrap().action,
+            TaskControlAction::Pause
+        );
+
+        // A second pause cannot stack; cancel supersedes.
+        let err = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: task.task_id.clone(),
+                    action: TaskControlAction::Pause,
+                    request_id: "req-pause-2".into(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_CONTROL_ALREADY_PENDING)
+        );
+        let result = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: task.task_id.clone(),
+                    action: TaskControlAction::Cancel,
+                    request_id: "req-cancel".into(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = result else {
+            panic!("expected single-task result")
+        };
+        assert_eq!(
+            task.pending_control.as_ref().unwrap().action,
+            TaskControlAction::Cancel
+        );
+
+        // Runner acks the cancel: task closes as Canceled.
+        let task = service
+            .handle_ack_control(
+                AckControlReq {
+                    envelope: envelope(&task),
+                    request_id: "req-cancel".into(),
+                    applied: true,
+                    reject_reason: None,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Terminal);
+        assert_eq!(task.outcome, Some(TaskOutcome::Canceled));
+        assert!(task.pending_control.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recursive_control_respects_child_policy_and_acl() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let root = service
+            .handle_create_task(raw_create_req("root", "kroot"), ctx.clone())
+            .await
+            .unwrap();
+
+        // Child that follows cancel.
+        let mut follow = raw_create_req("follow", "kfollow");
+        follow.parent_id = Some(root.task_id.clone());
+        let follow = service.handle_create_task(follow, ctx.clone()).await.unwrap();
+        assert_eq!(follow.root_id, root.task_id);
+
+        // Child that opted out of cancel propagation.
+        let mut opt_out = raw_create_req("optout", "koptout");
+        opt_out.parent_id = Some(root.task_id.clone());
+        opt_out.child_control_policy = Some(ChildControlPolicy {
+            follow_pause: true,
+            follow_resume: true,
+            follow_cancel: false,
+        });
+        let opt_out = service.handle_create_task(opt_out, ctx.clone()).await.unwrap();
+
+        let result = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: root.task_id.clone(),
+                    action: TaskControlAction::Cancel,
+                    request_id: "req-tree".into(),
+                    recursive: true,
+                    expected_revision: None,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Batch { result } = result else {
+            panic!("expected batch result")
+        };
+        assert!(result.requested.contains(&root.task_id));
+        assert!(result.requested.contains(&follow.task_id));
+        assert!(result.skipped_by_policy.contains(&opt_out.task_id));
+
+        // App tasks got a pending request, not a forced state.
+        let follow_now = service.store().get_task(&follow.task_id).await.unwrap().unwrap();
+        assert_eq!(follow_now.phase, TaskPhase::Accepted);
+        assert_eq!(
+            follow_now.pending_control.as_ref().unwrap().action,
+            TaskControlAction::Cancel
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn acl_hides_foreign_tasks_and_supports_grants() {
+        let (service, _tmp) = setup_service().await;
+        let alice = user_ctx("alice", "app-a");
+        let task = service
+            .handle_create_task(raw_create_req("private", "kacl"), alice.clone())
+            .await
+            .unwrap();
+
+        // A stranger sees task_not_found (not permission_denied).
+        let err = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id.clone(),
+                },
+                user_ctx("bob", "app-b"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_NOT_FOUND));
+
+        // Alice grants bob read access.
+        let task = service
+            .handle_grant_task_access(
+                GrantTaskAccessReq {
+                    task_id: task.task_id.clone(),
+                    grant: TaskAclGrantSpec {
+                        subject: TaskGrantSubject::User {
+                            user_id: "bob".into(),
+                        },
+                        actions: vec![TaskAction::ReadMeta, TaskAction::ReadInput],
+                        scope: TaskGrantScope::SelfOnly,
+                        data_scope: TaskDataScope::Payload,
+                    },
+                    expected_revision: task.revision,
+                },
+                alice.clone(),
+            )
+            .await
+            .unwrap();
+
+        let seen = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id.clone(),
+                },
+                user_ctx("bob", "app-b"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seen.input, json!({"payload": "private"}));
+        // Payload scope hides the audit envelope; no ReadResult grant.
+        assert_eq!(seen.idempotency_key, "");
+        assert_eq!(seen.data_scope, Some(TaskDataScope::Payload));
+
+        // Revoke closes the door again.
+        let grants = service
+            .handle_list_task_access(
+                ListTaskAccessReq {
+                    task_id: task.task_id.clone(),
+                },
+                alice.clone(),
+            )
+            .await
+            .unwrap()
+            .grants;
+        let task = service
+            .handle_revoke_task_access(
+                RevokeTaskAccessReq {
+                    task_id: task.task_id.clone(),
+                    grant_id: grants[0].grant_id.clone(),
+                    expected_revision: task.revision,
+                },
+                alice,
+            )
+            .await
+            .unwrap();
+        let err = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id,
+                },
+                user_ctx("bob", "app-b"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_NOT_FOUND));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn permission_boundary_blocks_root_creator() {
+        let (service, _tmp) = setup_service().await;
+        let alice = user_ctx("alice", "app-a");
+        let root = service
+            .handle_create_task(raw_create_req("tree-root", "kb-root"), alice.clone())
+            .await
+            .unwrap();
+
+        // Bob is granted CreateChild on the root subtree so he can attach a
+        // boundary-protected child.
+        let _ = service
+            .handle_grant_task_access(
+                GrantTaskAccessReq {
+                    task_id: root.task_id.clone(),
+                    grant: TaskAclGrantSpec {
+                        subject: TaskGrantSubject::User {
+                            user_id: "bob".into(),
+                        },
+                        actions: vec![TaskAction::ReadMeta, TaskAction::CreateChild],
+                        scope: TaskGrantScope::Subtree,
+                        data_scope: TaskDataScope::MetaOnly,
+                    },
+                    expected_revision: root.revision,
+                },
+                alice.clone(),
+            )
+            .await
+            .unwrap();
+
+        let mut sealed = raw_create_req("sealed", "kb-child");
+        sealed.parent_id = Some(root.task_id.clone());
+        sealed.permission_boundary = true;
+        let sealed = service
+            .handle_create_task(sealed, user_ctx("bob", "app-b"))
+            .await
+            .unwrap();
+
+        // Root creator alice can still see tree metadata as a participant,
+        // but the boundary cuts her preset control/read-payload inheritance.
+        let seen = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: sealed.task_id.clone(),
+                },
+                alice.clone(),
+            )
+            .await;
+        match seen {
+            Ok(task) => {
+                assert_eq!(task.data_scope, Some(TaskDataScope::MetaOnly));
+                assert_eq!(task.input, Value::Null);
             }
-        });
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            assert_eq!(result["task"]["root_id"], "session-beta");
-            result["task_id"]
-                .as_i64()
-                .expect("task_id should be present")
-        } else {
-            panic!("Failed to create task");
-        };
-
-        let list_req = create_rpc_request("list_tasks", json!({ "root_id": "session-beta" }));
-        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
-        if let RPCResult::Success(result) = list_resp.result {
-            let tasks = result["tasks"].as_array().expect("tasks should be array");
-            assert_eq!(tasks.len(), 1);
-            assert_eq!(tasks[0]["id"], task_id);
-            assert_eq!(tasks[0]["root_id"], "session-beta");
-        } else {
-            panic!("Failed to list tasks by root_id");
-        }
-
-        clean_test_environment(_temp_dir).await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_list_tasks() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        for i in 1..4 {
-            let create_params = json!({
-                "name": format!("test_task_{}", i),
-                "task_type": "test_type",
-                "app_name": "test_app"
-            });
-
-            let create_req = create_rpc_request("create_task", create_params);
-            let _ = server.handle_rpc_call(create_req, ip).await.unwrap();
-        }
-
-        let list_req = create_rpc_request("list_tasks", json!({}));
-        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
-
-        if let RPCResult::Success(result) = list_resp.result {
-            let tasks = result["tasks"].as_array().unwrap();
-            assert_eq!(tasks.len(), 3);
-        } else {
-            panic!("Failed to list tasks");
-        }
-        clean_test_environment(_temp_dir).await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_list_tasks_by_app() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        let create_params1 = json!({
-            "name": "app1_task",
-            "task_type": "test_type",
-            "app_name": "app1"
-        });
-
-        let create_params2 = json!({
-            "name": "app2_task",
-            "task_type": "test_type",
-            "app_name": "app2"
-        });
-
-        let create_req1 = create_rpc_request("create_task", create_params1);
-        let create_req2 = create_rpc_request("create_task", create_params2);
-        let _ = server.handle_rpc_call(create_req1, ip).await.unwrap();
-        let _ = server.handle_rpc_call(create_req2, ip).await.unwrap();
-
-        let list_params = json!({
-            "app_id": "app1"
-        });
-
-        let list_req = create_rpc_request("list_tasks", list_params);
-        let list_resp = server.handle_rpc_call(list_req, ip).await.unwrap();
-
-        if let RPCResult::Success(result) = list_resp.result {
-            let tasks = result["tasks"].as_array().unwrap();
-            assert_eq!(tasks.len(), 1);
-            assert_eq!(tasks[0]["app_id"], "app1");
-        } else {
-            panic!("Failed to list tasks by app");
-        }
-        clean_test_environment(_temp_dir).await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_update_task_status() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        let create_params = json!({
-            "name": "status_test",
-            "task_type": "test_type",
-            "app_name": "test_app"
-        });
-
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            result["task_id"].as_i64().unwrap()
-        } else {
-            panic!("Failed to create task");
-        };
-
-        let update_params = json!({
-            "id": task_id,
-            "status": "Running"
-        });
-
-        let update_req = create_rpc_request("update_task_status", update_params);
-        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
-
-        if let RPCResult::Success(_) = update_resp.result {
-            let get_params = json!({
-                "id": task_id
-            });
-
-            let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-
-            if let RPCResult::Success(result) = get_resp.result {
-                assert_eq!(result["task"]["status"], "Running");
-            } else {
-                panic!("Failed to get task after status update");
+            Err(err) => {
+                assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_NOT_FOUND));
             }
-        } else {
-            panic!("Failed to update task status");
         }
-        clean_test_environment(_temp_dir).await;
+        // And she cannot control it.
+        let err = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: sealed.task_id.clone(),
+                    action: TaskControlAction::Cancel,
+                    request_id: "req-x".into(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                alice,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_PERMISSION_DENIED) | Some(TASK_ERR_NOT_FOUND)
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_update_task_progress() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+    async fn schema_validation_gates_input_and_result() {
+        let (service, _tmp) = setup_service().await;
+        let publisher = user_ctx("alice", "app-a");
+        let _ = service
+            .handle_register_task_schema(
+                RegisterTaskSchemaReq {
+                    definition: TaskSchemaDefinition {
+                        schema_id: "test.op/v1".into(),
+                        schema_version: 1,
+                        input_schema: json!({"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}}}),
+                        output_schema: json!({"type": "object", "required": ["code"], "properties": {"code": {"type": "integer"}}}),
+                        presentation_schema: None,
+                        allowed_executor_kinds: vec![TaskExecutorKind::App],
+                        user_creatable: true,
+                        publisher_app_id: "app-a".into(),
+                        enabled: true,
+                        created_at: 0,
+                    },
+                },
+                publisher.clone(),
+            )
+            .await
+            .unwrap();
 
-        let create_params = json!({
-            "name": "progress_test",
-            "task_type": "test_type",
-            "app_name": "test_app"
-        });
+        // Bad input rejected at create.
+        let mut bad = raw_create_req("typed", "kt1");
+        bad.schema_id = "test.op/v1".into();
+        bad.input = json!({"nope": 1});
+        let err = service
+            .handle_create_task(bad, publisher.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_INPUT_SCHEMA_MISMATCH)
+        );
 
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
+        // Good input accepted; bad result rejected without changing the task.
+        let mut good = raw_create_req("typed", "kt2");
+        good.schema_id = "test.op/v1".into();
+        good.input = json!({"url": "http://x"});
+        let task = service.handle_create_task(good, publisher.clone()).await.unwrap();
+        let err = service
+            .handle_commit_result(
+                CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: json!({"code": "not-an-int"}),
+                    app_instance_id: None,
+                    runner_epoch: Some(task.runner_epoch),
+                    expected_revision: task.revision,
+                },
+                publisher.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_RESULT_SCHEMA_MISMATCH)
+        );
+        let unchanged = service.store().get_task(&task.task_id).await.unwrap().unwrap();
+        assert_eq!(unchanged.revision, task.revision);
+        assert!(unchanged.result.is_none());
 
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            result["task_id"].as_i64().unwrap()
-        } else {
-            panic!("Failed to create task");
+        // HumanSet not allowed by this schema.
+        let mut wrong_kind = raw_create_req("typed", "kt3");
+        wrong_kind.schema_id = "test.op/v1".into();
+        wrong_kind.input = json!({"url": "http://x"});
+        wrong_kind.executor = CreateTaskExecutor::HumanSet {
+            assignees: vec!["bob".into()],
         };
-
-        let update_params = json!({
-            "id": task_id,
-            "completed_items": 5,
-            "total_items": 10
-        });
-
-        let update_req = create_rpc_request("update_task_progress", update_params);
-        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
-
-        if let RPCResult::Success(_) = update_resp.result {
-            let get_params = json!({
-                "id": task_id
-            });
-
-            let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-
-            if let RPCResult::Success(result) = get_resp.result {
-                assert_eq!(result["task"]["progress"], 50.0);
-                assert_eq!(result["task"]["data"]["completed_items"], 5);
-                assert_eq!(result["task"]["data"]["total_items"], 10);
-            } else {
-                panic!("Failed to get task after progress update");
-            }
-        } else {
-            panic!("Failed to update task progress");
-        }
-        clean_test_environment(_temp_dir).await;
+        let err = service
+            .handle_create_task(wrong_kind, publisher)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_INPUT_SCHEMA_MISMATCH)
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_update_task_error() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+    async fn trusted_promise_lifecycle_bind_release_fence() {
+        let (service, _tmp) = setup_service().await;
+        let dispatcher = service.clone();
+        let actor = ActorRef::new("task-dispatcher", "task-dispatcher");
 
-        let create_params = json!({
-            "name": "error_test",
-            "task_type": "test_type",
-            "app_name": "test_app"
-        });
-
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            result["task_id"].as_i64().unwrap()
-        } else {
-            panic!("Failed to create task");
+        // Interactive callers cannot mint promised tasks.
+        let promised_req = CreatePromisedTaskReq {
+            name: "promised".into(),
+            schema_id: RAW_TASK_SCHEMA_ID.into(),
+            schema_version: None,
+            input: json!({"x": 1}),
+            creator: ActorRef::new("alice", "app-a"),
+            expected_input_digest: None,
+            origin_ref: Some(TaskOriginRef {
+                kind: "task-dispatcher".into(),
+                id: "dsp-1".into(),
+            }),
+            parent_id: None,
+            child_control_policy: None,
+            policy_preset: None,
+            permission_boundary: false,
+            idempotency_key: "dsp:dsp-1".into(),
+            wait_reason: None,
+            message: None,
         };
+        let err = service
+            .handle_create_promised_task(promised_req.clone(), user_ctx("alice", "app-a"))
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_PERMISSION_DENIED));
 
-        let update_params = json!({
-            "id": task_id,
-            "error_message": "Test error occurred"
-        });
+        let task = dispatcher
+            .trusted_create_promised_task(promised_req.clone(), &actor)
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Promised);
+        assert_eq!(task.executor, TaskExecutor::Unbound);
+        assert_eq!(task.creator.user_id, "alice");
+        assert_eq!(task.runner_epoch, 0);
 
-        let update_req = create_rpc_request("update_task_error", update_params);
-        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
+        // Idempotent replay returns the same task.
+        let replay = dispatcher
+            .trusted_create_promised_task(promised_req, &actor)
+            .await
+            .unwrap();
+        assert_eq!(replay.task_id, task.task_id);
 
-        if let RPCResult::Success(_) = update_resp.result {
-            let get_params = json!({
-                "id": task_id
-            });
+        // Bind -> Accepted, epoch 1.
+        let task = dispatcher
+            .trusted_bind_app_executor(
+                BindAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    target_id: Some("target-1".into()),
+                    app_id: "runner-app".into(),
+                    app_instance_id: "inst-1".into(),
+                    delivery_id: Some("dsp-1#1".into()),
+                    expected_revision: task.revision,
+                },
+                &actor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Accepted);
+        assert_eq!(task.runner_epoch, 1);
 
-            let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
+        // Runner starts, then the instance is lost and released.
+        let runner_ctx = user_ctx("svc", "runner-app");
+        let task = service
+            .handle_report_started(
+                ReportStartedReq {
+                    envelope: RunnerWriteEnvelope {
+                        task_id: task.task_id.clone(),
+                        app_instance_id: Some("inst-1".into()),
+                        runner_epoch: 1,
+                        expected_revision: task.revision,
+                    },
+                },
+                runner_ctx.clone(),
+            )
+            .await
+            .unwrap();
+        let task = dispatcher
+            .trusted_release_app_executor(
+                ReleaseAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    expected_instance_id: "inst-1".into(),
+                    expected_runner_epoch: 1,
+                    reason: TaskWaitReason::with_code(TaskWaitReasonKind::Capacity, "instance_lost"),
+                    expected_revision: task.revision,
+                },
+                &actor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.phase, TaskPhase::Waiting);
+        assert_eq!(task.runner_epoch, 2);
+        assert!(matches!(
+            &task.executor,
+            TaskExecutor::App { app_instance_id: None, .. }
+        ));
 
-            if let RPCResult::Success(result) = get_resp.result {
-                assert_eq!(result["task"]["message"], "Test error occurred");
-                assert_eq!(result["task"]["status"], "Failed");
-            } else {
-                panic!("Failed to get task after error update");
-            }
-        } else {
-            panic!("Failed to update task error");
-        }
-        clean_test_environment(_temp_dir).await;
+        // Old instance's late write is fenced.
+        let err = service
+            .handle_report_progress(
+                ReportProgressReq {
+                    envelope: RunnerWriteEnvelope {
+                        task_id: task.task_id.clone(),
+                        app_instance_id: Some("inst-1".into()),
+                        runner_epoch: 1,
+                        expected_revision: task.revision,
+                    },
+                    progress: Some(json!({"late": true})),
+                    message: None,
+                },
+                runner_ctx.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_STALE_RUNNER_EPOCH));
+
+        // Rebind on the same frozen target with a new instance.
+        let task = dispatcher
+            .trusted_bind_app_executor(
+                BindAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    target_id: Some("target-1".into()),
+                    app_id: "runner-app".into(),
+                    app_instance_id: "inst-2".into(),
+                    delivery_id: None,
+                    expected_revision: task.revision,
+                },
+                &actor,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.runner_epoch, 3);
+        assert_eq!(task.phase, TaskPhase::Accepted);
+
+        // A different logical target is frozen out.
+        let task_now = service.store().get_task(&task.task_id).await.unwrap().unwrap();
+        let released = dispatcher
+            .trusted_release_app_executor(
+                ReleaseAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    expected_instance_id: "inst-2".into(),
+                    expected_runner_epoch: 3,
+                    reason: TaskWaitReason::new(TaskWaitReasonKind::Capacity),
+                    expected_revision: task_now.revision,
+                },
+                &actor,
+            )
+            .await
+            .unwrap();
+        let err = dispatcher
+            .trusted_bind_app_executor(
+                BindAppExecutorReq {
+                    task_id: task.task_id.clone(),
+                    target_id: Some("target-2".into()),
+                    app_id: "runner-app".into(),
+                    app_instance_id: "inst-9".into(),
+                    delivery_id: None,
+                    expected_revision: released.revision,
+                },
+                &actor,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_INVALID_PHASE));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_update_task_data() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        let create_params = json!({
-            "name": "data_test",
-            "task_type": "test_type",
-            "app_name": "test_app"
-        });
-
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            result["task_id"].as_i64().unwrap()
-        } else {
-            panic!("Failed to create task");
+    async fn human_set_cancel_closes_directly() {
+        let (service, _tmp) = setup_service().await;
+        let alice = user_ctx("alice", "app-a");
+        let mut req = raw_create_req("cancelable", "khc");
+        req.executor = CreateTaskExecutor::HumanSet {
+            assignees: vec!["bob".into()],
         };
+        let task = service.handle_create_task(req, alice.clone()).await.unwrap();
 
-        let update_params = json!({
-            "id": task_id,
-            "data": {"updated": true, "value": "new data"}
-        });
-
-        let update_req = create_rpc_request("update_task_data", update_params);
-        let update_resp = server.handle_rpc_call(update_req, ip).await.unwrap();
-
-        if let RPCResult::Success(_) = update_resp.result {
-            let get_params = json!({
-                "id": task_id
-            });
-
-            let get_req = create_rpc_request("get_task", get_params);
-            let get_resp = server.handle_rpc_call(get_req, ip).await.unwrap();
-
-            if let RPCResult::Success(result) = get_resp.result {
-                assert_eq!(result["task"]["data"]["updated"], true);
-                assert_eq!(result["task"]["data"]["value"], "new data");
-            } else {
-                panic!("Failed to get task after data update");
-            }
-        } else {
-            panic!("Failed to update task data");
-        }
-        clean_test_environment(_temp_dir).await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_delete_task() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
-
-        let create_params = json!({
-            "name": "delete_test",
-            "task_type": "test_type",
-            "app_name": "test_app"
-        });
-
-        let create_req = create_rpc_request("create_task", create_params);
-        let create_resp = server.handle_rpc_call(create_req, ip).await.unwrap();
-
-        let task_id = if let RPCResult::Success(result) = create_resp.result {
-            result["task_id"].as_i64().unwrap()
-        } else {
-            panic!("Failed to create task");
+        let result = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: task.task_id.clone(),
+                    action: TaskControlAction::Cancel,
+                    request_id: "req-hc".into(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                alice,
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = result else {
+            panic!("expected task result")
         };
+        assert_eq!(task.phase, TaskPhase::Terminal);
+        assert_eq!(task.outcome, Some(TaskOutcome::Canceled));
+    }
 
-        let delete_params = json!({
-            "id": task_id
-        });
+    /// `rbac::SYS_ENFORCE` is process-wide, so the tests that install a policy
+    /// must not overlap each other.
+    static ENFORCER_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
-        let delete_req = create_rpc_request("delete_task", delete_params);
-        let delete_resp = server.handle_rpc_call(delete_req, ip).await.unwrap();
+    /// Installs a policy shaped like a real zone's: the owner bound to
+    /// `admin`, the Task Center's `control-panel` to `kernel`, and the agent
+    /// that creates the tasks left in `agent`.
+    async fn install_zone_like_enforcer() {
+        let config = build_current_rbac_config(Some(
+            "g, devtest, admin\ng, bob, users\ng, control-panel, kernel\ng, buckyos_jarvis, agent",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+    }
 
-        if let RPCResult::Success(_) = delete_resp.result {
-            let get_params = json!({
-                "id": task_id
-            });
+    /// The Task Center runs as `control-panel`, so every relation in the
+    /// preset — all keyed on the exact `{user_id, app_id}` — misses tasks the
+    /// user's own agent created. RBAC's `obj://task/{user}` is what closes it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_panel_sees_tasks_created_by_the_users_own_agent() {
+        let _guard = ENFORCER_LOCK
+            .get_or_init(Default::default)
+            .lock()
+            .await;
+        install_zone_like_enforcer().await;
+        let (service, _tmp) = setup_service().await;
 
-            let get_req = create_rpc_request("get_task", get_params);
-            let get_result = server.handle_rpc_call(get_req, ip).await;
-            assert!(
-                get_result.is_err(),
-                "Unexpected success when getting deleted task"
-            );
-        } else {
-            panic!("Failed to delete task");
-        }
-        clean_test_environment(_temp_dir).await;
+        let agent = user_ctx("devtest", "buckyos_jarvis");
+        let task = service
+            .handle_create_task(raw_create_req("aicc:job-1", "k-aicc-1"), agent)
+            .await
+            .unwrap();
+
+        // The owner, through the control surface.
+        let page = service
+            .handle_list_tasks(ListTasksReq::default(), user_ctx("devtest", "control-panel"))
+            .await
+            .unwrap();
+        assert!(
+            page.tasks.iter().any(|t| t.task_id == task.task_id),
+            "control-panel must list the owner's agent tasks"
+        );
+
+        // Full data scope: the Task Center renders progress and the scheduled
+        // task payload straight off `input`.
+        let detail = service
+            .handle_get_task(
+                GetTaskReq {
+                    task_id: task.task_id.clone(),
+                },
+                user_ctx("devtest", "control-panel"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.data_scope, Some(TaskDataScope::Full));
+        assert_eq!(detail.input, json!({"payload": "aicc:job-1"}));
+
+        // Another user gets nothing, from the same control surface.
+        let page = service
+            .handle_list_tasks(ListTasksReq::default(), user_ctx("bob", "control-panel"))
+            .await
+            .unwrap();
+        assert!(
+            page.tasks.is_empty(),
+            "the control surface must stay scoped to the requesting user"
+        );
+
+        // And an ordinary app of the same user still cannot cross app_id.
+        let page = service
+            .handle_list_tasks(
+                ListTasksReq::default(),
+                user_ctx("devtest", "buckyos_filebrowser"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            page.tasks.is_empty(),
+            "a non-control-surface app must keep the doc §8.5 isolation"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_invalid_method() {
-        let (server, _temp_dir, _guard) = setup_test_environment().await;
-        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+    async fn archive_requires_terminal_and_hides_from_default_list() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let task = service
+            .handle_create_task(raw_create_req("arch", "ka"), ctx.clone())
+            .await
+            .unwrap();
 
-        let req = create_rpc_request("invalid_method", json!({}));
-        let result = server.handle_rpc_call(req, ip).await;
+        let err = service
+            .handle_archive_task(
+                ArchiveTaskReq {
+                    task_id: task.task_id.clone(),
+                    expected_revision: task.revision,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(task_mgr_error_code(&err), Some(TASK_ERR_INVALID_PHASE));
 
-        assert!(matches!(result, Err(RPCErrors::UnknownMethod(_))));
-        clean_test_environment(_temp_dir).await;
+        let task = service
+            .handle_commit_result(
+                CommitResultReq {
+                    task_id: task.task_id.clone(),
+                    result: json!({}),
+                    app_instance_id: None,
+                    runner_epoch: Some(task.runner_epoch),
+                    expected_revision: task.revision,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        let task = service
+            .handle_archive_task(
+                ArchiveTaskReq {
+                    task_id: task.task_id.clone(),
+                    expected_revision: task.revision,
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(task.archived_at.is_some());
+
+        let page = service
+            .handle_list_tasks(ListTasksReq::default(), ctx.clone())
+            .await
+            .unwrap();
+        assert!(page.tasks.iter().all(|t| t.task_id != task.task_id));
+        let page = service
+            .handle_list_tasks(
+                ListTasksReq {
+                    include_archived: true,
+                    ..Default::default()
+                },
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(page.tasks.iter().any(|t| t.task_id == task.task_id));
     }
 }

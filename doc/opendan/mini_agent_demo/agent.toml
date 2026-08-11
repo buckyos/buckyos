@@ -1,0 +1,60 @@
+# Minimal AgentRootFS root config — see ../Agent配置改进.md §11.
+#
+# Three concepts on display:
+#   1. [[channel]]      — Gateway 接入(本 demo 只挂 msg_center)
+#   2. [dispatch]       — 事件类型 → 哪个 session 类
+#   3. [session.<class>]— session 类的行为骨架(kind / loop / 默认 behavior /
+#                         session_id 派生策略 / driver hook 策略等)
+#
+# 跟这份 schema 配对的 behavior 配置位于 ./behaviors/<name>.toml。
+
+[identity]
+display_name = "echo-bot"
+# agent_did 留空 ⇒ opendan 启动时按 buckyos identity 回填。
+
+[runtime]
+cancel_reason = "user canceled"
+
+# ─── Gateway: 只接 msg_center 的对话消息 ────────────────────────────────
+[[channel]]
+type = "msg_center"
+
+# ─── Dispatcher: msg.chat → ui 类 session ───────────────────────────────
+[dispatch]
+default_class = "ui"
+
+[[dispatch.rule]]
+on = "msg.chat"
+session_class = "ui"
+
+# ─── Session 类: 一个 peer 一个 UI session ─────────────
+[session.ui]
+kind                = "ui"
+loop_mode           = "agent"
+default_behavior    = "ui_default"
+session_id_strategy = "per_peer"     # session_id = `ui-<peer_did>`
+
+[session.ui.driver]
+switch_mode = "normal"
+inject_background_environment = true
+report_delivery = "final_only"
+
+[session.ui.driver.on_init]
+filter = "all"
+pull_msg = "none"
+pull_event = "none"
+
+[session.ui.driver.on_behavior_switch]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"
+
+[session.ui.driver.on_behavior_step_ob]
+filter = "none"
+pull_msg = "none"
+pull_event = "none"
+
+[session.ui.driver.on_wakeup]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"

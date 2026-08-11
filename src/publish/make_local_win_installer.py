@@ -26,7 +26,9 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+import package_common as common
 
 try:
     import yaml  # type: ignore
@@ -43,27 +45,22 @@ TMP_INSTALL_DIR = RESULT_ROOT_DIR / "win-installer"
 WIN_PKG_PROJECT_DIR = SRC_DIR / "publish" / "win_pkg"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
+WINDOWS_HOOK_EXTENSIONS = (".ps1", ".bat", ".cmd")
+WINDOWS_HOOK_STEPS = ("preinstall", "postinstall", "preuninstall")
+WINDOWS_SERVICE_SCRIPT_NAMES = (
+    "seed_defaults.ps1",
+    "ensure_firewall_rules.ps1",
+    "uninstall_cleanup.ps1",
+    "node_daemon_loader.vbs",
+)
 
 
 def yaml_load_file(path: Path) -> Dict[str, Any]:
-    if yaml is None:
-        raise ImportError(
-            "PyYAML is required to read bucky_project.yaml. "
-            "Use your project venv or install via `pip install pyyaml`."
-        )
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML root must be a map: {path}")
-    return data
+    return common.yaml_load_file(path)
 
 
 def json_load_file(path: Path) -> Dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"JSON root must be a map: {path}")
-    return data
+    return common.json_load_file(path)
 
 
 def _expand_vars(s: str) -> str:
@@ -83,14 +80,7 @@ def _expand_vars(s: str) -> str:
 
 
 def _manifest_install_project(manifest_path: Path, project_key: str) -> Dict[str, Any]:
-    data = json_load_file(manifest_path)
-    install_projects = data.get("install_projects", {}) or {}
-    if not isinstance(install_projects, dict):
-        raise ValueError("manifest.install_projects must be a map")
-    project = install_projects.get(project_key)
-    if not isinstance(project, dict):
-        raise ValueError(f"manifest.install_projects.{project_key} missing or invalid")
-    return project
+    return common.manifest_install_project(manifest_path, project_key)
 
 
 @dataclass(frozen=True)
@@ -100,6 +90,8 @@ class AppLayout:
     module_paths: List[str]
     data_paths: List[str]
     clean_paths: List[str]
+    module_source_paths: Dict[str, str]
+    data_source_paths: Dict[str, str]
 
 
 def _ignore_copy_entries(_: str, names: List[str]) -> List[str]:
@@ -143,7 +135,11 @@ def load_app_layout(
 ) -> AppLayout:
     data = yaml_load_file(project_yaml_path)
     apps = data.get("apps", {}) or {}
-    app_cfg = apps.get(app_key, {}) or {}
+    if not isinstance(apps, dict):
+        raise ValueError("apps must be a map")
+    app_cfg = apps.get(app_key)
+    if not isinstance(app_cfg, dict):
+        raise ValueError(f"apps.{app_key} missing or invalid")
 
     base_dir = str(data.get("base_dir", "."))
     project_base = (project_yaml_path.parent / base_dir).resolve()
@@ -156,9 +152,17 @@ def load_app_layout(
     target_rootfs = Path(_expand_vars(target_str)).resolve()
 
     modules = app_cfg.get("modules", {}) or {}
+    data_paths_raw = app_cfg.get("data_paths", []) or []
+    clean_paths_raw = app_cfg.get("clean_paths", []) or []
+    if not isinstance(modules, dict):
+        raise ValueError(f"apps.{app_key}.modules must be a map")
+    if not isinstance(data_paths_raw, list):
+        raise ValueError(f"apps.{app_key}.data_paths must be a list")
+    if not isinstance(clean_paths_raw, list):
+        raise ValueError(f"apps.{app_key}.clean_paths must be a list")
     module_paths = [str(p) for p in modules.values()]
-    data_paths = [str(p) for p in (app_cfg.get("data_paths", []) or [])]
-    clean_paths = [str(p) for p in (app_cfg.get("clean_paths", []) or [])]
+    data_paths = [str(p) for p in data_paths_raw]
+    clean_paths = [str(p) for p in clean_paths_raw]
 
     return AppLayout(
         source_rootfs=source_rootfs,
@@ -166,6 +170,8 @@ def load_app_layout(
         module_paths=module_paths,
         data_paths=data_paths,
         clean_paths=clean_paths,
+        module_source_paths={rel: str((source_rootfs / rel.strip().lstrip("/\\")).resolve()) for rel in module_paths},
+        data_source_paths={rel: str((source_rootfs / rel.strip().lstrip("/\\")).resolve()) for rel in data_paths},
     )
 
 
@@ -186,22 +192,14 @@ def load_app_layout_from_manifest(
     )
     target_str = target_override if target_override else default_target
 
-    def item_paths(name: str) -> List[str]:
-        items = app_cfg.get(name, []) or []
-        if not isinstance(items, list):
-            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
-        return [
-            str(item.get("raw_path") or item.get("target_dir_name") or "")
-            for item in items
-            if isinstance(item, dict) and str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
-        ]
-
     return AppLayout(
         source_rootfs=Path(source_rootfs_raw).resolve(),
         target_rootfs=Path(_expand_vars(target_str)).resolve(),
-        module_paths=item_paths("module_items"),
-        data_paths=item_paths("data_items"),
-        clean_paths=item_paths("clean_items"),
+        module_paths=common.item_paths(app_cfg, "module_items", project_key=app_key),
+        data_paths=common.item_paths(app_cfg, "data_items", project_key=app_key),
+        clean_paths=common.item_paths(app_cfg, "clean_items", project_key=app_key),
+        module_source_paths=common.item_source_paths(app_cfg, "module_items", project_key=app_key),
+        data_source_paths=common.item_source_paths(app_cfg, "data_items", project_key=app_key),
     )
 
 
@@ -227,6 +225,14 @@ def _as_str(v: Any) -> str:
     return str(v)
 
 
+def _parse_bool(value: Any, *, field_name: str, default: bool = False) -> bool:
+    return common.parse_bool(value, field_name=field_name, default=default)
+
+
+def _parse_component_type(value: Any, *, field_name: str) -> str:
+    return common.parse_component_type(value, field_name=field_name)
+
+
 def _sanitize_id(s: str) -> str:
     out = []
     for ch in s:
@@ -244,6 +250,7 @@ class PublishComponent:
     name: str
     kind: str  # "app" | "bundle"
     optional: bool
+    default_selected: bool
     src: str | None
     default_target: str
     system_service: bool
@@ -262,24 +269,27 @@ def load_win_pkg_components(project_yaml_path: Path) -> List[PublishComponent]:
         if not isinstance(cfg, dict):
             raise ValueError(f"publish.win_pkg.apps.{key} must be a map")
         name = _as_str(cfg.get("name", key)).strip() or key
-        kind = _as_str(cfg.get("type", "")).strip() or "app"
-        optional = bool(cfg.get("optional", False))
+        kind = _parse_component_type(cfg.get("type", "app"), field_name=f"publish.win_pkg.apps.{key}.type")
+        optional = _parse_bool(cfg.get("optional", False), field_name=f"publish.win_pkg.apps.{key}.optional")
+        default_selected = _parse_bool(
+            cfg.get("default_selected", False),
+            field_name=f"publish.win_pkg.apps.{key}.default_selected",
+        )
         src = _as_str(cfg.get("src", "")).strip() or None
         default_target = _as_str(cfg.get("default_target", "")).strip()
         if not default_target:
             raise ValueError(f"publish.win_pkg.apps.{key} missing default_target")
-        # Handle 'true,' string (YAML parsing quirk)
-        system_service_val = cfg.get("system_service", False)
-        if isinstance(system_service_val, str):
-            system_service = system_service_val.lower().strip().rstrip(",") == "true"
-        else:
-            system_service = bool(system_service_val)
+        system_service = _parse_bool(
+            cfg.get("system_service", False),
+            field_name=f"publish.win_pkg.apps.{key}.system_service",
+        )
         components.append(
             PublishComponent(
                 key=_as_str(key),
                 name=name,
                 kind=kind,
                 optional=optional,
+                default_selected=default_selected,
                 src=src,
                 default_target=default_target,
                 system_service=system_service,
@@ -291,13 +301,9 @@ def load_win_pkg_components(project_yaml_path: Path) -> List[PublishComponent]:
 def load_win_pkg_components_from_manifest(manifest_path: Path) -> List[PublishComponent]:
     data = json_load_file(manifest_path)
     install_projects = data.get("install_projects", {}) or {}
-    platforms = data.get("platforms", {}) or {}
-    win_cfg = platforms.get("windows", {}) or {}
-    component_keys = win_cfg.get("component_keys", []) or []
+    component_keys = common.manifest_component_keys(manifest_path, "windows")
     if not isinstance(install_projects, dict):
         raise ValueError("manifest.install_projects must be a map")
-    if not isinstance(component_keys, list):
-        raise ValueError("manifest.platforms.windows.component_keys must be a list")
 
     components: List[PublishComponent] = []
     for key in component_keys:
@@ -307,19 +313,30 @@ def load_win_pkg_components_from_manifest(manifest_path: Path) -> List[PublishCo
         platform_cfg = (project.get("platforms", {}) or {}).get("windows")
         if not isinstance(platform_cfg, dict):
             raise ValueError(f"manifest install project '{key}' missing windows platform config")
-        system_service_val = platform_cfg.get("system_service", False)
-        if isinstance(system_service_val, str):
-            system_service = system_service_val.lower().strip().rstrip(",") == "true"
-        else:
-            system_service = bool(system_service_val)
+        system_service = _parse_bool(
+            platform_cfg.get("system_service", False),
+            field_name=f"manifest.install_projects.{key}.platforms.windows.system_service",
+        )
         components.append(
             PublishComponent(
                 key=_as_str(platform_cfg.get("key", key)),
                 name=_as_str(platform_cfg.get("name", project.get("name", key))).strip() or _as_str(key),
-                kind=_as_str(platform_cfg.get("kind", project.get("kind", "app"))).strip() or "app",
-                optional=bool(platform_cfg.get("optional", False)),
+                kind=_parse_component_type(
+                    platform_cfg.get("kind", project.get("kind", "app")),
+                    field_name=f"manifest.install_projects.{key}.platforms.windows.kind",
+                ),
+                optional=_parse_bool(
+                    platform_cfg.get("optional", False),
+                    field_name=f"manifest.install_projects.{key}.platforms.windows.optional",
+                ),
+                default_selected=_parse_bool(
+                    platform_cfg.get("default_selected", False),
+                    field_name=f"manifest.install_projects.{key}.platforms.windows.default_selected",
+                ),
                 src=_as_str(platform_cfg.get("src", "")).strip() or None,
-                default_target=_as_str(platform_cfg.get("default_target", "")).strip(),
+                default_target=_as_str(
+                    platform_cfg.get("default_target_raw") or platform_cfg.get("default_target", "")
+                ).strip(),
                 system_service=system_service,
             )
         )
@@ -341,6 +358,21 @@ def _resolve_component_target(component: PublishComponent) -> str:
     return _expand_vars(component.default_target)
 
 
+def _nsis_default_target(component: PublishComponent) -> str:
+    target = component.default_target
+    replacements = {
+        "%APPDATA%": "$APPDATA",
+        "%LOCALAPPDATA%": "$LOCALAPPDATA",
+        "%USERPROFILE%": "$PROFILE",
+        "${APPDATA}": "$APPDATA",
+        "${LOCALAPPDATA}": "$LOCALAPPDATA",
+        "${USERPROFILE}": "$PROFILE",
+    }
+    for raw, nsis in replacements.items():
+        target = target.replace(raw, nsis)
+    return target
+
+
 def _copy_dir_contents(src_dir: Path, dst_dir: Path) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     for child in src_dir.iterdir():
@@ -352,6 +384,88 @@ def _copy_dir_contents(src_dir: Path, dst_dir: Path) -> None:
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(child, dst)
+
+
+def _copy_windows_service_scripts(scripts_src: Path, scripts_dst: Path) -> None:
+    scripts_dst.mkdir(parents=True, exist_ok=True)
+    for script_name in WINDOWS_SERVICE_SCRIPT_NAMES:
+        src = scripts_src / script_name
+        if not src.exists():
+            continue
+        if not src.is_file():
+            raise ValueError(f"Windows service script must be a regular file: {src}")
+        shutil.copy2(src, scripts_dst / script_name)
+
+
+def _discover_windows_hook(component_key: str, step: str) -> Path | None:
+    return common.discover_component_hook(
+        scripts_dirs=(WIN_PKG_PROJECT_DIR / "scripts",),
+        component_key=component_key,
+        step=step,
+        extensions=WINDOWS_HOOK_EXTENSIONS,
+    )
+
+
+def _stage_windows_hooks(component_key: str, comp_payload: Path) -> None:
+    hooks_dir = comp_payload / "scripts" / "hooks"
+    for step in WINDOWS_HOOK_STEPS:
+        hook_path = _discover_windows_hook(component_key, step)
+        if hook_path is None:
+            continue
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        dst = hooks_dir / f"{step}{hook_path.suffix.lower()}"
+        shutil.copy2(hook_path, dst)
+
+
+def _windows_payload_hook(comp_payload: Path, step: str) -> Path | None:
+    hooks_dir = comp_payload / "scripts" / "hooks"
+    for extension in WINDOWS_HOOK_EXTENSIONS:
+        candidate = hooks_dir / f"{step}{extension}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _hook_exec_command(var_name: str, hook_rel: str) -> str:
+    var_ref = var_name if var_name.startswith("$") else f"${var_name}"
+    hook_path = f"{var_ref}\\{hook_rel}"
+    suffix = Path(hook_rel).suffix.lower()
+    if suffix == ".ps1":
+        return f'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{hook_path}"'
+    if suffix in (".bat", ".cmd"):
+        return f'cmd.exe /c ""{hook_path}""'
+    raise ValueError(f"unsupported Windows hook extension: {hook_rel}")
+
+
+def _append_windows_hook_call(
+    lines: List[str],
+    *,
+    comp_key: str,
+    var_name: str,
+    hook_rel: str,
+    step: str,
+) -> None:
+    error_code = {"preinstall": "50", "postinstall": "70", "preuninstall": "80"}.get(step, "70")
+    label = f"{_sanitize_id(comp_key).replace('-', '_')}_{step}"
+    hook_cmd = _hook_exec_command(var_name, hook_rel)
+    lines.append(f"  ; Run {comp_key} {step} hook")
+    lines.append(f"  nsExec::ExecToLog '{hook_cmd}'")
+    lines.append("  Pop $0")
+    lines.append("  ${If} $0 != 0")
+    lines.append(f"    IfSilent silent_hook_failed_{label} interactive_hook_failed_{label}")
+    lines.append(f"silent_hook_failed_{label}:")
+    lines.append('    FileOpen $1 "$InstallerLogPath" a')
+    lines.append(f'    FileWrite $1 "{comp_key} {step} hook failed with exit code $0.$\\r$\\n"')
+    lines.append("    FileClose $1")
+    lines.append(f"    SetErrorLevel {error_code}")
+    lines.append("    Abort")
+    lines.append(f"interactive_hook_failed_{label}:")
+    lines.append(
+        f'    MessageBox MB_OK|MB_ICONSTOP "{comp_key} {step} hook failed with exit code $0."'
+    )
+    lines.append(f"    SetErrorLevel {error_code}")
+    lines.append("    Abort")
+    lines.append("  ${EndIf}")
 
 
 def _iter_payload_file_basenames(root: Path, *, limit: int = 256) -> List[str]:
@@ -402,7 +516,6 @@ def _component_expected_filenames(
                 "seed_defaults.ps1",
                 "ensure_firewall_rules.ps1",
                 "uninstall_cleanup.ps1",
-                "node_daemon_loader.ps1",
                 "node_daemon_loader.vbs",
             ],
         )
@@ -452,11 +565,29 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         if rel_s.startswith("/") or rel_s.startswith("\\"):
             rel_s = rel_s[1:]
         rel_s = rel_s.rstrip("/\\")
-        s = src_root / rel_s
+        s = common.source_path_for(
+            source_rootfs=layout.source_rootfs,
+            rel=rel,
+            item_source_paths=layout.module_source_paths,
+            source_root_override=src_root,
+            windows=True,
+        )
         d = dst_root / rel_s
+        if not s.exists():
+            raise FileNotFoundError(
+                f"module source missing: '{rel}' -> '{s}'. "
+                f"Please ensure it exists under the publish root ({src_root}), "
+                "or remove it from apps.buckyos.modules."
+            )
         if s.is_dir():
             _copytree_filtered(s, d)
-        elif s.exists():
+        else:
+            if (
+                s.suffix.lower() == ".exe"
+                and not d.suffix
+                and s.name.lower() == f"{d.name}.exe".lower()
+            ):
+                d = d.with_name(s.name)
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
 
@@ -467,11 +598,20 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         if rel_s.startswith("/") or rel_s.startswith("\\"):
             rel_s = rel_s[1:]
         rel_s = rel_s.rstrip("/\\")
-        s = src_root / rel_s
+        s = common.source_path_for(
+            source_rootfs=layout.source_rootfs,
+            rel=rel,
+            item_source_paths=layout.data_source_paths,
+            source_root_override=src_root,
+            windows=True,
+        )
         d = defaults_root / rel_s
         if not s.exists():
-            print(f"[warn] data_paths source missing: '{rel}' -> '{s}', skipping")
-            continue
+            raise FileNotFoundError(
+                f"data_paths source missing: '{rel}' -> '{s}'. "
+                f"Please ensure it exists under the publish root ({src_root}), "
+                "or remove it from apps.buckyos.data_paths."
+            )
         if s.is_dir():
             _copytree_filtered(s, d)
         else:
@@ -558,7 +698,9 @@ def generate_nsis_script(
     
     # Installer attributes
     lines.append(f'Name "${{PRODUCT_NAME}} ${{PRODUCT_VERSION}}"')
-    lines.append(f'OutFile "buckyos-win-{architecture}-{version}.exe"')
+    lines.append(
+        f'OutFile "{common.package_filename(platform_key="windows", architecture=architecture, version=version, package_format="exe")}"'
+    )
     
     # Set default install directory based on architecture
     if nsis_arch == "x64":
@@ -594,6 +736,7 @@ def generate_nsis_script(
     lines.append("Var ExistingBuckyRoot")
     lines.append("Var BestInstallDrive")
     lines.append("Var LaunchAfterInstall")
+    lines.append("Var InstallerLogPath")
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
         lines.append(f"Var {var_name}")
@@ -846,6 +989,11 @@ def generate_nsis_script(
     if nsis_arch == "x64":
         lines.append('  ; Check if running on 64-bit Windows')
         lines.append('  ${IfNot} ${RunningX64}')
+        lines.append("    IfSilent silent_bad_arch interactive_bad_arch")
+        lines.append("silent_bad_arch:")
+        lines.append("    SetErrorLevel 10")
+        lines.append("    Abort")
+        lines.append("interactive_bad_arch:")
         lines.append('    MessageBox MB_OK|MB_ICONSTOP "This installer requires 64-bit Windows."')
         lines.append('    Abort')
         lines.append('  ${EndIf}')
@@ -853,43 +1001,13 @@ def generate_nsis_script(
         lines.append('  SetRegView 64')
         lines.append("")
     
-    # Initialize install directories with default values
-    lines.append("  ; Pick the local disk with largest free space and use X:\\buckyos\\ as default")
-    lines.append("  Call SelectBestInstallDrive")
-    lines.append('  ; Initialize default install directories')
+    lines.append('  ; Initialize default install directories from bucky_project.yaml')
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
-        lines.append(f'  StrCpy ${var_name} "$BestInstallDrive\\buckyos\\"')
+        lines.append(f'  StrCpy ${var_name} "{_escape_nsis_string(_nsis_default_target(comp))}"')
     lines.append('  StrCpy $LaunchAfterInstall ""')
+    lines.append('  StrCpy $InstallerLogPath "$TEMP\\buckyos-windows-${PRODUCT_ARCH}-${PRODUCT_VERSION}.log"')
     lines.append("")
-    
-    lines.append('  ; Check Docker Desktop availability for current user context')
-    lines.append("  Call CheckDockerDesktopForUser")
-    lines.append('  ${If} $DockerCheckCode != "0"')
-    lines.append('    ${If} $DockerCheckCode == "1"')
-    lines.append('      MessageBox MB_YESNO|MB_ICONSTOP "Docker Desktop is required.$\\r$\\nThe installer could not find the docker command in the current PATH.$\\r$\\n$\\r$\\nOpen Docker Desktop install guide?" IDYES +2')
-    lines.append("      Abort")
-    lines.append('      ExecShell "open" "https://docs.docker.com/desktop/setup/install/windows-install/"')
-    lines.append("      Abort")
-    lines.append("    ${Else}")
-    lines.append('      MessageBox MB_OK|MB_ICONSTOP "Docker Desktop was found, but Docker Engine is not reachable right now.$\\r$\\nPlease open Docker Desktop, wait until it finishes starting, then retry this step."')
-    lines.append("      Abort")
-    lines.append("    ${EndIf}")
-    lines.append("  ${EndIf}")
-    lines.append("")
-    
-    lines.append("  Call IsVCRedistInstalled")
-    lines.append('  ${If} $VCRedistInstalled != "1"')
-    if bundled_vcredist and bundled_vcredist.exists():
-        lines.append("    Call ExtractBundledVCRedist")
-        lines.append("    Call TryInstallVCRedist")
-        lines.append("    Abort")
-    else:
-        lines.append('    MessageBox MB_YESNO|MB_ICONSTOP "Visual C++ 2015-2022 (x64) runtime is not registered.$\\r$\\nOpen Microsoft download page?" IDYES +2')
-        lines.append("    Abort")
-        lines.append('    ExecShell "open" "https://aka.ms/vs/17/release/vc_redist.x64.exe"')
-        lines.append("    Abort")
-    lines.append('  ${EndIf}')
     lines.append("FunctionEnd")
     lines.append("")
 
@@ -904,30 +1022,113 @@ def generate_nsis_script(
         lines.append("FunctionEnd")
         lines.append("")
     
-    # Sections for each component - all selected by default (no /o flag for optional)
+    # Sections for each component.
     has_service = False
     has_bundle = False
     for idx, comp in enumerate(components):
         section_id = f"SEC_{_sanitize_id(comp.key).upper()}"
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
         
-        # All components selected by default, but optional ones can be deselected
-        # Using empty flags means selected by default
-        lines.append(f'Section "{comp.name}" {section_id}')
+        section_flag = " /o" if comp.optional and not comp.default_selected else ""
+        lines.append(f'Section{section_flag} "{comp.name}" {section_id}')
+        if not comp.optional:
+            lines.append("  SectionIn RO")
         
         # Source files - use component-specific install directory
         comp_payload = payload_dir / comp.key
         if comp_payload.exists():
             if comp.system_service:
+                dep_label = _sanitize_id(comp.key).replace("-", "_")
+                lines.append(f"dep_check_{dep_label}:")
+                lines.append("  ; Check Docker only for the selected service component")
+                lines.append("  Call CheckDockerDesktopForUser")
+                lines.append('  ${If} $DockerCheckCode != "0"')
+                lines.append('    ${If} $DockerCheckCode == "1"')
+                lines.append("      IfSilent silent_docker_missing interactive_docker_missing")
+                lines.append("silent_docker_missing:")
+                lines.append('      FileOpen $0 "$InstallerLogPath" a')
+                lines.append('      FileWrite $0 "Docker CLI is required but was not found.$\\r$\\n"')
+                lines.append("      FileClose $0")
+                lines.append("      SetErrorLevel 20")
+                lines.append("      Abort")
+                lines.append("interactive_docker_missing:")
+                lines.append('      MessageBox MB_ABORTRETRYIGNORE|MB_ICONSTOP "Docker Desktop is required.$\\r$\\nThe installer could not find the docker command in the current PATH.$\\r$\\n$\\r$\\nAbort=Cancel, Retry=Retry, Ignore=Open install guide." IDRETRY dep_check_' + dep_label + ' IDIGNORE open_docker_' + dep_label)
+                lines.append("      Abort")
+                lines.append(f"open_docker_{dep_label}:")
+                lines.append('      ExecShell "open" "https://docs.docker.com/desktop/setup/install/windows-install/"')
+                lines.append(f"      Goto dep_check_{dep_label}")
+                lines.append("    ${Else}")
+                lines.append("      IfSilent silent_docker_engine interactive_docker_engine")
+                lines.append("silent_docker_engine:")
+                lines.append('      FileOpen $0 "$InstallerLogPath" a')
+                lines.append('      FileWrite $0 "Docker Engine is not reachable.$\\r$\\n"')
+                lines.append("      FileClose $0")
+                lines.append("      SetErrorLevel 21")
+                lines.append("      Abort")
+                lines.append("interactive_docker_engine:")
+                lines.append('      MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Docker Desktop was found, but Docker Engine is not reachable right now.$\\r$\\nPlease open Docker Desktop, wait until it finishes starting, then retry." IDRETRY dep_check_' + dep_label)
+                lines.append("      Abort")
+                lines.append("    ${EndIf}")
+                lines.append("  ${EndIf}")
+                lines.append("")
+                lines.append("  ; Check Visual C++ runtime only for the selected service component")
+                lines.append("  Call IsVCRedistInstalled")
+                lines.append('  ${If} $VCRedistInstalled != "1"')
+                lines.append("    IfSilent silent_vcredist_missing interactive_vcredist_missing")
+                lines.append("silent_vcredist_missing:")
+                if bundled_vcredist and bundled_vcredist.exists():
+                    lines.append("    Call ExtractBundledVCRedist")
+                    lines.append('    ExecWait \'"$PLUGINSDIR\\vcredist_x64.exe" /quiet /norestart\' $0')
+                    lines.append("    Call IsVCRedistInstalled")
+                    lines.append('    ${If} $VCRedistInstalled == "1"')
+                    lines.append(f"      Goto dep_check_{dep_label}_done")
+                    lines.append("    ${EndIf}")
+                lines.append('    FileOpen $0 "$InstallerLogPath" a')
+                lines.append('    FileWrite $0 "Visual C++ 2015-2022 x64 runtime is missing or installation failed.$\\r$\\n"')
+                lines.append("    FileClose $0")
+                lines.append("    SetErrorLevel 30")
+                lines.append("    Abort")
+                lines.append("interactive_vcredist_missing:")
+                if bundled_vcredist and bundled_vcredist.exists():
+                    lines.append("    Call ExtractBundledVCRedist")
+                    lines.append("    Call TryInstallVCRedist")
+                    lines.append("    Abort")
+                else:
+                    lines.append('    MessageBox MB_ABORTRETRYIGNORE|MB_ICONSTOP "Visual C++ 2015-2022 (x64) runtime is required.$\\r$\\nAbort=Cancel, Retry=Retry, Ignore=Open Microsoft download page." IDRETRY dep_check_' + dep_label + ' IDIGNORE open_vcredist_' + dep_label)
+                    lines.append("    Abort")
+                    lines.append(f"open_vcredist_{dep_label}:")
+                    lines.append('    ExecShell "open" "https://aka.ms/vs/17/release/vc_redist.x64.exe"')
+                    lines.append(f"    Goto dep_check_{dep_label}")
+                lines.append("  ${EndIf}")
+                lines.append(f"dep_check_{dep_label}_done:")
+                lines.append("")
                 lines.append("  ; Stop existing service and running processes before overwrite")
                 lines.append("  Call ExtractBundledStopScript")
                 lines.append("  Call StopExistingBuckyOS")
                 lines.append("  ; Check required ports only when installation actually starts")
+                lines.append(f"port_check_{dep_label}:")
                 lines.append("  Call CheckRequiredPorts")
                 lines.append('  ${If} $PortCheckCode != "0"')
-                lines.append('    MessageBox MB_OK|MB_ICONSTOP "Required port $PortCheckPort cannot be bound.$\\r$\\nPlease free ports 3180, 80, and 443 (or stop conflicting services) before installing."')
+                lines.append("    IfSilent silent_port_busy interactive_port_busy")
+                lines.append("silent_port_busy:")
+                lines.append('    FileOpen $0 "$InstallerLogPath" a')
+                lines.append('    FileWrite $0 "Required port $PortCheckPort is busy.$\\r$\\n"')
+                lines.append("    FileClose $0")
+                lines.append("    SetErrorLevel 40")
+                lines.append("    Abort")
+                lines.append("interactive_port_busy:")
+                lines.append('    MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Required port $PortCheckPort cannot be bound.$\\r$\\nPlease free ports 3180, 80, and 443 before installing." IDRETRY port_check_' + dep_label)
                 lines.append("    Abort")
                 lines.append("  ${EndIf}")
+            pre_hook = _windows_payload_hook(comp_payload, "preinstall")
+            if pre_hook is not None:
+                _append_windows_hook_call(
+                    lines,
+                    comp_key=comp.key,
+                    var_name=var_name,
+                    hook_rel=pre_hook.relative_to(comp_payload).as_posix().replace("/", "\\"),
+                    step="preinstall",
+                )
             lines.append(f'  SetOutPath "${var_name}"')
             lines.append(f'  File /r "{comp_payload}\\*.*"')
         
@@ -966,20 +1167,19 @@ def generate_nsis_script(
             lines.append("  ; Allow installed service executables through Windows Firewall before first launch")
             lines.append(f'  nsExec::ExecToLog \'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${var_name}\\scripts\\ensure_firewall_rules.ps1"\'')
             lines.append("")
-            lines.append("  ; Create node_daemon keepalive scheduled task (every 1 minute) via hidden VBS wrapper")
-            lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
-            lines.append(
-                f'  nsExec::ExecToLog \'schtasks /Create /TN "BuckyOSNodeDaemonKeepAlive" /SC MINUTE /MO 1 /F /TR "wscript.exe //B //NoLogo $\\"${var_name}\\scripts\\node_daemon_loader.vbs$\\" $\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\""\'' 
-            )
-            lines.append('  nsExec::ExecToLog \'schtasks /Run /TN "BuckyOSNodeDaemonKeepAlive"\'')
-            lines.append("")
-            lines.append("  ; Register current-user startup via the same hidden wrapper")
-            lines.append(
-                f'  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon" \'wscript.exe //B //NoLogo $\\"${var_name}\\scripts\\node_daemon_loader.vbs$\\" $\\"${var_name}\\bin\\node-daemon\\node_daemon.exe$\\"\''
-            )
-            lines.append("")
             lines.append(f'  ; Save install directory to registry')
             lines.append(f'  WriteRegStr HKCU "Software\\BuckyOS" "BuckyOSUserDir" "${var_name}"')
+        post_hook = _windows_payload_hook(comp_payload, "postinstall")
+        if post_hook is not None:
+            _append_windows_hook_call(
+                lines,
+                comp_key=comp.key,
+                var_name=var_name,
+                hook_rel=post_hook.relative_to(comp_payload).as_posix().replace("/", "\\"),
+                step="postinstall",
+            )
+            if comp.key == "buckycli":
+                lines.append('  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000')
         
         # Save each component's install directory to registry for uninstall
         lines.append(f'  WriteRegStr HKCU "Software\\BuckyOS" "InstDir_{comp.key}" "${var_name}"')
@@ -1026,24 +1226,12 @@ def generate_nsis_script(
     # Add 64-bit registry view for uninstaller
     if nsis_arch == "x64":
         lines.append('  SetRegView 64')
+    lines.append('  StrCpy $InstallerLogPath "$TEMP\\buckyos-windows-${PRODUCT_ARCH}-${PRODUCT_VERSION}-uninstall.log"')
     
-    lines.append('  ; Stop old service (for backward compatibility) and current-user daemon')
-    lines.append('  StrCpy $ExistingBuckyRoot ""')
-    lines.append('  ReadRegStr $ExistingBuckyRoot HKCU "Environment" "BUCKYOS_ROOT"')
-    lines.append('  ${If} $ExistingBuckyRoot == ""')
-    lines.append('    ReadRegStr $ExistingBuckyRoot HKCU "Software\\BuckyOS" "InstallDir"')
-    lines.append('  ${EndIf}')
+    lines.append('  ; Stop old Windows service for backward compatibility')
     lines.append('  nsExec::ExecToLog \'sc stop buckyos\'')
     lines.append("  Sleep 3000")
     lines.append('  nsExec::ExecToLog \'sc delete buckyos\'')
-    lines.append('  nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
-    lines.append('  DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
-    lines.append('  ${If} $ExistingBuckyRoot != ""')
-    lines.append('    Push $ExistingBuckyRoot')
-    lines.append('    Call un.RunStopScript')
-    lines.append('  ${Else}')
-    lines.append('    nsExec::ExecToLog \'taskkill /F /IM node_daemon.exe\'')
-    lines.append('  ${EndIf}')
     lines.append("")
     
     # Remove shortcuts for bundle components
@@ -1059,26 +1247,34 @@ def generate_nsis_script(
     lines.append('  ; Read install directories from registry and remove files')
     for comp in components:
         var_name = f"InstDir_{_sanitize_id(comp.key).replace('-', '_')}"
-        lines.append(f'  ReadRegStr $0 HKCU "Software\\BuckyOS" "InstDir_{comp.key}"')
-        lines.append(f'  ${{If}} $0 != ""')
+        comp_payload = payload_dir / comp.key
+        lines.append(f'  ReadRegStr ${var_name} HKCU "Software\\BuckyOS" "InstDir_{comp.key}"')
+        lines.append(f'  ${{If}} ${var_name} != ""')
+        preuninstall_hook = _windows_payload_hook(comp_payload, "preuninstall")
+        if preuninstall_hook is not None:
+            _append_windows_hook_call(
+                lines,
+                comp_key=comp.key,
+                var_name=var_name,
+                hook_rel=preuninstall_hook.relative_to(comp_payload).as_posix().replace("/", "\\"),
+                step="preuninstall",
+            )
         if comp.system_service:
             lines.append(f'    ; Stop running processes and old service for service component')
             lines.append(f'    nsExec::ExecToLog \'sc stop buckyos\'')
             lines.append("    Sleep 3000")
             lines.append(f'    nsExec::ExecToLog \'sc delete buckyos\'')
-            lines.append(f'    nsExec::ExecToLog \'schtasks /Delete /TN "BuckyOSNodeDaemonKeepAlive" /F\'')
-            lines.append(f'    DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "BuckyOSDaemon"')
-            lines.append(f'    Push $0')
+            lines.append(f'    Push ${var_name}')
             lines.append(f'    Call un.RunStopScript')
             lines.append(f'    ; Run cleanup script for service component')
-            lines.append(f'    nsExec::ExecToLog \'powershell.exe -ExecutionPolicy Bypass -File "$0\\scripts\\uninstall_cleanup.ps1"\'')
-            lines.append(f'    RMDir /r "$0\\.buckyos_installer_defaults"')
-            lines.append(f'    RMDir /r "$0\\scripts"')
+            lines.append(f'    nsExec::ExecToLog \'powershell.exe -ExecutionPolicy Bypass -File "${var_name}\\scripts\\uninstall_cleanup.ps1"\'')
+            lines.append(f'    RMDir /r "${var_name}\\.buckyos_installer_defaults"')
+            lines.append(f'    RMDir /r "${var_name}\\scripts"')
             lines.append('    MessageBox MB_YESNO|MB_ICONQUESTION "Do you want to delete your data and identity?" IDYES +2')
             lines.append("    Goto +2")
-            lines.append(f'    RMDir /r "$0"')
+            lines.append(f'    RMDir /r "${var_name}"')
         else:
-            lines.append(f'    RMDir /r "$0"')
+            lines.append(f'    RMDir /r "${var_name}"')
         lines.append(f'  ${{EndIf}}')
         lines.append("")
     
@@ -1133,8 +1329,8 @@ def build_win_installer(
     payload_dir = work_dir / "payload"
     nsi_file = work_dir / "installer.nsi"
     
-    # Keep scripts in sync with bucky_project.yaml before building
-    if not dry_run and not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS")):
+    # Keep scripts in sync with bucky_project.yaml before building.
+    if not dry_run:
         sync_win_scripts(project_yaml_path, WIN_PKG_PROJECT_DIR / "scripts", manifest_path=manifest_path)
     
     if work_dir.exists() and not dry_run:
@@ -1158,6 +1354,7 @@ def build_win_installer(
             print(f"\n[dry-run] Component: {comp.name} ({comp.key})")
             print(f"  Type: {comp.kind}")
             print(f"  Optional: {comp.optional}")
+            print(f"  Default Selected: {comp.default_selected}")
             print(f"  System Service: {comp.system_service}")
             print(f"  Source: {src}")
             print(f"  Target: {comp.default_target}")
@@ -1175,22 +1372,22 @@ def build_win_installer(
         
         comp_payload = payload_dir / comp.key
         comp_payload.mkdir(parents=True, exist_ok=True)
+        _stage_windows_hooks(comp.key, comp_payload)
         
-        if comp.key == "buckyos":
-            # Special staging for buckyos with data_paths semantics
+        if comp.kind == "app":
             layout = resolve_app_layout(
-                app_key="buckyos",
+                app_key=comp.key,
                 project_yaml_path=project_yaml_path,
                 manifest_path=manifest_path,
-                target_override="C:\\opt\\buckyos",
+                target_override=comp.default_target,
             )
             _stage_buckyos_app_root(src_root=src, dst_root=comp_payload, layout=layout)
             
-            # Copy scripts to payload
-            scripts_src = WIN_PKG_PROJECT_DIR / "scripts"
-            scripts_dst = comp_payload / "scripts"
-            if scripts_src.exists():
-                _copytree_filtered(scripts_src, scripts_dst)
+            if comp.system_service:
+                scripts_src = WIN_PKG_PROJECT_DIR / "scripts"
+                scripts_dst = comp_payload / "scripts"
+                if scripts_src.exists():
+                    _copy_windows_service_scripts(scripts_src, scripts_dst)
         else:
             if src.is_dir():
                 _copy_dir_contents(src, comp_payload)
@@ -1199,8 +1396,14 @@ def build_win_installer(
 
     if dry_run:
         print(f"\n[dry-run] Would generate NSIS script: {nsi_file}")
-        print(f"[dry-run] Would compile installer to: {out_dir / f'buckyos-win-{architecture}-{version}.exe'}")
-        return out_dir / f"buckyos-win-{architecture}-{version}.exe"
+        out_name = common.package_filename(
+            platform_key="windows",
+            architecture=architecture,
+            version=version,
+            package_format="exe",
+        )
+        print(f"[dry-run] Would compile installer to: {out_dir / out_name}")
+        return out_dir / out_name
     
     # Generate NSIS script
     license_file = WIN_PKG_PROJECT_DIR / "license.txt"
@@ -1256,8 +1459,14 @@ def build_win_installer(
         raise RuntimeError(f"NSIS compilation failed with code {rc}")
     
     # Move output to target directory
-    built_exe = work_dir / f"buckyos-win-{architecture}-{version}.exe"
-    out_exe = out_dir / f"buckyos-win-{architecture}-{version}.exe"
+    out_name = common.package_filename(
+        platform_key="windows",
+        architecture=architecture,
+        version=version,
+        package_format="exe",
+    )
+    built_exe = work_dir / out_name
+    out_exe = out_dir / out_name
     
     if built_exe.exists():
         shutil.move(str(built_exe), str(out_exe))
@@ -1344,7 +1553,6 @@ def verify_pkg(
                     "seed_defaults.ps1",
                     "ensure_firewall_rules.ps1",
                     "uninstall_cleanup.ps1",
-                    "node_daemon_loader.ps1",
                     "node_daemon_loader.vbs",
                 ):
                     if script.lower() not in extracted_basenames:
@@ -1595,11 +1803,6 @@ def main(argv: List[str]) -> int:
         default=str(Path.cwd() / "publish"),
         help='Output directory for the final .exe (default: "./publish")'
     )
-    p_build.add_argument(
-        "--no-sync-scripts",
-        action="store_true",
-        help="Do not auto-sync win_pkg/scripts from bucky_project.yaml before build"
-    )
     p_build.add_argument("--dry-run", action="store_true", help="Preview build without executing NSIS")
     
     # verify command
@@ -1619,8 +1822,6 @@ def main(argv: List[str]) -> int:
         arch = args.architecture
         if arch == "x86_64":
             arch = "amd64"
-        if args.no_sync_scripts:
-            os.environ["BUCKYOS_PKG_NO_SYNC_SCRIPTS"] = "1"
         
         out_exe = build_win_installer(
             architecture=arch,

@@ -148,5 +148,16 @@
     "error_copy_failed": "複製失敗，請手動複製。",
     "wallet_device_owner": "裝置將屬於: {{user_name}} {{public_key}}",
     "dns_config_txt_tips": "請在啟用前將以下 3 條 TXT 記錄新增到您的網域",
-    "language_label": "語言"
+    "language_label": "語言",
+    "region_probe_title": "網路區域",
+    "region_preference_label": "區域",
+    "region_auto_option": "自動（建議）",
+    "region_probe_detecting": "正在探測距離較近的區域…",
+    "region_probe_selected": "目前探測區域：{{region}}",
+    "region_manual_status": "目前使用手動選擇的區域：{{region}}",
+    "region_probe_unavailable": "區域探測暫時無法使用，註冊將繼續並由伺服器自動選擇。",
+    "region_probe_low_confidence": "信心度較低。",
+    "region_probe_cached": "已使用快取結果。",
+    "region_server_fallback": "由伺服器自動選擇",
+    "retry_button": "重試"
 }

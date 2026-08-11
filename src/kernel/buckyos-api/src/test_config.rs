@@ -1,26 +1,30 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use buckyos_kit::buckyos_get_unix_timestamp;
-use cyfs_sn::{SnDB, SqliteSnDB};
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use jsonwebtoken::{DecodingKey, EncodingKey};
+use name_client::IdentityRoots;
 use name_lib::{
-    generate_ed25519_key_pair, get_x_from_jwk, DIDDocumentTrait, DeviceConfig, DeviceInfo,
-    DeviceMiniConfig, DeviceNodeType, EncodedDocument, NodeIdentityConfig, OODDescriptionString,
-    OwnerConfig, ZoneBootConfig, ZoneConfig, DID,
+    generate_ed25519_key_pair, get_x_from_jwk, DIDDocumentTrait, DeviceDocument, DeviceInfo,
+    DeviceMiniDocument, DeviceNodeType, EncodedDocument, OODDescriptionString, OwnerDocument,
+    ZoneBootDocument, ZoneDocument, DID,
 };
 use package_lib::PackageId;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
-    AppDoc, LocalAppInstanceConfig, ServiceInstallConfig, ServiceInstanceState,
-    MSG_CENTER_SERVICE_UNIQUE_ID, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID,
-    SMB_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    build_device_did, device_identity_paths_for_roots, new_device_config_by_jwk_with_did,
+    save_local_device_identity_for_roots, AppDoc, LocalAppInstanceConfig, LocalNodeIdentityConfig,
+    ServiceInstanceState, ServiceSpecConfig, MSG_CENTER_SERVICE_UNIQUE_ID,
+    OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
+    VERIFY_HUB_UNIQUE_ID, WORKFLOW_SERVICE_UNIQUE_ID,
 };
 
 // ============================================================================
@@ -30,6 +34,103 @@ use crate::{
 const BASE_TIME: u64 = 1743478939; // 2025-04-01
 const DEFAULT_EXP_YEARS: u64 = 10;
 const ADMIN_PASSWORD_HASH: &str = "o8XyToejrbCYou84h/VkF4Tht0BeQQbuX3XKG+8+GQ4="; // bucky2025
+
+struct DevSnDb {
+    path: PathBuf,
+}
+
+impl DevSnDb {
+    async fn new_by_path(path: &str) -> Result<Self, String> {
+        Ok(Self {
+            path: PathBuf::from(path),
+        })
+    }
+
+    fn connect(&self) -> Result<Connection, String> {
+        Connection::open(&self.path)
+            .map_err(|e| format!("open SN database {} failed: {}", self.path.display(), e))
+    }
+
+    async fn initialize_database(&self) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS activation_codes (code TEXT PRIMARY KEY, used INTEGER);
+             CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, state TEXT, public_key TEXT, activation_code TEXT, zone_config TEXT, self_cert boolean, user_domain TEXT, sn_ips TEXT);
+             CREATE TABLE IF NOT EXISTS user_auth_v2 (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, password_algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_login_at INTEGER NULL);
+             CREATE TABLE IF NOT EXISTS devices (owner TEXT, device_name TEXT, did TEXT PRIMARY KEY, ip TEXT, description TEXT, mini_config_jwt TEXT, created_at INTEGER, updated_at INTEGER);
+             CREATE TABLE IF NOT EXISTS user_dns_records (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT, domain TEXT, record_type TEXT, record TEXT, ttl INTEGER, created_at INTEGER, updated_at INTEGER);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_user_domain_record_type ON user_dns_records (owner, domain, record_type);
+             CREATE INDEX IF NOT EXISTS user_dns_records_domain_index ON user_dns_records (domain, id);
+             CREATE TABLE IF NOT EXISTS user_domain_history (domain TEXT PRIMARY KEY, owner TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS did_documents (id INTEGER PRIMARY KEY AUTOINCREMENT, obj_id TEXT, owner_user TEXT, obj_name TEXT, did_document TEXT, doc_type TEXT, update_time INTEGER);
+             CREATE INDEX IF NOT EXISTS idx_did_documents_owner_obj ON did_documents (owner_user, obj_name, update_time);",
+        )
+        .map_err(|e| format!("initialize SN database failed: {}", e))?;
+        Ok(())
+    }
+
+    async fn insert_activation_code(&self, code: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO activation_codes (code, used) VALUES (?1, 0)",
+            params![code],
+        )
+        .map_err(|e| format!("insert activation code failed: {}", e))?;
+        Ok(())
+    }
+
+    async fn register_user_directly(
+        &self,
+        username: &str,
+        public_key: &str,
+        zone_config: &str,
+        user_domain: Option<String>,
+    ) -> Result<bool, String> {
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("begin SN user transaction failed: {}", e))?;
+        tx.execute(
+            "INSERT INTO users (username, state, public_key, activation_code, zone_config, user_domain, self_cert, sn_ips) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                username,
+                "active",
+                public_key,
+                "DIRECT",
+                zone_config,
+                user_domain,
+                true,
+                Option::<String>::None,
+            ],
+        )
+        .map_err(|e| format!("insert SN user failed: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("commit SN user transaction failed: {}", e))?;
+        Ok(true)
+    }
+
+    async fn register_device(
+        &self,
+        username: &str,
+        device_name: &str,
+        did: &str,
+        mini_config_jwt: &str,
+        ip: &str,
+        description: &str,
+    ) -> Result<(), String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("get current timestamp failed: {}", e))?
+            .as_secs() as i64;
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO devices (owner, device_name, did, ip, description, mini_config_jwt, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![username, device_name, did, ip, description, mini_config_jwt, now, now],
+        )
+        .map_err(|e| format!("insert SN device failed: {}", e))?;
+        Ok(())
+    }
+}
 
 // ============================================================================
 // Key Data Management
@@ -309,6 +410,13 @@ fn get_jwk(x: &str) -> jsonwebtoken::jwk::Jwk {
     .unwrap()
 }
 
+fn test_identity_roots(root_dir: &Path) -> IdentityRoots {
+    IdentityRoots::new(
+        root_dir.join("local").join("identity"),
+        root_dir.join("security"),
+    )
+}
+
 pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     let mut docs = HashMap::new();
     let verify_hub_doc = crate::generate_verify_hub_service_doc();
@@ -334,6 +442,10 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     let opendan_doc = crate::generate_opendan_service_doc();
     let opendan_json = serde_json::to_string(&opendan_doc).unwrap();
     let opendan_did = PackageId::unique_name_to_did(OPENDAN_SERVICE_UNIQUE_ID);
+
+    let workflow_doc = crate::generate_workflow_service_doc();
+    let workflow_json = serde_json::to_string(&workflow_doc).unwrap();
+    let workflow_did = PackageId::unique_name_to_did(WORKFLOW_SERVICE_UNIQUE_ID);
     docs.insert(
         verify_hub_did,
         EncodedDocument::from_str(verify_hub_json).unwrap(),
@@ -351,6 +463,10 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     docs.insert(
         opendan_did,
         EncodedDocument::from_str(opendan_json).unwrap(),
+    );
+    docs.insert(
+        workflow_did,
+        EncodedDocument::from_str(workflow_json).unwrap(),
     );
     docs
 }
@@ -438,6 +554,15 @@ pub struct UserEnvScope<'a> {
 }
 
 impl<'a> UserEnvScope<'a> {
+    fn owner_document(&self) -> OwnerDocument {
+        OwnerDocument::new(
+            self.did.clone(),
+            self.username.to_string(),
+            self.username.to_string(),
+            get_jwk(&self.key_pair.public_key_x),
+        )
+    }
+
     /// Create Owner configuration
     pub fn create_owner_config(&self) {
         write_file(
@@ -445,13 +570,7 @@ impl<'a> UserEnvScope<'a> {
             self.key_pair.private_key_pem.as_str(),
         );
 
-        let owner_jwk = get_jwk(&self.key_pair.public_key_x);
-        let owner_config = OwnerConfig::new(
-            self.did.clone(),
-            self.username.to_string(),
-            self.username.to_string(),
-            owner_jwk,
-        );
+        let owner_config = self.owner_document();
 
         write_json(&self.user_dir.join("user_config.json"), &owner_config);
         println!("Created owner config for {}", self.username);
@@ -484,7 +603,7 @@ impl<'a> UserEnvScope<'a> {
             }
         }
 
-        let mut zone_boot = ZoneBootConfig {
+        let mut zone_boot = ZoneBootDocument {
             id: None,
             oods: vec![ood.clone()],
             sn: real_sn_host,
@@ -499,7 +618,7 @@ impl<'a> UserEnvScope<'a> {
             &zone_boot,
         );
         zone_boot.id = Some(self.zone_did.clone());
-        let mut zone_config = ZoneConfig::new(
+        let mut zone_config = ZoneDocument::new(
             self.zone_did.clone(),
             self.did.clone(),
             get_jwk(&self.key_pair.public_key_x),
@@ -508,7 +627,7 @@ impl<'a> UserEnvScope<'a> {
         let owner_key = get_encoding_key(self.key_pair.private_key_pem.as_str());
         let jwt = zone_boot.encode(Some(&owner_key)).unwrap();
         let jwt_str = jwt.to_string();
-        zone_config.init_by_boot_config(&zone_boot, &jwt_str);
+        zone_config.init_by_boot_document(&zone_boot, &jwt_str);
         write_json(&self.user_dir.join("zone_config.json"), &zone_config);
         let pkx = get_x_from_jwk(&get_jwk(&self.key_pair.public_key_x)).unwrap();
         println!(
@@ -530,7 +649,7 @@ impl<'a> UserEnvScope<'a> {
             Some(rtcp_port as u32)
         };
         //ood1 mini config jwt
-        let mini_config = DeviceMiniConfig {
+        let mini_config = DeviceMiniDocument {
             name: ood.name.clone(),
             x: device_key_pair.public_key_x.clone(),
             rtcp_port: real_rtcp_port,
@@ -547,14 +666,15 @@ impl<'a> UserEnvScope<'a> {
 
         // 2. Create device configuration and JWT
         let device_jwk = get_jwk(&device_key_pair.public_key_x);
-        let mut device_config = DeviceConfig::new_by_jwk(ood.name.as_str(), device_jwk.clone());
+        let device_did = build_device_did(ood.name.as_str(), &self.zone_did).unwrap();
+        let mut device_config =
+            new_device_config_by_jwk_with_did(ood.name.as_str(), device_jwk.clone(), &device_did)
+                .unwrap();
         device_config.support_container = true;
         device_config.net_id = ood.net_id.clone();
         device_config.owner = self.did.clone();
         device_config.zone_did = Some(self.zone_did.clone());
         device_config.ddns_sn_url = ddns_sn_url;
-        let node_dir = self.user_dir.join(ood.name.as_str());
-        write_json(&node_dir.join("node_device_config.json"), &device_config);
 
         println!(
             "{} device config: {}",
@@ -583,18 +703,16 @@ impl<'a> UserEnvScope<'a> {
         let full_device_name = format!("{}.{}", self.username, device_name);
         let device_key_pair = TestKeys::get_key_pair_by_id(&full_device_name).unwrap();
         let node_dir = self.user_dir.join(device_name);
-        // 1. Write device private key
-        write_file(
-            &node_dir.join("node_private_key.pem"),
-            device_key_pair.private_key_pem.as_str(),
-        );
 
-        // 2. Create device configuration and JWT
         let device_jwk = get_jwk(&device_key_pair.public_key_x);
-        //load device_config from file
-        let device_config_path = node_dir.join("node_device_config.json");
-        let device_config: DeviceConfig =
-            serde_json::from_str(&fs::read_to_string(&device_config_path).unwrap()).unwrap();
+        let device_did = build_device_did(device_name, &self.zone_did).unwrap();
+        let mut device_config =
+            new_device_config_by_jwk_with_did(device_name, device_jwk.clone(), &device_did)
+                .unwrap();
+        device_config.support_container = true;
+        device_config.net_id = net_id.clone();
+        device_config.owner = self.did.clone();
+        device_config.zone_did = Some(self.zone_did.clone());
 
         println!(
             "input net_id: {:?},device_config.net_id: {:?}",
@@ -606,7 +724,7 @@ impl<'a> UserEnvScope<'a> {
         println!("{} device jwt: {}", device_name, device_jwt.to_string());
 
         // Create device_mini_config_jwt
-        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_config = DeviceMiniDocument::new_by_device_document(&device_config);
         let device_mini_jwt = device_mini_config.to_jwt(&owner_key).unwrap();
         println!(
             "{} device mini config jwt: {}",
@@ -618,29 +736,34 @@ impl<'a> UserEnvScope<'a> {
             device_mini_jwt.to_string().as_str(),
         );
 
-        // 3. Create node identity configuration
-        let identity_config = NodeIdentityConfig {
-            zone_did: self.zone_did.clone(),
-            owner_public_key: get_jwk(&self.key_pair.public_key_x),
-            owner_did: self.did.clone(),
-            device_doc_jwt: device_jwt.to_string(),
-            zone_iat: self.builder.now as u32,
-            device_mini_doc_jwt: device_mini_jwt.to_string(),
-        };
-        write_json(&node_dir.join("node_identity.json"), &identity_config);
+        let identity_config = LocalNodeIdentityConfig::new(
+            self.zone_did.clone(),
+            self.did.clone(),
+            get_jwk(&self.key_pair.public_key_x),
+            device_name.to_string(),
+            device_did,
+            self.builder.now as u32,
+        );
+        let roots = test_identity_roots(&node_dir);
+        save_local_device_identity_for_roots(
+            &node_dir,
+            &roots,
+            &identity_config,
+            &device_config,
+            device_jwt.to_string().as_str(),
+            device_mini_jwt.to_string().as_str(),
+            device_key_pair.private_key_pem.as_str(),
+        )
+        .unwrap();
 
-        // 4. Create startup configuration (only for OOD nodes)
         if device_name.starts_with("ood") {
             let start_config = json!({
                 "admin_password_hash": ADMIN_PASSWORD_HASH,
-                "device_private_key": device_key_pair.private_key_pem,
-                "device_public_key": device_jwk,
                 "ood_jwt": device_jwt.to_string(),
                 "friend_passcode": "sdfsdfsdf",
                 "gateway_type": "PortForward",
                 "guest_access": true,
-                "private_key": self.key_pair.private_key_pem,
-                "public_key": get_jwk(&self.key_pair.public_key_x),
+                "owner_document": self.owner_document(),
                 "user_name": self.username,
                 "zone_name": self.zone_did.to_host_name(),
                 "BUCKYOS_ROOT": "/opt/buckyos"
@@ -661,7 +784,7 @@ pub async fn create_formula_sn_config() {
     let sn_dir = PathBuf::from("/opt/sn.buckyos.ai/");
     let owner_keys = TestKeys::get_key_pair_by_id("buckyos").unwrap();
     let device_keys = TestKeys::get_key_pair_by_id("sn.buckyos").unwrap();
-    let device_mini_config = DeviceMiniConfig {
+    let device_mini_config = DeviceMiniDocument {
         name: "sn".to_string(),
         x: device_keys.public_key_x.clone(),
         rtcp_port: None,
@@ -671,7 +794,7 @@ pub async fn create_formula_sn_config() {
     let device_mini_jwt = device_mini_config
         .to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str()))
         .unwrap();
-    let mut device_config = DeviceConfig::new_by_mini_config(
+    let mut device_config = DeviceDocument::new_by_mini_document(
         &device_mini_jwt,
         &device_mini_config,
         DID::new("web", "sn.buckyos.ai"),
@@ -685,8 +808,8 @@ pub async fn create_formula_sn_config() {
     );
     println!("- Created sn device config & private key.");
 
-    // Create ZoneBootConfig
-    let zone_boot = ZoneBootConfig {
+    // Create ZoneBootDocument
+    let zone_boot = ZoneBootDocument {
         id: None,
         oods: vec!["sn".parse().unwrap()],
         sn: None,
@@ -714,7 +837,7 @@ pub async fn create_formula_sn_config() {
 
     // Create initial database
     let sn_db_path = sn_dir.join("sn_db.sqlite3");
-    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy())
+    let db = DevSnDb::new_by_path(&sn_db_path.to_string_lossy())
         .await
         .unwrap();
     db.initialize_database().await.unwrap();
@@ -738,7 +861,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_ho
     );
 
     let owner_jwk = get_jwk(owner_keys.public_key_x.as_str());
-    let owner_config = OwnerConfig::new(
+    let owner_config = OwnerDocument::new(
         DID::new("bns", "sn"),
         "root".to_string(),
         "sn admin".to_string(),
@@ -756,7 +879,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_ho
     println!("- Created owner config for sn admin.");
 
     // Create device JWT
-    let device_mini_config = DeviceMiniConfig {
+    let device_mini_config = DeviceMiniDocument {
         name: "sn".to_string(),
         x: device_keys.public_key_x.clone(),
         rtcp_port: None,
@@ -767,7 +890,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_ho
         .to_jwt(&get_encoding_key(owner_keys.private_key_pem.as_str()))
         .unwrap();
 
-    let mut device_config = DeviceConfig::new_by_mini_config(
+    let mut device_config = DeviceDocument::new_by_mini_document(
         &device_mini_jwt,
         &device_mini_config,
         DID::new("web", "sn.devtests.org"),
@@ -781,8 +904,8 @@ pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_ho
     );
     println!("- Created sn device config & private key.");
 
-    // Create ZoneBootConfig
-    let zone_boot = ZoneBootConfig {
+    // Create ZoneBootDocument
+    let zone_boot = ZoneBootDocument {
         id: None,
         oods: vec!["sn".parse().unwrap()],
         sn: None,
@@ -814,7 +937,7 @@ pub async fn create_sn_config(builder: &DevEnvBuilder, sn_ip: IpAddr, sn_base_ho
 
     // Create initial database
     let sn_db_path = builder.root_dir().join("sn_server").join("sn_db.sqlite3");
-    let db = SqliteSnDB::new_by_path(&sn_db_path.to_string_lossy())
+    let db = DevSnDb::new_by_path(&sn_db_path.to_string_lossy())
         .await
         .unwrap();
     db.initialize_database().await.unwrap();
@@ -851,7 +974,7 @@ pub async fn register_user_to_sn(
         .root_dir()
         .join(user_zone_id)
         .join("zone_config.json");
-    let zone_config: ZoneConfig = serde_json::from_str(
+    let zone_config: ZoneDocument = serde_json::from_str(
         &fs::read_to_string(&zone_config_file)
             .map_err(|e| format!("Failed to read {:?}: {}", zone_config_file, e))?,
     )
@@ -873,7 +996,7 @@ pub async fn register_user_to_sn(
     )
     .map_err(|e| format!("Failed to parse {:?}: {}", zone_record_path, e))?;
 
-    let db = SqliteSnDB::new_by_path(&sn_db_path).await.unwrap();
+    let db = DevSnDb::new_by_path(&sn_db_path).await.unwrap();
     let public_key_json = json!({
         "kty": "OKP",
         "crv": "Ed25519",
@@ -927,21 +1050,24 @@ pub async fn register_device_to_sn(
         ));
     }
 
-    // Read node_identity.json to get device DID
-    let node_identity: NodeIdentityConfig = serde_json::from_str(
+    let node_identity: LocalNodeIdentityConfig = serde_json::from_str(
         &std::fs::read_to_string(&node_identity_path)
             .map_err(|e| format!("Failed to read node_identity.json: {}", e))?,
     )
     .map_err(|e| format!("Failed to parse node_identity.json: {}", e))?;
 
     let username = node_identity.owner_did.id;
+    let roots = test_identity_roots(&device_dir);
+    let identity_paths = device_identity_paths_for_roots(&roots, &node_identity.device_did)
+        .map_err(|e| format!("Failed to build device identity paths: {}", e))?;
 
-    // Extract device DID from device_doc_jwt
-    let device_doc_jwt = node_identity.device_doc_jwt.clone();
-    let device_mini_doc_jwt = node_identity.device_mini_doc_jwt.clone();
+    let device_doc_jwt = fs::read_to_string(identity_paths.device_doc_jwt.as_path())
+        .map_err(|e| format!("Failed to read device_doc.jwt: {}", e))?;
+    let device_mini_doc_jwt = fs::read_to_string(identity_paths.device_mini_doc_jwt.as_path())
+        .map_err(|e| format!("Failed to read device_mini_doc.jwt: {}", e))?;
     let encoded_doc = EncodedDocument::from_str(device_doc_jwt.clone())
         .map_err(|e| format!("Failed to create EncodedDocument: {}", e))?;
-    let device_doc = DeviceConfig::decode(
+    let device_doc = DeviceDocument::decode(
         &encoded_doc,
         Some(
             &DecodingKey::from_jwk(&node_identity.owner_public_key)
@@ -950,7 +1076,6 @@ pub async fn register_device_to_sn(
     )
     .map_err(|e| format!("Failed to decode device_doc_jwt: {}", e))?;
 
-    // Get device DID from device config id field
     let device_did = device_doc.id.clone();
 
     let ood_desc = {
@@ -960,7 +1085,7 @@ pub async fn register_device_to_sn(
             .join("zone_config.json");
         fs::read_to_string(&zone_config_path)
             .ok()
-            .and_then(|content| serde_json::from_str::<ZoneConfig>(&content).ok())
+            .and_then(|content| serde_json::from_str::<ZoneDocument>(&content).ok())
             .and_then(|zone_config| {
                 zone_config
                     .oods
@@ -1003,7 +1128,7 @@ pub async fn register_device_to_sn(
         .map_err(|e| format!("Failed to serialize device info: {}", e))?;
 
     // Open SN database
-    let db = SqliteSnDB::new_by_path(sn_db_path)
+    let db = DevSnDb::new_by_path(sn_db_path)
         .await
         .map_err(|e| format!("Failed to open SN database: {}", e))?;
 
@@ -1114,7 +1239,7 @@ pub async fn cmd_create_node_configs(
 
     // Parse zone configuration
     let zone_config_file = root_dir.join("zone_config.json");
-    let zone_config: ZoneConfig = serde_json::from_str(
+    let zone_config: ZoneDocument = serde_json::from_str(
         &fs::read_to_string(&zone_config_file)
             .map_err(|e| format!("Failed to read {:?}: {}", zone_config_file, e))?,
     )
@@ -1172,9 +1297,20 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
     let mut app_list = HashMap::new();
 
     let cyfs_gateway_doc_json = json!({
+        "did": "did:bns:cyfs-gateway.buckyos.ai",
+        "doc_type": "app",
         "name": "cyfs-gateway",
         "show_name": "CYFS Gateway",
-        "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png",
+        "presentation": {
+            "title": {},
+            "summary": {},
+            "description": {},
+            "icons": {},
+            "links": {
+                "app_icon_url": "https://cyfs-gateway.buckyos.ai/meta/icon.png"
+            },
+            "license": ""
+        },
         "selector_type": "single",
         "version": "0.5.1",
         "author": "buckyos.ai",
@@ -1203,7 +1339,7 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
         enable: true,
         app_doc: cyfs_gateway_doc,
         user_id: "devtest".to_string(),
-        install_config: ServiceInstallConfig::default(),
+        install_config: ServiceSpecConfig::default(),
     };
     app_list.insert("cyfs-gateway".to_string(), cyfs_gateway_cfg);
 
@@ -1305,13 +1441,13 @@ pub async fn create_test_env_configs() {
     )
     .await;
 
-    // 4. Initialize SN database (if SnDB is available)
+    // 4. Initialize SN database
     // let sn_db_path = builder.root_dir().join("sn_db.sqlite3");
     // if sn_db_path.exists() {
     //     std::fs::remove_file(&sn_db_path).unwrap();
     // }
     //
-    // let db = SnDB::new_by_path(sn_db_path.to_str().unwrap()).unwrap();
+    // let db = DevSnDb::new_by_path(sn_db_path.to_str().unwrap()).await.unwrap();
     // db.initialize_database();
     //
     // // Insert activation codes
@@ -1349,8 +1485,6 @@ pub async fn create_test_env_configs() {
 
 #[cfg(test)]
 mod tests {
-    use serde::de;
-
     use super::*;
 
     /// Create DevEnvBuilder uniformly for tests, root directory distinguished by test name
@@ -1375,7 +1509,7 @@ mod tests {
         let encoded_doc = EncodedDocument::from_str(device_jwt_str.to_string()).unwrap();
         let values = encoded_doc.clone().to_json_value().unwrap();
         println!("device_jwt values: {:?}", values);
-        let device_mini_doc = DeviceMiniConfig {
+        let device_mini_doc = DeviceMiniDocument {
             name: "ood1".to_owned(),
             x: "W570JbRPqH1kukmzcB_M7x5nwAoY-iU5Grr2RXcf7GI".to_owned(),
             rtcp_port: None,
@@ -1386,7 +1520,7 @@ mod tests {
             .to_jwt(&get_encoding_key(owner_key_pem))
             .unwrap();
         println!("device_mini_jwt: {}", device_mini_jwt);
-        let device_config = DeviceConfig::new_by_mini_config(
+        let device_config = DeviceDocument::new_by_mini_document(
             &device_mini_jwt,
             &device_mini_doc,
             DID::new("web", "buckyos.ai"),
@@ -1412,42 +1546,53 @@ mod tests {
         let zone_did = DID::new("web", "test.buckyos.io");
         // Create device configuration
         let device_jwk = get_jwk(&device_keys.public_key_x);
-        let mut device_config = DeviceConfig::new_by_jwk("ood1", device_jwk.clone());
+        let device_did = build_device_did("ood1", &zone_did).unwrap();
+        let mut device_config =
+            new_device_config_by_jwk_with_did("ood1", device_jwk.clone(), &device_did).unwrap();
         device_config.support_container = true;
         device_config.owner = DID::new("bns", "devtest");
         device_config.zone_did = Some(zone_did.clone());
 
         let owner_key = get_encoding_key(owner_keys.private_key_pem.as_str());
         let device_jwt = device_config.encode(Some(&owner_key)).unwrap();
-        let device_mini_doc = DeviceMiniConfig::new_by_device_config(&device_config);
+        let device_mini_doc = DeviceMiniDocument::new_by_device_document(&device_config);
         let device_mini_doc_jwt = device_mini_doc.to_jwt(&owner_key).unwrap();
         let ood: OODDescriptionString = "ood1".to_string().parse().unwrap();
         let zone_txt_record = scope.create_zone_boot_config_jwt(None, ood, 2980);
 
-        // Create node identity configuration
-        let node_identity_config = NodeIdentityConfig {
-            zone_did: zone_did.clone(),
-            owner_public_key: get_jwk(&owner_keys.public_key_x),
-            owner_did: DID::new("bns", "devtest"),
-            device_doc_jwt: device_jwt.to_string(),
-            device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
-            zone_iat: builder.now() as u32,
-        };
-        write_json(
-            &builder.root_dir().join("node_identity.json"),
-            &node_identity_config,
+        let node_identity_config = LocalNodeIdentityConfig::new(
+            zone_did.clone(),
+            DID::new("bns", "devtest"),
+            get_jwk(&owner_keys.public_key_x),
+            "ood1".to_string(),
+            device_did,
+            builder.now() as u32,
         );
+        let roots = test_identity_roots(builder.root_dir());
+        save_local_device_identity_for_roots(
+            builder.root_dir(),
+            &roots,
+            &node_identity_config,
+            &device_config,
+            device_jwt.to_string().as_str(),
+            device_mini_doc_jwt.to_string().as_str(),
+            device_keys.private_key_pem.as_str(),
+        )
+        .unwrap();
 
         // Create startup configuration
+        let owner_document = OwnerDocument::new(
+            DID::new("bns", "devtest"),
+            "devtest".to_string(),
+            "devtest".to_string(),
+            get_jwk(&owner_keys.public_key_x),
+        );
         let start_config = json!({
             "admin_password_hash": ADMIN_PASSWORD_HASH,
-            "device_private_key": device_keys.private_key_pem,
-            "device_public_key": device_jwk,
             "friend_passcode": "sdfsdfsdf",
             "gateway_type": "PortForward",
             "guest_access": true,
-            "private_key": owner_keys.private_key_pem,
-            "public_key": get_jwk(&owner_keys.public_key_x),
+            "owner_document": owner_document,
             "user_name": "devtest",
             "zone_name": zone_did.to_host_name(),
             "BUCKYOS_ROOT": "/opt/buckyos"
@@ -1470,7 +1615,7 @@ mod tests {
 
     #[test]
     fn test_zone_boot_config() {
-        // Use DevEnvBuilder + create_zone_boot_config_jwt to construct ZoneBootConfig JWT
+        // Use DevEnvBuilder + create_zone_boot_config_jwt to construct ZoneBootDocument JWT
         let builder = new_test_builder("zone_boot_config");
         let owner_keys = TestKeys::devtest_owner();
         let zone_did = DID::new("bns", "devtest");
@@ -1491,11 +1636,11 @@ mod tests {
         let encoded_doc =
             EncodedDocument::from_str(zone_txt_record.boot_config_jwt.clone()).unwrap();
         let zone_boot_config_decoded =
-            ZoneBootConfig::decode(&encoded_doc, Some(&public_key)).unwrap();
+            ZoneBootDocument::decode(&encoded_doc, Some(&public_key)).unwrap();
         println!("zone_boot_config_decoded: {:?}", zone_boot_config_decoded);
 
-        // Construct expected ZoneBootConfig, consistent with logic in create_zone_boot_config_jwt
-        let expected_zone_boot_config = ZoneBootConfig {
+        // Construct expected ZoneBootDocument, consistent with logic in create_zone_boot_config_jwt
+        let _expected_zone_boot_config = ZoneBootDocument {
             id: None,
             oods: vec![ood],
             sn: sn_host,
@@ -1528,7 +1673,7 @@ mod tests {
             "x": "5bUuyWLOKyCre9az_IhJVIuOw8bA0gyKjstcYGHbaPE"
         });
         let _ood_key_jwk: jsonwebtoken::jwk::Jwk = serde_json::from_value(ood_public_key).unwrap();
-        let mut device_config = DeviceConfig::new(
+        let mut device_config = DeviceDocument::new(
             "ood1",
             "5bUuyWLOKyCre9az_IhJVIuOw8bA0gyKjstcYGHbaPE".to_string(),
         );
@@ -1540,7 +1685,7 @@ mod tests {
         let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("ood encoded: {:?}", encoded);
 
-        let decoded = DeviceConfig::decode(&encoded, Some(&public_key)).unwrap();
+        let decoded = DeviceDocument::decode(&encoded, Some(&public_key)).unwrap();
         println!(
             "ood decoded: {:?}",
             serde_json::to_string(&decoded).unwrap()
@@ -1564,7 +1709,7 @@ mod tests {
         });
         let _gateway_key_jwk: jsonwebtoken::jwk::Jwk =
             serde_json::from_value(gateway_public_key).unwrap();
-        let device_config = DeviceConfig::new(
+        let device_config = DeviceDocument::new(
             "gateway",
             "M3-pAdhs0uFkWmmjdHLBfs494R91QmQeXzCEhEHP-tI".to_string(),
         );
@@ -1575,7 +1720,7 @@ mod tests {
         let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("gateway encoded: {:?}", encoded);
 
-        let decoded = DeviceConfig::decode(&encoded, Some(&public_key)).unwrap();
+        let decoded = DeviceDocument::decode(&encoded, Some(&public_key)).unwrap();
         println!(
             "gateway decoded: {:?}",
             serde_json::to_string(&decoded).unwrap()
@@ -1593,7 +1738,7 @@ mod tests {
         });
         let _server_key_jwk: jsonwebtoken::jwk::Jwk =
             serde_json::from_value(server_public_key).unwrap();
-        let mut device_config = DeviceConfig::new(
+        let mut device_config = DeviceDocument::new(
             "server1",
             "LBgzvFCD4VqQxTsO2LCZjs9FPVaQV2Dt0Q5W_lr4mr0".to_string(),
         );
@@ -1606,7 +1751,7 @@ mod tests {
         let encoded = device_config.encode(Some(&owner_private_key)).unwrap();
         println!("server encoded: {:?}", encoded);
 
-        let decoded = DeviceConfig::decode(&encoded, Some(&public_key)).unwrap();
+        let decoded = DeviceDocument::decode(&encoded, Some(&public_key)).unwrap();
         println!(
             "server decoded: {:?}",
             serde_json::to_string(&decoded).unwrap()
@@ -1625,7 +1770,7 @@ mod tests {
         let private_key = get_encoding_key(owner_keys.private_key_pem.as_str());
         let public_key = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
-        let mut owner_config = OwnerConfig::new(
+        let mut owner_config = OwnerDocument::new(
             DID::new("bns", "lzc"),
             "lzc".to_string(),
             "zhicong liu".to_string(),
@@ -1640,7 +1785,7 @@ mod tests {
         let encoded = owner_config.encode(Some(&private_key)).unwrap();
         println!("encoded: {:?}", encoded);
 
-        let decoded = OwnerConfig::decode(&encoded, Some(&public_key)).unwrap();
+        let decoded = OwnerDocument::decode(&encoded, Some(&public_key)).unwrap();
         println!(
             "decoded: {}",
             serde_json::to_string_pretty(&decoded).unwrap()

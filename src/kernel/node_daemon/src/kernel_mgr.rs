@@ -6,7 +6,7 @@ use buckyos_api::*;
 use buckyos_kit::*;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
-use name_lib::DeviceConfig;
+use name_lib::DeviceDocument;
 use ndn_lib::ObjId;
 use package_lib::*;
 use serde::{Deserialize, Serialize};
@@ -182,6 +182,10 @@ impl RunItemControl for KernelServiceRunItem {
         Ok(self.resolved_pkg_id())
     }
 
+    fn get_item_kind(&self) -> &'static str {
+        "kernel_service"
+    }
+
     async fn deploy(&self, params: Option<&Vec<String>>) -> Result<()> {
         //这个逻辑是不区分新装和升级的
         let pkg_id = self.resolved_pkg_id();
@@ -210,12 +214,12 @@ impl RunItemControl for KernelServiceRunItem {
             token_type: kRPC::RPCSessionTokenType::Normal,
             appid: Some(app_id.clone()),
             jti: Some(timestamp.to_string()),
-            session: None,
             sub: Some(device_doc.name.clone()),
             aud: None,
             exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
             iss: Some(device_doc.name.clone()),
             token: None,
+            sudo: false,
             extra: HashMap::new(),
         };
 
@@ -276,8 +280,8 @@ impl RunItemControl for KernelServiceRunItem {
 mod tests {
     use super::KernelServiceRunItem;
     use buckyos_api::{
-        AppDoc, AppType, KernelServiceInstanceConfig, KernelServiceSpec, ServiceInstallConfig,
-        ServiceInstanceState, ServiceState, SubPkgDesc,
+        AppDoc, AppType, KernelServiceInstanceConfig, KernelServiceSpec, ServiceInstanceState,
+        ServiceSpecConfig, ServiceState, SubPkgDesc,
     };
     use name_lib::DID;
     use ndn_lib::ObjId;
@@ -333,7 +337,7 @@ mod tests {
                     app_index: 0,
                     expected_instance_count: 1,
                     state: ServiceState::default(),
-                    install_config: ServiceInstallConfig::default(),
+                    spec_config: ServiceSpecConfig::default(),
                 },
             },
         );

@@ -1,11 +1,14 @@
 #!/usr/bin/env -S deno run --allow-env --allow-read --allow-net --allow-run
 
 // service_debug.tsx 是一个 app_service 的 debug 工具。
-// 目标是参考 node_daemon 的 app_loader，为手工调试 opendan/agent 服务
+// 目标是参考 node_daemon 的 app_loader，为手工调试 AppService
 // 补齐 node_daemon 正常启动时会注入的关键环境变量，然后以前台方式启动。
 //
-// 当前实现优先覆盖 opendan(agent) 场景：
-//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--detach]
+// 支持：
+//   - pkg_list.script => HostScript
+//   - pkg_list.agent  => Agent / OpenDan
+//
+//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]
 
 type JsonValue =
   | string
@@ -24,10 +27,13 @@ type StartupOptions = {
   port?: number
   detach: boolean
   systemConfigUrl: string
+  agentPackageRoot?: string
+  opendanArgs: string[]
 }
 
 const DEFAULT_BUCKYOS_ROOT = '/opt/buckyos'
 const DEFAULT_OPENDAN_SERVICE_PORT = 4060
+const DEFAULT_HOST_SCRIPT_SERVICE_PORT = 3000
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS = ['www', 'http', 'https', 'main']
 const VERIFY_HUB_TOKEN_EXPIRE_TIME = 60 * 10
 
@@ -86,11 +92,15 @@ function printUsage(): never {
   console.error(
     [
       'Usage:',
-      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--detach]',
+      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]',
       '',
       'Example:',
-      '  service_debug jarvis alice',
-      '  service_debug jarvis alice --port 14060',
+      '  service_debug buckyos_jarvis alice',
+      '  service_debug buckyos_systest devtest',
+      '  service_debug buckyos_jarvis alice --port 14060',
+      '  service_debug buckyos_jarvis alice --agent-package-root ./rootfs/bin/buckyos_jarvis',
+      '  service_debug buckyos_jarvis alice --worksession-test ./case.json',
+      '  service_debug buckyos_jarvis alice --worksession-task-test ./case.json',
     ].join('\n'),
   )
   Deno.exit(1)
@@ -111,6 +121,8 @@ function parseArgs(args: string[]): StartupOptions {
   let port: number | undefined
   let detach = false
   let systemConfigUrl = 'http://127.0.0.1:3200/kapi/system_config'
+  let agentPackageRoot: string | undefined
+  const opendanArgs: string[] = []
 
   for (let index = 2; index < args.length; index += 1) {
     const arg = args[index]
@@ -142,7 +154,69 @@ function parseArgs(args: string[]): StartupOptions {
         index += 1
         break
       }
+      case '--agent-package-root':
+      case '--agent-bin': {
+        const raw = args[index + 1]?.trim()
+        index += 1
+        if (!raw) {
+          throw new Error(`missing value for ${arg}`)
+        }
+        agentPackageRoot = raw
+        break
+      }
+      case '--worksession-test':
+      case '--work-session-test': {
+        const raw = args[index + 1]?.trim()
+        index += 1
+        if (!raw) {
+          throw new Error(`missing value for ${arg}`)
+        }
+        opendanArgs.push(arg, raw)
+        break
+      }
+      case '--worksession-task-test':
+      case '--work-session-task-test':
+      case 'worksession-task-test':
+      case 'work-session-task-test': {
+        const raw = args[index + 1]?.trim()
+        index += 1
+        if (!raw) {
+          throw new Error(`missing value for ${arg}`)
+        }
+        opendanArgs.push('--worksession-task-test', raw)
+        break
+      }
+      case '--': {
+        const next = args[index + 1]?.trim()
+        if (
+          next === 'worksession-task-test' ||
+          next === 'work-session-task-test' ||
+          next === '--worksession-task-test' ||
+          next === '--work-session-task-test'
+        ) {
+          const raw = args[index + 2]?.trim()
+          index += 2
+          if (!raw) {
+            throw new Error(`missing value for ${next}`)
+          }
+          opendanArgs.push('--worksession-task-test', raw)
+          break
+        }
+        throw new Error(`unknown argument after --: ${next || ''}`)
+      }
       default: {
+        if (arg.startsWith('--worksession-test=') || arg.startsWith('--work-session-test=')) {
+          opendanArgs.push(arg)
+          break
+        }
+        if (arg.startsWith('--worksession-task-test=') || arg.startsWith('--work-session-task-test=')) {
+          const value = arg.slice(arg.indexOf('=') + 1)
+          if (!value.trim()) {
+            throw new Error(`missing value for ${arg.slice(0, arg.indexOf('='))}`)
+          }
+          opendanArgs.push(`--worksession-task-test=${value}`)
+          break
+        }
         throw new Error(`unknown argument: ${arg}`)
       }
     }
@@ -155,6 +229,8 @@ function parseArgs(args: string[]): StartupOptions {
     port,
     detach,
     systemConfigUrl,
+    agentPackageRoot,
+    opendanArgs,
   }
 }
 
@@ -181,6 +257,32 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+async function findDeviceIdentityDir(buckyosRoot: string, deviceDid: string): Promise<string> {
+  const identityRoot = joinPath(buckyosRoot, 'local', 'identity')
+  for await (const entry of Deno.readDir(identityRoot)) {
+    if (!entry.isDirectory) {
+      continue
+    }
+    const dir = joinPath(identityRoot, entry.name)
+    const didJsonPath = joinPath(dir, 'did.json')
+    const didJson = await readJsonFile(didJsonPath).catch(() => null)
+    if (didJson && getNestedString(didJson, ['id']) === deviceDid) {
+      return dir
+    }
+  }
+  throw new Error(`device identity dir not found for ${deviceDid}`)
+}
+
+async function loadDevicePrivateKeyPem(buckyosRoot: string, identityDir: string): Promise<string> {
+  const dirName = identityDir.split('/').filter(Boolean).pop()
+  if (!dirName) {
+    throw new Error(`invalid identity dir: ${identityDir}`)
+  }
+  const securityDir = joinPath(buckyosRoot, 'security', dirName)
+  const privateKeyPath = joinPath(securityDir, 'authentication.private.pem')
+  return await Deno.readTextFile(privateKeyPath)
 }
 
 async function readJsonFile(path: string): Promise<JsonObject> {
@@ -347,7 +449,7 @@ function selectAgentServicePort(
       : {}
 
   const preferredNames = new Set<string>()
-  const configTips = getNestedObject(appDoc, ['install_config_tips', 'service_ports']) || {}
+  const configTips = getNestedObject(appDoc, ['service_config_tips', 'service_endpoints']) || {}
   for (const key of Object.keys(configTips)) {
     preferredNames.add(key)
   }
@@ -375,32 +477,6 @@ function selectAgentServicePort(
   return DEFAULT_OPENDAN_SERVICE_PORT
 }
 
-function buildFallbackDeviceInfo(deviceConfig: JsonObject, nodeId: string): JsonObject {
-  const name = getNestedString(deviceConfig, ['name']) || nodeId
-  const deviceId = getNestedString(deviceConfig, ['id']) || ''
-  const netId = getNestedString(deviceConfig, ['net_id']) || ''
-  const supportContainer = typeof deviceConfig.support_container === 'boolean'
-    ? deviceConfig.support_container
-    : true
-
-  return {
-    name,
-    id: deviceId,
-    net_id: netId,
-    support_container: supportContainer,
-    cpu_mhz: 0,
-    total_mem: 0,
-    mem_usage: 0,
-    gpu_tflops: 0,
-    gpu_total_mem: 0,
-    gpu_used_mem: 0,
-    ips: [],
-    all_ip: [],
-    state: 'Running',
-    device_doc: deviceConfig,
-  }
-}
-
 async function resolveOpendanBinary(buckyosRoot: string): Promise<string> {
   const scriptDir = new URL('.', import.meta.url).pathname
   const candidates = [
@@ -420,10 +496,21 @@ async function resolveOpendanBinary(buckyosRoot: string): Promise<string> {
 async function resolveAgentPackageRoot(
   buckyosRoot: string,
   appDoc: JsonObject,
+  overridePath?: string,
 ): Promise<{ pkgId: string; fullPath: string }> {
   const pkgId = getNestedString(appDoc, ['pkg_list', 'agent', 'pkg_id'])
   if (!pkgId) {
     throw new Error('app_doc.pkg_list.agent.pkg_id is missing, only agent/opendan is supported')
+  }
+
+  if (overridePath) {
+    if (await fileExists(overridePath)) {
+      return {
+        pkgId,
+        fullPath: overridePath,
+      }
+    }
+    throw new Error(`agent package root override not found: ${overridePath}`)
   }
 
   const pkgName = uniquePkgName(pkgId)
@@ -441,6 +528,32 @@ async function resolveAgentPackageRoot(
   }
 
   throw new Error(`agent package root not found for pkg ${pkgId}`)
+}
+
+async function resolveHostScriptPackageRoot(
+  buckyosRoot: string,
+  appDoc: JsonObject,
+): Promise<{ pkgId: string; fullPath: string }> {
+  const pkgId = getNestedString(appDoc, ['pkg_list', 'script', 'pkg_id'])
+  if (!pkgId) {
+    throw new Error('app_doc.pkg_list.script.pkg_id is missing')
+  }
+
+  const pkgName = uniquePkgName(pkgId)
+  const candidates = [
+    joinPath(buckyosRoot, 'bin', pkgName),
+  ]
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) {
+      return {
+        pkgId,
+        fullPath: candidate,
+      }
+    }
+  }
+
+  throw new Error(`host script package root not found for pkg ${pkgId}`)
 }
 
 async function sysConfigGet(client: KRPCClient, key: string): Promise<JsonObject | null> {
@@ -509,24 +622,58 @@ async function loadAppInstanceConfig(
   }
 }
 
+function hasHostScriptPkg(appDoc: JsonObject): boolean {
+  return Boolean(getNestedString(appDoc, ['pkg_list', 'script', 'pkg_id']))
+}
+
+function hasAgentPkg(appDoc: JsonObject): boolean {
+  return Boolean(getNestedString(appDoc, ['pkg_list', 'agent', 'pkg_id']))
+}
+
+type AgentLaunchContext = {
+  runtime: 'agent'
+  specKey: string
+  nodeId: string
+  buckyosRoot: string
+  opendanBinary: string
+  agentEnvRoot: string
+  agentPackageRoot: string
+  servicePort: number
+  opendanArgs: string[]
+  env: Record<string, string>
+}
+
+type HostScriptLaunchContext = {
+  runtime: 'host-script'
+  specKey: string
+  nodeId: string
+  buckyosRoot: string
+  packageRoot: string
+  scriptDataRoot: string
+  servicePort: number
+  env: Record<string, string>
+}
+
+type LaunchContext = AgentLaunchContext | HostScriptLaunchContext
+
 async function buildLaunchContext(options: StartupOptions) {
   const buckyosRoot = getBuckyosRoot()
   const etcDir = joinPath(buckyosRoot, 'etc')
   const nodeIdentityPath = joinPath(etcDir, 'node_identity.json')
-  const nodePrivateKeyPath = joinPath(etcDir, 'node_private_key.pem')
-  const nodeDeviceConfigPath = joinPath(etcDir, 'node_device_config.json')
 
   const nodeIdentity = await readJsonFile(nodeIdentityPath)
-  const nodeDeviceConfig = await readJsonFile(nodeDeviceConfigPath)
-  const nodePrivateKeyPem = await Deno.readTextFile(nodePrivateKeyPath)
-  const deviceConfig = decodeJwtPayload<JsonObject>(
-    getNestedString(nodeIdentity, ['device_doc_jwt']) || '',
-  )
+  const deviceDid = getNestedString(nodeIdentity, ['device_did']) || ''
+  if (!deviceDid) {
+    throw new Error('device_did not found in node_identity.json')
+  }
+  const identityDir = await findDeviceIdentityDir(buckyosRoot, deviceDid)
+  const deviceConfig = await readJsonFile(joinPath(identityDir, 'did.json'))
+  const nodePrivateKeyPem = await loadDevicePrivateKeyPem(buckyosRoot, identityDir)
   const deviceName =
-    getNestedString(nodeDeviceConfig, ['name']) ||
+    getNestedString(nodeIdentity, ['device_name']) ||
     getNestedString(deviceConfig, ['name'])
   if (!deviceName) {
-    throw new Error('device name not found in node_device_config.json/device_doc_jwt')
+    throw new Error('device name not found in node_identity.json/did.json')
   }
 
   const nodeId = options.nodeId || deviceName
@@ -548,10 +695,6 @@ async function buildLaunchContext(options: StartupOptions) {
   if (!zoneConfig) {
     throw new Error('failed to load boot/config from system_config')
   }
-  const runtimeDeviceInfo =
-    await sysConfigGet(systemConfigClient, `devices/${nodeId}/info`).catch(() => null) ||
-    buildFallbackDeviceInfo(deviceConfig, nodeId)
-
   const { key: specKey, value: spec } = await loadAppSpec(
     systemConfigClient,
     options.appId,
@@ -570,60 +713,99 @@ async function buildLaunchContext(options: StartupOptions) {
     throw new Error('app_doc missing from app spec')
   }
 
-  const agentPackage = await resolveAgentPackageRoot(buckyosRoot, appDoc)
-  const opendanBinary = await resolveOpendanBinary(buckyosRoot)
-  const agentEnvRoot = getAppDataDir(buckyosRoot, options.appId, options.ownerUserId)
-  await Deno.mkdir(agentEnvRoot, { recursive: true })
-  const servicePort = selectAgentServicePort(appDoc, appInstanceConfig, options.port)
-
   const env: Record<string, string> = {
     BUCKYOS_ROOT: buckyosRoot,
     BUCKYOS_ZONE_CONFIG: JSON.stringify(zoneConfig),
-    BUCKYOS_THIS_DEVICE_INFO: JSON.stringify(runtimeDeviceInfo),
     BUCKYOS_THIS_DEVICE: JSON.stringify(deviceConfig),
     BUCKYOS_HOST_GATEWAY: '127.0.0.1',
     app_instance_config: JSON.stringify(appInstanceConfig),
     app_media_info: JSON.stringify({
-      pkg_id: agentPackage.pkgId,
-      full_path: agentPackage.fullPath,
+      pkg_id: '',
+      full_path: '',
     }),
     [getSessionTokenEnvKey(appFullId, true)]: serviceToken,
-    OPENDAN_AGENT_ID: options.appId,
-    OPENDAN_AGENT_ENV: agentEnvRoot,
-    OPENDAN_AGENT_BIN: agentPackage.fullPath,
-    OPENDAN_SERVICE_PORT: `${servicePort}`,
   }
 
-  return {
-    specKey,
-    nodeId,
-    buckyosRoot,
-    opendanBinary,
-    agentEnvRoot,
-    agentPackageRoot: agentPackage.fullPath,
-    servicePort,
-    env,
+  if (hasHostScriptPkg(appDoc)) {
+    const scriptPackage = await resolveHostScriptPackageRoot(buckyosRoot, appDoc)
+    const scriptDataRoot = joinPath(getAppDataDir(buckyosRoot, options.appId, options.ownerUserId), '.script_data')
+    await Deno.mkdir(scriptDataRoot, { recursive: true })
+    const servicePort = selectAgentServicePort(
+      appDoc,
+      appInstanceConfig,
+      options.port ?? getNestedNumber(appDoc, ['service_config_tips', 'service_endpoints', 'www', 'inner_port']) ?? DEFAULT_HOST_SCRIPT_SERVICE_PORT,
+    )
+
+    return {
+      runtime: 'host-script',
+      specKey,
+      nodeId,
+      buckyosRoot,
+      packageRoot: scriptPackage.fullPath,
+      scriptDataRoot,
+      servicePort,
+      env: {
+        ...env,
+        app_media_info: JSON.stringify({
+          pkg_id: scriptPackage.pkgId,
+          full_path: scriptPackage.fullPath,
+        }),
+        SCRIPT_APP_ID: options.appId,
+        SCRIPT_PACKAGE_ROOT: scriptPackage.fullPath,
+        SCRIPT_DATA_ROOT: scriptDataRoot,
+        PORT: `${servicePort}`,
+      },
+    } satisfies HostScriptLaunchContext
   }
+
+  if (hasAgentPkg(appDoc)) {
+    const agentPackage = await resolveAgentPackageRoot(buckyosRoot, appDoc, options.agentPackageRoot)
+    const opendanBinary = await resolveOpendanBinary(buckyosRoot)
+    const agentEnvRoot = getAppDataDir(buckyosRoot, options.appId, options.ownerUserId)
+    await Deno.mkdir(agentEnvRoot, { recursive: true })
+    const servicePort = selectAgentServicePort(appDoc, appInstanceConfig, options.port)
+
+    return {
+      runtime: 'agent',
+      specKey,
+      nodeId,
+      buckyosRoot,
+      opendanBinary,
+      agentEnvRoot,
+      agentPackageRoot: agentPackage.fullPath,
+      servicePort,
+      opendanArgs: options.opendanArgs,
+      env: {
+        ...env,
+        app_media_info: JSON.stringify({
+          pkg_id: agentPackage.pkgId,
+          full_path: agentPackage.fullPath,
+        }),
+        OPENDAN_SERVICE_PORT: `${servicePort}`,
+      },
+    } satisfies AgentLaunchContext
+  }
+
+  throw new Error('unsupported app runtime: neither pkg_list.script nor pkg_list.agent is configured')
 }
 
 async function runForeground(
   opendanBinary: string,
   appId: string,
-  agentEnvRoot: string,
   agentPackageRoot: string,
   servicePort: number,
+  opendanArgs: string[],
   env: Record<string, string>,
 ): Promise<number> {
   const child = new Deno.Command(opendanBinary, {
     args: [
       '--agent-id',
       appId,
-      '--agent-env',
-      agentEnvRoot,
       '--agent-bin',
       agentPackageRoot,
       '--service-port',
       `${servicePort}`,
+      ...opendanArgs,
     ],
     env,
     stdin: 'inherit',
@@ -631,28 +813,211 @@ async function runForeground(
     stderr: 'inherit',
   }).spawn()
 
-  const status = await child.status
-  return status.code
+  let signalCount = 0
+  const forwardSignal = (signal: Deno.Signal) => {
+    signalCount += 1
+    try {
+      child.kill(signalCount > 1 ? 'SIGKILL' : signal)
+    } catch (_error) {
+      return
+    }
+  }
+  const forwardSigint = () => forwardSignal('SIGINT')
+  const forwardSigterm = () => forwardSignal('SIGTERM')
+
+  Deno.addSignalListener('SIGINT', forwardSigint)
+  Deno.addSignalListener('SIGTERM', forwardSigterm)
+  try {
+    const status = await child.status
+    return status.code
+  } finally {
+    Deno.removeSignalListener('SIGINT', forwardSigint)
+    Deno.removeSignalListener('SIGTERM', forwardSigterm)
+  }
+}
+
+function detectHostScriptLanguage(packageRoot: string): 'typescript' | 'python' | 'unknown' {
+  for (const candidate of ['deno.json', 'deno.jsonc']) {
+    try {
+      Deno.statSync(joinPath(packageRoot, candidate))
+      return 'typescript'
+    } catch {
+      // continue
+    }
+  }
+
+  for (const candidate of ['pyproject.toml', 'requirements.txt']) {
+    try {
+      Deno.statSync(joinPath(packageRoot, candidate))
+      return 'python'
+    } catch {
+      // continue
+    }
+  }
+
+  for (const candidate of ['main.ts', 'start.ts', 'index.ts', 'main.tsx', 'start.tsx', 'index.tsx']) {
+    try {
+      Deno.statSync(joinPath(packageRoot, candidate))
+      return 'typescript'
+    } catch {
+      // continue
+    }
+  }
+
+  for (const candidate of ['main.py', 'start.py', '__main__.py']) {
+    try {
+      Deno.statSync(joinPath(packageRoot, candidate))
+      return 'python'
+    } catch {
+      // continue
+    }
+  }
+
+  return 'unknown'
+}
+
+function findHostScriptEntry(packageRoot: string, language: 'typescript' | 'python' | 'unknown'): string | null {
+  const configPath = joinPath(packageRoot, 'buckyos_script.json')
+  try {
+    const raw = Deno.readTextFileSync(configPath)
+    const parsed = JSON.parse(raw) as { entry?: unknown }
+    if (typeof parsed.entry === 'string' && parsed.entry.trim().length > 0) {
+      const candidate = joinPath(packageRoot, parsed.entry.trim())
+      try {
+        Deno.statSync(candidate)
+        return candidate
+      } catch {
+        // continue to default candidates
+      }
+    }
+  } catch {
+    // ignore missing config
+  }
+
+  const candidates = language === 'typescript'
+    ? ['main.ts', 'start.ts', 'index.ts', 'main.tsx', 'start.tsx', 'index.tsx']
+    : language === 'python'
+      ? ['main.py', 'start.py', '__main__.py']
+      : []
+
+  for (const candidate of candidates) {
+    const fullPath = joinPath(packageRoot, candidate)
+    try {
+      Deno.statSync(fullPath)
+      return fullPath
+    } catch {
+      // continue
+    }
+  }
+
+  return null
+}
+
+async function runHostScriptForeground(
+  packageRoot: string,
+  scriptDataRoot: string,
+  env: Record<string, string>,
+): Promise<number> {
+  const language = detectHostScriptLanguage(packageRoot)
+  const entry = findHostScriptEntry(packageRoot, language)
+  if (!entry) {
+    throw new Error(`no local host-script entry found in ${packageRoot}`)
+  }
+
+  if (language === 'typescript') {
+    await Deno.mkdir(joinPath(scriptDataRoot, '.deno'), { recursive: true })
+    const child = new Deno.Command('deno', {
+      args: ['run', '--allow-all', entry],
+      cwd: packageRoot,
+      env: {
+        ...env,
+        DENO_DIR: joinPath(scriptDataRoot, '.deno'),
+      },
+      stdin: 'inherit',
+      stdout: 'inherit',
+      stderr: 'inherit',
+    }).spawn()
+    const status = await child.status
+    return status.code
+  }
+
+  if (language === 'python') {
+    const child = new Deno.Command('python3', {
+      args: [entry],
+      cwd: packageRoot,
+      env,
+      stdin: 'inherit',
+      stdout: 'inherit',
+      stderr: 'inherit',
+    }).spawn()
+    const status = await child.status
+    return status.code
+  }
+
+  throw new Error(`unsupported host-script language for package ${packageRoot}`)
+}
+
+async function runHostScriptDetached(
+  packageRoot: string,
+  scriptDataRoot: string,
+  env: Record<string, string>,
+): Promise<void> {
+  const language = detectHostScriptLanguage(packageRoot)
+  const entry = findHostScriptEntry(packageRoot, language)
+  if (!entry) {
+    throw new Error(`no local host-script entry found in ${packageRoot}`)
+  }
+
+  if (language === 'typescript') {
+    await Deno.mkdir(joinPath(scriptDataRoot, '.deno'), { recursive: true })
+    const child = new Deno.Command('deno', {
+      args: ['run', '--allow-all', entry],
+      cwd: packageRoot,
+      env: {
+        ...env,
+        DENO_DIR: joinPath(scriptDataRoot, '.deno'),
+      },
+      stdin: 'null',
+      stdout: 'inherit',
+      stderr: 'inherit',
+    }).spawn()
+    console.log(`started detached host script pid=${child.pid}`)
+    return
+  }
+
+  if (language === 'python') {
+    const child = new Deno.Command('python3', {
+      args: [entry],
+      cwd: packageRoot,
+      env,
+      stdin: 'null',
+      stdout: 'inherit',
+      stderr: 'inherit',
+    }).spawn()
+    console.log(`started detached host script pid=${child.pid}`)
+    return
+  }
+
+  throw new Error(`unsupported host-script language for package ${packageRoot}`)
 }
 
 async function runDetached(
   opendanBinary: string,
   appId: string,
-  agentEnvRoot: string,
   agentPackageRoot: string,
   servicePort: number,
+  opendanArgs: string[],
   env: Record<string, string>,
 ): Promise<void> {
   const child = new Deno.Command(opendanBinary, {
     args: [
       '--agent-id',
       appId,
-      '--agent-env',
-      agentEnvRoot,
       '--agent-bin',
       agentPackageRoot,
       '--service-port',
       `${servicePort}`,
+      ...opendanArgs,
     ],
     env,
     stdin: 'null',
@@ -666,35 +1031,56 @@ async function runDetached(
 async function main() {
   try {
     const options = parseArgs(Deno.args)
-    const launch = await buildLaunchContext(options)
+    const launch: LaunchContext = await buildLaunchContext(options)
 
     console.log(`app spec key: ${launch.specKey}`)
+    console.log(`runtime: ${launch.runtime}`)
     console.log(`node id: ${launch.nodeId}`)
-    console.log(`agent env: ${launch.agentEnvRoot}`)
-    console.log(`agent package: ${launch.agentPackageRoot}`)
     console.log(`service port: ${launch.servicePort}`)
-    console.log(`opendan binary: ${launch.opendanBinary}`)
+
+    if (launch.runtime === 'agent') {
+      console.log(`agent env: ${launch.agentEnvRoot}`)
+      console.log(`agent package: ${launch.agentPackageRoot}`)
+      console.log(`opendan binary: ${launch.opendanBinary}`)
+    } else {
+      console.log(`script package: ${launch.packageRoot}`)
+      console.log(`script data: ${launch.scriptDataRoot}`)
+    }
 
     if (options.detach) {
-      await runDetached(
-        launch.opendanBinary,
-        options.appId,
-        launch.agentEnvRoot,
-        launch.agentPackageRoot,
-        launch.servicePort,
-        launch.env,
-      )
+      if (launch.runtime === 'agent') {
+        await runDetached(
+          launch.opendanBinary,
+          options.appId,
+          launch.agentPackageRoot,
+          launch.servicePort,
+          launch.opendanArgs,
+          launch.env,
+        )
+      } else {
+        await runHostScriptDetached(
+          launch.packageRoot,
+          launch.scriptDataRoot,
+          launch.env,
+        )
+      }
       return
     }
 
-    const code = await runForeground(
-      launch.opendanBinary,
-      options.appId,
-      launch.agentEnvRoot,
-      launch.agentPackageRoot,
-      launch.servicePort,
-      launch.env,
-    )
+    const code = launch.runtime === 'agent'
+      ? await runForeground(
+        launch.opendanBinary,
+        options.appId,
+        launch.agentPackageRoot,
+        launch.servicePort,
+        launch.opendanArgs,
+        launch.env,
+      )
+      : await runHostScriptForeground(
+        launch.packageRoot,
+        launch.scriptDataRoot,
+        launch.env,
+      )
     Deno.exit(code)
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))

@@ -1,1953 +1,1050 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::UNIX_EPOCH;
+//! §9 step 2 of NewOpenDANRuntime — assemble `LLMContextDeps` from the
+//! existing buckyos surfaces (aicc / agent_tool / worklog).
+//!
+//! The waist (`llm_context`) owns the actual LLM loop, tool dispatch,
+//! snapshot/resume and behavior parsing. opendan only provides the seven
+//! trait implementations the waist syscalls into:
+//!
+//! - [`AiccLlmClient`]       → `LlmClient`     (over `buckyos_api::AiccClient`)
+//! - [`OpendanToolAdapter`]  → `ToolManager`   (over `agent_tool::AgentToolManager`)
+//! - [`AgentPolicy`]         → `PolicyEngine`  (behavior-driven gate, MVP whitelist + approval)
+//! - [`OpenDanWorklogSink`]  → `WorklogSink`   (over `crate::worklog::WorklogService`)
+//! - [`SessionSnapshotHook`] → `TurnHook`      (writes `LLMContextSnapshot` to disk)
+//!
+//! Step 3 (`behavior_cfg`) will plug `LLMResultParser` / `StepRenderer` on
+//! top of [`build_session_deps`] when the Behavior Loop is enabled for a
+//! given behavior.
 
-use ::kRPC::{RPCContext, RPCErrors, Result as KRPCResult};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    OpenDanAgentInfo, OpenDanAgentListResult, OpenDanAgentSessionListResult,
-    OpenDanAgentSessionRecord, OpenDanHandler, OpenDanListAgentSessionsReq, OpenDanListAgentsReq,
-    OpenDanListWorkshopSubAgentsReq, OpenDanListWorkshopTodosReq, OpenDanListWorkshopWorklogsReq,
-    OpenDanServerHandler, OpenDanSubAgentInfo, OpenDanTodoItem, OpenDanWorklogItem,
-    OpenDanWorkspaceInfo, OpenDanWorkspaceSubAgentsResult, OpenDanWorkspaceTodosResult,
-    OpenDanWorkspaceWorklogsResult,
+    ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
+    AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
+    KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskDispatcherClient,
+    TaskManagerClient, TaskOutcome, TypedTaskData,
 };
-use log::info;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as Json};
-use tokio::{fs, task};
+use log::warn;
+use serde_json::{json, Value};
 
-use crate::agent_tool::{normalize_abs_path, now_ms};
-use crate::agent_tool::{
-    optional_trimmed_string_arg as optional_string, require_trimmed_string_arg as require_string,
-    sanitize_session_id_for_path, session_record_path, AgentTool, AgentToolError, AgentToolManager,
-    AgentToolResult, BindExternalWorkspaceTool as SharedBindExternalWorkspaceTool,
-    ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
-    ListExternalWorkspacesTool as SharedListExternalWorkspacesTool,
-    ManagedExternalWorkspaceBackend, TodoAdminListOptions, TodoTool, TodoToolConfig, ToolSpec,
-    TOOL_CREATE_SUB_AGENT,
+use ::agent_tool::{AgentToolManager, AgentToolResult, AgentToolStatus, SessionRuntimeContext};
+use llm_context::{
+    behavior_loop::{LLMResultParser, StepRenderer},
+    deps::{
+        LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine, ToolManager, ToolSpecLite,
+        TurnHook, WorkEvent, WorklogSink,
+    },
+    error::LLMComputeError,
+    observation::Observation,
+    request::LLMContextRequest,
+    state::LLMContextSnapshot,
 };
-use crate::behavior::SessionRuntimeContext;
-use crate::worklog::{WorklogListOptions, WorklogService, WorklogToolConfig};
 
-const AGENT_DOC_CANDIDATES: [&str; 2] = ["agent.json.doc", "Agent.json.doc"];
-const DEFAULT_SUB_AGENTS_DIR: &str = "sub-agents";
-const DEFAULT_EXTERNAL_WORKSPACES_DIR: &str = "workspaces";
-const DEFAULT_BEHAVIORS_DIR: &str = "behaviors";
-const DEFAULT_MEMORY_DIR: &str = "memory";
-const DEFAULT_ROLE_FILE: &str = "role.md";
-const DEFAULT_SELF_FILE: &str = "self.md";
-const DEFAULT_WORKSPACE_BINDINGS_FILE: &str = "bindings.json";
-const DEFAULT_AGENT_SESSIONS_DIR: &str = "sessions";
-const DEFAULT_AGENT_SESSION_FILE_NAME: &str = "session.json";
-const DEFAULT_SUB_AGENT_ROLE: &str = "# Role\nYou are a specialized sub-agent.\n";
-const DEFAULT_SUB_AGENT_SELF: &str = "# Self\n- Follow parent constraints\n- Keep output concise\n";
-const DEFAULT_KRPC_LIST_LIMIT: usize = 64;
-const MAX_KRPC_LIST_LIMIT: usize = 512;
-const SESSION_STATUS_NORMAL: &str = "normal";
-const SESSION_STATUS_PAUSE: &str = "pause";
-const ACTIVE_WINDOW_MS: u64 = 120_000;
+use crate::i18n::AgentI18n;
+use crate::worklog::{WorklogAppendCtx, WorklogService};
 
-#[derive(thiserror::Error, Debug)]
-pub enum AiRuntimeError {
-    #[error("invalid args: {0}")]
-    InvalidArgs(String),
-    #[error("agent not found: {0}")]
-    AgentNotFound(String),
-    #[error("already exists: {0}")]
-    AlreadyExists(String),
-    #[error("io error on `{path}`: {source}")]
-    Io {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to parse json `{path}`: {source}")]
-    Json {
-        path: String,
-        #[source]
-        source: serde_json::Error,
-    },
+// =====================================================================
+// LlmClient — aicc adapter
+// =====================================================================
+
+/// `LlmClient` over `AiccClient`. One `infer()` acquires one short-session
+/// client and performs one `llm.chat` round-trip; adapter retry / fallback
+/// happens inside aicc, not here.
+pub struct AiccLlmClient {
+    aicc: Option<Arc<AiccClient>>,
 }
 
-impl From<AiRuntimeError> for AgentToolError {
-    fn from(value: AiRuntimeError) -> Self {
-        match value {
-            AiRuntimeError::InvalidArgs(msg) => AgentToolError::InvalidArgs(msg),
-            AiRuntimeError::AgentNotFound(msg) => {
-                AgentToolError::InvalidArgs(format!("agent not registered in runtime: {msg}"))
-            }
-            AiRuntimeError::AlreadyExists(msg) => AgentToolError::InvalidArgs(msg),
-            AiRuntimeError::Io { path, source } => {
-                AgentToolError::ExecFailed(format!("io error on `{path}`: {source}"))
-            }
-            AiRuntimeError::Json { path, source } => {
-                AgentToolError::ExecFailed(format!("json error on `{path}`: {source}"))
-            }
-        }
+impl AiccLlmClient {
+    pub fn new(aicc: Arc<AiccClient>) -> Self {
+        Self { aicc: Some(aicc) }
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct AiRuntimeConfig {
-    pub agents_root: PathBuf,
-    pub sub_agents_dir_name: String,
-    pub external_workspaces_dir_name: String,
-    pub role_file_name: String,
-    pub self_file_name: String,
-    pub workspace_bindings_file_name: String,
-}
-
-impl AiRuntimeConfig {
-    pub fn new(agents_root: impl Into<PathBuf>) -> Self {
+    pub fn from_runtime(aicc_override: Option<Arc<AiccClient>>) -> Self {
         Self {
-            agents_root: agents_root.into(),
-            sub_agents_dir_name: DEFAULT_SUB_AGENTS_DIR.to_string(),
-            external_workspaces_dir_name: DEFAULT_EXTERNAL_WORKSPACES_DIR.to_string(),
-            role_file_name: DEFAULT_ROLE_FILE.to_string(),
-            self_file_name: DEFAULT_SELF_FILE.to_string(),
-            workspace_bindings_file_name: DEFAULT_WORKSPACE_BINDINGS_FILE.to_string(),
+            aicc: aicc_override,
         }
     }
-}
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeAgentInfo {
-    pub did: String,
-    pub name: String,
-    pub root: String,
-    pub parent_did: Option<String>,
-    pub is_sub_agent: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateSubAgentRequest {
-    pub name: String,
-    pub did: Option<String>,
-    pub role_md: Option<String>,
-    pub self_md: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateSubAgentResult {
-    pub did: String,
-    pub parent_did: String,
-    pub root: String,
-    pub created_at_ms: u64,
-}
-
-#[derive(Clone)]
-pub struct AiRuntime {
-    cfg: AiRuntimeConfig,
-    agents_by_did: Arc<RwLock<HashMap<String, PathBuf>>>,
-}
-
-impl AiRuntime {
-    pub async fn new(mut cfg: AiRuntimeConfig) -> Result<Self, AiRuntimeError> {
-        validate_runtime_config(&cfg)?;
-        let agents_root = normalize_abs_path(&to_abs_path(&cfg.agents_root)?);
-        info!(
-            "opendan.persist_entity_prepare: kind=agents_root path={}",
-            agents_root.display()
-        );
-        fs::create_dir_all(&agents_root)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: agents_root.display().to_string(),
-                source,
-            })?;
-        cfg.agents_root = agents_root;
-
-        let runtime = Self {
-            cfg,
-            agents_by_did: Arc::new(RwLock::new(HashMap::new())),
-        };
-        let _ = runtime.scan_agents().await?;
-        Ok(runtime)
-    }
-
-    pub fn config(&self) -> &AiRuntimeConfig {
-        &self.cfg
-    }
-
-    pub async fn register_tools(&self, tool_mgr: &AgentToolManager) -> Result<(), AgentToolError> {
-        let external_backend = Arc::new(ManagedExternalWorkspaceBackend::new(
-            Arc::new(OpenDanExternalWorkspaceRuntime::new(self.clone())),
-            ExternalWorkspaceServiceConfig {
-                external_workspaces_dir_name: self.cfg.external_workspaces_dir_name.clone(),
-                workspace_bindings_file_name: self.cfg.workspace_bindings_file_name.clone(),
-            },
-        ));
-        tool_mgr.register_tool(RuntimeCreateSubAgentTool {
-            runtime: Arc::new(self.clone()),
-        })?;
-        tool_mgr.register_tool(SharedBindExternalWorkspaceTool::new(
-            external_backend.clone(),
-        ))?;
-        tool_mgr.register_tool(SharedListExternalWorkspacesTool::new(external_backend))?;
-        Ok(())
-    }
-
-    pub async fn register_agent(
-        &self,
-        agent_did: impl AsRef<str>,
-        agent_root: impl Into<PathBuf>,
-    ) -> Result<(), AiRuntimeError> {
-        let did = agent_did.as_ref().trim();
-        if did.is_empty() {
-            return Err(AiRuntimeError::InvalidArgs(
-                "agent did cannot be empty".to_string(),
-            ));
+    async fn client(&self) -> std::result::Result<Arc<AiccClient>, RPCErrors> {
+        if let Some(client) = self.aicc.as_ref() {
+            return Ok(client.clone());
         }
-
-        let root = normalize_abs_path(&to_abs_path(&agent_root.into())?);
-        info!(
-            "opendan.persist_entity_prepare: kind=agent_root did={} path={}",
-            did,
-            root.display()
-        );
-        fs::create_dir_all(&root)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: root.display().to_string(),
-                source,
-            })?;
-
-        let mut guard = self
-            .agents_by_did
-            .write()
-            .map_err(|_| AiRuntimeError::InvalidArgs("runtime lock poisoned".to_string()))?;
-        guard.insert(did.to_string(), root);
-        Ok(())
-    }
-
-    pub async fn scan_agents(&self) -> Result<Vec<RuntimeAgentInfo>, AiRuntimeError> {
-        let mut stack = vec![(self.cfg.agents_root.clone(), None::<String>)];
-        let mut out = Vec::<RuntimeAgentInfo>::new();
-        let mut discovered = HashMap::<String, PathBuf>::new();
-
-        while let Some((dir, parent_did)) = stack.pop() {
-            if !fs::try_exists(&dir)
-                .await
-                .map_err(|source| AiRuntimeError::Io {
-                    path: dir.display().to_string(),
-                    source,
-                })?
-            {
-                continue;
-            }
-
-            let maybe_doc = find_agent_doc_path(&dir).await?;
-            if let Some(doc_path) = maybe_doc {
-                let did_doc = load_json_file(&doc_path).await?;
-                let did = extract_agent_did(&did_doc, &dir);
-                let name = dir
-                    .file_name()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("agent")
-                    .to_string();
-
-                out.push(RuntimeAgentInfo {
-                    did: did.clone(),
-                    name,
-                    root: dir.to_string_lossy().to_string(),
-                    parent_did: parent_did.clone(),
-                    is_sub_agent: parent_did.is_some(),
-                });
-                discovered.insert(did.clone(), dir.clone());
-
-                let sub_root = dir.join(&self.cfg.sub_agents_dir_name);
-                if fs::try_exists(&sub_root)
-                    .await
-                    .map_err(|source| AiRuntimeError::Io {
-                        path: sub_root.display().to_string(),
-                        source,
-                    })?
-                {
-                    stack.push((sub_root, Some(did)));
-                }
-                continue;
-            }
-
-            let mut read_dir = fs::read_dir(&dir)
-                .await
-                .map_err(|source| AiRuntimeError::Io {
-                    path: dir.display().to_string(),
-                    source,
-                })?;
-            while let Some(entry) =
-                read_dir
-                    .next_entry()
-                    .await
-                    .map_err(|source| AiRuntimeError::Io {
-                        path: dir.display().to_string(),
-                        source,
-                    })?
-            {
-                let entry_path = entry.path();
-                let file_type = entry
-                    .file_type()
-                    .await
-                    .map_err(|source| AiRuntimeError::Io {
-                        path: entry_path.display().to_string(),
-                        source,
-                    })?;
-                if file_type.is_dir() {
-                    stack.push((entry_path, parent_did.clone()));
-                }
-            }
-        }
-
-        {
-            let mut guard = self
-                .agents_by_did
-                .write()
-                .map_err(|_| AiRuntimeError::InvalidArgs("runtime lock poisoned".to_string()))?;
-            for (did, root) in discovered {
-                guard.insert(did, root);
-            }
-        }
-
-        out.sort_by(|a, b| a.did.cmp(&b.did));
-        Ok(out)
-    }
-
-    pub async fn create_sub_agent(
-        &self,
-        parent_agent_did: &str,
-        req: CreateSubAgentRequest,
-    ) -> Result<CreateSubAgentResult, AiRuntimeError> {
-        let parent_did = parent_agent_did.trim();
-        if parent_did.is_empty() {
-            return Err(AiRuntimeError::InvalidArgs(
-                "parent_agent_did cannot be empty".to_string(),
-            ));
-        }
-        validate_agent_name(&req.name)?;
-
-        let parent_root = self.lookup_agent_root(parent_did)?;
-        let sub_root = parent_root
-            .join(&self.cfg.sub_agents_dir_name)
-            .join(req.name.trim());
-        if fs::try_exists(&sub_root)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: sub_root.display().to_string(),
-                source,
-            })?
-        {
-            return Err(AiRuntimeError::AlreadyExists(format!(
-                "sub-agent `{}` already exists",
-                req.name
-            )));
-        }
-
-        create_minimal_agent_layout(&sub_root, &self.cfg).await?;
-
-        let did = req
-            .did
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| format!("{parent_did}:{}", req.name.trim()));
-        let created_at_ms = now_ms();
-
-        let agent_doc = json!({
-            "id": did,
-            "name": req.name.trim(),
-            "kind": "sub-agent",
-            "parent_did": parent_did,
-            "created_at_ms": created_at_ms
-        });
-        write_json_file(sub_root.join("agent.json.doc"), &agent_doc).await?;
-
-        fs::write(
-            sub_root.join(&self.cfg.role_file_name),
-            req.role_md
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_SUB_AGENT_ROLE.to_string()),
-        )
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: sub_root
-                .join(&self.cfg.role_file_name)
-                .display()
-                .to_string(),
-            source,
-        })?;
-
-        fs::write(
-            sub_root.join(&self.cfg.self_file_name),
-            req.self_md
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_SUB_AGENT_SELF.to_string()),
-        )
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: sub_root
-                .join(&self.cfg.self_file_name)
-                .display()
-                .to_string(),
-            source,
-        })?;
-
-        let mut guard = self
-            .agents_by_did
-            .write()
-            .map_err(|_| AiRuntimeError::InvalidArgs("runtime lock poisoned".to_string()))?;
-        guard.insert(did.clone(), sub_root.clone());
-
-        Ok(CreateSubAgentResult {
-            did,
-            parent_did: parent_did.to_string(),
-            root: sub_root.to_string_lossy().to_string(),
-            created_at_ms,
-        })
-    }
-
-    fn lookup_agent_root(&self, did: &str) -> Result<PathBuf, AiRuntimeError> {
-        let guard = self
-            .agents_by_did
-            .read()
-            .map_err(|_| AiRuntimeError::InvalidArgs("runtime lock poisoned".to_string()))?;
-        guard
-            .get(did)
-            .cloned()
-            .ok_or_else(|| AiRuntimeError::AgentNotFound(did.to_string()))
-    }
-}
-
-#[derive(Clone)]
-pub struct OpenDanRuntimeKrpcHandler {
-    runtime: Arc<AiRuntime>,
-}
-
-impl OpenDanRuntimeKrpcHandler {
-    pub fn new(runtime: Arc<AiRuntime>) -> Self {
-        Self { runtime }
-    }
-
-    pub fn into_server_handler(self) -> OpenDanServerHandler<Self> {
-        OpenDanServerHandler::new(self)
-    }
-
-    async fn find_agent(&self, agent_id: &str) -> KRPCResult<RuntimeAgentInfo> {
-        let agent_id = agent_id.trim();
-        if agent_id.is_empty() {
-            return Err(RPCErrors::ReasonError(
-                "agent_id cannot be empty".to_string(),
-            ));
-        }
-
-        let agents = self
-            .runtime
-            .scan_agents()
-            .await
-            .map_err(runtime_error_to_rpc)?;
-        agents
-            .into_iter()
-            .find(|agent| agent.did == agent_id)
-            .ok_or_else(|| RPCErrors::ReasonError(format!("agent not found: {agent_id}")))
-    }
-
-    async fn update_session_status(
-        &self,
-        session_id: &str,
-        status: &str,
-    ) -> KRPCResult<OpenDanAgentSessionRecord> {
-        let session_id =
-            sanitize_session_id_for_path(session_id).map_err(agent_tool_error_to_rpc)?;
-        let session_id_for_update = session_id.clone();
-        let status = status.to_string();
-        let runtime_cfg = self.runtime.cfg.clone();
-        let agents = self
-            .runtime
-            .scan_agents()
-            .await
-            .map_err(runtime_error_to_rpc)?;
-        task::spawn_blocking(move || {
-            update_agent_session_status_globally_sync(
-                &runtime_cfg,
-                agents.as_slice(),
-                session_id_for_update.as_str(),
-                status.as_str(),
-            )
-        })
-        .await
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!("update session status join failed: {error}"))
-        })?
-    }
-
-    async fn to_agent_info(&self, agent: &RuntimeAgentInfo) -> OpenDanAgentInfo {
-        let agent_root = PathBuf::from(&agent.root);
-        let agent_env_root = agent_env_root_from_agent_root(&self.runtime.cfg, &agent_root);
-        let todo_db = todo_db_path(&agent_env_root);
-        let worklog_db = worklog_db_path(&agent_env_root);
-        let updated_at = latest_modified_ms(&[
-            agent_env_root.join("worklog").join("agent-loop.jsonl"),
-            worklog_db,
-            todo_db,
-        ])
-        .await;
-        let status = derive_agent_status(updated_at);
-
-        OpenDanAgentInfo {
-            agent_id: agent.did.clone(),
-            agent_name: Some(agent.name.clone()),
-            agent_type: Some(if agent.is_sub_agent {
-                "sub".to_string()
-            } else {
-                "main".to_string()
-            }),
-            status: Some(status),
-            parent_agent_id: agent.parent_did.clone(),
-            current_run_id: None,
-            workspace_id: Some(format!("workspace:{}", agent.did)),
-            workspace_path: Some(agent_env_root.to_string_lossy().to_string()),
-            last_active_at: updated_at.map(|ts| ts.to_string()),
-            updated_at,
-            extra: Some(json!({
-                "agent_root": agent.root,
-            })),
-        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_aicc_client().await?))
     }
 }
 
 #[async_trait]
-impl OpenDanHandler for OpenDanRuntimeKrpcHandler {
-    async fn handle_list_agents(
-        &self,
-        request: OpenDanListAgentsReq,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanAgentListResult> {
-        let include_sub_agents = request.include_sub_agents.unwrap_or(true);
-        let status_filter = request.status.as_ref().map(|value| normalize_filter(value));
-        let limit = normalize_limit(request.limit);
-        let offset = parse_cursor(request.cursor.as_deref())?;
+impl LlmClient for AiccLlmClient {
+    async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        let LlmInferenceRequest {
+            messages,
+            model_alias,
+            fallbacks,
+            temperature,
+            max_completion_tokens,
+            force_json,
+            json_schema,
+            provider_options,
+            disable_capabilities,
+            tool_specs,
+            allow_tool_calls,
+            // AICC's `call_method` does not currently support cancel
+            // wire-through; the waist's `select!` already drops this future
+            // on interrupt, so dropping the abort token here is safe — the
+            // remote may keep generating tokens but the scheduler thread is
+            // freed immediately.
+            abort: _,
+        } = req;
 
-        let agents = self
-            .runtime
-            .scan_agents()
-            .await
-            .map_err(runtime_error_to_rpc)?;
+        // Tool catalogue (only advertised when the policy lets the LLM call tools)
+        let advertised_tools: Vec<AiToolSpec> = if allow_tool_calls {
+            tool_specs
+                .into_iter()
+                .map(|spec| AiToolSpec {
+                    name: spec.name,
+                    description: spec.description,
+                    args_schema: value_to_object_map(spec.args_schema),
+                    output_schema: json!({}),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
-        let mut mapped = Vec::<OpenDanAgentInfo>::new();
-        for agent in agents {
-            if !include_sub_agents && agent.is_sub_agent {
-                continue;
-            }
-            let info = self.to_agent_info(&agent).await;
-            if let Some(filter) = status_filter.as_deref() {
-                let status = info.status.as_deref().unwrap_or("idle");
-                if normalize_filter(status) != filter {
-                    continue;
+        // provider_options: opaque pass-through merged into payload options.
+        let mut options = serde_json::Map::new();
+        if let Some(t) = temperature {
+            options.insert("temperature".to_string(), Value::from(t));
+        }
+        if let Some(m) = max_completion_tokens {
+            options.insert("max_completion_tokens".to_string(), Value::from(m));
+        }
+        if let Some(schema) = json_schema {
+            options.insert("json_schema".to_string(), schema);
+        }
+        if let Some(extra) = provider_options {
+            match extra {
+                Value::Object(obj) => {
+                    for (k, v) in obj {
+                        options.insert(k, v);
+                    }
+                }
+                other => {
+                    options.insert("provider_options".to_string(), other);
                 }
             }
-            mapped.push(info);
         }
-        mapped.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
 
-        let total = mapped.len() as u64;
-        let items = mapped
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let next_cursor = build_next_cursor(offset, items.len(), total);
+        let payload = AiPayload::new(
+            None,
+            messages,
+            advertised_tools,
+            Vec::new(),
+            None,
+            Some(Value::Object(options)),
+        );
 
-        Ok(OpenDanAgentListResult {
-            items,
-            next_cursor,
-            total: Some(total),
-        })
-    }
-
-    async fn handle_get_agent(
-        &self,
-        agent_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanAgentInfo> {
-        let agent = self.find_agent(agent_id).await?;
-        Ok(self.to_agent_info(&agent).await)
-    }
-
-    async fn handle_get_workshop(
-        &self,
-        agent_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanWorkspaceInfo> {
-        let agent = self.find_agent(agent_id).await?;
-        let agent_env_root =
-            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let todo_db = todo_db_path(&agent_env_root);
-        let worklog_db = worklog_db_path(&agent_env_root);
-
-        let sub_agent_total = self
-            .runtime
-            .scan_agents()
-            .await
-            .map_err(runtime_error_to_rpc)?
-            .into_iter()
-            .filter(|item| item.parent_did.as_deref() == Some(agent.did.as_str()))
-            .count() as u64;
-
-        let todo_db_for_count = todo_db.clone();
-        let worklog_db_for_count = worklog_db.clone();
-        let agent_id_owned = agent.did.clone();
-        let (todo_total, worklog_total) =
-            task::spawn_blocking(move || -> KRPCResult<(u64, u64)> {
-                let (_, todo_total) = query_workshop_todos_sync(
-                    &todo_db_for_count,
-                    &agent_id_owned,
-                    None,
-                    true,
-                    None,
-                    1,
-                    0,
-                )?;
-                let (_, worklog_total) = query_workshop_worklogs_sync(
-                    &worklog_db_for_count,
-                    &agent_id_owned,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    1,
-                    0,
-                )?;
-                Ok((todo_total, worklog_total))
-            })
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("query workspace summary failed: {error}"))
-            })??;
-
-        Ok(OpenDanWorkspaceInfo {
-            workspace_id: format!("workspace:{}", agent.did),
-            agent_id: agent.did.clone(),
-            workspace_path: Some(agent_env_root.to_string_lossy().to_string()),
-            todo_db_path: Some(todo_db.to_string_lossy().to_string()),
-            worklog_db_path: Some(worklog_db.to_string_lossy().to_string()),
-            summary: Some(json!({
-                "todo_total": todo_total,
-                "worklog_total": worklog_total,
-                "sub_agent_total": sub_agent_total,
-            })),
-            extra: None,
-        })
-    }
-
-    async fn handle_list_workshop_worklogs(
-        &self,
-        request: OpenDanListWorkshopWorklogsReq,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanWorkspaceWorklogsResult> {
-        let agent = self.find_agent(&request.agent_id).await?;
-        let agent_env_root =
-            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let db_path = worklog_db_path(&agent_env_root);
-
-        let limit = normalize_limit(request.limit);
-        let offset = parse_cursor(request.cursor.as_deref())?;
-
-        let agent_id = request.agent_id.clone();
-        let owner_session_id = normalize_owner_session_id(request.owner_session_id.as_str())?;
-        let log_type = request.log_type.clone();
-        let status = request.status.clone();
-        let step_id = request.step_id.clone();
-        let keyword = request.keyword.clone();
-        let (items, total) = task::spawn_blocking(move || {
-            query_workshop_worklogs_sync(
-                &db_path,
-                &agent_id,
-                Some(owner_session_id.as_str()),
-                log_type.as_deref(),
-                status.as_deref(),
-                step_id.as_deref(),
-                keyword.as_deref(),
-                limit,
-                offset,
-            )
-        })
-        .await
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!("list workshop worklogs join failed: {error}"))
-        })??;
-
-        Ok(OpenDanWorkspaceWorklogsResult {
-            next_cursor: build_next_cursor(offset, items.len(), total),
-            items,
-            total: Some(total),
-        })
-    }
-
-    async fn handle_list_workshop_todos(
-        &self,
-        request: OpenDanListWorkshopTodosReq,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanWorkspaceTodosResult> {
-        let agent = self.find_agent(&request.agent_id).await?;
-        let agent_env_root =
-            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let db_path = todo_db_path(&agent_env_root);
-
-        let limit = normalize_limit(request.limit);
-        let offset = parse_cursor(request.cursor.as_deref())?;
-        let include_closed = request.include_closed.unwrap_or(true);
-        let agent_id = request.agent_id.clone();
-        let owner_session_id = normalize_owner_session_id(request.owner_session_id.as_str())?;
-        let status = request.status.clone();
-        let (items, total) = task::spawn_blocking(move || {
-            query_workshop_todos_sync(
-                &db_path,
-                &agent_id,
-                status.as_deref(),
-                include_closed,
-                Some(owner_session_id.as_str()),
-                limit,
-                offset,
-            )
-        })
-        .await
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!("list workshop todos join failed: {error}"))
-        })??;
-
-        Ok(OpenDanWorkspaceTodosResult {
-            next_cursor: build_next_cursor(offset, items.len(), total),
-            items,
-            total: Some(total),
-        })
-    }
-
-    async fn handle_list_workshop_sub_agents(
-        &self,
-        request: OpenDanListWorkshopSubAgentsReq,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanWorkspaceSubAgentsResult> {
-        let _ = self.find_agent(&request.agent_id).await?;
-        let include_disabled = request.include_disabled.unwrap_or(true);
-        let limit = normalize_limit(request.limit);
-        let offset = parse_cursor(request.cursor.as_deref())?;
-
-        let mut sub_agents = Vec::<OpenDanSubAgentInfo>::new();
-        for item in self
-            .runtime
-            .scan_agents()
-            .await
-            .map_err(runtime_error_to_rpc)?
-        {
-            if item.parent_did.as_deref() != Some(request.agent_id.as_str()) {
-                continue;
-            }
-            let info = self.to_agent_info(&item).await;
-            if !include_disabled && info.status.as_deref() == Some("disabled") {
-                continue;
-            }
-            sub_agents.push(OpenDanSubAgentInfo {
-                agent_id: info.agent_id,
-                agent_name: info.agent_name,
-                status: info.status,
-                current_run_id: info.current_run_id,
-                last_active_at: info.last_active_at,
-                workspace_id: info.workspace_id,
-                workspace_path: info.workspace_path,
-                extra: info.extra,
-            });
+        let mut must_features: Vec<String> = Vec::new();
+        if allow_tool_calls && !payload.tool_specs.is_empty() {
+            must_features.push(features::TOOL_CALLING.to_string());
         }
-        sub_agents.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
-        let total = sub_agents.len() as u64;
-        let items = sub_agents
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect::<Vec<_>>();
+        if force_json {
+            must_features.push(features::JSON_OUTPUT.to_string());
+        }
 
-        Ok(OpenDanWorkspaceSubAgentsResult {
-            next_cursor: build_next_cursor(offset, items.len(), total),
-            items,
-            total: Some(total),
-        })
-    }
+        let extra = if disable_capabilities.is_empty() {
+            None
+        } else {
+            Some(json!({
+                "disable_capabilities": disable_capabilities
+            }))
+        };
+        let mut requirements = Requirements::new(must_features, None, None, extra);
+        if force_json {
+            requirements.resp_format = RespFormat::Json;
+        }
 
-    async fn handle_list_agent_sessions(
-        &self,
-        request: OpenDanListAgentSessionsReq,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanAgentSessionListResult> {
-        let agent = self.find_agent(&request.agent_id).await?;
-        let agent_env_root =
-            agent_env_root_from_agent_root(&self.runtime.cfg, Path::new(&agent.root));
-        let sessions_dir = agent_env_root.join(DEFAULT_AGENT_SESSIONS_DIR);
-        let limit = normalize_limit(request.limit);
-        let offset = parse_cursor(request.cursor.as_deref())?;
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new(model_alias, None),
+            requirements,
+            payload,
+            None,
+        );
 
-        let (items, total) =
-            task::spawn_blocking(move || list_agent_session_ids_sync(&sessions_dir, limit, offset))
-                .await
-                .map_err(|error| {
-                    RPCErrors::ReasonError(format!("list agent sessions join failed: {error}"))
-                })??;
+        // Fallbacks aren't directly representable in `AiMethodRequest` yet
+        // (model_spec carries a single alias); attach them to options so the
+        // aicc adapter can pick them up when it adds fallback wiring.
+        let _ = fallbacks;
 
-        Ok(OpenDanAgentSessionListResult {
-            next_cursor: build_next_cursor(offset, items.len(), total),
-            items,
-            total: Some(total),
-        })
-    }
-
-    async fn handle_get_session_record(
-        &self,
-        session_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanAgentSessionRecord> {
-        let session_id =
-            sanitize_session_id_for_path(session_id).map_err(agent_tool_error_to_rpc)?;
-        let session_id_for_search = session_id.clone();
-        let runtime_cfg = self.runtime.cfg.clone();
-        let agents = self
-            .runtime
-            .scan_agents()
+        let aicc = self
+            .client()
             .await
-            .map_err(runtime_error_to_rpc)?;
-        task::spawn_blocking(move || {
-            load_agent_session_record_globally_sync(
-                &runtime_cfg,
-                agents.as_slice(),
-                session_id_for_search.as_str(),
-            )
-        })
-        .await
-        .map_err(|error| {
-            RPCErrors::ReasonError(format!("get session record join failed: {error}"))
-        })?
-    }
-
-    async fn handle_pause_session(
-        &self,
-        session_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanAgentSessionRecord> {
-        self.update_session_status(session_id, SESSION_STATUS_PAUSE)
+            .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
+        let resp = aicc
+            .call_method(ai_methods::LLM_CHAT, request)
             .await
-    }
+            .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 
-    async fn handle_resume_session(
-        &self,
-        session_id: &str,
-        _ctx: RPCContext,
-    ) -> KRPCResult<OpenDanAgentSessionRecord> {
-        self.update_session_status(session_id, SESSION_STATUS_NORMAL)
-            .await
-    }
-}
-
-fn runtime_error_to_rpc(err: AiRuntimeError) -> RPCErrors {
-    RPCErrors::ReasonError(err.to_string())
-}
-
-fn agent_tool_error_to_rpc(err: AgentToolError) -> RPCErrors {
-    RPCErrors::ReasonError(err.to_string())
-}
-
-fn normalize_limit(limit: Option<u32>) -> usize {
-    let value = limit.map(|v| v as usize).unwrap_or(DEFAULT_KRPC_LIST_LIMIT);
-    value.clamp(1, MAX_KRPC_LIST_LIMIT)
-}
-
-fn parse_cursor(cursor: Option<&str>) -> KRPCResult<usize> {
-    let Some(cursor) = cursor else {
-        return Ok(0);
-    };
-    let cursor = cursor.trim();
-    if cursor.is_empty() {
-        return Ok(0);
-    }
-    let parsed = cursor.parse::<u64>().map_err(|_| {
-        RPCErrors::ReasonError(format!(
-            "invalid cursor `{cursor}`, expected numeric offset"
-        ))
-    })?;
-    usize::try_from(parsed)
-        .map_err(|_| RPCErrors::ReasonError(format!("cursor too large: `{cursor}`")))
-}
-
-fn build_next_cursor(offset: usize, page_len: usize, total: u64) -> Option<String> {
-    let next = offset.saturating_add(page_len);
-    if (next as u64) < total {
-        Some(next.to_string())
-    } else {
-        None
+        match resp.status {
+            AiMethodStatus::Succeeded => resp.result.ok_or_else(|| {
+                LLMComputeError::Provider(
+                    "aicc returned status=succeeded without result".to_string(),
+                )
+            }),
+            AiMethodStatus::Running => resolve_async_aicc_result(resp.task_id.as_str()).await,
+            AiMethodStatus::Failed => {
+                Err(LLMComputeError::Provider("aicc status=failed".to_string()))
+            }
+        }
     }
 }
 
-fn normalize_filter(value: &str) -> String {
-    value
-        .trim()
-        .to_lowercase()
-        .replace([' ', '-'], "_")
-        .to_string()
-}
-
-fn normalize_todo_domain_status(value: &str) -> KRPCResult<String> {
-    match normalize_filter(value).as_str() {
-        "wait" => Ok("WAIT".to_string()),
-        "in_progress" => Ok("IN_PROGRESS".to_string()),
-        "complete" => Ok("COMPLETE".to_string()),
-        "failed" => Ok("FAILED".to_string()),
-        "done" => Ok("DONE".to_string()),
-        "check_failed" => Ok("CHECK_FAILED".to_string()),
-        other => Err(RPCErrors::ReasonError(format!(
-            "unsupported todo status filter `{other}`"
-        ))),
-    }
-}
-
-fn map_workshop_todo_statuses(
-    status: Option<&str>,
-    include_closed: bool,
-) -> KRPCResult<Vec<String>> {
-    let mut statuses = match status.map(normalize_filter) {
-        Some(filter) if filter == "open" => vec![
-            "WAIT".to_string(),
-            "IN_PROGRESS".to_string(),
-            "COMPLETE".to_string(),
-            "FAILED".to_string(),
-            "CHECK_FAILED".to_string(),
-        ],
-        Some(filter) if filter == "done" => vec!["DONE".to_string()],
-        Some(filter) => vec![normalize_todo_domain_status(filter.as_str())?],
-        None if include_closed => Vec::new(),
-        None => vec![
-            "WAIT".to_string(),
-            "IN_PROGRESS".to_string(),
-            "COMPLETE".to_string(),
-            "FAILED".to_string(),
-            "CHECK_FAILED".to_string(),
-        ],
-    };
-
-    if !include_closed {
-        statuses.retain(|status| status != "DONE");
-    }
-
-    Ok(statuses)
-}
-
-fn parse_worklog_record_type(value: &str) -> KRPCResult<crate::worklog::WorklogRecordType> {
-    use crate::worklog::WorklogRecordType;
-
-    match normalize_filter(value).as_str() {
-        "getmessage" | "get_message" => Ok(WorklogRecordType::GetMessage),
-        "replymessage" | "reply_message" => Ok(WorklogRecordType::ReplyMessage),
-        "functionrecord" | "function_record" => Ok(WorklogRecordType::FunctionRecord),
-        "actionrecord" | "action_record" => Ok(WorklogRecordType::ActionRecord),
-        "createsubagent" | "create_sub_agent" => Ok(WorklogRecordType::CreateSubAgent),
-        "stepsummary" | "step_summary" => Ok(WorklogRecordType::StepSummary),
-        other => Err(RPCErrors::ReasonError(format!(
-            "unsupported worklog type filter `{other}`"
-        ))),
-    }
-}
-
-fn normalize_owner_session_id(value: &str) -> KRPCResult<String> {
-    let normalized = value.trim();
-    if normalized.is_empty() {
-        return Err(RPCErrors::ReasonError(
-            "owner_session_id cannot be empty".to_string(),
+/// Block until an AICC-side async task reaches a terminal state and return
+/// its `AiResponse`. Mirrors the polling path the legacy
+/// `behavior::do_inference_once` used, but reuses
+/// `BuckyOSRuntime::wait_for_task_end_kevent` so the wait is kevent-
+/// accelerated with a sweep fallback.
+async fn resolve_async_aicc_result(task_id: &str) -> Result<AiResponse, LLMComputeError> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() {
+        return Err(LLMComputeError::Provider(
+            "aicc response status=running but task_id is empty".to_string(),
         ));
     }
-    Ok(normalized.to_string())
-}
 
-fn agent_env_root_from_agent_root(cfg: &AiRuntimeConfig, agent_root: &Path) -> PathBuf {
-    let _ = cfg;
-    agent_root.to_path_buf()
-}
+    let runtime = get_buckyos_api_runtime()
+        .map_err(|err| LLMComputeError::Internal(format!("load buckyos runtime failed: {err}")))?;
+    let task = runtime
+        .wait_for_task_end_kevent(task_id)
+        .await
+        .map_err(|err| LLMComputeError::Provider(err.to_string()))?;
 
-fn todo_db_path(agent_env_root: &Path) -> PathBuf {
-    agent_env_root.join("todo").join("todo.db")
-}
-
-fn worklog_db_path(agent_env_root: &Path) -> PathBuf {
-    agent_env_root.join("worklog").join("worklog.db")
-}
-
-async fn latest_modified_ms(paths: &[PathBuf]) -> Option<u64> {
-    let mut latest = None::<u64>;
-    for path in paths {
-        let Ok(meta) = fs::metadata(path).await else {
-            continue;
-        };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        let Ok(duration) = modified.duration_since(UNIX_EPOCH) else {
-            continue;
-        };
-        let ts = duration.as_millis() as u64;
-        latest = Some(match latest {
-            Some(current) => current.max(ts),
-            None => ts,
-        });
+    if task.outcome != Some(TaskOutcome::Succeeded) {
+        return Err(LLMComputeError::Provider(format!(
+            "aicc task {} ended with outcome {:?}",
+            task_id, task.outcome
+        )));
     }
-    latest
-}
 
-fn derive_agent_status(updated_at: Option<u64>) -> String {
-    let Some(updated_at) = updated_at else {
-        return "idle".to_string();
+    let payload = task
+        .result
+        .clone()
+        .or_else(|| task.progress.clone())
+        .unwrap_or_else(|| task.input.clone());
+    let task_data = match buckyos_api::parse_typed_task_data("aicc.compute", payload) {
+        Ok(TypedTaskData::AiccCompute(data)) => data,
+        _ => {
+            return Err(LLMComputeError::Provider(format!(
+                "aicc task {} terminated without typed aicc.compute payload",
+                task_id
+            )))
+        }
     };
-    if now_ms().saturating_sub(updated_at) <= ACTIVE_WINDOW_MS {
-        "running".to_string()
-    } else {
-        "idle".to_string()
-    }
-}
-
-fn query_workshop_todos_sync(
-    db_path: &Path,
-    agent_id: &str,
-    status: Option<&str>,
-    include_closed: bool,
-    owner_session_id: Option<&str>,
-    limit: usize,
-    offset: usize,
-) -> KRPCResult<(Vec<OpenDanTodoItem>, u64)> {
-    if !db_path.exists() {
-        return Ok((vec![], 0));
-    }
-    let tool = TodoTool::new(TodoToolConfig::with_db_path(db_path.to_path_buf()))
-        .map_err(agent_tool_error_to_rpc)?;
-    let statuses = map_workshop_todo_statuses(status, include_closed)?;
-    let listed = tokio::runtime::Handle::current()
-        .block_on(tool.list_admin_items(TodoAdminListOptions {
-            owner_session_id: owner_session_id.map(str::to_string),
-            statuses,
-            limit: Some(limit),
-            offset,
-        }))
-        .map_err(agent_tool_error_to_rpc)?;
-
-    let items = listed
-        .items
-        .into_iter()
-        .map(|item| {
-            let status = if item.status == "DONE" {
-                "done".to_string()
-            } else {
-                "open".to_string()
-            };
-            OpenDanTodoItem {
-                todo_id: item.todo_id,
-                title: item.title,
-                status: status.clone(),
-                agent_id: Some(agent_id.to_string()),
-                description: item.description,
-                created_at: Some(item.created_at),
-                completed_at: if status == "done" {
-                    Some(item.updated_at)
-                } else {
-                    None
-                },
-                created_in_step_id: None,
-                completed_in_step_id: None,
-                extra: Some(json!({
-                    "raw_status": item.status,
-                    "priority": item.priority,
-                    "labels": item.labels,
-                    "skills": item.skills,
-                    "assignee": item.assignee,
-                    "workspace_id": item.workspace_id,
-                    "owner_session_id": item.session_id,
-                    "todo_code": item.todo_code,
-                })),
-            }
-        })
-        .collect::<Vec<_>>();
-
-    Ok((items, listed.total))
-}
-
-fn query_workshop_worklogs_sync(
-    db_path: &Path,
-    agent_id_hint: &str,
-    owner_session_id: Option<&str>,
-    log_type: Option<&str>,
-    status: Option<&str>,
-    step_id: Option<&str>,
-    keyword: Option<&str>,
-    limit: usize,
-    offset: usize,
-) -> KRPCResult<(Vec<OpenDanWorklogItem>, u64)> {
-    if !db_path.exists() {
-        return Ok((vec![], 0));
-    }
-    let service = WorklogService::new(WorklogToolConfig::with_db_path(db_path.to_path_buf()))
-        .map_err(agent_tool_error_to_rpc)?;
-    let listed = tokio::runtime::Handle::current()
-        .block_on(service.list_worklog_page(WorklogListOptions {
-            owner_session_id: owner_session_id.map(str::to_string),
-            workspace_id: None,
-            step_id: step_id.map(str::to_string),
-            record_type: log_type.map(parse_worklog_record_type).transpose()?,
-            status: status.map(str::to_string),
-            impact_level: None,
-            tag: None,
-            keyword: keyword.map(str::to_string),
-            limit: Some(limit),
-            offset,
-        }))
-        .map_err(agent_tool_error_to_rpc)?;
-
-    let items = listed
-        .records
-        .into_iter()
-        .map(|record| OpenDanWorklogItem {
-            log_id: record.id,
-            log_type: record.record_type.as_str().to_string(),
-            status: record.status,
-            timestamp: record.timestamp,
-            agent_id: record.agent_did.or_else(|| Some(agent_id_hint.to_string())),
-            related_agent_id: record.subagent_did.or(record.related_agent_id),
-            step_id: record.step_id,
-            summary: record.summary,
-            payload: Some(record.payload),
-        })
-        .collect::<Vec<_>>();
-
-    Ok((items, listed.total))
-}
-
-fn list_agent_session_ids_sync(
-    sessions_dir: &Path,
-    limit: usize,
-    offset: usize,
-) -> KRPCResult<(Vec<String>, u64)> {
-    if !sessions_dir.exists() {
-        return Ok((vec![], 0));
-    }
-    let mut ids = Vec::<String>::new();
-    let read_dir = std::fs::read_dir(sessions_dir).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "read sessions dir `{}` failed: {error}",
-            sessions_dir.display()
-        ))
-    })?;
-
-    for entry in read_dir {
-        let entry = entry.map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "iterate sessions dir `{}` failed: {error}",
-                sessions_dir.display()
-            ))
-        })?;
-        let file_type = entry.file_type().map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "read session entry type `{}` failed: {error}",
-                entry.path().display()
-            ))
-        })?;
-        if !file_type.is_dir() {
-            continue;
-        }
-
-        let Some(raw_session_id) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        if sanitize_session_id_for_path(raw_session_id.as_str()).is_err() {
-            continue;
-        }
-
-        let Ok(session_file_path) = session_record_path(
-            sessions_dir,
-            raw_session_id.as_str(),
-            DEFAULT_AGENT_SESSION_FILE_NAME,
-        ) else {
-            continue;
-        };
-        if !session_file_path.is_file() {
-            continue;
-        }
-        ids.push(raw_session_id);
-    }
-
-    ids.sort();
-    let total = ids.len() as u64;
-    let items = ids.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
-    Ok((items, total))
-}
-
-fn load_agent_session_record_globally_sync(
-    runtime_cfg: &AiRuntimeConfig,
-    agents: &[RuntimeAgentInfo],
-    session_id: &str,
-) -> KRPCResult<OpenDanAgentSessionRecord> {
-    let mut matched = Vec::<OpenDanAgentSessionRecord>::new();
-    for agent in agents {
-        let agent_env_root =
-            agent_env_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
-        if let Some(record) = load_agent_session_record_for_agent_sync(&agent_env_root, session_id)?
-        {
-            matched.push(record);
-            if matched.len() > 1 {
-                break;
-            }
-        }
-    }
-
-    match matched.len() {
-        0 => Err(RPCErrors::ReasonError(format!(
-            "session not found: {session_id}"
-        ))),
-        1 => Ok(matched.swap_remove(0)),
-        _ => Err(RPCErrors::ReasonError(format!(
-            "duplicate session_id detected (expected globally unique): {session_id}"
-        ))),
-    }
-}
-
-fn load_agent_session_record_for_agent_sync(
-    agent_env_root: &Path,
-    session_id: &str,
-) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
-    let sessions_dir = agent_env_root.join(DEFAULT_AGENT_SESSIONS_DIR);
-    if !sessions_dir.exists() {
-        return Ok(None);
-    }
-    let session_file =
-        session_record_path(&sessions_dir, session_id, DEFAULT_AGENT_SESSION_FILE_NAME)
-            .map_err(agent_tool_error_to_rpc)?;
-    if !session_file.is_file() {
-        return Ok(None);
-    }
-    load_agent_session_record_sync(session_file.as_path(), session_id).map(Some)
-}
-
-fn update_agent_session_status_globally_sync(
-    runtime_cfg: &AiRuntimeConfig,
-    agents: &[RuntimeAgentInfo],
-    session_id: &str,
-    status: &str,
-) -> KRPCResult<OpenDanAgentSessionRecord> {
-    let mut matched_agent_env_roots = Vec::<PathBuf>::new();
-    for agent in agents {
-        let agent_env_root =
-            agent_env_root_from_agent_root(runtime_cfg, Path::new(agent.root.as_str()));
-        if load_agent_session_record_for_agent_sync(&agent_env_root, session_id)?.is_some() {
-            matched_agent_env_roots.push(agent_env_root);
-            if matched_agent_env_roots.len() > 1 {
-                break;
-            }
-        }
-    }
-
-    match matched_agent_env_roots.len() {
-        0 => Err(RPCErrors::ReasonError(format!(
-            "session not found: {session_id}"
-        ))),
-        1 => update_agent_session_status_for_agent_sync(
-            matched_agent_env_roots[0].as_path(),
-            session_id,
-            status,
-        )?
+    let output = task_data
+        .result
+        .and_then(|result| result.output)
         .ok_or_else(|| {
-            RPCErrors::ReasonError(format!(
-                "session not found when updating status: {session_id}"
+            LLMComputeError::Provider(format!(
+                "aicc task {} terminated without aicc output payload",
+                task_id
             ))
-        }),
-        _ => Err(RPCErrors::ReasonError(format!(
-            "duplicate session_id detected (expected globally unique): {session_id}"
-        ))),
-    }
-}
-
-fn update_agent_session_status_for_agent_sync(
-    agent_env_root: &Path,
-    session_id: &str,
-    status: &str,
-) -> KRPCResult<Option<OpenDanAgentSessionRecord>> {
-    let sessions_dir = agent_env_root.join(DEFAULT_AGENT_SESSIONS_DIR);
-    if !sessions_dir.exists() {
-        return Ok(None);
-    }
-    let session_file =
-        session_record_path(&sessions_dir, session_id, DEFAULT_AGENT_SESSION_FILE_NAME)
-            .map_err(agent_tool_error_to_rpc)?;
-    if !session_file.is_file() {
-        return Ok(None);
-    }
-
-    let mut record = load_agent_session_record_sync(&session_file, session_id)?;
-    let ts = now_ms();
-    record.status = status.to_string();
-    record.updated_at_ms = ts;
-    record.last_activity_ms = ts;
-
-    let serialized = serde_json::to_vec_pretty(&record).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "serialize session `{}` failed: {error}",
-            session_file.display()
-        ))
-    })?;
-    std::fs::write(&session_file, serialized).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "write session `{}` failed: {error}",
-            session_file.display()
-        ))
-    })?;
-    Ok(Some(record))
-}
-
-fn load_agent_session_record_sync(
-    session_file_path: &Path,
-    session_id: &str,
-) -> KRPCResult<OpenDanAgentSessionRecord> {
-    if !session_file_path.is_file() {
-        return Err(RPCErrors::ReasonError(format!(
-            "session not found: {session_id}"
-        )));
-    }
-
-    let raw = std::fs::read_to_string(session_file_path).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "read session `{}` failed: {error}",
-            session_file_path.display()
-        ))
-    })?;
-    let mut record = serde_json::from_str::<OpenDanAgentSessionRecord>(&raw).map_err(|error| {
-        RPCErrors::ReasonError(format!(
-            "parse session `{}` failed: {error}",
-            session_file_path.display()
-        ))
-    })?;
-    record.session_id = session_id.to_string();
-    if !record.meta.is_object() {
-        record.meta = json!({});
-    }
-    Ok(record)
-}
-
-#[derive(Clone)]
-struct RuntimeCreateSubAgentTool {
-    runtime: Arc<AiRuntime>,
-}
-
-#[derive(Clone)]
-struct OpenDanExternalWorkspaceRuntime {
-    runtime: AiRuntime,
-}
-
-impl OpenDanExternalWorkspaceRuntime {
-    fn new(runtime: AiRuntime) -> Self {
-        Self { runtime }
-    }
-}
-
-#[async_trait]
-impl AgentTool for RuntimeCreateSubAgentTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: TOOL_CREATE_SUB_AGENT.to_string(),
-            description: "Create a sub-agent under current agent runtime root.".to_string(),
-            args_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": { "type": "string", "description": "Sub-agent local name." },
-                    "did": { "type": "string", "description": "Optional sub-agent DID." },
-                    "parent_did": { "type": "string", "description": "Optional parent DID. Defaults to current agent DID." },
-                    "role_md": { "type": "string" },
-                    "self_md": { "type": "string" }
-                },
-                "required": ["name"],
-                "additionalProperties": false
-            }),
-            output_schema: json!({
-                "type": "object",
-                "properties": {
-                    "ok": { "type": "boolean" },
-                    "sub_agent": { "type": "object" }
-                }
-            }),
-            usage: None,
-        }
-    }
-
-    fn support_bash(&self) -> bool {
-        true
-    }
-    fn support_action(&self) -> bool {
-        false
-    }
-    fn support_llm_tool_call(&self) -> bool {
-        false
-    }
-
-    async fn call(
-        &self,
-        ctx: &SessionRuntimeContext,
-        args: Json,
-    ) -> Result<AgentToolResult, AgentToolError> {
-        let parent_did = optional_string(&args, "parent_did")?.unwrap_or(ctx.agent_name.clone());
-        let req = CreateSubAgentRequest {
-            name: require_string(&args, "name")?,
-            did: optional_string(&args, "did")?,
-            role_md: optional_string(&args, "role_md")?,
-            self_md: optional_string(&args, "self_md")?,
-        };
-
-        let result = self.runtime.create_sub_agent(&parent_did, req).await?;
-        Ok(AgentToolResult::from_details(json!({
-        "ok": true,
-        "sub_agent": result
-        }))
-        .with_cmd_line(TOOL_CREATE_SUB_AGENT.to_string())
-        .with_result("ok"))
-    }
-}
-
-#[async_trait]
-impl ExternalWorkspaceRuntimeBackend for OpenDanExternalWorkspaceRuntime {
-    async fn resolve_agent_root(&self, agent_did: &str) -> Result<PathBuf, AgentToolError> {
-        self.runtime
-            .lookup_agent_root(agent_did)
-            .map_err(Into::into)
-    }
-}
-
-fn validate_runtime_config(cfg: &AiRuntimeConfig) -> Result<(), AiRuntimeError> {
-    if cfg.sub_agents_dir_name.trim().is_empty()
-        || cfg.external_workspaces_dir_name.trim().is_empty()
-        || cfg.role_file_name.trim().is_empty()
-        || cfg.self_file_name.trim().is_empty()
-        || cfg.workspace_bindings_file_name.trim().is_empty()
-    {
-        return Err(AiRuntimeError::InvalidArgs(
-            "runtime config cannot contain empty path segment".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_agent_name(name: &str) -> Result<(), AiRuntimeError> {
-    validate_simple_name(name, "sub-agent name")
-}
-
-fn validate_simple_name(value: &str, field: &str) -> Result<(), AiRuntimeError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(AiRuntimeError::InvalidArgs(format!(
-            "{field} cannot be empty"
-        )));
-    }
-    if trimmed == "." || trimmed == ".." || trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(AiRuntimeError::InvalidArgs(format!(
-            "{field} must be a plain directory name"
-        )));
-    }
-    Ok(())
-}
-
-fn to_abs_path(path: &Path) -> Result<PathBuf, AiRuntimeError> {
-    crate::agent_tool::to_abs_path(path).map_err(|err| match err {
-        AgentToolError::InvalidArgs(message) => AiRuntimeError::InvalidArgs(message),
-        AgentToolError::NotFound(message) => AiRuntimeError::InvalidArgs(message),
-        AgentToolError::AlreadyExists(message) => AiRuntimeError::AlreadyExists(message),
-        AgentToolError::ExecFailed(message) => AiRuntimeError::Io {
-            path: path.display().to_string(),
-            source: std::io::Error::other(message),
-        },
-        AgentToolError::Timeout => AiRuntimeError::Io {
-            path: path.display().to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "to_abs_path timed out"),
-        },
-    })
-}
-
-async fn create_minimal_agent_layout(
-    agent_root: &Path,
-    cfg: &AiRuntimeConfig,
-) -> Result<(), AiRuntimeError> {
-    let dirs = [
-        agent_root.to_path_buf(),
-        agent_root.join(DEFAULT_BEHAVIORS_DIR),
-        agent_root.join(DEFAULT_MEMORY_DIR),
-        agent_root.join(DEFAULT_AGENT_SESSIONS_DIR),
-        agent_root.join(&cfg.sub_agents_dir_name),
-        agent_root.join("todo"),
-        agent_root.join("tools"),
-        agent_root.join("artifacts"),
-        agent_root.join("worklog"),
-        agent_root.join(&cfg.external_workspaces_dir_name),
-    ];
-
-    for dir in dirs {
-        if !fs::try_exists(&dir)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: dir.display().to_string(),
-                source,
-            })?
-        {
-            info!(
-                "opendan.persist_entity_prepare: kind=agent_layout_dir path={}",
-                dir.display()
-            );
-        }
-        fs::create_dir_all(&dir)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: dir.display().to_string(),
-                source,
-            })?;
-    }
-
-    Ok(())
-}
-
-async fn write_json_file(path: PathBuf, value: &Json) -> Result<(), AiRuntimeError> {
-    if let Some(parent) = path.parent() {
-        if !fs::try_exists(parent)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: parent.display().to_string(),
-                source,
-            })?
-        {
-            info!(
-                "opendan.persist_entity_prepare: kind=json_parent_dir path={}",
-                parent.display()
-            );
-        }
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: parent.display().to_string(),
-                source,
-            })?;
-    }
-    if !fs::try_exists(&path)
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: path.display().to_string(),
-            source,
-        })?
-    {
-        info!(
-            "opendan.persist_entity_prepare: kind=json_file path={}",
-            path.display()
-        );
-    }
-    let payload = serde_json::to_string_pretty(value).map_err(|source| AiRuntimeError::Json {
-        path: path.display().to_string(),
-        source,
-    })?;
-    fs::write(&path, payload)
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: path.display().to_string(),
-            source,
-        })
-}
-
-async fn load_json_file(path: &Path) -> Result<Json, AiRuntimeError> {
-    let content = fs::read_to_string(path)
-        .await
-        .map_err(|source| AiRuntimeError::Io {
-            path: path.display().to_string(),
-            source,
         })?;
-    serde_json::from_str::<Json>(&content).map_err(|source| AiRuntimeError::Json {
-        path: path.display().to_string(),
-        source,
+    let summary_value = output.get("summary").cloned().unwrap_or(output);
+    serde_json::from_value::<AiResponse>(summary_value).map_err(|err| {
+        LLMComputeError::Provider(format!(
+            "decode AiResponse from aicc task {} output failed: {err}",
+            task_id
+        ))
     })
 }
 
-async fn find_agent_doc_path(root: &Path) -> Result<Option<PathBuf>, AiRuntimeError> {
-    for name in AGENT_DOC_CANDIDATES {
-        let path = root.join(name);
-        if fs::try_exists(&path)
-            .await
-            .map_err(|source| AiRuntimeError::Io {
-                path: path.display().to_string(),
-                source,
-            })?
-        {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
+// =====================================================================
+// ToolManager — agent_tool adapter
+// =====================================================================
+
+/// Wraps an `AgentToolManager` so the waist can dispatch tool calls. The
+/// adapter is constructed per-session because `agent_tool::AgentTool::call`
+/// requires a `SessionRuntimeContext` keyed by session / trace / behavior.
+pub struct OpendanToolAdapter {
+    manager: Arc<AgentToolManager>,
+    ctx: SessionRuntimeContext,
+    step_idx: AtomicU32,
+    /// §4.7.2 — DID of the user this turn is executing on behalf of.
+    /// Runtime-injected into every `call.args` as `from_user_did` so tool
+    /// implementations can enforce permission checks / billing audit
+    /// regardless of what the LLM tries to claim in its arguments.
+    /// `None` for tool-only contexts that have no upstream human (boot
+    /// turns, autonomous work sessions).
+    from_user_did: Option<String>,
 }
 
-fn extract_agent_did(did_document: &Json, agent_root: &Path) -> String {
-    did_document
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
-        .or_else(|| {
-            did_document
-                .get("did")
-                .and_then(|v| v.as_str())
-                .map(|v| v.to_string())
-        })
-        .unwrap_or_else(|| {
-            let dir_name = agent_root
-                .file_name()
-                .and_then(|v| v.to_str())
-                .unwrap_or("agent");
-            format!("did:opendan:{dir_name}")
-        })
+impl OpendanToolAdapter {
+    pub fn new(manager: Arc<AgentToolManager>, ctx: SessionRuntimeContext) -> Self {
+        Self::with_from_user_did(manager, ctx, None)
+    }
+
+    pub fn with_from_user_did(
+        manager: Arc<AgentToolManager>,
+        ctx: SessionRuntimeContext,
+        from_user_did: Option<String>,
+    ) -> Self {
+        let step_idx = AtomicU32::new(ctx.step_idx);
+        Self {
+            manager,
+            ctx,
+            step_idx,
+            from_user_did,
+        }
+    }
+}
+
+#[async_trait]
+impl ToolManager for OpendanToolAdapter {
+    async fn call_tool(&self, mut call: AiToolCall) -> Observation {
+        let mut ctx = self.ctx.clone();
+        ctx.step_idx = self.step_idx.fetch_add(1, Ordering::Relaxed);
+        let call_id = call.call_id.clone();
+        // §4.7.2 — overwrite any pre-existing `from_user_did` in args.
+        // The LLM has no business setting this field; only the runtime
+        // does. An LLM-supplied value is treated as a prompt-injection
+        // attempt and discarded.
+        if let Some(did) = self.from_user_did.as_ref() {
+            call.args
+                .insert("from_user_did".to_string(), Value::String(did.clone()));
+        } else {
+            call.args.remove("from_user_did");
+        }
+        match self.manager.call_tool(&ctx, call).await {
+            Ok(result) => result_to_observation(call_id, result),
+            Err(err) => Observation::Error {
+                call_id,
+                message: err.to_string(),
+                tool_result: None,
+            },
+        }
+    }
+
+    fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
+        self.manager
+            .list_tool_specs()
+            .into_iter()
+            .map(|s| ToolSpecLite {
+                name: s.name,
+                description: s.description,
+                args_schema: s.args_schema,
+            })
+            .collect()
+    }
+
+    fn has_tool(&self, name: &str) -> bool {
+        self.manager.has_tool(name)
+    }
+}
+
+fn result_to_observation(call_id: String, result: AgentToolResult) -> Observation {
+    let tool_result = Some(result.to_tool_result_view());
+    if matches!(result.status, AgentToolStatus::Pending) {
+        return Observation::Pending {
+            call_id,
+            tool_result,
+        };
+    }
+    let is_error = matches!(result.status, AgentToolStatus::Error);
+    let summary = result.summary.clone();
+    let title = result.title.clone();
+    if is_error {
+        let output = result.output.clone().unwrap_or_default();
+        let message = if !output.trim().is_empty() {
+            if summary.trim().is_empty() {
+                output
+            } else {
+                format!("{}\n```output\n{}\n```", summary.trim(), output.trim())
+            }
+        } else if !summary.is_empty() {
+            summary
+        } else if !title.is_empty() {
+            title
+        } else {
+            "tool error".to_string()
+        };
+        Observation::Error {
+            call_id,
+            message,
+            tool_result,
+        }
+    } else {
+        let text = result
+            .output
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| summary.clone());
+        let bytes = text.len();
+        Observation::Success {
+            call_id,
+            content: Value::String(text),
+            bytes,
+            truncated: false,
+            tool_result,
+        }
+    }
+}
+
+// =====================================================================
+// PolicyEngine — behavior-driven gate (MVP)
+// =====================================================================
+
+/// `PolicyEngine` for opendan. Two gates:
+///   - `approval_required`: invocations (tools *or* actions) in this list
+///     become recoverable errors the LLM can self-correct against (or that
+///     the L4 worksession can escalate to a human). Matched on the
+///     normalized invocation name.
+///   - `enforce_whitelist`: when set, the policy also re-validates each
+///     invocation against the request's policy. Per beta2.2's split,
+///     XML-action names are checked against `action_whitelist`/`action_mode`
+///     and everything else against `whitelist`/`mode`. Defence-in-depth on
+///     top of the waist's spec advertisement, since adversarial LLMs
+///     sometimes emit calls to invocations that were never advertised.
+///
+/// Populated by §9.3 `behavior_cfg` translation in `agent_session::build_deps`.
+pub struct AgentPolicy {
+    pub approval_required: Vec<String>,
+    pub enforce_whitelist: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvocationSurface {
+    Tool,
+    Action,
+}
+
+impl AgentPolicy {
+    pub fn new(approval_required: Vec<String>) -> Self {
+        Self {
+            approval_required,
+            enforce_whitelist: true,
+        }
+    }
+
+    pub fn with_whitelist_enforcement(mut self, enforce: bool) -> Self {
+        self.enforce_whitelist = enforce;
+        self
+    }
+
+    fn gate_calls_on_surface(
+        &self,
+        request: &LLMContextRequest,
+        calls: Vec<AiToolCall>,
+        surface: InvocationSurface,
+    ) -> Result<Vec<AiToolCall>, String> {
+        if !self.approval_required.is_empty() {
+            if let Some(blocked) = calls
+                .iter()
+                .find(|c| self.approval_required.iter().any(|n| n == &c.name))
+            {
+                return Err(format!(
+                    "invocation `{}` requires human approval",
+                    blocked.name
+                ));
+            }
+        }
+        if self.enforce_whitelist {
+            use llm_context::request::ToolMode;
+            for call in &calls {
+                let (mode, whitelist, kind, whitelist_name) = match surface {
+                    InvocationSurface::Tool => (
+                        request.tool_policy.mode,
+                        &request.tool_policy.whitelist,
+                        "tool",
+                        "tool_whitelist",
+                    ),
+                    InvocationSurface::Action => (
+                        request.tool_policy.action_mode,
+                        &request.tool_policy.action_whitelist,
+                        "action",
+                        "action_whitelist",
+                    ),
+                };
+                match mode {
+                    ToolMode::None => {
+                        return Err(format!(
+                            "{kind} `{}` is rejected: this behavior disables the {kind} surface",
+                            call.name
+                        ));
+                    }
+                    ToolMode::Whitelist => {
+                        if !whitelist.iter().any(|n| n == &call.name) {
+                            return Err(format!(
+                                "{kind} `{}` is not in this behavior's {whitelist_name}",
+                                call.name,
+                            ));
+                        }
+                    }
+                    ToolMode::All => {}
+                }
+            }
+        }
+        Ok(calls)
+    }
+}
+
+#[async_trait]
+impl PolicyEngine for AgentPolicy {
+    async fn gate_tool_calls(
+        &self,
+        request: &LLMContextRequest,
+        calls: Vec<AiToolCall>,
+    ) -> Result<Vec<AiToolCall>, String> {
+        self.gate_calls_on_surface(request, calls, InvocationSurface::Tool)
+    }
+
+    async fn gate_action_calls(
+        &self,
+        request: &LLMContextRequest,
+        calls: Vec<AiToolCall>,
+    ) -> Result<Vec<AiToolCall>, String> {
+        self.gate_calls_on_surface(request, calls, InvocationSurface::Action)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use buckyos_api::{value_to_object_map, AiToolCall};
-    use tempfile::tempdir;
-
+mod policy_tests {
     use super::*;
+    use ::agent_tool::AgentToolStatus;
+    use llm_context::request::{ContextOwnerRef, ToolMode, ToolPolicy};
+    use std::collections::HashMap;
 
-    async fn write_agent_doc(path: &Path, did: &str) {
-        fs::create_dir_all(path).await.expect("create agent dir");
-        fs::write(
-            path.join("agent.json.doc"),
-            json!({
-                "id": did,
-                "name": did
-            })
-            .to_string(),
-        )
-        .await
-        .expect("write agent doc");
-    }
-
-    async fn write_session_record(
-        agent_root: &Path,
-        session_id: &str,
-        owner_agent: &str,
-        title: &str,
-        last_activity_ms: u64,
-    ) {
-        let session_path = agent_root.join(DEFAULT_AGENT_SESSIONS_DIR).join(session_id);
-        fs::create_dir_all(&session_path)
-            .await
-            .expect("create session dir");
-        fs::write(
-            session_path.join(DEFAULT_AGENT_SESSION_FILE_NAME),
-            json!({
-                "session_id": session_id,
-                "owner_agent": owner_agent,
-                "title": title,
-                "summary": "",
-                "status": "active",
-                "created_at_ms": 1,
-                "updated_at_ms": 2,
-                "last_activity_ms": last_activity_ms,
-                "links": [],
-                "tags": [],
-                "meta": {}
-            })
-            .to_string(),
-        )
-        .await
-        .expect("write session record");
-    }
-
-    fn call_ctx(agent_did: &str) -> SessionRuntimeContext {
-        SessionRuntimeContext {
-            trace_id: "trace-1".to_string(),
-            agent_name: agent_did.to_string(),
-            behavior: "on_wakeup".to_string(),
-            step_idx: 0,
-            wakeup_id: "wakeup-1".to_string(),
-            session_id: "session-test".to_string(),
+    fn request_with_policy(tool_policy: ToolPolicy) -> LLMContextRequest {
+        LLMContextRequest {
+            owner: ContextOwnerRef::Other {
+                label: "test".to_string(),
+            },
+            trace: None,
+            objective: String::new(),
+            behavior_name: "test".to_string(),
+            input: Vec::new(),
+            model_policy: Default::default(),
+            tool_policy,
+            output: Default::default(),
+            budget: Default::default(),
+            human_policy: Default::default(),
+            error_policy: Default::default(),
+            forbid_next_behavior: false,
         }
     }
 
-    #[tokio::test]
-    async fn scan_agents_detects_root_and_nested_sub_agents() {
-        let tmp = tempdir().expect("create tempdir");
-        let root = tmp.path().join("agents");
+    fn call(name: &str) -> AiToolCall {
+        AiToolCall {
+            name: name.to_string(),
+            args: HashMap::new(),
+            call_id: "call-1".to_string(),
+        }
+    }
 
-        let root_agent = root.join("jarvis");
-        let sub_agent = root_agent.join("sub-agents").join("web-agent");
-        let nested_sub_agent = sub_agent.join("sub-agents").join("crawler-agent");
+    #[test]
+    fn error_observation_keeps_tool_output() {
+        let result = AgentToolResult::from_details(json!({}))
+            .with_tool("exec_bash")
+            .with_command_metadata("exec_bash", "date -d @1")
+            .with_status(AgentToolStatus::Error)
+            .with_result("exit=1 in 10ms")
+            .with_output("date: illegal option -- d\nusage: date ...")
+            .with_return_code(1);
 
-        write_agent_doc(&root_agent, "did:test:jarvis").await;
-        write_agent_doc(&sub_agent, "did:test:web-agent").await;
-        write_agent_doc(&nested_sub_agent, "did:test:crawler-agent").await;
+        let obs = result_to_observation("call-1".to_string(), result);
+        match obs {
+            Observation::Error { message, .. } => {
+                assert!(message.contains("exit=1 in 10ms"));
+                assert!(message.contains("date: illegal option -- d"));
+            }
+            _ => panic!("expected error observation"),
+        }
+    }
 
-        let runtime = AiRuntime::new(AiRuntimeConfig::new(&root))
-            .await
-            .expect("create runtime");
+    #[test]
+    fn fork_status_uses_parent_turn_nonce() {
+        assert_eq!(ui_status_nonce("ui-session-7::fork-1"), "ui-session-7");
+        assert_eq!(ui_status_nonce("ui-session-8"), "ui-session-8");
+    }
 
-        let agents = runtime.scan_agents().await.expect("scan agents");
-        assert_eq!(agents.len(), 3);
+    #[test]
+    fn exec_bash_provider_tool_uses_tool_whitelist() {
+        let policy = AgentPolicy::new(Vec::new());
+        let request = request_with_policy(ToolPolicy {
+            mode: ToolMode::Whitelist,
+            whitelist: vec!["exec_bash".to_string()],
+            action_mode: ToolMode::None,
+            action_whitelist: Vec::new(),
+            ..Default::default()
+        });
 
-        let root_info = agents
-            .iter()
-            .find(|item| item.did == "did:test:jarvis")
-            .expect("find root agent");
-        assert!(!root_info.is_sub_agent);
-        assert_eq!(root_info.parent_did, None);
+        let result = policy.gate_calls_on_surface(
+            &request,
+            vec![call("exec_bash")],
+            InvocationSurface::Tool,
+        );
 
-        let web_info = agents
-            .iter()
-            .find(|item| item.did == "did:test:web-agent")
-            .expect("find first sub agent");
-        assert!(web_info.is_sub_agent);
-        assert_eq!(web_info.parent_did.as_deref(), Some("did:test:jarvis"));
+        assert!(result.is_ok());
+    }
 
-        let crawler_info = agents
-            .iter()
-            .find(|item| item.did == "did:test:crawler-agent")
-            .expect("find nested sub agent");
-        assert!(crawler_info.is_sub_agent);
+    #[test]
+    fn exec_bash_xml_action_uses_action_whitelist() {
+        let policy = AgentPolicy::new(Vec::new());
+        let request = request_with_policy(ToolPolicy {
+            mode: ToolMode::Whitelist,
+            whitelist: vec!["exec_bash".to_string()],
+            action_mode: ToolMode::None,
+            action_whitelist: Vec::new(),
+            ..Default::default()
+        });
+
+        let result = policy.gate_calls_on_surface(
+            &request,
+            vec![call("exec_bash")],
+            InvocationSurface::Action,
+        );
+
         assert_eq!(
-            crawler_info.parent_did.as_deref(),
-            Some("did:test:web-agent")
+            result.unwrap_err(),
+            "action `exec_bash` is rejected: this behavior disables the action surface"
         );
     }
+}
 
-    #[tokio::test]
-    async fn runtime_tools_create_sub_agent() {
-        let tmp = tempdir().expect("create tempdir");
-        let agents_root = tmp.path().join("agents");
-        let parent_root = agents_root.join("jarvis");
+// =====================================================================
+// WorklogSink — WorklogService adapter + one-line status fanout
+// =====================================================================
 
-        write_agent_doc(&parent_root, "did:test:jarvis").await;
+/// Receiver for the session's "one-line status" string surfaced to UIs.
+/// Implementations typically own an `Arc<Mutex<String>>` or a broadcast
+/// channel; the worklog sink calls `set` on every meaningful `WorkEvent`.
+pub trait OneLineStatusSink: Send + Sync {
+    fn set(&self, status: String);
 
-        let runtime = AiRuntime::new(AiRuntimeConfig::new(&agents_root))
-            .await
-            .expect("create runtime");
-        runtime
-            .register_agent("did:test:jarvis", &parent_root)
-            .await
-            .expect("register root agent");
+    fn set_with_nonce(&self, status: String, _nonce: Option<String>) {
+        self.set(status);
+    }
+}
 
-        let tool_mgr = AgentToolManager::new();
-        runtime
-            .register_tools(&tool_mgr)
-            .await
-            .expect("register runtime tools");
+/// `WorklogSink` that translates waist `WorkEvent`s into worklog records
+/// and updates the session's one-line status as a side effect.
+pub struct OpenDanWorklogSink {
+    service: Arc<WorklogService>,
+    ctx: WorklogAppendCtx,
+    status: Option<Arc<dyn OneLineStatusSink>>,
+    i18n: AgentI18n,
+}
 
-        let create_result = tool_mgr
-            .call_tool(
-                &call_ctx("did:test:jarvis"),
-                AiToolCall {
-                    name: TOOL_CREATE_SUB_AGENT.to_string(),
-                    args: value_to_object_map(json!({
-                        "name": "web-agent",
-                        "role_md": "# Role\nWeb specialist\n",
-                        "self_md": "# Self\n- browser only\n"
-                    })),
-                    call_id: "call-create-sub-agent".to_string(),
-                },
-            )
-            .await
-            .expect("create sub agent via tool");
-
-        let sub_did = create_result["sub_agent"]["did"]
-            .as_str()
-            .expect("read sub did");
-        assert_eq!(sub_did, "did:test:jarvis:web-agent");
-
-        let sub_root = parent_root.join("sub-agents").join("web-agent");
-        assert!(fs::try_exists(sub_root.join("agent.json.doc"))
-            .await
-            .expect("check sub agent doc"));
+impl OpenDanWorklogSink {
+    pub fn new(
+        service: Arc<WorklogService>,
+        ctx: WorklogAppendCtx,
+        status: Option<Arc<dyn OneLineStatusSink>>,
+        i18n: AgentI18n,
+    ) -> Self {
+        Self {
+            service,
+            ctx,
+            status,
+            i18n,
+        }
     }
 
-    #[tokio::test]
-    async fn opendan_handler_lists_agent_sessions_with_pagination() {
-        let tmp = tempdir().expect("create tempdir");
-        let agents_root = tmp.path().join("agents");
-        let agent_root = agents_root.join("jarvis");
-        let did = "did:test:jarvis";
+    fn update_status(&self, line: Option<String>, nonce: Option<String>) {
+        if let (Some(sink), Some(line)) = (self.status.as_ref(), line) {
+            sink.set_with_nonce(line, nonce);
+        }
+    }
+}
 
-        write_agent_doc(&agent_root, did).await;
-        write_session_record(&agent_root, "session-c", did, "Session C", 30).await;
-        write_session_record(&agent_root, "session-a", did, "Session A", 10).await;
-        write_session_record(&agent_root, "session-b", did, "Session B", 20).await;
-        fs::create_dir_all(
-            agent_root
-                .join(DEFAULT_AGENT_SESSIONS_DIR)
-                .join("session-without-file"),
-        )
-        .await
-        .expect("create ignored session dir");
+pub(crate) fn ui_status_nonce(trace_id: &str) -> String {
+    trace_id
+        .split_once("::fork-")
+        .map(|(parent, _)| parent)
+        .unwrap_or(trace_id)
+        .to_string()
+}
 
-        let runtime = Arc::new(
-            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
-                .await
-                .expect("create runtime"),
-        );
-        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
-
-        let first_page = handler
-            .handle_list_agent_sessions(
-                OpenDanListAgentSessionsReq::new(did.to_string(), Some(2), None),
-                RPCContext::default(),
-            )
-            .await
-            .expect("list first page");
-        assert_eq!(first_page.items, vec!["session-a", "session-b"]);
-        assert_eq!(first_page.total, Some(3));
-        assert_eq!(first_page.next_cursor.as_deref(), Some("2"));
-
-        let second_page = handler
-            .handle_list_agent_sessions(
-                OpenDanListAgentSessionsReq::new(
-                    did.to_string(),
-                    Some(2),
-                    first_page.next_cursor.clone(),
+#[async_trait]
+impl WorklogSink for OpenDanWorklogSink {
+    async fn emit(&self, event: WorkEvent) {
+        let (event_type, status, payload, status_line) = match event {
+            WorkEvent::LLMStarted { trace_id, model } => (
+                "LLMStarted",
+                "ok",
+                json!({"trace_id": trace_id, "model": &model}),
+                Some(self.i18n.render("status.llm_started", &[("model", model)])),
+            ),
+            WorkEvent::LLMFinished { trace_id, ok } => (
+                "LLMFinished",
+                if ok { "ok" } else { "error" },
+                json!({"trace_id": trace_id, "ok": ok}),
+                Some(if ok {
+                    self.i18n.render("status.llm_finished", &[])
+                } else {
+                    self.i18n.render("status.llm_failed", &[])
+                }),
+            ),
+            WorkEvent::LLMInferenceFailed { trace_id, error } => (
+                "LLMInferenceFailed",
+                "error",
+                json!({"trace_id": trace_id, "error": &error}),
+                Some(self.i18n.render("status.llm_error", &[("error", error)])),
+            ),
+            WorkEvent::ToolCallPlanned {
+                trace_id,
+                tool,
+                call_id,
+            } => (
+                "ToolCallPlanned",
+                "ok",
+                json!({"trace_id": trace_id, "tool": &tool, "call_id": call_id}),
+                Some(self.i18n.render("status.tool_planned", &[("tool", tool)])),
+            ),
+            WorkEvent::ToolCallFinished {
+                trace_id,
+                tool,
+                call_id,
+                ok,
+                duration_ms,
+            } => (
+                "ToolCallFinished",
+                if ok { "ok" } else { "error" },
+                json!({
+                    "trace_id": trace_id,
+                    "tool": &tool,
+                    "call_id": call_id,
+                    "ok": ok,
+                    "duration_ms": duration_ms,
+                }),
+                Some(self.i18n.render(
+                    "status.tool_finished",
+                    &[
+                        ("tool", tool),
+                        (
+                            "result",
+                            if ok {
+                                self.i18n.render("status.tool_result_done", &[])
+                            } else {
+                                self.i18n.render("status.tool_result_failed", &[])
+                            },
+                        ),
+                    ],
+                )),
+            ),
+            WorkEvent::ToolCallFailed {
+                trace_id,
+                tool,
+                call_id,
+                message,
+            } => (
+                "ToolCallFailed",
+                "error",
+                json!({
+                    "trace_id": trace_id,
+                    "tool": &tool,
+                    "call_id": call_id,
+                    "message": &message,
+                }),
+                Some(self.i18n.render(
+                    "status.tool_failed",
+                    &[("tool", tool), ("message", message)],
+                )),
+            ),
+            WorkEvent::OutputParseFailed { trace_id, error } => (
+                "OutputParseFailed",
+                "error",
+                json!({"trace_id": trace_id, "error": &error}),
+                Some(self.i18n.render("status.parse_error", &[("error", error)])),
+            ),
+            WorkEvent::ContextRewritten {
+                trace_id,
+                from_messages,
+                to_messages,
+            } => (
+                "ContextRewritten",
+                "ok",
+                json!({
+                    "trace_id": trace_id,
+                    "from_messages": from_messages,
+                    "to_messages": to_messages,
+                }),
+                Some(self.i18n.render(
+                    "status.context_rewritten",
+                    &[
+                        ("from_messages", from_messages.to_string()),
+                        ("to_messages", to_messages.to_string()),
+                    ],
+                )),
+            ),
+            WorkEvent::SelfReportSet { trace_id, chars } => (
+                "SelfReportSet",
+                "ok",
+                json!({"trace_id": trace_id, "chars": chars}),
+                Some(
+                    self.i18n
+                        .render("status.self_report_set", &[("chars", chars.to_string())]),
                 ),
-                RPCContext::default(),
-            )
-            .await
-            .expect("list second page");
-        assert_eq!(second_page.items, vec!["session-c"]);
-        assert_eq!(second_page.total, Some(3));
-        assert!(second_page.next_cursor.is_none());
+            ),
+            WorkEvent::MessageSent {
+                trace_id,
+                target,
+                chars,
+            } => (
+                "MessageSent",
+                "ok",
+                json!({"trace_id": trace_id, "target": &target, "chars": chars}),
+                Some(self.i18n.render(
+                    "status.message_sent",
+                    &[("target", target), ("chars", chars.to_string())],
+                )),
+            ),
+        };
+
+        let status_nonce = payload
+            .get("trace_id")
+            .and_then(Value::as_str)
+            .map(ui_status_nonce);
+        self.update_status(status_line, status_nonce);
+
+        let record = json!({
+            "type": event_type,
+            "status": status,
+            "trace_id": payload.get("trace_id").cloned().unwrap_or(Value::Null),
+            "payload": payload,
+        });
+        if let Err(err) = self.service.append_record(&self.ctx, record).await {
+            warn!("opendan.worklog: append failed: {err}");
+        }
+    }
+}
+
+// =====================================================================
+// TurnHook — snapshot persistence
+// =====================================================================
+
+/// `TurnHook` that flushes the latest `LLMContextSnapshot` to disk before
+/// every LLM inference. Pair with `session/.meta/state.snap`.
+///
+/// Sync I/O is intentional — the waist blocks on this hook, and tokio's
+/// `spawn_blocking` would add overhead for a small JSON write. If profiling
+/// shows the write dominates latency, switch to a bounded channel + writer
+/// task.
+pub struct SessionSnapshotHook {
+    path: PathBuf,
+}
+
+impl SessionSnapshotHook {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl TurnHook for SessionSnapshotHook {
+    fn before_inference(&self, snapshot: &LLMContextSnapshot) {
+        let bytes = match serde_json::to_vec(snapshot) {
+            Ok(v) => v,
+            Err(err) => {
+                warn!("opendan.snapshot: serialize failed: {err}");
+                return;
+            }
+        };
+        if let Some(parent) = self.path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                warn!("opendan.snapshot: mkdir {} failed: {err}", parent.display());
+                return;
+            }
+        }
+        // tmp + rename for crash-consistency: a half-written `state.snap`
+        // would prevent the session from recovering on next boot.
+        let tmp = self.path.with_extension("snap.tmp");
+        if let Err(err) = std::fs::write(&tmp, &bytes) {
+            warn!("opendan.snapshot: write {} failed: {err}", tmp.display());
+            return;
+        }
+        if let Err(err) = std::fs::rename(&tmp, &self.path) {
+            warn!(
+                "opendan.snapshot: rename to {} failed: {err}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+// =====================================================================
+// AgentRuntime — process-level singleton, deps factory
+// =====================================================================
+
+/// Process-level shared state — singleton per opendan process (§1 of the
+/// design doc). Future steps will extend this with `contact_mgr` and
+/// `task_mgr` once they have consumers.
+pub struct AgentRuntime {
+    /// Fixed AICC client override for in-process tests or callers that manage
+    /// their own token. None means acquire a short-session client per use.
+    pub aicc: Option<Arc<AiccClient>>,
+    pub worklog: Arc<WorklogService>,
+    /// Fixed msg-center client override for in-process tests or callers that
+    /// manage their own token. None means acquire a short-session client per use.
+    pub msg_center: Option<Arc<MsgCenterClient>>,
+    /// Optional kevent handle. Paired with `msg_center` to drive the inbox
+    /// pump — when both are set, the pump uses kevent as a poll accelerator
+    /// and falls back to box sweeps on timeout / reader loss.
+    pub kevent_client: Option<Arc<KEventClient>>,
+    /// Fixed task-manager client override for in-process tests or callers that
+    /// manage their own token. None means acquire a short-session client per use.
+    pub task_mgr: Option<Arc<TaskManagerClient>>,
+    /// Fixed Task Dispatch Center client override for in-process tests or
+    /// callers that manage their own token. None means acquire a short-session
+    /// client per use.
+    pub task_dispatcher: Option<Arc<TaskDispatcherClient>>,
+}
+
+impl AgentRuntime {
+    pub fn new(aicc: Arc<AiccClient>, worklog: Arc<WorklogService>) -> Self {
+        Self {
+            aicc: Some(aicc),
+            worklog,
+            msg_center: None,
+            kevent_client: None,
+            task_mgr: None,
+            task_dispatcher: None,
+        }
     }
 
-    #[tokio::test]
-    async fn opendan_handler_reads_sessions_from_files() {
-        let tmp = tempdir().expect("create tempdir");
-        let agents_root = tmp.path().join("agents");
-        let agent_root = agents_root.join("jarvis");
-        let did = "did:test:jarvis";
-
-        write_agent_doc(&agent_root, did).await;
-        write_session_record(&agent_root, "session-c", did, "Session C", 30).await;
-        write_session_record(&agent_root, "session-a", did, "Session A", 10).await;
-        write_session_record(&agent_root, "session-b", did, "Session B", 20).await;
-
-        let runtime = Arc::new(
-            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
-                .await
-                .expect("create runtime"),
-        );
-        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
-
-        let list = handler
-            .handle_list_agent_sessions(
-                OpenDanListAgentSessionsReq::new(did.to_string(), Some(10), None),
-                RPCContext::default(),
-            )
-            .await
-            .expect("list sessions from files");
-        assert_eq!(list.items, vec!["session-a", "session-b", "session-c"]);
-        assert_eq!(list.total, Some(3));
-
-        let got = handler
-            .handle_get_session_record("session-b", RPCContext::default())
-            .await
-            .expect("get file session");
-        assert_eq!(got.session_id, "session-b");
-        assert_eq!(got.owner_agent, did);
-        assert_eq!(got.title, "Session B");
+    pub fn from_runtime(worklog: Arc<WorklogService>) -> Self {
+        Self {
+            aicc: None,
+            worklog,
+            msg_center: None,
+            kevent_client: None,
+            task_mgr: None,
+            task_dispatcher: None,
+        }
     }
 
-    #[tokio::test]
-    async fn opendan_handler_can_get_session_record() {
-        let tmp = tempdir().expect("create tempdir");
-        let agents_root = tmp.path().join("agents");
-        let agent_root = agents_root.join("jarvis");
-        let did = "did:test:jarvis";
-
-        write_agent_doc(&agent_root, did).await;
-        write_session_record(&agent_root, "session-001", did, "Primary Session", 88).await;
-
-        let runtime = Arc::new(
-            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
-                .await
-                .expect("create runtime"),
-        );
-        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
-
-        let session = handler
-            .handle_get_session_record("session-001", RPCContext::default())
-            .await
-            .expect("get session");
-        assert_eq!(session.session_id, "session-001");
-        assert_eq!(session.owner_agent, did);
-        assert_eq!(session.title, "Primary Session");
-        assert_eq!(session.last_activity_ms, 88);
-
-        let missing = handler
-            .handle_get_session_record("session-404", RPCContext::default())
-            .await;
-        assert!(missing.is_err());
-
-        let invalid = handler
-            .handle_get_session_record("../bad", RPCContext::default())
-            .await;
-        assert!(invalid.is_err());
+    pub async fn aicc_client(&self) -> std::result::Result<Arc<AiccClient>, RPCErrors> {
+        if let Some(client) = self.aicc.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_aicc_client().await?))
     }
 
-    #[tokio::test]
-    async fn opendan_handler_can_pause_and_resume_session() {
-        let tmp = tempdir().expect("create tempdir");
-        let agents_root = tmp.path().join("agents");
-        let agent_root = agents_root.join("jarvis");
-        let did = "did:test:jarvis";
-
-        write_agent_doc(&agent_root, did).await;
-        write_session_record(&agent_root, "session-001", did, "Primary Session", 88).await;
-
-        let runtime = Arc::new(
-            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
-                .await
-                .expect("create runtime"),
-        );
-        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
-
-        let paused = handler
-            .handle_pause_session("session-001", RPCContext::default())
-            .await
-            .expect("pause session");
-        assert_eq!(paused.status, "pause");
-
-        let resumed = handler
-            .handle_resume_session("session-001", RPCContext::default())
-            .await
-            .expect("resume session");
-        assert_eq!(resumed.status, "normal");
-
-        let reloaded = handler
-            .handle_get_session_record("session-001", RPCContext::default())
-            .await
-            .expect("get session after resume");
-        assert_eq!(reloaded.status, "normal");
+    pub async fn msg_center_client(&self) -> std::result::Result<Arc<MsgCenterClient>, RPCErrors> {
+        if let Some(client) = self.msg_center.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_msg_center_client().await?))
     }
 
-    #[tokio::test]
-    async fn opendan_handler_rejects_duplicate_global_session_id() {
-        let tmp = tempdir().expect("create tempdir");
-        let agents_root = tmp.path().join("agents");
-        let agent_root_a = agents_root.join("jarvis");
-        let agent_root_b = agents_root.join("vision");
-        let did_a = "did:test:jarvis";
-        let did_b = "did:test:vision";
-
-        write_agent_doc(&agent_root_a, did_a).await;
-        write_agent_doc(&agent_root_b, did_b).await;
-        write_session_record(&agent_root_a, "session-dup-001", did_a, "Session A", 11).await;
-        write_session_record(&agent_root_b, "session-dup-001", did_b, "Session B", 22).await;
-
-        let runtime = Arc::new(
-            AiRuntime::new(AiRuntimeConfig::new(&agents_root))
-                .await
-                .expect("create runtime"),
-        );
-        let handler = OpenDanRuntimeKrpcHandler::new(runtime);
-
-        let result = handler
-            .handle_get_session_record("session-dup-001", RPCContext::default())
-            .await;
-        assert!(result.is_err());
+    pub async fn task_mgr_client(&self) -> std::result::Result<Arc<TaskManagerClient>, RPCErrors> {
+        if let Some(client) = self.task_mgr.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_task_mgr_client().await?))
     }
+
+    pub async fn task_dispatcher_client(
+        &self,
+    ) -> std::result::Result<Arc<TaskDispatcherClient>, RPCErrors> {
+        if let Some(client) = self.task_dispatcher.as_ref() {
+            return Ok(client.clone());
+        }
+        let runtime = get_buckyos_api_runtime()?;
+        Ok(Arc::new(runtime.get_task_dispatcher_client().await?))
+    }
+
+    pub fn with_msg_center(mut self, client: Arc<MsgCenterClient>) -> Self {
+        self.msg_center = Some(client);
+        self
+    }
+
+    pub fn with_kevent_client(mut self, client: Arc<KEventClient>) -> Self {
+        self.kevent_client = Some(client);
+        self
+    }
+
+    pub fn with_task_mgr(mut self, client: Arc<TaskManagerClient>) -> Self {
+        self.task_mgr = Some(client);
+        self
+    }
+
+    pub fn with_task_dispatcher(mut self, client: Arc<TaskDispatcherClient>) -> Self {
+        self.task_dispatcher = Some(client);
+        self
+    }
+}
+
+/// Inputs to [`build_session_deps`]. Bundled so callers don't pass a
+/// half-dozen positional args; every field has a well-defined home in the
+/// new runtime's session layer.
+pub struct SessionDepsInput {
+    pub tools: Arc<AgentToolManager>,
+    pub ctx: SessionRuntimeContext,
+    pub snapshot_path: PathBuf,
+    pub approval_required: Vec<String>,
+    pub one_line_status: Option<Arc<dyn OneLineStatusSink>>,
+    pub i18n: AgentI18n,
+    /// Behavior Loop: structured parser + matched renderer. `None` ⇒
+    /// traditional Agent Loop. Filled by [`behavior_cfg`](crate::behavior_cfg).
+    pub parser_renderer: Option<(Arc<dyn LLMResultParser>, Arc<dyn StepRenderer>)>,
+    /// §4.7.2 — DID of the user the current turn is acting on behalf of.
+    /// Forwarded into every dispatched tool call as a runtime-injected
+    /// `from_user_did` arg. In 1-on-1 chat this is the peer's DID
+    /// (== the agent owner); in group chat it's the @-mentioner. `None`
+    /// for autonomous turns (boot, scheduled work).
+    pub from_user_did: Option<String>,
+}
+
+/// Assemble per-session `LLMContextDeps`. Step 3 will compose the optional
+/// behavior-loop fields (`result_parser` / `step_renderer`) on top of the
+/// value returned here.
+pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LLMContextDeps {
+    let SessionDepsInput {
+        tools,
+        ctx,
+        snapshot_path,
+        approval_required,
+        one_line_status,
+        i18n,
+        parser_renderer,
+        from_user_did,
+    } = input;
+
+    let worklog_ctx = WorklogAppendCtx {
+        trace_id: ctx.trace_id.clone(),
+        agent_name: ctx.agent_name.clone(),
+        behavior: ctx.behavior.clone(),
+        session_id: ctx.session_id.clone(),
+    };
+
+    let llm: Arc<dyn LlmClient> = Arc::new(AiccLlmClient::from_runtime(runtime.aicc.clone()));
+    let tools_adapter: Arc<dyn ToolManager> = Arc::new(OpendanToolAdapter::with_from_user_did(
+        tools,
+        ctx,
+        from_user_did,
+    ));
+    let policy: Arc<dyn PolicyEngine> = Arc::new(AgentPolicy::new(approval_required));
+    let worklog: Arc<dyn WorklogSink> = Arc::new(OpenDanWorklogSink::new(
+        runtime.worklog.clone(),
+        worklog_ctx,
+        one_line_status,
+        i18n,
+    ));
+    let hook: Arc<dyn TurnHook> = Arc::new(SessionSnapshotHook::new(snapshot_path));
+
+    let mut deps = LLMContextDeps::new(llm, tools_adapter)
+        .with_policy(policy)
+        .with_worklog(worklog)
+        .with_turn_hook(hook);
+    if let Some((parser, renderer)) = parser_renderer {
+        deps = deps.with_result_parser(parser).with_step_renderer(renderer);
+    }
+    deps
 }

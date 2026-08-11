@@ -67,7 +67,7 @@
 - `new_doc/ref/notepads/整理node_daemon启动服务.md`
 
 ## 3) RBAC 策略变更不是立刻生效（缓存传播）
-- `system/rbac/policy` 与 `system/rbac/model` 读取带 cache。
+- `system/rbac/policy` 读取带 cache。
 - notepads 记录为最长约 10s 才能全系统看见新策略。
 - Symptom：
   - 你刚写入/更新了 `system/rbac/policy`，但某些服务仍然返回 `NoPermission`；过几秒（<=10s）才“突然好了”。
@@ -78,7 +78,7 @@
 - Where to look in code/KV：
   - code: `src/kernel/buckyos-api/src/system_config.rs`（`CONFIG_CACHE_TIME: 10`；`cache_key_control` 包含 `system/rbac/`；日志：`get system_config from CONFIG_CACHE ...`）
   - code: `src/kernel/scheduler/src/system_config_agent.rs`（RBAC 更新写入点；日志：`will update system/rbac/policy => ...`）
-  - KV: `system/rbac/model`、`system/rbac/policy`、(参考) `system/rbac/base_policy`
+  - KV: `system/rbac/policy`；完整 RBAC 配置由 API runtime 内置默认配置与该动态尾部合成。
   - notepads: `new_doc/ref/notepads/rbac.md`
 - Quick confirm steps：
   - 读 KV：直接对比 `system/rbac/policy` 的最新值是否已经写入（如果 KV 已更新但行为未变，基本就是 cache）。

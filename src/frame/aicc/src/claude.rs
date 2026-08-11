@@ -1,43 +1,98 @@
 use crate::aicc::{
-    AIComputeCenter, CostEstimate, Provider, ProviderError, ProviderInstance, ProviderStartResult,
-    ResolvedRequest, TaskEventSink,
+    provider_type_from_settings, redacted_json_log, AIComputeCenter, Provider, ProviderError,
+    ProviderInstance, ProviderRefreshTask, ProviderStartResult, ResolvedRequest, TaskEventSink,
 };
 use crate::claude_protocol::convert_complete_request;
+use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
+use crate::model_types::{
+    ApiType, CostEstimateInput, CostEstimateOutput, HealthStatus, ModelMetadata, PricingMode,
+    ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
+};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    features, AiCost, AiResponseSummary, AiToolCall, AiUsage, Capability, CompleteRequest, Feature,
+    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
+    Feature, ResourceRef,
 };
 use log::{info, warn};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
+use tokio::sync::watch;
+use tokio::time;
 
 const DEFAULT_CLAUDE_BASE_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_CLAUDE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_CLAUDE_MODELS: &str = "claude-3-7-sonnet-20250219,claude-3-5-haiku-20241022";
+const DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+const CLAUDE_MODELS_PAGE_LIMIT: u32 = 1000;
+const CLAUDE_MODELS_MAX_PAGES: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct ClaudeInstanceConfig {
-    pub instance_id: String,
+    pub provider_instance_name: String,
     pub provider_type: String,
+    pub provider_driver: String,
+    pub api_token: String,
     pub base_url: String,
     pub timeout_ms: u64,
     pub models: Vec<String>,
     pub default_model: Option<String>,
     pub features: Vec<Feature>,
+    #[allow(dead_code)]
     pub alias_map: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ClaudeProvider {
     instance: ProviderInstance,
+    inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
     api_token: String,
     base_url: String,
+    provider_type: ProviderType,
+    provider_driver: String,
+    provider_instance_name: String,
+    features: Vec<Feature>,
+    refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeModelsResponse {
+    #[serde(default)]
+    data: Vec<ClaudeModelEntry>,
+    #[serde(default)]
+    has_more: bool,
+    #[serde(default)]
+    last_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeModelEntry {
+    id: String,
+}
+
+fn next_claude_models_cursor(
+    has_more: bool,
+    last_id: Option<String>,
+    seen_cursors: &mut HashSet<String>,
+) -> Result<Option<String>> {
+    if !has_more {
+        return Ok(None);
+    }
+    let cursor = last_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("claude models pagination omitted last_id"))?;
+    if !seen_cursors.insert(cursor.clone()) {
+        return Err(anyhow!("claude models pagination repeated last_id"));
+    }
+    Ok(Some(cursor))
 }
 
 impl ClaudeProvider {
@@ -53,21 +108,416 @@ impl ClaudeProvider {
             .build()
             .context("failed to build reqwest client for claude provider")?;
 
+        let provider_type = provider_type_from_settings(cfg.provider_type.as_str());
+        let provider_instance_name = cfg.provider_instance_name.clone();
+        let provider_driver = cfg.provider_driver.clone();
         let instance = ProviderInstance {
-            instance_id: cfg.instance_id,
-            provider_type: cfg.provider_type,
-            capabilities: vec![Capability::LlmRouter],
-            features: cfg.features,
+            provider_instance_name: provider_instance_name.clone(),
+            provider_type: provider_type.clone(),
+            provider_driver: provider_driver.clone(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            capabilities: vec![Capability::Llm, Capability::Vision],
+            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
+        let inventory = Self::build_inventory_from_models(
+            provider_instance_name.as_str(),
+            provider_type.clone(),
+            provider_driver.as_str(),
+            cfg.models.as_slice(),
+            cfg.features.as_slice(),
+            Some("settings-v1".to_string()),
+        );
 
         Ok(Self {
             instance,
+            inventory: Arc::new(RwLock::new(inventory)),
             client,
             api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            provider_type,
+            provider_driver,
+            provider_instance_name,
+            features: cfg.features,
+            refresh_task: Arc::new(Mutex::new(None)),
         })
+    }
+
+    fn build_inventory_from_models(
+        provider_instance_name: &str,
+        provider_type: ProviderType,
+        provider_driver: &str,
+        models: &[String],
+        _features: &[Feature],
+        inventory_revision: Option<String>,
+    ) -> ProviderInventory {
+        let requests = models
+            .iter()
+            .map(|model| DriverModelResolveRequest::new(model.clone(), vec![ApiType::Llm]))
+            .collect::<Vec<_>>();
+        resolve_driver_inventory(
+            provider_instance_name,
+            provider_type,
+            provider_driver,
+            requests.as_slice(),
+            inventory_revision,
+        )
+    }
+
+    pub fn start_inventory_refresh(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        let existing = match self.refresh_task.lock() {
+            Ok(mut current) => current.replace(refresh_task.clone()),
+            Err(_) => {
+                warn!(
+                    "aicc.claude.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                    self.provider_instance_name
+                );
+                return;
+            }
+        };
+        if let Some(existing) = existing {
+            existing.shutdown();
+        }
+        let provider = Arc::downgrade(&self);
+        let provider_instance_name = self.provider_instance_name.clone();
+        tokio::spawn(async move {
+            Self::run_inventory_refresh(
+                provider,
+                provider_instance_name,
+                refresh_task,
+                shutdown_rx,
+            )
+            .await;
+        });
+    }
+
+    async fn run_inventory_refresh(
+        provider: Weak<Self>,
+        provider_instance_name: String,
+        refresh_task: Arc<ProviderRefreshTask>,
+        mut shutdown_rx: watch::Receiver<bool>,
+    ) {
+        if !refresh_task.try_start_request() {
+            info!(
+                "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                provider_instance_name
+            );
+            return;
+        }
+        let Some(current) = provider.upgrade() else {
+            refresh_task.shutdown();
+            return;
+        };
+        let initial_result = current.refresh_inventory_once().await;
+        refresh_task.finish_request();
+        drop(current);
+        if let Err(err) = initial_result {
+            warn!(
+                "aicc.claude.inventory.initial_refresh_failed provider_instance_name={} err={}",
+                provider_instance_name, err
+            );
+        }
+        if refresh_task.is_stopped() {
+            info!(
+                "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                provider_instance_name
+            );
+            return;
+        }
+
+        let mut interval = time::interval(DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL);
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                biased;
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() || *shutdown_rx.borrow() {
+                        info!(
+                            "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                            provider_instance_name
+                        );
+                        return;
+                    }
+                }
+                _ = interval.tick() => {
+                    if !refresh_task.try_start_request() {
+                        return;
+                    }
+                    let Some(current) = provider.upgrade() else {
+                        refresh_task.shutdown();
+                        return;
+                    };
+                    let result = current.refresh_inventory_once().await;
+                    refresh_task.finish_request();
+                    drop(current);
+                    if let Err(err) = result {
+                        warn!(
+                            "aicc.claude.inventory.refresh_failed provider_instance_name={} err={}",
+                            provider_instance_name, err
+                        );
+                    }
+                    if refresh_task.is_stopped() {
+                        info!(
+                            "aicc.claude.inventory.refresh_stopped provider_instance_name={}",
+                            provider_instance_name
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn stop_inventory_refresh(&self) {
+        match self.refresh_task.lock() {
+            Ok(mut current) => {
+                if let Some(task) = current.take() {
+                    task.shutdown();
+                    info!(
+                        "aicc.claude.inventory.refresh_stop_requested provider_instance_name={}",
+                        self.provider_instance_name
+                    );
+                }
+            }
+            Err(_) => warn!(
+                "aicc.claude.inventory.refresh_task_lock_poisoned provider_instance_name={}",
+                self.provider_instance_name
+            ),
+        }
+    }
+
+    async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
+        let mut model_ids = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        let mut seen_cursors = HashSet::<String>::new();
+        let mut after_id: Option<String> = None;
+
+        for page in 0..CLAUDE_MODELS_MAX_PAGES {
+            let mut url = Url::parse(format!("{}/models", self.base_url).as_str())
+                .context("build claude models URL")?;
+            url.query_pairs_mut()
+                .append_pair("limit", CLAUDE_MODELS_PAGE_LIMIT.to_string().as_str());
+            if let Some(cursor) = after_id.as_deref() {
+                url.query_pairs_mut().append_pair("after_id", cursor);
+            }
+
+            let response = self
+                .client
+                .get(url)
+                .header("x-api-key", self.api_token.as_str())
+                .header("anthropic-version", ANTHROPIC_API_VERSION)
+                .send()
+                .await
+                .context("claude inventory refresh request failed")?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "claude inventory refresh failed status={} body={}",
+                    status,
+                    body
+                ));
+            }
+
+            let body = response
+                .json::<Value>()
+                .await
+                .context("failed to parse claude models response")?;
+            if body
+                .get("models")
+                .and_then(|value| value.as_array())
+                .is_some()
+            {
+                let inventory = serde_json::from_value::<ProviderInventory>(body)
+                    .context("failed to parse claude provider inventory response")?;
+                let inventory = self.normalize_remote_provider_inventory(inventory);
+                if inventory.models.is_empty() {
+                    return Err(anyhow!(
+                        "claude provider inventory returned no supported models"
+                    ));
+                }
+                {
+                    let mut current = self
+                        .inventory
+                        .write()
+                        .map_err(|_| anyhow!("claude inventory lock poisoned"))?;
+                    *current = inventory.clone();
+                }
+                info!(
+                    "aicc.claude.inventory.refreshed provider_instance_name={} models={}",
+                    self.provider_instance_name,
+                    inventory.models.len()
+                );
+                return Ok(inventory);
+            }
+
+            let parsed = serde_json::from_value::<ClaudeModelsResponse>(body)
+                .context("failed to parse claude models response")?;
+
+            for entry in parsed.data.iter() {
+                let id = entry.id.trim();
+                if id.is_empty() {
+                    continue;
+                }
+                let lower = id.to_ascii_lowercase();
+                if !lower.starts_with("claude-") {
+                    continue;
+                }
+                if seen.insert(lower) {
+                    model_ids.push(id.to_string());
+                }
+            }
+
+            let Some(cursor) =
+                next_claude_models_cursor(parsed.has_more, parsed.last_id, &mut seen_cursors)?
+            else {
+                break;
+            };
+            after_id = Some(cursor);
+            if page + 1 == CLAUDE_MODELS_MAX_PAGES {
+                return Err(anyhow!(
+                    "claude models pagination exceeded {} pages",
+                    CLAUDE_MODELS_MAX_PAGES
+                ));
+            }
+        }
+
+        if model_ids.is_empty() {
+            return Err(anyhow!(
+                "claude inventory refresh returned no supported models"
+            ));
+        }
+
+        let revision = Some(claude_inventory_revision(model_ids.as_slice()));
+        let inventory = Self::build_inventory_from_models(
+            self.provider_instance_name.as_str(),
+            self.provider_type.clone(),
+            self.provider_driver.as_str(),
+            model_ids.as_slice(),
+            self.features.as_slice(),
+            revision,
+        );
+
+        {
+            let mut current = self
+                .inventory
+                .write()
+                .map_err(|_| anyhow!("claude inventory lock poisoned"))?;
+            *current = inventory.clone();
+        }
+        info!(
+            "aicc.claude.inventory.refreshed provider_instance_name={} models={}",
+            self.provider_instance_name,
+            inventory.models.len()
+        );
+        Ok(inventory)
+    }
+
+    fn normalize_remote_provider_inventory(
+        &self,
+        inventory: ProviderInventory,
+    ) -> ProviderInventory {
+        let version = inventory.version.clone();
+        let inventory_revision = inventory.inventory_revision.clone();
+        let remote_models = inventory.models;
+        let requests = remote_models
+            .iter()
+            .filter_map(|model| {
+                let provider_model_id = model.provider_model_id.trim();
+                if provider_model_id.is_empty() {
+                    return None;
+                }
+                let fallback_api_types = if model.api_types.is_empty() {
+                    vec![ApiType::Llm]
+                } else {
+                    model.api_types.clone()
+                };
+                Some(
+                    DriverModelResolveRequest::new(provider_model_id, fallback_api_types)
+                        .with_cost(model.pricing.estimated_cost)
+                        .with_latency(model.health.p50_latency_ms.or(model.health.p95_latency_ms)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let remote_by_id = remote_models
+            .iter()
+            .filter(|model| !model.provider_model_id.trim().is_empty())
+            .map(|model| (model.provider_model_id.trim().to_string(), model))
+            .collect::<HashMap<_, _>>();
+        let mut normalized = resolve_driver_inventory(
+            self.provider_instance_name.as_str(),
+            self.provider_type.clone(),
+            self.provider_driver.as_str(),
+            requests.as_slice(),
+            inventory_revision,
+        );
+        for model in normalized.models.iter_mut() {
+            let base_model_id = model
+                .provider_actual_model_id
+                .as_deref()
+                .unwrap_or(model.provider_model_id.as_str());
+            if let Some(remote) = remote_by_id.get(base_model_id) {
+                model.parameter_scale = remote.parameter_scale.clone();
+                Self::merge_remote_pricing(model, remote);
+                Self::merge_remote_health(model, remote);
+            }
+        }
+        normalized.version = version.clone();
+        if normalized.inventory_revision.is_none() {
+            normalized.inventory_revision = Some(claude_inventory_revision_from_metadata(
+                normalized.models.as_slice(),
+            ));
+        }
+        normalized
+    }
+
+    fn merge_remote_pricing(normalized: &mut ModelMetadata, remote: &ModelMetadata) {
+        normalized.pricing.currency = remote.pricing.currency.clone();
+        if remote.pricing.input_token.is_some() {
+            normalized.pricing.input_token = remote.pricing.input_token;
+        }
+        if remote.pricing.output_token.is_some() {
+            normalized.pricing.output_token = remote.pricing.output_token;
+        }
+        if remote.pricing.cache_input_token.is_some() {
+            normalized.pricing.cache_input_token = remote.pricing.cache_input_token;
+        }
+        if remote.pricing.estimated_cost.is_some() {
+            normalized.pricing.estimated_cost = remote.pricing.estimated_cost;
+        }
+    }
+
+    fn merge_remote_health(normalized: &mut ModelMetadata, remote: &ModelMetadata) {
+        if remote.health.status != HealthStatus::Available {
+            normalized.health.status = remote.health.status.clone();
+        }
+        if remote.health.p50_latency_ms.is_some() {
+            normalized.health.p50_latency_ms = remote.health.p50_latency_ms;
+        }
+        if remote.health.p95_latency_ms.is_some() {
+            normalized.health.p95_latency_ms = remote.health.p95_latency_ms;
+        }
+        if remote.health.error_rate_5m.is_some() {
+            normalized.health.error_rate_5m = remote.health.error_rate_5m;
+        }
+        if remote.health.recent_failures.is_some() {
+            normalized.health.recent_failures = remote.health.recent_failures;
+        }
+        if remote.health.queue_depth.is_some() {
+            normalized.health.queue_depth = remote.health.queue_depth;
+        }
+        if remote.health.quota_state != QuotaState::Unknown {
+            normalized.health.quota_state = remote.health.quota_state.clone();
+        }
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
@@ -81,7 +531,9 @@ impl ClaudeProvider {
         }
     }
 
-    fn estimate_tokens(req: &CompleteRequest) -> (u64, u64) {
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn estimate_tokens(req: &AiMethodRequest) -> (u64, u64) {
         let mut text_len = 0usize;
 
         if let Some(text) = req.payload.text.as_ref() {
@@ -89,15 +541,29 @@ impl ClaudeProvider {
         }
 
         for message in req.payload.messages.iter() {
-            text_len += message.content.len();
+            text_len += message.estimate_text_len();
+        }
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            text_len += json_text_len(input_json);
         }
 
         let input_tokens = ((text_len as f64) / 4.0).ceil() as u64;
         let output_tokens = req
             .payload
-            .options
+            .input_json
             .as_ref()
-            .and_then(|value| value.get("max_tokens").and_then(|value| value.as_u64()))
+            .and_then(|value| {
+                value
+                    .get("max_output_tokens")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| value.get("max_tokens").and_then(|value| value.as_u64()))
+            })
+            .or_else(|| {
+                req.payload
+                    .options
+                    .as_ref()
+                    .and_then(|value| value.get("max_tokens").and_then(|value| value.as_u64()))
+            })
             .unwrap_or(1024);
 
         (input_tokens.max(1), output_tokens.max(1))
@@ -157,6 +623,16 @@ impl ClaudeProvider {
             .unwrap_or_default()
     }
 
+    fn max_output_tokens_from_inventory(&self, provider_model: &str) -> Option<u64> {
+        self.inventory
+            .read()
+            .ok()?
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == provider_model)
+            .and_then(|model| model.capabilities.max_output_tokens)
+    }
+
     fn classify_api_error(status: StatusCode, message: String) -> ProviderError {
         if status.as_u16() == 429 || status.is_server_error() {
             ProviderError::retryable(message)
@@ -169,11 +645,32 @@ impl ClaudeProvider {
         &self,
         ctx: &crate::aicc::InvokeCtx,
         provider_model: &str,
-        req: &CompleteRequest,
+        req: &AiMethodRequest,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
-        let (request_obj, _ignored) = convert_complete_request(req, provider_model)?;
+        let (request_obj, ignored_options) = convert_complete_request(
+            req,
+            provider_model,
+            self.max_output_tokens_from_inventory(provider_model),
+        )?;
         let request_value = Value::Object(request_obj.clone());
         let endpoint = format!("{}/messages", self.base_url);
+
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.claude ignored unsupported llm options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                ignored_options
+            );
+        }
+        info!(
+            "aicc.claude.llm.input provider_instance_name={} model={} trace_id={:?} request={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            ctx.trace_id,
+            redacted_json_log(&request_value)
+        );
 
         let response = self
             .client
@@ -185,13 +682,33 @@ impl ClaudeProvider {
             .send()
             .await
             .map_err(|error| {
+                warn!(
+                    "aicc.claude.http_send_failed provider_instance_name={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err={}",
+                    self.instance.provider_instance_name,
+                    self.instance.provider_type,
+                    endpoint,
+                    error.is_timeout() || error.is_connect(),
+                    error.is_timeout(),
+                    error.is_connect(),
+                    error.status(),
+                    error
+                );
                 ProviderError::retryable(format!("claude request failed: {}", error))
             })?;
 
         let status = response.status();
         let body = response.json::<Value>().await.map_err(|error| {
+            warn!(
+                "aicc.claude.response_decode_failed provider_instance_name={} provider_type={} url={} status={} err={}",
+                self.instance.provider_instance_name,
+                self.instance.provider_type,
+                endpoint,
+                status.as_u16(),
+                error
+            );
             ProviderError::fatal(format!("claude response decode failed: {}", error))
         })?;
+        let response_log = redacted_json_log(&body);
 
         if !status.is_success() {
             let message = body
@@ -201,15 +718,23 @@ impl ClaudeProvider {
                 .unwrap_or("claude api returned non-success status")
                 .to_string();
             warn!(
-                "aicc.claude.llm.error instance_id={} model={} trace_id={:?} status={} body={}",
-                self.instance.instance_id,
+                "aicc.claude.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
                 provider_model,
                 ctx.trace_id,
                 status.as_u16(),
-                body
+                response_log
             );
             return Err(Self::classify_api_error(status, message));
         }
+        info!(
+            "aicc.claude.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            ctx.trace_id,
+            status.as_u16(),
+            response_log
+        );
 
         let content = Self::extract_text_content(&body);
         let tool_calls = Self::extract_tool_calls(&body);
@@ -240,10 +765,8 @@ impl ClaudeProvider {
             }),
         );
 
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: content,
-            tool_calls,
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(content, tool_calls, vec![]),
             usage,
             cost,
             finish_reason: body
@@ -254,28 +777,231 @@ impl ClaudeProvider {
             extra: Some(Value::Object(extra)),
         }))
     }
+
+    fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
+        let input = req.payload.input_json.as_ref()?;
+        for key in keys {
+            if let Some(value) = input.get(*key) {
+                if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
+                    return Some(resource);
+                }
+            }
+        }
+        None
+    }
+
+    fn image_block(resource: &ResourceRef) -> Result<Value, ProviderError> {
+        match resource {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": url
+                }
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime,
+                    "data": data_base64
+                }
+            })),
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "claude provider cannot resolve named object resource {} without resolver bytes",
+                obj_id
+            ))),
+        }
+    }
+
+    fn vision_prompt(method: &str, req: &AiMethodRequest) -> String {
+        if let Some(prompt) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("prompt"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return prompt.to_string();
+        }
+        match method {
+            ai_methods::VISION_OCR => {
+                "Extract readable text from the image. Return concise plain text first, then JSON details if useful.".to_string()
+            }
+            _ => "Describe the image concisely.".to_string(),
+        }
+    }
+
+    async fn start_vision(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> std::result::Result<ProviderStartResult, ProviderError> {
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "document"]))
+            .ok_or_else(|| ProviderError::fatal("vision request requires an image resource"))?;
+        let request_value = json!({
+            "model": provider_model,
+            "max_tokens": self.max_output_tokens_from_inventory(provider_model).unwrap_or(1024),
+            "messages": [{
+                "role": "user",
+                "content": [
+                    Self::image_block(&resource)?,
+                    {
+                        "type": "text",
+                        "text": Self::vision_prompt(method, req)
+                    }
+                ]
+            }]
+        });
+        let endpoint = format!("{}/messages", self.base_url);
+        info!(
+            "aicc.claude.vision.input provider_instance_name={} model={} method={} trace_id={:?} request={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            method,
+            ctx.trace_id,
+            redacted_json_log(&request_value)
+        );
+        let response = self
+            .client
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01")
+            .header("x-api-key", self.api_token.as_str())
+            .json(&request_value)
+            .send()
+            .await
+            .map_err(|error| {
+                warn!(
+                    "aicc.claude.http_send_failed provider_instance_name={} provider_type={} url={} retryable={} timeout={} connect={} status={:?} err={}",
+                    self.instance.provider_instance_name,
+                    self.instance.provider_type,
+                    endpoint,
+                    error.is_timeout() || error.is_connect(),
+                    error.is_timeout(),
+                    error.is_connect(),
+                    error.status(),
+                    error
+                );
+                ProviderError::retryable(format!("claude vision request failed: {}", error))
+            })?;
+        let status = response.status();
+        let body = response.json::<Value>().await.map_err(|error| {
+            warn!(
+                "aicc.claude.response_decode_failed provider_instance_name={} provider_type={} url={} status={} err={}",
+                self.instance.provider_instance_name,
+                self.instance.provider_type,
+                endpoint,
+                status.as_u16(),
+                error
+            );
+            ProviderError::fatal(format!("claude vision response decode failed: {}", error))
+        })?;
+        let response_log = redacted_json_log(&body);
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("claude vision api returned non-success status")
+                .to_string();
+            warn!(
+                "aicc.claude.vision.output provider_instance_name={} model={} method={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
+                provider_model,
+                method,
+                ctx.trace_id,
+                status.as_u16(),
+                response_log
+            );
+            return Err(Self::classify_api_error(status, message));
+        }
+        info!(
+            "aicc.claude.vision.output provider_instance_name={} model={} method={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            method,
+            ctx.trace_id,
+            status.as_u16(),
+            response_log
+        );
+        let text = Self::extract_text_content(&body);
+        let mut extra = Map::new();
+        let key = if method == ai_methods::VISION_OCR {
+            "ocr"
+        } else {
+            "captions"
+        };
+        extra.insert(key.to_string(), json!({ "text": text }));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({ "input": request_value, "output": body }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(text, vec![], vec![]),
+            finish_reason: Some("stop".to_string()),
+            extra: Some(Value::Object(extra)),
+            ..Default::default()
+        }))
+    }
 }
 
 #[async_trait]
 impl Provider for ClaudeProvider {
-    fn instance(&self) -> &ProviderInstance {
-        &self.instance
+    fn inventory(&self) -> ProviderInventory {
+        self.inventory
+            .read()
+            .map(|inventory| inventory.clone())
+            .unwrap_or_else(|_| {
+                Self::build_inventory_from_models(
+                    self.provider_instance_name.as_str(),
+                    self.provider_type.clone(),
+                    self.provider_driver.as_str(),
+                    Vec::<String>::new().as_slice(),
+                    self.features.as_slice(),
+                    Some("inventory-lock-poisoned".to_string()),
+                )
+            })
     }
 
-    fn estimate_cost(&self, req: &CompleteRequest, provider_model: &str) -> CostEstimate {
-        let (input_tokens, output_tokens) = Self::estimate_tokens(req);
+    fn shutdown(&self) {
+        self.stop_inventory_refresh();
+    }
+
+    fn estimate_cost(&self, input: &CostEstimateInput) -> CostEstimateOutput {
+        let provider_model = provider_model_from_exact(input.exact_model.as_str());
+        let input_tokens = input.input_tokens.max(1);
+        let output_tokens = input.estimated_output_tokens.unwrap_or(1024).max(1);
         let usage = AiUsage {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
             total_tokens: Some(input_tokens.saturating_add(output_tokens)),
         };
 
-        CostEstimate {
+        CostEstimateOutput {
             estimated_cost_usd: self
                 .estimate_cost_for_usage(provider_model, &usage)
-                .map(|cost| cost.amount),
+                .map(|cost| cost.amount)
+                .unwrap_or(1.0),
+            pricing_mode: PricingMode::PerToken,
+            quota_state: QuotaState::Normal,
+            confidence: 0.7,
             estimated_latency_ms: Some(1800),
         }
+    }
+
+    async fn refresh_inventory(&self) -> std::result::Result<ProviderInventory, ProviderError> {
+        self.refresh_inventory_once()
+            .await
+            .map_err(|err| ProviderError::retryable(err.to_string()))
     }
 
     async fn start(
@@ -285,14 +1011,23 @@ impl Provider for ClaudeProvider {
         req: ResolvedRequest,
         _sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
-        match req.request.capability {
-            Capability::LlmRouter => {
+        match req.method.as_str() {
+            ai_methods::LLM_CHAT => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }
-            capability => Err(ProviderError::fatal(format!(
-                "claude provider does not support capability '{:?}'",
-                capability
+            ai_methods::VISION_CAPTION | ai_methods::VISION_OCR => {
+                self.start_vision(
+                    &ctx,
+                    provider_model.as_str(),
+                    req.method.as_str(),
+                    &req.request,
+                )
+                .await
+            }
+            method => Err(ProviderError::fatal(format!(
+                "claude provider does not support method '{}'",
+                method
             ))),
         }
     }
@@ -303,6 +1038,53 @@ impl Provider for ClaudeProvider {
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
         Ok(())
+    }
+}
+
+impl Drop for ClaudeProvider {
+    fn drop(&mut self) {
+        self.stop_inventory_refresh();
+    }
+}
+
+fn provider_model_from_exact(exact_model: &str) -> &str {
+    exact_model
+        .rsplit_once('@')
+        .map(|(model, _)| model)
+        .unwrap_or(exact_model)
+}
+
+fn claude_inventory_revision(models: &[String]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    models.hash(&mut hasher);
+    format!("claude-models-{}-{:x}", models.len(), hasher.finish())
+}
+
+fn claude_inventory_revision_from_metadata(models: &[ModelMetadata]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for model in models {
+        model.provider_model_id.hash(&mut hasher);
+        model.exact_model.hash(&mut hasher);
+        model.api_types.hash(&mut hasher);
+        model.logical_mounts.hash(&mut hasher);
+        if let Some(max_context_tokens) = model.capabilities.max_context_tokens {
+            max_context_tokens.hash(&mut hasher);
+        }
+        if let Some(max_output_tokens) = model.capabilities.max_output_tokens {
+            max_output_tokens.hash(&mut hasher);
+        }
+    }
+    format!("claude-inventory-{}-{:x}", models.len(), hasher.finish())
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn json_text_len(value: &Value) -> usize {
+    match value {
+        Value::String(text) => text.len(),
+        Value::Array(items) => items.iter().map(json_text_len).sum(),
+        Value::Object(map) => map.values().map(json_text_len).sum(),
+        _ => 0,
     }
 }
 
@@ -321,9 +1103,13 @@ struct ClaudeSettings {
 #[derive(Debug, Clone, Deserialize)]
 struct SettingsClaudeInstanceConfig {
     #[serde(default = "default_instance_id")]
-    instance_id: String,
+    provider_instance_name: String,
     #[serde(default = "default_provider_type")]
     provider_type: String,
+    #[serde(default = "default_provider_driver")]
+    provider_driver: String,
+    #[serde(default, alias = "api_key", alias = "apiKey")]
+    api_token: String,
     #[serde(default = "default_base_url")]
     base_url: String,
     #[serde(default = "default_timeout_ms")]
@@ -347,6 +1133,10 @@ fn default_instance_id() -> String {
 }
 
 fn default_provider_type() -> String {
+    "cloud_api".to_string()
+}
+
+fn default_provider_driver() -> String {
     "claude".to_string()
 }
 
@@ -359,11 +1149,101 @@ fn default_timeout_ms() -> u64 {
 }
 
 fn default_features() -> Vec<String> {
+    // Broad set of features that modern Claude (3.7+/4+) supports. The per-model
+    // classifier in `effective_features_for_claude_model` trims this list for
+    // older families (Claude 3 / 3.5) that lack `plan`, `web_search`, or
+    // `vision`. Refer to Anthropic's public capability docs.
     vec![
         features::PLAN.to_string(),
         features::JSON_OUTPUT.to_string(),
         features::TOOL_CALLING.to_string(),
+        features::WEB_SEARCH.to_string(),
+        features::VISION.to_string(),
     ]
+}
+
+/// Per-model capability classification for Anthropic Claude models.
+///
+/// Anthropic's `GET /v1/models` API only returns `id`/`display_name` and does
+/// not advertise per-model capabilities. We hand-maintain this table from the
+/// public capability docs:
+///   - Extended thinking ("plan"): Claude 3.7 Sonnet and the Claude 4 family.
+///   - Web Search server tool: Claude 3.5 family and newer (3.5 Haiku, 3.5
+///     Sonnet, 3.7 Sonnet, 4.x).
+///   - Vision (image input): all Claude families except `claude-3-5-haiku`,
+///     which is text-only.
+///
+/// Naming pattern accepted: `claude-{3|3-5|3-7}-{family}-...` for legacy and
+/// `claude-{opus|sonnet|haiku}-{4|5}-...` for Claude 4 onwards.
+#[cfg(test)]
+fn claude_model_family_is_4_or_newer(id: &str) -> bool {
+    id.starts_with("claude-opus-4")
+        || id.starts_with("claude-sonnet-4")
+        || id.starts_with("claude-haiku-4")
+        || id.starts_with("claude-opus-5")
+        || id.starts_with("claude-sonnet-5")
+        || id.starts_with("claude-haiku-5")
+}
+
+#[cfg(test)]
+fn claude_model_supports_extended_thinking(model_id: &str) -> bool {
+    let id = model_id.trim().to_ascii_lowercase();
+    id.starts_with("claude-3-7-") || claude_model_family_is_4_or_newer(id.as_str())
+}
+
+#[cfg(test)]
+fn claude_model_supports_web_search(model_id: &str) -> bool {
+    let id = model_id.trim().to_ascii_lowercase();
+    id.starts_with("claude-3-5-")
+        || id.starts_with("claude-3-7-")
+        || claude_model_family_is_4_or_newer(id.as_str())
+}
+
+#[cfg(test)]
+fn claude_model_supports_vision(model_id: &str) -> bool {
+    let id = model_id.trim().to_ascii_lowercase();
+    // Claude 3.5 Haiku is text-only per Anthropic docs.
+    !id.starts_with("claude-3-5-haiku")
+}
+
+#[cfg(test)]
+fn effective_features_for_claude_model(model_id: &str, base: &[Feature]) -> Vec<Feature> {
+    let mut out: Vec<Feature> = Vec::with_capacity(base.len() + 3);
+    let push_unique = |out: &mut Vec<Feature>, value: &str| {
+        if !out.iter().any(|item| item == value) {
+            out.push(value.to_string());
+        }
+    };
+
+    for feature in base.iter() {
+        let allowed = match feature.as_str() {
+            "web_search" => claude_model_supports_web_search(model_id),
+            "vision" => claude_model_supports_vision(model_id),
+            "plan" => claude_model_supports_extended_thinking(model_id),
+            _ => true,
+        };
+        if allowed {
+            push_unique(&mut out, feature.as_str());
+        }
+    }
+
+    // Universal Claude 3+ capabilities — present even if the operator's base
+    // config omitted them, so inventory reflects reality.
+    push_unique(&mut out, features::TOOL_CALLING);
+    push_unique(&mut out, features::JSON_OUTPUT);
+    push_unique(&mut out, "streaming");
+
+    if claude_model_supports_web_search(model_id) {
+        push_unique(&mut out, features::WEB_SEARCH);
+    }
+    if claude_model_supports_vision(model_id) {
+        push_unique(&mut out, features::VISION);
+    }
+    if claude_model_supports_extended_thinking(model_id) {
+        push_unique(&mut out, features::PLAN);
+    }
+
+    out
 }
 
 fn normalize_model_list(models: Vec<String>) -> Vec<String> {
@@ -421,8 +1301,10 @@ fn parse_claude_settings(settings: &Value) -> Result<Option<ClaudeSettings>> {
 fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanceConfig>> {
     let raw_instances = if settings.instances.is_empty() {
         vec![SettingsClaudeInstanceConfig {
-            instance_id: default_instance_id(),
+            provider_instance_name: default_instance_id(),
             provider_type: default_provider_type(),
+            provider_driver: default_provider_driver(),
+            api_token: settings.api_token.clone(),
             base_url: default_base_url(),
             timeout_ms: default_timeout_ms(),
             models: vec![],
@@ -443,7 +1325,7 @@ fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanc
         if models.is_empty() {
             return Err(anyhow!(
                 "claude instance {} has no models configured",
-                raw_instance.instance_id
+                raw_instance.provider_instance_name
             ));
         }
 
@@ -457,8 +1339,14 @@ fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanc
         };
 
         instances.push(ClaudeInstanceConfig {
-            instance_id: raw_instance.instance_id,
+            provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
+            provider_driver: raw_instance.provider_driver,
+            api_token: if raw_instance.api_token.trim().is_empty() {
+                settings.api_token.clone()
+            } else {
+                raw_instance.api_token
+            },
             base_url: raw_instance.base_url,
             timeout_ms: raw_instance.timeout_ms,
             models,
@@ -471,6 +1359,8 @@ fn build_claude_instances(settings: &ClaudeSettings) -> Result<Vec<ClaudeInstanc
     Ok(instances)
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn register_default_aliases(
     center: &AIComputeCenter,
     provider_type: &str,
@@ -479,14 +1369,14 @@ fn register_default_aliases(
 ) {
     for model in models.iter() {
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             model.as_str(),
             provider_type,
             model.as_str(),
         );
 
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             format!("llm.{}", model),
             provider_type,
             model.as_str(),
@@ -494,14 +1384,9 @@ fn register_default_aliases(
     }
 
     if let Some(default_model) = default_model {
-        for alias in [
-            "llm.default",
-            "llm.chat.default",
-            "llm.plan.default",
-            "llm.code.default",
-        ] {
+        for alias in ["llm.default", "llm.plan.default", "llm.code.default"] {
             center.model_catalog().set_mapping(
-                Capability::LlmRouter,
+                Capability::Llm,
                 alias,
                 provider_type,
                 default_model,
@@ -510,6 +1395,8 @@ fn register_default_aliases(
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn register_custom_aliases(
     center: &AIComputeCenter,
     provider_type: &str,
@@ -517,7 +1404,7 @@ fn register_custom_aliases(
 ) {
     for (alias, model) in alias_map.iter() {
         center.model_catalog().set_mapping(
-            Capability::LlmRouter,
+            Capability::Llm,
             alias.as_str(),
             provider_type,
             model.as_str(),
@@ -530,13 +1417,6 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
         info!("aicc claude provider is disabled (settings.claude missing or disabled)");
         return Ok(0);
     };
-    if claude_settings.api_token.trim().is_empty() {
-        warn!("aicc claude provider enabled but api_token is empty");
-        return Err(anyhow!(
-            "settings.claude.api_token (or api_key) is required when claude provider is enabled"
-        ));
-    }
-
     let instances = build_claude_instances(&claude_settings)?;
     info!(
         "aicc claude registering instances={} default_models={:?}",
@@ -546,31 +1426,34 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
             .map(|item| item.default_model.clone().unwrap_or_default())
             .collect::<Vec<_>>(),
     );
-    let mut prepared = Vec::<(ClaudeInstanceConfig, Arc<dyn Provider>)>::new();
+    let mut prepared = Vec::<(ClaudeInstanceConfig, Arc<ClaudeProvider>)>::new();
     for config in instances.iter() {
-        let provider = ClaudeProvider::new(config.clone(), claude_settings.api_token.clone())?;
-        prepared.push((config.clone(), Arc::new(provider)));
+        if config.api_token.trim().is_empty() {
+            return Err(anyhow!(
+                "claude instance {} api_token (or api_key) is required",
+                config.provider_instance_name
+            ));
+        }
+        let provider = Arc::new(ClaudeProvider::new(
+            config.clone(),
+            config.api_token.clone(),
+        )?);
+        prepared.push((config.clone(), provider));
     }
 
     for (config, provider) in prepared.into_iter() {
-        center.registry().add_provider(provider);
-        register_default_aliases(
-            center,
-            config.provider_type.as_str(),
-            &config.models,
-            config.default_model.as_deref(),
-        );
-        register_custom_aliases(
-            center,
-            config.provider_type.as_str(),
-            &claude_settings.alias_map,
-        );
-        register_custom_aliases(center, config.provider_type.as_str(), &config.alias_map);
-
+        provider.clone().start_inventory_refresh();
+        let inventory = center.registry().add_provider(provider);
         info!(
-            "registered claude instance id={} provider_type={} base_url={} models={:?}",
-            config.instance_id, config.provider_type, config.base_url, config.models,
+            "registered claude base_url={} inventory={:?}",
+            config.base_url, inventory
         );
+        center
+            .model_registry()
+            .write()
+            .map_err(|_| anyhow!("model registry lock poisoned"))?
+            .apply_inventory(inventory)
+            .map_err(|err| anyhow!("failed to apply claude inventory: {}", err))?;
     }
 
     Ok(instances.len())
@@ -579,7 +1462,168 @@ pub fn register_claude_providers(center: &AIComputeCenter, settings: &Value) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aicc::ModelCatalog;
+
+    #[test]
+    fn claude_models_pagination_rejects_missing_and_repeated_cursors() {
+        let mut seen = HashSet::new();
+        assert_eq!(
+            next_claude_models_cursor(false, None, &mut seen).unwrap(),
+            None
+        );
+        assert!(next_claude_models_cursor(true, None, &mut seen).is_err());
+        assert_eq!(
+            next_claude_models_cursor(true, Some(" page/2 ".to_string()), &mut seen)
+                .unwrap()
+                .as_deref(),
+            Some("page/2")
+        );
+        assert!(next_claude_models_cursor(true, Some("page/2".to_string()), &mut seen).is_err());
+    }
+
+    #[test]
+    fn classifier_matches_anthropic_public_capabilities() {
+        // Claude 3 family: vision yes, web_search no, plan no.
+        assert!(claude_model_supports_vision("claude-3-opus-20240229"));
+        assert!(!claude_model_supports_web_search("claude-3-opus-20240229"));
+        assert!(!claude_model_supports_extended_thinking(
+            "claude-3-opus-20240229"
+        ));
+
+        // Claude 3.5 Haiku: text-only, web_search yes, plan no.
+        assert!(!claude_model_supports_vision("claude-3-5-haiku-20241022"));
+        assert!(claude_model_supports_web_search(
+            "claude-3-5-haiku-20241022"
+        ));
+        assert!(!claude_model_supports_extended_thinking(
+            "claude-3-5-haiku-20241022"
+        ));
+
+        // Claude 3.5 Sonnet: vision + web_search yes, plan no.
+        assert!(claude_model_supports_vision("claude-3-5-sonnet-20241022"));
+        assert!(claude_model_supports_web_search(
+            "claude-3-5-sonnet-20241022"
+        ));
+        assert!(!claude_model_supports_extended_thinking(
+            "claude-3-5-sonnet-20241022"
+        ));
+
+        // Claude 3.7 Sonnet: all of vision/web_search/plan.
+        assert!(claude_model_supports_vision("claude-3-7-sonnet-20250219"));
+        assert!(claude_model_supports_web_search(
+            "claude-3-7-sonnet-20250219"
+        ));
+        assert!(claude_model_supports_extended_thinking(
+            "claude-3-7-sonnet-20250219"
+        ));
+
+        // Claude 4 / 4.5 / 4.7 family.
+        for id in [
+            "claude-opus-4-20250514",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5",
+            "claude-opus-4-7",
+        ] {
+            assert!(claude_model_supports_vision(id), "vision: {}", id);
+            assert!(claude_model_supports_web_search(id), "web_search: {}", id);
+            assert!(
+                claude_model_supports_extended_thinking(id),
+                "thinking: {}",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn effective_features_trims_for_legacy_and_extends_for_modern() {
+        let base = vec![
+            features::PLAN.to_string(),
+            features::JSON_OUTPUT.to_string(),
+            features::TOOL_CALLING.to_string(),
+            features::WEB_SEARCH.to_string(),
+            features::VISION.to_string(),
+        ];
+
+        let claude_3 = effective_features_for_claude_model("claude-3-opus-20240229", &base);
+        assert!(!claude_3.iter().any(|f| f == features::PLAN));
+        assert!(!claude_3.iter().any(|f| f == features::WEB_SEARCH));
+        assert!(claude_3.iter().any(|f| f == features::VISION));
+        assert!(claude_3.iter().any(|f| f == features::TOOL_CALLING));
+
+        let haiku_3_5 = effective_features_for_claude_model("claude-3-5-haiku-20241022", &base);
+        assert!(!haiku_3_5.iter().any(|f| f == features::VISION));
+        assert!(haiku_3_5.iter().any(|f| f == features::WEB_SEARCH));
+        assert!(!haiku_3_5.iter().any(|f| f == features::PLAN));
+
+        let sonnet_4 = effective_features_for_claude_model("claude-sonnet-4-5", &base);
+        for expected in [
+            features::PLAN,
+            features::JSON_OUTPUT,
+            features::TOOL_CALLING,
+            features::WEB_SEARCH,
+            features::VISION,
+            "streaming",
+        ] {
+            assert!(
+                sonnet_4.iter().any(|f| f == expected),
+                "modern model missing feature {}",
+                expected
+            );
+        }
+
+        // Even when base is empty, universally-supported features are added back.
+        let empty = effective_features_for_claude_model("claude-3-opus-20240229", &[]);
+        assert!(empty.iter().any(|f| f == features::TOOL_CALLING));
+        assert!(empty.iter().any(|f| f == features::JSON_OUTPUT));
+    }
+
+    #[test]
+    fn build_inventory_reflects_per_model_capabilities() {
+        let models = vec![
+            "claude-3-5-haiku-20241022".to_string(),
+            "claude-3-7-sonnet-20250219".to_string(),
+            "claude-3-opus-20240229".to_string(),
+        ];
+        let inventory = ClaudeProvider::build_inventory_from_models(
+            "claude-test",
+            ProviderType::CloudApi,
+            "claude",
+            models.as_slice(),
+            &default_features(),
+            None,
+        );
+
+        let by_id = |id: &str| {
+            inventory
+                .models
+                .iter()
+                .find(|m| m.provider_model_id == id)
+                .cloned()
+                .unwrap_or_else(|| panic!("missing model {}", id))
+        };
+
+        let haiku = by_id("claude-3-5-haiku-20241022");
+        assert!(!haiku.capabilities.vision);
+        assert!(haiku.capabilities.web_search);
+        assert!(!haiku
+            .api_types
+            .iter()
+            .any(|api| matches!(api, ApiType::VisionCaption | ApiType::VisionOcr)));
+
+        let sonnet = by_id("claude-3-7-sonnet-20250219");
+        assert!(sonnet.capabilities.vision);
+        assert!(sonnet.capabilities.web_search);
+        assert!(sonnet
+            .api_types
+            .iter()
+            .any(|api| matches!(api, ApiType::VisionCaption)));
+
+        let opus3 = by_id("claude-3-opus-20240229");
+        assert!(opus3.capabilities.vision);
+        assert!(!opus3.capabilities.web_search);
+
+        assert_eq!(sonnet.capabilities.max_context_tokens, Some(200_000));
+    }
 
     #[test]
     fn build_claude_instances_uses_defaults() {
@@ -592,26 +1636,100 @@ mod tests {
 
         let instances = build_claude_instances(&settings).expect("instances should build");
         assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].provider_type, "claude");
+        assert_eq!(instances[0].provider_type, "cloud_api");
+        assert_eq!(instances[0].provider_driver, "claude");
         assert_eq!(
             instances[0].default_model.as_deref(),
             Some("claude-3-7-sonnet-20250219")
         );
     }
 
+    #[tokio::test]
+    async fn stopped_refresh_does_not_send_initial_request() {
+        let config = build_claude_instances(&ClaudeSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        })
+        .expect("instances")
+        .remove(0);
+        let provider = Arc::new(
+            ClaudeProvider::new(config, "token".to_string()).expect("provider should build"),
+        );
+        let provider_instance_name = provider.provider_instance_name.clone();
+        let (refresh_task, shutdown_rx) = ProviderRefreshTask::new();
+        refresh_task.shutdown();
+
+        ClaudeProvider::run_inventory_refresh(
+            Arc::downgrade(&provider),
+            provider_instance_name,
+            refresh_task.clone(),
+            shutdown_rx,
+        )
+        .await;
+
+        assert_eq!(refresh_task.started_requests(), 0);
+    }
+
     #[test]
-    fn register_claude_aliases_exposes_defaults() {
-        let center = AIComputeCenter::new(Default::default(), ModelCatalog::default());
+    fn dropping_provider_stops_refresh_task() {
+        let config = build_claude_instances(&ClaudeSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        })
+        .expect("instances")
+        .remove(0);
+        let provider = ClaudeProvider::new(config, "token".to_string()).expect("provider");
+        let (refresh_task, _) = ProviderRefreshTask::new();
+        *provider.refresh_task.lock().expect("refresh task lock") = Some(refresh_task.clone());
+
+        drop(provider);
+
+        assert!(refresh_task.is_stopped());
+    }
+
+    #[tokio::test]
+    async fn registration_error_does_not_start_prepared_refresh() {
+        let center = AIComputeCenter::default();
+        let settings = json!({
+            "claude": {
+                "enabled": true,
+                "instances": [
+                    {
+                        "provider_instance_name": "claude-valid",
+                        "api_token": "token",
+                        "base_url": "http://127.0.0.1:1"
+                    },
+                    {
+                        "provider_instance_name": "claude-invalid"
+                    }
+                ]
+            }
+        });
+
+        let result = register_claude_providers(&center, &settings);
+
+        assert!(result.is_err());
+        assert!(center.registry().inventories().is_empty());
+    }
+
+    #[test]
+    fn register_claude_inventory_exposes_default_mounts() {
+        let center = AIComputeCenter::default();
         let settings = json!({
             "claude": {
                 "enabled": true,
                 "api_token": "token",
                 "instances": [
                     {
-                        "instance_id": "claude-main",
-                        "provider_type": "claude",
+                        "provider_instance_name": "claude-main",
+                        "provider_type": "cloud_api",
+                        "provider_driver": "claude",
                         "base_url": "https://api.anthropic.com/v1",
-                        "models": ["claude-3-7-sonnet-20250219"],
+                        "models": ["claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"],
                         "default_model": "claude-3-7-sonnet-20250219"
                     }
                 ]
@@ -621,10 +1739,29 @@ mod tests {
         let count = register_claude_providers(&center, &settings).expect("register should work");
         assert_eq!(count, 1);
 
-        let resolved = center
-            .model_catalog()
-            .resolve("", &Capability::LlmRouter, "llm.plan.default", "claude")
-            .expect("default alias should resolve");
-        assert_eq!(resolved, "claude-3-7-sonnet-20250219");
+        let items = center
+            .model_registry()
+            .read()
+            .expect("model registry lock")
+            .default_items_for_path("llm.claude");
+        assert!(items
+            .values()
+            .any(|item| item.target == "claude-3-7-sonnet-20250219@claude-main"));
+        let sonnet_items = center
+            .model_registry()
+            .read()
+            .expect("model registry lock")
+            .default_items_for_path("llm.sonnet");
+        assert!(sonnet_items
+            .values()
+            .any(|item| item.target == "claude-3-7-sonnet-20250219@claude-main"));
+        let haiku_items = center
+            .model_registry()
+            .read()
+            .expect("model registry lock")
+            .default_items_for_path("llm.haiku");
+        assert!(haiku_items
+            .values()
+            .any(|item| item.target == "claude-3-5-haiku-20241022@claude-main"));
     }
 }

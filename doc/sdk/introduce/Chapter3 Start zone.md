@@ -74,28 +74,29 @@ let node_identity = NodeIdentityConfig {
 - 是否启用了 SN？（影响公网可达性与域名解析模式）
 - 这些信息是否带有 owner 可验证的签名？（避免被 DNS 污染/劫持）
 
-实现里，node-daemon 会在启动阶段尝试拿到 ZoneBootConfig：
+实现里，node-daemon 会在启动阶段尝试拿到 ZoneDocument：
 
-- 入口：`looking_zone_boot_config()`（`src/kernel/node_daemon/src/node_daemon.rs`）
-- 正常路径：调用 `resolve_did(&node_identity.zone_did, Some("boot"))` 获取 zone_doc，再用 owner public key 验证并 decode（`src/kernel/node_daemon/src/node_daemon.rs`）
+- 入口：`boot_resolve_zone_document()`（`src/kernel/node_daemon/src/zone_boot_resolve.rs`）
+- 正常路径：先用默认 policy 调用 `resolve_did(&node_identity.zone_did, Some("zone"))` 获取完整 ZoneDocument；默认 policy 不允许访问 DNS DID resolver。
+- fallback 路径：如果完整 ZoneDocument 拿不到，则直接查询 DNS TXT 获取 ZoneBootConfig，使用激活时保存在 `node_identity` 中的 owner key 验签，并转换成 ZoneDocument。该 boot fallback 不依赖尚未启动的 Zone HTTPS authority。
 
 ### 3.1. 一个很“实现细节但必须知道”的点：当前是 JSON 而不是 JWT
 
-很多文档会把 ZoneBootConfig 讲成“JWT”，但当前实现里，scheduler `--boot` 读取的是环境变量 `BUCKYOS_ZONE_BOOT_CONFIG`，并按 JSON 反序列化：
+很多文档会把 ZoneBootConfig 讲成“JWT”，但当前实现里，scheduler `--boot` 读取的是环境变量 `BUCKYOS_ZONE_DOC`，并按 JSON 反序列化为 ZoneDocument：
 
 - 读取点：`src/kernel/scheduler/src/main.rs`（`do_boot_scheduler()`）
 
 也就是说：
 
 - ZoneBootConfig 的“存储/传输形态”可能是 JWT
-- 但 node-daemon 传递给 scheduler 的形态，是 `ZoneBootConfig` 结构体的 JSON 字符串（见 `doc/arch/02_boot_and_activation.md` 的归纳）
+- 但 node-daemon 传递给 scheduler 的形态，是 `ZoneDocument` 的 JSON 字符串（见 `doc/arch/02_boot_and_activation.md` 的归纳）
 
 ### 3.2. 离线/调试模式：从本地文件绕开解析
 
-`looking_zone_boot_config()` 还提供了一个很实用的 debug 入口：
+`boot_resolve_zone_document()` 还提供了一个很实用的 debug 入口：
 
 - 如果存在 `./<zone_raw_host_name>.zone.json`，会优先从本地加载并解析
-- 代码：`src/kernel/node_daemon/src/node_daemon.rs`
+- 代码：`src/kernel/node_daemon/src/zone_boot_resolve.rs`
 
 这让你在离线环境里也能绕开 DNS/BNS/SN 的解析链路，直接验证后续 boot/scheduler 的行为。
 

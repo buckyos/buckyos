@@ -1,132 +1,104 @@
-use std::path::PathBuf;
+//! opendan binary entry.
+//!
+//! Wires the §9 components together: bootstrap shared deps (aicc + worklog) →
+//! open `AIAgent` over the configured agent root → run the dispatcher loop.
+//! SIGINT triggers a graceful shutdown via `AIAgent::shutdown`.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use buckyos_api::msg_queue::MsgQueueClient;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
-    set_buckyos_api_runtime, AppDoc, AppServiceInstanceConfig, AppServiceSpec, BuckyOSRuntimeType,
-    ServiceInstallConfig, AICC_SERVICE_SERVICE_NAME, OPENDAN_SERVICE_NAME,
-    OPENDAN_SERVICE_PORT as DEFAULT_OPENDAN_SERVICE_PORT,
+    set_buckyos_api_runtime, BuckyOSRuntimeType,
 };
-use buckyos_kit::{get_buckyos_root_dir, init_logging};
-use bytes::Bytes;
-use cyfs_gateway_lib::{
-    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
-    StreamInfo,
-};
-use http::{Method, Version};
-use http_body_util::combinators::BoxBody;
+use buckyos_kit::{get_buckyos_app_data_dir, init_logging};
 use log::{error, info, warn};
 use name_lib::{AgentDocument, DIDDocumentTrait, EncodedDocument};
-use serde_json::Value as Json;
-use server_runner::Runner;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs as sync_fs;
 use tokio::fs;
-use tokio::time::{sleep, Duration};
 
-use opendan::agent::{AIAgent, AIAgentDeps};
-use opendan::agent_config::AIAgentConfig;
-use opendan::ai_runtime::{AiRuntime, AiRuntimeConfig, OpenDanRuntimeKrpcHandler};
-struct OpenDanHttpServer {
-    rpc_handler: buckyos_api::OpenDanServerHandler<OpenDanRuntimeKrpcHandler>,
-}
+use opendan::agent::{AIAgent, CreateWorkSessionParams};
+use opendan::agent_config::AgentTomlFile;
+use opendan::ai_runtime::AgentRuntime;
+use opendan::session_model::{SessionStatus, SessionSummary};
+use opendan::worklog::{WorklogService, WorklogToolConfig};
 
-impl OpenDanHttpServer {
-    fn new(runtime: Arc<AiRuntime>) -> Self {
-        Self {
-            rpc_handler: OpenDanRuntimeKrpcHandler::new(runtime).into_server_handler(),
-        }
-    }
-}
+const WORKLOG_DB_ENV: &str = "OPENDAN_WORKLOG_DB";
+const DEFAULT_WORKLOG_DB: &str = "/opt/buckyos/opendan/worklog.db";
+const BUCKYOS_APPID_ENV: [&str; 1] = ["BUCKYOS_APP_ID"];
+const PACKAGE_ROOT_ENVS: [&str; 2] = ["BUCKYOS_PKG_DIR", "BUCKYOS_PKG_SOURCE_DIR"];
+const ROOTFS_SYNC_MANIFEST: &str = ".meta/rootfs_sync.json";
+const ROOTFS_SYNC_VERSION: u32 = 1;
 
-#[async_trait::async_trait]
-impl kRPC::RPCHandler for OpenDanHttpServer {
-    async fn handle_rpc_call(
-        &self,
-        req: kRPC::RPCRequest,
-        ip_from: std::net::IpAddr,
-    ) -> std::result::Result<kRPC::RPCResponse, kRPC::RPCErrors> {
-        self.rpc_handler.handle_rpc_call(req, ip_from).await
-    }
-}
-
-#[async_trait::async_trait]
-impl HttpServer for OpenDanHttpServer {
-    async fn serve_request(
-        &self,
-        req: http::Request<BoxBody<Bytes, ServerError>>,
-        info: StreamInfo,
-    ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        if *req.method() == Method::POST {
-            return serve_http_by_rpc_handler(req, info, self).await;
-        }
-        Err(server_err!(
-            ServerErrorCode::BadRequest,
-            "Method not allowed"
-        ))
-    }
-
-    fn id(&self) -> String {
-        OPENDAN_SERVICE_NAME.to_string()
-    }
-
-    fn http_version(&self) -> Version {
-        Version::HTTP_11
-    }
-
-    fn http3_port(&self) -> Option<u16> {
-        None
-    }
-}
-
-const OPENDAN_AGENT_ID_ENV: [&str; 1] = ["OPENDAN_AGENT_ID"];
-const OPENDAN_AGENT_ENV_ENV: [&str; 1] = ["OPENDAN_AGENT_ENV"];
-const OPENDAN_AGENT_BIN_ENV: [&str; 1] = ["OPENDAN_AGENT_BIN"];
-const OPENDAN_AGENT_OWNER_ENV: [&str; 1] = ["OPENDAN_AGENT_OWNER"];
-const OPENDAN_SERVICE_PORT_ENV: [&str; 1] = ["OPENDAN_SERVICE_PORT"];
-const OPENDAN_SESSION_WORKER_THREADS_ENV: &str = "OPENDAN_SESSION_WORKER_THREADS";
-const OPENDAN_STARTUP_DEP_READY_WAIT_SECS: u64 = 3;
-
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct StartupArgs {
-    agent_id: Option<String>,
-    agent_env: Option<PathBuf>,
+    appid: Option<String>,
+    owner_id: Option<String>,
     agent_bin: Option<PathBuf>,
-    service_port: Option<u16>,
+    worksession_test: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
-struct AgentInstanceDoc {
-    doc: AgentDocument,
-    json: Json,
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct RootfsSyncManifest {
+    version: u32,
+    files: BTreeMap<String, RootfsSyncEntry>,
 }
 
-#[derive(Clone)]
-struct AgentAppSpec {
-    key: String,
-    json: Json,
-    #[allow(dead_code)]
-    app_doc: AppDoc,
-    #[allow(dead_code)]
-    install_config: ServiceInstallConfig,
-    user_id: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RootfsSyncEntry {
+    source_sha256: String,
+    installed_sha256: String,
 }
 
-#[derive(Clone)]
-struct LaunchConfig {
-    agent_id: String,
-    agent_env_root: PathBuf,
-    agent_package_root: Option<PathBuf>,
-    agent_did: Option<String>,
-    agent_owner_did: Option<String>,
-    agent_doc: Option<AgentInstanceDoc>,
-    agent_spec: Option<AgentAppSpec>,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+struct WorkSessionQuickTestSpec {
+    task_id: Option<String>,
+    title: String,
+    objective: String,
+    workspace_id: Option<String>,
+    behavior: Option<String>,
+    created_by_session_id: String,
+    #[serde(alias = "reason_message")]
+    reason_messages: Vec<String>,
+    auto_start: bool,
 }
 
-fn parse_u16_arg(value: &str, arg_name: &str) -> Result<u16> {
-    value
-        .parse::<u16>()
-        .map_err(|err| anyhow!("invalid value for {}: {} ({})", arg_name, value, err))
+impl Default for WorkSessionQuickTestSpec {
+    fn default() -> Self {
+        Self {
+            task_id: None,
+            title: String::new(),
+            objective: String::new(),
+            workspace_id: None,
+            behavior: None,
+            created_by_session_id: "worksession-test".to_string(),
+            reason_messages: Vec::new(),
+            auto_start: true,
+        }
+    }
+}
+
+impl WorkSessionQuickTestSpec {
+    fn into_params(self) -> CreateWorkSessionParams {
+        CreateWorkSessionParams {
+            title: self.title,
+            objective: self.objective,
+            workspace_id: self.workspace_id,
+            behavior: self.behavior,
+            created_by_session_id: self.created_by_session_id,
+            reason_messages: self.reason_messages,
+            task_binding: None,
+            task_id: self.task_id,
+            auto_start: self.auto_start,
+            bind_task: true,
+        }
+    }
 }
 
 fn parse_startup_args_from_iter<I, S>(args: I) -> Result<StartupArgs>
@@ -139,48 +111,88 @@ where
     while let Some(arg) = args.next() {
         let arg = arg.as_ref();
         match arg {
-            "--agent-id" => {
-                parsed.agent_id = Some(
+            "--appid" | "--app-id" | "--agent-id" => {
+                parsed.appid = Some(
                     args.next()
                         .map(|value| value.as_ref().to_string())
-                        .ok_or_else(|| anyhow!("missing value for --agent-id"))?,
+                        .ok_or_else(|| anyhow!("missing value for {arg}"))?,
                 );
             }
-            "--agent-env" => {
-                parsed.agent_env = Some(PathBuf::from(
+            "--owner-id" | "--owner-user-id" => {
+                parsed.owner_id = Some(
                     args.next()
                         .map(|value| value.as_ref().to_string())
-                        .ok_or_else(|| anyhow!("missing value for --agent-env"))?,
+                        .ok_or_else(|| anyhow!("missing value for {arg}"))?,
+                );
+            }
+            "--agent-root" | "--agent-env" => {
+                return Err(anyhow!(
+                    "{arg} is no longer supported; opendan resolves agent_root from BuckyOS app data folder"
                 ));
             }
             "--agent-bin" => {
                 parsed.agent_bin = Some(PathBuf::from(
                     args.next()
                         .map(|value| value.as_ref().to_string())
-                        .ok_or_else(|| anyhow!("missing value for --agent-bin"))?,
+                        .ok_or_else(|| anyhow!("missing value for {arg}"))?,
                 ));
             }
-            "--service-port" => {
-                let value = args
-                    .next()
-                    .map(|value| value.as_ref().to_string())
-                    .ok_or_else(|| anyhow!("missing value for --service-port"))?;
-                parsed.service_port = Some(parse_u16_arg(&value, "--service-port")?);
+            "--worksession-test" | "--work-session-test" => {
+                parsed.worksession_test = Some(PathBuf::from(
+                    args.next()
+                        .map(|value| value.as_ref().to_string())
+                        .ok_or_else(|| anyhow!("missing value for {arg}"))?,
+                ));
+            }
+            // beta2.2: `--worksession-task-test` (direct agent.delegate task
+            // injection into TaskMgr) is gone — external delegation goes
+            // through the Task Dispatch Center only.
+            "--worksession-task-test" | "--work-session-task-test" => {
+                return Err(anyhow!(
+                    "{arg} was removed: external delegation must go through task-dispatcher (dispatch agent.delegate/v1)"
+                ));
+            }
+            other if other.starts_with("--appid=") => {
+                parsed.appid = Some(other["--appid=".len()..].to_string());
+            }
+            other if other.starts_with("--app-id=") => {
+                parsed.appid = Some(other["--app-id=".len()..].to_string());
             }
             other if other.starts_with("--agent-id=") => {
-                parsed.agent_id = Some(other["--agent-id=".len()..].to_string());
+                parsed.appid = Some(other["--agent-id=".len()..].to_string());
             }
-            other if other.starts_with("--agent-env=") => {
-                parsed.agent_env = Some(PathBuf::from(&other["--agent-env=".len()..]));
+            other if other.starts_with("--owner-id=") => {
+                parsed.owner_id = Some(other["--owner-id=".len()..].to_string());
+            }
+            other if other.starts_with("--owner-user-id=") => {
+                parsed.owner_id = Some(other["--owner-user-id=".len()..].to_string());
+            }
+            other if other.starts_with("--agent-root=") || other.starts_with("--agent-env=") => {
+                return Err(anyhow!(
+                    "{other} is no longer supported; opendan resolves agent_root from BuckyOS app data folder"
+                ));
             }
             other if other.starts_with("--agent-bin=") => {
                 parsed.agent_bin = Some(PathBuf::from(&other["--agent-bin=".len()..]));
             }
-            other if other.starts_with("--service-port=") => {
-                parsed.service_port = Some(parse_u16_arg(
-                    &other["--service-port=".len()..],
-                    "--service-port",
-                )?);
+            other if other.starts_with("--worksession-test=") => {
+                parsed.worksession_test =
+                    Some(PathBuf::from(&other["--worksession-test=".len()..]));
+            }
+            other if other.starts_with("--work-session-test=") => {
+                parsed.worksession_test =
+                    Some(PathBuf::from(&other["--work-session-test=".len()..]));
+            }
+            other
+                if other.starts_with("--worksession-task-test=")
+                    || other.starts_with("--work-session-task-test=") =>
+            {
+                return Err(anyhow!(
+                    "{other} was removed: external delegation must go through task-dispatcher (dispatch agent.delegate/v1)"
+                ));
+            }
+            other if !other.starts_with('-') && parsed.appid.is_none() => {
+                parsed.appid = Some(other.to_string());
             }
             _ => {}
         }
@@ -192,602 +204,505 @@ fn parse_startup_args() -> Result<StartupArgs> {
     parse_startup_args_from_iter(std::env::args().skip(1))
 }
 
-fn resolve_owner_from_agent_env(agent_env: Option<&PathBuf>) -> Option<String> {
-    let agent_env = agent_env?;
-    let components = agent_env
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_string())
-        .collect::<Vec<_>>();
-
-    for (index, component) in components.iter().enumerate() {
-        if component != "home" {
-            continue;
-        }
-        if index + 3 >= components.len() {
-            continue;
-        }
-        if components[index + 2] == ".local" && components[index + 3] == "share" {
-            let owner = components[index + 1].trim();
-            if !owner.is_empty() {
-                return Some(owner.to_string());
-            }
-        }
-    }
-
-    None
-}
-
-fn get_first_env_var(keys: &[&str]) -> Option<String> {
+fn first_env(keys: &[&str]) -> Option<String> {
     keys.iter()
         .filter_map(|key| std::env::var(key).ok())
         .map(|value| value.trim().to_string())
         .find(|value| !value.is_empty())
 }
 
-fn resolve_requested_service_port(startup: &StartupArgs) -> Result<u16> {
-    if let Some(service_port) = startup.service_port {
-        return Ok(service_port);
-    }
-
-    if let Some(value) = get_first_env_var(&OPENDAN_SERVICE_PORT_ENV) {
-        return parse_u16_arg(&value, "OPENDAN_SERVICE_PORT");
-    }
-
-    Ok(DEFAULT_OPENDAN_SERVICE_PORT)
-}
-
-fn resolve_requested_agent_id(startup: &StartupArgs) -> Result<String> {
-    if let Some(agent_id) = startup
-        .agent_id
-        .clone()
-        .filter(|value| !value.trim().is_empty())
+fn resolve_appid(startup: &StartupArgs) -> Result<String> {
+    if let Some((appid, _owner_id)) = load_app_identity_from_env()
+        .map_err(|err| anyhow!("load app identity from app_instance_config failed: {err}"))?
     {
-        info!("resolved opendan agent_id from cli: {}", agent_id);
-        return Ok(agent_id);
+        return Ok(appid);
     }
-
-    if let Some(agent_id) = get_first_env_var(&OPENDAN_AGENT_ID_ENV) {
-        info!("resolved opendan agent_id from env: {}", agent_id);
-        return Ok(agent_id);
+    if let Some(appid) = first_env(&BUCKYOS_APPID_ENV) {
+        return Ok(appid);
     }
-
-    if let Some((app_id, _owner_id)) = load_app_identity_from_env()
-        .map_err(|err| anyhow!("load app identity from app_instance_config failed: {}", err))?
+    if let Some(appid) = startup
+        .appid
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
     {
-        info!(
-            "resolved opendan agent_id from app_instance_config: {}",
-            app_id
-        );
-        return Ok(app_id);
+        return Ok(appid.to_string());
     }
-
-    warn!("failed to resolve opendan agent_id from cli/env/app_instance_config");
     Err(anyhow!(
-        "agent instance id is required; pass --agent-id, set one of {:?}, or provide app_instance_config",
-        OPENDAN_AGENT_ID_ENV
+        "appid is required; pass --appid <id>, a positional appid, or set one of {:?}",
+        BUCKYOS_APPID_ENV
     ))
 }
 
-fn resolve_requested_owner_id(startup: &StartupArgs) -> Result<String> {
-    if let Some(owner_id) = get_first_env_var(&OPENDAN_AGENT_OWNER_ENV) {
-        info!("resolved opendan owner_id from env: {}", owner_id);
-        return Ok(owner_id);
-    }
-
-    if let Some(owner_id) = resolve_owner_from_agent_env(startup.agent_env.as_ref())
-        .filter(|value| !value.trim().is_empty())
+fn resolve_owner_id(startup: &StartupArgs) -> Result<Option<String>> {
+    if let Some((_appid, owner_id)) = load_app_identity_from_env()
+        .map_err(|err| anyhow!("load app identity from app_instance_config failed: {err}"))?
     {
-        info!(
-            "resolved opendan owner_id from agent_env path {} => {}",
-            startup
-                .agent_env
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            owner_id
-        );
-        return Ok(owner_id);
+        return Ok(Some(owner_id));
     }
-
-    if let Some((_app_id, owner_id)) = load_app_identity_from_env()
-        .map_err(|err| anyhow!("load app identity from app_instance_config failed: {}", err))?
+    if let Some(owner_id) = startup
+        .owner_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
     {
-        info!(
-            "resolved opendan owner_id from app_instance_config: {}",
-            owner_id
-        );
-        return Ok(owner_id);
+        return Ok(Some(owner_id.to_string()));
     }
-
-    warn!("failed to resolve opendan owner_id from env/agent_env/app_instance_config");
-    Err(anyhow!(
-        "agent owner id is required; set one of {:?}, use an --agent-env under data/home/<owner>/.local/share/<appid>, or provide app_instance_config",
-        OPENDAN_AGENT_OWNER_ENV
-    ))
+    Ok(None)
 }
 
-async fn load_agent_instance_doc(agent_id: &str) -> Result<Option<AgentInstanceDoc>> {
-    let runtime = get_buckyos_api_runtime().context("load runtime failed before sys_config")?;
+fn resolve_agent_root() -> Result<PathBuf> {
+    let runtime =
+        get_buckyos_api_runtime().map_err(|err| anyhow!("load buckyos runtime failed: {err}"))?;
+    let appid = runtime.get_app_id();
+    let owner_id = runtime
+        .get_owner_user_id()
+        .ok_or_else(|| anyhow!("resolve opendan app data folder failed: owner_user_id missing"))?;
+    Ok(get_buckyos_app_data_dir(&appid, &owner_id))
+}
+
+fn resolve_agent_package_root(startup: &StartupArgs, appid: &str) -> Option<PathBuf> {
+    if let Some(path) = startup.agent_bin.clone() {
+        return Some(path);
+    }
+    if let Some(path) = first_env(&PACKAGE_ROOT_ENVS).map(PathBuf::from) {
+        return Some(path);
+    }
+    for path in [
+        PathBuf::from("/opt/buckyos/bin").join(appid),
+        PathBuf::from("/opt/buckyos/bin").join(format!("buckyos_{appid}")),
+    ] {
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+async fn init_agent_rootfs(agent_root: &Path, package_root: Option<&Path>) -> Result<()> {
+    ensure_agent_rootfs_layout(agent_root)
+        .await
+        .with_context(|| format!("initialize AgentRootFS layout at {}", agent_root.display()))?;
+    let Some(package_root) = package_root else {
+        warn!(
+            "opendan.rootfs: no agent package/bin directory found; skip release sync into {}",
+            agent_root.display()
+        );
+        return Ok(());
+    };
+    if !package_root.is_dir() {
+        return Err(anyhow!(
+            "agent package/bin directory does not exist or is not a directory: {}",
+            package_root.display()
+        ));
+    }
+    sync_agent_rootfs_from_package(package_root, agent_root)
+        .await
+        .with_context(|| {
+            format!(
+                "sync AgentRootFS from {} to {}",
+                package_root.display(),
+                agent_root.display()
+            )
+        })?;
+    Ok(())
+}
+
+async fn ensure_agent_rootfs_layout(agent_root: &Path) -> Result<()> {
+    for rel in [
+        "",
+        ".meta",
+        "users",
+        "memory",
+        "notebook",
+        "skills",
+        "tools",
+        "behaviors",
+        "archive",
+        "archive/skills",
+        "archive/sessions",
+        "archive/workspace",
+        "workspace",
+        "sessions",
+    ] {
+        fs::create_dir_all(agent_root.join(rel))
+            .await
+            .with_context(|| {
+                format!("create AgentRootFS dir {}", agent_root.join(rel).display())
+            })?;
+    }
+    Ok(())
+}
+
+async fn sync_agent_rootfs_from_package(package_root: &Path, agent_root: &Path) -> Result<()> {
+    let manifest_path = agent_root.join(ROOTFS_SYNC_MANIFEST);
+    let mut manifest = load_rootfs_sync_manifest(&manifest_path).await?;
+    manifest.version = ROOTFS_SYNC_VERSION;
+
+    let mut copied = 0usize;
+    let mut updated = 0usize;
+    let mut preserved = 0usize;
+    let mut tracked = 0usize;
+    for source in collect_package_files(package_root)? {
+        let rel = source
+            .strip_prefix(package_root)
+            .with_context(|| format!("strip package prefix for {}", source.display()))?;
+        let rel_key = rootfs_rel_key(rel);
+        if rel_key == ROOTFS_SYNC_MANIFEST {
+            continue;
+        }
+        let target = agent_root.join(rel);
+        let source_hash = sha256_file(&source)?;
+        let existing_hash = if target.is_file() {
+            Some(sha256_file(&target)?)
+        } else {
+            None
+        };
+        let previous = manifest.files.get(&rel_key);
+        let local_unmodified = match (existing_hash.as_deref(), previous) {
+            (None, _) => true,
+            (Some(current), Some(entry)) => current == entry.installed_sha256,
+            (Some(current), None) => current == source_hash,
+        };
+
+        if existing_hash.is_none() {
+            copy_package_file(&source, &target)?;
+            copied += 1;
+        } else if local_unmodified {
+            if existing_hash.as_deref() != Some(source_hash.as_str()) {
+                copy_package_file(&source, &target)?;
+                updated += 1;
+            } else {
+                tracked += 1;
+            }
+        } else {
+            preserved += 1;
+            warn!(
+                "opendan.rootfs: preserve locally modified file during package sync: {}",
+                target.display()
+            );
+        }
+
+        manifest.files.insert(
+            rel_key,
+            RootfsSyncEntry {
+                source_sha256: source_hash.clone(),
+                installed_sha256: if local_unmodified {
+                    source_hash
+                } else {
+                    previous
+                        .map(|entry| entry.installed_sha256.clone())
+                        .unwrap_or_else(|| existing_hash.unwrap_or_default())
+                },
+            },
+        );
+    }
+    save_rootfs_sync_manifest(&manifest_path, &manifest).await?;
+    info!(
+        "opendan.rootfs: synced package={} root={} copied={} updated={} tracked={} preserved_modified={}",
+        package_root.display(),
+        agent_root.display(),
+        copied,
+        updated,
+        tracked,
+        preserved
+    );
+    Ok(())
+}
+
+async fn load_rootfs_sync_manifest(path: &Path) -> Result<RootfsSyncManifest> {
+    match fs::read_to_string(path).await {
+        Ok(raw) => serde_json::from_str::<RootfsSyncManifest>(&raw)
+            .with_context(|| format!("parse {}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(RootfsSyncManifest::default()),
+        Err(err) => Err(err).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+async fn save_rootfs_sync_manifest(path: &Path, manifest: &RootfsSyncManifest) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create {}", parent.display()))?;
+    }
+    let raw = serde_json::to_vec_pretty(manifest).context("serialize rootfs sync manifest")?;
+    fs::write(path, raw)
+        .await
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn collect_package_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    collect_package_files_inner(root, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn collect_package_files_inner(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in sync_fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("read entry under {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type {}", path.display()))?;
+        if file_type.is_symlink() {
+            warn!("opendan.rootfs: skip package symlink {}", path.display());
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_package_files_inner(&path, out)?;
+        } else if file_type.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn copy_package_file(source: &Path, target: &Path) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        sync_fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    sync_fs::copy(source, target)
+        .with_context(|| format!("copy {} -> {}", source.display(), target.display()))?;
+    let mut permissions = sync_fs::metadata(source)
+        .with_context(|| format!("metadata {}", source.display()))?
+        .permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
+    }
+    sync_fs::set_permissions(target, permissions)
+        .with_context(|| format!("set permissions {}", target.display()))?;
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = sync_fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let digest = Sha256::digest(&bytes);
+    Ok(hex::encode(digest))
+}
+
+fn rootfs_rel_key(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+async fn load_agent_document(appid: &str) -> Result<AgentDocument> {
+    let runtime = get_buckyos_api_runtime().context("load runtime failed before agent doc")?;
     let client = runtime
         .get_system_config_client()
         .await
         .context("init system_config client for opendan failed")?;
-    let key = format!("agents/{agent_id}/doc");
-    let value = match client.get(&key).await {
-        Ok(value) => value.value,
-        Err(err) => {
-            warn!("load agent instance doc failed: key={} err={}", key, err);
-            return Ok(None);
-        }
-    };
-    let encoded = EncodedDocument::from_str(value.clone())
-        .map_err(|err| anyhow!("decode agent instance doc failed: key={} err={}", key, err))?;
-    let doc = AgentDocument::decode(&encoded, None).map_err(|err| {
-        anyhow!(
-            "decode agent instance AgentDocument failed: key={} err={}",
-            key,
-            err
-        )
-    })?;
-    let json = encoded.to_json_value().map_err(|err| {
-        anyhow!(
-            "convert agent instance doc to json failed: key={} err={}",
-            key,
-            err
-        )
-    })?;
-    Ok(Some(AgentInstanceDoc { doc, json }))
-}
-
-fn owner_key_candidates(owner: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    let trimmed = owner.trim();
-    if trimmed.is_empty() {
-        return candidates;
-    }
-
-    candidates.push(trimmed.to_string());
-
-    if let Some(value) = trimmed.rsplit(':').next() {
-        let value = value.trim();
-        if !value.is_empty() && !candidates.iter().any(|item| item == value) {
-            candidates.push(value.to_string());
-        }
-    }
-
-    candidates
-}
-
-fn agent_spec_key_candidates(agent_id: &str, owner: &str) -> Vec<String> {
-    let mut keys = Vec::new();
-    for owner_key in owner_key_candidates(owner) {
-        keys.push(format!("users/{owner_key}/agents/{agent_id}/spec"));
-    }
-    keys
-}
-
-fn parse_agent_app_spec(key: &str, raw: &str) -> Result<AgentAppSpec> {
-    let json: Json = serde_json::from_str(raw)
-        .map_err(|err| anyhow!("parse agent spec json failed: key={} err={}", key, err))?;
-
-    if let Ok(spec) = serde_json::from_str::<AppServiceInstanceConfig>(raw) {
-        return Ok(AgentAppSpec {
-            key: key.to_string(),
-            json,
-            app_doc: spec.app_spec.app_doc,
-            install_config: spec.app_spec.install_config,
-            user_id: Some(spec.app_spec.user_id),
-        });
-    }
-
-    if let Ok(spec) = serde_json::from_str::<AppServiceSpec>(raw) {
-        return Ok(AgentAppSpec {
-            key: key.to_string(),
-            json,
-            app_doc: spec.app_doc,
-            install_config: spec.install_config,
-            user_id: Some(spec.user_id),
-        });
-    }
-
-    if let Ok(app_doc) = serde_json::from_str::<AppDoc>(raw) {
-        return Ok(AgentAppSpec {
-            key: key.to_string(),
-            json,
-            app_doc,
-            install_config: ServiceInstallConfig::default(),
-            user_id: None,
-        });
-    }
-
-    Err(anyhow!(
-        "unsupported agent spec payload: key={} expected AppServiceInstanceConfig/AppServiceSpec/AppDoc",
-        key
-    ))
-}
-
-async fn load_agent_app_spec(agent_id: &str, owner: Option<&str>) -> Result<Option<AgentAppSpec>> {
-    let Some(owner) = owner.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-
-    let runtime = get_buckyos_api_runtime().context("load runtime failed before agent spec")?;
-    let client = runtime
-        .get_system_config_client()
+    let key = format!("agents/{appid}/doc");
+    let value = client
+        .get(&key)
         .await
-        .context("init system_config client for opendan agent spec failed")?;
-
-    let mut last_err: Option<anyhow::Error> = None;
-    for key in agent_spec_key_candidates(agent_id, owner) {
-        match client.get(&key).await {
-            Ok(value) => {
-                return parse_agent_app_spec(&key, &value.value).map(Some);
-            }
-            Err(err) => {
-                last_err = Some(anyhow!("key={} err={}", key, err));
-            }
-        }
-    }
-
-    if let Some(err) = last_err {
-        warn!(
-            "load agent spec skipped: agent_id={} owner={} detail={}",
-            agent_id, owner, err
-        );
-    }
-
-    Ok(None)
+        .with_context(|| format!("load agent document failed: key={key}"))?
+        .value;
+    let encoded = EncodedDocument::from_str(value)
+        .map_err(|err| anyhow!("decode agent document failed: key={key} err={err}"))?;
+    AgentDocument::decode(&encoded, None)
+        .map_err(|err| anyhow!("decode AgentDocument failed: key={key} err={err}"))
 }
 
-fn resolve_optional_path(cli_value: Option<&PathBuf>, env_keys: &[&str]) -> Option<PathBuf> {
-    cli_value
-        .cloned()
-        .or_else(|| get_first_env_var(env_keys).map(PathBuf::from))
-}
-
-fn resolve_agent_env_root(
-    startup: &StartupArgs,
-    _spec: Option<&AgentAppSpec>,
-    _doc: Option<&AgentInstanceDoc>,
-    agent_id: &str,
-) -> PathBuf {
-    let direct = resolve_optional_path(startup.agent_env.as_ref(), &OPENDAN_AGENT_ENV_ENV);
-    if direct.is_some() {
-        return direct.unwrap();
-    }
-
-    get_buckyos_root_dir().join("agents").join(agent_id)
-}
-
-fn resolve_agent_package_root(
-    startup: &StartupArgs,
-    _spec: Option<&AgentAppSpec>,
-    _doc: Option<&AgentInstanceDoc>,
-) -> Option<PathBuf> {
-    resolve_optional_path(startup.agent_bin.as_ref(), &OPENDAN_AGENT_BIN_ENV)
-}
-
-fn resolve_agent_did(doc: Option<&AgentInstanceDoc>) -> Option<String> {
-    doc.map(|doc| doc.doc.get_id().to_string())
-}
-
-fn resolve_agent_owner_did(doc: Option<&AgentInstanceDoc>) -> Option<String> {
-    doc.map(|doc| doc.doc.owner.to_string())
-}
-
-fn absolutize_path(path: PathBuf) -> Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path);
-    }
-    Ok(std::env::current_dir()
-        .context("read current_dir failed")?
-        .join(path))
-}
-
-async fn write_cached_agent_doc(agent_env_root: &PathBuf, doc: &AgentInstanceDoc) -> Result<()> {
-    fs::create_dir_all(agent_env_root).await.map_err(|err| {
-        anyhow!(
-            "create agent env root failed: path={} err={}",
-            agent_env_root.display(),
-            err
-        )
-    })?;
-    let path = agent_env_root.join("agent.json.doc");
-    let pretty = serde_json::to_string_pretty(&doc.json)
-        .context("serialize cached agent instance doc failed")?;
-    fs::write(&path, pretty).await.map_err(|err| {
-        anyhow!(
-            "write cached agent instance doc failed: path={} err={}",
-            path.display(),
-            err
-        )
-    })?;
-    Ok(())
-}
-
-async fn write_cached_agent_spec(agent_env_root: &PathBuf, spec: &AgentAppSpec) -> Result<()> {
-    fs::create_dir_all(agent_env_root).await.map_err(|err| {
-        anyhow!(
-            "create agent env root failed before spec cache: path={} err={}",
-            agent_env_root.display(),
-            err
-        )
-    })?;
-    let path = agent_env_root.join("agent.app.json");
-    let pretty =
-        serde_json::to_string_pretty(&spec.json).context("serialize cached agent spec failed")?;
-    fs::write(&path, pretty).await.map_err(|err| {
-        anyhow!(
-            "write cached agent spec failed: path={} err={}",
-            path.display(),
-            err
-        )
-    })?;
-    Ok(())
-}
-
-fn resolve_session_worker_threads(default_value: usize) -> usize {
-    let Ok(raw) = std::env::var(OPENDAN_SESSION_WORKER_THREADS_ENV) else {
-        return default_value;
+async fn write_agent_did_to_toml(agent_root: &PathBuf, appid: &str, agent_did: &str) -> Result<()> {
+    fs::create_dir_all(agent_root)
+        .await
+        .with_context(|| format!("create agent root at {}", agent_root.display()))?;
+    let path = agent_root.join("agent.toml");
+    let mut toml = match fs::read_to_string(&path).await {
+        Ok(raw) => toml::from_str::<AgentTomlFile>(&raw)
+            .with_context(|| format!("parse {}", path.display()))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => AgentTomlFile::default(),
+        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     };
-    let parsed = raw.trim().parse::<usize>();
-    match parsed {
-        Ok(value) if value > 0 => value,
-        _ => {
-            warn!(
-                "invalid {} value `{}`; fallback to {}",
-                OPENDAN_SESSION_WORKER_THREADS_ENV, raw, default_value
-            );
-            default_value
-        }
+    toml.identity.agent_did = agent_did.to_string();
+    if toml.identity.display_name.trim().is_empty() {
+        toml.identity.display_name = appid.to_string();
     }
-}
-
-async fn run_agent(launch: &LaunchConfig, deps: AIAgentDeps) -> Result<()> {
-    let mut cfg = AIAgentConfig::new(&launch.agent_env_root);
-    cfg.agent_instance_id = launch.agent_id.clone();
-    cfg.agent_package_root = launch.agent_package_root.clone();
-    cfg.agent_did = launch.agent_did.clone();
-    cfg.agent_owner_did = launch.agent_owner_did.clone();
-    cfg.session_worker_threads = resolve_session_worker_threads(cfg.session_worker_threads);
-    let session_worker_threads = cfg.session_worker_threads;
-
-    let agent = Arc::new(AIAgent::load(cfg, deps).await.map_err(|err| {
-        anyhow!(
-            "load agent failed: instance={} root={}, err={}",
-            launch.agent_id,
-            launch.agent_env_root.display(),
-            err
-        )
-    })?);
-    info!(
-        "opendan agent loaded: instance={} did={} root={} package_root={} session_workers={}",
-        launch.agent_id,
-        agent.did(),
-        launch.agent_env_root.display(),
-        launch
-            .agent_package_root
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string()),
-        session_worker_threads
-    );
-    agent.clone().run_agent_loop(None).await.map_err(|err| {
-        anyhow!(
-            "agent loop failed: instance={} did={} root={}, err={}",
-            launch.agent_id,
-            agent.did(),
-            launch.agent_env_root.display(),
-            err
-        )
-    })?;
+    let raw = toml::to_string_pretty(&toml).context("serialize agent.toml")?;
+    fs::write(&path, raw)
+        .await
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 
-async fn service_main() -> Result<()> {
-    init_logging("opendan", true);
-    //install_panic_hook();
-    //install_signal_logging();
-    info!("starting opendan service...");
-    let startup = parse_startup_args().context("parse opendan startup args failed")?;
-    info!(
-        "opendan startup args: agent_id={} agent_env={} agent_bin={} service_port={}",
-        startup.agent_id.as_deref().unwrap_or("<none>"),
-        startup
-            .agent_env
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string()),
-        startup
-            .agent_bin
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string()),
-        startup
-            .service_port
-            .map(|port| port.to_string())
-            .unwrap_or_else(|| "<none>".to_string())
-    );
-    let agent_id = resolve_requested_agent_id(&startup)?;
-    let owner_id = resolve_requested_owner_id(&startup)?;
-    let service_port = resolve_requested_service_port(&startup)?;
-    info!(
-        "opendan runtime init request: agent_id={} owner_id={} resolved_service_port={}",
-        agent_id, owner_id, service_port
-    );
-
-    let mut runtime = init_buckyos_api_runtime(
-        &agent_id,
-        Some(owner_id.clone()),
-        BuckyOSRuntimeType::AppService,
-    )
-    .await
-    .context("init buckyos runtime for opendan failed")?;
+async fn bootstrap(appid: &str, owner_id: Option<String>) -> Result<Arc<AgentRuntime>> {
+    let mut runtime = init_buckyos_api_runtime(appid, owner_id, BuckyOSRuntimeType::AppService)
+        .await
+        .map_err(|err| anyhow!("init buckyos runtime failed: {err}"))?;
     runtime
         .login()
         .await
-        .context("opendan login to buckyos failed")?;
-    info!(
-        "opendan runtime initialized: app_id={} owner_id={}",
-        agent_id, owner_id
-    );
-    info!(
-        "opendan login succeeded, waiting {}s for dependent services to get ready",
-        OPENDAN_STARTUP_DEP_READY_WAIT_SECS
-    );
-    sleep(Duration::from_secs(OPENDAN_STARTUP_DEP_READY_WAIT_SECS)).await;
-    info!("opendan startup wait finished, continue service bootstrap");
-    info!("setting opendan main service port to {}", service_port);
-    runtime.set_main_service_port(service_port).await;
-    info!("registering global buckyos runtime for opendan");
-    set_buckyos_api_runtime(runtime).context("register opendan runtime failed")?;
-    info!("global buckyos runtime registered for opendan");
+        .map_err(|err| anyhow!("opendan login failed: {err}"))?;
+    set_buckyos_api_runtime(runtime)
+        .map_err(|err| anyhow!("register buckyos runtime failed: {err}"))?;
 
-    info!("loading opendan agent instance doc: agent_id={}", agent_id);
-    let agent_doc = load_agent_instance_doc(&agent_id).await?;
-    info!(
-        "loaded opendan agent instance doc: found={}",
-        agent_doc.is_some()
-    );
-    let agent_owner_did = resolve_agent_owner_did(agent_doc.as_ref());
-    info!(
-        "loading opendan agent spec: agent_id={} owner_did={}",
-        agent_id,
-        agent_owner_did.as_deref().unwrap_or("<none>")
-    );
-    let agent_spec = load_agent_app_spec(&agent_id, agent_owner_did.as_deref()).await?;
-    info!("loaded opendan agent spec: found={}", agent_spec.is_some());
-    let agent_env_root = absolutize_path(resolve_agent_env_root(
-        &startup,
-        agent_spec.as_ref(),
-        agent_doc.as_ref(),
-        &agent_id,
-    ))?;
-    let agent_package_root =
-        resolve_agent_package_root(&startup, agent_spec.as_ref(), agent_doc.as_ref())
-            .map(absolutize_path)
-            .transpose()?;
-    let launch = LaunchConfig {
-        agent_id: agent_id.clone(),
-        agent_env_root,
-        agent_package_root,
-        agent_did: resolve_agent_did(agent_doc.as_ref()),
-        agent_owner_did,
-        agent_doc,
-        agent_spec,
-    };
-    if let Some(doc) = &launch.agent_doc {
-        write_cached_agent_doc(&launch.agent_env_root, doc).await?;
-    }
-    if let Some(spec) = &launch.agent_spec {
-        write_cached_agent_spec(&launch.agent_env_root, spec).await?;
-    }
-    info!(
-        "opendan launch resolved: instance={} service_port={} env_root={} package_root={} did={} owner={} spec_key={} spec_user={}",
-        launch.agent_id,
-        service_port,
-        launch.agent_env_root.display(),
-        launch
-            .agent_package_root
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string()),
-        launch.agent_did.as_deref().unwrap_or("<auto>"),
-        launch.agent_owner_did.as_deref().unwrap_or("<none>"),
-        launch
-            .agent_spec
-            .as_ref()
-            .map(|spec| spec.key.as_str())
-            .unwrap_or("<none>"),
-        launch
-            .agent_spec
-            .as_ref()
-            .and_then(|spec| spec.user_id.as_deref())
-            .unwrap_or("<none>")
-    );
+    let api_runtime =
+        get_buckyos_api_runtime().map_err(|err| anyhow!("load buckyos runtime failed: {err}"))?;
+    let worklog_db = std::env::var(WORKLOG_DB_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_WORKLOG_DB));
+    let worklog = WorklogService::new(WorklogToolConfig::with_db_path(worklog_db.clone()))
+        .with_context(|| format!("open worklog db at {}", worklog_db.display()))?;
 
-    let runtime = get_buckyos_api_runtime().context("load runtime failed after init")?;
-    info!("resolved global runtime after registration");
-
-    info!("initializing task-manager client");
-    let taskmgr = Arc::new(
-        runtime
-            .get_task_mgr_client()
+    // The KEvent client must come from the runtime: opendan runs in a
+    // container, so its only global-event channel is node-daemon's bridge.
+    // Building one here with no transport used to "succeed" against a private
+    // ring buffer nobody else was attached to — every global event silently
+    // stayed inside the container. This is a hard failure now: without the
+    // bridge, agent event subscriptions do not work at all.
+    let kevent_client = Arc::new(
+        api_runtime
+            .get_kevent_client()
             .await
-            .context("init task-manager client failed")?,
+            .map_err(|err| anyhow!("opendan.bootstrap: kevent client unavailable: {err:?}"))?,
     );
-    if let Ok(url) = runtime
-        .get_zone_service_url(AICC_SERVICE_SERVICE_NAME, runtime.force_https)
-        .await
-    {
-        info!("opendan resolved aicc endpoint: {}", url);
-    }
-    let msg_center = match runtime.get_msg_center_client().await {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            warn!("init msg-center client failed, continue without chat history: {err}");
-            None
-        }
-    };
-
-    let msg_queue: Option<MsgQueueClient> = match runtime.get_msg_queue_client().await {
-        Ok(client) => Some(client),
-        Err(err) => {
-            warn!("init msg-queue client failed, continue without queue polling: {err}");
-            None
-        }
-    };
-
-    let deps = AIAgentDeps {
-        taskmgr,
-        msg_center,
-        msg_queue: msg_queue.map(Arc::new),
-    };
+    let kevent_backend = kevent_client.transport_kind();
+    let kevent_endpoint = kevent_client
+        .transport_status()
+        .map(|status| status.endpoint)
+        .unwrap_or_else(|| "local".to_string());
 
     info!(
-        "initializing opendan ai runtime: env_root={}",
-        launch.agent_env_root.display()
-    );
-    let ai_runtime = Arc::new(
-        AiRuntime::new(AiRuntimeConfig::new(&launch.agent_env_root))
-            .await
-            .context("init opendan ai runtime for rpc failed")?,
-    );
-    info!("opendan ai runtime initialized");
-    if let Some(agent_did) = launch.agent_did.as_deref() {
-        info!("registering root agent into ai runtime: did={}", agent_did);
-        ai_runtime
-            .register_agent(agent_did, &launch.agent_env_root)
-            .await
-            .context("register root agent into opendan rpc runtime failed")?;
-        info!("registered root agent into ai runtime: did={}", agent_did);
-    }
-    let server = Arc::new(OpenDanHttpServer::new(ai_runtime));
-    let runner = Runner::new(service_port);
-    runner
-        .add_http_server("/kapi/opendan".to_string(), server)
-        .map_err(|err| anyhow!("failed to add opendan http server: {err:?}"))?;
-    info!(
-        "opendan http server registered, entering select loop: service_port={}",
-        service_port
+        "opendan.bootstrap: service_clients=runtime worklog_db={} kevent_backend={:?} kevent_endpoint={}",
+        worklog_db.display(),
+        kevent_backend,
+        kevent_endpoint
     );
 
-    tokio::select! {
-        runner_result = runner.run() => {
-            runner_result
-                .map_err(|err| anyhow!("opendan runner exited with error: {err:?}"))?;
-            Err(anyhow!("opendan runner exited unexpectedly"))
+    Ok(Arc::new(
+        AgentRuntime::from_runtime(Arc::new(worklog)).with_kevent_client(kevent_client),
+    ))
+}
+
+async fn run_worksession_quick_test(agent: Arc<AIAgent>, json_path: PathBuf) -> Result<()> {
+    let result = async {
+        let raw = fs::read_to_string(&json_path)
+            .await
+            .with_context(|| format!("read worksession test json {}", json_path.display()))?;
+        let spec = serde_json::from_str::<WorkSessionQuickTestSpec>(&raw)
+            .with_context(|| format!("parse worksession test json {}", json_path.display()))?;
+        let outcome = agent
+            .clone()
+            .create_work_session(spec.into_params())
+            .await
+            .context("create worksession for quick test failed")?;
+        info!(
+            "opendan.worksession_test: created session_id={} workspace_id={} workspace_status={} behavior={}",
+            outcome.session_id, outcome.workspace_id, outcome.workspace_status, outcome.behavior
+        );
+        let summary = wait_worksession_to_finish(agent.clone(), &outcome.session_id).await?;
+        info!(
+            "opendan.worksession_test: finished session_id={} status={:?}",
+            summary.session_id, summary.status
+        );
+        Ok(())
+    }
+    .await;
+
+    if let Err(err) = &result {
+        error!("opendan.worksession_test: failed: {err:#}");
+    }
+    agent.shutdown().await;
+    result
+}
+
+async fn wait_worksession_to_finish(
+    agent: Arc<AIAgent>,
+    session_id: &str,
+) -> Result<SessionSummary> {
+    let mut last_status = None;
+    loop {
+        let session = agent
+            .get_session(session_id)
+            .await
+            .ok_or_else(|| anyhow!("worksession `{session_id}` disappeared"))?;
+        let summary = session.summary().await;
+        if last_status != Some(summary.status) {
+            info!(
+                "opendan.worksession_test: session_id={} status={:?}",
+                summary.session_id, summary.status
+            );
+            last_status = Some(summary.status);
         }
-        agent_result = run_agent(&launch, deps) => {
-            agent_result
+        match summary.status {
+            SessionStatus::Ended => return Ok(summary),
+            SessionStatus::Error => {
+                return Err(anyhow!("worksession `{session_id}` entered Error status"));
+            }
+            _ => tokio::time::sleep(Duration::from_millis(500)).await,
         }
     }
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(err) = service_main().await {
-        error!("opendan service exited with error: {err}");
+async fn run() -> Result<()> {
+    let startup = parse_startup_args().context("parse opendan startup args failed")?;
+    let appid = resolve_appid(&startup)?;
+    let owner_id = resolve_owner_id(&startup)?;
+    info!(
+        "opendan.bootstrap: appid={} owner_id={}",
+        appid,
+        owner_id.as_deref().unwrap_or("<runtime-env>")
+    );
+    let runtime = bootstrap(&appid, owner_id).await?;
+    let agent_root = resolve_agent_root()?;
+
+    let agent_doc = load_agent_document(&appid).await?;
+    let agent_did = agent_doc.get_id().to_string();
+    let package_root = resolve_agent_package_root(&startup, &appid);
+    init_agent_rootfs(&agent_root, package_root.as_deref()).await?;
+    write_agent_did_to_toml(&agent_root, &appid, &agent_did).await?;
+    info!(
+        "opendan.bootstrap: agent_root={} package_root={} agent_did={}",
+        agent_root.display(),
+        package_root
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<none>".to_string()),
+        agent_did
+    );
+
+    let agent = AIAgent::open(agent_root, runtime)?;
+    let worksession_test_handle = startup
+        .worksession_test
+        .clone()
+        .map(|path| tokio::spawn(run_worksession_quick_test(agent.clone(), path)));
+    let agent_for_signal = agent.clone();
+    tokio::spawn(async move {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            error!("opendan: ctrl_c handler failed: {err}");
+            return;
+        }
+        info!("opendan: received SIGINT, requesting shutdown");
+        agent_for_signal.shutdown().await;
+    });
+
+    agent.run().await?;
+    if let Some(mut handle) = worksession_test_handle {
+        match tokio::time::timeout(Duration::from_secs(1), &mut handle).await {
+            Ok(joined) => {
+                joined.map_err(|err| anyhow!("worksession test task join failed: {err}"))??;
+            }
+            Err(_) => {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+    }
+    info!("opendan: AIAgent::run returned cleanly");
+    Ok(())
+}
+
+fn main() {
+    init_logging("opendan", true);
+    let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    if let Err(err) = rt.block_on(run()) {
+        error!("opendan: startup failed: {err:#}");
         std::process::exit(1);
     }
 }
@@ -795,69 +710,156 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_spec_key_candidates, parse_startup_args_from_iter, resolve_owner_from_agent_env,
-        resolve_requested_owner_id, resolve_requested_service_port, StartupArgs,
-        DEFAULT_OPENDAN_SERVICE_PORT,
+        parse_startup_args_from_iter, sync_agent_rootfs_from_package, ROOTFS_SYNC_MANIFEST,
     };
-    use std::path::PathBuf;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
-    fn agent_spec_key_candidates_include_agents_and_apps_paths() {
-        let keys = agent_spec_key_candidates("jarvis", "did:bns:alice");
-        assert_eq!(
-            keys,
-            vec![
-                "users/did:bns:alice/agents/jarvis/spec".to_string(),
-                "users/alice/agents/jarvis/spec".to_string(),
-            ]
-        );
+    fn parses_positional_appid() {
+        let parsed = parse_startup_args_from_iter(["buckyos_jarvis"]).expect("parse args");
+        assert_eq!(parsed.appid.as_deref(), Some("buckyos_jarvis"));
     }
 
     #[test]
-    fn parse_startup_args_accepts_service_port_override() {
+    fn parses_appid_flag() {
         let parsed =
-            parse_startup_args_from_iter(["--agent-id", "jarvis", "--service-port", "12016"])
-                .expect("parse startup args");
-
-        assert_eq!(parsed.agent_id.as_deref(), Some("jarvis"));
-        assert_eq!(parsed.service_port, Some(12016));
+            parse_startup_args_from_iter(["--appid", "buckyos_jarvis"]).expect("parse args");
+        assert_eq!(parsed.appid.as_deref(), Some("buckyos_jarvis"));
     }
 
     #[test]
-    fn resolve_owner_from_agent_env_extracts_home_owner() {
-        let owner = resolve_owner_from_agent_env(Some(&PathBuf::from(
-            "/opt/buckyos/data/home/devtest/.local/share/jarvis",
-        )));
-
-        assert_eq!(owner.as_deref(), Some("devtest"));
+    fn keeps_agent_id_as_loader_alias() {
+        let parsed =
+            parse_startup_args_from_iter(["--agent-id=buckyos_jarvis"]).expect("parse args");
+        assert_eq!(parsed.appid.as_deref(), Some("buckyos_jarvis"));
     }
 
     #[test]
-    fn resolve_requested_owner_id_uses_agent_env_as_fallback() {
-        let startup = StartupArgs {
-            agent_env: Some(PathBuf::from(
-                "/opt/buckyos/data/home/devtest/.local/share/jarvis",
-            )),
-            ..Default::default()
-        };
-
+    fn parses_agent_bin_flag() {
+        let parsed = parse_startup_args_from_iter([
+            "--appid=buckyos_jarvis",
+            "--agent-bin",
+            "/pkg/buckyos_jarvis",
+        ])
+        .expect("parse args");
         assert_eq!(
-            resolve_requested_owner_id(&startup).expect("resolve owner"),
-            "devtest"
+            parsed.agent_bin.unwrap(),
+            std::path::PathBuf::from("/pkg/buckyos_jarvis")
         );
     }
 
     #[test]
-    fn resolve_requested_service_port_prefers_cli_value() {
-        let startup = StartupArgs {
-            service_port: Some(12016),
-            ..Default::default()
-        };
+    fn parses_worksession_test_flag() {
+        let parsed = parse_startup_args_from_iter([
+            "--appid=buckyos_jarvis",
+            "--worksession-test",
+            "/tmp/ws.json",
+        ])
+        .expect("parse args");
+        assert_eq!(
+            parsed.worksession_test.unwrap(),
+            std::path::PathBuf::from("/tmp/ws.json")
+        );
+    }
+
+    #[test]
+    fn worksession_task_test_flag_is_removed() {
+        // beta2.2: direct agent.delegate injection into TaskMgr is gone;
+        // external delegation must go through the Task Dispatch Center.
+        for args in [
+            vec![
+                "--appid=buckyos_jarvis",
+                "--worksession-task-test",
+                "/tmp/ws-task.json",
+            ],
+            vec![
+                "--appid=buckyos_jarvis",
+                "--worksession-task-test=/tmp/ws-task.json",
+            ],
+        ] {
+            let err = parse_startup_args_from_iter(args).expect_err("flag must be refused");
+            assert!(err.to_string().contains("task-dispatcher"), "{}", err);
+        }
+    }
+
+    #[test]
+    fn parses_worksession_test_json() {
+        let spec: super::WorkSessionQuickTestSpec = serde_json::from_value(serde_json::json!({
+            "title": "quick check",
+            "objective": "run one complete task",
+            "workspace_id": "ws-existing",
+            "behavior": "work_default",
+            "created_by_session_id": "ui-source",
+            "reason_message": ["requested by cli"]
+        }))
+        .expect("parse spec");
+
+        assert_eq!(spec.title, "quick check");
+        assert_eq!(spec.objective, "run one complete task");
+        assert_eq!(spec.workspace_id.as_deref(), Some("ws-existing"));
+        assert_eq!(spec.behavior.as_deref(), Some("work_default"));
+        assert_eq!(spec.created_by_session_id, "ui-source");
+        assert_eq!(spec.reason_messages, vec!["requested by cli"]);
+    }
+
+    #[tokio::test]
+    async fn rootfs_sync_copies_missing_release_files() {
+        let dir = tempdir().unwrap();
+        let package = dir.path().join("pkg");
+        let root = dir.path().join("root");
+        fs::create_dir_all(package.join("tools")).unwrap();
+        fs::write(package.join("role.md"), "role v1").unwrap();
+        fs::write(package.join("tools/hello.sh"), "#!/bin/sh\necho hi\n").unwrap();
+
+        sync_agent_rootfs_from_package(&package, &root)
+            .await
+            .expect("sync rootfs");
+
+        assert_eq!(fs::read_to_string(root.join("role.md")).unwrap(), "role v1");
+        assert!(root.join("tools/hello.sh").is_file());
+        assert!(root.join(ROOTFS_SYNC_MANIFEST).is_file());
+    }
+
+    #[tokio::test]
+    async fn rootfs_sync_updates_unmodified_local_file() {
+        let dir = tempdir().unwrap();
+        let package = dir.path().join("pkg");
+        let root = dir.path().join("root");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("self.md"), "self v1").unwrap();
+        sync_agent_rootfs_from_package(&package, &root)
+            .await
+            .expect("initial sync");
+
+        fs::write(package.join("self.md"), "self v2").unwrap();
+        sync_agent_rootfs_from_package(&package, &root)
+            .await
+            .expect("second sync");
+
+        assert_eq!(fs::read_to_string(root.join("self.md")).unwrap(), "self v2");
+    }
+
+    #[tokio::test]
+    async fn rootfs_sync_preserves_locally_modified_file() {
+        let dir = tempdir().unwrap();
+        let package = dir.path().join("pkg");
+        let root = dir.path().join("root");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("role.md"), "role v1").unwrap();
+        sync_agent_rootfs_from_package(&package, &root)
+            .await
+            .expect("initial sync");
+
+        fs::write(root.join("role.md"), "local role").unwrap();
+        fs::write(package.join("role.md"), "role v2").unwrap();
+        sync_agent_rootfs_from_package(&package, &root)
+            .await
+            .expect("second sync");
 
         assert_eq!(
-            resolve_requested_service_port(&startup).expect("resolve service port"),
-            12016
+            fs::read_to_string(root.join("role.md")).unwrap(),
+            "local role"
         );
-        assert_ne!(DEFAULT_OPENDAN_SERVICE_PORT, 12016);
     }
 }

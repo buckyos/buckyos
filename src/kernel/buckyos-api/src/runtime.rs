@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ::kRPC::Result;
 use ::kRPC::*;
 use buckyos_kit::*;
 use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
@@ -16,25 +17,33 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use tokio::sync::{OnceCell, RwLock};
 
 use name_client::*;
 use name_lib::*;
-use named_store::NamedStoreMgr;
+use named_store::NamedDataMgr;
 
 use crate::aicc_client::*;
 use crate::app_mgr::*;
 use crate::control_panel::*;
+use crate::kevent_client::{
+    KEventClient, BUCKYOS_KEVENT_DAEMON_ADDR_ENV, KEVENT_SERVICE_NATIVE_PORT,
+};
 use crate::msg_center_client::*;
 use crate::msg_queue::*;
 use crate::opendan_client::*;
 use crate::repo_client::*;
 use crate::scheduler_client::*;
 use crate::system_config::*;
+use crate::task_dispatcher::{TaskDispatcherClient, TASK_DISPATCHER_SERVICE_NAME};
 use crate::task_mgr::*;
 use crate::verify_hub_client::*;
+use crate::workflow_service::{WorkflowServiceClient, WORKFLOW_SERVICE_NAME};
 use crate::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, OPENDAN_SERVICE_NAME,
+    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, load_local_device_config,
+    load_local_device_private_key, load_local_node_identity_config, RbacConfig,
+    OPENDAN_SERVICE_NAME,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -44,12 +53,13 @@ const BUCKYOS_KRPC_TIMEOUT_SECS_ENV: &str = "BUCKYOS_KRPC_TIMEOUT_SECS";
 const BUCKYOS_KRPC_TIMEOUT_SECS_PREFIX: &str = "BUCKYOS_KRPC_TIMEOUT_SECS_";
 const BUCKYOS_HOST_GATEWAY_ENV: &str = "BUCKYOS_HOST_GATEWAY";
 const DEFAULT_DOCKER_HOST_GATEWAY: &str = "host.docker.internal";
+pub const BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV: &str = "BUCKYOS_APPCLIENT_SESSION_TOKEN";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuckyOSRuntimeType {
     AppClient,     //运行在所有设备上，通常不在容器里（唯一可能加载user private key的类型)
     AppService,    //R3 运行在Node上，指定用户，可能在容器里
-    FrameService,  //R2 运行在Node上，通常在容器里
+    FrameService,  //R2 运行在Node上，通常在容器里（未启用）
     KernelService, //R1 由node-daemon启动的的系统基础服务
     Kernel,        //R0,node-daemon和cyfs-gateway使用，可以单独启动的组件
 }
@@ -162,12 +172,11 @@ pub struct BuckyOSRuntime {
 
     pub user_id: Option<String>,
     pub authenticated_user_id: Option<String>,
-    pub user_config: Option<OwnerConfig>,
+    pub user_config: Option<OwnerDocument>,
     pub user_private_key: Option<EncodingKey>,
 
-    pub device_config: Option<DeviceConfig>,
+    pub device_config: Option<DeviceDocument>,
     pub device_private_key: Option<EncodingKey>,
-    pub device_info: Option<DeviceInfo>,
 
     pub zone_id: DID,
     pub node_gateway_port: u16,
@@ -178,8 +187,9 @@ pub struct BuckyOSRuntime {
     pub refresh_token: Arc<RwLock<String>>,
     trust_keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
     last_update_service_info_time: RwLock<u64>,
-    named_store_mgr: OnceCell<NamedStoreMgr>,
+    named_store_mgr: OnceCell<NamedDataMgr>,
     system_config_client: OnceCell<Arc<SystemConfigClient>>,
+    kevent_client: OnceCell<KEventClient>,
     background_task_status:
         Arc<RwLock<HashMap<RuntimeBackgroundTaskKind, RuntimeBackgroundTaskStatus>>>,
 
@@ -224,7 +234,6 @@ impl BuckyOSRuntime {
             zone_config: None,
             device_config: None,
             device_private_key: None,
-            device_info: None,
             user_private_key: None,
             user_config: None,
             zone_id: DID::undefined(),
@@ -233,6 +242,7 @@ impl BuckyOSRuntime {
             last_update_service_info_time: RwLock::new(0),
             named_store_mgr: OnceCell::new(),
             system_config_client: OnceCell::new(),
+            kevent_client: OnceCell::new(),
             background_task_status: Arc::new(RwLock::new(HashMap::from([
                 (
                     RuntimeBackgroundTaskKind::RenewToken,
@@ -261,14 +271,15 @@ impl BuckyOSRuntime {
         *main_service_port = port;
     }
 
-    pub async fn get_named_store(&self) -> Result<NamedStoreMgr> {
-        let store_mgr: &NamedStoreMgr = self
+    pub async fn get_named_store(&self) -> Result<NamedDataMgr> {
+        let store_mgr: &NamedDataMgr = self
             .named_store_mgr
             .get_or_try_init(|| async {
                 let config_path = get_buckyos_root_dir()
                     .join("storage")
                     .join("named_store.json");
-                NamedStoreMgr::get_store_mgr(config_path.as_path())
+                let http_backend_links = HashMap::new();
+                NamedDataMgr::get_store_mgr(config_path.as_path(), &http_backend_links)
                     .await
                     .map_err(|e| {
                         RPCErrors::ReasonError(format!(
@@ -282,19 +293,6 @@ impl BuckyOSRuntime {
     }
 
     pub async fn fill_by_env_var(&mut self) -> Result<()> {
-        // let zone_boot_config = env::var("BUCKYOS_ZONE_BOOT_CONFIG");
-        // if zone_boot_config.is_ok() {
-        //     let zone_boot_config:ZoneBootConfig = serde_json::from_str(zone_boot_config.unwrap().as_str())
-        //         .map_err(|e| {
-        //             error!("Failed to parse zone boot config: {}", e);
-        //             RPCErrors::ReasonError(format!("Failed to parse zone boot config: {}", e))
-        //         })?;
-        //     if zone_boot_config.id.is_none() {
-        //         return Err(RPCErrors::ReasonError("zone_boot_config id is not set".to_string()));
-        //     }
-
-        //     self.zone_id = zone_boot_config.id.clone().unwrap();
-        // } e
         let zone_config_str = env::var("BUCKYOS_ZONE_CONFIG");
         if zone_config_str.is_ok() {
             let zone_config_str = zone_config_str.unwrap();
@@ -307,22 +305,11 @@ impl BuckyOSRuntime {
                 ));
             }
             let zone_config: ZoneConfig = zone_config.unwrap();
-            self.zone_id = zone_config.id.clone();
+            let zone_document = zone_config
+                .zone_document()
+                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+            self.zone_id = zone_document.id.clone();
             self.zone_config = Some(zone_config);
-        }
-
-        let device_info_str = env::var("BUCKYOS_THIS_DEVICE_INFO");
-        if device_info_str.is_ok() {
-            let device_info_str = device_info_str.unwrap();
-            let device_info = serde_json::from_str(device_info_str.as_str());
-            if device_info.is_err() {
-                warn!("device_info_str format error");
-                return Err(RPCErrors::ReasonError(
-                    "device_info_str format error".to_string(),
-                ));
-            }
-            let device_info = device_info.unwrap();
-            self.device_info = Some(device_info);
         }
 
         if let Ok(device_doc) = env::var("BUCKYOS_THIS_DEVICE") {
@@ -334,7 +321,7 @@ impl BuckyOSRuntime {
                     "device_doc format error".to_string(),
                 ));
             }
-            let device_config: DeviceConfig = device_config.unwrap();
+            let device_config: DeviceDocument = device_config.unwrap();
             self.device_config = Some(device_config.clone());
         }
 
@@ -365,6 +352,36 @@ impl BuckyOSRuntime {
                 }
                 session_token_keys.push(get_session_token_env_key(self.app_id.as_str(), true));
             }
+            BuckyOSRuntimeType::AppClient => match env::var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV) {
+                Ok(session_token) => {
+                    if session_token.trim().is_empty() {
+                        warn!(
+                            "{} is set but empty, skip AppClient session token bootstrap",
+                            BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                        );
+                    } else {
+                        info!(
+                            "load AppClient session_token from env var success: {}",
+                            BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                        );
+                        let mut this_session_token = self.session_token.write().await;
+                        *this_session_token = session_token;
+                        return Ok(());
+                    }
+                }
+                Err(env::VarError::NotPresent) => {
+                    info!(
+                        "{} not set, skip AppClient session token bootstrap",
+                        BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
+                    );
+                }
+                Err(error) => {
+                    return Err(RPCErrors::ReasonError(format!(
+                        "read {} from env failed: {}",
+                        BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, error
+                    )));
+                }
+            },
             _ => {
                 info!(
                     "will not load session_token from env var for runtime_type: {:?}",
@@ -524,35 +541,20 @@ impl BuckyOSRuntime {
         );
 
         let node_identity_file = config_root_dir.join("node_identity.json");
-        let device_private_key_file = config_root_dir.join("node_private_key.pem");
 
         let node_identity_config =
-            NodeIdentityConfig::load_node_identity_config(&node_identity_file).map_err(|e| {
+            load_local_node_identity_config(&node_identity_file).map_err(|e| {
                 error!("Failed to load node identity config: {}", e);
                 RPCErrors::ReasonError(format!("Failed to load node identity config: {}", e))
             });
 
         if node_identity_config.is_ok() {
             let node_identity_config = node_identity_config.unwrap();
-            let device_config =
-                decode_jwt_claim_without_verify(node_identity_config.device_doc_jwt.as_str())
-                    .map_err(|e| {
-                        error!("Failed to decode device config: {}", e);
-                        RPCErrors::ReasonError(format!("Failed to decode device config: {}", e))
-                    })?;
-
-            let devcie_config = serde_json::from_value::<DeviceConfig>(device_config);
-            if devcie_config.is_err() {
-                error!(
-                    "Failed to parse device config: {}",
-                    devcie_config.err().unwrap()
-                );
-                return Err(RPCErrors::ReasonError(format!(
-                    "Failed to parse device config from jwt: {}",
-                    node_identity_config.device_doc_jwt.as_str()
-                )));
-            }
-            let device_config = devcie_config.unwrap();
+            let (_, device_config) = load_local_device_config(&node_identity_config, false)
+                .map_err(|e| {
+                    error!("Failed to load local device config: {}", e);
+                    RPCErrors::ReasonError(format!("Failed to load local device config: {}", e))
+                })?;
             self.device_config = Some(device_config);
             let zone_did = node_identity_config.zone_did.clone();
             self.zone_id = zone_did.clone();
@@ -564,24 +566,13 @@ impl BuckyOSRuntime {
             }
         }
 
-        if self.runtime_type == BuckyOSRuntimeType::AppClient
-            || self.runtime_type == BuckyOSRuntimeType::Kernel
-        {
-            let private_key = load_private_key(&device_private_key_file);
-            if private_key.is_ok() {
-                self.device_private_key = Some(private_key.unwrap());
-            } else {
-                self.device_private_key = None;
-            }
-        }
-
         //let zone_config_file;
         if self.runtime_type == BuckyOSRuntimeType::AppClient {
             let user_config_file = config_root_dir.join("user_config.json");
             let user_private_key_file = config_root_dir.join("user_private_key.pem");
             if user_config_file.exists() {
                 let owner_config =
-                    OwnerConfig::load_owner_config(&user_config_file).map_err(|e| {
+                    OwnerDocument::load_owner_document(&user_config_file).map_err(|e| {
                         error!("Failed to load owner config: {}", e);
                         RPCErrors::ReasonError(format!("Failed to load owner config: {}", e))
                     })?;
@@ -592,8 +583,7 @@ impl BuckyOSRuntime {
                     self.app_owner_id = Some(owner_config.name.clone());
                 }
                 if !self.zone_id.is_valid() {
-                    if owner_config.default_zone_did.is_some() {
-                        let zone_did = owner_config.default_zone_did.clone().unwrap();
+                    if let Some(zone_did) = owner_config.get_default_zone_did() {
                         self.zone_id = zone_did.clone();
                     } else {
                         return Err(RPCErrors::ReasonError(
@@ -618,6 +608,19 @@ impl BuckyOSRuntime {
             }
         }
 
+        Ok(())
+    }
+
+    pub fn load_device_private_key(&mut self) -> Result<()> {
+        let device_did = self
+            .device_config
+            .as_ref()
+            .map(|config| config.id.clone())
+            .ok_or_else(|| RPCErrors::ReasonError("device_config is not set".to_string()))?;
+        let private_key = load_local_device_private_key(&device_did).map_err(|err| {
+            RPCErrors::ReasonError(format!("load device private key failed: {}", err))
+        })?;
+        self.device_private_key = Some(private_key);
         Ok(())
     }
 
@@ -659,10 +662,11 @@ impl BuckyOSRuntime {
             | RPCErrors::InvalidPassword
             | RPCErrors::UserNotFound(_)
             | RPCErrors::KeyNotExist(_)
-            | RPCErrors::UnknownMethod(_) => RuntimeErrorClass::NonRetryable,
-            RPCErrors::TokenExpired(_) | RPCErrors::ServiceNotValid(_) => {
-                RuntimeErrorClass::Retryable
-            }
+            | RPCErrors::UnknownMethod(_)
+            | RPCErrors::S2sPermanentError(_) => RuntimeErrorClass::NonRetryable,
+            RPCErrors::TokenExpired(_)
+            | RPCErrors::ServiceNotValid(_)
+            | RPCErrors::S2sTransientError(_) => RuntimeErrorClass::Retryable,
             RPCErrors::ReasonError(message) => {
                 let message = message.to_ascii_lowercase();
                 if [
@@ -1074,7 +1078,7 @@ impl BuckyOSRuntime {
         }
 
         Err(RPCErrors::ReasonError(
-            "Missing local private key for login".to_string(),
+            "Missing local private key for login; call load_device_private_key() only for components that require device signing".to_string(),
         ))
     }
 
@@ -1282,7 +1286,7 @@ impl BuckyOSRuntime {
 
                 if session_token.is_empty() {
                     return Err(RPCErrors::ReasonError(
-                        "session_token is empty!".to_string(),
+                        "session_token is empty; runtime will not implicitly load the device private key".to_string(),
                     ));
                 }
                 drop(session_token);
@@ -1320,6 +1324,10 @@ impl BuckyOSRuntime {
         //session token already set, try to connect to control-panel and get zone config
         let control_panel_client = self.get_control_panel_client().await?;
         let zone_config = control_panel_client.load_zone_config().await?;
+        let zone_document = zone_config
+            .zone_document()
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        self.zone_id = zone_document.id.clone();
         self.zone_config = Some(zone_config);
         self.authenticated_user_id =
             BuckyOSRuntime::resolve_authenticated_user_id(&authenticated_session_token);
@@ -1328,8 +1336,8 @@ impl BuckyOSRuntime {
         if self.runtime_type == BuckyOSRuntimeType::KernelService
             || self.runtime_type == BuckyOSRuntimeType::FrameService
         {
-            let (rbac_model, rbac_policy) = control_panel_client.load_rbac_config().await?;
-            rbac::create_enforcer(Some(rbac_model.as_str()), Some(rbac_policy.as_str()))
+            let rbac_config = self.get_current_rbac_config().await?;
+            rbac::create_enforcer(rbac_config.model.as_str(), rbac_config.policy.as_str())
                 .await
                 .map_err(|error| {
                     RPCErrors::ReasonError(format!("init rbac enforcer failed: {}", error))
@@ -1426,6 +1434,9 @@ impl BuckyOSRuntime {
         //zone_config 中包含trust_keys
         if self.zone_config.is_some() {
             let zone_config = self.zone_config.as_ref().unwrap();
+            let zone_document = zone_config
+                .zone_document()
+                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
             if zone_config.verify_hub_info.is_some() {
                 let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
@@ -1439,9 +1450,9 @@ impl BuckyOSRuntime {
                 warn!("NO verfiy-hub publick key, system init with errors!");
             }
 
-            if zone_config.owner.is_valid() {
-                let owner_did = zone_config.owner.clone();
-                if let Some(owner_key) = zone_config.get_default_key() {
+            if zone_document.owner.is_valid() {
+                let owner_did = zone_document.owner.clone();
+                if let Some(owner_key) = zone_document.get_default_key() {
                     let owner_public_key = DecodingKey::from_jwk(&owner_key).map_err(|err| {
                         error!("Failed to parse owner_public_key from zone_config: {}", err);
                         RPCErrors::ReasonError(err.to_string())
@@ -1543,6 +1554,11 @@ impl BuckyOSRuntime {
         Ok(rpc_token)
     }
 
+    pub async fn get_current_rbac_config(&self) -> Result<RbacConfig> {
+        let system_config_client = self.get_system_config_client().await?;
+        crate::load_current_rbac_config(system_config_client.as_ref()).await
+    }
+
     //success return (userid,appid)
     pub async fn enforce(
         &self,
@@ -1604,15 +1620,22 @@ impl BuckyOSRuntime {
             .unwrap_or("kernel");
 
         let system_config_client = self.get_system_config_client().await?;
-        let rbac_policy = system_config_client.get("system/rbac/policy").await;
-        if rbac_policy.is_ok() {
-            let rbac_policy = rbac_policy.unwrap();
-            if rbac_policy.is_changed {
-                rbac::update_enforcer(Some(rbac_policy.value.as_str())).await;
-            }
+        let rbac_config = crate::load_current_rbac_config(system_config_client.as_ref()).await?;
+        if rbac_config.is_changed {
+            rbac::update_enforcer(rbac_config.model.as_str(), rbac_config.policy.as_str())
+                .await
+                .map_err(|error| {
+                    RPCErrors::ReasonError(format!("update rbac enforcer failed: {}", error))
+                })?;
         }
 
-        let result = rbac::enforce(userid, Some(appid), resource_path, action).await;
+        let sudo = decoded_json
+            .get("sudo")
+            .and_then(|sudo| sudo.as_bool())
+            .unwrap_or(false)
+            .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(userid)));
+
+        let result = rbac::enforce(userid, appid, resource_path, action, sudo).await;
         if !result {
             return Err(RPCErrors::NoPermission(format!(
                 "enforce failed,userid:{},appid:{},resource:{},action:{}",
@@ -1915,17 +1938,18 @@ impl BuckyOSRuntime {
     fn resolve_local_service_host(&self) -> String {
         match self.runtime_type {
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
-                env::var(BUCKYOS_HOST_GATEWAY_ENV)
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| DEFAULT_DOCKER_HOST_GATEWAY.to_string())
+                let configured_host = env::var(BUCKYOS_HOST_GATEWAY_ENV).ok();
+                resolve_container_gateway_host(configured_host.as_deref())
             }
             _ => "127.0.0.1".to_string(),
         }
     }
 
-    pub async fn get_system_config_client(&self) -> Result<Arc<SystemConfigClient>> {
+    /// Compute the URL used to reach the zone's `system_config` service for
+    /// the current runtime type. Exposed so that callers (e.g. control_panel
+    /// handlers that want to forward the caller's RPC session token) can
+    /// construct a fresh `SystemConfigClient` with their own auth token.
+    pub fn get_system_config_url(&self) -> String {
         let mut url = format!(
             "http://{}:3200/kapi/system_config",
             self.resolve_local_service_host()
@@ -1948,10 +1972,23 @@ impl BuckyOSRuntime {
                     DEFAULT_NODE_GATEWAY_PORT
                 );
             }
-            _ => {
-                // keep local direct system_config url
+            BuckyOSRuntimeType::Kernel | BuckyOSRuntimeType::KernelService => {
+                // 非 OOD Kernel（ZoneGateway / 普通 Node）本机不跑 system_config 服务，
+                // 必须通过本机 cyfs-gateway 转发到 OOD。
+                if !self.is_ood() {
+                    url = format!(
+                        "http://{}:{}/kapi/system_config",
+                        self.resolve_local_service_host(),
+                        DEFAULT_NODE_GATEWAY_PORT
+                    );
+                }
             }
         }
+        url
+    }
+
+    pub async fn get_system_config_client(&self) -> Result<Arc<SystemConfigClient>> {
+        let url = self.get_system_config_url();
 
         //let url = self.get_zone_service_url("system_config",self.force_https)?;
         let session_token = self.get_session_token().await;
@@ -1972,12 +2009,147 @@ impl BuckyOSRuntime {
         Ok(client.clone())
     }
 
+    /// Returns a short-session client bound to the runtime session token that is
+    /// valid at the time this method is called.
+    ///
+    /// Do not cache the returned client in long-lived services. Acquire a new
+    /// client from the runtime for each operation unless the caller explicitly
+    /// owns and refreshes the client's token.
     pub async fn get_task_mgr_client(&self) -> Result<TaskManagerClient> {
         let krpc_client = self.get_zone_service_krpc_client("task-manager").await?;
         let client = TaskManagerClient::new(krpc_client);
         Ok(client)
     }
 
+    /// Waits for a task without retaining a short-session TaskManager client.
+    /// Every authoritative task read acquires a new client with the runtime's
+    /// current session token.
+    pub async fn wait_for_task_end_kevent(&self, task_id: &str) -> Result<Task> {
+        const FIRST_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
+        const STEADY_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+        let kevent = match self.get_kevent_client().await {
+            Ok(client) => match client
+                .create_event_reader(vec![task_mgr_task_event_path(task_id)])
+                .await
+            {
+                Ok(reader) => Some((client, reader)),
+                Err(err) => {
+                    warn!(
+                        "runtime.wait_for_task_end_kevent: subscribe failed (task_id={}): {}; polling only",
+                        task_id, err
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                warn!(
+                    "runtime.wait_for_task_end_kevent: get_kevent_client failed (task_id={}): {}; polling only",
+                    task_id, err
+                );
+                None
+            }
+        };
+
+        let task = self.get_task_mgr_client().await?.get_task(task_id).await?;
+        if task.phase.is_terminal() {
+            return Ok(task);
+        }
+
+        let mut interval = FIRST_SWEEP_INTERVAL;
+        loop {
+            match kevent.as_ref() {
+                Some((_client, reader)) => {
+                    let _ = reader.pull_event(Some(interval.as_millis() as u64)).await;
+                }
+                None => tokio::time::sleep(interval).await,
+            }
+            let task = self.get_task_mgr_client().await?.get_task(task_id).await?;
+            if task.phase.is_terminal() {
+                return Ok(task);
+            }
+            interval = if kevent.is_some() {
+                STEADY_SWEEP_INTERVAL
+            } else {
+                FIRST_SWEEP_INTERVAL
+            };
+        }
+    }
+
+    /// Returns a short-session Task Dispatch Center client. Acquire it again
+    /// from the runtime for each operation instead of keeping it in long-lived
+    /// state. The dispatcher shares the task-manager process/port (one
+    /// deployment unit) but is a separate RPC surface, so the URL is resolved
+    /// through the task-manager service entry and only the kapi path segment
+    /// differs.
+    pub async fn get_task_dispatcher_client(&self) -> Result<TaskDispatcherClient> {
+        let url = self
+            .get_zone_service_url(TASK_MANAGER_SERVICE_NAME, self.force_https)
+            .await?;
+        let url = url.replace(
+            &format!("/kapi/{}", TASK_MANAGER_SERVICE_NAME),
+            &format!("/kapi/{}", TASK_DISPATCHER_SERVICE_NAME),
+        );
+        let session_token = self.session_token.read().await;
+        let krpc_client = kRPC::new_with_timeout_secs(
+            &url,
+            Some(session_token.clone()),
+            DEFAULT_KRPC_TIMEOUT_SECS,
+        );
+        Ok(TaskDispatcherClient::new(krpc_client))
+    }
+
+    /// The process-wide KEvent client, bound to this runtime's `app_id`.
+    ///
+    /// This is the only supported way to obtain one: the transport depends on
+    /// where the process runs, and business code has no business knowing about
+    /// `BUCKYOS_KEVENT_DAEMON_ADDR`, host gateways or ring-buffer paths.
+    ///
+    /// * `AppService` / `FrameService` run inside containers, cannot reach the
+    ///   host's ring buffer, and therefore talk to node-daemon's native bridge.
+    ///   (node-daemon is their loader, so it is always the right peer.)
+    /// * Everything else runs beside node-daemon on the host and uses the
+    ///   shared ring buffer.
+    ///
+    /// It is a *singleton*: each client owns a ring-dispatch thread or a set
+    /// of TCP connections, so handing out a fresh one per call would leak a
+    /// thread (or a connection) per caller — `wait_for_task_end_kevent` alone
+    /// would burn one per wait.
+    pub async fn get_kevent_client(&self) -> Result<KEventClient> {
+        let client = self
+            .kevent_client
+            .get_or_try_init(|| async { self.build_kevent_client() })
+            .await?;
+        Ok(client.clone())
+    }
+
+    fn build_kevent_client(&self) -> Result<KEventClient> {
+        let source_node = self.app_id.as_str();
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                let configured_endpoint = env::var(BUCKYOS_KEVENT_DAEMON_ADDR_ENV).ok();
+                let endpoint = resolve_kevent_daemon_endpoint(
+                    configured_endpoint.as_deref(),
+                    &self.resolve_local_service_host(),
+                );
+                info!(
+                    "kevent client for {} uses daemon bridge at {}",
+                    source_node, endpoint
+                );
+                KEventClient::new_daemon_bridge(source_node, endpoint)
+                    .map_err(|err| RPCErrors::ReasonError(err.to_string()))
+            }
+            _ => KEventClient::new_shared_memory(source_node).map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "kevent shared memory transport unavailable for {}: {}",
+                    source_node, err
+                ))
+            }),
+        }
+    }
+
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_aicc_client(&self) -> Result<AiccClient> {
         let krpc_client = self
             .get_zone_service_krpc_client_with_default_timeout(
@@ -1989,6 +2161,8 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_msg_center_client(&self) -> Result<MsgCenterClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(MSG_CENTER_SERVICE_NAME)
@@ -1997,15 +2171,28 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_msg_queue_client(&self) -> Result<MsgQueueClient> {
         let krpc_client = self.get_zone_service_krpc_client(KMSG_SERVICE_NAME).await?;
         Ok(MsgQueueClient::new_krpc(Box::new(krpc_client)))
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_scheduler_client(&self) -> Result<SchedulerClient> {
         let krpc_client = self.get_zone_service_krpc_client("scheduler").await?;
         let client = SchedulerClient::new(krpc_client);
         Ok(client)
+    }
+
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
+    pub async fn get_workflow_service_client(&self) -> Result<WorkflowServiceClient> {
+        let krpc_client = self
+            .get_zone_service_krpc_client(WORKFLOW_SERVICE_NAME)
+            .await?;
+        Ok(WorkflowServiceClient::new(krpc_client))
     }
 
     pub async fn get_control_panel_client(&self) -> Result<ControlPanelClient> {
@@ -2014,12 +2201,16 @@ impl BuckyOSRuntime {
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_verify_hub_client(&self) -> Result<VerifyHubClient> {
         let krpc_client = self.get_zone_service_krpc_client("verify-hub").await?;
         let client = VerifyHubClient::new(krpc_client);
         Ok(client)
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_repo_client(&self) -> Result<RepoClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(REPO_SERVICE_SERVICE_NAME)
@@ -2027,6 +2218,8 @@ impl BuckyOSRuntime {
         Ok(RepoClient::new(krpc_client))
     }
 
+    /// Returns a short-session client. Acquire it again from the runtime for
+    /// each operation instead of keeping it in long-lived state.
     pub async fn get_opendan_client(&self) -> Result<OpenDanClient> {
         let krpc_client = self
             .get_zone_service_krpc_client(OPENDAN_SERVICE_NAME)
@@ -2170,15 +2363,13 @@ impl BuckyOSRuntime {
             BuckyOSRuntimeType::AppClient => {
                 //通过Zone Host Name 访问Service总是可以成功的，理论上有SDK的环境不应该使用这种方式。
                 //TODO：如果约束为有SDK的环境，必然有node_gateway,那么这个分支就不必要存在
+                //
+                // kRPC `/kapi/<service>` 一律打到 zone 的裸 host —— `app_host_perfix.<zone_host>`
+                // 这种二级域名只属于 WebUI 静态资源路由，service 维度的 RPC 不走那条路径。
+                // (例：DV test 环境里 `test.buckyos.io` 有 DNS / cert，
+                // `buckycli.test.buckyos.io` 没有。)
                 let host_name = self.zone_id.to_host_name();
-                if self.app_host_perfix.len() > 0 {
-                    return Ok(format!(
-                        "{}://{}.{}/kapi/{}",
-                        schema, self.app_host_perfix, host_name, service_name
-                    ));
-                } else {
-                    return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
-                }
+                return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
             }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
@@ -2203,11 +2394,20 @@ impl BuckyOSRuntime {
         }
     }
 
+    /// Creates a short-session kRPC client with a snapshot of the runtime's
+    /// current session token.
+    ///
+    /// Runtime token renewal does not update clients already returned by this
+    /// method. Long-lived code must call this method for each operation. A
+    /// caller may retain the client only when it explicitly manages the token
+    /// or intentionally preserves a forwarded identity.
     pub async fn get_zone_service_krpc_client(&self, service_name: &str) -> Result<kRPC> {
         self.get_zone_service_krpc_client_with_default_timeout(service_name, None)
             .await
     }
 
+    /// Creates a short-session kRPC client with the same token snapshot
+    /// semantics as [`Self::get_zone_service_krpc_client`].
     pub async fn get_zone_service_krpc_client_with_default_timeout(
         &self,
         service_name: &str,
@@ -2291,6 +2491,43 @@ impl BuckyOSRuntime {
 
         Ok(chunk_ids)
     }
+}
+
+fn resolve_container_gateway_host(configured_host: Option<&str>) -> String {
+    let host = configured_host
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_DOCKER_HOST_GATEWAY);
+    resolve_host_to_ipv4_literal(host).unwrap_or_else(|| host.to_string())
+}
+
+fn resolve_kevent_daemon_endpoint(
+    configured_endpoint: Option<&str>,
+    fallback_host: &str,
+) -> String {
+    configured_endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}:{}", fallback_host, KEVENT_SERVICE_NATIVE_PORT))
+}
+
+fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+    if let Ok(ipv4) = host.parse::<Ipv4Addr>() {
+        return Some(ipv4.to_string());
+    }
+
+    (host, 0)
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| match addr.ip() {
+            IpAddr::V4(ipv4) => Some(ipv4.to_string()),
+            IpAddr::V6(_) => None,
+        })
 }
 
 #[cfg(test)]
@@ -2388,6 +2625,18 @@ mod tests {
             )),
             RuntimeErrorClass::NonRetryable
         );
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::S2sPermanentError(
+                "invalid key".to_string()
+            )),
+            RuntimeErrorClass::NonRetryable
+        );
+        assert_eq!(
+            BuckyOSRuntime::classify_error(&RPCErrors::S2sTransientError(
+                "connection reset".to_string()
+            )),
+            RuntimeErrorClass::Retryable
+        );
     }
 
     #[test]
@@ -2400,5 +2649,29 @@ mod tests {
         assert!(data_dir.is_err());
         assert!(cache_dir.is_err());
         assert!(local_cache_dir.is_err());
+    }
+
+    #[test]
+    fn container_gateway_host_prefers_ipv4_literals() {
+        assert_eq!(
+            resolve_container_gateway_host(Some("127.0.0.1")),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            resolve_container_gateway_host(Some("localhost")),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn kevent_daemon_endpoint_prefers_explicit_deployment_value() {
+        assert_eq!(
+            resolve_kevent_daemon_endpoint(Some(" host.docker.internal:43183 "), "127.0.0.1"),
+            "host.docker.internal:43183"
+        );
+        assert_eq!(
+            resolve_kevent_daemon_endpoint(Some("  "), "127.0.0.1"),
+            "127.0.0.1:3183"
+        );
     }
 }

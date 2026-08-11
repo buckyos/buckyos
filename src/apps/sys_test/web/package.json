@@ -1,0 +1,21 @@
+{
+  "name": "sys_test",
+  "version": "1.0.0",
+  "description": "BuckyOS sys_test web panel",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  },
+  "dependencies": {
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
+  }
+}

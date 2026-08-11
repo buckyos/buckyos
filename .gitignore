@@ -27,25 +27,32 @@ src/rootfs/bin/smb-service/smb_service
 src/rootfs/bin/buckycli/buckycli
 /src/rootfs/bin/control-panel/control_panel
 /src/rootfs/bin/control-panel/web/
-/src/rootfs/bin/sys-test/
+/src/rootfs/bin/sys-test/dist/
 src/rootfs/logs
 src/rootfs/tmp
 src/apps/control_panel/src/dist/
-src/apps/sys_test/dist/
+src/apps/sys_test/web/dist/
+src/frame/desktop/dist/
 
 src/web3_bridge/cyfs_gateway
 
 
 cargo.lock
 pnpm-lock.yaml
+!src/kernel/node_active/pnpm-lock.yaml
+!src/apps/sys_test/pnpm-lock.yaml
 src/Cargo.lock
 **/node_modules
 .pnpm-store
 src/scripts/remote/dev_configs.bak
+src/bucky_project.local.json
+src/bucky_project.local.yaml
+src/bucky_project.local.yml
 src/rootfs/bin/control-panel/i18n.d.ts
 src/rootfs/_buckycli_tmp/
 src/_scripts/
 src/target
+target/
 rootfs/_buckycli_tmp/
 
 src/rootfs/bin/node_active/
@@ -57,7 +64,6 @@ src/rootfs/bin/buckyos_systest/
 src/rootfs/bin/aicc/aicc
 src/rootfs/bin/kmsg/kmsg
 src/rootfs/bin/task-manager/task_manager
-src/rootfs/bin/aicc/aicc
 src/rootfs/bin/msg-center/msg_center
 src/rootfs/bin/opendan/opendan*
 src/rootfs/bin/bucky-file/
@@ -65,9 +71,28 @@ src/publish/win_pkg/scripts/seed_defaults.ps1
 src/publish/win_pkg/scripts/ensure_firewall_rules.ps1
 src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
-src/apps/sys_test/web/dist/
+
+src/apps/sys_test/dist/
+old/*
 src/frame/desktop/dist/favicon.svg
 aicc_remote_runner.toml
 test/aicc_test/rust_runner/target
 .dev_buckyos
 .dev_buckyos_*
+test/deno.lock
+.claude/
+uv.lock
+test/aicc_test/deno.lock
+test/aicc_test/reports/*
+test/workflow_test/reports/*
+test/kevent_kmsg/reports/*
+test/reports/
+test/*/Cargo.lock
+test/*/target/
+test/**/Cargo.lock
+test/**/target/
+src/rootfs/bin/workflow/workflow
+*.codex
+src/deno.lock
+src/kernel/node_active/pnpm-lock.yaml
+src/apps/sys_test/pnpm-lock.yaml

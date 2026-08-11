@@ -1,0 +1,85 @@
+<mxfile host="65bd71144e">
+    <diagram id="41SmqWoNh-Prb5JRE0Y1" name="Page-1">
+        <mxGraphModel dx="823" dy="684" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="80" y="100" width="760" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="导航树&lt;div&gt;（控制主目录区)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="80" y="100" width="130" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.rrect;rSize=0;fillColor=#eeeeee;strokeColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="210" y="100" width="180" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="Tab 1" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.anchor;fontStyle=1;fontColor=#666666;" vertex="1" parent="4">
+                    <mxGeometry width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="Tab 2" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.rrect;rSize=0;fontStyle=1;fillColor=#44c5f5;strokeColor=none;fontColor=#ffffff;" vertex="1" parent="4">
+                    <mxGeometry x="45" width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.rrect;rSize=0;fillColor=#33b5e5;strokeColor=none;" vertex="1" parent="6">
+                    <mxGeometry y="18" width="45" height="2" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="Tab 3" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.anchor;fontStyle=1;fontColor=#666666;" vertex="1" parent="4">
+                    <mxGeometry x="90" width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" value="Tab 4" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.anchor;fontStyle=1;fontColor=#666666;" vertex="1" parent="4">
+                    <mxGeometry x="135" width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="10" value="" style="shape=line;strokeColor=#666666;direction=south;" vertex="1" parent="4">
+                    <mxGeometry x="127.94594594594595" y="3.333333333333333" width="9.72972972972973" height="13.333333333333332" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="地址栏操作栏" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="210" y="120" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="13" value="主目录内容" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="210" y="150" width="260" height="290" as="geometry"/>
+                </mxCell>
+                <mxCell id="15" value="状态栏" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="210" y="430" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="16" value="" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.rrect;rSize=0;fillColor=#eeeeee;strokeColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="470" y="100" width="180" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="17" value="Tab 1" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.anchor;fontStyle=1;fontColor=#666666;" vertex="1" parent="16">
+                    <mxGeometry width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="18" value="Tab 2" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.rrect;rSize=0;fontStyle=1;fillColor=#44c5f5;strokeColor=none;fontColor=#ffffff;" vertex="1" parent="16">
+                    <mxGeometry x="45" width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="19" value="" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.rrect;rSize=0;fillColor=#33b5e5;strokeColor=none;" vertex="1" parent="18">
+                    <mxGeometry y="18" width="45" height="2" as="geometry"/>
+                </mxCell>
+                <mxCell id="20" value="Tab 3" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.anchor;fontStyle=1;fontColor=#666666;" vertex="1" parent="16">
+                    <mxGeometry x="90" width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="21" value="Tab 4" style="strokeWidth=1;html=1;shadow=0;dashed=0;shape=mxgraph.android.anchor;fontStyle=1;fontColor=#666666;" vertex="1" parent="16">
+                    <mxGeometry x="135" width="45" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="22" value="" style="shape=line;strokeColor=#666666;direction=south;" vertex="1" parent="16">
+                    <mxGeometry x="127.94594594594595" y="3.333333333333333" width="9.72972972972973" height="13.333333333333332" as="geometry"/>
+                </mxCell>
+                <mxCell id="23" value="地址栏操作栏" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="470" y="120" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="24" value="Right Pin目录内容" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="470" y="140" width="260" height="290" as="geometry"/>
+                </mxCell>
+                <mxCell id="25" value="状态栏" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="470" y="430" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="26" value="侧边栏(可收起)" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="730" y="100" width="110" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="27" value="操作工具栏" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="210" y="140" width="260" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="28" value="操作工具栏" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="470" y="140" width="260" height="20" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

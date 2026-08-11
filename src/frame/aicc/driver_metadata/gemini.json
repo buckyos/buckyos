@@ -1,0 +1,448 @@
+{
+  "format": "buckyos.aicc.provider-driver-metadata",
+  "schema_version": 3,
+  "schema_revision": 1,
+  "provider_driver": "google-gemini",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "gemini-embedding-001",
+      "api_types": ["embedding.text", "embedding.multimodal"],
+      "logical_mounts": [
+        "embedding.text",
+        "embedding.text.google",
+        "embedding.text.gemini",
+        "embedding.text.{model}",
+        "embedding.multimodal",
+        "embedding.multimodal.google",
+        "embedding.multimodal.gemini",
+        "embedding.multimodal.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
+      "estimated_latency_ms": 800
+    },
+    {
+      "id": "gemini-2.5-flash-preview-tts",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.google", "audio.tts.gemini", "audio.tts.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 3000
+    },
+    {
+      "id": "lyria-002",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music", "audio.music.google", "audio.music.gemini", "audio.music.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.1
+      },
+      "estimated_latency_ms": 60000
+    },
+    {
+      "id": "veo-3.1-generate-preview",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.google",
+        "video.txt2video.gemini",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
+      "estimated_latency_ms": 120000
+    }
+  ],
+  "patterns": [
+    {
+      "pattern": "*embedding*",
+      "api_types": ["embedding.text", "embedding.multimodal"],
+      "logical_mounts": [
+        "embedding.text",
+        "embedding.text.google",
+        "embedding.text.gemini",
+        "embedding.text.{model}",
+        "embedding.multimodal",
+        "embedding.multimodal.google",
+        "embedding.multimodal.gemini",
+        "embedding.multimodal.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
+      "estimated_latency_ms": 800
+    },
+    {
+      "pattern": "*tts*",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.google", "audio.tts.gemini", "audio.tts.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 3000
+    },
+    {
+      "pattern": "lyria-*",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music", "audio.music.google", "audio.music.gemini", "audio.music.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.1
+      },
+      "estimated_latency_ms": 60000
+    },
+    {
+      "pattern": "veo-*",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.google",
+        "video.txt2video.gemini",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "pattern": "*image*",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "image.txt2img.google",
+        "image.txt2img.gemini",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.google",
+        "image.img2img.gemini",
+        "image.img2img.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 6000
+    },
+    {
+      "pattern": "*imagen*",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "image.txt2img.google",
+        "image.txt2img.gemini",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.google",
+        "image.img2img.gemini",
+        "image.img2img.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 6000
+    },
+    {
+      "pattern": "*nano-banana*",
+      "api_types": ["image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "image.txt2img.google",
+        "image.txt2img.gemini",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.google",
+        "image.img2img.gemini",
+        "image.img2img.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 6000
+    },
+    {
+      "pattern": "gemini-*flash-lite*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini-flash-lite",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}",
+        "vision.detect",
+        "vision.detect.google",
+        "vision.detect.gemini",
+        "vision.detect.{model}",
+        "vision.segment",
+        "vision.segment.google",
+        "vision.segment.gemini",
+        "vision.segment.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
+    {
+      "pattern": "gemini-*flash*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini-flash",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}",
+        "vision.detect",
+        "vision.detect.google",
+        "vision.detect.gemini",
+        "vision.detect.{model}",
+        "vision.segment",
+        "vision.segment.google",
+        "vision.segment.gemini",
+        "vision.segment.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
+    {
+      "pattern": "gemini-*deepthink*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini-deepthink",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}",
+        "vision.detect",
+        "vision.detect.google",
+        "vision.detect.gemini",
+        "vision.detect.{model}",
+        "vision.segment",
+        "vision.segment.google",
+        "vision.segment.gemini",
+        "vision.segment.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": false,
+        "vision": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
+    {
+      "pattern": "gemini-*deep-think*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini-deepthink",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}",
+        "vision.detect",
+        "vision.detect.google",
+        "vision.detect.gemini",
+        "vision.detect.{model}",
+        "vision.segment",
+        "vision.segment.google",
+        "vision.segment.gemini",
+        "vision.segment.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": false,
+        "vision": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
+    {
+      "pattern": "gemini-*pro*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini-pro",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}",
+        "vision.detect",
+        "vision.detect.google",
+        "vision.detect.gemini",
+        "vision.detect.{model}",
+        "vision.segment",
+        "vision.segment.google",
+        "vision.segment.gemini",
+        "vision.segment.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
+    {
+      "pattern": "gemini-*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment"],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}",
+        "vision.detect",
+        "vision.detect.google",
+        "vision.detect.gemini",
+        "vision.detect.{model}",
+        "vision.segment",
+        "vision.segment.google",
+        "vision.segment.gemini",
+        "vision.segment.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": false,
+        "vision": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    }
+  ],
+  "capability_overrides": [
+    {
+      "pattern": "gemini-2.*",
+      "api_types": ["llm"],
+      "capabilities": {
+        "unsupported_feature_combinations": [["tool_calling", "web_search"]]
+      }
+    }
+  ],
+  "defaults": {
+    "api_types": ["llm"],
+    "logical_mounts": ["llm.google-gemini", "llm.gemini", "llm.gemini.{model}"],
+    "capabilities": {
+      "streaming": false,
+      "tool_call": false,
+      "json_schema": false,
+      "web_search": false,
+      "vision": false
+    },
+    "pricing": {
+      "currency": "USD",
+      "estimated_cost": 0.01
+    },
+    "estimated_latency_ms": 1400
+  },
+  "variants": [],
+  "signature": null
+}

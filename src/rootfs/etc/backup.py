@@ -32,8 +32,6 @@ def get_backup_file_list():
     """Get backup file list"""
     return [
         "node_identity.json",
-        "node_device_config.json",
-        "node_private_key.pem",
         "start_config.json",
         "machine.json"
     ]
@@ -51,10 +49,65 @@ def sanitize_filename(name: str) -> str:
     return name
 
 
+def get_identity_root(buckyos_root: str) -> Path:
+    return Path(os.environ.get("BUCKYOS_IDENTITY_ROOT", Path(buckyos_root) / "local" / "identity"))
+
+
+def get_security_root(buckyos_root: str) -> Path:
+    return Path(os.environ.get("BUCKYOS_SECURITY_ROOT", Path(buckyos_root) / "security"))
+
+
+def find_device_identity_dir(buckyos_root: str, device_did: str):
+    if not device_did:
+        return None
+
+    identity_root = get_identity_root(buckyos_root)
+    if not identity_root.exists():
+        return None
+
+    for did_json in identity_root.glob("*/did.json"):
+        try:
+            with open(did_json, "r", encoding="utf-8") as f:
+                did_doc = json.load(f)
+        except Exception:
+            continue
+        if did_doc.get("id") == device_did:
+            return did_json.parent
+
+    return None
+
+
+def copy_file(src_file: Path, dst_file: Path, label: str, copied_items: list):
+    if src_file.exists():
+        try:
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            print(f"Copying {src_file} -> {dst_file} ...")
+            shutil.copy2(src_file, dst_file)
+            copied_items.append(label)
+            print(f"  ✓ Copied: {label}")
+        except Exception as e:
+            print(f"  ✗ Failed to copy {label}: {e}")
+    else:
+        print(f"  - Skipped (not found): {label}")
+
+
+def copy_tree(src_dir: Path, dst_dir: Path, label: str, copied_items: list):
+    if src_dir.exists():
+        try:
+            print(f"Copying {src_dir} -> {dst_dir} ...")
+            shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+            copied_items.append(label)
+            print(f"  ✓ Copied: {label}")
+        except Exception as e:
+            print(f"  ✗ Failed to copy {label}: {e}")
+    else:
+        print(f"  - Skipped (not found): {label}")
+
+
 def backup_identity_file(target_dir: str):
     """
     Backup identity files
-    Files to backup: [node_identity.json, node_device_config.json, node_private_key.pem, start_config.json, machine.json]
+    Files to backup: [etc/node_identity.json, etc/start_config.json, etc/machine.json, local/identity/<device>, security/<device>]
     Backup to target_dir/$zone_name directory, zone_name is obtained from start_config.json file
     """
     buckyos_root = get_buckyos_rootfs_dir()
@@ -101,17 +154,35 @@ def backup_identity_file(target_dir: str):
     backed_up_files = []
     for filename in files_to_backup:
         src_file = etc_dir / filename
-        if src_file.exists():
-            dst_file = backup_dir / filename
-            try:
-                print(f"Backing up {src_file} -> {dst_file} ...")
-                shutil.copy2(src_file, dst_file)
-                backed_up_files.append(filename)
-                print(f"  ✓ Backed up: {filename}")
-            except Exception as e:
-                print(f"  ✗ Failed to backup {filename}: {e}")
-        else:
-            print(f"  - Skipped (not found): {filename}")
+        dst_file = backup_dir / "etc" / filename
+        copy_file(src_file, dst_file, f"etc/{filename}", backed_up_files)
+
+    node_identity_file = etc_dir / "node_identity.json"
+    if node_identity_file.exists():
+        try:
+            with open(node_identity_file, "r", encoding="utf-8") as f:
+                node_identity = json.load(f)
+            device_did = node_identity.get("device_did", "")
+            identity_dir = find_device_identity_dir(buckyos_root, device_did)
+            if identity_dir:
+                dir_name = identity_dir.name
+                security_dir = get_security_root(buckyos_root) / dir_name
+                copy_tree(
+                    identity_dir,
+                    backup_dir / "local" / "identity" / dir_name,
+                    f"local/identity/{dir_name}",
+                    backed_up_files,
+                )
+                copy_tree(
+                    security_dir,
+                    backup_dir / "security" / dir_name,
+                    f"security/{dir_name}",
+                    backed_up_files,
+                )
+            else:
+                print(f"  - Skipped identity directories (not found for {device_did})")
+        except Exception as e:
+            print(f"  ✗ Failed to backup identity directories: {e}")
     
     if backed_up_files:
         print(f"\nBackup completed! {len(backed_up_files)} file(s) backed up to {backup_dir}")
@@ -149,24 +220,37 @@ def restore_identity_file(source_dir: str, zone_name: str):
     # Ensure etc directory exists
     etc_dir.mkdir(parents=True, exist_ok=True)
     
-    # List of files to restore
-    files_to_restore = get_backup_file_list()
-    
-    # Restore files
     restored_files = []
-    for filename in files_to_restore:
-        src_file = backup_dir / filename
-        if src_file.exists():
-            dst_file = etc_dir / filename
-            try:
-                print(f"Restoring {src_file} -> {dst_file} ...")
-                shutil.copy2(src_file, dst_file)
-                restored_files.append(filename)
-                print(f"  ✓ Restored: {filename}")
-            except Exception as e:
-                print(f"  ✗ Failed to restore {filename}: {e}")
-        else:
-            print(f"  - Skipped (not found in backup): {filename}")
+    for filename in get_backup_file_list():
+        src_file = backup_dir / "etc" / filename
+        dst_file = etc_dir / filename
+        copy_file(src_file, dst_file, f"etc/{filename}", restored_files)
+
+    identity_backup_root = backup_dir / "local" / "identity"
+    if identity_backup_root.exists():
+        for identity_dir in identity_backup_root.iterdir():
+            if identity_dir.is_dir():
+                copy_tree(
+                    identity_dir,
+                    get_identity_root(buckyos_root) / identity_dir.name,
+                    f"local/identity/{identity_dir.name}",
+                    restored_files,
+                )
+    else:
+        print(f"  - Skipped (not found in backup): local/identity")
+
+    security_backup_root = backup_dir / "security"
+    if security_backup_root.exists():
+        for security_dir in security_backup_root.iterdir():
+            if security_dir.is_dir():
+                copy_tree(
+                    security_dir,
+                    get_security_root(buckyos_root) / security_dir.name,
+                    f"security/{security_dir.name}",
+                    restored_files,
+                )
+    else:
+        print(f"  - Skipped (not found in backup): security")
     
     if restored_files:
         print(f"\nRestore completed! {len(restored_files)} file(s) restored to {etc_dir}")

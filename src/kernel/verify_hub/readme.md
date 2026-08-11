@@ -64,6 +64,36 @@ response:
 }
 ```
 
+## sudo_by_password 协议
+
+request:
+
+```json
+{
+    "method": "sudo_by_password",
+    "params": {
+        "username": "username",
+        "appid": "appid",
+        "password": "password",
+        "login_nonce": 1234567890,
+        "aud": "optional audience"
+    }
+}
+```
+
+response:
+
+```json
+{
+    "result": {
+        "session_token": "$sudo_session_token"
+    }
+}
+```
+
+返回的 `session_token` 是由 verify-hub 签发的 SUDO session token，有效期 3 分钟，不包含 refresh token。
+`sudo_by_password` 不按 `UserType` 限制调用者；后续能否执行敏感操作由对应 sudo 身份的 RBAC 策略决定。
+
 ## verify_token 协议
 
 request:

@@ -5,20 +5,38 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$ROOT_DIR/src"
 PROJECT_CONFIG_PATH="$SRC_DIR/bucky_project.yaml"
-IMAGE_NAME="${IMAGE_NAME:-paios/aios}"
+DEFAULT_IMAGE_NAME="paios/aios"
+DEVENV_PATH="$ROOT_DIR/devenv.json"
+IMAGE_NAME="${IMAGE_NAME:-}"
 VERSION_FILE="$SRC_DIR/VERSION"
 VERSION_TAG="${VERSION_TAG:-}"
 SUPPORTED_ARCHES=("amd64" "aarch64")
-RUNTIME_PACKAGES=("tmux" "bash" "ca-certificates" "tree")
-WORKSPACE_PACKAGES=("python3" "python3-pip" "python3-venv" "nodejs" "npm" "git")
+# Core runtime + predefined Worker Image CLI tool set (see container
+# requirements §6.3). No compile toolchain — Crafter is deferred.
+RUNTIME_PACKAGES=(
+  "bash" "ca-certificates" "curl" "git" "jq" "locales" "rsync"
+  "tmux" "tree" "unzip" "xz-utils"
+  "python3" "python3-venv"
+  "nodejs" "npm"
+  "ffmpeg" "imagemagick" "poppler-utils" "pandoc" "tesseract-ocr"
+)
+# Legacy flag kept for CLI compat; the Worker Image always ships the tool set.
+WORKSPACE_PACKAGES=()
 EXTRA_APT_PACKAGES=()
 SELECTED_ARCHES=()
 PUSH=0
 INSTALL_WORKSPACE_TOOLS=1
+ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
+BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
+AICC_TOOL_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/aicc-tool"
+BUCKYOS_WEBSDK_REPO="https://github.com/buckyos/buckyos-websdk.git"
+BUCKYOS_WEBSDK_COMMIT="${BUCKYOS_WEBSDK_COMMIT:-6849d3a9edc6e0c6ac54883bdb7bd12531c76aae}"
+REUSE_CARGO_TARGET=0
+CARGO_TARGET_DIR_OVERRIDE="${AIOS_CARGO_TARGET_DIR:-}"
 
 usage() {
   cat <<'EOF'
-Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>]
+Usage: ./build_aios [--push] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
 
 Builds the OpenDAN binary with cargo for:
   - amd64   -> x86_64-unknown-linux-musl
@@ -32,12 +50,20 @@ Then packages each binary into an Ubuntu-based Docker image:
 
 Options:
   --push          Push arch-specific images and create multi-arch manifests
-  --image <name>  Override image name, default: paios/aios
+  --image <name>  Override image name, default: devenv.json["aios"] or paios/aios
   --tag <tag>     Override version tag, default: src/VERSION
   --runtime-only  Install only required runtime dependencies in the image
   --arch <arch>   Build only one architecture (amd64|aarch64); can be repeated
   --apt-package   Add an extra apt package to the image; can be repeated
+  --reuse-cargo-target
+                  Reuse Cargo artifacts from a stable /tmp cache across runs (development only)
+  --cargo-target-dir <dir>
+                  Reuse a specific Cargo target dir; relative paths are resolved from repo root
   -h, --help      Show this help
+
+Env overrides:
+  BUCKYOS_WEBSDK_COMMIT
+                  Pinned buckyos-websdk commit packaged with buckyos-agent tools
 EOF
 }
 
@@ -67,6 +93,14 @@ while [[ $# -gt 0 ]]; do
       EXTRA_APT_PACKAGES+=("$2")
       shift 2
       ;;
+    --reuse-cargo-target)
+      REUSE_CARGO_TARGET=1
+      shift
+      ;;
+    --cargo-target-dir)
+      CARGO_TARGET_DIR_OVERRIDE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -81,6 +115,39 @@ done
 
 log() {
   printf '[build_aios] %s\n' "$*"
+}
+
+default_reused_cargo_target_dir() {
+  local tmp_base="${TMPDIR:-/tmp}"
+  local repo_name
+  local repo_key
+  local cache_owner
+
+  repo_name="$(basename "$ROOT_DIR" | tr -c 'A-Za-z0-9._-' '_')"
+  repo_key="$(printf '%s' "$ROOT_DIR" | cksum | awk '{print $1}')"
+  cache_owner="${USER:-$(id -un 2>/dev/null || id -u)}"
+
+  printf '%s\n' "$tmp_base/build_aios-cargo-$cache_owner-$repo_name-$repo_key"
+}
+
+resolve_cargo_target_dir() {
+  local tmp_root="$1"
+
+  if [[ -n "$CARGO_TARGET_DIR_OVERRIDE" ]]; then
+    if [[ "$CARGO_TARGET_DIR_OVERRIDE" == /* ]]; then
+      printf '%s\n' "$CARGO_TARGET_DIR_OVERRIDE"
+    else
+      printf '%s\n' "$ROOT_DIR/$CARGO_TARGET_DIR_OVERRIDE"
+    fi
+    return
+  fi
+
+  if [[ "$REUSE_CARGO_TARGET" -eq 1 ]]; then
+    default_reused_cargo_target_dir
+    return
+  fi
+
+  printf '%s\n' "$tmp_root/cargo"
 }
 
 prepare_docker_config() {
@@ -207,7 +274,7 @@ resolve_selected_arches() {
     local arch
     for arch in "${SELECTED_ARCHES[@]}"; do
       validate_arch "$arch"
-      if [[ ! " ${resolved[*]} " =~ " ${arch} " ]]; then
+      if [[ ! " ${resolved[*]:-} " =~ " ${arch} " ]]; then
         resolved+=("$arch")
       fi
     done
@@ -221,13 +288,60 @@ package_list_to_string() {
   printf '%s' "$*"
 }
 
+prepare_buckyos_agent_package() {
+  local output_dir="$1"
+  local tmp_root="$2"
+  local python_bin="$3"
+  local sdk_dist=""
+  local sdk_checkout="$tmp_root/buckyos-websdk"
+  local fetched_commit
+
+  if [[ ! -f "$BUCKYOS_AGENT_TOOLS_SOURCE/aicc-tool.ts" ]]; then
+    echo "Missing buckyos-agent entrypoint: $BUCKYOS_AGENT_TOOLS_SOURCE/aicc-tool.ts" >&2
+    exit 1
+  fi
+  if [[ ! -f "$AICC_TOOL_LAUNCHER_SOURCE" ]]; then
+    echo "Missing AICC tool launcher: $AICC_TOOL_LAUNCHER_SOURCE" >&2
+    exit 1
+  fi
+  mkdir -p "$output_dir"
+  cp -R "$BUCKYOS_AGENT_TOOLS_SOURCE/." "$output_dir/"
+
+  log "Fetching buckyos-websdk commit $BUCKYOS_WEBSDK_COMMIT for AICC tools"
+  git init -q "$sdk_checkout"
+  git -C "$sdk_checkout" remote add origin "$BUCKYOS_WEBSDK_REPO"
+  git -C "$sdk_checkout" fetch -q --depth 1 origin "$BUCKYOS_WEBSDK_COMMIT"
+  fetched_commit="$(git -C "$sdk_checkout" rev-parse FETCH_HEAD)"
+  if [[ "$fetched_commit" != "$BUCKYOS_WEBSDK_COMMIT" ]]; then
+    echo "Fetched buckyos-websdk commit $fetched_commit, expected $BUCKYOS_WEBSDK_COMMIT" >&2
+    exit 1
+  fi
+  git -C "$sdk_checkout" checkout -q --detach FETCH_HEAD
+  sdk_dist="$sdk_checkout/dist"
+
+  if [[ ! -f "$sdk_dist/node.mjs" ]]; then
+    echo "buckyos-websdk Node bundle not found in $sdk_dist" >&2
+    exit 1
+  fi
+
+  mkdir -p "$output_dir/vendor/buckyos-websdk"
+  cp -R "$sdk_dist/." "$output_dir/vendor/buckyos-websdk/"
+
+  "$python_bin" - "$output_dir/deno.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+config = json.loads(config_path.read_text(encoding="utf-8"))
+config.setdefault("imports", {})["buckyos"] = "./vendor/buckyos-websdk/node.mjs"
+config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 render_dockerfile() {
   local output_path="$1"
   local -a apt_packages=("${RUNTIME_PACKAGES[@]}")
-
-  if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
-    apt_packages+=("${WORKSPACE_PACKAGES[@]}")
-  fi
 
   if [[ ${#EXTRA_APT_PACKAGES[@]} -gt 0 ]]; then
     apt_packages+=("${EXTRA_APT_PACKAGES[@]}")
@@ -239,13 +353,15 @@ FROM ubuntu:24.04
 
 ARG TARGET_ARCH
 
-LABEL org.opencontainers.image.title="AIOS" \
-      org.opencontainers.image.description="OpenDAN runtime image for paios/aios" \
+LABEL org.opencontainers.image.title="paios/aios (BuckyOS Worker Image)" \
+EOF
+    printf '      org.opencontainers.image.description="Unified worker runtime for %s" \\\n' "$IMAGE_NAME"
+    cat <<'EOF'
       org.opencontainers.image.vendor="BuckyOS DAO"
 
-WORKDIR /opt/buckyos
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Required by OpenDAN runtime and common agent workspace workflows.
+# Runtime + predefined worker CLI tools (see container spec §6.3).
 RUN apt-get update && apt-get install -y --no-install-recommends \
 EOF
 
@@ -254,19 +370,86 @@ EOF
     done
 
     cat <<'EOF'
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8
 
-RUN mkdir -p /opt/buckyos/bin/opendan
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# uv — managed Python + dependency installer used by Script apps.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+RUN uv python install 3.12
+
+# Deno — TypeScript runtime used by Script apps and Worker-layer Agents.
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+
+ENV BUCKYOS_ROOT=/opt/buckyos
+WORKDIR /opt/buckyos
+
+# BuckyOS Agent AICC CLI tools. Keep these outside /opt/buckyos/tools because
+# that path is shadowed by the shared ExtTool volume at runtime.
+COPY buckyos-agent /opt/buckyos/bin/opendan/buckyos-agent
+COPY aicc-tool-launcher /usr/local/bin/aicc-tool
+RUN chmod 755 /usr/local/bin/aicc-tool && \
+    for command_path in /opt/buckyos/bin/opendan/buckyos-agent/commands/*.ts; do \
+      command_name="$(basename "$command_path" .ts)"; \
+      ln -sf aicc-tool "/usr/local/bin/$command_name"; \
+    done && \
+    deno check \
+      --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
+      /opt/buckyos/bin/opendan/buckyos-agent/aicc-tool.ts && \
+    (cd /opt/buckyos/bin/opendan/buckyos-agent && deno task gen_image --help >/dev/null 2>&1) && \
+    printf '%s\n' \
+      'import { teardown } from "/opt/buckyos/bin/opendan/buckyos-agent/lib/runtime.ts";' \
+      'teardown();' > /tmp/buckyos-agent-compose-smoke.ts && \
+    deno run \
+      --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
+      --allow-env \
+      --allow-read \
+      /tmp/buckyos-agent-compose-smoke.ts && \
+    rm -f /tmp/buckyos-agent-compose-smoke.ts && \
+    command -v aicc-tool >/dev/null && \
+    command -v gen_image >/dev/null && \
+    command -v edit_image >/dev/null && \
+    aicc-tool --help >/dev/null 2>&1 && \
+    gen_image --help >/dev/null 2>&1 && \
+    edit_image --help >/dev/null 2>&1
+
+# ExtTool Volume mount point — kept empty in the Worker image. The real
+# payload (FreeCAD, pre-warmed uv/deno caches, tool packages) ships in the
+# separate paios/exttool image and lands in the buckyos-exttool named
+# volume, which node_daemon mounts here ro at run time (§6.3 of paios容器需求.md).
+RUN mkdir -p \
+    /opt/buckyos/bin/opendan \
+    /opt/buckyos/data \
+    /opt/buckyos/logs \
+    /opt/buckyos/storage \
+    /opt/buckyos/tools/store \
+    /opt/buckyos/tools/bin \
+    /mnt/buckyos/pkg
 
 COPY opendan /opt/buckyos/bin/opendan/opendan
 COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
 RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool
 
-ENV AIOS_TARGET_ARCH="${TARGET_ARCH}"
+# Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
+# agent/script/custom dispatch.
+COPY entrypoint.sh /opt/buckyos/entrypoint.sh
+RUN chmod 755 /opt/buckyos/entrypoint.sh
+
+ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
+    BUCKYOS_INSTANCE_VOLUME=/opt/buckyos/instance \
+    BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg \
+    BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools \
+    DENO_DIR=/opt/buckyos/instance/deno-cache \
+    UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \
+    NPM_CONFIG_CACHE=/opt/buckyos/instance/npm-cache \
+    PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
+    PATH="/opt/buckyos/tools/bin:${PATH}"
 
 EXPOSE 3180
 
-ENTRYPOINT ["/opt/buckyos/bin/opendan/opendan"]
+ENTRYPOINT ["/opt/buckyos/entrypoint.sh"]
 EOF
   } > "$output_path"
 }
@@ -291,10 +474,53 @@ resolve_python() {
   exit 1
 }
 
+resolve_default_image_name() {
+  local python_bin
+  local resolved_image
+
+  if [[ -n "$IMAGE_NAME" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$DEVENV_PATH" ]]; then
+    IMAGE_NAME="$DEFAULT_IMAGE_NAME"
+    return
+  fi
+
+  python_bin="$(resolve_python)"
+  resolved_image="$(
+    "$python_bin" - "$DEVENV_PATH" "$DEFAULT_IMAGE_NAME" <<'PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+default_image = sys.argv[2]
+
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        config = json.load(fh)
+except Exception:
+    print(default_image)
+    raise SystemExit(0)
+
+image = config.get("aios")
+if isinstance(image, str) and image.strip():
+    print(image.strip())
+else:
+    print(default_image)
+PY
+  )"
+
+  IMAGE_NAME="${resolved_image:-$DEFAULT_IMAGE_NAME}"
+}
+
 load_build_context() {
   local python_bin="$1"
   local rust_target="$2"
   local -a python_cmd
+  local musl_cc=""
+  local musl_tool_bin_dir=""
+  local -a python_env_cmd=(env)
 
   if "$python_bin" - <<'PY' >/dev/null 2>&1
 import importlib.util
@@ -328,7 +554,24 @@ EOF
     return 1
   fi
 
-  "${python_cmd[@]}" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
+  case "$rust_target" in
+    x86_64-unknown-linux-musl)
+      if musl_cc="$(resolve_x86_64_musl_cc)"; then
+        musl_tool_bin_dir="$(dirname "$musl_cc")"
+      fi
+      ;;
+    aarch64-unknown-linux-musl)
+      if musl_cc="$(resolve_aarch64_musl_cc)"; then
+        musl_tool_bin_dir="$(dirname "$musl_cc")"
+      fi
+      ;;
+  esac
+
+  if [[ -n "$musl_tool_bin_dir" ]]; then
+    python_env_cmd+=("PATH=$musl_tool_bin_dir:$PATH")
+  fi
+
+  "${python_env_cmd[@]}" "${python_cmd[@]}" - "$PROJECT_CONFIG_PATH" "$rust_target" <<'PY'
 import contextlib
 import io
 import sys
@@ -373,6 +616,61 @@ resolve_rust_target() {
   esac
 }
 
+resolve_x86_64_musl_cc() {
+  if command -v x86_64-linux-musl-gcc >/dev/null 2>&1; then
+    command -v x86_64-linux-musl-gcc
+    return
+  fi
+
+  if command -v musl-gcc >/dev/null 2>&1; then
+    command -v musl-gcc
+    return
+  fi
+
+  # Fallback lookup paths for installations not on PATH:
+  # - Homebrew FiloSottile/musl-cross is keg-only on macOS.
+  # - devenv.py extracts musl.cc tarballs under /opt/musl-cross/<target>-cross/.
+  local candidate
+  for candidate in \
+    /opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-gcc \
+    /usr/local/opt/musl-cross/bin/x86_64-linux-musl-gcc \
+    /opt/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc \
+    /opt/musl-cross/bin/x86_64-linux-musl-gcc; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
+
+  return 1
+}
+
+resolve_x86_64_musl_cxx() {
+  if command -v x86_64-linux-musl-g++ >/dev/null 2>&1; then
+    command -v x86_64-linux-musl-g++
+    return
+  fi
+
+  if command -v musl-g++ >/dev/null 2>&1; then
+    command -v musl-g++
+    return
+  fi
+
+  local candidate
+  for candidate in \
+    /opt/homebrew/opt/musl-cross/bin/x86_64-linux-musl-g++ \
+    /usr/local/opt/musl-cross/bin/x86_64-linux-musl-g++ \
+    /opt/musl-cross/x86_64-linux-musl-cross/bin/x86_64-linux-musl-g++ \
+    /opt/musl-cross/bin/x86_64-linux-musl-g++; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
+
+  return 1
+}
+
 resolve_aarch64_musl_cc() {
   if command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
     command -v aarch64-linux-musl-gcc
@@ -384,10 +682,19 @@ resolve_aarch64_musl_cc() {
     return
   fi
 
-  if [[ -x /opt/musl-cross/bin/aarch64-linux-musl-gcc ]]; then
-    echo "/opt/musl-cross/bin/aarch64-linux-musl-gcc"
-    return
-  fi
+  local candidate
+  for candidate in \
+    /opt/homebrew/opt/musl-cross/bin/aarch64-linux-musl-gcc \
+    /usr/local/opt/musl-cross/bin/aarch64-linux-musl-gcc \
+    /opt/homebrew/opt/aarch64-unknown-linux-musl/bin/aarch64-linux-musl-gcc \
+    /usr/local/opt/aarch64-unknown-linux-musl/bin/aarch64-linux-musl-gcc \
+    /opt/musl-cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc \
+    /opt/musl-cross/bin/aarch64-linux-musl-gcc; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return
+    fi
+  done
 
   return 1
 }
@@ -412,6 +719,54 @@ resolve_aarch64_musl_tool() {
   return 1
 }
 
+get_x86_64_musl_env_lines() {
+  local x86_64_musl_cc
+  local x86_64_musl_cxx
+  local tool_bin_dir
+  local x86_64_musl_ar
+  local x86_64_musl_ranlib
+
+  if ! x86_64_musl_cc="$(resolve_x86_64_musl_cc)"; then
+    cat >&2 <<'EOF'
+Missing musl compiler for x86_64-linux-musl.
+Linux builds in this repository are fully static. Install a musl toolchain that provides:
+  - `x86_64-linux-musl-gcc` in PATH
+  - or `musl-gcc` in PATH
+then rerun build_aios.
+EOF
+    return 1
+  fi
+
+  if ! "$x86_64_musl_cc" -dumpmachine >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Resolved musl compiler is not runnable: $x86_64_musl_cc
+Ensure the full x86_64 musl toolchain is installed, then rerun build_aios.
+EOF
+    return 1
+  fi
+
+  tool_bin_dir="$(dirname "$x86_64_musl_cc")"
+  printf '%s\n' "PATH=$tool_bin_dir:$PATH"
+  printf '%s\n' "CC_x86_64_unknown_linux_musl=$x86_64_musl_cc"
+  printf '%s\n' "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$x86_64_musl_cc"
+
+  if x86_64_musl_ar="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
+    x86_64-linux-musl-ar x86_64-linux-musl-gcc-ar ar)"; then
+    printf '%s\n' "AR_x86_64_unknown_linux_musl=$x86_64_musl_ar"
+  fi
+
+  if x86_64_musl_ranlib="$(resolve_aarch64_musl_tool "$tool_bin_dir" \
+    x86_64-linux-musl-ranlib x86_64-linux-musl-gcc-ranlib ranlib)"; then
+    printf '%s\n' "RANLIB_x86_64_unknown_linux_musl=$x86_64_musl_ranlib"
+  fi
+
+  if x86_64_musl_cxx="$(resolve_x86_64_musl_cxx)"; then
+    printf '%s\n' "CXX_x86_64_unknown_linux_musl=$x86_64_musl_cxx"
+  else
+    log "x86_64 musl C++ compiler not found; crates with C++ deps (for example rocksdb) require x86_64-linux-musl-g++ or musl-g++" >&2
+  fi
+}
+
 get_aarch64_musl_env_lines() {
   local aarch64_musl_cc
   local tool_bin_dir
@@ -428,7 +783,7 @@ that provides one of:
   - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if ! "$aarch64_musl_cc" -dumpmachine >/dev/null 2>&1; then
@@ -438,7 +793,7 @@ This usually means the toolchain is installed in a non-standard location but its
 support files are incomplete or unavailable. Ensure the full aarch64 musl toolchain
 is installed, then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   tool_bin_dir="$(dirname "$aarch64_musl_cc")"
@@ -473,7 +828,7 @@ that provides one of:
   - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if [[ "$line" == "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" ]]; then
@@ -490,7 +845,7 @@ that provides one of:
   - `/opt/musl-cross/bin/aarch64-linux-musl-gcc`
 then rerun build_aios.
 EOF
-    exit 1
+    return 1
   fi
 
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -551,7 +906,7 @@ build_runtime_binaries() {
     -p
     opendan
     -p
-    agent_tool
+    agent_tool_cli_dev
     --release
     --target
     "$rust_target"
@@ -567,16 +922,26 @@ build_runtime_binaries() {
       normalized_line="$(rewrite_env_line "$line")"
       normalized_env_lines+=("$normalized_line")
     done
-    if [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
-      local extra_line
+    local extra_line
+    local extra_lines_output=""
+    if [[ "$rust_target" == "x86_64-unknown-linux-musl" ]]; then
+      if ! extra_lines_output="$(get_x86_64_musl_env_lines)"; then
+        exit 1
+      fi
+    elif [[ "$rust_target" == "aarch64-unknown-linux-musl" ]]; then
+      if ! extra_lines_output="$(get_aarch64_musl_env_lines)"; then
+        exit 1
+      fi
+    fi
+    if [[ -n "$extra_lines_output" ]]; then
       while IFS= read -r extra_line; do
         [[ -n "$extra_line" ]] && normalized_env_lines+=("$extra_line")
-      done < <(get_aarch64_musl_env_lines)
+      done <<< "$extra_lines_output"
     fi
     env_cmd+=("${normalized_env_lines[@]}")
   fi
 
-  log "Building opendan and agent_tool for $arch using target $rust_target via ${cargo_cmd[*]}"
+  log "Building opendan and agent_tool_cli_dev for $arch using target $rust_target via ${cargo_cmd[*]}"
   (
     cd "$SRC_DIR"
     "${env_cmd[@]}" "${cargo_cmd[@]}"
@@ -596,6 +961,13 @@ build_runtime_binaries() {
   cp "$source_opendan" "$context_dir/opendan"
   cp "$source_agent_tool" "$context_dir/agent_tool"
   chmod 755 "$context_dir/opendan" "$context_dir/agent_tool"
+
+  if [[ ! -f "$ENTRYPOINT_SOURCE" ]]; then
+    echo "Missing paios/aios entrypoint at $ENTRYPOINT_SOURCE" >&2
+    exit 1
+  fi
+  cp "$ENTRYPOINT_SOURCE" "$context_dir/entrypoint.sh"
+  chmod 755 "$context_dir/entrypoint.sh"
 }
 
 docker_platform_for_arch() {
@@ -706,13 +1078,17 @@ publish_manifests() {
 main() {
   local tmp_root
   local python_bin
-  local -a target_arches
+  local cargo_target_dir
+  local cargo_target_mode
+  local buckyos_agent_package_dir
+  local -a target_arches=()
 
   if [[ ! -f "$PROJECT_CONFIG_PATH" ]]; then
     echo "Missing project config: $PROJECT_CONFIG_PATH" >&2
     exit 1
   fi
 
+  resolve_default_image_name
   resolve_version_tag
   python_bin="$(resolve_python)"
   while IFS= read -r _arch_line; do
@@ -722,14 +1098,34 @@ main() {
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_aios.XXXXXX")"
   trap "rm -rf '$tmp_root'" EXIT
 
+  buckyos_agent_package_dir="$tmp_root/buckyos-agent-package"
+  prepare_buckyos_agent_package "$buckyos_agent_package_dir" "$tmp_root" "$python_bin"
+
+  cargo_target_dir="$(resolve_cargo_target_dir "$tmp_root")"
+  mkdir -p "$cargo_target_dir"
+
+  if [[ -n "$CARGO_TARGET_DIR_OVERRIDE" ]]; then
+    cargo_target_mode="persistent (explicit)"
+  elif [[ "$REUSE_CARGO_TARGET" -eq 1 ]]; then
+    cargo_target_mode="persistent (--reuse-cargo-target)"
+  else
+    cargo_target_mode="ephemeral"
+  fi
+
   prepare_docker_config "$tmp_root"
   ensure_buildx_support "${target_arches[@]}"
 
   log "Version tag: $VERSION_TAG"
+  log "Image repo: $IMAGE_NAME"
   log "Target arches: $(package_list_to_string "${target_arches[@]}")"
+  log "Cargo target dir: $cargo_target_dir ($cargo_target_mode)"
   log "Runtime packages: $(package_list_to_string "${RUNTIME_PACKAGES[@]}")"
   if [[ "$INSTALL_WORKSPACE_TOOLS" -eq 1 ]]; then
-    log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
+    if [[ ${#WORKSPACE_PACKAGES[@]} -gt 0 ]]; then
+      log "Workspace packages: $(package_list_to_string "${WORKSPACE_PACKAGES[@]}")"
+    else
+      log "Workspace packages: (none)"
+    fi
   else
     log "Workspace packages: skipped (--runtime-only)"
   fi
@@ -739,7 +1135,6 @@ main() {
 
   for arch in "${target_arches[@]}"; do
     local context_dir="$tmp_root/$arch"
-    local cargo_target_dir="$tmp_root/cargo-$arch"
     local dockerfile_path="$context_dir/Dockerfile"
     local platform
 
@@ -747,6 +1142,8 @@ main() {
     mkdir -p "$context_dir"
 
     build_runtime_binaries "$arch" "$context_dir" "$cargo_target_dir" "$python_bin"
+    cp -R "$buckyos_agent_package_dir" "$context_dir/buckyos-agent"
+    cp "$AICC_TOOL_LAUNCHER_SOURCE" "$context_dir/aicc-tool-launcher"
     render_dockerfile "$dockerfile_path"
     build_image "$arch" "$context_dir" "$platform" "$dockerfile_path"
   done

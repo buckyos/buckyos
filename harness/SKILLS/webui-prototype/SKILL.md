@@ -2,7 +2,7 @@
 
 # Role
 
-You are an expert Frontend Engineer & AI Harness Agent specializing in BuckyOS WebUI. Your task is to从 PRD 出发，完成一个 Mock-first 的 UI 原型，通过 Playwright 自动化循环收敛质量，最终沉淀出稳定的 UI DataModel 文档。
+You are an expert Frontend Engineer & AI Harness Agent specializing in  WebUI. Your task is to从 PRD 出发，完成一个 Mock-first 的 UI 原型，通过 Playwright 自动化循环收敛质量，最终沉淀出稳定的 UI DataModel 文档。
 
 # Context
 
@@ -60,61 +60,7 @@ Do NOT use this skill when:
 | Routing | **React Router DOM v7** |
 | State Management | React hooks + Context API |
 | Forms & Input Validation | **react-hook-form** + **Zod** |
-| Fonts | **Space Grotesk** (headings), **Work Sans** (body) |
 | i18n | BuckyOS custom i18n (`useI18n()` hook, `I18nProvider`) |
-
-# BuckyOS Visual Style
-
-### Color Palette (CSS Variables)
-
-```css
---cp-primary: #0f766e;        /* Teal — 主操作、活跃导航 */
---cp-primary-strong: #0b5f59;  /* 深 Teal — hover */
---cp-primary-soft: #d1f2ef;    /* 浅 Teal — 背景高亮 */
---cp-accent: #f59e0b;          /* Amber — 次要强调 */
---cp-success: #16a34a;         /* Green — 成功 */
---cp-warning: #d97706;         /* Orange — 警告 */
---cp-danger: #dc2626;          /* Red — 错误、危险操作 */
---cp-bg: #eef4f3;              /* 页面背景 */
---cp-surface: #ffffff;         /* 卡片/面板表面 */
---cp-surface-muted: #f4f8f7;   /* 弱化表面 */
---cp-border: #d7e1df;          /* 边框 */
---cp-ink: #0f172a;             /* 主文本 */
---cp-muted: #52606d;           /* 次要文本 */
-```
-
-### Component Classes
-
-- `.cp-shell` — 主容器（max-width: 1280px，居中，桌面 32px 水平内边距）
-- `.cp-panel` — 大卡片/面板（白色，bordered，rounded-24px，soft shadow）
-- `.cp-panel-muted` — 弱化面板
-- `.cp-card` — 小卡片（rounded-18px）
-- `.cp-pill` — 状态徽章（rounded-full，小字号）
-- `.cp-nav-link` — 导航链接
-- `.cp-divider` — 水平分隔线
-
-### Typography
-
-- 标题：`var(--cp-font-heading)` — Space Grotesk，letter-spacing: -0.01em
-- 正文：`var(--cp-font-body)` — Work Sans
-
-### Layout
-
-- 最大内容宽度 1280px，居中
-- 圆角：24px（面板）、18px（卡片）、16px（导航）、999px（pill）
-- 阴影：`var(--cp-shadow)` 或 `var(--cp-shadow-soft)`
-
-### Responsive
-
-- Desktop-first，移动端断点 768px
-- 桌面与移动浏览器均 MUST 可用
-
-### Accessibility
-
-- 尊重 `prefers-reduced-motion` — 减弱动画
-- 使用语义化 HTML 元素
-
----
 
 # 阶段一：Mock-first Prototype 开发
 
@@ -128,10 +74,6 @@ TODO:这里要区分几种 UI形态，来确定在哪个项目pnpm run dev
 
 ### Step 1: 项目搭建
 
-在现有 Control Panel 中新增模块：
-
-- 添加路由到路由配置。
-- 在 `src/` 下创建页面组件目录。
 
 独立模块：
 
@@ -163,9 +105,7 @@ Mock 数据 MUST：
 
 1. 创建页面组件。
 2. 接入 mock 数据 provider。
-3. 实现五种状态：正常、空、加载、错误、进度。
-4. 应用 BuckyOS 视觉风格（CSS Variables + 组件类）。
-5. 所有面向用户的文本通过 i18n：`const { t } = useI18n();`
+3. 所有面向用户的文本通过 i18n：`const { t } = useI18n();`
 
 如果页面包含表单、筛选器、向导、配置面板或任何用户输入区域，MUST：
 
@@ -192,14 +132,8 @@ const form = useForm<FormValues>({
 });
 ```
 
-### Step 4: 双视图模式
 
-UI SHOULD 支持两种视图：
-
-1. **独立页面模式** — 全页，开发用。
-2. **桌面窗口模式** — 嵌入 BuckyOS 桌面 shell，集成预览。
-
-### Step 5: 验证可独立运行
+### Step 4: 验证可独立运行
 
 ```bash
 pnpm install && pnpm run dev
@@ -219,7 +153,6 @@ pnpm install && pnpm run dev
 - [ ] 正常态、空态、加载态、错误态均正确呈现。
 - [ ] 移动端视口（≤768px）可用。
 - [ ] i18n：所有字符串走 `t()`，`en` 和 `zh-CN` 均有翻译。
-- [ ] 使用 BuckyOS 视觉风格（CSS Variables + 组件类）。
 - [ ] 无真实后端依赖——纯 mock 数据。
 - [ ] 控制台无错误。
 
@@ -282,12 +215,6 @@ tests/e2e/
 
 ## 评估维度
 
-### 布局
-- 内容在 `cp-shell` 容器内（max-width 1280px，居中）。
-- 面板使用 `cp-panel` / `cp-card`。
-- 间距一致（4px 倍数）。
-- 无内容溢出或裁切。
-
 ### 状态
 - 正常：数据正确渲染，列表填充，操作可见。
 - 空态：清晰提示，非空白/破损页面。
@@ -317,9 +244,7 @@ tests/e2e/
 ## MUST 测试项
 
 - 所有页面无 console error 渲染。
-- 每个数据视图的五种状态。
 - PRD 主用户流程（happy path）。
-- 页面间导航。
 - 移动端视口（375px）。
 
 ## AI 行为规则

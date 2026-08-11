@@ -2,25 +2,40 @@
   "name": "web3-gateway",
   "version": "latest",
   "directories": {
-      "source": "/opt/web3-gateway",
-      "target": "/opt/web3-gateway",
-      "source_bin": "/opt/web3-gateway/web3_gateway",
-      "target_bin": "/opt/web3-gateway/web3_gateway"
+    "source": "/opt/web3-gateway",
+    "target": "/opt/web3-gateway",
+    "source_bin": "/opt/web3-gateway/web3_gateway",
+    "target_bin": "/opt/web3-gateway/web3_gateway"
   },
   "commands": {
     "build": [
-      "echo 'MAKE sure you already build the linux version of cyfs-gateway (result store in web3-gateway/)'"
+      "cd {{system.base_dir}}/../../cyfs-gateway/src && uv run ./build.py aarch64",
+      "rm -rf /opt/web3-gateway/bns && mkdir -p /opt/web3-gateway/bns && cp {{system.base_dir}}/../../cyfs-gateway/src/apps/bns/foundry.toml /opt/web3-gateway/bns/ && cp -R {{system.base_dir}}/../../cyfs-gateway/src/apps/bns/src /opt/web3-gateway/bns/"
     ],
     "build_all": [
-        "uv run ./make_config.py sn_server --sn_ip {{sn.ip}}"
-    ],
-    "update":[
-      "echo 'update web3-gateway'"
+      "cd {{system.base_dir}}/../../cyfs-gateway/src && uv run ./build.py aarch64",
+      "rm -rf /opt/web3-gateway/bns && mkdir -p /opt/web3-gateway/bns && cp {{system.base_dir}}/../../cyfs-gateway/src/apps/bns/foundry.toml /opt/web3-gateway/bns/ && cp -R {{system.base_dir}}/../../cyfs-gateway/src/apps/bns/src /opt/web3-gateway/bns/",
+      "cd {{system.base_dir}}/../../cyfs-gateway/src && deno run -A ./make_sn_config.ts --seed-v2 --sn_ip {{sn.ip}}"
     ],
     "install": [
-      "sudo chmod +x /opt/web3-gateway/web3_gateway"
+      "sudo chmod +x /opt/web3-gateway/web3_gateway /opt/web3-gateway/init_anvil.py"
     ],
-    "start": ["sudo python3 /opt/web3-gateway/start.py > /dev/null 2>&1 &"],
-    "stop": ["sudo python3 /opt/web3-gateway/stop.py"]
+    "init_anvil": [
+      "cd /opt/web3-gateway && sudo uv run ./init_anvil.py"
+    ],
+    "init_anvil_fresh": [
+      "cd /opt/web3-gateway && sudo uv run ./init_anvil.py --fresh --install-foundry"
+    ],
+    "start": [
+      "sudo uv run /opt/web3-gateway/start.py"
+    ],
+    "start_bg": [
+      "sudo systemd-run --unit=web3-gateway-dev --collect --working-directory=/opt/web3-gateway --property=StandardOutput=append:/opt/web3-gateway/start.log --property=StandardError=append:/opt/web3-gateway/start.log /usr/local/bin/uv run ./start.py"
+    ],
+    "stop": [
+      "sudo systemctl kill --kill-whom=all -s SIGKILL web3-gateway-dev 2>/dev/null || true",
+      "sudo systemctl reset-failed web3-gateway-dev 2>/dev/null || true",
+      "sudo uv run /opt/web3-gateway/stop.py"
+    ]
   }
 }

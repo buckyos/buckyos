@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+# TODO : 现在非docker版的filebrowser不会使用了(filebrowser变成了纯example)
 import os
 import sys
 import json
@@ -17,7 +18,6 @@ owner_userid = None
 app_token = None
 app_instance_config = None
 zone_config = None
-device_info = None
 
 def get_app_bin_path(appid):
     bin_path = os.path.join(current_dir, appid)
@@ -27,7 +27,7 @@ def get_app_bin_path(appid):
 
 def load_app_instance_cfg():
     global appid, full_appid,owner_userid, app_token, app_instance_config
-    global zone_config,device_info
+    global zone_config
 
 
     app_token_env_key = util.get_session_token_env_key(full_appid, True)
@@ -35,17 +35,12 @@ def load_app_instance_cfg():
     app_instance_config_str = os.getenv("app_instance_config")
     zone_config_str = os.getenv(f"BUCKYOS_ZONE_CONFIG")
     zone_config = None
-    device_info_str = os.getenv(f"BUCKYOS_THIS_DEVICE_INFO")
-    device_info = None
 
     if zone_config_str:
         zone_config = json.loads(zone_config_str)
         docker_repo_base_url = zone_config.get("docker_repo_base_url")
         if docker_repo_base_url:
             zone_docker_repo_base_url = docker_repo_base_url
-    
-    if device_info_str:
-        device_info = json.loads(device_info_str)
 
     if app_token is None:
         print(f"No session token found for appid: {full_appid}")
@@ -105,6 +100,3 @@ if __name__ == "__main__":
     instance_cfg = load_app_instance_cfg()
     try_stop_app(instance_cfg)
     start_app(instance_cfg)
-
-
-    

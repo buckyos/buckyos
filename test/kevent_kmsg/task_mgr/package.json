@@ -1,0 +1,12 @@
+{
+  "name": "kevent-kmsg-task-mgr-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dv": "deno run --config deno.json --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors task_mgr_kevent_dv.ts",
+    "test": "pnpm run dv"
+  },
+  "dependencies": {
+    "buckyos": "github:buckyos/buckyos-websdk#beta2.2"
+  }
+}

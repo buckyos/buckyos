@@ -8,7 +8,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
-import { buckyos, RuntimeType, TaskManagerClient } from 'buckyos/node'
+import { buckyos, TaskManagerClient } from 'buckyos/node'
 
 const execFileAsync = promisify(execFile)
 
@@ -94,6 +94,33 @@ function buildMetaFields() {
     last_update_time: now,
     exp: now + 30 * 24 * 60 * 60,
   }
+}
+
+
+// v0.5: AppDoc requires `did` (App DID); derive via the frozen rule did:bns:{app_name}.{owner_id}.
+function deriveAppDid(appId) {
+  const ownerIdPart = OWNER_DID.split(':').pop()
+  return `did:bns:${appId}.${ownerIdPart}`
+}
+
+function appPackageNamespace(appId) {
+  const ownerIdPart = OWNER_DID.split(':').pop()
+  return `${ownerIdPart}_${appId}`
+}
+
+function packageEnvQualifier() {
+  const osName =
+    process.platform === 'darwin'
+      ? 'apple'
+      : process.platform === 'win32'
+        ? 'windows'
+        : process.platform
+  const archName = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'aarch64' : process.arch
+  return `nightly-${osName}-${archName}`
+}
+
+function appPackageName(appId, role, qualifier = packageEnvQualifier()) {
+  return `${qualifier}.${appPackageNamespace(appId)}-${role}`
 }
 
 function replacePlaceholders(value, tokens) {
@@ -206,66 +233,72 @@ function encodeJwtPart(value) {
   return Buffer.from(JSON.stringify(value)).toString('base64url')
 }
 
+async function getNodeSigningCredential() {
+  const identity = JSON.parse(
+    await readFile('/opt/buckyos/etc/node_identity.json', 'utf8'),
+  )
+  const deviceHost = String(identity.device_did ?? '').replace(/^did:web:/, '')
+  return {
+    path: path.join(
+      '/opt/buckyos/security',
+      deviceHost,
+      'authentication.private.pem',
+    ),
+    kid: identity.device_name ?? getEnv('BUCKYOS_TEST_NODE_KID') ?? 'ood1',
+  }
+}
+
 async function createOwnerSignedLoginJwt(userId) {
-  const ownerKeyPath = '/opt/buckyos/etc/.buckycli/user_private_key.pem'
-  if (!(await fileExists(ownerKeyPath))) {
-    return null
-  }
+  // 本地可用的 zone owner 或当前 device 信任凭证。
+  const candidates = [
+    { path: '/opt/buckyos/etc/.buckycli/user_private_key.pem', kid: 'root' },
+    await getNodeSigningCredential(),
+  ]
+  for (const candidate of candidates) {
+    if (!(await fileExists(candidate.path))) {
+      continue
+    }
+    const keyPem = (await readFile(candidate.path, 'utf8')).trim()
+    if (!keyPem) {
+      continue
+    }
 
-  const keyPem = (await readFile(ownerKeyPath, 'utf8')).trim()
-  if (!keyPem) {
-    return null
-  }
+    const now = Math.floor(Date.now() / 1000)
+    const header = {
+      alg: 'EdDSA',
+      kid: candidate.kid,
+    }
+    const payload = {
+      appid: TEST_APP_ID,
+      userid: userId,
+      sub: userId,
+      iss: candidate.kid,
+      jti: String(now),
+      session: now,
+      exp: now + 5 * 60,
+    }
 
-  const now = Math.floor(Date.now() / 1000)
-  const header = {
-    alg: 'EdDSA',
-    kid: 'root',
-  }
-  const payload = {
-    appid: TEST_APP_ID,
-    userid: userId,
-    sub: userId,
-    iss: 'root',
-    jti: String(now),
-    session: now,
-    exp: now + 5 * 60,
-  }
+    const signingInput = `${encodeJwtPart(header)}.${encodeJwtPart(payload)}`
+    const signature = signDetached(
+      null,
+      Buffer.from(signingInput),
+      createPrivateKey(keyPem),
+    ).toString('base64url')
 
-  const signingInput = `${encodeJwtPart(header)}.${encodeJwtPart(payload)}`
-  const signature = signDetached(
-    null,
-    Buffer.from(signingInput),
-    createPrivateKey(keyPem),
-  ).toString('base64url')
-
-  return `${signingInput}.${signature}`
+    return `${signingInput}.${signature}`
+  }
+  return null
 }
 
 async function loginWithAppClient() {
   const ownerSignedJwt = await createOwnerSignedLoginJwt(TEST_USER_ID)
-
-  await buckyos.initBuckyOS(TEST_APP_ID, {
-    appId: TEST_APP_ID,
-    runtimeType: RuntimeType.AppClient,
-    zoneHost: '',
-    defaultProtocol: 'https://',
-    systemConfigServiceUrl: SYSTEM_CONFIG_URL,
-    privateKeySearchPaths: [
-      '/opt/buckyos/etc/.buckycli',
-      '/opt/buckyos/etc',
-      '/opt/buckyos',
-      `${process.env.HOME ?? ''}/.buckycli`,
-      `${process.env.HOME ?? ''}/.buckyos`,
-    ],
-  })
-
-  const accountInfo = ownerSignedJwt
-    ? {
-        session_token: ownerSignedJwt,
-        user_id: TEST_USER_ID,
-      }
-    : await buckyos.login()
+  if (!ownerSignedJwt) {
+    throw new Error('No local owner or device signing credential is available')
+  }
+  const accountInfo = {
+    session_token: ownerSignedJwt,
+    user_id: TEST_USER_ID,
+  }
 
   if (!accountInfo?.session_token) {
     throw new Error('AppClient login did not return a session_token')
@@ -453,36 +486,137 @@ async function publishApp({ appType, localDir, appDoc }) {
 
   assert.equal(result.ok, true)
   assert.ok(result.obj_id, 'publish should return obj_id')
+  // v0.5: publish returns full identity + pikg handle + explicit status.
+  assert.ok(result.app_did, 'publish should return app_did')
+  assert.ok(result.app_doc_id, 'publish should return app_doc_id')
+  assert.ok(
+    `${result.pikg_handle}`.startsWith('pikg:sha256:'),
+    `publish should return a pikg staging handle, got ${result.pikg_handle}`,
+  )
+  assert.ok(result.pikg_digest, 'publish should return pikg_digest')
+  assert.equal(result.publish_status, 'repo_stored_candidate')
+  assert.ok(result.app_doc, 'publish should return the final app_doc body')
   return result
 }
 
-async function installApp({ appId, version }) {
-  const result = await callControlPanel('apps.install', {
-    app_id: appId,
-    version,
-  })
-
-  assert.ok(result.task_id, 'install should return task_id')
-  return waitForTask(result.task_id)
+function escapeResolverSegment(raw) {
+  return `${raw}`.replaceAll('%', '%25').replaceAll('/', '%2F')
 }
 
-async function installAppAllowFailure({ appId, version }) {
-  const result = await callControlPanel('apps.install', {
-    app_id: appId,
-    version,
-  })
-
-  assert.ok(result.task_id, 'install should return task_id')
-  return waitForTaskResult(result.task_id)
+// resolver/cache/* 的写入受 RBAC 限制（kernel/root 级）。fixture 种入使用
+// 本机 node/device key 铸 root 会话（等价于 DV 管理注入，Installer 自身
+// 永不写这些 key）。
+let seedRpcClient = null
+async function getSeedRpcClient() {
+  if (seedRpcClient) {
+    return seedRpcClient
+  }
+  const credential = await getNodeSigningCredential()
+  const keyPem = (await readFile(credential.path, 'utf8')).trim()
+  const now = Math.floor(Date.now() / 1000)
+  const header = { alg: 'EdDSA', kid: credential.kid }
+  const payload = {
+    appid: 'node-daemon',
+    userid: 'root',
+    sub: 'root',
+    iss: credential.kid,
+    jti: String(now),
+    session: now,
+    exp: now + 3600,
+  }
+  const input = `${encodeJwtPart(header)}.${encodeJwtPart(payload)}`
+  const signature = signDetached(
+    null,
+    Buffer.from(input),
+    createPrivateKey(keyPem),
+  ).toString('base64url')
+  seedRpcClient = new buckyos.kRPCClient(SYSTEM_CONFIG_URL, `${input}.${signature}`)
+  return seedRpcClient
 }
 
-function assertInstallCompletedOrTimedOutWaitingReady(installTask, appType) {
-  assert.ok(
-    installTask.status === 'Completed' ||
-      (installTask.status === 'Failed' &&
-        `${installTask.task.message ?? ''}`.includes('Timed out waiting for app')),
-    `${appType} install should either complete or only fail on control-plane readiness timeout, got status=${installTask.status}, message=${installTask.task.message ?? '<none>'}`,
+async function writeConfig(key, value) {
+  const rpc = await getSeedRpcClient()
+  await rpc.call('sys_config_set', { key, value })
+}
+
+// v0.5 D4: 测试环境通过 zone resolver 数据面（RBAC 管控的 KV）显式种入
+// `(App DID, "app")` 解析证据；Installer 只消费 resolver 结果。
+async function seedResolverCache(appDid, appDocJson, documentVersion = 1) {
+  const base = `resolver/cache/${escapeResolverSegment(appDid)}/app`
+  await writeConfig(`${base}/doc`, JSON.stringify(appDocJson))
+  await writeConfig(
+    `${base}/state`,
+    JSON.stringify({
+      document_status: 'active',
+      document_version: documentVersion,
+      updated_by: 'app_installer_test',
+    }),
   )
+}
+
+async function waitForTaskStatus(taskId, statuses, { timeoutMs = 120000, intervalMs = 1000 } = {}) {
+  const ctx = await getSdkContext()
+  const numericTaskId = Number(taskId)
+  const deadline = Date.now() + timeoutMs
+  let task = null
+  while (Date.now() <= deadline) {
+    task = await ctx.taskManager.getTask(numericTaskId)
+    if (statuses.includes(task.status)) {
+      return task
+    }
+    if (['Failed', 'Canceled'].includes(task.status)) {
+      return task
+    }
+    await sleep(intervalMs)
+  }
+  throw new Error(
+    `task ${numericTaskId} did not reach ${statuses.join('/')} in time, last=${task?.status}, message=${task?.message ?? '<none>'}`,
+  )
+}
+
+// v0.5 安装闭环：apps.install_package -> WaitingForApproval ->
+// apps.install.confirm -> Completed（不再接受 ready 超时算通过）。
+async function installPikgToCompletion({ stagingHandle, expectOfflineReady = true }) {
+  const startResult = await callControlPanel('apps.install_package', {
+    staging_handle: stagingHandle,
+  })
+  assert.ok(startResult.task_id, 'install_package should return task_id')
+  const taskId = startResult.task_id
+
+  const waiting = await waitForTaskStatus(taskId, ['WaitingForApproval'])
+  assert.equal(
+    waiting.status,
+    'WaitingForApproval',
+    `install should stop for approval, got ${waiting.status}: ${waiting.message ?? '<none>'}`,
+  )
+  const plan = waiting.data?.plan
+  assert.ok(plan, 'waiting task must carry a persisted plan in Task.data')
+  if (expectOfflineReady) {
+    assert.equal(
+      plan.readiness?.install,
+      'OFFLINE_READY',
+      `pikg install should be offline ready, got ${JSON.stringify(plan.readiness)}`,
+    )
+  }
+
+  const requiredPermissions = (plan.permission_options ?? []).filter(
+    (permission) => permission.required,
+  )
+  const confirmResult = await callControlPanel('apps.install.confirm', {
+    task_id: `${taskId}`,
+    install_params: {
+      ...(plan.install_params ?? {}),
+      permissions: requiredPermissions,
+    },
+  })
+  assert.ok(confirmResult.task_id, 'confirm should return task_id')
+
+  const task = await waitForTask(taskId)
+  assert.ok(
+    task.data?.result?.completed_at,
+    'completed install task must carry a structured result',
+  )
+  return task
 }
 
 async function uninstallApp({ appId, removeData = false }) {
@@ -501,11 +635,14 @@ async function stageStaticWebFixture() {
   const localDir = await ensureTempDir('cp-web')
   await cp(path.join(FIXTURES_ROOT, 'static-web'), localDir, { recursive: true })
 
+  const webPackageName = appPackageName(appId, 'web')
   const appDoc = await loadTemplate('static-web.app_doc.json', {
     APP_ID: appId,
+    APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
-    WEB_PKG_ID: `${appId}-web#${version}`,
+    WEB_PKG_ID: `${webPackageName}#${version}`,
+    WEB_PKG_NAME: webPackageName,
   })
 
   Object.assign(appDoc, buildMetaFields())
@@ -517,7 +654,7 @@ async function stageStaticWebFixture() {
     appDoc,
     specPath: (userId) => `users/${userId}/apps/${appId}/spec`,
     specId: (userId) => `${appId}@${userId}`,
-    binPath: () => path.join('/opt/buckyos/bin', `${appId}-web`),
+    binPath: () => path.join('/opt/buckyos/bin', `${appPackageNamespace(appId)}-web`),
   }
 }
 
@@ -538,11 +675,14 @@ async function stageAgentFixture() {
     `${JSON.stringify(agentDoc, null, 2)}\n`,
   )
 
+  const agentPackageName = appPackageName(appId, 'agent')
   const appDoc = await loadTemplate('agent.app_doc.json', {
     APP_ID: appId,
+    APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
-    AGENT_PKG_ID: `${appId}-agent#${version}`,
+    AGENT_PKG_ID: `${agentPackageName}#${version}`,
+    AGENT_PKG_NAME: agentPackageName,
   })
 
   Object.assign(appDoc, buildMetaFields())
@@ -585,19 +725,22 @@ async function stageDockerFixture() {
 
   const appDoc = await loadTemplate('docker.app_doc.json', {
     APP_ID: appId,
+    APP_DID: deriveAppDid(appId),
     VERSION: version,
     OWNER_DID,
   })
 
   Object.assign(appDoc, buildMetaFields())
+  const dockerArchName = process.arch === 'x64' ? 'amd64' : 'aarch64'
+  const dockerPackageName = appPackageName(appId, 'img', `nightly-linux-${dockerArchName}`)
   appDoc.pkg_list = {
     [dockerArchKey]: {
-      pkg_id: `${appId}-img#${version}`,
+      pkg_id: `${dockerPackageName}#${version}`,
       docker_image_name: imageName,
     },
   }
   appDoc.deps = {
-    [`${appId}-img`]: version,
+    [dockerPackageName]: version,
   }
 
   return {
@@ -656,10 +799,6 @@ async function fileExists(targetPath) {
 }
 
 after(async () => {
-  if (sdkContextPromise) {
-    buckyos.logout(false)
-  }
-
   if (UNINSTALL_AFTER_INSTALL) {
     for (const imageName of [...dockerImages]) {
       await removeDockerImage(imageName)
@@ -679,32 +818,49 @@ test('app_installer local publish lifecycle', async (t) => {
     const fixture = await stageStaticWebFixture()
 
     try {
-      await publishApp({
+      const published = await publishApp({
         appType: 'web',
         localDir: fixture.localDir,
         appDoc: fixture.appDoc,
       })
+      assert.equal(published.app_did, deriveAppDid(fixture.appId))
 
-      const installTask = await installAppAllowFailure({
-        appId: fixture.appId,
-        version: fixture.version,
+      // v0.5: 显式种 resolver 证据 -> 本地 pikg 安装 -> 确认 -> 严格等完成。
+      await seedResolverCache(published.app_did, published.app_doc)
+      const installTask = await installPikgToCompletion({
+        stagingHandle: published.pikg_handle,
       })
-
-      await sleep(POST_INSTALL_SETTLE_MS)
 
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
       assert.equal(spec.app_doc.version, fixture.version)
+      assert.equal(spec.app_doc.did, published.app_did)
       assert.equal(spec.app_doc.selector_type, 'static')
       assert.ok(
         isInstalledSpecState(spec.state),
         `static web spec should be in an installed state, got ${spec.state}`,
       )
-      assertInstallCompletedOrTimedOutWaitingReady(installTask, 'static web')
       assert.deepEqual(
-        spec.install_config.expose_config.www?.sub_hostname ?? [],
+        spec.spec_config.expose_config.www?.route?.sub_hostname ?? [],
         [fixture.appId],
       )
+
+      // install_record（D3）与 proof 顺序：完成后 record=installed 且
+      // task result 带 record key；proof id（Repo 可用时）回填进 record。
+      const installRecord = await readConfigJson(
+        `users/${userId}/apps/${fixture.appId}/install_record`,
+      )
+      assert.equal(installRecord.state, 'installed')
+      assert.equal(installRecord.task_id, Number(installTask.id))
+      assert.equal(installRecord.app_did, published.app_did)
+      assert.equal(
+        installTask.data?.result?.install_record_key,
+        `users/${userId}/apps/${fixture.appId}/install_record`,
+      )
+      if (installTask.data?.result?.proof_id) {
+        assert.equal(installRecord.proof_id, installTask.data.result.proof_id)
+      }
+
       assert.equal(
         await waitForCondition(() => fileExists(fixture.binPath()), {
           timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
@@ -730,25 +886,20 @@ test('app_installer local publish lifecycle', async (t) => {
     }
   })
 
-  await t.test(
-    'agent app publish + install',
-    { skip: 'temporarily disabled due to runtime-dependent install design' },
-    async () => {
+  await t.test('agent app publish + install', async () => {
     const fixture = await stageAgentFixture()
 
     try {
-      await publishApp({
+      const published = await publishApp({
         appType: 'agent',
         localDir: fixture.localDir,
         appDoc: fixture.appDoc,
       })
 
-      const installTask = await installAppAllowFailure({
-        appId: fixture.appId,
-        version: fixture.version,
+      await seedResolverCache(published.app_did, published.app_doc)
+      await installPikgToCompletion({
+        stagingHandle: published.pikg_handle,
       })
-
-      await sleep(POST_INSTALL_SETTLE_MS)
 
       const spec = await readConfigJson(fixture.specPath(userId))
       assert.equal(spec.app_doc.name, fixture.appId)
@@ -761,7 +912,6 @@ test('app_installer local publish lifecycle', async (t) => {
 
       const instances = await listServiceInstances(fixture.specId(userId))
       assert.ok(instances.length >= 1, 'agent install should create a started instance')
-      assertInstallCompletedOrTimedOutWaitingReady(installTask, 'agent')
       assert.equal(
         await waitForCondition(() => fileExists(fixture.pidFile(userId)), {
           timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
@@ -785,28 +935,28 @@ test('app_installer local publish lifecycle', async (t) => {
     } finally {
       await cleanupTempDir(fixture.localDir)
     }
-    },
-  )
+  })
 
   await t.test(
     'docker app publish + install',
-    { skip: !(await isDockerAvailable()) },
+    {
+      skip:
+        getEnv('BUCKYOS_TEST_SKIP_DOCKER') === '1' || !(await isDockerAvailable()),
+    },
     async () => {
       const fixture = await stageDockerFixture()
 
       try {
-        await publishApp({
+        const published = await publishApp({
           appType: 'dapp',
           localDir: fixture.localDir,
           appDoc: fixture.appDoc,
         })
 
-        const installTask = await installAppAllowFailure({
-          appId: fixture.appId,
-          version: fixture.version,
+        await seedResolverCache(published.app_did, published.app_doc)
+        await installPikgToCompletion({
+          stagingHandle: published.pikg_handle,
         })
-
-        await sleep(POST_INSTALL_SETTLE_MS)
 
         const spec = await readConfigJson(fixture.specPath(userId))
         assert.equal(spec.app_doc.name, fixture.appId)
@@ -817,7 +967,6 @@ test('app_installer local publish lifecycle', async (t) => {
         )
         assert.equal(spec.app_doc.categories[0], 'dapp')
         assert.equal(await isContainerRunning(fixture.containerName(userId)), true)
-        assertInstallCompletedOrTimedOutWaitingReady(installTask, 'docker')
 
         if (UNINSTALL_AFTER_INSTALL) {
           await uninstallApp({ appId: fixture.appId, removeData: false })

@@ -327,8 +327,8 @@ fn test_app_disable_updates_instance_instead_of_removing_it() {
     let mut scheduler = NodeScheduler::new_empty(1);
 
     scheduler.add_service_spec(ServiceSpec {
-        id: "jarvis@alice".to_string(),
-        app_id: "jarvis".to_string(),
+        id: "buckyos_jarvis@alice".to_string(),
+        app_id: "buckyos_jarvis".to_string(),
         owner_id: "alice".to_string(),
         spec_type: ServiceSpecType::App,
         state: ServiceSpecState::Disable,
@@ -346,9 +346,9 @@ fn test_app_disable_updates_instance_instead_of_removing_it() {
 
     scheduler.add_replica_instance(ReplicaInstance {
         node_id: "node1".to_string(),
-        spec_id: "jarvis@alice".to_string(),
+        spec_id: "buckyos_jarvis@alice".to_string(),
         res_limits: HashMap::new(),
-        instance_id: "jarvis@alice@node1".to_string(),
+        instance_id: "buckyos_jarvis@alice@node1".to_string(),
         last_update_time: buckyos_get_unix_timestamp(),
         state: InstanceState::Running,
         service_ports: HashMap::new(),
@@ -358,8 +358,8 @@ fn test_app_disable_updates_instance_instead_of_removing_it() {
     assert_eq!(actions.len(), 1);
     match &actions[0] {
         SchedulerAction::UpdateInstance(instance_id, instance) => {
-            assert_eq!(instance_id, "jarvis@alice@node1");
-            assert_eq!(instance.instance_id, "jarvis@alice@node1");
+            assert_eq!(instance_id, "buckyos_jarvis@alice@node1");
+            assert_eq!(instance.instance_id, "buckyos_jarvis@alice@node1");
             assert_eq!(instance.state, InstanceState::Suspended);
         }
         other => panic!("unexpected action: {:?}", other),
