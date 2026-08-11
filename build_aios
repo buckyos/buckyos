@@ -30,7 +30,7 @@ ENTRYPOINT_SOURCE="$ROOT_DIR/publish/aios/entrypoint.sh"
 BUCKYOS_AGENT_TOOLS_SOURCE="$SRC_DIR/tools/buckyos-agent"
 AICC_TOOL_LAUNCHER_SOURCE="$ROOT_DIR/publish/aios/aicc-tool"
 BUCKYOS_WEBSDK_REPO="https://github.com/buckyos/buckyos-websdk.git"
-BUCKYOS_WEBSDK_COMMIT="${BUCKYOS_WEBSDK_COMMIT:-6849d3a9edc6e0c6ac54883bdb7bd12531c76aae}"
+BUCKYOS_WEBSDK_REF="${BUCKYOS_WEBSDK_REF:-main}"
 REUSE_CARGO_TARGET=0
 CARGO_TARGET_DIR_OVERRIDE="${AIOS_CARGO_TARGET_DIR:-}"
 
@@ -62,8 +62,8 @@ Options:
   -h, --help      Show this help
 
 Env overrides:
-  BUCKYOS_WEBSDK_COMMIT
-                  Pinned buckyos-websdk commit packaged with buckyos-agent tools
+  BUCKYOS_WEBSDK_REF
+                  buckyos-websdk Git ref packaged with buckyos-agent tools (default: main)
 EOF
 }
 
@@ -307,15 +307,12 @@ prepare_buckyos_agent_package() {
   mkdir -p "$output_dir"
   cp -R "$BUCKYOS_AGENT_TOOLS_SOURCE/." "$output_dir/"
 
-  log "Fetching buckyos-websdk commit $BUCKYOS_WEBSDK_COMMIT for AICC tools"
+  log "Fetching buckyos-websdk ref $BUCKYOS_WEBSDK_REF for AICC tools"
   git init -q "$sdk_checkout"
   git -C "$sdk_checkout" remote add origin "$BUCKYOS_WEBSDK_REPO"
-  git -C "$sdk_checkout" fetch -q --depth 1 origin "$BUCKYOS_WEBSDK_COMMIT"
+  git -C "$sdk_checkout" fetch -q --depth 1 origin "$BUCKYOS_WEBSDK_REF"
   fetched_commit="$(git -C "$sdk_checkout" rev-parse FETCH_HEAD)"
-  if [[ "$fetched_commit" != "$BUCKYOS_WEBSDK_COMMIT" ]]; then
-    echo "Fetched buckyos-websdk commit $fetched_commit, expected $BUCKYOS_WEBSDK_COMMIT" >&2
-    exit 1
-  fi
+  log "Resolved buckyos-websdk ref $BUCKYOS_WEBSDK_REF to $fetched_commit"
   git -C "$sdk_checkout" checkout -q --detach FETCH_HEAD
   sdk_dist="$sdk_checkout/dist"
 

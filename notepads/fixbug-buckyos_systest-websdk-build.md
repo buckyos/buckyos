@@ -6,6 +6,6 @@
 
 ## 我是如何修复的
 
-把 `src/apps/sys_test/web/package.json` 中的 `buckyos` 依赖改成 `github:buckyos/buckyos-websdk#beta2.2`，让构建时直接从 GitHub 的 `beta2.2` 分支获取依赖，不再依赖本地目录布局。
+把 `src/apps/sys_test/web/package.json` 中的 `buckyos` 依赖改成 `github:buckyos/buckyos-websdk#main`，让构建时直接从 GitHub 的 `main` 分支获取依赖，不再依赖本地目录布局。
 
 同时把 `src/apps/sys_test/deno.json` 和 `src/rootfs/bin/buckyos_systest/deno.json` 中的 `build` 任务改成 `cd web && pnpm install --frozen-lockfile && pnpm run build`，让构建链和现有 `pnpm-lock.yaml` 保持一致。

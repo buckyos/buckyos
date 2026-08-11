@@ -1,6 +1,6 @@
 {
   "imports": {
-    "buckyos": "../../apps/sys_test/dist/buckyos-websdk/dist/node.mjs"
+    "buckyos": "../../apps/sys_test/dist/node_modules/buckyos/dist/node.mjs"
   },
   "tasks": {
     "run": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors aicc-tool.ts",
