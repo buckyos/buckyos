@@ -1330,12 +1330,15 @@ impl GoogleGeminiProvider {
     }
 
     fn tool_result_value(content: &[AiToolResultContent]) -> Value {
-        if let [AiToolResultContent::Text { text }] = content {
-            if let Ok(value) = serde_json::from_str(text.trim()) {
-                return value;
-            }
+        let value = match content {
+            [AiToolResultContent::Text { text }] => serde_json::from_str(text.trim())
+                .unwrap_or_else(|_| Value::String(text.clone())),
+            _ => Value::String(Self::tool_result_text(content)),
+        };
+        match value {
+            Value::Object(_) => value,
+            value => json!({ "output": value }),
         }
-        Value::String(Self::tool_result_text(content))
     }
 
     fn resource_placeholder_text(source: &ResourceRef) -> String {
@@ -3865,7 +3868,7 @@ mod tests {
         );
         assert_eq!(
             contents[1].pointer("/parts/0/functionResponse/response"),
-            Some(&json!("sunny"))
+            Some(&json!({ "output": "sunny" }))
         );
     }
 
