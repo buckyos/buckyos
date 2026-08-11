@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use buckyos_api::get_buckyos_api_runtime;
 use log::warn;
 use tokio::fs;
 use tokio::process::Command;
@@ -373,7 +374,11 @@ impl BashRunner for TmuxBashRunner {
         let exit_code_path = self.runtime_dir.join(format!("{run_id}.exit.code"));
         let script_path = self.runtime_dir.join(format!("{run_id}.exec.sh"));
 
-        let env = runtime_exec_env(&req.env, &self.base_env, ctx);
+        let mut env = runtime_exec_env(&req.env, &self.base_env, ctx);
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            let token = runtime.get_session_token().await;
+            set_current_appclient_session_token(&mut env, &token);
+        }
         let script = build_exec_script(
             &run_id,
             &stdout_path,
@@ -657,6 +662,17 @@ fn runtime_exec_env(
     set_env_value(&mut env, OPENDAN_TRACE_ID_ENV, ctx.trace_id.clone());
     set_env_value(&mut env, OPENDAN_SESSION_ID_ENV, ctx.session_id.clone());
     env
+}
+
+fn set_current_appclient_session_token(env: &mut Vec<(String, String)>, token: &str) {
+    let token = token.trim();
+    if !token.is_empty() {
+        set_env_value(
+            env,
+            agent_tool::BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
+            token.to_string(),
+        );
+    }
 }
 
 fn is_agent_tool_context_override_env(key: &str) -> bool {
@@ -1439,6 +1455,23 @@ mod tests {
             "runtime-token"
         );
         assert!(value("OPENDAN_AGENT_TOOL").is_empty());
+    }
+
+    #[test]
+    fn current_appclient_session_token_replaces_session_snapshot() {
+        let mut env = vec![(
+            agent_tool::BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV.to_string(),
+            "stale-token".to_string(),
+        )];
+
+        set_current_appclient_session_token(&mut env, " current-token ");
+
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == agent_tool::BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV)
+                .map(|(_, value)| value.as_str()),
+            Some("current-token")
+        );
     }
 
     #[test]

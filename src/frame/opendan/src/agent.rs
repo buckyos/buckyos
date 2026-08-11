@@ -273,6 +273,9 @@ async fn resolve_appclient_session_token() -> Result<String> {
             }
         }
     };
+    runtime.renew_token_from_verify_hub().await.map_err(|err| {
+        anyhow!("renew appclient session token before building session tools: {err}")
+    })?;
     let token = runtime.get_session_token().await;
     if token.trim().is_empty() {
         #[cfg(test)]
