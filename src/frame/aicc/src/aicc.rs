@@ -2968,6 +2968,7 @@ pub fn provider_model_metadata(
             web_search: features
                 .iter()
                 .any(|item| item == buckyos_api::features::WEB_SEARCH),
+            unsupported_feature_combinations: vec![],
             vision: features
                 .iter()
                 .any(|item| item == buckyos_api::features::VISION),

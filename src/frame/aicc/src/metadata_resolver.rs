@@ -1,8 +1,8 @@
 use crate::aicc::exact_model_name;
 use crate::model_types::{
-    ApiType, CostClass, HealthStatus, LatencyClass, ModelAttributes, ModelCapabilities,
-    ModelHealth, ModelMetadata, ModelPricing, PrivacyClass, ProviderInventory, ProviderOrigin,
-    ProviderType, ProviderTypeTrustedSource, QuotaState,
+    is_model_feature_name, ApiType, CostClass, HealthStatus, LatencyClass, ModelAttributes,
+    ModelCapabilities, ModelHealth, ModelMetadata, ModelPricing, PrivacyClass, ProviderInventory,
+    ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
 };
 use buckyos_kit::get_buckyos_system_etc_dir;
 use log::warn;
@@ -64,6 +64,8 @@ pub struct DriverMetadataDocument {
     pub models: Vec<DriverModelRule>,
     #[serde(default)]
     pub patterns: Vec<DriverModelRule>,
+    #[serde(default)]
+    pub capability_overrides: Vec<DriverCapabilityOverride>,
     #[serde(default)]
     pub defaults: DriverModelRule,
     #[serde(default)]
@@ -155,6 +157,16 @@ pub struct DriverModelRule {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DriverCapabilityOverride {
+    pub pattern: String,
+    #[serde(default)]
+    pub api_types: Vec<ApiType>,
+    #[serde(default)]
+    pub capabilities: DriverCapabilitiesPatch,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DriverVersionRule {
     #[serde(default)]
     pub family: String,
@@ -209,6 +221,8 @@ pub struct DriverCapabilitiesPatch {
     pub json_schema: Option<bool>,
     #[serde(default)]
     pub web_search: Option<bool>,
+    #[serde(default)]
+    pub unsupported_feature_combinations: Option<Vec<Vec<String>>>,
     #[serde(default)]
     pub vision: Option<bool>,
     #[serde(default)]
@@ -409,6 +423,12 @@ fn resolve_driver_model(
             cost_class = next;
         }
     }
+    apply_capability_overrides(
+        provider_model_id,
+        api_types.as_slice(),
+        &mut capabilities,
+        sources,
+    );
     if logical_mounts.is_empty() && !driver_rule_found {
         logical_mounts = provider_fallback_mounts(request.fallback_logical_mounts.as_slice());
     }
@@ -588,6 +608,21 @@ pub(crate) fn validate_driver_metadata_document(
             return Err(format!("duplicate model pattern '{}'", pattern));
         }
         validate_driver_model_rule(rule, format!("patterns[{}]", index).as_str())?;
+    }
+
+    for (index, rule) in document.capability_overrides.iter().enumerate() {
+        let location = format!("capability_overrides[{}]", index);
+        validate_trimmed_value(rule.pattern.as_str(), &format!("{}.pattern", location))?;
+        if !rule.capabilities.has_any() {
+            return Err(format!("{}.capabilities cannot be empty", location));
+        }
+        let mut api_types = HashSet::new();
+        for api_type in &rule.api_types {
+            if !api_types.insert(api_type) {
+                return Err(format!("{}.api_types contains duplicate value", location));
+            }
+        }
+        validate_capabilities_patch(&rule.capabilities, location.as_str())?;
     }
 
     if document.defaults.id.is_some() || document.defaults.pattern.is_some() {
@@ -786,6 +821,39 @@ fn validate_capabilities_patch(
             "{}.capability token limits must be positive",
             location
         ));
+    }
+    if let Some(combinations) = capabilities.unsupported_feature_combinations.as_ref() {
+        let mut unique_combinations = HashSet::new();
+        for (index, combination) in combinations.iter().enumerate() {
+            let combination_location = format!(
+                "{}.capabilities.unsupported_feature_combinations[{}]",
+                location, index
+            );
+            if combination.len() < 2 {
+                return Err(format!(
+                    "{} must contain at least two features",
+                    combination_location
+                ));
+            }
+            validate_string_list(combination, combination_location.as_str())?;
+            if let Some(feature) = combination
+                .iter()
+                .find(|feature| !is_model_feature_name(feature))
+            {
+                return Err(format!(
+                    "{} contains unsupported feature '{}'",
+                    combination_location, feature
+                ));
+            }
+            let mut canonical = combination.clone();
+            canonical.sort();
+            if !unique_combinations.insert(canonical.join("\0")) {
+                return Err(format!(
+                    "{}.capabilities.unsupported_feature_combinations contains duplicate combination",
+                    location
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -987,6 +1055,33 @@ fn find_pattern_rule<'a>(
     None
 }
 
+fn apply_capability_overrides(
+    provider_model_id: &str,
+    api_types: &[ApiType],
+    capabilities: &mut ModelCapabilities,
+    sources: &[DriverMetadataSource],
+) {
+    for source in sources {
+        if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
+            continue;
+        }
+        for rule in &source.document.capability_overrides {
+            if !wildcard_matches(rule.pattern.as_str(), provider_model_id) {
+                continue;
+            }
+            if !rule.api_types.is_empty()
+                && !rule
+                    .api_types
+                    .iter()
+                    .any(|required| api_types.contains(required))
+            {
+                continue;
+            }
+            apply_capabilities_patch(capabilities, &rule.capabilities);
+        }
+    }
+}
+
 fn find_default_rule(sources: &[DriverMetadataSource]) -> Option<&DriverModelRule> {
     for source in sources.iter().rev() {
         if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
@@ -1130,6 +1225,7 @@ fn conservative_capabilities() -> ModelCapabilities {
         tool_call: false,
         json_schema: false,
         web_search: false,
+        unsupported_feature_combinations: vec![],
         vision: false,
         max_context_tokens: None,
         max_output_tokens: None,
@@ -1142,6 +1238,7 @@ impl DriverCapabilitiesPatch {
             || self.tool_call.is_some()
             || self.json_schema.is_some()
             || self.web_search.is_some()
+            || self.unsupported_feature_combinations.is_some()
             || self.vision.is_some()
             || self.max_context_tokens.is_some()
             || self.max_output_tokens.is_some()
@@ -1160,6 +1257,9 @@ fn apply_capabilities_patch(capabilities: &mut ModelCapabilities, patch: &Driver
     }
     if let Some(value) = patch.web_search {
         capabilities.web_search = value;
+    }
+    if let Some(value) = patch.unsupported_feature_combinations.as_ref() {
+        capabilities.unsupported_feature_combinations = value.clone();
     }
     if let Some(value) = patch.vision {
         capabilities.vision = value;
@@ -1640,6 +1740,72 @@ mod tests {
             validate_driver_metadata_document(&document)
                 .unwrap_or_else(|err| panic!("{} metadata is invalid: {}", driver, err));
         }
+    }
+
+    #[test]
+    fn capability_combination_validation_is_generic_and_fail_closed() {
+        let mut patch = DriverCapabilitiesPatch {
+            unsupported_feature_combinations: Some(vec![vec![
+                "web_search".to_string(),
+                "tool_calling".to_string(),
+            ]]),
+            ..Default::default()
+        };
+        assert!(validate_capabilities_patch(&patch, "models[0]").is_ok());
+
+        patch.unsupported_feature_combinations = Some(vec![vec!["web_search".to_string()]]);
+        assert!(validate_capabilities_patch(&patch, "models[0]").is_err());
+
+        patch.unsupported_feature_combinations = Some(vec![vec![
+            "web_search".to_string(),
+            "future_feature".to_string(),
+        ]]);
+        assert!(validate_capabilities_patch(&patch, "models[0]").is_err());
+
+        patch.unsupported_feature_combinations = Some(vec![
+            vec!["web_search".to_string(), "tool_calling".to_string()],
+            vec!["tool_calling".to_string(), "web_search".to_string()],
+        ]);
+        assert!(validate_capabilities_patch(&patch, "models[0]").is_err());
+    }
+
+    #[test]
+    fn capability_overrides_apply_by_model_pattern_and_api_type() {
+        let source = DriverMetadataSource::new(
+            "test".to_string(),
+            DriverMetadataDocument {
+                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
+                capability_overrides: vec![DriverCapabilityOverride {
+                    pattern: "gemini-2.*".to_string(),
+                    api_types: vec![ApiType::Llm],
+                    capabilities: DriverCapabilitiesPatch {
+                        unsupported_feature_combinations: Some(vec![vec![
+                            "tool_calling".to_string(),
+                            "web_search".to_string(),
+                        ]]),
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            },
+        );
+        let mut llm = ModelCapabilities::default();
+        apply_capability_overrides(
+            "gemini-2.5-flash",
+            &[ApiType::Llm],
+            &mut llm,
+            &[source.clone()],
+        );
+        assert!(!llm.supports_feature_combination(&["tool_calling", "web_search"]));
+
+        let mut image = ModelCapabilities::default();
+        apply_capability_overrides(
+            "gemini-2.5-flash-image-preview",
+            &[ApiType::ImageTextToImage],
+            &mut image,
+            &[source],
+        );
+        assert!(image.supports_feature_combination(&["tool_calling", "web_search"]));
     }
 
     #[test]

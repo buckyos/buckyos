@@ -1599,6 +1599,9 @@ function toModelMetadata(
       tool_call: asBoolean(capabilities.tool_call, false),
       json_schema: asBoolean(capabilities.json_schema, false),
       web_search: asBoolean(capabilities.web_search, false),
+      unsupported_feature_combinations: toStringArrayArray(
+        capabilities.unsupported_feature_combinations,
+      ),
       vision: asBoolean(capabilities.vision, apiTypes.some((type) => type.startsWith('vision.'))),
       max_context_tokens: asOptionalNumber(capabilities.max_context_tokens),
       max_output_tokens: asOptionalNumber(capabilities.max_output_tokens),
@@ -2109,6 +2112,14 @@ function toApiTypes(value: unknown): ApiType[] {
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+}
+
+function toStringArrayArray(value: unknown): string[][] {
+  return Array.isArray(value)
+    ? value
+        .map(toStringArray)
+        .filter((combination) => combination.length >= 2)
     : []
 }
 

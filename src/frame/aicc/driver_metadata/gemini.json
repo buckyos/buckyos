@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 3,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "provider_driver": "google-gemini",
   "revision_seq": 1,
   "required_features": [],
@@ -207,7 +207,7 @@
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
-        "web_search": false,
+        "web_search": true,
         "vision": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 8192
@@ -247,7 +247,7 @@
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
-        "web_search": false,
+        "web_search": true,
         "vision": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 8192
@@ -367,7 +367,7 @@
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
-        "web_search": false,
+        "web_search": true,
         "vision": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 8192
@@ -416,6 +416,15 @@
         "estimated_cost": 0.01
       },
       "estimated_latency_ms": 1400
+    }
+  ],
+  "capability_overrides": [
+    {
+      "pattern": "gemini-2.*",
+      "api_types": ["llm"],
+      "capabilities": {
+        "unsupported_feature_combinations": [["tool_calling", "web_search"]]
+      }
     }
   ],
   "defaults": {

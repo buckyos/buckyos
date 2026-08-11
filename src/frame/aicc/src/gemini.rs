@@ -13,8 +13,9 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, features, AiArtifact, AiContent, AiCost, AiMessage, AiMethodRequest, AiResponse,
-    AiRole, AiToolResultContent, AiUsage, Capability, Feature, ResourceRef,
+    ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
+    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiToolSpec, AiUsage,
+    Capability, Feature, ResourceRef,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -41,6 +42,13 @@ const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GEMINI_MODELS_MAX_PAGES: usize = 10;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GeminiToolCallContext {
+    name: String,
+    provider_call_id: Option<String>,
+}
+
 const GEMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
     "candidate_count",
     "max_output_tokens",
@@ -329,6 +337,24 @@ impl GoogleGeminiProvider {
             requests.as_slice(),
             inventory_revision,
         )
+    }
+
+    fn model_supports_feature_combination(
+        &self,
+        provider_model: &str,
+        combination: &[&str],
+    ) -> bool {
+        self.inventory
+            .read()
+            .ok()
+            .and_then(|inventory| {
+                inventory
+                    .models
+                    .iter()
+                    .find(|model| model.provider_model_id == provider_model)
+                    .map(|model| model.capabilities.supports_feature_combination(combination))
+            })
+            .unwrap_or(false)
     }
 
     pub fn start_inventory_refresh(self: Arc<Self>) {
@@ -900,13 +926,14 @@ impl GoogleGeminiProvider {
 
     fn build_contents(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut contents: Vec<Value> = vec![];
+        let mut tool_calls = HashMap::new();
 
         // 主路径:消费 typed `Vec<AiMessage>`,保留 ToolUse/ToolResult/Image
         // 等 block,转成 Gemini parts(functionCall / functionResponse /
         // inlineData / fileData / text)。
         if !req.payload.messages.is_empty() {
             for msg in req.payload.messages.iter() {
-                Self::lower_message_to_gemini(msg, &mut contents)?;
+                Self::lower_message_to_gemini(msg, &mut contents, &mut tool_calls)?;
             }
         }
 
@@ -972,33 +999,32 @@ impl GoogleGeminiProvider {
     fn lower_message_to_gemini(
         msg: &AiMessage,
         contents: &mut Vec<Value>,
+        tool_calls: &mut HashMap<String, GeminiToolCallContext>,
     ) -> Result<(), ProviderError> {
         match msg.role {
             AiRole::Tool => {
                 let Some(AiContent::ToolResult {
                     call_id,
                     content,
-                    is_error,
+                    is_error: _,
                 }) = msg.content.first()
                 else {
                     return Ok(());
                 };
-                let mut response_obj = Map::new();
-                let response_text = Self::tool_result_text(content);
-                response_obj.insert("output".to_string(), Value::String(response_text));
-                if *is_error {
-                    response_obj.insert("error".to_string(), Value::Bool(true));
+                let context = tool_calls.get(call_id);
+                let name = context
+                    .map(|context| context.name.clone())
+                    .unwrap_or_else(|| call_id.clone());
+                let mut function_response = Map::new();
+                function_response.insert("name".to_string(), Value::String(name));
+                function_response.insert("response".to_string(), Self::tool_result_value(content));
+                if let Some(provider_call_id) =
+                    context.and_then(|context| context.provider_call_id.as_ref())
+                {
+                    function_response
+                        .insert("id".to_string(), Value::String(provider_call_id.clone()));
                 }
-                // Gemini convention: functionResponse.name is the tool name; we
-                // don't always have it on the IR side, so reuse call_id as the
-                // stable correlator (model still matches on the immediately
-                // preceding functionCall by position).
-                let part = json!({
-                    "functionResponse": {
-                        "name": call_id,
-                        "response": Value::Object(response_obj),
-                    }
-                });
+                let part = json!({ "functionResponse": function_response });
                 contents.push(json!({
                     "role": "user",
                     "parts": [part],
@@ -1006,11 +1032,16 @@ impl GoogleGeminiProvider {
                 Ok(())
             }
             _ => {
+                if let Some(provider_content) = Self::gemini_provider_content(&msg.content) {
+                    Self::remember_provider_tool_calls(provider_content, tool_calls);
+                    contents.push(provider_content.clone());
+                    return Ok(());
+                }
                 let role = match msg.role {
                     AiRole::Assistant => "model",
                     _ => "user",
                 };
-                let parts = Self::lower_blocks_to_parts(&msg.content)?;
+                let parts = Self::lower_blocks_to_parts(&msg.content, tool_calls)?;
                 if !parts.is_empty() {
                     contents.push(json!({
                         "role": role,
@@ -1022,7 +1053,10 @@ impl GoogleGeminiProvider {
         }
     }
 
-    fn lower_blocks_to_parts(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+    fn lower_blocks_to_parts(
+        content: &[AiContent],
+        tool_calls: &mut HashMap<String, GeminiToolCallContext>,
+    ) -> Result<Vec<Value>, ProviderError> {
         let mut parts = Vec::with_capacity(content.len());
         for block in content {
             match block {
@@ -1046,6 +1080,13 @@ impl GoogleGeminiProvider {
                     name,
                     args,
                 } => {
+                    tool_calls.insert(
+                        call_id.clone(),
+                        GeminiToolCallContext {
+                            name: name.clone(),
+                            provider_call_id: Some(call_id.clone()),
+                        },
+                    );
                     let args_value = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
                     parts.push(json!({
                         "functionCall": {
@@ -1067,19 +1108,170 @@ impl GoogleGeminiProvider {
                         parts.push(json!({ "text": text }));
                     }
                 }
-                AiContent::ProviderState { provider, value } => {
-                    if provider.eq_ignore_ascii_case("google")
-                        || provider.eq_ignore_ascii_case("gemini")
-                    {
-                        parts.push(value.clone());
-                    }
-                }
+                AiContent::ProviderState { .. } => {}
                 AiContent::ToolResult { .. } => {
                     // Tool role is handled by the caller; ignore defensively.
                 }
             }
         }
         Ok(parts)
+    }
+
+    fn function_declaration(spec: &AiToolSpec) -> Value {
+        let mut declaration = Map::new();
+        declaration.insert("name".to_string(), Value::String(spec.name.clone()));
+        if !spec.description.trim().is_empty() {
+            declaration.insert(
+                "description".to_string(),
+                Value::String(spec.description.clone()),
+            );
+        }
+        declaration.insert(
+            "parametersJsonSchema".to_string(),
+            Value::Object(spec.args_schema.clone().into_iter().collect()),
+        );
+        if !spec.output_schema.is_null()
+            && !spec.output_schema.as_object().is_some_and(Map::is_empty)
+        {
+            declaration.insert("responseJsonSchema".to_string(), spec.output_schema.clone());
+        }
+        Value::Object(declaration)
+    }
+
+    fn merge_llm_tools(
+        target: &mut Map<String, Value>,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        combined_tools_supported: bool,
+    ) -> Result<(), ProviderError> {
+        let web_search_required = req.requirements.requires_feature(features::WEB_SEARCH);
+        if web_search_required && !req.payload.tool_specs.is_empty() && !combined_tools_supported {
+            return Err(ProviderError::fatal(format!(
+                "google gemini model {} does not support combining Google Search with function calling",
+                provider_model
+            )));
+        }
+        let mut tools = Vec::new();
+        if !req.payload.tool_specs.is_empty() {
+            tools.push(json!({
+                "functionDeclarations": req
+                    .payload
+                    .tool_specs
+                    .iter()
+                    .map(Self::function_declaration)
+                    .collect::<Vec<_>>()
+            }));
+        }
+        if web_search_required {
+            tools.push(json!({ "googleSearch": {} }));
+        }
+        if !tools.is_empty() {
+            target.insert("tools".to_string(), Value::Array(tools));
+        }
+        if web_search_required && !req.payload.tool_specs.is_empty() {
+            target.insert(
+                "toolConfig".to_string(),
+                json!({
+                    "functionCallingConfig": {
+                        "mode": "VALIDATED"
+                    },
+                    "includeServerSideToolInvocations": true
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    fn extract_tool_calls(body: &Value) -> Vec<AiToolCall> {
+        body.pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, part)| {
+                        let function = part.get("functionCall")?.as_object()?;
+                        let name = function.get("name")?.as_str()?.to_string();
+                        let provider_call_id = function
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_string);
+                        let call_id =
+                            Self::internal_tool_call_id(index, &name, provider_call_id.as_deref());
+                        let args = function
+                            .get("args")
+                            .cloned()
+                            .filter(Value::is_object)
+                            .unwrap_or_else(|| Value::Object(Map::new()));
+                        Some(AiToolCall {
+                            call_id,
+                            name,
+                            args: value_to_object_map(args),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn extract_provider_state(body: &Value) -> Option<AiContent> {
+        body.pointer("/candidates/0/content")
+            .cloned()
+            .map(|value| AiContent::ProviderState {
+                provider: "google-gemini".to_string(),
+                value,
+            })
+    }
+
+    fn internal_tool_call_id(index: usize, name: &str, provider_call_id: Option<&str>) -> String {
+        provider_call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("gemini-no-id-{}-{}", index, name))
+    }
+
+    fn gemini_provider_content(content: &[AiContent]) -> Option<&Value> {
+        content.iter().find_map(|block| match block {
+            AiContent::ProviderState { provider, value }
+                if (provider.eq_ignore_ascii_case("google")
+                    || provider.eq_ignore_ascii_case("gemini")
+                    || provider.eq_ignore_ascii_case("google-gemini"))
+                    && value.get("parts").and_then(Value::as_array).is_some() =>
+            {
+                Some(value)
+            }
+            _ => None,
+        })
+    }
+
+    fn remember_provider_tool_calls(
+        provider_content: &Value,
+        tool_calls: &mut HashMap<String, GeminiToolCallContext>,
+    ) {
+        let Some(parts) = provider_content.get("parts").and_then(Value::as_array) else {
+            return;
+        };
+        for (index, part) in parts.iter().enumerate() {
+            let Some(function) = part.get("functionCall").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(name) = function.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let provider_call_id = function
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string);
+            let call_id = Self::internal_tool_call_id(index, name, provider_call_id.as_deref());
+            tool_calls.insert(
+                call_id,
+                GeminiToolCallContext {
+                    name: name.to_string(),
+                    provider_call_id,
+                },
+            );
+        }
     }
 
     fn resource_to_gemini_part(
@@ -1135,6 +1327,18 @@ impl GoogleGeminiProvider {
             }
         }
         parts.join("\n")
+    }
+
+    fn tool_result_value(content: &[AiToolResultContent]) -> Value {
+        let value = match content {
+            [AiToolResultContent::Text { text }] => serde_json::from_str(text.trim())
+                .unwrap_or_else(|_| Value::String(text.clone())),
+            _ => Value::String(Self::tool_result_text(content)),
+        };
+        match value {
+            Value::Object(_) => value,
+            value => json!({ "output": value }),
+        }
     }
 
     fn resource_placeholder_text(source: &ResourceRef) -> String {
@@ -1883,6 +2087,16 @@ impl GoogleGeminiProvider {
                 Value::String("application/json".to_string()),
             );
         }
+        let combined_tools_supported = self.model_supports_feature_combination(
+            provider_model,
+            &[features::WEB_SEARCH, features::TOOL_CALLING],
+        );
+        Self::merge_llm_tools(
+            &mut request_obj,
+            provider_model,
+            req,
+            combined_tools_supported,
+        )?;
 
         if !ignored_options.is_empty() {
             warn!(
@@ -1936,6 +2150,7 @@ impl GoogleGeminiProvider {
         );
 
         let content = Self::extract_text_content(&body);
+        let tool_calls = Self::extract_tool_calls(&body);
         let usage = body.get("usageMetadata").map(|usage| AiUsage {
             input_tokens: usage
                 .get("promptTokenCount")
@@ -1969,9 +2184,16 @@ impl GoogleGeminiProvider {
                 "output": body.clone()
             }),
         );
+        if let Some(grounding_metadata) = body.pointer("/candidates/0/groundingMetadata") {
+            extra.insert("grounding_metadata".to_string(), grounding_metadata.clone());
+        }
 
+        let mut message = AiResponse::message_from_parts(content, tool_calls, vec![]);
+        if let Some(provider_state) = Self::extract_provider_state(&body) {
+            message.content.push(provider_state);
+        }
         let summary = AiResponse {
-            message: AiResponse::message_from_parts(content, vec![], vec![]),
+            message,
             usage,
             cost,
             finish_reason: body
@@ -3309,6 +3531,347 @@ mod tests {
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
 
+    fn build_llm_request(
+        must_features: Vec<Feature>,
+        tool_specs: Vec<AiToolSpec>,
+    ) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.chat".to_string(), None),
+            Requirements::new(must_features, None, None, None),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::User, "hello")],
+                tool_specs,
+                vec![],
+                None,
+                None,
+            ),
+            None,
+        )
+    }
+
+    #[test]
+    fn llm_tools_include_function_declarations_and_google_search() {
+        let request = build_llm_request(
+            vec![
+                features::TOOL_CALLING.to_string(),
+                features::WEB_SEARCH.to_string(),
+            ],
+            vec![AiToolSpec {
+                name: "get_weather".to_string(),
+                description: "Get current weather".to_string(),
+                args_schema: value_to_object_map(json!({
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    },
+                    "required": ["city"]
+                })),
+                output_schema: json!({ "type": "object" }),
+            }],
+        );
+        let mut request_obj = Map::new();
+
+        GoogleGeminiProvider::merge_llm_tools(
+            &mut request_obj,
+            "gemini-3.1-pro-preview",
+            &request,
+            true,
+        )
+        .expect("Gemini 3 should support combined tools");
+        let request_value = Value::Object(request_obj);
+
+        assert_eq!(
+            request_value.pointer("/tools/0/functionDeclarations/0/name"),
+            Some(&json!("get_weather"))
+        );
+        assert_eq!(
+            request_value.pointer(
+                "/tools/0/functionDeclarations/0/parametersJsonSchema/properties/city/type"
+            ),
+            Some(&json!("string"))
+        );
+        assert_eq!(
+            request_value.pointer("/tools/0/functionDeclarations/0/responseJsonSchema/type"),
+            Some(&json!("object"))
+        );
+        assert_eq!(
+            request_value.pointer("/tools/1/googleSearch"),
+            Some(&json!({}))
+        );
+        assert_eq!(
+            request_value.pointer("/toolConfig/includeServerSideToolInvocations"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            request_value.pointer("/toolConfig/functionCallingConfig/mode"),
+            Some(&json!("VALIDATED"))
+        );
+    }
+
+    #[test]
+    fn gemini_builtin_tool_alone_does_not_enable_combination_config() {
+        let request = build_llm_request(vec![features::WEB_SEARCH.to_string()], vec![]);
+        let mut request_obj = Map::new();
+
+        GoogleGeminiProvider::merge_llm_tools(
+            &mut request_obj,
+            "gemini-3-flash-preview",
+            &request,
+            true,
+        )
+        .expect("Google Search should be enabled");
+
+        assert!(request_obj.get("toolConfig").is_none());
+        assert_eq!(
+            Value::Object(request_obj).pointer("/tools/0/googleSearch"),
+            Some(&json!({}))
+        );
+    }
+
+    #[test]
+    fn gemini_tool_schema_is_passed_through_as_json_schema() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "definitions": {
+                "RecallMode": {
+                    "type": "string",
+                    "enum": ["auto", "mechanical", "llm"]
+                },
+                "TagInput": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    },
+                    "required": ["name"]
+                }
+            },
+            "properties": {
+                "mode": {
+                    "anyOf": [
+                        { "$ref": "#/definitions/RecallMode" },
+                        { "type": "null" }
+                    ]
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/TagInput" }
+                }
+            }
+        });
+
+        let declaration = GoogleGeminiProvider::function_declaration(&AiToolSpec {
+            name: "recall".to_string(),
+            description: String::new(),
+            args_schema: value_to_object_map(schema.clone()),
+            output_schema: Value::Null,
+        });
+
+        assert_eq!(declaration.get("parametersJsonSchema"), Some(&schema));
+        assert!(declaration.get("parameters").is_none());
+    }
+
+    #[test]
+    fn gemini_2_5_rejects_combined_builtin_and_function_tools() {
+        let request = build_llm_request(
+            vec![
+                features::TOOL_CALLING.to_string(),
+                features::WEB_SEARCH.to_string(),
+            ],
+            vec![AiToolSpec {
+                name: "get_weather".to_string(),
+                description: String::new(),
+                args_schema: value_to_object_map(json!({ "type": "object" })),
+                output_schema: Value::Null,
+            }],
+        );
+
+        let error = GoogleGeminiProvider::merge_llm_tools(
+            &mut Map::new(),
+            "gemini-2.5-flash",
+            &request,
+            false,
+        )
+        .expect_err("Gemini 2.5 must reject combined tools");
+
+        assert!(error.to_string().contains("does not support combining"));
+    }
+
+    #[test]
+    fn gemini_candidate_and_structured_tool_result_round_trip() {
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "text": "checking",
+                            "thoughtSignature": "text-signed-state"
+                        },
+                        {
+                            "toolCall": {
+                                "id": "server-call-1",
+                                "name": "google_search",
+                                "args": { "query": "Shanghai weather" }
+                            }
+                        },
+                        {
+                            "toolResponse": {
+                                "id": "server-call-1",
+                                "name": "google_search",
+                                "response": { "result": "search result" }
+                            }
+                        },
+                        {
+                            "functionCall": {
+                                "id": "call-1",
+                                "name": "get_weather",
+                                "args": { "city": "Shanghai" }
+                            },
+                            "thoughtSignature": "signed-state"
+                        }
+                    ]
+                }
+            }]
+        });
+
+        let calls = GoogleGeminiProvider::extract_tool_calls(&body);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "call-1");
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(calls[0].args.get("city"), Some(&json!("Shanghai")));
+
+        let mut message = AiResponse::message_from_parts(None, calls, vec![]);
+        message.content.push(
+            GoogleGeminiProvider::extract_provider_state(&body)
+                .expect("candidate content should be preserved"),
+        );
+        let mut contents = Vec::new();
+        let mut tool_calls = HashMap::new();
+        GoogleGeminiProvider::lower_message_to_gemini(&message, &mut contents, &mut tool_calls)
+            .expect("Gemini provider state should lower");
+        assert_eq!(contents.len(), 1);
+        assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
+
+        let tool_result = AiMessage::new(
+            AiRole::Tool,
+            vec![AiContent::tool_result_text(
+                "call-1",
+                r#"{"temperature":24,"condition":"sunny"}"#,
+                false,
+            )],
+        );
+        GoogleGeminiProvider::lower_message_to_gemini(&tool_result, &mut contents, &mut tool_calls)
+            .expect("structured tool result should lower");
+        assert_eq!(
+            contents[1].pointer("/parts/0/functionResponse"),
+            Some(&json!({
+                "id": "call-1",
+                "name": "get_weather",
+                "response": { "temperature": 24, "condition": "sunny" }
+            }))
+        );
+    }
+
+    #[test]
+    fn gemini_no_id_function_call_stays_without_provider_id() {
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "get_weather",
+                            "args": { "city": "Shanghai" }
+                        },
+                        "thoughtSignature": "signed-state"
+                    }]
+                }
+            }]
+        });
+        let calls = GoogleGeminiProvider::extract_tool_calls(&body);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "gemini-no-id-0-get_weather");
+
+        let mut message = AiResponse::message_from_parts(None, calls, vec![]);
+        message.content.push(
+            GoogleGeminiProvider::extract_provider_state(&body)
+                .expect("candidate content should be preserved"),
+        );
+        let mut contents = Vec::new();
+        let mut tool_calls = HashMap::new();
+        GoogleGeminiProvider::lower_message_to_gemini(&message, &mut contents, &mut tool_calls)
+            .expect("candidate should lower");
+        let tool_result = AiMessage::new(
+            AiRole::Tool,
+            vec![AiContent::tool_result_text(
+                "gemini-no-id-0-get_weather",
+                "sunny",
+                false,
+            )],
+        );
+        GoogleGeminiProvider::lower_message_to_gemini(&tool_result, &mut contents, &mut tool_calls)
+            .expect("tool result should lower");
+
+        assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
+        assert!(contents[0].pointer("/parts/0/functionCall/id").is_none());
+        assert!(
+            contents[1]
+                .pointer("/parts/0/functionResponse/id")
+                .is_none()
+        );
+        assert_eq!(
+            contents[1].pointer("/parts/0/functionResponse/name"),
+            Some(&json!("get_weather"))
+        );
+        assert!(
+            !serde_json::to_string(&contents)
+                .unwrap()
+                .contains("gemini-no-id")
+        );
+    }
+
+    #[test]
+    fn gemini_tool_result_keeps_function_name_and_call_id() {
+        let messages = vec![
+            AiResponse::message_from_parts(
+                None,
+                vec![AiToolCall {
+                    call_id: "call-1".to_string(),
+                    name: "get_weather".to_string(),
+                    args: value_to_object_map(json!({ "city": "Shanghai" })),
+                }],
+                vec![],
+            ),
+            AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::tool_result_text("call-1", "sunny", false)],
+            ),
+        ];
+        let mut contents = Vec::new();
+        let mut tool_calls = HashMap::new();
+        for message in &messages {
+            GoogleGeminiProvider::lower_message_to_gemini(message, &mut contents, &mut tool_calls)
+                .expect("message should lower");
+        }
+
+        assert_eq!(
+            contents[1].pointer("/parts/0/functionResponse/name"),
+            Some(&json!("get_weather"))
+        );
+        assert_eq!(
+            contents[1].pointer("/parts/0/functionResponse/id"),
+            Some(&json!("call-1"))
+        );
+        assert_eq!(
+            contents[1].pointer("/parts/0/functionResponse/response"),
+            Some(&json!({ "output": "sunny" }))
+        );
+    }
+
     #[test]
     fn gemini_models_pagination_rejects_repeated_tokens() {
         let mut seen = HashSet::new();
@@ -3760,7 +4323,7 @@ mod tests {
                         "provider_type": "cloud_api",
                         "provider_driver": "google-gemini",
                         "base_url": "https://generativelanguage.googleapis.com/v1beta",
-                        "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
+                        "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.1-pro-preview"],
                         "image_models": ["gemini-2.5-flash-image-preview"]
                     }
                 ]
@@ -3780,6 +4343,34 @@ mod tests {
         assert!(pro_items
             .values()
             .any(|item| item.target == "gemini-2.5-pro@google-gemini-default"));
+        let inventories = center.registry().inventories();
+        let inventory = inventories
+            .iter()
+            .find(|inventory| inventory.provider_instance_name == "google-gemini-default")
+            .expect("Gemini inventory");
+        let flash = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-2.5-flash")
+            .expect("Gemini 2.5 Flash metadata");
+        assert!(flash.capabilities.web_search);
+        assert_eq!(
+            flash.capabilities.unsupported_feature_combinations,
+            vec![vec![
+                features::TOOL_CALLING.to_string(),
+                features::WEB_SEARCH.to_string()
+            ]]
+        );
+        let gemini_3 = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-3.1-pro-preview")
+            .expect("Gemini 3 metadata");
+        assert!(gemini_3.capabilities.web_search);
+        assert!(gemini_3
+            .capabilities
+            .unsupported_feature_combinations
+            .is_empty());
         let image_items = registry.default_items_for_path("image.txt2img.gemini");
         assert!(image_items
             .values()

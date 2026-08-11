@@ -3,6 +3,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+pub(crate) fn is_model_feature_name(feature: &str) -> bool {
+    matches!(
+        feature,
+        "streaming" | "tool_calling" | "json_output" | "web_search" | "vision"
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ExactModelName {
     pub provider_model_id: String,
@@ -337,6 +344,8 @@ pub struct ModelCapabilities {
     pub json_schema: bool,
     #[serde(default)]
     pub web_search: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsupported_feature_combinations: Vec<Vec<String>>,
     #[serde(default)]
     pub vision: bool,
     #[serde(default)]
@@ -347,10 +356,14 @@ pub struct ModelCapabilities {
 
 impl ModelCapabilities {
     pub fn supports(&self, required: &RequiredModelFeatures) -> bool {
+        let required_features = required.feature_names();
         (!required.streaming || self.streaming)
             && (!required.tool_call || self.tool_call)
             && (!required.json_schema || self.json_schema)
             && (!required.web_search || self.web_search)
+            && self
+                .unsupported_combination(required_features.as_slice())
+                .is_none()
             && (!required.vision || self.vision)
             && required
                 .min_context_tokens
@@ -372,6 +385,22 @@ impl ModelCapabilities {
         if required.web_search && !self.web_search {
             missing.push("web_search".to_string());
         }
+        let required_features = required.feature_names();
+        if let Some(combination) = self
+            .unsupported_combination(required_features.as_slice())
+            .filter(|combination| {
+                combination
+                    .iter()
+                    .all(|feature| self.supports_feature(feature))
+            })
+        {
+            let mut combination = combination.to_vec();
+            combination.sort();
+            missing.push(format!(
+                "unsupported_feature_combination:{}",
+                combination.join("+")
+            ));
+        }
         if required.vision && !self.vision {
             missing.push("vision".to_string());
         }
@@ -381,6 +410,57 @@ impl ModelCapabilities {
             }
         }
         missing
+    }
+
+    pub fn set_feature_combination_supported(&mut self, features: &[&str], supported: bool) {
+        let mut combination = features
+            .iter()
+            .map(|feature| feature.to_string())
+            .collect::<Vec<_>>();
+        combination.sort();
+        combination.dedup();
+        if combination.len() < 2 {
+            return;
+        }
+        self.unsupported_feature_combinations.retain(|existing| {
+            let mut existing = existing.clone();
+            existing.sort();
+            existing.dedup();
+            existing != combination
+        });
+        if !supported {
+            self.unsupported_feature_combinations.push(combination);
+        }
+    }
+
+    pub fn supports_feature_combination(&self, features: &[&str]) -> bool {
+        let features = features
+            .iter()
+            .map(|feature| feature.to_string())
+            .collect::<Vec<_>>();
+        self.unsupported_combination(features.as_slice()).is_none()
+    }
+
+    fn unsupported_combination(&self, required_features: &[String]) -> Option<&[String]> {
+        self.unsupported_feature_combinations
+            .iter()
+            .find(|combination| {
+                combination
+                    .iter()
+                    .all(|feature| required_features.iter().any(|required| required == feature))
+            })
+            .map(Vec::as_slice)
+    }
+
+    fn supports_feature(&self, feature: &str) -> bool {
+        match feature {
+            "streaming" => self.streaming,
+            "tool_calling" => self.tool_call,
+            "json_output" => self.json_schema,
+            "web_search" => self.web_search,
+            "vision" => self.vision,
+            _ => false,
+        }
     }
 }
 
@@ -398,6 +478,20 @@ pub struct RequiredModelFeatures {
     pub vision: bool,
     #[serde(default)]
     pub min_context_tokens: Option<u64>,
+}
+
+impl RequiredModelFeatures {
+    fn feature_names(&self) -> Vec<String> {
+        ModelRequirement {
+            streaming: self.streaming,
+            tool_call: self.tool_call,
+            json_schema: self.json_schema,
+            web_search: self.web_search,
+            vision: self.vision,
+            min_context_tokens: None,
+        }
+        .feature_names()
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1463,6 +1557,7 @@ mod tests {
                 tool_call: true,
                 json_schema: true,
                 web_search: true,
+                unsupported_feature_combinations: vec![],
                 vision: false,
                 max_context_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),
@@ -1493,6 +1588,67 @@ mod tests {
         }
         .supports_requirements(&RequiredModelFeatures {
             web_search: true,
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn unsupported_feature_combination_rejects_matching_request() {
+        let required = RequiredModelFeatures {
+            web_search: true,
+            tool_call: true,
+            ..Default::default()
+        };
+        let capabilities = ModelCapabilities {
+            web_search: true,
+            tool_call: true,
+            unsupported_feature_combinations: vec![vec![
+                "web_search".to_string(),
+                "tool_calling".to_string(),
+            ]],
+            ..Default::default()
+        };
+
+        assert!(!capabilities.supports(&required));
+        assert_eq!(
+            capabilities.explain_missing_requirements(&ModelRequirement {
+                web_search: true,
+                tool_call: true,
+                ..Default::default()
+            }),
+            vec!["unsupported_feature_combination:tool_calling+web_search"]
+        );
+    }
+
+    #[test]
+    fn unsupported_feature_combination_matches_only_the_complete_set() {
+        let mut capabilities = ModelCapabilities {
+            tool_call: true,
+            web_search: true,
+            vision: true,
+            ..Default::default()
+        };
+        capabilities
+            .set_feature_combination_supported(&["vision", "web_search", "tool_calling"], false);
+
+        assert!(capabilities.supports(&RequiredModelFeatures {
+            web_search: true,
+            tool_call: true,
+            ..Default::default()
+        }));
+        assert!(!capabilities.supports(&RequiredModelFeatures {
+            web_search: true,
+            tool_call: true,
+            vision: true,
+            ..Default::default()
+        }));
+
+        capabilities
+            .set_feature_combination_supported(&["tool_calling", "vision", "web_search"], true);
+        assert!(capabilities.supports(&RequiredModelFeatures {
+            web_search: true,
+            tool_call: true,
+            vision: true,
             ..Default::default()
         }));
     }

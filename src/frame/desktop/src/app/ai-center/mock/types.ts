@@ -47,6 +47,7 @@ export interface ModelMetadata {
     tool_call: boolean
     json_schema: boolean
     web_search: boolean
+    unsupported_feature_combinations?: string[][]
     vision: boolean
     max_context_tokens?: number
     max_output_tokens?: number
