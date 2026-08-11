@@ -3351,8 +3351,6 @@ impl OpenAIProvider {
             ("720p", _) => Some("1280x720".to_string()),
             ("1024p", "9:16") => Some("1024x1792".to_string()),
             ("1024p", _) => Some("1792x1024".to_string()),
-            ("1080p", "9:16") => Some("1080x1920".to_string()),
-            ("1080p", _) => Some("1920x1080".to_string()),
             _ => None,
         }
     }
@@ -3363,8 +3361,6 @@ impl OpenAIProvider {
             "1280x720" => Some((1280, 720)),
             "1024x1792" => Some((1024, 1792)),
             "1792x1024" => Some((1792, 1024)),
-            "1080x1920" => Some((1080, 1920)),
-            "1920x1080" => Some((1920, 1080)),
             _ => None,
         }
     }
@@ -4358,6 +4354,23 @@ mod tests {
         )
     }
 
+    fn build_video_request(options: Value) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Video,
+            ModelSpec::new("video.sora".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("animate the image".to_string()),
+                vec![],
+                vec![],
+                vec![],
+                Some(options),
+                None,
+            ),
+            None,
+        )
+    }
+
     fn assert_model_mount(
         inventory: &ProviderInventory,
         provider_model_id: &str,
@@ -4490,6 +4503,25 @@ mod tests {
 
         assert_eq!(size, "1280x720");
         assert_eq!((normalized.width(), normalized.height()), (1280, 720));
+    }
+
+    #[test]
+    fn video_size_only_maps_openai_supported_dimensions() {
+        assert_eq!(
+            OpenAIProvider::video_size(&build_video_request(json!({
+                "resolution": "1024p",
+                "aspect_ratio": "9:16"
+            }))),
+            Some("1024x1792".to_string())
+        );
+        assert_eq!(
+            OpenAIProvider::video_size(&build_video_request(json!({
+                "resolution": "1080p",
+                "aspect_ratio": "16:9"
+            }))),
+            None
+        );
+        assert_eq!(OpenAIProvider::video_dimensions("1920x1080"), None);
     }
 
     #[test]

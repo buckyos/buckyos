@@ -71,11 +71,12 @@ export interface CallResult {
 }
 
 interface TaskRecord {
-  id: number;
-  status: string;
+  task_id: string;
+  phase: string;
+  outcome?: string | null;
   message?: string | null;
   updated_at?: number;
-  data?: {
+  result?: {
     request?: {
       external_task_id?: string;
     };
@@ -88,6 +89,7 @@ interface TaskRecord {
     };
     error?: JsonValue;
   };
+  error?: JsonValue;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -171,14 +173,6 @@ function rpcMethodForCall(method: string): string {
   return method;
 }
 
-function normalizeTaskList(result: unknown): TaskRecord[] {
-  if (Array.isArray(result)) return result as TaskRecord[];
-  if (result && typeof result === "object" && Array.isArray((result as { tasks?: unknown }).tasks)) {
-    return (result as { tasks: TaskRecord[] }).tasks;
-  }
-  return [];
-}
-
 function normalizeTask(result: unknown): TaskRecord {
   if (result && typeof result === "object" && "task" in result) {
     return (result as { task: TaskRecord }).task;
@@ -198,7 +192,7 @@ function asAiResponse(value: unknown): AiResponse | null {
 
 async function waitForFinalTask(
   taskMgr: RpcClient,
-  externalTaskId: string,
+  taskId: string,
   method: string,
   deadlineMs: number,
 ): Promise<TaskRecord> {
@@ -207,34 +201,22 @@ async function waitForFinalTask(
   const reportRunning = () => {
     const now = Date.now();
     if (now - lastProgressAt >= 5_000) {
-      emitAiccProgress(method, "running", externalTaskId, now - startedAt);
+      emitAiccProgress(method, "running", taskId, now - startedAt);
       lastProgressAt = now;
     }
   };
   while (Date.now() < deadlineMs) {
     reportRunning();
-    const raw = await taskMgr.call("list_tasks", {
-      task_type: "aicc.compute",
-    });
-    const tasks = normalizeTaskList(raw).sort(
-      (a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0),
+    const next = normalizeTask(
+      await taskMgr.call("get_task", { task_id: taskId }),
     );
-    const matched = tasks.find((t) => t.data?.request?.external_task_id === externalTaskId);
-    if (matched) {
-      while (Date.now() < deadlineMs) {
-        reportRunning();
-        const next = normalizeTask(await taskMgr.call("get_task", { id: matched.id }));
-        if (["Completed", "Failed", "Canceled"].includes(next.status)) {
-          emitAiccProgress(method, "finalizing", externalTaskId, Date.now() - startedAt);
-          return next;
-        }
-        await sleep(1000);
-      }
-      throw new Error(`timed out while waiting for AICC task ${matched.id} to finish`);
+    if (next.phase === "Terminal") {
+      emitAiccProgress(method, "finalizing", taskId, Date.now() - startedAt);
+      return next;
     }
     await sleep(1000);
   }
-  throw new Error(`timed out while locating AICC task for external_task_id=${externalTaskId}`);
+  throw new Error(`timed out while waiting for AICC task ${taskId} to finish`);
 }
 
 export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise<CallResult> {
@@ -244,7 +226,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
   const taskMgr = (runtime.buckyos as any).getServiceRpcClient("task-manager") as RpcClient;
 
   const request = buildRequest(opts);
-  const waitTimeoutMs = opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 180_000);
+  const waitTimeoutMs = opts.waitTimeoutMs ?? envNumber("AICC_DEFAULT_TIMEOUT", 900_000);
 
   let response: AiccMethodResponse;
   try {
@@ -282,11 +264,11 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
     opts.method,
     deadline,
   );
-  if (finalTask.status === "Completed") {
+  if (finalTask.outcome === "Succeeded") {
     return {
       taskId: response.task_id,
       status: "succeeded",
-      summary: asAiResponse(finalTask.data?.result?.output ?? null),
+      summary: asAiResponse(finalTask.result?.result?.output ?? null),
       rawResponse: response,
       finalTask,
     };
@@ -294,7 +276,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
   return {
     taskId: response.task_id,
     status: "failed",
-    summary: asAiResponse(finalTask.data?.result?.output ?? null),
+    summary: asAiResponse(finalTask.result?.result?.output ?? null),
     rawResponse: response,
     finalTask,
   };
@@ -363,9 +345,10 @@ export function textToImage(runtime: AiccRuntime, opts: TextToImageOptions): Pro
 
 export function describeFailure(result: CallResult): string {
   if (result.finalTask) {
-    const err = result.finalTask.data?.error ?? result.finalTask.message;
+    const err = result.finalTask.error ?? result.finalTask.result?.error ??
+      result.finalTask.message;
     if (err) return typeof err === "string" ? err : JSON.stringify(err);
-    return `task ended with ${result.finalTask.status}`;
+    return `task ended with ${result.finalTask.outcome ?? result.finalTask.phase}`;
   }
   if (result.rawResponse?.result) {
     return JSON.stringify(result.rawResponse.result);

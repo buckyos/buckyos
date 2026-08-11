@@ -130,7 +130,9 @@ URL 输入通过 `--url` 或参数值的 URL scheme 识别，转换为：
 
 异步任务返回 `running` 后，CLI 每 5 秒向 stderr 写一行结构化进度心跳：前缀为
 `__BUCKYOS_AGENT_PROGRESS__`，后面紧跟 JSON，包含协议版本、AICC method、stage、task_id
-和 elapsed_ms。stdout 仍只写最终 `AgentToolResult`。OpenDAN 消费心跳后更新会话状态，并在
+和 elapsed_ms。stdout 仍只写最终 `AgentToolResult`。其中 `task_id` 是 TaskMgr 2.0 的正式
+任务 ID，CLI 通过 `get_task({ task_id })` 直接读取 `phase / outcome / result / error`，不通过
+`list_tasks` 或 AICC external id 反查。OpenDAN 消费心跳后更新会话状态，并在
 默认超时之外继续等待活跃任务；无心跳的普通命令仍使用原有超时规则。
 
 ### 2.5 退出码
@@ -659,7 +661,7 @@ http://127.0.0.1:3180/kapi/aicc
 AICC_ENDPOINT
 BUCKYOS_SESSION_TOKEN
 AICC_DEFAULT_PROFILE
-AICC_DEFAULT_TIMEOUT
+AICC_DEFAULT_TIMEOUT  # milliseconds; default 900000
 ```
 
 ### 10.3 JSON 输出契约

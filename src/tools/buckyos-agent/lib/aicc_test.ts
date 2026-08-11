@@ -11,15 +11,14 @@ function assertEquals(actual: unknown, expected: unknown): void {
 
 function runtimeWithTask(task: Record<string, unknown>): AiccRuntime {
   const aiccRpc = {
-    call: () => Promise.resolve({ task_id: "aicc-1", status: "running" }),
+    call: () => Promise.resolve({ task_id: "t-aicc-1", status: "running" }),
   };
   const taskMgr = {
     call: (method: string, params: Record<string, unknown>) => {
-      if (method === "list_tasks") {
-        assertEquals(params, { task_type: "aicc.compute" });
-        return Promise.resolve({ tasks: [task] });
+      if (method === "get_task") {
+        assertEquals(params, { task_id: "t-aicc-1" });
+        return Promise.resolve(task);
       }
-      if (method === "get_task") return Promise.resolve({ task });
       throw new Error(`unexpected method: ${method}`);
     },
   };
@@ -43,9 +42,10 @@ Deno.test("callAicc resolves a completed beta2.2 task", async () => {
     },
   };
   const task = {
-    id: 7,
-    status: "Completed",
-    data: {
+    task_id: "t-aicc-1",
+    phase: "Terminal",
+    outcome: "Succeeded",
+    result: {
       request: { external_task_id: "aicc-1" },
       result: { output },
     },
@@ -63,9 +63,10 @@ Deno.test("callAicc resolves a completed beta2.2 task", async () => {
 Deno.test("describeFailure reads a beta2.2 task error", async () => {
   const error = { code: "provider_failed", message: "video failed" };
   const task = {
-    id: 8,
-    status: "Failed",
-    data: {
+    task_id: "t-aicc-1",
+    phase: "Terminal",
+    outcome: "Failed",
+    result: {
       request: { external_task_id: "aicc-1" },
       error,
     },

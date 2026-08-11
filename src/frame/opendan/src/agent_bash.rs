@@ -51,7 +51,7 @@ const TMUX_SESSION_PREFIX: &str = "od_";
 /// to feel snappy on small commands, large enough to avoid burning a core.
 const TMUX_POLL_MS: u64 = 120;
 const AGENT_TOOL_PROGRESS_PREFIX: &str = "__BUCKYOS_AGENT_PROGRESS__";
-const PROGRESS_HARD_TIMEOUT_MULTIPLIER: u32 = 5;
+const PROGRESS_HARD_TIMEOUT_MULTIPLIER: u32 = 15;
 /// How many lines of scrollback `capture-pane` should pull back when we read
 /// pane output for fallback / partial-output paths.
 const TMUX_CAPTURE_SCROLLBACK: &str = "-6000";

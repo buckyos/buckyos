@@ -135,7 +135,7 @@ export async function run(argv: string[]): Promise<never> {
   // callAicc 会:
   //   • 用 modelAlias / capability / policy 包成完整 AiMethodRequest
   //   • 一次性走 aicc.<method> RPC，拿到 succeeded / running / failed
-  //   • 如果是 running，按 external_task_id 在 task-manager 里轮询到终态
+  //   • 如果是 running，按返回的 TaskMgr task_id 直接轮询到终态
   let call;
   try {
     call = await textToImage(runtime, {
