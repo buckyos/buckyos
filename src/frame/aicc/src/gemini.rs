@@ -42,6 +42,13 @@ const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GEMINI_MODELS_MAX_PAGES: usize = 10;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GeminiToolCallContext {
+    name: String,
+    provider_call_id: Option<String>,
+}
+
 const GEMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
     "candidate_count",
     "max_output_tokens",
@@ -919,14 +926,14 @@ impl GoogleGeminiProvider {
 
     fn build_contents(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut contents: Vec<Value> = vec![];
-        let mut tool_names = HashMap::new();
+        let mut tool_calls = HashMap::new();
 
         // 主路径:消费 typed `Vec<AiMessage>`,保留 ToolUse/ToolResult/Image
         // 等 block,转成 Gemini parts(functionCall / functionResponse /
         // inlineData / fileData / text)。
         if !req.payload.messages.is_empty() {
             for msg in req.payload.messages.iter() {
-                Self::lower_message_to_gemini(msg, &mut contents, &mut tool_names)?;
+                Self::lower_message_to_gemini(msg, &mut contents, &mut tool_calls)?;
             }
         }
 
@@ -992,33 +999,30 @@ impl GoogleGeminiProvider {
     fn lower_message_to_gemini(
         msg: &AiMessage,
         contents: &mut Vec<Value>,
-        tool_names: &mut HashMap<String, String>,
+        tool_calls: &mut HashMap<String, GeminiToolCallContext>,
     ) -> Result<(), ProviderError> {
         match msg.role {
             AiRole::Tool => {
                 let Some(AiContent::ToolResult {
                     call_id,
                     content,
-                    is_error,
+                    is_error: _,
                 }) = msg.content.first()
                 else {
                     return Ok(());
                 };
-                let mut response_obj = Map::new();
-                let response_text = Self::tool_result_text(content);
-                response_obj.insert("output".to_string(), Value::String(response_text));
-                if *is_error {
-                    response_obj.insert("error".to_string(), Value::Bool(true));
-                }
-                let name = tool_names
-                    .get(call_id)
-                    .cloned()
+                let context = tool_calls.get(call_id);
+                let name = context
+                    .map(|context| context.name.clone())
                     .unwrap_or_else(|| call_id.clone());
                 let mut function_response = Map::new();
                 function_response.insert("name".to_string(), Value::String(name));
-                function_response.insert("response".to_string(), Value::Object(response_obj));
-                if tool_names.contains_key(call_id) && !call_id.starts_with("gemini-no-id-") {
-                    function_response.insert("id".to_string(), Value::String(call_id.clone()));
+                function_response.insert("response".to_string(), Self::tool_result_value(content));
+                if let Some(provider_call_id) =
+                    context.and_then(|context| context.provider_call_id.as_ref())
+                {
+                    function_response
+                        .insert("id".to_string(), Value::String(provider_call_id.clone()));
                 }
                 let part = json!({ "functionResponse": function_response });
                 contents.push(json!({
@@ -1028,11 +1032,16 @@ impl GoogleGeminiProvider {
                 Ok(())
             }
             _ => {
+                if let Some(provider_content) = Self::gemini_provider_content(&msg.content) {
+                    Self::remember_provider_tool_calls(provider_content, tool_calls);
+                    contents.push(provider_content.clone());
+                    return Ok(());
+                }
                 let role = match msg.role {
                     AiRole::Assistant => "model",
                     _ => "user",
                 };
-                let parts = Self::lower_blocks_to_parts(&msg.content, tool_names)?;
+                let parts = Self::lower_blocks_to_parts(&msg.content, tool_calls)?;
                 if !parts.is_empty() {
                     contents.push(json!({
                         "role": role,
@@ -1046,7 +1055,7 @@ impl GoogleGeminiProvider {
 
     fn lower_blocks_to_parts(
         content: &[AiContent],
-        tool_names: &mut HashMap<String, String>,
+        tool_calls: &mut HashMap<String, GeminiToolCallContext>,
     ) -> Result<Vec<Value>, ProviderError> {
         let mut parts = Vec::with_capacity(content.len());
         for block in content {
@@ -1071,7 +1080,13 @@ impl GoogleGeminiProvider {
                     name,
                     args,
                 } => {
-                    tool_names.insert(call_id.clone(), name.clone());
+                    tool_calls.insert(
+                        call_id.clone(),
+                        GeminiToolCallContext {
+                            name: name.clone(),
+                            provider_call_id: Some(call_id.clone()),
+                        },
+                    );
                     let args_value = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
                     parts.push(json!({
                         "functionCall": {
@@ -1093,34 +1108,7 @@ impl GoogleGeminiProvider {
                         parts.push(json!({ "text": text }));
                     }
                 }
-                AiContent::ProviderState { provider, value } => {
-                    if provider.eq_ignore_ascii_case("google")
-                        || provider.eq_ignore_ascii_case("gemini")
-                        || provider.eq_ignore_ascii_case("google-gemini")
-                    {
-                        let raw_function = value.get("functionCall").and_then(Value::as_object);
-                        let existing = raw_function.and_then(|raw| {
-                            let raw_id = raw.get("id").and_then(Value::as_str);
-                            let raw_name = raw.get("name").and_then(Value::as_str);
-                            parts.iter_mut().find(|part| {
-                                let Some(function) =
-                                    part.get("functionCall").and_then(Value::as_object)
-                                else {
-                                    return false;
-                                };
-                                raw_id.is_some()
-                                    && function.get("id").and_then(Value::as_str) == raw_id
-                                    || raw_id.is_none()
-                                        && function.get("name").and_then(Value::as_str) == raw_name
-                            })
-                        });
-                        if let Some(existing) = existing {
-                            *existing = value.clone();
-                        } else {
-                            parts.push(value.clone());
-                        }
-                    }
-                }
+                AiContent::ProviderState { .. } => {}
                 AiContent::ToolResult { .. } => {
                     // Tool role is handled by the caller; ignore defensively.
                 }
@@ -1204,12 +1192,13 @@ impl GoogleGeminiProvider {
                     .filter_map(|(index, part)| {
                         let function = part.get("functionCall")?.as_object()?;
                         let name = function.get("name")?.as_str()?.to_string();
-                        let call_id = function
+                        let provider_call_id = function
                             .get("id")
                             .and_then(Value::as_str)
                             .filter(|value| !value.trim().is_empty())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("gemini-no-id-{}-{}", index, name));
+                            .map(str::to_string);
+                        let call_id =
+                            Self::internal_tool_call_id(index, &name, provider_call_id.as_deref());
                         let args = function
                             .get("args")
                             .cloned()
@@ -1226,25 +1215,63 @@ impl GoogleGeminiProvider {
             .unwrap_or_default()
     }
 
-    fn extract_provider_state(body: &Value) -> Vec<AiContent> {
-        body.pointer("/candidates/0/content/parts")
-            .and_then(Value::as_array)
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter(|part| {
-                        part.get("thoughtSignature").is_some()
-                            || part.get("toolCall").is_some()
-                            || part.get("toolResponse").is_some()
-                    })
-                    .cloned()
-                    .map(|value| AiContent::ProviderState {
-                        provider: "google-gemini".to_string(),
-                        value,
-                    })
-                    .collect()
+    fn extract_provider_state(body: &Value) -> Option<AiContent> {
+        body.pointer("/candidates/0/content")
+            .cloned()
+            .map(|value| AiContent::ProviderState {
+                provider: "google-gemini".to_string(),
+                value,
             })
-            .unwrap_or_default()
+    }
+
+    fn internal_tool_call_id(index: usize, name: &str, provider_call_id: Option<&str>) -> String {
+        provider_call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("gemini-no-id-{}-{}", index, name))
+    }
+
+    fn gemini_provider_content(content: &[AiContent]) -> Option<&Value> {
+        content.iter().find_map(|block| match block {
+            AiContent::ProviderState { provider, value }
+                if (provider.eq_ignore_ascii_case("google")
+                    || provider.eq_ignore_ascii_case("gemini")
+                    || provider.eq_ignore_ascii_case("google-gemini"))
+                    && value.get("parts").and_then(Value::as_array).is_some() =>
+            {
+                Some(value)
+            }
+            _ => None,
+        })
+    }
+
+    fn remember_provider_tool_calls(
+        provider_content: &Value,
+        tool_calls: &mut HashMap<String, GeminiToolCallContext>,
+    ) {
+        let Some(parts) = provider_content.get("parts").and_then(Value::as_array) else {
+            return;
+        };
+        for (index, part) in parts.iter().enumerate() {
+            let Some(function) = part.get("functionCall").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(name) = function.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let provider_call_id = function
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string);
+            let call_id = Self::internal_tool_call_id(index, name, provider_call_id.as_deref());
+            tool_calls.insert(
+                call_id,
+                GeminiToolCallContext {
+                    name: name.to_string(),
+                    provider_call_id,
+                },
+            );
+        }
     }
 
     fn resource_to_gemini_part(
@@ -1300,6 +1327,15 @@ impl GoogleGeminiProvider {
             }
         }
         parts.join("\n")
+    }
+
+    fn tool_result_value(content: &[AiToolResultContent]) -> Value {
+        if let [AiToolResultContent::Text { text }] = content {
+            if let Ok(value) = serde_json::from_str(text.trim()) {
+                return value;
+            }
+        }
+        Value::String(Self::tool_result_text(content))
     }
 
     fn resource_placeholder_text(source: &ResourceRef) -> String {
@@ -2150,7 +2186,9 @@ impl GoogleGeminiProvider {
         }
 
         let mut message = AiResponse::message_from_parts(content, tool_calls, vec![]);
-        message.content.extend(Self::extract_provider_state(&body));
+        if let Some(provider_state) = Self::extract_provider_state(&body) {
+            message.content.push(provider_state);
+        }
         let summary = AiResponse {
             message,
             usage,
@@ -3659,12 +3697,16 @@ mod tests {
     }
 
     #[test]
-    fn gemini_function_calls_are_normalized() {
+    fn gemini_candidate_and_structured_tool_result_round_trip() {
         let body = json!({
             "candidates": [{
                 "content": {
+                    "role": "model",
                     "parts": [
-                        { "text": "checking" },
+                        {
+                            "text": "checking",
+                            "thoughtSignature": "text-signed-state"
+                        },
                         {
                             "toolCall": {
                                 "id": "server-call-1",
@@ -3700,24 +3742,92 @@ mod tests {
         assert_eq!(calls[0].args.get("city"), Some(&json!("Shanghai")));
 
         let mut message = AiResponse::message_from_parts(None, calls, vec![]);
-        message
-            .content
-            .extend(GoogleGeminiProvider::extract_provider_state(&body));
+        message.content.push(
+            GoogleGeminiProvider::extract_provider_state(&body)
+                .expect("candidate content should be preserved"),
+        );
         let mut contents = Vec::new();
-        GoogleGeminiProvider::lower_message_to_gemini(&message, &mut contents, &mut HashMap::new())
+        let mut tool_calls = HashMap::new();
+        GoogleGeminiProvider::lower_message_to_gemini(&message, &mut contents, &mut tool_calls)
             .expect("Gemini provider state should lower");
-        assert_eq!(contents[0]["parts"].as_array().map(Vec::len), Some(3));
+        assert_eq!(contents.len(), 1);
+        assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
+
+        let tool_result = AiMessage::new(
+            AiRole::Tool,
+            vec![AiContent::tool_result_text(
+                "call-1",
+                r#"{"temperature":24,"condition":"sunny"}"#,
+                false,
+            )],
+        );
+        GoogleGeminiProvider::lower_message_to_gemini(&tool_result, &mut contents, &mut tool_calls)
+            .expect("structured tool result should lower");
         assert_eq!(
-            contents[0].pointer("/parts/0/thoughtSignature"),
-            Some(&json!("signed-state"))
+            contents[1].pointer("/parts/0/functionResponse"),
+            Some(&json!({
+                "id": "call-1",
+                "name": "get_weather",
+                "response": { "temperature": 24, "condition": "sunny" }
+            }))
+        );
+    }
+
+    #[test]
+    fn gemini_no_id_function_call_stays_without_provider_id() {
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "get_weather",
+                            "args": { "city": "Shanghai" }
+                        },
+                        "thoughtSignature": "signed-state"
+                    }]
+                }
+            }]
+        });
+        let calls = GoogleGeminiProvider::extract_tool_calls(&body);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "gemini-no-id-0-get_weather");
+
+        let mut message = AiResponse::message_from_parts(None, calls, vec![]);
+        message.content.push(
+            GoogleGeminiProvider::extract_provider_state(&body)
+                .expect("candidate content should be preserved"),
+        );
+        let mut contents = Vec::new();
+        let mut tool_calls = HashMap::new();
+        GoogleGeminiProvider::lower_message_to_gemini(&message, &mut contents, &mut tool_calls)
+            .expect("candidate should lower");
+        let tool_result = AiMessage::new(
+            AiRole::Tool,
+            vec![AiContent::tool_result_text(
+                "gemini-no-id-0-get_weather",
+                "sunny",
+                false,
+            )],
+        );
+        GoogleGeminiProvider::lower_message_to_gemini(&tool_result, &mut contents, &mut tool_calls)
+            .expect("tool result should lower");
+
+        assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
+        assert!(contents[0].pointer("/parts/0/functionCall/id").is_none());
+        assert!(
+            contents[1]
+                .pointer("/parts/0/functionResponse/id")
+                .is_none()
         );
         assert_eq!(
-            contents[0].pointer("/parts/1/toolCall/id"),
-            Some(&json!("server-call-1"))
+            contents[1].pointer("/parts/0/functionResponse/name"),
+            Some(&json!("get_weather"))
         );
-        assert_eq!(
-            contents[0].pointer("/parts/2/toolResponse/id"),
-            Some(&json!("server-call-1"))
+        assert!(
+            !serde_json::to_string(&contents)
+                .unwrap()
+                .contains("gemini-no-id")
         );
     }
 
@@ -3739,9 +3849,9 @@ mod tests {
             ),
         ];
         let mut contents = Vec::new();
-        let mut tool_names = HashMap::new();
+        let mut tool_calls = HashMap::new();
         for message in &messages {
-            GoogleGeminiProvider::lower_message_to_gemini(message, &mut contents, &mut tool_names)
+            GoogleGeminiProvider::lower_message_to_gemini(message, &mut contents, &mut tool_calls)
                 .expect("message should lower");
         }
 
@@ -3752,6 +3862,10 @@ mod tests {
         assert_eq!(
             contents[1].pointer("/parts/0/functionResponse/id"),
             Some(&json!("call-1"))
+        );
+        assert_eq!(
+            contents[1].pointer("/parts/0/functionResponse/response"),
+            Some(&json!("sunny"))
         );
     }
 
