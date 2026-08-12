@@ -35,7 +35,7 @@ const DEFAULT_GEMINI_IMAGE_MODELS: &str =
     "gemini-2.0-flash-exp-image-generation,gemini-2.5-flash-image-preview";
 const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
 const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
-const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-002";
+const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
 const DEFAULT_GEMINI_VIDEO_MODELS: &str = "veo-3.1-generate-preview";
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -638,7 +638,7 @@ impl GoogleGeminiProvider {
         // 但 `gemini-2.0-flash` / `gemini-2.0-flash-lite` 这些 alias 仍然出现在
         // `/v1beta/models` 列表里）。aicc 的设计也鼓励调用方用 family alias 而非
         // 完整模型名，所以这里再加一道：每个 bucket 内识别 `gemini-X.Y-...` 的版本
-        // 前缀，只保留全局最大 (X,Y) 的那一族。无版本前缀的条目（如 `lyria-002` /
+        // 前缀，只保留全局最大 (X,Y) 的那一族。无版本前缀的条目
         // `gemini-embedding-001`）当成"独立模型"原样保留。
         keep_only_max_gemini_version(&mut buckets.llm);
         keep_only_max_gemini_version(&mut buckets.image);
@@ -2248,12 +2248,17 @@ impl GoogleGeminiProvider {
 
     fn veo_video_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
         match resource {
-            ResourceRef::Url { url, .. } => Ok(json!({ "uri": url })),
+            ResourceRef::Url { url, mime_hint } if url.starts_with("gs://") => Ok(json!({
+                "gcsUri": url,
+                "mimeType": mime_hint.as_deref().unwrap_or("video/mp4")
+            })),
+            ResourceRef::Url { url, .. } => Err(ProviderError::fatal(format!(
+                "google gemini Veo requires base64 data or a gs:// URI, got {}",
+                url
+            ))),
             ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
-                "inlineData": {
-                    "mimeType": mime,
-                    "data": data_base64
-                }
+                "mimeType": mime,
+                "bytesBase64Encoded": data_base64
             })),
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "google gemini provider cannot resolve named object resource {} without resolver bytes",
@@ -2766,6 +2771,7 @@ impl GoogleGeminiProvider {
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
             message: AiResponse::message_from_parts(text, vec![], artifacts),
+            usage: Some(AiUsage::request_units(1)),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -2779,47 +2785,111 @@ impl GoogleGeminiProvider {
         req: &AiMethodRequest,
         multimodal: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let text = req
+        let mut texts = req
             .payload
             .input_json
             .as_ref()
-            .and_then(|value| value.pointer("/items/0/text"))
-            .and_then(|value| value.as_str())
-            .or(req.payload.text.as_deref())
-            .unwrap_or("");
-        let mut parts = Vec::new();
-        if !text.trim().is_empty() {
-            parts.push(json!({ "text": text }));
-        }
-        if multimodal {
-            if let Some(resource) = req
+            .and_then(|value| value.get("items"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        item.get("text")
+                            .and_then(Value::as_str)
+                            .or_else(|| item.as_str())
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .map(ToString::to_string)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if texts.is_empty() {
+            if let Some(text) = req
                 .payload
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                texts.push(text.to_string());
+            } else {
+                texts.extend(
+                    req.payload
+                        .messages
+                        .iter()
+                        .map(|message| message.text_content().trim().to_string())
+                        .filter(|text| !text.is_empty()),
+                );
+            }
+        }
+        let resource = if multimodal {
+            req.payload
                 .resources
                 .first()
                 .cloned()
                 .or_else(|| Self::resource_from_input_json(req, &["image", "audio", "video"]))
-            {
-                parts.push(Self::content_resource_part(&resource)?);
-            }
-        }
-        if parts.is_empty() {
+        } else {
+            None
+        };
+        if texts.is_empty() && resource.is_none() {
             return Err(ProviderError::fatal(
                 "embedding request requires text or multimodal resource",
             ));
         }
-        let mut request_obj = Map::new();
-        request_obj.insert("content".to_string(), json!({ "parts": parts }));
-        if let Some(dimensions) = req
+        if resource.is_some() && texts.len() > 1 {
+            return Err(ProviderError::fatal(
+                "embedding.multimodal accepts one text item with one resource",
+            ));
+        }
+
+        let dimensions = req
             .payload
             .input_json
             .as_ref()
             .and_then(|value| value.get("dimensions"))
-            .cloned()
-        {
-            request_obj.insert("outputDimensionality".to_string(), dimensions);
+            .cloned();
+        let build_config = || {
+            dimensions
+                .as_ref()
+                .map(|value| json!({ "outputDimensionality": value }))
+        };
+        let mut request_obj = Map::new();
+        let action;
+        if texts.len() > 1 {
+            let model = format!("models/{}", provider_model.trim_start_matches("models/"));
+            let requests = texts
+                .iter()
+                .map(|text| {
+                    let mut request = json!({
+                        "model": model,
+                        "content": { "parts": [{ "text": text }] }
+                    });
+                    if let Some(config) = build_config() {
+                        request["embedContentConfig"] = config;
+                    }
+                    request
+                })
+                .collect::<Vec<_>>();
+            request_obj.insert("requests".to_string(), Value::Array(requests));
+            action = "batchEmbedContents";
+        } else {
+            let mut parts = Vec::new();
+            if let Some(text) = texts.first() {
+                parts.push(json!({ "text": text }));
+            }
+            if let Some(resource) = resource.as_ref() {
+                parts.push(Self::content_resource_part(resource)?);
+            }
+            request_obj.insert("content".to_string(), json!({ "parts": parts }));
+            if let Some(config) = build_config() {
+                request_obj.insert("embedContentConfig".to_string(), config);
+            }
+            action = "embedContent";
         }
         let (status, body, latency_ms) = self
-            .post_model_action(provider_model, "embedContent", &request_obj)
+            .post_model_action(provider_model, action, &request_obj)
             .await?;
         if !status.is_success() {
             let message = body
@@ -2828,28 +2898,67 @@ impl GoogleGeminiProvider {
                 .unwrap_or("google gemini embedding returned non-success status");
             return Err(Self::classify_api_error(status, message.to_string()));
         }
-        let dimensions = body
-            .pointer("/embedding/values")
-            .and_then(|value| value.as_array())
-            .map(|items| items.len())
+        let embeddings = if action == "batchEmbedContents" {
+            body.get("embeddings")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            body.get("embedding")
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        if embeddings.is_empty() {
+            return Err(ProviderError::fatal(
+                "google gemini embedding response is missing embedding values",
+            ));
+        }
+        let output_dimensions = embeddings
+            .first()
+            .and_then(|embedding| embedding.get("values"))
+            .and_then(Value::as_array)
+            .map(Vec::len)
             .unwrap_or(0);
-        let embedding_space_id =
-            format!("google-gemini:{}:{}:multimodal", provider_model, dimensions);
+        let embedding_space_id = format!(
+            "google-gemini:{}:{}",
+            provider_model, output_dimensions
+        );
+        let data = embeddings
+            .iter()
+            .enumerate()
+            .map(|(index, embedding)| {
+                json!({
+                    "index": index,
+                    "embedding": embedding.get("values").cloned().unwrap_or(Value::Array(vec![])),
+                    "embedding_space_id": embedding_space_id
+                })
+            })
+            .collect::<Vec<_>>();
+        let usage = body
+            .pointer("/usageMetadata/promptTokenCount")
+            .and_then(Value::as_u64)
+            .map(|input_tokens| AiUsage {
+                input_tokens: Some(input_tokens),
+                output_tokens: Some(0),
+                total_tokens: Some(input_tokens),
+                request_units: None,
+            })
+            .unwrap_or_else(|| AiUsage::request_units(1));
+        let cost = self.estimate_cost_for_usage(provider_model, &usage);
         let mut extra = Map::new();
         extra.insert(
             "embedding".to_string(),
             json!({
-                "data": [{
-                    "index": 0,
-                    "embedding": body.pointer("/embedding/values").cloned().unwrap_or(Value::Array(vec![])),
-                    "embedding_space_id": embedding_space_id
-                }],
+                "data": data,
                 "embedding_space_id": embedding_space_id,
                 "provider_io": { "input": request_obj, "output": body },
                 "latency_ms": latency_ms
             }),
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
+            usage: Some(usage),
+            cost,
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -3012,6 +3121,7 @@ impl GoogleGeminiProvider {
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], artifacts),
+            usage: Some(AiUsage::request_units(1)),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -3536,7 +3646,8 @@ fn default_features() -> Vec<String> {
 
 fn is_text2image_model_name(model: &str) -> bool {
     let lowered = model.trim().to_ascii_lowercase();
-    lowered.contains("image") || lowered.contains("nano-banana") || lowered.contains("imagen")
+    !lowered.contains("imagen")
+        && (lowered.contains("image") || lowered.contains("nano-banana"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3556,7 +3667,7 @@ fn strip_gemini_model_prefix(name: &str) -> &str {
 }
 
 /// 在一份模型列表里识别 `gemini-X.Y-...` 形态的版本前缀，找到全局最大 (X,Y)，
-/// 把所有更老主版本族的条目都丢掉。无版本前缀的条目（例如 `lyria-002` /
+/// 把所有更老主版本族的条目都丢掉。无版本前缀的条目
 /// `gemini-embedding-001` / 不以 `gemini-` 开头的命名）原样保留——它们没有
 /// 跟谁竞争。
 ///
@@ -4371,7 +4482,7 @@ mod tests {
         assert_eq!(parse_gemini_major_minor("gemini-pro-vision"), None);
         assert_eq!(parse_gemini_major_minor("gemini-2-flash"), None);
         // 不是 gemini- 开头的
-        assert_eq!(parse_gemini_major_minor("lyria-002"), None);
+        assert_eq!(parse_gemini_major_minor("custom-model"), None);
         assert_eq!(parse_gemini_major_minor("veo-3.1-generate-preview"), None);
         assert_eq!(parse_gemini_major_minor("text-embedding-004"), None);
         // 三段版本 (2.5.1) 不识别——Google 没有这种命名，避免误判
@@ -4444,7 +4555,7 @@ mod tests {
     }
 
     #[test]
-    fn veo_video_input_uses_inline_data() {
+    fn veo_video_input_uses_predict_long_running_bytes() {
         let resource = ResourceRef::Base64 {
             mime: "video/mp4".to_string(),
             data_base64: "dmlkZW8=".to_string(),
@@ -4452,10 +4563,8 @@ mod tests {
         assert_eq!(
             GoogleGeminiProvider::veo_video_part(&resource).unwrap(),
             json!({
-                "inlineData": {
-                    "mimeType": "video/mp4",
-                    "data": "dmlkZW8="
-                }
+                "mimeType": "video/mp4",
+                "bytesBase64Encoded": "dmlkZW8="
             })
         );
     }
@@ -4489,6 +4598,44 @@ mod tests {
             .expect("embedding-2 should exist");
         assert!(multimodal.api_types.contains(&ApiType::Embedding));
         assert!(multimodal.api_types.contains(&ApiType::EmbeddingMultimodal));
+    }
+
+    #[test]
+    fn inventory_uses_current_lyria_and_excludes_imagen() {
+        let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
+            "gemini-primary",
+            ProviderType::CloudApi,
+            "google-gemini",
+            &GeminiModelBuckets {
+                image: vec![
+                    "gemini-2.5-flash-image".to_string(),
+                    "imagen-4.0-generate-001".to_string(),
+                ],
+                music: vec![
+                    "lyria-3-clip-preview".to_string(),
+                    "lyria-3-pro-preview".to_string(),
+                ],
+                ..Default::default()
+            },
+            &[],
+            Some("test".to_string()),
+        );
+        assert!(inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "gemini-2.5-flash-image"));
+        assert!(inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "lyria-3-clip-preview"));
+        assert!(inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "lyria-3-pro-preview"));
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id.starts_with("imagen-")));
     }
 
     #[test]
@@ -4620,7 +4767,7 @@ mod tests {
             "gemini-2.5-computer-use-preview-10-2025".to_string(),
             // 没 X.Y 版本号的非 gemini 命名 → 原样保留
             "gemini-embedding-001".to_string(),
-            "lyria-002".to_string(),
+            "lyria-3-clip-preview".to_string(),
             "veo-3.1-generate-preview".to_string(),
         ];
         keep_only_max_gemini_version(&mut models);
@@ -4632,7 +4779,7 @@ mod tests {
                 "gemini-2.5-pro".to_string(),
                 "gemini-2.5-computer-use-preview-10-2025".to_string(),
                 "gemini-embedding-001".to_string(),
-                "lyria-002".to_string(),
+                "lyria-3-clip-preview".to_string(),
                 "veo-3.1-generate-preview".to_string(),
             ]
         );
@@ -4642,7 +4789,7 @@ mod tests {
     fn keep_only_max_gemini_version_no_op_without_versioned_models() {
         // 全部都没 gemini-X.Y 版本号 → 不动
         let mut models = vec![
-            "lyria-002".to_string(),
+            "lyria-3-clip-preview".to_string(),
             "veo-3.1-generate-preview".to_string(),
             "gemini-embedding-001".to_string(),
         ];
@@ -4650,7 +4797,7 @@ mod tests {
         assert_eq!(
             models,
             vec![
-                "lyria-002".to_string(),
+                "lyria-3-clip-preview".to_string(),
                 "veo-3.1-generate-preview".to_string(),
                 "gemini-embedding-001".to_string(),
             ]

@@ -299,7 +299,7 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
 }
 
 #[tokio::test]
-async fn adapter_gemini_video_extend_uses_video_inline_data() {
+async fn adapter_gemini_video_extend_uses_predict_long_running_bytes() {
     let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![
         MockHttpReply {
             status_code: 200,
@@ -352,10 +352,8 @@ async fn adapter_gemini_video_extend_uses_video_inline_data() {
     assert_eq!(
         request_body.pointer("/instances/0/video"),
         Some(&serde_json::json!({
-            "inlineData": {
-                "mimeType": "video/mp4",
-                "data": openai_b64(b"previous-video")
-            }
+            "mimeType": "video/mp4",
+            "bytesBase64Encoded": openai_b64(b"previous-video")
         }))
     );
     assert!(request_body
@@ -421,7 +419,13 @@ async fn adapter_gemini_img2img_uses_generate_content_inline_data() {
         )
         .await
         .expect("gemini img2img should succeed");
-    assert!(matches!(result, ProviderStartResult::Immediate(_)));
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini img2img should complete immediately");
+    };
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.request_units),
+        Some(1)
+    );
 
     let request_body = captured_requests
         .lock()
@@ -457,7 +461,8 @@ async fn adapter_gemini_vision_and_multimodal_embedding_use_content_parts() {
         },
         MockHttpReply {
             status_code: 200,
-            body: r#"{"embedding":{"values":[0.1,0.2]}}"#.to_string(),
+            body: r#"{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":3}}"#
+                .to_string(),
             content_type: "application/json",
             delay_ms: 0,
         },
@@ -487,7 +492,7 @@ async fn adapter_gemini_vision_and_multimodal_embedding_use_content_parts() {
     embedding_request.capability = Capability::Embedding;
     embedding_request.payload.text = None;
     embedding_request.payload.options = None;
-    provider
+    let result = provider
         .start(
             InvokeCtx::default(),
             "gemini-embedding-2".to_string(),
@@ -496,6 +501,13 @@ async fn adapter_gemini_vision_and_multimodal_embedding_use_content_parts() {
         )
         .await
         .expect("gemini multimodal embedding should succeed");
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini multimodal embedding should complete immediately");
+    };
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.input_tokens),
+        Some(3)
+    );
 
     let requests = captured_requests.lock().expect("captured requests lock");
     assert_eq!(
@@ -508,6 +520,66 @@ async fn adapter_gemini_vision_and_multimodal_embedding_use_content_parts() {
     );
     assert!(!requests[0].to_string().contains("bytesBase64Encoded"));
     assert!(!requests[1].to_string().contains("bytesBase64Encoded"));
+}
+
+#[tokio::test]
+async fn adapter_gemini_batch_embedding_preserves_all_items() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![MockHttpReply {
+        status_code: 200,
+        body: r#"{"embeddings":[{"values":[0.1,0.2]},{"values":[0.3,0.4]}],"usageMetadata":{"promptTokenCount":5}}"#
+            .to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = base_request_for(Capability::Embedding, ai_methods::EMBEDDING_TEXT);
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({
+        "items": [{ "text": "first" }, { "text": "second" }],
+        "dimensions": 2
+    }));
+    request.payload.options = None;
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-embedding-001".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::EMBEDDING_TEXT, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini batch embedding should succeed");
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini batch embedding should complete immediately");
+    };
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.input_tokens),
+        Some(5)
+    );
+    assert_eq!(
+        summary
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.pointer("/embedding/data"))
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+
+    let requests = captured_requests.lock().expect("captured requests lock");
+    assert_eq!(
+        requests[0].pointer("/requests/0/model"),
+        Some(&serde_json::json!("models/gemini-embedding-001"))
+    );
+    assert_eq!(
+        requests[0].pointer("/requests/1/content/parts/0/text"),
+        Some(&serde_json::json!("second"))
+    );
+    assert_eq!(
+        requests[0].pointer("/requests/0/embedContentConfig/outputDimensionality"),
+        Some(&serde_json::json!(2))
+    );
 }
 
 #[tokio::test]
@@ -544,7 +616,13 @@ async fn adapter_gemini_tts_maps_text_voice_and_language() {
         )
         .await
         .expect("gemini tts should succeed");
-    assert!(matches!(result, ProviderStartResult::Immediate(_)));
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini tts should complete immediately");
+    };
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.request_units),
+        Some(1)
+    );
 
     let request_body = captured_requests
         .lock()

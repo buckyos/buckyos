@@ -55,6 +55,7 @@ const AICC_TASK_EVENT_RETENTION: usize = 64;
 const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
 const REDACTED_DATA_URL_BASE64_PREFIX: &str = "[redacted_data_url_base64";
 const REDACTED_LONG_BASE64_LIKE_PLACEHOLDER: &str = "[redacted_base64_like_string]";
+const REDACTED_LOG_TEXT_PLACEHOLDER: &str = "[redacted_text]";
 const LOG_BASE64_LIKE_MIN_CHARS: usize = 512;
 const SN_AI_PROVIDER_FREE_CREDIT_USD: f64 = 15.0;
 const REFRESH_IDLE: u8 = 0;
@@ -288,6 +289,69 @@ fn redact_base64_fields(value: &mut Value) {
     }
 }
 
+fn redact_all_log_strings(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_all_log_strings(item);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values_mut() {
+                redact_all_log_strings(nested);
+            }
+        }
+        Value::String(text) => {
+            *text = format!("{} len={}", REDACTED_LOG_TEXT_PLACEHOLDER, text.len());
+        }
+        _ => {}
+    }
+}
+
+fn redact_sensitive_log_fields(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_sensitive_log_fields(item);
+            }
+        }
+        Value::Object(map) => {
+            for (key, nested) in map.iter_mut() {
+                let normalized = key.to_ascii_lowercase().replace('_', "").replace('-', "");
+                if matches!(normalized.as_str(), "args" | "arguments" | "queries") {
+                    redact_all_log_strings(nested);
+                    continue;
+                }
+                if matches!(
+                    normalized.as_str(),
+                    "text"
+                        | "prompt"
+                        | "command"
+                        | "instructions"
+                        | "system"
+                        | "content"
+                        | "input"
+                        | "output"
+                        | "caption"
+                        | "transcript"
+                        | "query"
+                        | "searchsuggestions"
+                        | "url"
+                        | "fileuri"
+                        | "gcsuri"
+                ) {
+                    if nested.is_string() {
+                        redact_all_log_strings(nested);
+                        continue;
+                    }
+                }
+                redact_sensitive_log_fields(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn redacted_summary_value(summary: &AiResponse) -> Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
     redact_base64_fields(&mut value);
@@ -297,6 +361,7 @@ fn redacted_summary_value(summary: &AiResponse) -> Value {
 pub(crate) fn redacted_json_log(value: &Value) -> String {
     let mut value = value.clone();
     redact_base64_fields(&mut value);
+    redact_sensitive_log_fields(&mut value);
     value.to_string()
 }
 
@@ -6480,7 +6545,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_json_log_keeps_plain_multiline_tool_output() {
+    fn redacted_json_log_hides_plain_multiline_tool_output() {
         let output = [
             "PROJECTS_DIR=/Users/liuzhicong/project",
             "COUNT=39",
@@ -6534,9 +6599,27 @@ mod tests {
             "output": output
         }));
 
-        assert!(!logged.contains(REDACTED_LONG_BASE64_LIKE_PLACEHOLDER));
-        assert!(logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
-        assert!(logged.contains("buckyos-websdk"));
+        assert!(logged.contains(REDACTED_LOG_TEXT_PLACEHOLDER));
+        assert!(!logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
+        assert!(!logged.contains("buckyos-websdk"));
+    }
+
+    #[test]
+    fn redacted_json_log_hides_prompts_and_tool_arguments() {
+        let logged = redacted_json_log(&json!({
+            "contents": [{ "parts": [{ "text": "private conversation" }] }],
+            "functionCall": {
+                "name": "exec_bash",
+                "args": { "command": "print secret", "goal": "private goal" }
+            },
+            "usageMetadata": { "totalTokenCount": 42 }
+        }));
+
+        assert!(!logged.contains("private conversation"));
+        assert!(!logged.contains("print secret"));
+        assert!(!logged.contains("private goal"));
+        assert!(logged.contains("exec_bash"));
+        assert!(logged.contains("totalTokenCount"));
     }
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {

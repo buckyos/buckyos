@@ -1,9 +1,9 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 3,
-  "schema_revision": 1,
+  "schema_revision": 2,
   "provider_driver": "google-gemini",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -33,11 +33,25 @@
     },
     {
       "id": "lyria-002",
+      "exclude": true
+    },
+    {
+      "id": "lyria-3-clip-preview",
       "api_types": ["audio.music"],
       "logical_mounts": ["audio.music", "audio.music.google", "audio.music.gemini", "audio.music.{model}"],
       "pricing": {
         "currency": "USD",
-        "estimated_cost": 0.1
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 60000
+    },
+    {
+      "id": "lyria-3-pro-preview",
+      "api_types": ["audio.music"],
+      "logical_mounts": ["audio.music", "audio.music.google", "audio.music.gemini", "audio.music.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.08
       },
       "estimated_latency_ms": 60000
     },
@@ -190,7 +204,7 @@
       "estimated_latency_ms": 120000
     },
     {
-      "pattern": "*image*",
+      "pattern": "gemini-*image*",
       "api_types": ["image.txt2img", "image.img2img"],
       "logical_mounts": [
         "image.txt2img.google",
@@ -209,21 +223,7 @@
     },
     {
       "pattern": "*imagen*",
-      "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": [
-        "image.txt2img.google",
-        "image.txt2img.gemini",
-        "image.txt2img.{model}",
-        "image.img2img",
-        "image.img2img.google",
-        "image.img2img.gemini",
-        "image.img2img.{model}"
-      ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.04
-      },
-      "estimated_latency_ms": 6000
+      "exclude": true
     },
     {
       "pattern": "*nano-banana*",
