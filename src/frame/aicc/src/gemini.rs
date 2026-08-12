@@ -81,12 +81,27 @@ const GEMINI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
 ];
 const GEMINI_VIDEO_PARAMETER_ALLOWLIST: &[&str] = &[
     "aspect_ratio",
+    "compression_quality",
+    "duration",
     "duration_seconds",
+    "enhance_prompt",
+    "generate_audio",
     "negative_prompt",
     "person_generation",
     "resolution",
+    "resize_mode",
     "sample_count",
     "seed",
+];
+
+const GEMINI_VIDEO_CONSUMED_INPUT_KEYS: &[&str] = &[
+    "continuation_handle",
+    "image",
+    "output",
+    "prompt",
+    "resource_format",
+    "response_format",
+    "video",
 ];
 
 #[derive(Debug, Clone)]
@@ -1674,10 +1689,14 @@ impl GoogleGeminiProvider {
     fn normalize_video_parameter_key(key: &str) -> Option<&'static str> {
         match key {
             "aspect_ratio" | "aspectRatio" => Some("aspectRatio"),
-            "duration_seconds" | "durationSeconds" => Some("durationSeconds"),
+            "compression_quality" | "compressionQuality" => Some("compressionQuality"),
+            "duration" | "duration_seconds" | "durationSeconds" => Some("durationSeconds"),
+            "enhance_prompt" | "enhancePrompt" => Some("enhancePrompt"),
+            "generate_audio" | "generateAudio" => Some("generateAudio"),
             "negative_prompt" | "negativePrompt" => Some("negativePrompt"),
             "person_generation" | "personGeneration" => Some("personGeneration"),
             "resolution" => Some("resolution"),
+            "resize_mode" | "resizeMode" => Some("resizeMode"),
             "sample_count" | "sampleCount" => Some("sampleCount"),
             "seed" => Some("seed"),
             _ => None,
@@ -1691,6 +1710,9 @@ impl GoogleGeminiProvider {
 
         let mut ignored = vec![];
         for (key, item) in map.iter() {
+            if GEMINI_VIDEO_CONSUMED_INPUT_KEYS.contains(&key.as_str()) {
+                continue;
+            }
             if !GEMINI_VIDEO_PARAMETER_ALLOWLIST.contains(&key.as_str())
                 && Self::normalize_video_parameter_key(key.as_str()).is_none()
             {
@@ -1969,17 +1991,17 @@ impl GoogleGeminiProvider {
 
     fn resource_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
         match resource {
-            ResourceRef::Url { url, mime_hint } => Ok(json!({
-                "fileData": {
-                    "fileUri": url,
-                    "mimeType": mime_hint.as_deref().unwrap_or("application/octet-stream")
-                }
+            ResourceRef::Url { url, mime_hint } if url.starts_with("gs://") => Ok(json!({
+                "gcsUri": url,
+                "mimeType": mime_hint.as_deref().unwrap_or("application/octet-stream")
             })),
+            ResourceRef::Url { url, .. } => Err(ProviderError::fatal(format!(
+                "google gemini Veo requires base64 data or a gs:// URI, got {}",
+                url
+            ))),
             ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
-                "inlineData": {
-                    "mimeType": mime,
-                    "data": data_base64
-                }
+                "mimeType": mime,
+                "bytesBase64Encoded": data_base64
             })),
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "google gemini provider cannot resolve named object resource {} without resolver bytes",

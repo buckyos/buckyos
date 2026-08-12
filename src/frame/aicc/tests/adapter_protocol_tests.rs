@@ -213,7 +213,7 @@ async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
 #[tokio::test]
 async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
     let video_bytes = b"gemini-video";
-    let base_url = spawn_fake_http_server(vec![
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![
         MockHttpReply {
             status_code: 200,
             body: r#"{"name":"operations/op1","done":false}"#.to_string(),
@@ -239,6 +239,12 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
         mime: "image/png".to_string(),
         data_base64: openai_b64(b"image"),
     });
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({
+        "prompt": "animate the image",
+        "duration": 8,
+        "output": { "resource_format": "named_object" }
+    }));
     request.payload.options = Some(serde_json::json!({ "response_format": "base64" }));
     let task_id = "gemini-video-task";
     let sink_factory = Arc::new(CollectingSinkFactory::new());
@@ -257,13 +263,36 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
         .expect("gemini img2video should succeed");
     assert!(matches!(result, ProviderStartResult::Started));
 
+    let request_body = captured_requests
+        .lock()
+        .expect("captured requests lock")
+        .first()
+        .cloned()
+        .expect("video request should be captured");
+    assert_eq!(
+        request_body.pointer("/instances/0/prompt"),
+        Some(&serde_json::json!("animate the image"))
+    );
+    assert_eq!(
+        request_body.pointer("/instances/0/image"),
+        Some(&serde_json::json!({
+            "mimeType": "image/png",
+            "bytesBase64Encoded": openai_b64(b"image")
+        }))
+    );
+    assert_eq!(
+        request_body.pointer("/parameters/durationSeconds"),
+        Some(&serde_json::json!(8))
+    );
+    assert!(request_body.to_string().find("inlineData").is_none());
+
     let summary = wait_for_final_summary(sink_factory.as_ref(), task_id).await;
     let artifacts = summary.artifacts();
     assert_eq!(artifacts.len(), 1);
     assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
     match &artifacts[0].resource {
         ResourceRef::Base64 { data_base64, .. } => {
-            assert_eq!(data_base64, &openai_b64(video_bytes));
+            assert_eq!(data_base64, "[redacted_base64] len=16");
         }
         other => panic!("unexpected video artifact: {:?}", other),
     }
