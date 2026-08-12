@@ -271,6 +271,31 @@ export function toLocalUserEntity(
   }
 }
 
+export function toVisibleLocalUserEntities(
+  users: UserInfo[],
+  apps: AppSummary[],
+  selfUserId: string,
+  now: string,
+): LocalUserEntity[] {
+  const seenUserIds = new Set([selfUserId])
+  const visibleUsers: LocalUserEntity[] = []
+
+  for (const user of users) {
+    const userId = user.user_id.trim()
+    if (
+      !userId ||
+      String(user.user_type).toLowerCase() === 'root' ||
+      seenUserIds.has(userId)
+    ) {
+      continue
+    }
+    seenUserIds.add(userId)
+    visibleUsers.push(toLocalUserEntity(user, apps, now))
+  }
+
+  return visibleUsers
+}
+
 function agentStateToStatus(state: unknown): AgentEntity['status'] {
   const normalized = String(state ?? '').toLowerCase()
   if (normalized === 'running') return 'running'

@@ -86,6 +86,7 @@ test.describe('Users & Agents app panel', () => {
     await win.getByText('Carol').click()
     await expect(win.getByText('Pending DID Confirmation')).toBeVisible()
     await expect(win.getByText('Target user must confirm binded_zone_list update')).toBeVisible()
+    await expect(win.locator('button[aria-current="page"]')).toHaveCount(1)
 
     await win.getByPlaceholder('Search name, DID, role, tag, status...').fill('assistant')
     await win.getByText('BuckyOS Assistant').click()

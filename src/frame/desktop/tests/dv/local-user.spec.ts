@@ -199,6 +199,11 @@ test('admin creates a real local user, then that user logs in and sees self', as
     await expect(appWindow.getByText('Internal Entities')).toBeVisible()
     await appWindow.getByRole('button', { name: new RegExp(displayName) }).click()
     await expect(appWindow.getByRole('heading', { name: displayName })).toBeVisible()
+    await expect(appWindow.locator('button[aria-current="page"]')).toHaveCount(1)
+    const listedEntityIds = await appWindow.locator('button[data-entity-id]').evaluateAll(
+      (items) => items.map((item) => item.getAttribute('data-entity-id')),
+    )
+    expect(new Set(listedEntityIds).size, 'internal entity ids must be unique').toBe(listedEntityIds.length)
     await expect(appWindow.getByText(`did:web:${userId}.test.buckyos.io`, { exact: true })).toBeVisible()
     await expect(appWindow.getByRole('heading', { name: 'Profile' })).toBeVisible()
     await expect(appWindow.getByRole('heading', { name: 'Settings' })).toBeVisible()

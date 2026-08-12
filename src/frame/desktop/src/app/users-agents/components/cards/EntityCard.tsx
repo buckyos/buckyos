@@ -36,6 +36,8 @@ export function EntityCard({ entity, isActive, onClick }: EntityCardProps) {
     <button
       type="button"
       onClick={onClick}
+      aria-current={isActive ? 'page' : undefined}
+      data-entity-id={entity.id}
       className="w-full flex items-center gap-3 px-3 py-2.5 rounded-[16px] text-left transition-all duration-150"
       style={{
         background: isActive

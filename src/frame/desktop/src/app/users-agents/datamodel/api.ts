@@ -18,8 +18,8 @@ import type {
 import {
   toAgentEntity,
   toEntityGroupEntity,
-  toLocalUserEntity,
   toSelfEntity,
+  toVisibleLocalUserEntities,
 } from './transforms'
 
 type GroupListByMemberResponse = unknown[]
@@ -101,9 +101,7 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
   const self = toSelfEntity(selfDetail, apps, empty.self)
   const now = new Date().toISOString()
   const localUsers = usersResult.data
-    ? usersResult.data.users
-        .filter((user) => user.user_id !== self.id)
-        .map((user) => toLocalUserEntity(user, apps, now))
+    ? toVisibleLocalUserEntities(usersResult.data.users, apps, self.id, now)
     : []
 
   const agents = agentsResult.data
