@@ -1086,15 +1086,6 @@ def _prepare_common_build_root(
     _remove_tree(buckyos_root, dry_run=dry_run)
     _remove_tree(buckycli_root, dry_run=dry_run)
 
-    _prepare_publish_dependencies(
-        project_path=project_path,
-        target=target,
-        dry_run=dry_run,
-        skip_cargo_update=skip_cargo_update,
-        rust_target=rust_target,
-        timings_dir=timings_dir,
-    )
-
     if not skip_cargo_update:
         _run_checked(["cargo", "update"], cwd=SRC_DIR, dry_run=dry_run)
     buckyos_build_cmd = _buckyos_build_command(
@@ -1112,6 +1103,16 @@ def _prepare_common_build_root(
         ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=buckyos"],
         cwd=SRC_DIR,
         dry_run=dry_run,
+    )
+    # Dependency apps share the BuckyOS root. Install them only after the base
+    # app, whose clean_paths may otherwise remove files they already staged.
+    _prepare_publish_dependencies(
+        project_path=project_path,
+        target=target,
+        dry_run=dry_run,
+        skip_cargo_update=skip_cargo_update,
+        rust_target=rust_target,
+        timings_dir=timings_dir,
     )
     _ensure_executable(buckyos_root / "bin" / "stop_osx.sh", dry_run=dry_run)
     _run_checked(
