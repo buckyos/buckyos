@@ -846,20 +846,14 @@ def _prepare_common_build_root(
     _remove_tree(buckyos_root, dry_run=dry_run)
     _remove_tree(buckycli_root, dry_run=dry_run)
 
-    if (not skip_cyfs_gateway) and CYFS_SRC_DIR.exists():
-        if not dry_run:
-            buckyos_root.mkdir(parents=True, exist_ok=True)
+    prepare_cyfs_gateway = (not skip_cyfs_gateway) and CYFS_SRC_DIR.exists()
+    if prepare_cyfs_gateway:
         if not skip_cargo_update:
             _run_checked(["cargo", "update"], cwd=CYFS_SRC_DIR, dry_run=dry_run)
         cyfs_build_cmd = ["buckyos-build"]
         if rust_target:
             cyfs_build_cmd.append(f"--target={rust_target}")
         _run_checked(cyfs_build_cmd, cwd=CYFS_SRC_DIR, dry_run=dry_run)
-        _run_checked(
-            ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=cyfs-gateway"],
-            cwd=CYFS_SRC_DIR,
-            dry_run=dry_run,
-        )
     elif skip_cyfs_gateway:
         print("[prepare] skip cyfs-gateway by request")
     else:
@@ -881,6 +875,14 @@ def _prepare_common_build_root(
         cwd=SRC_DIR,
         dry_run=dry_run,
     )
+    # Dependency apps share the BuckyOS root. Install them only after the base
+    # app, whose clean_paths may otherwise remove files they already staged.
+    if prepare_cyfs_gateway:
+        _run_checked(
+            ["buckyos-install", "--all", f"--target-rootfs={buckyos_root}", "--app=cyfs-gateway"],
+            cwd=CYFS_SRC_DIR,
+            dry_run=dry_run,
+        )
     _ensure_executable(buckyos_root / "bin" / "stop_osx.sh", dry_run=dry_run)
     _run_checked([python_exe, "make_config.py", "release", f"--rootfs={buckyos_root}"], cwd=SRC_DIR, dry_run=dry_run)
 
