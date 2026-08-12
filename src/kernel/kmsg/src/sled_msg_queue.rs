@@ -1,12 +1,12 @@
 use ::kRPC::*;
 use async_trait::async_trait;
 use buckyos_api::msg_queue::*;
-use buckyos_kit::get_buckyos_service_local_data_dir;
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::{
     HttpServer, ServerError, ServerErrorCode, ServerResult, StreamInfo, serve_http_by_rpc_handler,
     server_err,
 };
+use buckyos_kit::get_buckyos_service_local_data_dir;
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use serde::{Deserialize, Serialize};
@@ -178,6 +178,7 @@ impl SledMsgQueue {
             .map_err(|err| RPCErrors::ReasonError(format!("Failed to decode message: {}", err)))
     }
 
+    #[allow(dead_code)]
     fn encode_message(message: &Message) -> std::result::Result<Vec<u8>, RPCErrors> {
         serde_json::to_vec(message)
             .map_err(|err| RPCErrors::ReasonError(format!("Failed to encode message: {}", err)))

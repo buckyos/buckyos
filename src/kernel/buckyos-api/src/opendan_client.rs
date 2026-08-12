@@ -38,29 +38,9 @@ pub struct OpenDanWorkspaceInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_db_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worklog_db_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OpenDanWorklogItem {
-    pub log_id: String,
-    pub log_type: String,
-    pub status: String,
-    pub timestamp: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub related_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -106,15 +86,6 @@ pub struct OpenDanSubAgentInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OpenDanAgentListResult {
     pub items: Vec<OpenDanAgentInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OpenDanWorkspaceWorklogsResult {
-    pub items: Vec<OpenDanWorklogItem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,57 +214,6 @@ impl OpenDanGetWorkshopReq {
         serde_json::from_value(value).map_err(|error| {
             RPCErrors::ParseRequestError(format!(
                 "Failed to parse OpenDanGetWorkshopReq: {}",
-                error
-            ))
-        })
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OpenDanListWorkshopWorklogsReq {
-    pub agent_id: String,
-    pub owner_session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub log_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keyword: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-}
-
-impl OpenDanListWorkshopWorklogsReq {
-    pub fn new(
-        agent_id: String,
-        owner_session_id: String,
-        log_type: Option<String>,
-        status: Option<String>,
-        step_id: Option<String>,
-        keyword: Option<String>,
-        limit: Option<u32>,
-        cursor: Option<String>,
-    ) -> Self {
-        Self {
-            agent_id,
-            owner_session_id,
-            log_type,
-            status,
-            step_id,
-            keyword,
-            limit,
-            cursor,
-        }
-    }
-
-    pub fn from_json(value: Value) -> Result<Self> {
-        serde_json::from_value(value).map_err(|error| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse OpenDanListWorkshopWorklogsReq: {}",
                 error
             ))
         })
@@ -590,60 +510,6 @@ impl OpenDanClient {
         }
     }
 
-    pub async fn list_workshop_worklogs(
-        &self,
-        agent_id: &str,
-        owner_session_id: &str,
-        log_type: Option<&str>,
-        status: Option<&str>,
-        step_id: Option<&str>,
-        keyword: Option<&str>,
-        limit: Option<u32>,
-        cursor: Option<&str>,
-    ) -> Result<OpenDanWorkspaceWorklogsResult> {
-        match self {
-            Self::InProcess(handler) => {
-                let ctx = RPCContext::default();
-                let req = OpenDanListWorkshopWorklogsReq::new(
-                    agent_id.to_string(),
-                    owner_session_id.to_string(),
-                    log_type.map(|value| value.to_string()),
-                    status.map(|value| value.to_string()),
-                    step_id.map(|value| value.to_string()),
-                    keyword.map(|value| value.to_string()),
-                    limit,
-                    cursor.map(|value| value.to_string()),
-                );
-                handler.handle_list_workshop_worklogs(req, ctx).await
-            }
-            Self::KRPC(client) => {
-                let req = OpenDanListWorkshopWorklogsReq::new(
-                    agent_id.to_string(),
-                    owner_session_id.to_string(),
-                    log_type.map(|value| value.to_string()),
-                    status.map(|value| value.to_string()),
-                    step_id.map(|value| value.to_string()),
-                    keyword.map(|value| value.to_string()),
-                    limit,
-                    cursor.map(|value| value.to_string()),
-                );
-                let req_json = serde_json::to_value(&req).map_err(|error| {
-                    RPCErrors::ReasonError(format!(
-                        "Failed to serialize OpenDanListWorkshopWorklogsReq: {}",
-                        error
-                    ))
-                })?;
-                let result = client.call("list_workshop_worklogs", req_json).await?;
-                serde_json::from_value(result).map_err(|error| {
-                    RPCErrors::ParserResponseError(format!(
-                        "Failed to parse list_workshop_worklogs response: {}",
-                        error
-                    ))
-                })
-            }
-        }
-    }
-
     pub async fn list_workshop_todos(
         &self,
         agent_id: &str,
@@ -873,12 +739,6 @@ pub trait OpenDanHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<OpenDanWorkspaceInfo>;
 
-    async fn handle_list_workshop_worklogs(
-        &self,
-        request: OpenDanListWorkshopWorklogsReq,
-        ctx: RPCContext,
-    ) -> Result<OpenDanWorkspaceWorklogsResult>;
-
     async fn handle_list_workshop_todos(
         &self,
         request: OpenDanListWorkshopTodosReq,
@@ -945,11 +805,6 @@ impl<T: OpenDanHandler> RPCHandler for OpenDanServerHandler<T> {
             "get_workshop" => {
                 let request = OpenDanGetWorkshopReq::from_json(req.params)?;
                 let result = self.0.handle_get_workshop(&request.agent_id, ctx).await?;
-                RPCResult::Success(json!(result))
-            }
-            "list_workshop_worklogs" => {
-                let request = OpenDanListWorkshopWorklogsReq::from_json(req.params)?;
-                let result = self.0.handle_list_workshop_worklogs(request, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             "list_workshop_todos" => {

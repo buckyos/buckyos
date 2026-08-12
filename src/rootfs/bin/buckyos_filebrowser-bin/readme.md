@@ -1,1 +1,1 @@
-dev test put exe here
+现在非docker版的filebrowser不会使用了(filebrowser变成了纯example)

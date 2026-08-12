@@ -1,0 +1,15 @@
+[package]
+name = "kevent_peer_container_harness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kevent_peer_harness"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1.89"
+buckyos-api = { path = "../../../../src/kernel/buckyos-api" }
+kevent = { path = "../../../../src/kernel/kevent" }
+serde_json = "1.0.149"
+tokio = { version = "1.49.0", features = ["full"] }

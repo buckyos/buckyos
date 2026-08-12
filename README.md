@@ -48,10 +48,12 @@ After cloning, install `uv` first. The repo now ships a root `pyproject.toml`, s
 
 ```bash
 cd buckyos
-uv run src/buckyos-build.py --no-build-web-apps
+uv run src/buckyos-build.py --skip-web
 ```
 
-Before building, you can refer to `devenv.py` to prepare the environment. The main dependencies are the Rust toolchain, Node.js + pnpm, Python 3.12, and `docker.io`. Once those are ready, use the following steps.
+If your machine is not ready for BuckyOS development yet, you can run `python3 devenv.py` first. The script installs `uv`, `deno`, `tmux`, and other basic dependencies according to the current platform.
+
+Before building, you can refer to `devenv.py` to prepare the environment. The main dependencies are the Rust toolchain, Node.js + pnpm, Python 3.12, `uv`, Deno, tmux, and `docker.io`. Once those are ready, use the following steps.
 
 ### Step 1. Build cyfs-gateway
 
@@ -65,15 +67,23 @@ uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" 
 uvx --from "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git" buckyos-install --all
 ```
 
-### Step 2. Build buckyos
+### Step 2. Build and update buckyos rootfs
 
 Return to the BuckyOS repository and run:
 
 ```bash
 cd buckyos/src
 uv run ./buckyos-build.py
-uv run buckyos-install --all
+uv run ./buckyos-install.py --all
 ```
+
+`uv run ./buckyos-build.py` is intentionally not a pure compile command. It runs the devkit `buckyos-build` command first, then runs `buckyos-update` to copy the latest build results into the installed BuckyOS rootfs, usually `/opt/buckyos` on macOS/Linux or `%APPDATA%\buckyos` on Windows. VM-related development scripts depend on this rootfs being up to date; Linux VM flows can use cross-compiled results through the updated rootfs directly.
+
+Keep the `buckyos-install.py --all` step for a first source installation or when you need a full refresh of the installed rootfs data/config/module layout. For normal development after BuckyOS has already been installed, `uv run ./buckyos-build.py` is the usual "compile and update installed rootfs" command.
+
+If BuckyOS is already running, `buckyos-build.py` may try to overwrite running binaries such as `bin/node-daemon/node_daemon`. Stop the local runtime before updating installed artifacts. During the current transition period, `src/stop.py` only kills known process names and does not disable host service managers or keepalive launchers, so a service-managed `node_daemon` may be restarted automatically. The replacement path is `buckycli node stop` / `buckycli node restart`, but this command family is still being validated.
+
+Be especially careful when developing on a machine that also has the BuckyOS Desktop edition installed. A source development rootfs and a Desktop-managed BuckyOS runtime can compete for the same root, service registration, ports, and running processes. The newer `buckycli node ...` commands are intended to detect and handle the common conflicts, but the safer workflow is to keep source development and BuckyOS Desktop testing in separate environments. For example, run the Desktop edition in a dedicated VM and keep the host machine for source development.
 
 ### Step 3. Start buckyos
 
@@ -100,7 +110,9 @@ sudo /opt/buckyos/bin/node-daemon/node_daemon --enable_active
 #### Common pitfalls and troubleshooting during the transition period
 
 - **You may need `cargo update` frequently**: especially in a fresh environment or when the lockfile has drifted.
-- **`make_config.py` depends on `buckycli`**: in practice, you usually need to run `buckyos-build && buckyos-install` in the buckyos repo first to make sure `buckycli` is available.
+- **`make_config.ts` requires Deno >= 2.2**: run it from the buckyos `src/` directory with `deno task make_config <group> --rootfs <rootfs>`.
+- **Do not manually kill a service-managed `node_daemon` and expect it to stay stopped**: launchd, systemd, or Windows keepalive tasks can restart it. Use the BuckyOS stop/uninstall path that matches how it was started.
+- **Avoid mixing source development and BuckyOS Desktop on the same machine unless you manage the runtime deliberately**: both environments can touch the same installed rootfs and host service state. Keeping Desktop in a VM is the recommended low-friction setup.
 
 ### Common scripts in the source tree
 
@@ -108,8 +120,10 @@ sudo /opt/buckyos/bin/node-daemon/node_daemon --enable_active
 
 ```bash
 cd src
-uv run ./buckyos-build.py --no-build-web-apps
+uv run ./buckyos-build.py --skip-web
 ```
+
+This still updates the installed rootfs after the Rust build succeeds; `--skip-web` only skips web UI builds.
 
 - Update only the compiled artifacts and then start `/opt/buckyos`:
 
@@ -179,8 +193,10 @@ SourceDAO is the open-source DAO smart contract built on these ideas. For more d
 
 #### 2026
 
-- **0.6.0 Beta2:** 2.5% (This release in Q1 2026; iterative development is ongoing)
-- **0.7.0 Beta3:** 2.5% (Planned for late April 2026)
+- **0.6.0 Beta2:** 4% (Completed in April 2026)
+- **0.7.0 Beta2.2:** 7.5% (Planned for May 2026)
+- **0.8.0 Beat3:** 4% (Planed for July 2026)
+
 
 ## License
 

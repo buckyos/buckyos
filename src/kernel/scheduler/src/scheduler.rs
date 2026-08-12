@@ -89,7 +89,7 @@ SchedulerAction 的执行由外部模块负责：
 - 更新 Gateway 路由：根据 ServiceInfo 生成各 Node 的 gateway_config（process chain 规则）
     - Kernel/Service 服务 → 匹配 /kapi/{service_name} 路径
     - App 服务 → 匹配 host 前缀（子域名），支持 shortcut 快捷方式
-    - 单实例本机 → 直接 forward 到 127.0.0.1:{port}
+    - 单实例本机 → 直接 forward 到 tcp:///127.0.0.1:{port}
     - 其他情况 → 通过 buckyos-select 路由
 
 ## 工作原则
@@ -147,6 +147,7 @@ pub enum ServiceSpecType {
     Kernel,  //kernel service 无owner_user_id
     Service, //系统服务
     App,     // 无状态的app服务，有owner_user_id
+    Agent,
 }
 
 impl From<String> for ServiceSpecType {
@@ -155,9 +156,16 @@ impl From<String> for ServiceSpecType {
             "kernel" => ServiceSpecType::Kernel,
             "service" => ServiceSpecType::Service,
             "frame" => ServiceSpecType::Service,
+            "agent" => ServiceSpecType::Agent,
             "app" => ServiceSpecType::App,
             _ => ServiceSpecType::App,
         }
+    }
+}
+
+impl ServiceSpecType {
+    pub fn is_app_like(&self) -> bool {
+        matches!(self, ServiceSpecType::App | ServiceSpecType::Agent)
     }
 }
 
@@ -882,7 +890,7 @@ impl NodeScheduler {
                     ));
                 }
                 ServiceSpecState::Disable => {
-                    if spec_snapshot.spec_type != ServiceSpecType::App {
+                    if !spec_snapshot.spec_type.is_app_like() {
                         continue;
                     }
 

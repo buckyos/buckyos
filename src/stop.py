@@ -83,6 +83,7 @@ def kill_all():
     kill_process("scheduler")
     kill_process("verify-hub")
     kill_process("verify_hub")
+    kill_process("klog-daemon")
     kill_process("system-config")
     kill_process("system_config")
     kill_process("cyfs-gateway")
@@ -99,6 +100,7 @@ def kill_all():
     kill_process("kmsg")
     kill_process("msg_center")
     kill_process("opendan")
+    kill_process("workflow")
     kill_devtest_containers()
 
 

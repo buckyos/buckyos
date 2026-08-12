@@ -1,4 +1,6 @@
 {
+  "did": "__APP_DID__",
+  "doc_type": "app",
   "name": "__APP_ID__",
   "version": "__VERSION__",
   "show_name": "App Installer Agent Fixture",
@@ -17,9 +19,20 @@
     }
   },
   "selector_type": "single",
-  "install_config_tips": {
-    "service_ports": {
-      "http": 4060
+  "service_config_tips": {
+    "service_endpoints": {
+      "http": {
+        "protocol": "http",
+        "inner_port": 4060,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": false
+        }
+      }
     }
   },
   "pkg_list": {
@@ -28,6 +41,6 @@
     }
   },
   "deps": {
-    "__APP_ID__-agent": "__VERSION__"
+    "__AGENT_PKG_NAME__": "__VERSION__"
   }
 }

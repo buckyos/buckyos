@@ -3,32 +3,43 @@
 输入信息： docker-url / app_name / 基本配置
 ```json
 {
-    "pkg_name":"username-appname",
+    "did":"did:bns:username-appname.owner",
+    "doc_type":"app",
+    "name":"username-appname",
     "version":"0.1.0",
     "tag":"latest",
-    "app_name" : "appname",
+    "show_name" : "appname",
     "description" : {
         "detail":"appname"
     },
-    "author" : "user_zone_host",
-    "pub_time":0,
+    "author" : "did:web:user-zone-host",
+    "owner" : "did:bns:owner",
+    "categories": ["dapp"],
+    "selector_type": "single",
     "exp":0,
     "pkg_list" : {
         "amd64_docker_image" : {
-            "docker_image_name":"docker-url"
-        },
+            "docker_image_name":"docker-url",
+            "pkg_id":"username-appname-img#0.1.0"
+        }
     },
     "deps":{
 
     },
-    "install_config" : {
-        "data_mount_point" : [],
-        "cache_mount_point" : [],
-        "local_cache_mount_point" : [],
-        "tcp_ports" : {
-            "www":80
-        },
-        "udp_ports" : {
+    "service_config_tips": {
+        "data_mount_points": {},
+        "local_cache_mount_points": {},
+        "service_endpoints": {
+            "www": {
+                "protocol": "http",
+                "inner_port": 80,
+                "required": true,
+                "expose": {
+                    "route": {
+                        "type": "web"
+                    }
+                }
+            }
         }
     }
 }

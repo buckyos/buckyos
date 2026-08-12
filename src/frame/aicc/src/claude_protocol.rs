@@ -1,8 +1,22 @@
 #![allow(dead_code)]
 
 use crate::aicc::ProviderError;
-use buckyos_api::{AiToolSpec, CompleteRequest, ResourceRef};
+use buckyos_api::{
+    AiContent, AiMessage, AiMethodRequest, AiRole, AiToolResultContent, AiToolSpec, ResourceRef,
+};
 use serde_json::{json, Map, Value};
+
+/// Tool result lowering dialect.
+///
+/// `Claude` emits native `tool_use` / `tool_result` content blocks.
+/// `MiniMax` exposes the Anthropic surface but per spec we degrade tool
+/// results to plain user text — the upstream endpoint does not reliably
+/// honor native tool_result blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProtocolDialect {
+    Claude,
+    MiniMax,
+}
 
 const CLAUDE_OPTION_ALLOWLIST: &[&str] = &[
     "max_tokens",
@@ -18,7 +32,7 @@ const CLAUDE_OPTION_ALLOWLIST: &[&str] = &[
     "system",
 ];
 const CLAUDE_TOOL_NAME_PATTERN: &str = "^[a-zA-Z0-9_-]+$";
-const DEFAULT_MAX_TOKENS: u64 = 1024;
+const FALLBACK_MAX_TOKENS: u64 = 1024;
 
 fn is_valid_claude_tool_name(value: &str) -> bool {
     !value.is_empty()
@@ -49,7 +63,7 @@ fn default_tool_input_schema() -> Value {
 fn build_claude_tool(
     raw_name: &str,
     description: Option<&str>,
-    input_schema: Value,
+    mut input_schema: Value,
     field_path: &str,
 ) -> Result<Value, ProviderError> {
     let name = validate_claude_tool_name(raw_name, field_path)?;
@@ -67,6 +81,14 @@ fn build_claude_tool(
         );
     }
 
+    if let Some(map) = input_schema.as_object_mut() {
+        // Claude (like OpenAI) requires `input_schema` to declare
+        // `"type":"object"` at the top level. Hand-authored tool specs
+        // sometimes omit it — fill it in rather than letting the API
+        // reject the whole request.
+        map.entry("type".to_string())
+            .or_insert_with(|| Value::String("object".to_string()));
+    }
     normalized.insert("input_schema".to_string(), input_schema);
     Ok(Value::Object(normalized))
 }
@@ -86,6 +108,7 @@ fn convert_internal_tool(tool: &Map<String, Value>, idx: usize) -> Result<Value,
 
     let input_schema = tool
         .get("args_schema")
+        .or_else(|| tool.get("args_json_schema"))
         .cloned()
         .unwrap_or_else(default_tool_input_schema);
     if !input_schema.is_object() {
@@ -123,6 +146,7 @@ fn normalize_openai_function_tool(
 
     let input_schema = function_obj
         .get("parameters")
+        .or_else(|| function_obj.get("args_json_schema"))
         .cloned()
         .unwrap_or_else(default_tool_input_schema);
     if !input_schema.is_object() {
@@ -185,9 +209,15 @@ fn normalize_tools_option(tools: &Value) -> Result<Value, ProviderError> {
 
         let converted = match tool_obj.get("type").and_then(|value| value.as_str()) {
             Some("function") => normalize_openai_function_tool(tool_obj, idx)?,
+            Some(other) if is_claude_server_tool_type(other) => {
+                // Anthropic-native server-side tools (`web_search_20250305`,
+                // `code_execution_20250522`, etc.) pass through verbatim — the
+                // Messages API expects `{type, name, ...}` as-is.
+                Value::Object(tool_obj.clone())
+            }
             Some(other) => {
                 return Err(ProviderError::fatal(format!(
-                    "tools[{}].type '{}' is unsupported; only 'function' is supported",
+                    "tools[{}].type '{}' is unsupported; only 'function' or Anthropic server-side tools are supported",
                     idx, other
                 )));
             }
@@ -217,6 +247,77 @@ pub(crate) fn merge_tool_calls(
         ProviderError::fatal(format!("failed to serialize payload.tool_calls: {err}"))
     })?;
     target.insert("tools".to_string(), normalize_tools_option(&raw_tools)?);
+    Ok(())
+}
+
+/// Anthropic-native server-side tool type prefix. Used to recognise tools that
+/// should pass through `normalize_tools_option` verbatim.
+fn is_claude_server_tool_type(tool_type: &str) -> bool {
+    // Anthropic versions server tools with a `_YYYYMMDD` suffix (e.g.
+    // `web_search_20250305`, `code_execution_20250522`,
+    // `computer_20250124`). Match the family by prefix so newly-released
+    // versions don't require a code change.
+    const PREFIXES: &[&str] = &[
+        "web_search_",
+        "code_execution_",
+        "computer_",
+        "text_editor_",
+        "bash_",
+    ];
+    PREFIXES.iter().any(|p| tool_type.starts_with(p))
+}
+
+const CLAUDE_WEB_SEARCH_TOOL_TYPE: &str = "web_search_20250305";
+const CLAUDE_WEB_SEARCH_TOOL_NAME: &str = "web_search";
+
+/// Inject Anthropic's server-side `web_search` tool when the request
+/// requires the `web_search` feature.
+///
+/// Mirrors `OpenAIProvider::merge_requirements_tools` — the router records
+/// `requirements.web_search: true` for `llm.chat`, and each provider is
+/// responsible for translating that into its native server-tool wire format.
+pub(crate) fn merge_requirements_tools(
+    target: &mut Map<String, Value>,
+    req: &AiMethodRequest,
+) -> Result<(), ProviderError> {
+    let web_search_required = req
+        .requirements
+        .requires_feature(buckyos_api::features::WEB_SEARCH);
+    if !web_search_required {
+        return Ok(());
+    }
+
+    let web_search_tool = json!({
+        "type": CLAUDE_WEB_SEARCH_TOOL_TYPE,
+        "name": CLAUDE_WEB_SEARCH_TOOL_NAME,
+    });
+
+    if let Some(tools_value) = target.get_mut("tools") {
+        let Some(tools) = tools_value.as_array_mut() else {
+            return Err(ProviderError::fatal(
+                "tools must be an array when enabling web_search",
+            ));
+        };
+        let already_has_web_search = tools.iter().any(|item| {
+            let type_matches = item
+                .get("type")
+                .and_then(|value| value.as_str())
+                .map(|value| value.starts_with("web_search_"))
+                .unwrap_or(false);
+            let name_matches = item
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map(|value| value == CLAUDE_WEB_SEARCH_TOOL_NAME)
+                .unwrap_or(false);
+            type_matches || name_matches
+        });
+        if !already_has_web_search {
+            tools.push(web_search_tool);
+        }
+        return Ok(());
+    }
+
+    target.insert("tools".to_string(), Value::Array(vec![web_search_tool]));
     Ok(())
 }
 
@@ -576,7 +677,7 @@ pub(crate) fn merge_options(
     Ok((ignored, extra_messages))
 }
 
-fn build_fallback_content(req: &CompleteRequest) -> Result<Option<String>, ProviderError> {
+fn build_fallback_content(req: &AiMethodRequest) -> Result<Option<String>, ProviderError> {
     let mut content = req
         .payload
         .text
@@ -616,35 +717,114 @@ fn build_fallback_content(req: &CompleteRequest) -> Result<Option<String>, Provi
     }
 }
 
-fn build_messages(req: &CompleteRequest) -> Result<(Option<String>, Vec<Value>), ProviderError> {
-    let mut system_parts = vec![];
-    let mut messages = vec![];
+fn content_value_to_text(value: &Value) -> Result<Option<String>, ProviderError> {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        return Ok((!text.is_empty()).then(|| text.to_string()));
+    }
 
-    for msg in req.payload.messages.iter() {
-        let role = msg.role.trim().to_lowercase();
-        let content = msg.content.trim();
-        if role.is_empty() || content.is_empty() {
+    let Some(parts) = value.as_array() else {
+        return Ok(None);
+    };
+
+    let mut lines = Vec::new();
+    for part in parts {
+        let Some(part_obj) = part.as_object() else {
             continue;
+        };
+        match part_obj.get("type").and_then(|value| value.as_str()) {
+            Some("text") => {
+                if let Some(text) = part_obj
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    lines.push(text.to_string());
+                }
+            }
+            Some("resource") => {
+                if let Some(resource_value) = part_obj.get("resource") {
+                    let resource: ResourceRef = serde_json::from_value(resource_value.clone())
+                        .map_err(|err| {
+                            ProviderError::fatal(format!("invalid content resource part: {}", err))
+                        })?;
+                    match resource {
+                        ResourceRef::Url { url, .. } => {
+                            lines.push(format!("resource_url: {}", url));
+                        }
+                        ResourceRef::NamedObject { obj_id } => {
+                            lines.push(format!("named_object: {}", obj_id));
+                        }
+                        ResourceRef::Base64 { .. } => {
+                            return Err(ProviderError::fatal(
+                                "claude provider does not support base64 resources in this version",
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
+    }
 
-        match role.as_str() {
-            "system" => {
-                system_parts.push(content.to_string());
-            }
-            "user" => {
-                messages.push(text_message("user", content));
-            }
-            "assistant" => {
-                messages.push(text_message("assistant", content));
-            }
-            "tool" => {
-                messages.push(text_message("user", format!("tool: {}", content).as_str()));
-            }
-            other => {
-                messages.push(text_message(
-                    "user",
-                    format!("{}: {}", other, content).as_str(),
-                ));
+    if lines.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(lines.join("\n")))
+    }
+}
+
+fn build_messages(
+    req: &AiMethodRequest,
+    dialect: ProtocolDialect,
+) -> Result<(Option<String>, Vec<Value>), ProviderError> {
+    let mut system_parts: Vec<String> = vec![];
+    let mut messages: Vec<Value> = vec![];
+
+    // 主路径:消费 typed `Vec<AiMessage>` —— 保留 ToolUse / ToolResult /
+    // Image / Document / Thinking 等 block,不再压缩成纯文本。
+    if !req.payload.messages.is_empty() {
+        for msg in req.payload.messages.iter() {
+            lower_ai_message(msg, dialect, &mut system_parts, &mut messages)?;
+        }
+    }
+
+    // 兼容路径:caller 直接通过 input_json.messages 喂裸 JSON。这条线现在
+    // 仅承担降级到 text 的兜底 —— 上游已经鼓励走 typed messages。
+    if messages.is_empty() && system_parts.is_empty() {
+        if let Some(canonical_messages) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("messages"))
+            .and_then(|value| value.as_array())
+        {
+            for msg in canonical_messages {
+                let Some(msg_obj) = msg.as_object() else {
+                    continue;
+                };
+                let role = msg_obj
+                    .get("role")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("user")
+                    .to_lowercase();
+                let Some(content) = msg_obj
+                    .get("content")
+                    .map(content_value_to_text)
+                    .transpose()?
+                    .flatten()
+                else {
+                    continue;
+                };
+                push_text_message_content(
+                    &mut system_parts,
+                    &mut messages,
+                    role.as_str(),
+                    content.as_str(),
+                );
             }
         }
     }
@@ -670,7 +850,292 @@ fn build_messages(req: &CompleteRequest) -> Result<(Option<String>, Vec<Value>),
     Ok((system, messages))
 }
 
-fn resolve_provider_model(req: &CompleteRequest, provider_model: &str) -> Option<String> {
+/// Lower a single `AiMessage` (typed content blocks) into Claude / MiniMax
+/// native message form. System/Developer text accumulates into
+/// `system_parts`; everything else lands in `messages`.
+fn lower_ai_message(
+    msg: &AiMessage,
+    dialect: ProtocolDialect,
+    system_parts: &mut Vec<String>,
+    messages: &mut Vec<Value>,
+) -> Result<(), ProviderError> {
+    match msg.role {
+        AiRole::System | AiRole::Developer => {
+            let mut text = String::new();
+            for block in &msg.content {
+                if let AiContent::Text { text: chunk } = block {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(chunk);
+                }
+            }
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                system_parts.push(trimmed.to_string());
+            }
+        }
+        AiRole::User => {
+            let blocks = lower_user_blocks(&msg.content)?;
+            if !blocks.is_empty() {
+                messages.push(json!({ "role": "user", "content": blocks }));
+            }
+        }
+        AiRole::Assistant => {
+            let blocks = lower_assistant_blocks(&msg.content)?;
+            if !blocks.is_empty() {
+                messages.push(json!({ "role": "assistant", "content": blocks }));
+            }
+        }
+        AiRole::Tool => {
+            // Validator guarantees a single ToolResult block; defend against
+            // misuse anyway.
+            let Some(AiContent::ToolResult {
+                call_id,
+                content,
+                is_error,
+            }) = msg.content.first()
+            else {
+                return Ok(());
+            };
+            match dialect {
+                ProtocolDialect::Claude => {
+                    let blocks = lower_tool_result_content_claude(content)?;
+                    let mut tr = json!({
+                        "type": "tool_result",
+                        "tool_use_id": call_id,
+                        "content": blocks,
+                    });
+                    if *is_error {
+                        if let Value::Object(map) = &mut tr {
+                            map.insert("is_error".to_string(), Value::Bool(true));
+                        }
+                    }
+                    messages.push(json!({
+                        "role": "user",
+                        "content": [tr],
+                    }));
+                }
+                ProtocolDialect::MiniMax => {
+                    // Degrade to user text per the MiniMax spec.
+                    let text = tool_result_content_to_text(content);
+                    let body = if *is_error {
+                        format!("tool_result[{}] (error): {}", call_id, text)
+                    } else {
+                        format!("tool_result[{}]: {}", call_id, text)
+                    };
+                    messages.push(text_message("user", body.as_str()));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_user_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = Vec::with_capacity(content.len());
+    for block in content {
+        match block {
+            AiContent::Text { text } => {
+                if !text.is_empty() {
+                    blocks.push(text_content_block(text));
+                }
+            }
+            AiContent::Image { source } => {
+                blocks.push(image_block_from_source(source)?);
+            }
+            AiContent::Document { source, title } => {
+                blocks.push(document_block_from_source(source, title.as_deref())?);
+            }
+            _ => {
+                // Validator rejects other block types on User role; ignore
+                // defensively rather than fatal.
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn lower_assistant_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = Vec::with_capacity(content.len());
+    for block in content {
+        match block {
+            AiContent::Text { text } => {
+                if !text.is_empty() {
+                    blocks.push(text_content_block(text));
+                }
+            }
+            AiContent::ToolUse {
+                call_id,
+                name,
+                args,
+            } => {
+                let input = serde_json::to_value(args).unwrap_or_else(|_| json!({}));
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": name,
+                    "input": input,
+                }));
+            }
+            AiContent::Thinking {
+                text,
+                provider_metadata,
+                summary,
+            } => {
+                // Claude `thinking` blocks pair `thinking` (plaintext) with
+                // `signature` (verifier blob). When we don't have a signature
+                // we fall back to emitting just the summary as text so the
+                // assistant turn isn't reduced to nothing.
+                let signature = provider_metadata
+                    .as_ref()
+                    .and_then(|value| value.get("signature"))
+                    .and_then(|value| value.as_str());
+                if let (Some(thinking), Some(sig)) = (text.as_deref(), signature) {
+                    blocks.push(json!({
+                        "type": "thinking",
+                        "thinking": thinking,
+                        "signature": sig,
+                    }));
+                } else if let Some(summary) = summary.as_deref().filter(|s| !s.is_empty()) {
+                    blocks.push(text_content_block(summary));
+                } else if let Some(thinking) = text.as_deref().filter(|s| !s.is_empty()) {
+                    blocks.push(text_content_block(thinking));
+                }
+            }
+            AiContent::ProviderState { provider, value } => {
+                // Restore native item only when the block was authored by
+                // this provider; other providers' opaque state is dropped.
+                if provider.eq_ignore_ascii_case("anthropic") {
+                    blocks.push(value.clone());
+                }
+            }
+            _ => {
+                // ToolResult / Image / Document not valid on Assistant role —
+                // validator catches this upstream.
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn lower_tool_result_content_claude(
+    content: &[AiToolResultContent],
+) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = Vec::with_capacity(content.len());
+    for item in content {
+        match item {
+            AiToolResultContent::Text { text } => {
+                blocks.push(text_content_block(text));
+            }
+            AiToolResultContent::Image { source } => {
+                blocks.push(image_block_from_source(source)?);
+            }
+            AiToolResultContent::Document { source, title } => {
+                blocks.push(document_block_from_source(source, title.as_deref())?);
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn tool_result_content_to_text(content: &[AiToolResultContent]) -> String {
+    let mut parts = Vec::new();
+    for item in content {
+        match item {
+            AiToolResultContent::Text { text } => parts.push(text.clone()),
+            AiToolResultContent::Image { source } => {
+                parts.push(resource_text_placeholder(source));
+            }
+            AiToolResultContent::Document { source, title } => {
+                let mut line = resource_text_placeholder(source);
+                if let Some(title) = title {
+                    line.push_str(" (");
+                    line.push_str(title);
+                    line.push(')');
+                }
+                parts.push(line);
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn resource_text_placeholder(source: &ResourceRef) -> String {
+    match source {
+        ResourceRef::Url { url, .. } => format!("resource_url: {}", url),
+        ResourceRef::NamedObject { obj_id } => format!("named_object: {}", obj_id),
+        ResourceRef::Base64 { mime, .. } => format!("inline_{}", mime),
+    }
+}
+
+fn image_block_from_source(source: &ResourceRef) -> Result<Value, ProviderError> {
+    Ok(json!({
+        "type": "image",
+        "source": claude_source_object(source)?,
+    }))
+}
+
+fn document_block_from_source(
+    source: &ResourceRef,
+    title: Option<&str>,
+) -> Result<Value, ProviderError> {
+    let mut obj = Map::new();
+    obj.insert("type".to_string(), Value::String("document".to_string()));
+    obj.insert("source".to_string(), claude_source_object(source)?);
+    if let Some(title) = title.filter(|s| !s.is_empty()) {
+        obj.insert("title".to_string(), Value::String(title.to_string()));
+    }
+    Ok(Value::Object(obj))
+}
+
+fn claude_source_object(source: &ResourceRef) -> Result<Value, ProviderError> {
+    match source {
+        ResourceRef::Url { url, .. } => Ok(json!({
+            "type": "url",
+            "url": url,
+        })),
+        ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+            "type": "base64",
+            "media_type": mime,
+            "data": data_base64,
+        })),
+        ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+            "claude provider cannot lower named_object source `{}` without resolution",
+            obj_id
+        ))),
+    }
+}
+
+fn push_text_message_content(
+    system_parts: &mut Vec<String>,
+    messages: &mut Vec<Value>,
+    role: &str,
+    content: &str,
+) {
+    match role {
+        "system" | "developer" => {
+            system_parts.push(content.to_string());
+        }
+        "user" => {
+            messages.push(text_message("user", content));
+        }
+        "assistant" => {
+            messages.push(text_message("assistant", content));
+        }
+        "tool" => {
+            messages.push(text_message("user", format!("tool: {}", content).as_str()));
+        }
+        other => {
+            messages.push(text_message(
+                "user",
+                format!("{}: {}", other, content).as_str(),
+            ));
+        }
+    }
+}
+
+fn resolve_provider_model(req: &AiMethodRequest, provider_model: &str) -> Option<String> {
     if !provider_model.trim().is_empty() {
         return Some(provider_model.trim().to_string());
     }
@@ -691,13 +1156,28 @@ fn resolve_provider_model(req: &CompleteRequest, provider_model: &str) -> Option
 }
 
 pub(crate) fn convert_complete_request(
-    req: &CompleteRequest,
+    req: &AiMethodRequest,
     provider_model: &str,
+    default_max_tokens: Option<u64>,
+) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
+    convert_complete_request_with_dialect(
+        req,
+        provider_model,
+        ProtocolDialect::Claude,
+        default_max_tokens,
+    )
+}
+
+pub(crate) fn convert_complete_request_with_dialect(
+    req: &AiMethodRequest,
+    provider_model: &str,
+    dialect: ProtocolDialect,
+    default_max_tokens: Option<u64>,
 ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
     let model = resolve_provider_model(req, provider_model)
         .ok_or_else(|| ProviderError::fatal("provider model is required for claude request"))?;
 
-    let (system, messages) = build_messages(req)?;
+    let (system, messages) = build_messages(req, dialect)?;
 
     let mut request = Map::new();
     request.insert("model".to_string(), Value::String(model));
@@ -708,10 +1188,15 @@ pub(crate) fn convert_complete_request(
 
     let mut ignored = vec![];
     let mut extra_messages = vec![];
+    if let Some(input_json) = req.payload.input_json.as_ref() {
+        let (ignored_options, converted_tool_messages) = merge_options(&mut request, input_json)?;
+        ignored.extend(ignored_options);
+        extra_messages.extend(converted_tool_messages);
+    }
     if let Some(options) = req.payload.options.as_ref() {
         let (ignored_options, converted_tool_messages) = merge_options(&mut request, options)?;
-        ignored = ignored_options;
-        extra_messages = converted_tool_messages;
+        ignored.extend(ignored_options);
+        extra_messages.extend(converted_tool_messages);
     }
 
     if !extra_messages.is_empty() {
@@ -725,8 +1210,15 @@ pub(crate) fn convert_complete_request(
 
     merge_tool_calls(&mut request, req.payload.tool_specs.as_slice())?;
 
+    if matches!(dialect, ProtocolDialect::Claude) {
+        merge_requirements_tools(&mut request, req)?;
+    }
+
     if !request.contains_key("max_tokens") {
-        request.insert("max_tokens".to_string(), Value::from(DEFAULT_MAX_TOKENS));
+        request.insert(
+            "max_tokens".to_string(),
+            Value::from(default_max_tokens.unwrap_or(FALLBACK_MAX_TOKENS)),
+        );
     }
 
     Ok((request, ignored))
@@ -736,13 +1228,13 @@ pub(crate) fn convert_complete_request(
 mod tests {
     use super::*;
     use buckyos_api::{
-        value_to_object_map, AiMessage, AiPayload, AiToolSpec, Capability, CompleteRequest,
+        value_to_object_map, AiMessage, AiMethodRequest, AiPayload, AiRole, AiToolSpec, Capability,
         ModelSpec, Requirements,
     };
 
-    fn base_request() -> CompleteRequest {
-        CompleteRequest::new(
-            Capability::LlmRouter,
+    fn base_request() -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Llm,
             ModelSpec::new(
                 "llm.default".to_string(),
                 Some("claude-3-5-sonnet-20241022".to_string()),
@@ -757,8 +1249,8 @@ mod tests {
     fn convert_complete_request_maps_messages_and_tool_messages() {
         let mut req = base_request();
         req.payload.messages = vec![
-            AiMessage::new("system".to_string(), "system rules".to_string()),
-            AiMessage::new("user".to_string(), "hello".to_string()),
+            AiMessage::text(AiRole::System, "system rules"),
+            AiMessage::text(AiRole::User, "hello"),
         ];
         req.payload.options = Some(json!({
             "max_completion_tokens": 333,
@@ -778,7 +1270,7 @@ mod tests {
             ]
         }));
 
-        let (request, ignored) = convert_complete_request(&req, "claude-3-7-sonnet-20250219")
+        let (request, ignored) = convert_complete_request(&req, "claude-3-7-sonnet-20250219", None)
             .expect("convert should work");
         let request_value = Value::Object(request);
 
@@ -828,7 +1320,7 @@ mod tests {
             Some("text/plain".to_string()),
         )];
 
-        let (request, _ignored) = convert_complete_request(&req, "claude-3-5-haiku-20241022")
+        let (request, _ignored) = convert_complete_request(&req, "claude-3-5-haiku-20241022", None)
             .expect("convert should work");
         let request_value = Value::Object(request);
 
@@ -838,6 +1330,18 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("summarize updates\n\nresource_url: https://example.com/doc")
         );
+    }
+
+    #[test]
+    fn convert_complete_request_uses_inventory_default_max_tokens() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
+
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219", Some(8192))
+                .expect("convert should work");
+
+        assert_eq!(request.get("max_tokens"), Some(&json!(8192)));
     }
 
     #[test]
@@ -951,7 +1455,7 @@ mod tests {
     #[test]
     fn convert_complete_request_prefers_payload_tool_calls_over_option_tools() {
         let mut req = base_request();
-        req.payload.messages = vec![AiMessage::new("user".to_string(), "hello".to_string())];
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
         req.payload.tool_specs = vec![AiToolSpec {
             name: "payload_tool".to_string(),
             description: "from payload".to_string(),
@@ -968,8 +1472,9 @@ mod tests {
             ]
         }));
 
-        let (request, _ignored) = convert_complete_request(&req, "claude-3-7-sonnet-20250219")
-            .expect("convert should work");
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219", None)
+                .expect("convert should work");
         let request_value = Value::Object(request);
 
         assert_eq!(
@@ -977,6 +1482,172 @@ mod tests {
                 .pointer("/tools/0/name")
                 .and_then(|value| value.as_str()),
             Some("payload_tool")
+        );
+    }
+
+    #[test]
+    fn typed_assistant_tool_use_lowers_to_native_block() {
+        use buckyos_api::AiContent;
+        use std::collections::HashMap;
+
+        let mut req = base_request();
+        let mut args = HashMap::new();
+        args.insert("topic".to_string(), json!("project"));
+        req.payload.messages = vec![
+            AiMessage::text(AiRole::User, "look it up"),
+            AiMessage::new(
+                AiRole::Assistant,
+                vec![AiContent::tool_use("call-1", "load_memory", args)],
+            ),
+            AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::tool_result_text("call-1", "ok", false)],
+            ),
+        ];
+
+        let (request, _) = convert_complete_request(&req, "claude-3-7-sonnet-20250219", None)
+            .expect("convert should work");
+        let value = Value::Object(request);
+
+        assert_eq!(
+            value
+                .pointer("/messages/1/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("tool_use"),
+            "assistant tool_use must lower to native Claude block: {}",
+            value
+        );
+        assert_eq!(
+            value
+                .pointer("/messages/1/content/0/id")
+                .and_then(|v| v.as_str()),
+            Some("call-1")
+        );
+        assert_eq!(
+            value
+                .pointer("/messages/2/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("tool_result"),
+            "tool role must become Claude tool_result: {}",
+            value
+        );
+        assert_eq!(
+            value
+                .pointer("/messages/2/content/0/tool_use_id")
+                .and_then(|v| v.as_str()),
+            Some("call-1")
+        );
+    }
+
+    #[test]
+    fn minimax_dialect_degrades_tool_result_to_user_text() {
+        use buckyos_api::AiContent;
+
+        let mut req = base_request();
+        req.payload.messages = vec![
+            AiMessage::text(AiRole::User, "look it up"),
+            AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::tool_result_text("call-1", "ok", false)],
+            ),
+        ];
+
+        let (request, _) = convert_complete_request_with_dialect(
+            &req,
+            "MiniMax-M2.5",
+            ProtocolDialect::MiniMax,
+            None,
+        )
+        .expect("convert should work");
+        let value = Value::Object(request);
+
+        // The tool result must NOT carry a Claude-shaped tool_result block;
+        // it must collapse to plain user text per the MiniMax spec.
+        assert_ne!(
+            value
+                .pointer("/messages/1/content/0/type")
+                .and_then(|v| v.as_str()),
+            Some("tool_result"),
+            "minimax should not emit tool_result blocks: {}",
+            value
+        );
+        let body = value
+            .pointer("/messages/1/content/0/text")
+            .and_then(|v| v.as_str())
+            .expect("tool result must land as text body");
+        assert!(
+            body.contains("call-1") && body.contains("ok"),
+            "tool result text must carry call_id and payload: {}",
+            body
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_injects_anthropic_web_search() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "search")];
+        req.requirements
+            .must_features
+            .push(buckyos_api::features::WEB_SEARCH.to_string());
+
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219", None).expect("convert");
+        let tools = request
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0].get("type").and_then(|v| v.as_str()),
+            Some("web_search_20250305")
+        );
+        assert_eq!(
+            tools[0].get("name").and_then(|v| v.as_str()),
+            Some("web_search")
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_dedupes_existing_web_search() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "search")];
+        req.requirements
+            .must_features
+            .push(buckyos_api::features::WEB_SEARCH.to_string());
+        req.payload.options = Some(json!({
+            "tools": [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 3,
+                }
+            ]
+        }));
+
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219", None).expect("convert");
+        let tools = request
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .expect("tools array");
+        assert_eq!(tools.len(), 1, "should not duplicate web_search tool");
+        assert_eq!(
+            tools[0].get("max_uses").and_then(|v| v.as_u64()),
+            Some(3),
+            "existing user-supplied tool spec must be preserved"
+        );
+    }
+
+    #[test]
+    fn merge_requirements_tools_is_noop_without_requirement() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
+        let (request, _ignored) =
+            convert_complete_request(&req, "claude-3-7-sonnet-20250219", None).expect("convert");
+        assert!(
+            request.get("tools").is_none(),
+            "tools must not be set when web_search not required: {:?}",
+            request.get("tools")
         );
     }
 }

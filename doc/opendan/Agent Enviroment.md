@@ -1,418 +1,490 @@
-# Agent Enviroment 需求
+# AgentSession Prompt Environment
 
-## 1. 目标与范围
+OpenDAN `AgentSession` 把会话、workspace、pending input、行为上下文和运行时状态映射成 `llm_context::PromptRenderEngine` 可消费的变量。本文是 Behavior 开发人员查看可用模板变量的主参考。
 
-### 1.1 目标
+如果只是在写 `behaviors/*.toml`，优先看本文。另一个 [`Render_Prompt_Template_Variables.md`](Render_Prompt_Template_Variables.md) 是模板引擎自身的实现参考，面向修改 `llm_context::PromptRenderEngine` 的开发者，不列 OpenDAN 业务变量契约。
 
-在 Agent Runtime 的 `agent_environment` 中实现一个 **安全、确定性、可审计** 的模板替换引擎，用于将 Behavior 配置与 Prompt 组装中的模板占位符（`{{...}}`）渲染为最终文本，支持：
+> 文件名中的 `Enviroment` 是历史拼写，语义上是 **AgentSession Prompt Environment**。
 
-* **变量替换**：如 `{{new_msg}}`、`{{new_event}}`（运行时输入源）。
-* **文件片段 include**：如 `{{workspace/to_agent.md}}`、`{{cwd/to_agent.md}}`（从工作区/当前目录注入片段）。
-* **Null 语义**：模板替换后若 `input` 为空，则 `generate_input()` 返回 `None`，step 跳过推理并进入 `WAIT`（零 LLM 空转）。
+实现集中在 [`src/frame/opendan/src/prompt_env.rs`](../../src/frame/opendan/src/prompt_env.rs) 和 [`src/frame/opendan/src/agent_session.rs`](../../src/frame/opendan/src/agent_session.rs)。
 
-### 1.2 适用位置（MVP）
+## 1. 渲染管线
 
-引擎必须至少能在下列字段中使用（它们来自 Behavior 配置的文本字段）：
+Behavior 模板不是在加载 behavior 时预渲染，而是在 Session worker 的 hook point 上用一份冻结的环境快照渲染。
 
-* `process_rule`
-* `policy`（虽然示例主要展示 process_rule，但 prompt 组装中它也是 system prompt 的组成）
-* `input`（关键：决定是否推理）
-
-### 1.3 非目标（Non-goals）
-
-* 不支持执行脚本/表达式求值（禁止 `eval` 类能力）。
-* 不提供网络访问能力。
-* 不负责 Prompt 的 delimiter/observation 清洗截断（这是 prompt builder 的职责，但模板引擎需要提供元信息以便上层做安全处理）。
-
----
-
-## 2. 术语与概念
-
-* **Render**：将模板字符串渲染为最终字符串（或 Null）。
-* **Placeholder**：`{{ ... }}` 内的内容。
-* **Resolver**：将 placeholder 映射到具体值的解析器（变量解析器/文件解析器）。
-* **Null**：表示“无内容、应当被整体忽略”的语义（不是空字符串的简单同义）。`input` 渲染结果为 Null 时会导致跳过推理。
-
----
-
-## 3. 模板语法（MVP）
-
-### 3.1 基本形式
-
-* 占位符使用双大括号：
-
-  * `{{name}}`
-  * `{{ workspace/to_agent.md }}`（允许前后空白）
-* 匹配规则：**非嵌套** `{{` … `}}`，最左匹配到最近的 `}}` 结束（MVP 简化）。
-
-### 3.2 Placeholder 内容语法（MVP）
-
-MVP 支持两类：
-
-1. **变量名**
-
-* 语法：`[A-Za-z_][A-Za-z0-9_]*`
-* 例：`new_msg`、`new_event`
-
-2. **命名空间路径**（文件 include）
-
-* 语法：`<ns>/<rel_path>`
-* `ns`（MVP 必须支持）：
-
-  * `workspace`
-  * `cwd`
-* `rel_path`：相对路径（禁止绝对路径、禁止 `..` 穿越）
-
-### 3.3 转义（MVP）
-
-* MUST：支持输出字面量 `{{`、`}}`
-  建议语法：`\{{`、`\}}`（或 `{{"{{"}}` 这类会引入表达式，不推荐）。
-
-> 选择最易实现且不引入表达式求值的方式。
-
----
-
-## 4. 渲染上下文与变量字典
-
-### 4.1 RenderContext（建议数据结构）
-
-模板引擎不直接依赖全局单例，所有信息通过 `RenderContext` 注入，确保可测试、可并发：
-
-* `session_id`
-* `agent_id` / `subagent_id`
-* `cwd_path`（当前执行目录）
-* `workspace_roots`（0..N 个 workspace 根目录；至少包含 session 绑定的 workspace，如有）
-* `input_sources`（运行时输入源）：
-
-  * `new_msg`（string?）
-  * `new_event`（string?）
-  * SHOULD：`current_todo_details`、`last_step_summary` 等（文档列出 Input 可能包含这些来源，后续行为会用到）
-* `policy`：PolicyEngine 句柄/接口（用于 fs 权限校验）
-* `limits`：安全与性能限制（见第 8 节）
-
-> 注：文档明确 `<<Input>>` 的来源可能多种，且若无法得到 input 本 step 跳过。
-
----
-
-## 5. 解析与替换规则
-
-### 5.1 变量解析（MVP MUST）
-
-* 若 placeholder 为变量名（如 `new_msg`）：
-
-  * 从 `RenderContext.input_sources` 查找同名字段
-  * 取值类型：
-
-    * `None` → 解析结果为 Null
-    * 非空字符串 → 解析结果为该字符串
-    * 空字符串（仅空白）→ 视为 Null（默认；可配置）
-
-### 5.2 文件 include 解析（MVP MUST）
-
-* 若 placeholder 为 `workspace/<rel_path>` 或 `cwd/<rel_path>`：
-
-  * 先确定根目录：
-
-    * `cwd` → `RenderContext.cwd_path`
-    * `workspace` → `RenderContext.workspace_roots`（若多个 workspace：MVP 选择 “primary workspace”；或按顺序第一个；必须在需求里固定一种确定性规则）
-  * 路径拼接与规范化：
-
-    * MUST：拒绝绝对路径（`/`、`C:\`）
-    * MUST：拒绝包含 `..` 的路径穿越
-    * MUST：最终规范化路径必须落在根目录内（realpath containment）
-  * 权限校验：
-
-    * MUST：调用 PolicyEngine 进行读权限校验（Root/SubAgent fs_scope 都在这里统一限制）。
-  * 文件读取：
-
-    * 默认 UTF-8
-    * 二进制/不可解码：按“读取失败”处理（见错误策略）
-    * 内容过大：按截断/拒绝策略处理（见第 8 节）
-
-### 5.3 递归渲染（SHOULD）
-
-* 允许 include 的文件内容中继续包含 `{{...}}`，引擎递归渲染。
-* MUST：设置最大递归深度与循环检测（避免互相 include 死循环）。
-* 默认建议：`max_depth = 3~5`。
-
----
-
-## 6. Null 语义与渲染模式（关键）
-
-文档明确：`session.generate_input()` 判空，无有效 input 则 step 跳过并进入 `WAIT`。
-
-因此模板引擎必须至少提供两种渲染模式：
-
-### 6.1 Mode A：Text 模式（用于 process_rule/policy 等）
-
-* 返回类型：`string`（永不返回 None）
-* Null 行为：
-
-  * placeholder 解析为 Null → 替换为空字符串 `""`
-  * 渲染后执行轻度规范化（SHOULD）：
-
-    * 移除多余的连续空行（例如 3 行以上压到 2 行）
-    * 去掉行尾多余空白
-* 用途：system prompt 的组成部分（process_rule、policy 等）。
-
-### 6.2 Mode B：InputBlock 模式（用于 behavior_cfg.input → exec_input）
-
-* 返回类型：`Optional<string>`（可能为 None）
-* 输入模板通常多行拼装（如 `{{new_event}}\n{{new_msg}}`）。
-* Null 行为（MVP MUST，给出确定规则，确保“零 LLM 空转”准确）：
-
-  1. 先按 Text 模式替换 placeholder（Null→空串）
-  2. 然后做 **行级清理**：
-
-     * 按行 split
-     * 对每行 `trim()`；若为空行则丢弃
-  3. 重新用 `\n` join
-  4. 若最终字符串为空 → 返回 `None`
-* 上层行为：
-
-  * `exec_input is None` → `session.update_state("WAIT")` 并 return，不触发推理。
-
-> 这条规则是实现“零 LLM 空转”的关键验收点。
-
----
-
-## 7. 错误处理与策略（MVP 必须可控）
-
-模板替换会遇到缺变量、缺文件、权限拒绝等情况。为了运行时稳定，必须定义默认策略，并允许配置严格模式。
-
-### 7.1 错误类型（建议枚举）
-
-* `UnknownVariable`
-* `FileNotFound`
-* `PermissionDenied`
-* `PathTraversalDenied`
-* `DecodeError`
-* `IncludeTooLarge`
-* `RecursionLimitExceeded`
-* `CyclicIncludeDetected`
-* `TemplateSyntaxError`（例如缺 `}}`）
-
-### 7.2 默认策略（MVP 建议）
-
-* **容错为主**（避免因为一个可选片段导致整个 step 失败）：
-
-  * UnknownVariable → 视为 Null（替换为空）
-  * FileNotFound → 视为 Null
-  * PermissionDenied → 视为 Null + 记录审计（安全上不暴露更多信息）
-  * TemplateSyntaxError → 返回原文不替换 + 记录错误（或仅跳过该占位符）
-* 但必须有 **Strict 开关**（用于开发/测试或关键模板）：
-
-  * Strict=true 时，上述错误应导致渲染失败（抛错/返回 error），由上层决定中止 step 或降级。
-
-### 7.3 Error 输出与可观测性（MVP MUST）
-
-* 模板引擎必须输出 `RenderReport`（见第 9 节），至少记录：
-
-  * errors（类型、placeholder 原文、原因）
-  * resolved_refs（解析成功的变量/文件路径）
-  * skipped_refs（被当作 Null 的原因：缺失/权限/为空等）
-
----
-
-## 8. 安全与资源限制（MVP MUST）
-
-文档强调：Prompt 必须分段加 delimiter，tool/action 输出默认不可信并需要截断清洗；同时 PolicyEngine 负责 fs permissions、SubAgent fs_scope 等护栏。
-
-模板引擎需要落实其中与“include 文件”和“内容进入 prompt”相关的底层安全要求：
-
-### 8.1 FS 权限与 SubAgent 限制（MUST）
-
-* 所有文件 include 必须走 PolicyEngine 校验读权限：
-
-  * Root Agent 与 SubAgent 必须按各自 `fs_scope` 约束。SubAgent 的 fs_scope 文档明确要求限制。 
-* 必须禁止路径穿越、符号链接逃逸（realpath containment）。
-
-### 8.2 大小与深度限制（MUST）
-
-防止 prompt 被无意撑爆、或被恶意模板撑爆：
-
-* `max_placeholder_len`：placeholder 字符长度上限（例如 256）
-* `max_include_bytes`：单个文件 include 最大字节数（例如 64KB，超限截断或报错）
-* `max_total_render_bytes`：一次渲染的总输出上限（例如 256KB）
-* `max_depth`：递归 include 深度上限（例如 5）
-
-> 截断策略必须写入 RenderReport，便于审计与调试。
-
-### 8.3 内容分类元信息（SHOULD）
-
-虽然 delimiter/observation 清洗由上层负责，但模板引擎应在报告中标注每个片段的来源类型，帮助上层决定放在哪个 prompt 区域（system/user/observation）。文档要求 tool/action 输出默认不可信并放 observation。
-
----
-
-## 9. 对外接口（工程可直接实现）
-
-### 9.1 API 设计（建议）
-
-提供一个纯函数式核心接口，便于在 Rust/Go/TS 中实现：
-
-```text
-render(template: string, ctx: RenderContext, opt: RenderOptions) -> RenderResult
+```
+Session driver hook
+  -> freeze AgentSessionEnv
+  -> PromptRenderEngine.render()
+  -> AiMessage
+  -> LLMContext
 ```
 
-#### RenderOptions（建议字段）
+当前有四类重要 hook point：
 
-* `mode`: `TEXT | INPUT_BLOCK`
-* `strict`: bool
-* `allow_recursive`: bool
-* `max_depth`
-* `max_include_bytes`
-* `max_total_render_bytes`
-* `trim_blank_lines`: bool（INPUT_BLOCK 默认 true）
+| Hook point | 触发边界 | 典型用途 |
+| --- | --- | --- |
+| `on_init` | session / context 初始化 | 渲染 system prompt |
+| `on_behavior_switch` | behavior switch / fork / independent 切换 | 给新 behavior 构造入口 user message |
+| `on_behavior_step_ob` | Behavior Loop step 观察阶段 | 在 step 边界观察追加输入或事件 |
+| `on_wakeup` | idle / waiting 状态下被 pending input 唤醒 | UI / Work session 被输入唤醒后的下一轮驱动 |
 
-#### RenderResult（建议结构）
+背景环境块也分两层配置：
 
-* `text`: string | null
-* `report`: RenderReport
+| 配置点 | 含义 |
+| --- | --- |
+| 触发边界 | 哪个 hook point 会构造背景环境 |
+| 内容模板 | 触发后向 LLM 提供哪些 session / workspace / runtime 信息 |
 
-#### RenderReport（MVP 必须至少包含）
+## 2. 模板语法
 
-* `placeholders_total`: int
-* `resolved_variables`: list<{name, bytes}>
-* `included_files`: list<{ns, rel_path, abs_path_hash?, bytes, truncated: bool}>
-* `skipped`: list<{placeholder, reason, error_type?}>
-* `errors`: list<{placeholder, error_type, message}>
-* `duration_ms`
-* `cache_hits`（如实现缓存）
+模板语法由 `llm_context::PromptRenderEngine` 决定，不是 OpenDAN 自家方言。Behavior 作者只需要使用 upon 语法和 `PromptRenderEngine` 指令。
 
-> abs_path 建议不要直接落日志（避免泄露），可用 hash + rel_path + ns 组合。
+| 形式 | 用途 |
+| --- | --- |
+| `{{ session.id }}` | 输出一个标量字段 |
+| `{% if workspace.has_id %}...{% endif %}` | 条件判断 |
+| `{% for event in input.events %}...{% endfor %}` | 遍历 list |
+| `__VAR(name, $expr)__` | 通过 loader 解析 `$expr` 并注册为模板变量 |
+| `__INCLUDE(/abs/path)__` | 内联文件内容，受 `include_roots` 白名单约束 |
+| `__ENV($expr)__` | 读取静态 env / loader 值，主要给底层模板引擎使用 |
+| `__EXEC(cmd)__` | 默认关闭，OpenDAN 不打开 |
+| `\{{ ... \}}` | 输出字面双花括号 |
 
-### 9.2 与 Runtime 的集成点（MVP MUST）
+常见写法：
 
-必须落在文档描述的 step-loop 里：
+```upon
+{% if session.has_title %}
+Session title: {{ session.title }}
+{% endif %}
 
-1. `session.generate_input(behavior_cfg)`
+{% for event in input.events %}
+- event_id: {{ event.event_id }}
+{% if event.data.reason %}  reason: {{ event.data.reason }}{% endif %}
+{% endfor %}
+```
 
-* 对 `behavior_cfg.input` 做 `render(..., mode=INPUT_BLOCK)`
-* 若 `RenderResult.text == null` → 返回 `None` 触发零空转逻辑。
+常见类型：
 
-2. `behavior_cfg.build_prompt(exec_input)`
+| 类型 | 模板里怎么用 | 注意事项 |
+| --- | --- | --- |
+| `string` / `number` / `bool` | 可以直接 `{{ value }}` 输出 | 字符串为空时通常配合 `has_*` 判断 |
+| `object` | 用点路径访问字段，如 `{{ session.id }}` | 不要直接输出整个 object |
+| `array` | 用 `{% for item in items %}` 遍历，或 `items.0` 取第一项 | 不要直接输出整个 array |
+| `null` | 用 `{% if value %}` 判断存在性 | 直接输出通常为空或失败 |
 
-* 对 `process_rule/policy` 做 `render(..., mode=TEXT)`
-* 将渲染结果放入 System Prompt 的对应段落。
+数组 / object 不能直接当字符串输出。`{{ input.events }}`、`{{ input.bg_events }}`、`{{ current_context.step_history }}` 这类写法会在 upon 格式化阶段失败；模板应访问标量字段、循环展开，或使用后续提供的 `*_json` 辅助字段。
 
----
+## 3. 变量参考
 
-## 10. 规范化与一致性要求（防止提示词不稳定）
+### 3.1 `session`
 
-### 10.1 确定性（MUST）
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$session` | `{{ session }}` | object | 下列字段的聚合 |
+| `$session.id` | `{{ session.id }}` | string | `SessionMeta.session_id` |
+| `$session.kind` | `{{ session.kind }}` | string | `"ui"` / `"work"` / `"self_check"` / `"self_improve"` |
+| `$session.title` | `{{ session.title }}` | string | `SessionMeta.title.trim()` |
+| `$session.objective` | `{{ session.objective }}` | string | `SessionMeta.objective`；为空时回退到当前 behavior objective |
+| `$session.owner` | `{{ session.owner }}` | string | `SessionMeta.owner` |
+| `$session.current_behavior` | `{{ session.current_behavior }}` | string | 当前 behavior name |
+| `$session.current_todo` | `{{ session.current_todo.todo_id }}` | object / null | `todos.json` 中第一个非终态 Todo |
+| `$session.current_todo_list` | `{{ session.current_todo_list }}` | string | `todos.json` 的简表；缺失时为 `(empty)` |
+| `$session.background_hint_changed` | `{{ session.background_hint_changed }}` | bool | 本 hook 是否通过 `load_background_hits` 加载到变化的背景 hint |
+| `$session.default_changed_background_hint_text` | `{{ session.default_changed_background_hint_text }}` | string | `session.background_hints` 的默认纯文本渲染，格式为 `- hint text` 列表 |
+| `$session.default_changed_backgrand_hint_text` | `{{ session.default_changed_backgrand_hint_text }}` | string | 上一项的历史拼写别名 |
+| `$session.background_hints` | `{% for hint in session.background_hints %}` | array of `BackgroundHint` | 本 hook 新加载到的变化背景 hint；没有配置加载或无变化时为空数组 |
+| `$session.has_title` | `{{ session.has_title }}` | bool | title 是否非空 |
+| `$session.has_current_todo` | `{{ session.has_current_todo }}` | bool | 当前 session 是否存在非终态 Todo |
 
-同样的 `template + ctx` 必须输出完全一致的结果：
+`BackgroundHint`：
 
-* 不允许读取“当前时间”之类的隐式变量
-* 不允许遍历目录并按不稳定顺序拼接（如未来支持 `workspace/*.md`，必须排序；MVP 不支持通配符）
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `path` | string | hint 的稳定路径，如 `event/presence.changed`、`notepad/<id>`、`memory/<key>` |
+| `kind` | string | `event` / `notepad` / `memory` |
+| `text` | string | 给 LLM 阅读的简短提示文本 |
+| `fingerprint` | string | 用于判断本次和上次加载相比是否变化 |
+| `data` | object / null | 结构化原始数据；模板通常不需要直接展开 |
 
-### 10.2 并发安全（MUST）
+### 3.2 `workspace`
 
-* 引擎必须可在多 session worker 并发调用（文档允许多个 session 并发，且 SubAgent 可并发）。
-* 若实现缓存：必须线程安全；推荐 **每次 render 使用局部 cache**（一次渲染内缓存 include），避免全局共享复杂度。
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$workspace` | `{{ workspace }}` | object | 下列字段的聚合 |
+| `$workspace.id` | `{{ workspace.id }}` | string | `SessionMeta.workspace_id`，未绑定为空串 |
+| `$workspace.root` | `{{ workspace.root }}` | string | `agent_config.layout.workspaces_dir / workspace_id`，未绑定为空串 |
+| `$workspace.has_id` | `{{ workspace.has_id }}` | bool | workspace id 是否非空 |
 
----
+### 3.3 `paths`
 
-## 11. 参考行为（Examples）
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$paths` | `{{ paths }}` | object | 下列字段的聚合 |
+| `$paths.agent_root` | `{{ paths.agent_root }}` | string | agent root |
+| `$paths.session_root` | `{{ paths.session_root }}` | string | 当前 session 目录 |
+| `$paths.workspace_root` | `{{ paths.workspace_root }}` | string | 同 `$workspace.root` |
 
-### 11.1 route behavior 示例（来自文档）
+这些路径主要用作 `__INCLUDE__` 的拼接锚点。直接把绝对路径塞进模型上下文一般不必要。
 
-* `process_rule` include workspace/cwd 文件片段
-* `input` 拼装 `new_event/new_msg`
+### 3.4 `input`
 
-预期渲染行为：
+`input` 表示本 hook point 从 pending input 中消费或观察到的 msg / event。`pull_msg` / `pull_event` 只影响 `input`，不影响 `current_context`。
 
-* 如果 `workspace/to_agent.md` 不存在：该占位符为 Null → 在 Text 模式中替换为空串
-* 如果当前 step 没有 `new_event` 且没有 `new_msg`：
+当 driver 只消费单条记录时，模板不必每次写循环：`input.msg` 是 `input.msgs.0` 的快捷入口，`input.event` 是 `input.events.0` 的快捷入口。没有对应记录时为 `null`。
 
-  * INPUT_BLOCK 模式行级清理后为空 → 返回 None → step 不推理，session 进入 WAIT。
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$input` | `{{ input }}` | object | 下列字段的聚合 |
+| `$input.text` | `{{ input.text }}` | string | 本次消息输入合并文本；没有消息时为空串 |
+| `$input.msg` | `{{ input.msg.text }}` | `MsgRef` / null | `input.msgs.0` 的快捷入口 |
+| `$input.msgs` | `{% for msg in input.msgs %}` | array of `MsgRef` | `pull_msg` 拉出的 message |
+| `$input.event` | `{{ input.event.event_id }}` | `EventRef` / null | `input.events.0` 的快捷入口 |
+| `$input.events` | `{% for event in input.events %}` | array of `EventRef` | `pull_event` 拉出的 event |
+| `$input.bg_events` | `{% for event in input.bg_events %}` | array of `BgEventSnapshot` | 半订阅事件快照，不消费 pending queue |
+| `$input.has_user_text` | `{{ input.has_user_text }}` | bool | 是否有用户文本 |
+| `$input.has_msgs` | `{{ input.has_msgs }}` | bool | `input.msgs` 是否非空 |
+| `$input.has_events` | `{{ input.has_events }}` | bool | `input.events` 是否非空 |
+| `$input.has_bg_events` | `{{ input.has_bg_events }}` | bool | `input.bg_events` 是否非空 |
 
-### 11.2 文档强调的 cwd 概念（对 include 有用）
+`MsgRef`：
 
-* 文档提到 session 有 cwd 概念，便于定位 workspace 目录（这也是支持 `cwd/...` include 的依据）。
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `record_id` | string | message record id |
+| `from` | string | 展示用发送者名称；应优先由 contact manager / channel adapter 归一化 |
+| `from_did` | string / null | 发送者 DID |
+| `tunnel_did` | string / null | 消息所在 tunnel / channel DID |
+| `created_at_ms` | number / null | 消息创建 / 发送时间；没有上游时间时为空 |
+| `received_at_ms` | number | AgentSession 接收并冻结该输入的时间 |
+| `raw_text` | string / null | channel 入口解析出的原始纯文本；没有纯文本时为空 |
+| `text` | string | 系统从 `content` 渲染出的默认纯文本视图，包含标准 attachment marker |
+| `content` | array of `MsgContentBlock` | 结构化消息内容块，转自 `AiMessage.content` |
+| `attachments` | array of `AttachmentRef` | `content` 中图片、文档等非文本附件块的快捷索引 |
 
----
+`raw_text`、`text` 和 `content` 的区别：
 
-## 12. 测试用例与验收标准（工程落地清单）
+| 字段 | 适合场景 |
+| --- | --- |
+| `raw_text` | 需要还原 channel 入口的用户原话 |
+| `text` | 普通 Behavior 模板默认使用；它是 `content` 的系统默认文本渲染，附件会以标准 marker 出现 |
+| `content` | 需要精确处理多模态块、附件、结构化 payload 或 runtime auto message |
 
-### 12.1 单元测试（必须）
+系统会为复杂结构提供默认文本渲染，命名统一使用 `default_*_text` 或直接使用对象的 `text` 字段。`input.msg.text` 是 `MsgRef.content` 的默认文本视图：文本块按顺序输出，附件块以 `AttachmentRef.text_marker` 形式输出。模板只需要自然语言输入时优先使用 `input.msg.text` / `input.text`；需要精确判断图片、文档或 object id 时再读 `input.msg.content` / `input.msg.attachments`。
 
-1. **变量替换**
+附件不应只靠普通字符串表示。当前 MessageHub 入站模型中，文本在 `MsgContent.content`，附件在 `MsgContent.refs`；降到 LLMContext 后会成为 `AiContent::Image` / `AiContent::Document`。`AiMessage::text_content()` 只返回文本块，会跳过图片和文档。因此 `MsgRef.text` 必须由 OpenDAN 自己渲染，并保留结构化 `content` / `attachments`。
 
-* 模板：`"A={{new_msg}}"`
-* ctx.new_msg="hi" → `"A=hi"`
+`MsgContentBlock`：
 
-2. **变量为 Null**
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `type` | string | `text` / `image` / `document` / `audio` / `video` / `file` / `machine` |
+| `text` | string / null | `type = "text"` 时的文本 |
+| `attachment` | `AttachmentRef` / null | 附件类 block 的结构化引用 |
+| `machine` | object / null | 机器可读 payload |
 
-* ctx.new_msg=None
-* TEXT 模式 → `"A="`
-* INPUT_BLOCK 模式：模板 `"{{new_msg}}"` → `None`
+`AttachmentRef`：
 
-3. **多行 input 拼装**
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `kind` | string | `image` / `document` / `audio` / `video` / `file` |
+| `source.type` | string | `named_object` / `url` / `base64` |
+| `source.obj_id` | string / null | `source.type = "named_object"` 时的 CYFS object id |
+| `source.url` | string / null | `source.type = "url"` 时的 URL |
+| `mime` | string / null | MIME hint，例如 `image/png` |
+| `title` | string / null | 文件标题或展示名 |
+| `label` | string / null | 上游 ref label |
+| `text_marker` | string | 给纯文本 prompt 使用的稳定占位，例如 `[image: screenshot.png]` |
 
-* 模板：
+图片消息示例：
 
-  ```
-  {{new_event}}
-  {{new_msg}}
-  ```
-* new_event=None, new_msg="m" → 输出 `"m"`（无空行）
-* new_event="e", new_msg=None → 输出 `"e"`
-* 两者都 None → 输出 None（触发零空转）
+```json
+{
+  "record_id": "msg-1",
+  "from": "Alice",
+  "from_did": "did:example:alice",
+  "raw_text": "看看这个截图",
+  "text": "看看这个截图\n[image: screenshot.png]",
+  "content": [
+    {
+      "type": "text",
+      "text": "看看这个截图"
+    },
+    {
+      "type": "image",
+      "attachment": {
+        "kind": "image",
+        "source": {
+          "type": "named_object",
+          "obj_id": "file:010203"
+        },
+        "mime": "image/png",
+        "title": "screenshot.png",
+        "label": "screenshot.png",
+        "text_marker": "[image: screenshot.png]"
+      }
+    }
+  ],
+  "attachments": [
+    {
+      "kind": "image",
+      "source": {
+        "type": "named_object",
+        "obj_id": "file:010203"
+      },
+      "mime": "image/png",
+      "title": "screenshot.png",
+      "label": "screenshot.png",
+      "text_marker": "[image: screenshot.png]"
+    }
+  ]
+}
+```
 
-4. **文件 include 成功**
+模板中建议这样使用：
 
-* workspace_root 下存在 `to_agent.md`
-* 模板 `{{workspace/to_agent.md}}` → 输出文件内容（可包含换行）
+```upon
+{{ input.msg.text }}
+{% for attachment in input.msg.attachments %}
+- attachment: {{ attachment.kind }} {{ attachment.title }}
+{% endfor %}
+```
 
-5. **文件不存在**
+`EventRef`：
 
-* → 视为 Null（默认容错）+ RenderReport 记录 FileNotFound
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `event_id` | string | 事件名 / 事件路径，例如 `timer.reminder_check` 或 `/task_mgr/<id>/status` |
+| `data` | object / null | 事件 payload |
+| `reason` | string / null | 订阅或调度方给出的可读原因；session 主动订阅事件时通常应填写 |
+| `observed_at_ms` | number | AgentSession 观察到事件并冻结输入的时间 |
 
-6. **权限拒绝**
+`event_id` 命名约定：
 
-* PolicyEngine deny read
-* → 视为 Null + RenderReport 记录 PermissionDenied（不泄露绝对路径）
+| 形态 | 用途 |
+| --- | --- |
+| `timer.reminder_check` | 本地逻辑事件，通常不以 `/` 开头，适合 driver filter 命名空间 |
+| `/task_mgr/...` / `/msg_center/...` | KEvent path，保留 `/` 开头，语义参考 kevent event path 设计 |
 
-7. **路径穿越攻击**
+`BgEventSnapshot`：
 
-* `{{workspace/../secret}}` → 必须拒绝（PathTraversalDenied）
-* strict=false：替换为空 + 记录
-* strict=true：返回 error
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `event_id` | string | 事件名 |
+| `data` | object / null | 最新快照 payload |
+| `reason` | string / null | 订阅方给出的可读原因 |
+| `observed_at_ms` | number | 观察时间 |
 
-8. **递归 include 与循环**
+Driver policy 对 `input` 的影响：
 
-* A include B, B include A → 必须循环检测并终止（CyclicIncludeDetected 或 RecursionLimitExceeded）
+| policy | 影响 |
+| --- | --- |
+| `pull_msg = "none"` | `input.msgs = []`，`input.msg = null`，`input.text = ""` |
+| `pull_msg = "one"` | `input.msgs` 最多一条；有消息时 `input.msg` 和 `input.text` 可直接使用 |
+| `pull_msg = "all"` | `input.msgs` 包含本 hook 可消费的所有 message；`input.msg` 指第一条，`input.text` 是合并文本 |
+| `pull_event = "none"` | `input.events = []`，`input.event = null` |
+| `pull_event = "all"` | `input.events` 包含本 hook 可消费的所有 event；`input.event` 指第一条 |
+| `pull_event = "<filter_name>"` | `input.events` 只包含匹配 filter 的 event，例如 `timer.*`；`input.event` 指第一条匹配事件 |
+| `load_background_hits = "none"` | `session.background_hints = []`，`session.background_hint_changed = false` |
+| `load_background_hits = "all"` | 调用 `load_changed_background_hits`，加载本 hook 相比上次调用发生变化的背景 hint；若同 session 过去 60 秒内返回过非空结果，本次直接返回空 |
 
-9. **大小限制**
+### 3.5 `current_context`
 
-* include 文件超过 `max_include_bytes`：
+`current_context` 是 Driver 在 hook point 上冻结出来的 LLMContext 运行态摘要。它描述当前 behavior context 本身，不承载 pending input。
 
-  * 若策略=truncate：输出截断内容 + truncated=true
-  * 若策略=error：按 strict 行为决定失败或置 Null
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$current_context` | `{{ current_context }}` | `LLMContext` | 下列字段的聚合 |
+| `$current_context.behavior_name` | `{{ current_context.behavior_name }}` | string | 当前 behavior name |
+| `$current_context.last_step` | `{{ current_context.last_step.observation }}` | `StepRecord` / null | 最近一个 step |
+| `$current_context.last_report` | `{{ current_context.last_report }}` | string / null | 当前 context 最近一次 `<report>` |
+| `$current_context.step_history` | `{% for step in current_context.step_history %}` | array of `StepRecord` | 当前 context 的 step history |
 
-### 12.2 集成测试（必须）
+`StepRecord` 是给 Behavior 模板读取 step 历史的稳定结构，至少应能暴露：
 
-1. 在 session step-loop 中：
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `step_index` | number | step 序号 |
+| `behavior_name` | string | step 所属 behavior |
+| `observation` | string / null | 上一步 action / tool 结果观察 |
+| `thinking` | string / null | LLM 本步思考摘要 |
+| `actions` | array | 本步发起的 action / tool call |
+| `report` | string / null | 本步产生的 report |
+| `next_behavior` | string / null | 本步声明的 next behavior |
 
-* `generate_input()` 渲染为空 → exec_input=None → 不触发 LLM 推理 → session 状态变 WAIT。
+`on_behavior_step_ob` 还应提供系统默认的 action result 文本渲染，避免每个 Behavior 自己格式化复杂的 action / observation 结构：
 
-2. 在 prompt builder 中：
+```toml
+on_behavior_step_ob = """
+<<last_step_action_results>>
+{{ default_last_step_action_results_text }}
+<</last_step_results>>
+"""
+```
 
-* 渲染后的 process_rule/policy 放入 System Prompt，并且上层仍然对 tool/action 输出走 observation + 清洗截断（模板引擎不破坏该约束）。
+| 表达式 | 类型 | 含义 |
+| --- | --- | --- |
+| `$default_last_step_action_results_text` | string | 当前 last step action results 的默认纯文本渲染，可直接放进 prompt |
+| `$default_last_step_action_results_content` | array / object | 当前 last step action results 的结构化内容，不能直接用 `{{ }}` 格式化输出 |
 
----
+Behavior 模板需要自然语言 observation 时统一使用 `default_last_step_action_results_text`；只有需要按类型处理 action result 时才读取结构化 `default_last_step_action_results_content`。
 
-## 13. 建议的迭代规划
+### 3.6 `runtime`
 
-### MVP（建议 1~2 周可落地）
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$runtime` | `{{ runtime }}` | object | 下列字段的聚合 |
+| `$runtime.clock_unix_ms` | `{{ runtime.clock_unix_ms }}` | number | Driver 冻结环境时的 Unix ms |
+| `$runtime.clock_text` | `{{ runtime.clock_text }}` | string | Driver 冻结环境时的本地时间，格式 `DD-MM HH:MM`，24 小时制 |
+| `$runtime.recent_activity` | `{{ runtime.recent_activity }}` | string | `OneLineStatusSink` 当前值 |
+| `$runtime.has_activity` | `{{ runtime.has_activity }}` | bool | recent activity 是否非空 |
+| `$runtime.workspace_list_text` | `{{ runtime.workspace_list_text }}` | string | `render_workspace_inventory` 渲染出的 workspace 列表文本，按当前 `session_id` 上次访问后的 `updated_at_ms` 增量窗口读取当前 Agent workspace registry；首次访问按 `updated_at_ms` 倒序读取 |
+| `$runtime.last_schedule_task_list_text` | `{{ runtime.last_schedule_task_list_text }}` | string | Schedule-Task 增量摘要的预渲染文本；包含从上一次访问到本次环境冻结之间需要 Agent 关注的计划任务变化 |
 
-* `{{var}}`、`{{workspace/rel}}`、`{{cwd/rel}}`
-* 两种模式：TEXT / INPUT_BLOCK
-* Null 语义 + 行级清理
-* PolicyEngine 文件读权限校验
-* 递归 include（可先不做，或只做 1 层）+ 深度限制
-* RenderReport（最小字段）
+`runtime.last_schedule_task_list_text` 面向 prompt 直接阅读，不要求 Behavior 再遍历结构化 task 列表。文本只包含下列三类 Schedule-Task：
 
+| 类别 | 触发条件 | 备注要求 |
+| --- | --- | --- |
+| 新计划任务 | 上一次访问后新创建的 Schedule-Task | 必须注明是否 create from Notebook Item；如果是，应包含来源 notebook item 信息 |
+| 运行失败的计划任务 | 上一次访问后执行失败的 Schedule-Task | 应包含失败原因、最近一次 execution report 或可读错误摘要 |
+| 有用户手工 Noted 过的计划任务 | 上一次访问后用户手工追加过 note / remark 的 Schedule-Task | 应包含 note / remark 摘要、作者和时间；只统计用户手工记录，不统计系统自动执行日志 |
 
+每条 task 至少包含：动作、`task_id`、`task_title`、相关备注。建议格式保持简短稳定，例如：
 
+```text
+- created task_id=task-1 task_title="daily mail check" note="create from Notebook Item notebook=user/actions item=item-9"
+- failed task_id=task-2 task_title="send weekly report" note="last run failed: smtp timeout"
+- user_noted task_id=task-3 task_title="book train reminder" note="Alice noted: postpone to Friday"
+```
+
+没有匹配任务时返回可读空结果，例如 `Recent schedule tasks: none.`。
+
+### 3.7 `notebook`
+
+`notebook` 表示当前 Agent 可见的 Agent Notebook 摘要。这里注入的是给 prompt 使用的纯文本索引，不是 notebook 正文；需要确认事实时，Behavior 仍应调用 `agent-notebook read` 读取对应 notebook / item。
+
+| 表达式 | upon 占位 | 类型 | 来源 |
+| --- | --- | --- | --- |
+| `$notebook` | `{{ notebook }}` | object | 下列字段的聚合 |
+| `$notebook.list_text` | `{{ notebook.list_text }}` | string | Agent Notebook registry 的默认纯文本渲染；列出当前一共有多少个 Notebook、每个 Notebook 有多少条记录，以及最后修改时间 |
+| `$notebook.last_items_text` | `{{ notebook.last_items_text }}` | string | Agent Notebook 最近变化 item 的默认纯文本渲染；按当前 `session_id` 上次访问后的增量窗口读取，最多列出最近 8 条 item；每条 item 直接输出 `item_id status updated_at source_session_id` 和正文内容；带 active `self_check` remark 且标记 `keep_observing` 的 item 不受该窗口限制 |
+
+推荐在 system prompt 中直接插入这两个字段：
+
+```upon
+{{ notebook.list_text }}
+{{ notebook.last_items_text }}
+```
+
+`notebook.list_text` 用于帮助 Agent 选择应该读取哪本 notebook；`notebook.last_items_text` 用于直接暴露最近变化 item 的状态、更新时间、来源 session 和内容，避免只拿到标题后再补读。
+
+## 4. `on_behavior_switch` 变量
+
+`on_behavior_switch` 除了通用变量，还会注入切换来源信息：
+
+| 占位 | 类型 | 含义 |
+| --- | --- | --- |
+| `{{ switch.from }}` / `{{ from_behavior }}` | string | 切换前 behavior name |
+| `{{ switch.to }}` | string | 切换后 behavior name |
+| `{{ switch.from_context }}` | `LLMContext` / null | 切换前 context 的冻结摘要 |
+| `{{ switch.to_context }}` / `{{ current_context }}` | `LLMContext` | 切换后的当前 context |
+
+Fork / independent child 返回父 context 时，`switch.from_context.last_report` 是父 behavior 观察 child 输出的主要入口。
+
+## 5. 关键事件变量
+
+事件统一进入 `input.events`。为了让常见事件更容易写模板，下列派生变量按事件类型分桶；没有匹配事件时均为空数组。
+
+| 变量 | 类型 | 来源 event |
+| --- | --- | --- |
+| `input.timer_events` | array of `TimerEvent` | `timer.*` |
+| `input.reminder_events` | array of `TimerEvent` | `timer.reminder_check` |
+| `input.hard_barrier_events` | array of `TimerEvent` | `timer.hard_barrier` |
+| `input.scheduled_task_events` | array of `TimerEvent` | `timer.scheduled_task_check` |
+| `input.worksession_reports` | array of `WorksessionReportEvent` | `worksession_report` |
+
+`TimerEvent.data` 使用 `TimerReason`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `trigger_type` | string | `hard_barrier` / `precise_trigger` |
+| `target_type` | string | `reminder` / `scheduled_task` / `other` / named target |
+| `target_id` | string | 目标对象 id |
+| `expected_trigger_time` | string | 期望触发时间 |
+| `reason` | string | timer 原因 |
+
+示例：
+
+```upon
+{% for timer in input.reminder_events %}
+- reminder {{ timer.data.target_id }}: {{ timer.data.reason }}
+{% endfor %}
+```
+
+`WorksessionReportEvent.data` 的关键字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `report_id` | string | report 唯一 id |
+| `source_session_id` | string | 来源 WorkSession |
+| `target_session_id` | string | 目标 UI Session |
+| `title` | string | WorkSession 标题 |
+| `objective` | string | WorkSession 目标 |
+| `workspace_id` | string / null | workspace id |
+| `phase` | string | `checkpoint` / `final` |
+| `report` | string | report 正文 |
+| `is_final` | bool | 是否 final report |
+
+## 6. 环境块
+
+环境块由一组 session 相关的 background hints 组成。OpenDAN 不再自动插入 `<background_environment>` 块；是否插入、插入到哪个 User Message 模板，由 Behavior 开发者显式决定。
+
+Driver 需要在对应 hook 上打开 hint 加载，例如：
+
+```toml
+[session.ui.driver.on_wakeup]
+filter = "top"
+pull_msg = "all"
+pull_event = "none"
+load_background_hits = "all"
+```
+
+然后在相关 User Message 模板中手工插入：
+
+```upon
+{% if session.background_hint_changed %}
+<background_environment>
+{{ session.default_changed_background_hint_text }}
+</background_environment>
+{% endif %}
+```
+
+`session.default_changed_background_hint_text` 是 `session.background_hints` 的默认渲染，格式为：
+
+```text
+- hint1
+- hint2
+```
+
+需要注意的是，`load_changed_background_hits` 会记录上一次加载状态，只返回相比上次调用发生变化的部分。为了让事件和其它背景变化有时间汇聚，函数还有一个 session 级 60 秒硬间隔：同一 session 只要返回过一次非空结果，未来 60 秒内每次调用都会直接返回空，不读取也不刷新 hint 指纹。没有配置 `load_background_hits = "all"` 的 hook 不会读取 hints，`session.background_hint_changed` 为 `false`。
+
+## 7. Include 与安全边界
+
+Behavior 模板应使用 `__INCLUDE__` 引入文件内容，不再依赖 `role_md` / `self_md` 这类 render-time extras。
+
+| 字段 | 当前值 | 说明 |
+| --- | --- | --- |
+| `include_roots` | `[agent_root, session_root]` + `workspace_root`（若绑定） | `__INCLUDE__` 白名单 |
+| `allow_exec` | `false` | `__EXEC__` 全程关闭 |
+| `max_include_bytes` | 64 KiB | 单次 `__INCLUDE__` 字节上限 |
+| `max_total_bytes` | 256 KiB | 渲染输出上限，超出标记 `truncated=true` |
+| `max_recursion_depth` | 8 | `__INCLUDE__` 嵌套深度上限 |
+
+`__INCLUDE__` 解析为绝对路径，且必须在某个 `include_root` 之下，否则会留下失败标记，不会读取任意路径。
+
+## 8. 测试入口
+
+- 单元测试在 [`prompt_env::tests`](../../src/frame/opendan/src/prompt_env.rs) 模块。
+- 变量契约主测试是 `prompt_env::tests::contract_renders_main_variables_and_control_flow`。本文任意新增、删除、重命名或改变语义的 prompt env 变量，必须同步更新这个测试；新增常用模板写法（尤其是 `if` / `for` / 数组索引）也必须在该测试或同级契约测试中覆盖。
+- `cargo test -p opendan --lib prompt_env::` 可单独跑。
+- 完整 opendan 单元测试：`cargo test -p opendan --lib`。

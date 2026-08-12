@@ -1,5 +1,23 @@
 # OpenDAN Worklog 组件需求与 Prompt 加载规范
 
+> ⚠️ **设计调整说明（beta2.2）**：当前实现已简化为
+> 纯 append-only 审计日志，本文档中关于 Prompt 加载、StepSummary 聚合、prompt_view、
+> token budget、commit_state、build_prompt_worklog 等内容均已废弃。新版要点：
+>
+> - Worklog **不再进入 Prompt**；删除/丢失不影响 Agent 行为。
+> - `WorklogRecordType` 改为开放 string，新事件类型无需注册即可使用。
+> - 仅保留 `append_worklog` / `list_worklog` / `get_worklog` 三个 action；
+>   `append_step_summary` / `mark_step_committed` / `build_prompt_worklog`
+>   / `render_for_prompt` / `list_step` 已移除。
+> - 写入端保存全量 payload（消息内容、AgentToolResult 等），不再做 digest 截断。
+> - DB schema 简化为 `log_id, seq, ts, timestamp, event_type, agent_id,
+>   owner_session_id, workspace_id, behavior, step_id, step_index, status,
+>   trace_id, task_id, record_json, created_at`；其余信息纳入 `record_json`。
+> - 暴露 worklog 的 AgentWorkspace kRPC 观察接口已删除。
+>
+> 本文余下部分仅作为旧设计的历史参考。新增功能请围绕“审计日志”定位扩展，
+> 不要恢复 Prompt 渲染相关字段。
+
 ## 1. 背景与定位
 
 ### 1.1 背景：为什么需要 Worklog

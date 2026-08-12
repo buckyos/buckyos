@@ -1,8 +1,8 @@
 # Agent-Human-Loop Workflow 引擎需求文档
 
-> **版本**: 0.3.0-draft
+> **版本**: 0.4.0-draft
 > **状态**: RFC / 社区讨论稿
-> **变更**: v0.3 新增 Step Output Mode（single / finite_seekable / finite_sequential）作为一级 DSL 概念，重新定义 for_each 的调度语义使其与上游输出的 seekability 挂钩，分离 progress（给 UI）与 output（给下游）的语义，新增 stream 运行时状态追踪。此前变更：Node Graph 统一建模、human_confirm subject_ref、Executor 协议、事件 Envelope 等。
+> **变更**: v0.4 引入双层架构（Workflow 编排器 + Thunk 调度器），定义 Expr Tree（DSL 编译后的内部表示）和 Thunk Object（调度器原语），新增编排器主循环（`run_workflow_expr`）伪代码规范。明确编排器与调度器的职责边界、接口协议和 Named Object / Cache 交互。此前变更：Output Mode、Node Graph、human_confirm subject_ref、事件 Envelope 等。
 > **上下文**: 本文档基于 OpenDAN × BuckyOS × cyfs:// 北极星方向文档，定义 Agent-Human-Loop Workflow 引擎的需求与 DSL 规范。
 
 ---
@@ -54,6 +54,46 @@ DSL 有三个读者：Agent（生成者）、引擎（执行者）、人类（�
 ### 2.3 Pipeline 是 Workflow 的退化特例
 
 传统 KB 领域的 Pipeline（线性、确定性、无人类介入）是本引擎的一个特例：当所有步骤都是 `autonomous` 类型、无条件分支、无 plan amendment 时，运行时行为与 Pipeline 完全相同。不需要两套机制。
+
+### 2.4 双层架构：编排器管语义，调度器管执行
+
+系统在运行时由两个独立组件协作：
+
+**Workflow 编排器（Expr Tree Evaluator）**：持有整棵 Expr Tree，负责编排语义——哪些节点可以并行、branch 走哪条路、for_each 怎么展开、什么时候等人类确认。当某个节点的前置依赖都满足时，编排器先解析 executor 引用：`service::` / `http::` / `appservice::` / `operator::` 可由编排器侧 adapter 直接执行；解析为 FunctionObject 的节点则构造 ThunkObject 投递给调度器。结果返回后，编排器更新 Expr Tree 的状态，决定下一步推进什么。
+
+**Thunk 调度器（Thunk Dispatcher）**：只做一件事——收到一个 ThunkObject，检查参数是否就绪（`check_param_is_ready`），就绪则找一个物理节点执行，执行完把结果写入 Named Object。调度器不知道 ThunkObject 来自哪棵 Expr Tree、不知道 ThunkObject 之间的依赖关系、不知道这个 Run 属于谁的什么业务。
+
+两者之间的接口极其简单：
+
+```
+编排器 → 调度器：schedule_thunk(thunk_obj_id)
+调度器 → 编排器：thunk.completed(thunk_obj_id, result) | thunk.failed(thunk_obj_id, error)
+```
+
+**分工边界**：
+
+| 职责 | 归属 | 不管什么 |
+|------|------|---------|
+| 依赖关系管理、投递时机决策 | 编排器 | 不管在哪个节点执行 |
+| 并行/串行/分支 策略 | 编排器 | 不管物理资源分配 |
+| 人类交互（暂停、审核、回退） | 编排器 | 不管 ThunkObject 执行细节 |
+| 参数就绪检查、节点选择、执行 | 调度器 | 不管 ThunkObject 之间的关系 |
+| 结果写入 Named Object | 调度器 | 不管谁消费结果 |
+| 全局 Memoization（cache） | Named Object 层 | 编排器投递前查，调度器无感 |
+
+**关键性质**：两个团队可以完全独立迭代。调度器只认 ThunkObject 这一种类型，不管 Workflow DSL 怎么演进。编排器负责解析 executor 引用、调用编排器侧 adapter，或在 FunctionObject 路径上投递 ThunkObject 并接收结果，不管调度器是单机还是分布式。
+
+### 2.5 DSL → Expr Tree → executor 定义 / ThunkObject：编译而非解析
+
+DSL 的输入是 JSON（已结构化），不需要词法分析和语法解析。从 JSON 到 Expr Tree 是一个**编译器中端**的工作：
+
+```
+JSON DSL → serde 反序列化 → schema 校验 → 引用解析 → 依赖图构建 → 静态分析 → Expr Tree
+```
+
+Expr Tree 是引擎内部唯一的执行表示。`Apply` 节点中的 executor 引用可能是实际 executor 定义，也可能是 `/agent/`、`/skill/`、`/tool/` 语义链接。编排器运行前通过 registry 将语义链接展开为实际 executor 定义；其中只有 FunctionObject 路径会进一步实例化为 ThunkObject 并交给调度器。调度器只认 ThunkObject。
+
+未来如果支持人类手写脚本语言、UI 拖拽流程图、或其他输入源，只需要为每种输入源写一个"→ Expr Tree"的编译后端。调度器和编排器的代码永远不需要改。
 
 ---
 
@@ -110,7 +150,7 @@ Workflow 的执行结构是一个**有向图（Workflow Graph）**，图中有�
 {
   "id": "scan_source",
   "name": "扫描数据源",
-  "executor": "skill/fs-scanner",
+  "executor": "/skill/fs-scanner",
   "type": "autonomous",
   "input": {
     "path": "/mnt/nas/media"
@@ -149,7 +189,7 @@ Workflow 的执行结构是一个**有向图（Workflow Graph）**，图中有�
 |------|------|------|
 | `id` | 是 | 节点唯一标识（与 ControlNode 共享命名空间，全局唯一） |
 | `name` | 是 | 人类可读名称 |
-| `executor` | 条件 | 执行者，格式为 `agent/<name>` / `skill/<name>` / `tool/<name>`。`type` 为 `human_required` 时不需要 |
+| `executor` | 条件 | 执行者引用。实际 executor 定义使用 `namespace::name`（如 `service::aicc.llm.chat` / `http::file-classifier.classify`）；语义链接使用路径形式（如 `/agent/mia` / `/skill/fs-scanner` / `/tool/image-normalizer`），运行前需通过 registry 展开到实际 executor 定义。`type` 为 `human_required` 时不需要 |
 | `type` | 是 | 执行类型（见 3.3） |
 | `input` | 否 | 输入数据，可包含 Reference（见 3.6） |
 | `input_schema` | 否 | 输入的 JSON Schema 约束。当提供时，引擎在静态分析阶段校验上游 output_schema 与本 step input_schema 的类型兼容性 |
@@ -160,6 +200,12 @@ Workflow 的执行结构是一个**有向图（Workflow Graph）**，图中有�
 | `skippable` | 否 | 默认 `true`。声明人类是否被允许跳过此步骤。不可跳过的步骤人类无法执行 skip 操作 |
 | `output_mode` | 否 | 输出模式（见 3.2.1）。默认 `single`。声明此步骤的输出是单值还是集合/流 |
 | `guards` | 否 | 步骤级约束，覆盖全局约束 |
+
+**executor 引用语义**：
+
+- `service::`、`http::`、`appservice::`、`operator::`、`func::` 这类 `namespace::name` 表达的是一个实际 executor 定义，已经能定位到 adapter 或 FunctionObject。
+- `/agent/`、`/skill/`、`/tool/` 表达的是语义链接，描述“这一步需要什么能力”，不是最终执行定义。
+- 编排器运行前应通过 executor registry 把语义链接展开为实际 executor 定义。这样大流程可以稳定引用 `/skill/fs-scanner`，而系统可以把它切换到 `service::...`、`http::...` 或后续 `func::...`。
 
 #### 3.2.1 Output Mode（输出模式——一级 DSL 概念）
 
@@ -179,7 +225,7 @@ Step 的输出不总是单一 value。当一个 Step 产出一个集合（如扫
 {
   "id": "plan",
   "name": "生成处理计划",
-  "executor": "agent/mia",
+  "executor": "/agent/mia",
   "type": "autonomous",
   "output_mode": "single",
   "output_schema": { "$ref": "#/defs/PlanOutput" }
@@ -190,7 +236,7 @@ Step 的输出不总是单一 value。当一个 Step 产出一个集合（如扫
 {
   "id": "scan_files",
   "name": "扫描文件列表",
-  "executor": "skill/fs-scanner",
+  "executor": "/skill/fs-scanner",
   "type": "autonomous",
   "output_mode": "finite_seekable",
   "output_schema": {
@@ -515,7 +561,7 @@ Amendment 不是 DSL 语法的一部分，而是引擎提供的运行时协议�
         {
           "id": "dedup_check",
           "name": "重复数据检测",
-          "executor": "skill/dedup-detector",
+          "executor": "/skill/dedup-detector",
           "type": "autonomous",
           "output_schema": {
             "type": "object",
@@ -576,6 +622,218 @@ Workflow 配置中可包含 `defs` 字段，用于定义可复用的 schema 片�
 ```
 
 步骤的 `output_schema` 或 `input_schema` 中可使用 `{ "$ref": "#/defs/PlanOutput" }` 引用。
+
+### 3.10 Expr Tree（DSL 编译后的内部表示）
+
+Expr Tree 是 DSL JSON 经过静态分析后生成的内部执行表示。它是编排器唯一认识的数据结构，也是整个系统中"所有上游输入源"和"所有下游执行基础设施"之间的唯一契约。
+
+**核心约束：不图灵完备，可在不执行的情况下静态展开为有限图。**
+
+```rust
+/// FunctionObject 的内容寻址标识；只有走 Thunk 调度路径时才需要
+pub struct FunId(pub [u8; 32]);
+
+/// DSL 中的 executor 引用。
+/// Actual 指向实际 executor 定义，如 service::aicc.llm.chat / http::x.y / func::<objid>。
+/// SemanticPath 是可展开的语义链接，如 /agent/mia / /skill/fs-scanner。
+pub enum ExecutorRef {
+    Actual(String),
+    SemanticPath(String),
+}
+
+/// 对另一个节点输出的只读引用
+pub struct Ref {
+    pub node_id: String,
+    pub field_path: Vec<String>,  // e.g. ["final_subject", "video_batches"]
+}
+
+/// 表达式树节点
+pub enum Expr {
+    /// 字面值（常量输入）
+    Literal(serde_json::Value),
+
+    /// 引用另一个节点的输出（只读，不可计算）
+    Reference(Ref),
+
+    /// executor(params) → result
+    /// 对应 DSL 的 autonomous Step
+    Apply {
+        executor: ExecutorRef,
+        /// 当 executor 被解析为 FunctionObject 时填写；
+        /// 一期直接 service/http/appservice 调用时可以为空。
+        fun_id: Option<FunId>,
+        params: HashMap<String, Expr>,
+        output_mode: OutputMode,
+        idempotent: bool,
+        guards: Guards,
+    },
+
+    /// 枚举分支：match expr.field { cases }
+    /// 对应 DSL 的 branch ControlNode
+    Match {
+        on: Box<Expr>,
+        field: String,
+        cases: HashMap<String, Box<Expr>>,
+        max_iterations: u32,
+    },
+
+    /// 并行求值
+    /// 对应 DSL 的 parallel ControlNode
+    Par {
+        branches: HashMap<String, Box<Expr>>,
+        join: JoinStrategy,
+    },
+
+    /// 映射：对集合每个元素应用函数
+    /// 对应 DSL 的 for_each ControlNode
+    Map {
+        collection: Box<Expr>,
+        body: Box<Expr>,
+        max_items: u32,
+        concurrency: u32,
+    },
+
+    /// 等待人类输入
+    /// 对应 DSL 的 human_confirm / human_required Step
+    Await {
+        subject: Box<Expr>,
+        prompt: String,
+        output_schema: serde_json::Value,
+    },
+}
+
+pub enum OutputMode { Single, FiniteSeekable, FiniteSequential }
+pub enum JoinStrategy { All, Any, NOfM(u32) }
+```
+
+**DSL 到 Expr Tree 的映射关系**：
+
+| DSL 概念 | Expr Tree 节点 | 说明 |
+|----------|---------------|------|
+| `autonomous` Step | `Apply` | 保留 executor 引用；若是 `/agent/`、`/skill/`、`/tool/` 语义链接，则先通过 registry 展开为实际 executor 定义；params 从 input 中的 Reference 解析 |
+| `human_confirm` Step | `Await` | subject 从 subject_ref 解析 |
+| branch ControlNode | `Match` | on 引用上游输出，cases 穷举分支 |
+| parallel ControlNode | `Par` | branches 是并行子表达式 |
+| for_each ControlNode | `Map` | collection 引用上游集合输出，body 是每个元素的子表达式 |
+| Reference `${a.output.x}` | `Reference(Ref)` | 只读指针，在编排器 resolve 时替换为实际值 |
+| 常量输入 | `Literal` | 不依赖任何节点的固定值 |
+
+**Expr Tree 不包含的内容**：node 名称、人类可读描述、UI 渲染信息——这些留在 DSL 层，编排器在生成事件时从 DSL 原始配置中查找。
+
+### 3.11 FunctionObject 与 ThunkObject（调度器原语）
+
+FunctionObject 是 executor 的定义对象；ThunkObject 是一次具体执行对象。两者关系是：
+
+```text
+FunctionObject + params = ThunkObject
+```
+
+定义层使用 FunctionObject，回答“这个 executor 是什么、怎么运行、需要什么资源、参数和结果是什么”。执行层使用 ThunkObject，回答“这一次用这组参数执行哪个 FunctionObject”。
+
+Thunk Object 是编排器投递给调度器的最小执行单元。它是 Expr Tree 的一个 `Apply` 节点在投递时的**具体化形式**——executor 已解析到 FunctionObject，所有 Reference 已被解析为实际值，所有编排语义（依赖、分支、并行）已被编排器处理完毕。
+
+**调度器只认识 Thunk Object，不认识 Expr Tree、DSL、Workflow、Run。**
+
+```json
+{
+  "thunk_obj_id": "thunk-hash-xxx",
+  "fun_id": "sha256-of-executor-code",
+  "params": {
+    "type": "fixed | normal | check_by_runner",
+    "values": { ... },
+    "obj_refs": ["named-obj-id-1", "named-obj-id-2"]
+  },
+  "idempotent": true,
+  "resource_requirements": {
+    "max_tokens": 50000,
+    "max_duration": "10m",
+    "gpu_required": false
+  },
+  "metadata": {
+    "run_id": "run-abc-123",
+    "node_id": "process_videos",
+    "attempt": 1,
+    "shard": { "index": 37 }
+  }
+}
+```
+
+**字段说明**：
+
+| 字段 | 说明 |
+|------|------|
+| `thunk_obj_id` | Thunk 的唯一标识（content hash of fun_id + params） |
+| `fun_id` | 要执行的 FunctionObject 的内容寻址标识 |
+| `params.type` | 参数就绪类型（见下文 check_param_is_ready） |
+| `params.values` | 已内联的参数值（当 type 为 `fixed` 时，所有值已就绪） |
+| `params.obj_refs` | 引用的 Named Object ID 列表（当 type 为 `normal` 时，需要查 Named Store） |
+| `idempotent` | 是否幂等。影响调度器的缓存和重试策略 |
+| `resource_requirements` | 资源需求声明，供调度器做节点选择 |
+| `metadata` | 编排器附加的元信息。调度器不解析，原样回传。编排器用于关联 Thunk 结果和 Expr Tree 节点 |
+
+**params.type 的三种取值与 check_param_is_ready**：
+
+调度器收到 ThunkObject 后执行参数就绪检查。检查逻辑极其简单：
+
+```python
+def check_param_is_ready(thunk):
+    if thunk.params.type == "check_by_runner":
+        return True   # executor 自己在运行时展开参数
+    if thunk.params.type == "fixed":
+        return True   # 编排器已内联所有参数值
+    if thunk.params.type == "normal":
+        return all(
+            exists_in_named_store(ref)
+            for ref in thunk.params.obj_refs
+        )
+```
+
+| type | 语义 | 典型场景 |
+|------|------|---------|
+| `check_by_runner` | 参数由 executor 运行时自行获取 | executor 需要读取实时状态（如当前磁盘用量） |
+| `fixed` | 所有参数已内联为值 | 编排器已完成 Reference 解析，参数完全确定 |
+| `normal` | 参数包含 Named Object 引用 | 大型中间结果不适合内联，通过引用传递 |
+
+**设计理由**：调度器的 check 是纯同步的（或最多一次 Named Store 存在性查询）。不阻塞、不等待、不回调。编排器在投递前已确认依赖满足，调度器的检查只是防御性校验。
+
+**Thunk 的执行结果**：
+
+调度器执行完成后，将结果写入 Named Object：
+
+```json
+{
+  "thunk_obj_id": "thunk-hash-xxx",
+  "status": "success | failed | cancelled",
+  "result_obj_id": "named-obj-result-yyy",
+  "error": null,
+  "metrics": { "tokens_used": 1200, "duration_ms": 3400, "cost_usdb": 0.003 },
+  "side_effect_receipt": null
+}
+```
+
+编排器监听 Thunk 完成事件，通过 `metadata.run_id + metadata.node_id` 关联回 Expr Tree 中的对应节点。
+
+**调度器的核心循环**：
+
+```python
+def schedule_thunk(thunk_obj_id, shard_range=None):
+    thunk = get_from_named_store(thunk_obj_id)
+
+    if not check_param_is_ready(thunk):
+        reject(thunk_obj_id, reason="params_not_ready")
+        return
+
+    # 幂等 Thunk 查 cache
+    if thunk.idempotent:
+        cached = lookup_named_object(thunk.fun_id, hash(thunk.params))
+        if cached is not None:
+            notify_completed(thunk_obj_id, cached)
+            return
+
+    # 选择执行节点并分发
+    executor_node = find_best_node(thunk.resource_requirements)
+    dispatch_to_node(executor_node, thunk_obj_id)
+```
 
 ---
 
@@ -694,43 +952,285 @@ pending → ready → running → completed
 
 **规则 3：回退不删除历史**。回退操作本身作为一个事件记录在事件日志中，包含：回退发起人、目标步骤、被重置的步骤列表、被重置步骤的原始输出快照。历史不可篡改，只是"从某个点重新开始"。
 
-### 4.7 Executor 协议
+### 4.7 编排器与调度器的交互协议
 
-Executor 是 Step 的实际执行者。引擎与 Executor 之间通过标准协议通信。
+编排器（Workflow Engine）只有在某个 `Apply` 的实际 executor 定义解析为 `func::...` / FunctionObject 时，才通过 ThunkObject（见 3.11）与调度器交互。`service::`、`http::`、`appservice::`、`operator::` 这类编排器侧 adapter 可以直接执行并回填结果，不进入 Thunk 调度路径。
 
-**引擎 → Executor 的调用参数（最小集合）**：
+#### 4.7.1 投递流程（编排器 → 调度器）
 
-| 参数 | 必需 | 说明 |
-|------|------|------|
-| `run_id` | 是 | 当前 Run 的唯一标识 |
-| `step_id` | 是 | 当前 Step 的唯一标识 |
-| `attempt` | 是 | 当前尝试次数（从 1 开始，重试时递增）。`run_id + step_id + attempt` 构成幂等键 |
-| `input` | 是 | 引擎解析 Reference 后的实际输入数据 |
-| `budget_remaining` | 是 | 本步骤剩余可用预算（token、USDB、时间） |
-| `shard` | 否 | 仅当 for_each 调度 finite_seekable 输出时提供。格式为 `{ "index": n }` 或 `{ "range": [start, end) }`，指示 executor 只处理集合中的指定分片 |
+当编排器判断某个 `Apply` 节点的所有依赖已满足，且该节点的 executor 已解析到 FunctionObject 时：
 
-**Executor → 引擎的返回结果（最小集合）**：
+1. **解析 Reference**：将 Expr Tree 节点的 `params` 中所有 `Reference` 替换为实际值（从 `node_outputs` 中取）。
+2. **解析 FunctionObject**：将 `func::...` 或语义链接展开后的结果解析为 FunctionObject，得到 `fun_id`、资源需求、参数类型、结果类型等定义层信息。
+3. **查 Cache**（仅 `idempotent: true`）：用 `fun_id + hash(resolved_params)` 查询 Named Object。命中则直接将结果写入 `node_outputs`，不投递给调度器。
+4. **构造 Thunk Object**：按 `FunctionObject + resolved_params = ThunkObject`，将 `fun_id`、解析后的参数、资源需求、元信息（run_id、node_id、attempt）打包为 ThunkObject。
+5. **写入 Named Store**：将 ThunkObject 写入 Named Store，获得 `thunk_obj_id`。
+6. **投递**：调用 `schedule_thunk(thunk_obj_id)`。
 
-| 字段 | 必需 | 说明 |
-|------|------|------|
-| `status` | 是 | `success` / `failed` / `request_human` |
-| `output` | 条件 | `status` 为 `success` 时必需，须符合 output_schema |
-| `error` | 条件 | `status` 为 `failed` 时必需，结构化错误信息 |
-| `metrics` | 否 | 资源消耗：`{ tokens_used, duration_ms, cost_usdb }` |
-| `side_effect_receipt` | 条件 | `idempotent: false` 的步骤必须返回。包含副作用的标识信息（如消息 ID、文件路径、交易号），用于审计和去重 |
-| `human_request` | 条件 | `status` 为 `request_human` 时，描述需要人类帮助的内容 |
-| `stream_meta` | 条件 | `output_mode` 为 stream 类型时返回。包含 `{ total_count }` 等集合元信息，供引擎初始化 for_each 展开 |
+#### 4.7.2 结果接收（调度器 → 编排器）
 
-**取消协议**：引擎可以向正在执行的 Executor 发送 `cancel` 信号（如 parallel join:any 场景）。Executor 应在合理时间内停止执行并返回 `{ status: "cancelled" }`。如果 Executor 不响应取消，引擎在超时后强制标记步骤为 `aborted`。
+调度器执行完成后通知编排器。编排器通过 `metadata.run_id + metadata.node_id` 关联回 Expr Tree 节点，更新状态。
 
-**关于 stream 输出的执行模式**：
+调度器返回的错误分类：
 
-Executor 本身始终是"调用一次，返回一次"的简单模型。Stream 的复杂性由引擎在调度层处理：
+| 错误类型 | 含义 | 编排器的处理 |
+|----------|------|-------------|
+| `node_failure` | 执行节点宕机/网络故障 | 换节点重试（有意义） |
+| `execution_error` | 函数执行逻辑错误 | 重试可能无意义，按 retry 策略决定 |
+| `timeout` | 超时 | 可能需要更多资源或更长时限 |
+| `cancelled` | 被编排器取消 | 不重试 |
 
-- 对于 `finite_seekable` 输出：引擎先调用一次 executor 获取完整集合（或集合的 `total_count`），然后在 for_each 中按 shard 分片调度后续步骤。Executor 不需要维护流状态。
-- 对于 `finite_sequential` 输出：引擎按顺序逐个调度 for_each 中的步骤，每个元素完成后持久化 checkpoint。Executor 不需要实现 start/poll/seek 等流式接口。
+#### 4.7.3 取消协议
 
-### 4.8 事件系统
+编排器可以向调度器发送 `cancel_thunk(thunk_obj_id)` 请求（如 parallel join:any 某分支已完成、人类执行 abort）。调度器尽力取消，但不保证——Thunk 可能已经执行完毕。编排器必须处理"取消请求发出后仍收到成功结果"的情况（忽略该结果即可）。
+
+### 4.8 编排器主循环（run_workflow_expr）
+
+编排器的核心是一个事件驱动的主循环：扫描可推进节点 → 按 Expr 节点类型分发 → 等待外部事件 → 更新状态 → 持久化 → 下一轮。
+
+**只有解析到 FunctionObject 的 `Apply` 节点会产生 ThunkObject 并投递给调度器。** `service::` / `http::` / `appservice::` / `operator::` 这类 `Apply` 可以由编排器侧 adapter 直接执行。`Match`、`Par`、`Map` 是纯编排逻辑，在编排器内部就地处理。`Await` 是人类交互，编排器自己管理暂停和恢复。
+
+```python
+def run_workflow_expr(expr_tree, run_id):
+    # ======== 初始化 ========
+    nodes = extract_nodes(expr_tree)
+    edges = extract_edges(expr_tree)
+    node_states = {n.id: "pending" for n in nodes}
+    node_outputs = {}
+
+    persist_run_state(run_id, node_states, node_outputs)
+    emit_event("run.started", run_id)
+
+    # ======== 主循环 ========
+    while True:
+
+        # ---- 阶段 1：发现可推进节点 ----
+        actionable = []
+        for node in nodes:
+            if node_states[node.id] != "pending":
+                continue
+            upstream_ids = get_upstream_ids(node.id, edges)
+            if all(node_states[dep] == "completed" for dep in upstream_ids):
+                actionable.append(node)
+
+        # ---- 阶段 2：终止判断 ----
+        running = count_by_state(node_states, "running")
+        waiting = count_by_state(node_states, "waiting_human")
+        if not actionable and running == 0 and waiting == 0:
+            if all(s == "completed" for s in node_states.values()):
+                emit_event("run.completed", run_id)
+            else:
+                emit_event("run.failed", run_id)
+            break
+
+        # ---- 阶段 3：按节点类型分发 ----
+        for node in actionable:
+            resolved_input = resolve_references(node.input, node_outputs)
+
+            match node:
+
+                case Apply(executor, fun_id, params, output_mode, idempotent, guards):
+                    actual_executor = resolve_executor_ref(executor)
+
+                    # service:: / http:: / appservice:: / operator:: 直接由编排器侧 adapter 执行
+                    if is_orchestrator_side_executor(actual_executor):
+                        result = call_executor_adapter(actual_executor, resolved_input)
+                        node_states[node.id] = "completed"
+                        node_outputs[node.id] = result
+                        emit_event("step.completed", node.id, source="adapter")
+                        continue
+
+                    # 只有 FunctionObject 路径会继续构造 ThunkObject
+                    function_object = resolve_function_object(actual_executor)
+                    fun_id = function_object.fun_id
+
+                    # 幂等节点先查 cache
+                    if idempotent:
+                        cached = lookup_named_object(fun_id, hash(resolved_input))
+                        if cached is not None:
+                            node_states[node.id] = "completed"
+                            node_outputs[node.id] = cached
+                            emit_event("step.completed", node.id, source="cache")
+                            continue
+
+                    # FunctionObject + params = ThunkObject，然后投递
+                    thunk = build_thunk(
+                        fun_id     = fun_id,
+                        params     = resolved_input,
+                        param_type = "fixed",
+                        metadata   = { "run_id": run_id,
+                                       "node_id": node.id,
+                                       "attempt": get_attempt(run_id, node.id) }
+                    )
+                    thunk_obj_id = put_named_object(thunk)
+                    node_states[node.id] = "running"
+                    emit_event("step.started", node.id)
+                    schedule_thunk(thunk_obj_id)
+
+                case Match(on_expr, field, cases, max_iterations):
+                    # 纯编排逻辑，不投递 ThunkObject
+                    value = resolve_references(on_expr, node_outputs)
+                    branch_key = value[field]
+
+                    if branch_key not in cases:
+                        node_states[node.id] = "waiting_human"
+                        emit_event("step.waiting_human", node.id,
+                                   reason="unexpected branch: " + branch_key)
+                        continue
+
+                    if get_iteration_count(run_id, node.id) >= max_iterations:
+                        node_states[node.id] = "waiting_human"
+                        emit_event("step.waiting_human", node.id,
+                                   reason="max_iterations reached")
+                        continue
+
+                    increment_iteration_count(run_id, node.id)
+                    target_id = cases[branch_key]
+                    node_states[target_id] = "pending"
+                    node_states[node.id] = "completed"
+                    node_outputs[node.id] = {"branch": branch_key}
+
+                case Par(branches, join):
+                    # 纯编排逻辑：把所有分支标记为 pending
+                    for branch_id in branches:
+                        node_states[branch_id] = "pending"
+                    node_states[node.id] = "running"
+
+                case Map(collection_expr, body, max_items, concurrency):
+                    collection = resolve_references(collection_expr, node_outputs)
+                    items = collection["items"]
+
+                    if len(items) > max_items:
+                        node_states[node.id] = "failed"
+                        emit_event("step.failed", node.id,
+                                   reason="items exceeds max_items")
+                        continue
+
+                    # 按上游 output_mode 决定实际并行度
+                    seekable = get_output_mode(collection_expr) == "finite_seekable"
+                    actual_concurrency = concurrency if seekable else 1
+
+                    # 为每个 item 构造子 ThunkObject（仅当 body 解析到 FunctionObject）
+                    for i, item in enumerate(items):
+                        shard_thunk = build_thunk(
+                            fun_id     = body.fun_id,
+                            params     = inject_item(body, item, index=i),
+                            param_type = "fixed",
+                            metadata   = { "run_id": run_id,
+                                           "node_id": f"{node.id}[{i}]",
+                                           "attempt": 1,
+                                           "shard": {"index": i} }
+                        )
+                        put_named_object(shard_thunk)
+
+                    node_states[node.id] = "running"
+                    emit_event("step.started", node.id, total=len(items))
+                    dispatch_shards(node.id, items, actual_concurrency)
+
+                case Await(subject_expr, prompt, output_schema):
+                    # 不投递 ThunkObject，直接等人
+                    subject = resolve_references(subject_expr, node_outputs)
+                    node_states[node.id] = "waiting_human"
+                    emit_event("step.waiting_human", node.id,
+                               subject=subject, prompt=prompt)
+                    send_human_notification(run_id, node.id, subject, prompt)
+
+        # ---- 阶段 4：等待外部事件 ----
+        event = wait_for_event([
+            "thunk.completed", "thunk.failed",
+            "human.action", "budget.exhausted"
+        ])
+
+        match event:
+
+            case ThunkCompleted(node_id, result):
+                node_states[node_id] = "completed"
+                node_outputs[node_id] = result
+                emit_event("step.completed", node_id)
+                # 检查 Par 汇合 / Map 进度
+                check_par_join_if_applicable(node_id, nodes, node_states, node_outputs)
+                check_map_progress_if_applicable(node_id, nodes, node_states, node_outputs)
+
+            case ThunkFailed(node_id, error):
+                retry_cfg = get_retry_config(node_id, nodes)
+                attempt = get_attempt(run_id, node_id)
+                if attempt < retry_cfg.max_attempts:
+                    increment_attempt(run_id, node_id)
+                    node_states[node_id] = "pending"  # 下轮重新投递
+                    emit_event("step.retrying", node_id, attempt=attempt+1)
+                elif retry_cfg.fallback == "human":
+                    node_states[node_id] = "waiting_human"
+                    emit_event("step.waiting_human", node_id,
+                               reason="retries exhausted", error=error)
+                else:
+                    node_states[node_id] = "failed"
+                    emit_event("step.failed", node_id, error=error)
+
+            case HumanAction(node_id, action, payload):
+                match action:
+                    case "approve":
+                        subject = get_subject(node_id, node_outputs)
+                        node_outputs[node_id] = {
+                            "decision": "approved",
+                            "final_subject": subject }
+                        node_states[node_id] = "completed"
+                    case "modify":
+                        node_outputs[node_id] = {
+                            "decision": "approved",
+                            "final_subject": payload["modified_subject"] }
+                        node_states[node_id] = "completed"
+                    case "reject":
+                        node_outputs[node_id] = {
+                            "decision": "rejected",
+                            "final_subject": None,
+                            "feedback": payload.get("feedback", "") }
+                        node_states[node_id] = "completed"
+                    case "skip":
+                        if not is_skippable(node_id, nodes):
+                            continue
+                        node_outputs[node_id] = None
+                        node_states[node_id] = "skipped"
+                    case "abort":
+                        for nid in node_states:
+                            if node_states[nid] in ("pending","running","waiting_human"):
+                                node_states[nid] = "aborted"
+                        emit_event("run.aborted", run_id)
+                        break
+                    case "rollback":
+                        target = payload["target_node_id"]
+                        downstream = get_downstream_nodes(target, edges)
+                        # 副作用保护：遇到 non-idempotent completed 停下等人确认
+                        barrier = any(
+                            not is_idempotent(n, nodes)
+                            and node_states[n] == "completed"
+                            for n in downstream)
+                        if barrier:
+                            emit_event("step.waiting_human", node_id,
+                                       reason="rollback blocked by side-effects")
+                            continue
+                        for nid in [target] + downstream:
+                            node_states[nid] = "pending"
+                            node_outputs.pop(nid, None)
+                            emit_event("step.rollback", nid)
+
+                emit_event("human.action", node_id, action=action)
+
+            case BudgetExhausted():
+                emit_event("budget.exhausted", run_id)
+                # 等人类 top_up 或 abort
+
+        # ---- 阶段 5：持久化 ----
+        persist_run_state(run_id, node_states, node_outputs)
+```
+
+**关键设计点**：
+
+1. **只有解析到 FunctionObject 的 Apply 才产生 ThunkObject。** `service::` / `http::` / `appservice::` / `operator::` 可由编排器侧 adapter 直接执行。Match / Par / Map / Await 全部在编排器内部处理，调度器看不到也不需要看到。
+2. **每轮循环结束必须持久化。** 崩溃恢复时从持久化状态重建 `node_states` 和 `node_outputs`，重新进入主循环即可继续。已 `completed` 的节点不会重新投递。
+3. **Cache 短路在编排器侧。** 幂等节点投递前先查 Named Object，命中则跳过调度器。调度器的世界里没有 cache 概念。
+4. **人类确认完全不经过调度器。** `Await` 节点的状态管理（暂停、通知、接收操作、写回结果）全部在编排器内部闭环。
+
+### 4.9 事件系统
 
 引擎通过事件系统与外部世界通信。所有事件都是结构化的 JSON。
 
@@ -791,11 +1291,11 @@ Executor 本身始终是"调用一次，返回一次"的简单模型。Stream �
 | `budget.exhausted` | 预算耗尽 |
 | `human.action` | 人类执行了操作（含操作类型和理由） |
 
-### 4.9 对外 API
+### 4.10 对外 API
 
 引擎对外暴露的核心 API。分两类消费者：Agent（提交和修改计划）和人类/UI（观测和干预）。
 
-#### 4.9.1 Agent 侧 API
+#### 4.10.1 Agent 侧 API
 
 | 接口 | 说明 |
 |------|------|
@@ -805,7 +1305,7 @@ Executor 本身始终是"调用一次，返回一次"的简单模型。Stream �
 | `POST /run/{id}/step/{step_id}/output` | Agent 提交步骤执行结果 |
 | `POST /run/{id}/step/{step_id}/progress` | Agent 报告步骤进度 |
 
-#### 4.9.2 人类 / UI 侧 API
+#### 4.10.2 人类 / UI 侧 API
 
 | 接口 | 说明 |
 |------|------|
@@ -826,7 +1326,7 @@ Executor 本身始终是"调用一次，返回一次"的简单模型。Stream �
 | `POST /run/{id}/amendment/{amid}/reject` | 拒绝 Amendment |
 | `POST /run/{id}/budget/top_up` | 追加预算 |
 
-#### 4.9.3 外部系统集成 API
+#### 4.10.3 外部系统集成 API
 
 引擎也可作为被调用方接入企业已有系统（如通过 n8n 的 HTTP Request 节点触发）：
 
@@ -893,7 +1393,7 @@ POST /agent/task
     {
       "id": "scan",
       "name": "扫描数据源",
-      "executor": "skill/fs-scanner",
+      "executor": "/skill/fs-scanner",
       "type": "autonomous",
       "input": { "path": "/mnt/nas/media" },
       "output_schema": {
@@ -912,7 +1412,7 @@ POST /agent/task
     {
       "id": "plan",
       "name": "生成处理计划",
-      "executor": "agent/mia",
+      "executor": "/agent/mia",
       "type": "autonomous",
       "input": {
         "data_profile": "${scan.output}"
@@ -943,7 +1443,7 @@ POST /agent/task
     {
       "id": "revise_plan",
       "name": "修订处理计划",
-      "executor": "agent/mia",
+      "executor": "/agent/mia",
       "type": "autonomous",
       "input": {
         "original_plan": "${review_plan.output.final_subject}",
@@ -954,7 +1454,7 @@ POST /agent/task
     {
       "id": "process_videos",
       "name": "处理视频素材",
-      "executor": "skill/video-kb-ingest",
+      "executor": "/skill/video-kb-ingest",
       "type": "autonomous",
       "input": {
         "batches": "${review_plan.output.final_subject.video_batches}"
@@ -976,7 +1476,7 @@ POST /agent/task
     {
       "id": "process_images",
       "name": "处理图片素材",
-      "executor": "skill/image-kb-ingest",
+      "executor": "/skill/image-kb-ingest",
       "type": "autonomous",
       "input": {
         "batches": "${review_plan.output.final_subject.image_batches}"
@@ -996,7 +1496,7 @@ POST /agent/task
     {
       "id": "process_docs",
       "name": "处理文档素材",
-      "executor": "skill/doc-kb-ingest",
+      "executor": "/skill/doc-kb-ingest",
       "type": "autonomous",
       "input": {
         "batches": "${review_plan.output.final_subject.doc_batches}"
@@ -1015,7 +1515,7 @@ POST /agent/task
     {
       "id": "quality_report",
       "name": "生成质量报告",
-      "executor": "agent/mia",
+      "executor": "/agent/mia",
       "type": "autonomous",
       "input": {
         "video_result": "${parallel_process.output.process_videos}",
@@ -1063,7 +1563,7 @@ POST /agent/task
     {
       "id": "build_index",
       "name": "构建知识库索引",
-      "executor": "skill/kb-index-builder",
+      "executor": "/skill/kb-index-builder",
       "type": "autonomous",
       "input": { "scope": "full" },
       "output_schema": {
@@ -1150,32 +1650,60 @@ POST /agent/task
 
 ### 7.1 最小可用版本（v0.1）
 
-只实现以下子集：
+分步交付：
 
-- **节点类型**：TaskNode（`autonomous` + `human_confirm`）+ ControlNode 仅 `branch`
-- **Edges**：完整支持
-- **无 Amendment**：计划一旦批准不可运行时修改
-- **无 for_each / parallel**
-- **subject_ref + final_subject**：完整支持（这是 human_confirm 可用的前提）
-- **Executor 协议**：最小集合（input/output/metrics/side_effect_receipt）
-- **事件 Envelope**：完整支持（event_id / ts / seq / actor 等标准字段）
-- **持久化**：文件系统 JSON（不引入数据库依赖）
-- **事件系统**：内存事件总线 + 日志文件
+**Step 1：DSL 实现 + Expr Tree 编译器**
 
-用 Mia 的 KB 构建场景（小规模数据集，如几百个文档）验证核心循环：Agent 生成计划 → 人类审核（approve/modify subject）→ 引擎逐步执行 → 人类确认质量 → 完成或回退。
+- DSL JSON Schema 定义完整（serde 类型）
+- 解析器：JSON → DSL 结构体 → 静态分析 → Expr Tree
+- 静态分析 pass：引用完整性、类型兼容、分支穷举、循环上界、可达性
+- 交付物：`compile(workflow_json) -> Result<ExprTree, Vec<AnalysisError>>`
+
+**Step 2：NamedObject 定义（与 Step 1 并行）**
+
+- FunctionObject schema（定义层：func_type、content、参数约束、资源需求、结果类型）
+- ThunkObject schema（见 3.11）
+- ResultObject schema
+- Named Store 存储接口 + cache 查询接口
+
+**Step 3：实际 executor 定义 + node-executor（依赖 Step 2）**
+
+- KB 场景需要的语义链接：`/skill/fs-scanner`、`/agent/mia`、`/skill/kb-ingest`、`/skill/kb-index-builder`
+- 语义链接到实际 executor 定义的 registry：如 `/skill/fs-scanner -> service::...` / `http::...` / 后续 `func::...`
+- 本地 node-executor 实现
+
+**Step 4a：单机 Thunk 调度器 + 编排器主循环（依赖 Step 1-3）**
+
+- `schedule_thunk` + `check_param_is_ready` 实现
+- `run_workflow_expr` 主循环实现（仅 `Apply` + `Match` + `Await`）
+- 单机求值，无分布式
+
+**Step 5：人类确认组件 + Msg Center（依赖 Step 4a）**
+
+- `Await` 节点的完整处理：subject 推送、approve/modify/reject 回写
+- 自动通知（凡进入 waiting_human 就发）
+- **★ 此时可端到端 demo：Mia 生成计划 → 人类审核 → 执行 → 人类确认质量 → 完成**
+
+**Step 6a：UI - 静态计划视图（可从 Step 1 完成后开始）**
+
+- React Flow 渲染 Expr Tree / Workflow Graph
+- 不需要运行时状态
+
+**Step 6b：UI - 运行时监控视图（依赖 Step 4a + 5）**
+
+- 节点状态实时更新、人类操作按钮
 
 ### 7.2 第二版（v0.2）
 
-- 加入 `for_each`（支持批量处理场景，含实例化 ID 和聚合 Step 规范）
-- 加入 `output_mode`：先支持 `single` + `finite_seekable`（覆盖可并行的批量场景）
+- 加入 `Map`（for_each），含 output_mode 联动（finite_seekable 可并行，finite_sequential 强制串行）
 - 加入 `step.progress` 事件（与 output 分离，仅给 UI）
 - 加入 Amendment 机制
 - 持久化升级为嵌入式数据库（如 SQLite）
+- **Step 4b：分布式 Thunk 调度**（多节点执行、远程结果回传、节点故障处理）
 
 ### 7.3 第三版（v0.3）
 
-- 加入 `finite_sequential` output_mode（含 checkpoint 和串行调度）
-- 加入 `parallel`（含 keyed 输出合并和 cancel 协议）
+- 加入 `Par`（parallel，含 keyed 输出合并和 cancel 协议）
 - 加入预算实时追踪与耗尽处理
 - 对外 API 稳定化，支持外部系统集成（callback 模式）
 - 加入 Workflow 模板的发布与安装（通过 cyfs://）
@@ -1185,14 +1713,17 @@ POST /agent/task
 ## 8. 成功标准
 
 1. Agent（Mia/Jarvis）能在**一次 LLM 调用**内生成符合 DSL schema 的合法 Workflow 配置。
-2. 引擎能在加载配置时**完成全部静态分析**并给出明确的通过/失败报告。
-3. 人类能通过 `GET /run/{id}/graph` **随时获取可渲染的结构化节点图**，无需阅读 JSON 配置原文。
-4. `human_confirm` 步骤中，人类**清楚知道自己在审查什么**（subject_ref），approve/modify/reject 的语义无歧义。
-5. 任何 Run 在任意时刻被中断（进程崩溃、设备重启），恢复后能从**最后一个已持久化的状态点**继续，且 `idempotent: false` 的步骤不会被自动重执行。
-6. 一个 Run 完成后，从事件历史中能**完整重建执行轨迹**：每步做了什么、花了多少、人类在哪里介入了什么。事件序列可通过 `seq` 字段可靠重放。
-7. 预算约束**真的生效**：超出额度时流程暂停而不是继续消耗。
-8. 回退操作在遇到 `idempotent: false` 的已完成步骤时，**必须停下来等人类确认**，不会静默重复副作用。
-9. 同一个 Workflow 配置可以被**另一个 OpenDAN 实例安装并运行**，不依赖原作者的环境（executor 可用的前提下）。
+2. DSL 编译器能将 JSON 配置**编译为 Expr Tree**，并在编译阶段完成全部静态分析，给出明确的通过/失败报告。
+3. 编排器能按 Expr Tree 的依赖关系**正确地解析 executor 引用**：编排器侧 executor 直接执行并回填结果，FunctionObject executor 正确构造并投递 ThunkObject，幂等节点命中 Named Object cache 时跳过执行。
+4. 调度器的 `check_param_is_ready` **三条规则覆盖所有场景**，正常路径下总是通过。
+5. 人类能通过 `GET /run/{id}/graph` **随时获取可渲染的结构化节点图**，无需阅读 JSON 配置原文。
+6. `human_confirm` 步骤中，人类**清楚知道自己在审查什么**（subject_ref），approve/modify/reject 的语义无歧义。**Await 完全不经过调度器。**
+7. 任何 Run 在任意时刻被中断（进程崩溃、设备重启），编排器从持久化状态恢复后能从**最后一个已持久化的状态点**继续主循环，且 `idempotent: false` 的步骤不会被自动重执行。
+8. 一个 Run 完成后，从事件历史中能**完整重建执行轨迹**：每步做了什么、花了多少、人类在哪里介入了什么。事件序列可通过 `seq` 字段可靠重放。
+9. 预算约束**真的生效**：超出额度时流程暂停而不是继续消耗。
+10. 回退操作在遇到 `idempotent: false` 的已完成步骤时，**必须停下来等人类确认**，不会静默重复副作用。
+11. **编排器和调度器可以完全独立迭代**：DSL 新增语法、新增人类交互模式时，调度器代码零修改；调度器从单机升级到分布式时，编排器代码零修改。
+12. 同一个 Workflow 配置可以被**另一个 OpenDAN 实例安装并运行**，不依赖原作者的环境（executor 可用的前提下）。
 
 ---
 
@@ -1202,6 +1733,9 @@ POST /agent/task
 |------|------|
 | **Workflow** | 一个完整的执行计划配置，由 DSL 描述 |
 | **Workflow Graph** | Workflow 的执行结构，由 TaskNode、ControlNode 和 Edge 构成的有向图 |
+| **Expr Tree** | DSL 编译后的内部执行表示。非图灵完备，可静态展开。编排器唯一认识的数据结构 |
+| **FunctionObject** | executor 的定义对象，描述代码/包/脚本、参数约束、资源需求、结果类型等。定义层使用 |
+| **Thunk Object** | FunctionObject 加上本次参数后形成的执行对象。`FunctionObject + params = ThunkObject`。执行层使用，编排器将其投递给调度器 |
 | **Run** | Workflow 的一次具体执行实例 |
 | **TaskNode / Step** | 执行业务逻辑的节点，引擎调度的原子执行单位 |
 | **ControlNode** | 负责流转路由的节点（branch / parallel / for_each），不执行业务逻辑 |
@@ -1209,7 +1743,13 @@ POST /agent/task
 | **Reference** | 节点间数据传递的只读指针（`${node_id.output.field}`） |
 | **Guard** | 附加在 Node 或 Workflow 上的约束条件 |
 | **Amendment** | Agent 在运行时提交的计划修改请求 |
-| **Executor** | Step 的执行者（`agent/*`、`skill/*`、`tool/*`、`human`） |
+| **Executor 定义** | DSL 中 `namespace::name` 形式的实际执行定义，如 `service::aicc.llm.chat`、`http::x.y`、`func::<objid>` |
+| **Executor 语义链接** | DSL 中路径形式的能力引用，如 `/agent/mia`、`/skill/fs-scanner`、`/tool/image-normalizer`，运行前需通过 registry 展开为实际 executor 定义 |
+| **Executor Runtime** | 物理节点上实际执行 ThunkObject 的运行时。接收 ThunkObject，返回 result |
+| **FunId** | FunctionObject 的内容寻址标识。相同 FunctionObject 永远产生相同 FunId |
+| **Named Object** | 全局内容寻址存储。`funid(hash(params)) → result` 的全局 memoization |
+| **编排器（Orchestrator）** | 持有 Expr Tree，管理编排语义（依赖、分支、并行、人类交互），在正确时机调用编排器侧 adapter 或投递 ThunkObject |
+| **调度器（Thunk Dispatcher）** | 收到 ThunkObject，检查参数就绪，选择节点，执行，返回结果。不理解 Workflow 语义 |
 | **subject_ref** | `human_confirm` 步骤中，指向人类审查对象的 Reference |
 | **side_effect_receipt** | 副作用型步骤返回的标识信息，用于审计和去重 |
 | **Pipeline** | Workflow 的退化特例：所有步骤 autonomous、无分支、无 amendment |
@@ -1218,145 +1758,3 @@ POST /agent/task
 | **Checkpoint** | finite_sequential 流在每个元素完成后持久化的恢复点，用于崩溃恢复时从断点继续 |
 | **Agent-Human-Loop** | 以人类确认/协作作为约束的 Agent 工作流闭环 |
 | **DSL** | 受限的领域特定语言，保证可静态分析，不图灵完备 |
-
-## 实现前的一些准备
-
-一个Workflow Run后，是一组TaskMgr里的Task，每个Step，可以根据其定义，转换为一个Function Instance(ThunkObject). Scheduler只支持调度Function Instance
-
-### 标准对象
-- 定义FuncObject，需要定义函数类型，输入schema和输出schema. 输出schema会说明自己是否是一个Stream类型的FuncObject
-  - Stream结果:有限元：能知道stream一共有多少个step,可seek的，可以传任意step,不可seekk的，要计算step n,则必须先得到step n-1
-  - 要保留一种组合类型的的FuncObject,允许通过组合一系列FuncObject得到一个新的FuncObject
-  - 要有足够的信息，帮助调度器计算“最佳运行位置"
-  - 最后通过node_daemon的FuncExector运行，可以支持的类型
-    - 智能合约（需要有能执行的密钥）
-    - runtime_type + script_hash （需要能
-    - pkg_id
-  
-- 定义ThunkObject （result of call FuncObject)
-   ThunkObject = FuncObject Id + ParamObjects
-- 定义Action: Eval
-- SameAs Reation,把ThunkObject和另一个，表示结果的对象关联起来
-
-
-### 工作视角
-- Run Workflow
-- Workflow Engine根据定义，构造ThunkObjects,并传递给调度器 （function_instance_queue.push)，
-- Workflow Engine，根据工作情况，调用SendMsg,要求人类过来处理某个Step
-- Workflow Engine，对Runing状态的workflow,会定期检查
-- 调度器不断的在function_instance_queue 尝试得到Ready的ThunkObject，针对Ready的ThunkObject会按下面逻辑开始调度
-  - 过滤可用的node exectour
-  - 根据结果亲和输入亲和原则，寻找最合适的node-exector
-  - 将ThunkObjectId投递给该node-exector
-- node-exector执行ThunkObject,更新状态,这会触发另一个ThunkObject的就绪
-
-
-### 工作计划
-1. DSL 实现 + 表达式树编译器
-   交付物：JSON Schema、解析器、静态分析、DSL → ExprTree 编译器
-   
-2. NamedObject 定义（FuncObject / ThunkObject / ResultObject）
-   交付物：schema 定义、存储接口、cache 查询接口
-   可以和第 1 步并行
-
-3. FuncType 定义 + node-executor 实现
-   交付物：KB 场景需要的 4-5 种 FuncType、本地 executor
-   依赖第 2 步的 schema
-
-4a. 单机表达式求值器
-   交付物：按依赖顺序 force 表达式树、查 cache、调 executor、写结果
-   依赖第 1、2、3 步
-
-5. 人类确认组件 + Msg Center 集成
-   交付物：waiting_human 状态处理、subject 推送、操作回写、自动通知
-   依赖第 4a 步
-   ★ 此时可以端到端 demo
-
-6a. UI - 静态计划视图（可从第 1 步完成后就开始） https://reactflow.dev/learn
-6b. UI - 运行时监控视图（依赖第 4a + 5）
-
-4b. 分布式求值（多节点调度）
-   交付物：节点选择、远程执行、结果回传、故障处理
-   依赖第 4a 步稳定
-
-
-  ```rust
-  /// 表达式树：Workflow DSL 编译后的内部表示
-/// 核心约束：不图灵完备，可静态展开为有限图
-
-/// 内容寻址的函数标识
-pub struct FunId(pub [u8; 32]); // content hash
-
-/// 对另一个节点输出的只读引用
-pub struct Ref {
-    pub node_id: String,
-    pub field_path: Vec<String>, // e.g. ["strategy_summary"]
-}
-
-/// 表达式树节点
-pub enum Expr {
-    /// 字面值（常量输入）
-    Literal(serde_json::Value),
-    
-    /// 引用另一个节点的输出
-    Reference(Ref),
-    
-    /// 函数调用：funid(params) → result
-    /// 对应 DSL 的 autonomous Step
-    Apply {
-        fun_id: FunId,
-        params: HashMap<String, Expr>,
-        output_mode: OutputMode,
-        idempotent: bool,
-    },
-    
-    /// 枚举分支：match expr { cases }
-    /// 对应 DSL 的 branch ControlNode
-    Match {
-        on: Box<Expr>,          // 被匹配的值
-        field: String,           // 取哪个字段做匹配
-        cases: HashMap<String, Box<Expr>>,  // 穷举的分支
-        max_iterations: u32,
-    },
-    
-    /// 并行求值
-    /// 对应 DSL 的 parallel ControlNode
-    Par {
-        branches: HashMap<String, Box<Expr>>,
-        join: JoinStrategy,
-    },
-    
-    /// 映射：对集合每个元素应用函数
-    /// 对应 DSL 的 for_each ControlNode
-    Map {
-        collection: Box<Expr>,
-        body: Box<Expr>,        // 对每个元素执行的子表达式
-        max_items: u32,
-        concurrency: u32,       // 受上游 seekability 约束
-    },
-    
-    /// 等待人类输入
-    /// 对应 DSL 的 human_confirm / human_required Step
-    Await {
-        subject: Box<Expr>,     // 审查对象
-        prompt: String,
-        output_schema: serde_json::Value,
-    },
-}
-
-pub enum OutputMode {
-    Single,
-    FiniteSeekable,
-    FiniteSequential,
-}
-
-pub enum JoinStrategy {
-    All,
-    Any,
-    NOfM(u32),
-}
-```
-
-这棵树的每个节点都有明确的语义，不图灵完备（没有通用循环、没有可变变量），可以在不执行的情况下做完整的静态分析（依赖图、类型兼容、终止性、预算预估）。
-
-**DSL JSON → 这棵 Expr tree 的编译是第 1 步的核心交付物。** 

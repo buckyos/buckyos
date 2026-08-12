@@ -1,10 +1,21 @@
 pub mod aicc;
+pub mod aicc_usage_log_db;
 pub mod claude;
 pub mod claude_protocol;
 pub mod complete_request_queue;
-pub mod gimini;
+pub mod default_logical_tree;
+pub mod fal;
+pub mod gemini;
+pub mod metadata_resolver;
+pub mod metadata_updater;
 pub mod minimax;
+pub mod model_registry;
+pub mod model_router;
+pub mod model_scheduler;
+pub mod model_session;
+pub mod model_types;
 pub mod openai;
 pub mod openai_protocol;
+pub mod sn_ai_provider;
 
 pub use self::aicc::*;

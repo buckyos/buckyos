@@ -1,0 +1,8 @@
+{
+  "title": "开发网页版连连看小游戏",
+  "objective": "单页面连连看小游戏,使用经典规则",
+  "workspace_id": "web-lianliankan",
+  "behavior": "plan",
+  "created_by_session_id": "tg:lzc_jarvis:5397330802",
+  "reason_messages": ["做一个纯前端的 连连看 小游戏"]
+}

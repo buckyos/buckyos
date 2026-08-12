@@ -26,7 +26,17 @@ class BootstrapError(RuntimeError):
 
 
 LINUX_CORE_PACKAGES = {
-    "apt-get": ["build-essential", "curl", "wget", "git", "pkg-config", "libssl-dev"],
+    "apt-get": [
+        "build-essential",
+        "curl",
+        "wget",
+        "git",
+        "pkg-config",
+        "libssl-dev",
+        "clang",
+        "libclang-dev",
+        "llvm-dev",
+    ],
     "dnf": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconf-pkg-config", "openssl-devel"],
     "yum": ["gcc", "gcc-c++", "make", "curl", "wget", "git", "pkgconfig", "openssl-devel"],
     "pacman": ["base-devel", "curl", "wget", "git", "pkgconf", "openssl"],
@@ -100,6 +110,33 @@ LINUX_CROSS_PACKAGE_CHOICES = {
     "zypper": [["musl"], ["gcc-aarch64-linux-gnu"], ["cross-aarch64-gcc13", "cross-aarch64-binutils"]],
 }
 
+MUSL_CROSS_INSTALL_ROOT = Path("/opt/musl-cross")
+MUSL_CROSS_BASE_URL = "https://musl.cc"
+MUSL_CROSS_TOOLCHAINS = [
+    ("x86_64-linux-musl", "x86_64-linux-musl-cross"),
+    ("aarch64-linux-musl", "aarch64-linux-musl-cross"),
+]
+
+LINUX_BINDGEN_PACKAGE_CHOICES = {
+    "apt-get": [["clang", "libclang-dev", "llvm-dev"]],
+    "dnf": [
+        ["clang", "clang-devel", "llvm-devel"],
+        ["clang", "libclang", "llvm-devel"],
+        ["clang", "libclang-devel", "llvm-devel"],
+    ],
+    "yum": [
+        ["clang", "clang-devel", "llvm-devel"],
+        ["clang", "libclang", "llvm-devel"],
+        ["clang", "libclang-devel", "llvm-devel"],
+    ],
+    "pacman": [["clang", "llvm"]],
+    "zypper": [
+        ["clang", "clang-devel", "llvm-devel"],
+        ["clang", "libclang-devel", "llvm-devel"],
+        ["clang", "llvm-devel"],
+    ],
+}
+
 BREW_FORMULAE = ["git", "wget", "pkgconf", "openssl@3", "python@3.12", "node", "pnpm", "rustup", "uv", "deno", "tmux"]
 BREW_CASKS = ["docker"]
 
@@ -113,6 +150,7 @@ WINGET_PACKAGE_CHOICES = {
     "deno": [["DenoLand.Deno"]],
     "docker": [["Docker.DockerDesktop"]],
     "msvc": [["Microsoft.VisualStudio.2022.BuildTools"]],
+    "llvm": [["LLVM.LLVM"]],
 }
 
 WINGET_MSVS_OVERRIDE = "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -429,6 +467,60 @@ class Bootstrapper:
                 return str(candidate)
         return None
 
+    def find_libclang(self) -> str | None:
+        env_path = os.environ.get("LIBCLANG_PATH")
+        if env_path:
+            env_candidate = Path(env_path)
+            search_roots = [env_candidate] if env_candidate.is_dir() else [env_candidate.parent]
+        else:
+            search_roots = []
+
+        search_roots.extend(
+            [
+                Path("/usr/lib"),
+                Path("/usr/local/lib"),
+                Path("/usr/lib64"),
+                Path("/usr/local/lib64"),
+                Path("/opt/homebrew/opt/llvm/lib"),
+                Path("/usr/local/opt/llvm/lib"),
+            ]
+        )
+        if self.system == "Windows":
+            program_files = os.environ.get("ProgramFiles")
+            program_files_x86 = os.environ.get("ProgramFiles(x86)")
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            if program_files:
+                search_roots.extend([Path(program_files) / "LLVM" / "bin", Path(program_files) / "LLVM" / "lib"])
+            if program_files_x86:
+                search_roots.extend([Path(program_files_x86) / "LLVM" / "bin", Path(program_files_x86) / "LLVM" / "lib"])
+            if local_app_data:
+                search_roots.extend(
+                    [
+                        Path(local_app_data) / "Programs" / "LLVM" / "bin",
+                        Path(local_app_data) / "Programs" / "LLVM" / "lib",
+                    ]
+                )
+            for path_entry in os.environ.get("PATH", "").split(os.pathsep):
+                if path_entry:
+                    search_roots.append(Path(path_entry))
+        search_roots.extend(sorted(Path("/usr/lib").glob("llvm-*/lib")))
+        search_roots.extend(sorted(Path("/usr/lib64").glob("llvm-*/lib")))
+
+        seen: set[Path] = set()
+        for root in search_roots:
+            if root in seen or not root.exists():
+                continue
+            seen.add(root)
+            for pattern in ("libclang.so", "libclang.so.*", "libclang.dylib", "libclang.dll"):
+                matches = sorted(root.glob(pattern))
+                if matches:
+                    return str(matches[0])
+            if self.system == "Windows":
+                matches = sorted(root.glob("clang.dll"))
+                if matches:
+                    return str(matches[0])
+        return None
+
     def ensure_uv(self) -> None:
         if self.find_uv():
             return
@@ -472,6 +564,35 @@ class Bootstrapper:
             package_id = package_ids[0]
             if not self.package_installed(package_id, kind="winget"):
                 self.install_winget_package(package_id)
+
+    def ensure_linux_rustup(self) -> None:
+        if self.find_rustup():
+            return
+
+        packages = self.resolve_package_set(LINUX_RUSTUP_CHOICES[self.package_manager])
+        if packages:
+            missing = [package for package in packages if not self.package_installed(package)]
+            if missing:
+                self.install_packages(missing)
+            return
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and not os.environ.get("SUDO_USER"):
+            self.warnings.append(
+                "rustup will be installed into root's home directory because the script is running as root"
+            )
+
+        if shutil.which("curl"):
+            fetch_command = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        elif shutil.which("wget"):
+            fetch_command = "wget -qO- https://sh.rustup.rs | sh -s -- -y"
+        else:
+            raise BootstrapError("rustup installer requires curl or wget")
+
+        self.run(self.run_as_invoking_user(["sh", "-c", fetch_command]))
+
+        rustup_path = self.find_rustup()
+        if rustup_path and not shutil.which(Path(rustup_path).name):
+            self.notes.append(f"rustup was installed at {rustup_path}; reopen the terminal if it is not yet in PATH")
 
     def ensure_tmux(self) -> None:
         if shutil.which("tmux"):
@@ -626,9 +747,15 @@ class Bootstrapper:
     def install_linux_environment(self) -> None:
         self.update_package_index()
         self.install_packages(LINUX_CORE_PACKAGES[self.package_manager])
+        if self.package_manager != "apt-get":
+            self.install_first_resolved_set(
+                "clang/libclang build dependencies",
+                LINUX_BINDGEN_PACKAGE_CHOICES[self.package_manager],
+                optional=True,
+            )
         self.install_first_resolved_set("Python 3", LINUX_PYTHON_CHOICES[self.package_manager])
         self.ensure_linux_node()
-        self.install_first_resolved_set("rustup", LINUX_RUSTUP_CHOICES[self.package_manager])
+        self.ensure_linux_rustup()
         self.ensure_uv()
         self.ensure_deno()
         self.ensure_tmux()
@@ -657,7 +784,9 @@ class Bootstrapper:
         if not self.args.skip_cross_tools:
             for choices in LINUX_CROSS_PACKAGE_CHOICES[self.package_manager]:
                 self.install_first_resolved_set("cross-compilation dependencies", [choices], optional=True)
+            self.ensure_linux_full_musl_toolchain()
             self.check_linux_static_tooling()
+        self.check_linux_bindgen_tooling()
 
         if not self.args.skip_buckyos_dir:
             self.ensure_buckyos_directory()
@@ -684,12 +813,30 @@ class Bootstrapper:
         self.ensure_deno()
         self.ensure_tmux()
 
+        if not self.args.skip_cross_tools:
+            self.ensure_macos_musl_cross()
+
         if not self.args.skip_buckyos_dir:
             self.ensure_buckyos_directory()
 
         rustup_prefix = self.capture_text(["brew", "--prefix", "rustup"])
         if rustup_prefix:
             self.notes.append(f"If rustup is not found in terminal, add {rustup_prefix}/bin to PATH")
+
+    def ensure_macos_musl_cross(self) -> None:
+        """Install FiloSottile/musl-cross so Linux musl cross-compilation works on macOS.
+
+        The formula is keg-only; build_aios auto-detects binaries under
+        /opt/homebrew/opt/musl-cross/bin (or /usr/local/opt/musl-cross/bin on Intel),
+        so no PATH changes are required.
+        """
+        if self.package_installed("musl-cross"):
+            return
+        self.install_packages(["FiloSottile/musl-cross/musl-cross"])
+        self.notes.append(
+            "Installed FiloSottile/musl-cross (keg-only); build_aios discovers it under "
+            "/opt/homebrew/opt/musl-cross/bin without PATH changes."
+        )
 
     def install_windows_environment(self) -> None:
         self.update_package_index()
@@ -724,13 +871,113 @@ class Bootstrapper:
             else:
                 self.warnings.append("winget could not find Visual Studio Build Tools; native Windows Rust build may fail")
 
+        self.ensure_windows_libclang()
         self.ensure_rust_toolchain()
         self.notes.append("For Linux target cross-compilation on Windows, consider using WSL2")
+
+    def ensure_windows_libclang(self) -> None:
+        package_ids = self.resolve_package_set(WINGET_PACKAGE_CHOICES["llvm"], kind="winget")
+        if package_ids:
+            package_id = package_ids[0]
+            if not self.package_installed(package_id, kind="winget"):
+                self.install_winget_package(package_id)
+        else:
+            self.warnings.append("winget could not find LLVM; crates using bindgen may fail")
+
+        libclang = self.find_libclang()
+        if not libclang:
+            self.warnings.append(
+                "libclang.dll not found; crates using bindgen may fail unless LIBCLANG_PATH points to LLVM's bin directory"
+            )
+            return
+
+        libclang_dir = str(Path(libclang).parent)
+        if os.environ.get("LIBCLANG_PATH") == libclang_dir:
+            return
+
+        os.environ["LIBCLANG_PATH"] = libclang_dir
+        self.run(["setx", "LIBCLANG_PATH", libclang_dir])
+        self.notes.append(f"Set LIBCLANG_PATH to {libclang_dir}; reopen the terminal before rebuilding")
+
+    def musl_toolchain_complete(self, prefix: str) -> bool:
+        for tool in ("gcc", "g++", "ar", "ranlib"):
+            name = f"{prefix}-{tool}"
+            if shutil.which(name):
+                continue
+            if (MUSL_CROSS_INSTALL_ROOT / f"{prefix}-cross" / "bin" / name).exists():
+                continue
+            return False
+        return True
+
+    def ensure_linux_full_musl_toolchain(self) -> None:
+        for prefix, archive_name in MUSL_CROSS_TOOLCHAINS:
+            if self.musl_toolchain_complete(prefix):
+                continue
+            try:
+                self.install_musl_cross_archive(archive_name)
+            except BootstrapError as error:
+                self.warnings.append(str(error))
+
+    def install_musl_cross_archive(self, archive_name: str) -> None:
+        archive_url = f"{MUSL_CROSS_BASE_URL}/{archive_name}.tgz"
+        install_dir = MUSL_CROSS_INSTALL_ROOT / archive_name
+
+        if self.args.dry_run:
+            self.print_command(["curl", "-fsSLO", archive_url])
+            self.print_command(["sudo", "mkdir", "-p", str(MUSL_CROSS_INSTALL_ROOT)])
+            self.print_command(
+                ["sudo", "tar", "-xzf", f"{archive_name}.tgz", "-C", str(MUSL_CROSS_INSTALL_ROOT)]
+            )
+            self.print_command(
+                ["sudo", "ln", "-sfn", f"{install_dir}/bin/<tool>", "/usr/local/bin/<tool>"]
+            )
+            return
+
+        if not install_dir.exists():
+            with tempfile.TemporaryDirectory(prefix="buckyos-musl-") as temp_dir:
+                archive_path = Path(temp_dir) / f"{archive_name}.tgz"
+                try:
+                    self.download_file(archive_url, archive_path)
+                except Exception as error:
+                    raise BootstrapError(
+                        f"Failed to download musl cross toolchain from {archive_url}: {error}"
+                    ) from error
+
+                self.run(self.require_unix_privilege(["mkdir", "-p", str(MUSL_CROSS_INSTALL_ROOT)]))
+                self.run(
+                    self.require_unix_privilege(
+                        ["tar", "-xzf", str(archive_path), "-C", str(MUSL_CROSS_INSTALL_ROOT)]
+                    )
+                )
+
+        bin_dir = install_dir / "bin"
+        if not bin_dir.exists():
+            raise BootstrapError(
+                f"musl cross toolchain {archive_name} extracted without a bin/ directory at {install_dir}"
+            )
+
+        for binary_path in sorted(bin_dir.iterdir()):
+            if not (binary_path.is_file() or binary_path.is_symlink()):
+                continue
+            link_path = Path("/usr/local/bin") / binary_path.name
+            self.run(
+                self.require_unix_privilege(
+                    ["ln", "-sfn", str(binary_path), str(link_path)]
+                )
+            )
+
+        self.notes.append(f"Installed musl cross toolchain at {install_dir}")
 
     def check_linux_static_tooling(self) -> None:
         if not shutil.which("musl-gcc") and not shutil.which("x86_64-linux-musl-gcc"):
             self.warnings.append(
                 "x86_64 musl toolchain not found; static Linux builds require musl-gcc or x86_64-linux-musl-gcc"
+            )
+
+        if not shutil.which("musl-g++") and not shutil.which("x86_64-linux-musl-g++"):
+            self.warnings.append(
+                "x86_64 musl C++ toolchain not found; crates with C++ deps (for example rocksdb) require "
+                "musl-g++ or x86_64-linux-musl-g++. On Ubuntu, musl-tools alone is not enough."
             )
 
         if (
@@ -741,6 +988,15 @@ class Bootstrapper:
             self.warnings.append(
                 "aarch64 musl toolchain not found; static Linux builds require aarch64-linux-musl-gcc "
                 "or /usr/aarch64-linux-musl/bin/musl-gcc or /opt/musl-cross/bin/aarch64-linux-musl-gcc"
+            )
+
+    def check_linux_bindgen_tooling(self) -> None:
+        if not shutil.which("clang"):
+            self.warnings.append("clang not found; crates using bindgen or C/C++ build steps may fail")
+
+        if not self.find_libclang():
+            self.warnings.append(
+                "libclang not found; crates using bindgen may fail unless LIBCLANG_PATH points to libclang.so"
             )
 
     def ensure_macos_build_tools(self) -> None:
@@ -762,6 +1018,9 @@ class Bootstrapper:
             self.run([rustup, "target", "add", "x86_64-unknown-linux-musl"])
             self.run([rustup, "target", "add", "aarch64-unknown-linux-gnu"])
             self.run([rustup, "target", "add", "aarch64-unknown-linux-musl"])
+        if self.system == "Darwin" and not self.args.skip_cross_tools:
+            self.run([rustup, "target", "add", "x86_64-unknown-linux-musl"])
+            self.run([rustup, "target", "add", "aarch64-unknown-linux-musl"])
         if self.system == "Windows" and not self.args.skip_msvc:
             host_arch = platform.machine().lower()
             if host_arch in {"amd64", "x86_64"}:
@@ -774,6 +1033,8 @@ class Bootstrapper:
             return path
 
         candidates = [
+            self.invoking_user_home() / ".cargo" / "bin" / "rustup",
+            self.invoking_user_home() / ".cargo" / "bin" / "rustup.exe",
             Path.home() / ".cargo" / "bin" / "rustup",
             Path.home() / ".cargo" / "bin" / "rustup.exe",
             Path("/opt/homebrew/bin/rustup"),

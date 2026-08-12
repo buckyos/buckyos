@@ -1,0 +1,11 @@
+{
+  "lock": false,
+  "tasks": {
+    "start": "deno run --allow-net --allow-read --allow-env main.ts",
+    "build": "pnpm build"
+  },
+  "imports": {
+    "@std/http": "jsr:@std/http@^1",
+    "@sys-test/websdk-node-types": "./node_modules/buckyos/dist/node.d.ts"
+  }
+}

@@ -1,0 +1,14 @@
+export const SIDEBAR_DEFAULT_WIDTH = 280
+export const SIDEBAR_MIN_WIDTH = 220
+export const SIDEBAR_MAX_WIDTH = 400
+export const SIDEBAR_COLLAPSED_WIDTH = 64
+
+export const INFO_PANEL_DEFAULT_WIDTH = 320
+export const INFO_PANEL_MIN_WIDTH = 260
+export const INFO_PANEL_MAX_WIDTH = 440
+
+export const PANEL_SPLITTER_WIDTH = 6
+
+export const FEED_CARD_MAX_WIDTH = 680
+export const MOBILE_BOTTOM_NAV_HEIGHT = 56
+export const FILTER_BAR_HEIGHT = 44

@@ -45,16 +45,23 @@ fn build_app_service_config(
     instance_service_ports: HashMap<String, u16>,
 ) -> Result<AppServiceInstanceConfig> {
     let mut result_config = AppServiceInstanceConfig::new(node_id, app_config);
+    let has_script_pkg = app_config.app_doc.pkg_list.script.is_some();
     if node_info.support_container {
         let docker_pkg_name = format!("{}_docker_image", node_info.arch.as_str());
         let docker_pkg_info = app_config.app_doc.pkg_list.get(&docker_pkg_name);
-        if docker_pkg_info.is_none() && app_config.app_doc.get_app_type() != AppType::Agent {
+        if docker_pkg_info.is_none()
+            && app_config.app_doc.get_app_type() != AppType::Agent
+            && !has_script_pkg
+        {
             return Err(anyhow::anyhow!(
                 "docker_pkg_name: {} not found",
                 docker_pkg_name
             ));
         }
-        if docker_pkg_info.is_none() && app_config.app_doc.pkg_list.agent.is_none() {
+        if docker_pkg_info.is_none()
+            && app_config.app_doc.pkg_list.agent.is_none()
+            && !has_script_pkg
+        {
             return Err(anyhow::anyhow!(
                 "docker_pkg_name: {} or agent pkg not found",
                 docker_pkg_name
@@ -63,7 +70,7 @@ fn build_app_service_config(
     } else {
         // 解析是否有<arch>_<os_type>_app字段
         let app_pkg_name = format!("{}_{}_app", node_info.arch.as_str(), node_info.os.as_str());
-        if app_config.app_doc.pkg_list.get(&app_pkg_name).is_none() {
+        if app_config.app_doc.pkg_list.get(&app_pkg_name).is_none() && !has_script_pkg {
             return Err(anyhow::anyhow!("app_pkg_name: {} not found", app_pkg_name));
         }
     }

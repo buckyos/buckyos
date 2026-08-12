@@ -1,450 +1,527 @@
-
 # MessageCenter 设计文档
 
-## 1. 背景与目标
+> **MessageCenter is not an IM server. It is a DID-native, store-and-forward personal messaging system—email upgraded for Personal Servers and Agents.**
 
-MessageCenter 是全系统的“消息域”核心服务，统一承接：
+本文档与 [Message Tunnel Design.md](<./Message Tunnel Design.md>) 共同构成消息域的两份主设计文档，共享同一定位、同一五层模型和同一术语表。任何与本文冲突的旧描述（包括代码注释和历史文档）以本文为准。
 
-* **tunnel 入站**：Telegram/Slack/HTTP 等将外部事件转换为 MsgObject 后 `dispatch()` 写入系统。
-* **Agent/人类/系统出站**：通过 `post_send()` 将待发送 MsgObject 进入发送流水，并由 tunnel 消费发送。
-* **Box 抽象**：`get_inbox(did)` / `get_outbox(did|tunnel)` 提供统一队列/列表语义。
-* **群聊 read receipt**：群聊消息的“已读/阅读中”状态跟随 *reader(agent)* 而不是跟随消息本体。
+## 1. 定位
 
-### 设计目标（必须满足）
+MessageCenter 运行在用户的 Personal Server（Zone）上，主要服务**一个用户、这个用户的设备和 Agent**。它是消息域的真相源：所有消息先持久化为不可变对象，再按确定的规则投递、引用和展示。
 
-1. **幂等**：同一 MsgObject（同一 MsgObjectId）重复 dispatch/post_send 不会造成重复的 inbox/outbox 记录（除非业务刻意允许）。
-2. **可扩展**：可水平扩展（多 tunnel、多 agent、多 people)
-3. **可观察**：提供事件/索引能力让 UI/TaskMgr/审计能“看见发生了什么”。
-4. **存储模型正确**：MsgObject 不可变；状态、删除策略、重试等是“named_store”的职责。
+设计优先级依次是：
 
+1. **可靠性**：消息不丢、不重，投递失败可重试。
+2. **可恢复性**：服务崩溃、重启、断网后能从持久状态完整恢复，不依赖任何在线连接。
+3. **可审计性**：谁发了什么、投递到哪、结果如何，事后全部可追溯。
+4. **语义清晰**：每个概念只有一个含义；UI、Agent、transport 各自只依赖自己那一层。
+
+**不是**设计目标的：中心化 IM 的极限吞吐、在线撮合、全局一致的会话状态。单用户 Personal Server 的消息量级由真实的人和少量 Agent 决定，正确性永远优先于吞吐。
+
+### 1.1 非目标
+
+- **不把在线连接作为消息系统中心。** webhook、long polling、kevent、stream 都只是加速信号；真相永远在持久化的 mailbox 和 delivery queue 里，消费者必须能靠扫描补偿。
+- **不把 Session 作为消息真相源。** Session 是 mailbox 的投影，可以随时丢弃重建；删除全部 session 索引不丢失任何消息。
+- **不根据 ContactMgr、在线状态或最近活跃信道自动选路。** `msg.to` 写的是哪个 DID，就确定性地投递到哪；解析失败就是错误。
+- **不要求 UI 理解 Inbox、Delivery Queue 等内部实现。** UI 只消费 Session API（见 §5）。
+- **不把 typing、presence、streaming 中间态混入可靠消息投递。** 它们是易失的 SessionState，走独立通道，不产生 MailboxRecord。
+
+### 1.2 五层模型
+
+消息域的全部设计围绕五层展开。评审任何新需求时，第一个问题是"它落在哪一层"：
+
+```text
+MsgObject          不可变消息本体（内容寻址，全系统只存一份）
+DeliveryEnvelope   一次确定投递的信封（post_send 解析产物，不是路由输入）
+MailboxRecord      某个 owner 对消息的本地引用（INBOX / SENT / GROUP_INBOX / REQUEST_BOX）
+DeliveryRecord     投递队列、重试和结果（DELIVERY_QUEUE，owner = 投递执行者）
+SessionProjection  UI/Agent 的会话视图（由上面各层聚合派生，可重建）
+```
+
+层间依赖是单向的：上层可以引用下层，下层不知道上层存在。`MsgObject` 不知道自己被投递到哪；`DeliveryRecord` 不知道 UI 怎么展示；`SessionProjection` 不持有任何独立真相。
+
+### 1.3 Email → BuckyOS 概念映射
+
+MessageCenter 的心智模型是"为 Personal Server 和 Agent 升级过的 email"，而不是 IM：
+
+| Email 世界 | BuckyOS 消息域 | 说明 |
+|---|---|---|
+| RFC 5322 message（信件本体） | `MsgObject` | 不可变、可签名、内容寻址 |
+| Message-ID | `msg_id`（MsgObjectId） | canonical JSON hash |
+| SMTP envelope（`RCPT TO`） | `DeliveryEnvelope` | 信封与信件分离；投递看信封不看信件 |
+| 收件人地址 | shareable DID / local shadow endpoint DID | 分类见 Tunnel 文档 §3 |
+| MX 解析 | DID → Zone 解析 | 确定性协议，不是"智能选路" |
+| MTA 队列与重试 | `DeliveryRecord`（`DELIVERY_QUEUE`） | `WAIT → SENDING → SENT / FAILED / DEAD` |
+| MTA / smarthost / gateway | MessageHub（原生）/ MessageTunnel（外部） | 两类 DeliveryExecutor |
+| DSN / bounce | DeliveryReport → 更新 `DeliveryRecord` | 永不修改 `MsgObject` |
+| IMAP mailbox + `\Seen` flag | `MailboxRecord` + `RecipientState` | 每个 owner 独立管理 |
+| Sent 文件夹 | `SENT` mailbox | 发送历史 ≠ 投递成功 |
+| MUA 的会话/线程视图 | `SessionProjection` | 客户端投影，可重建 |
+| 邮件规则/过滤器 | 入站 policy（ContactMgr ACL → INBOX / REQUEST_BOX / DROP） | 只影响 mailbox 归属，不改消息 |
+
+Email 没有做好而 BuckyOS 升级的部分：DID 原生身份与签名、群实体（group 自己有 mailbox）、Agent 作为一等收发方、投递状态对发送方可见（聚合进 Session 视图）。
 
 ---
 
-## 2. 核心概念与数据模型
+## 2. 数据模型
 
-### 2.1 MsgObject（已完成）
+### 2.1 MsgObject：不可变消息本体
 
-定义参考ndn_lib::MsgObject
+定义见 `ndn_lib::MsgObject`。`MsgObject` 只保存**不可变语义**，一经创建永不修改（内容寻址，改一个字节就是另一条消息）：
 
-### 2.2 MsgRecord（关键：解决“消息副本/状态/删除策略”）
+- `from` / `to`：消息参与方 DID。入站消息 `from` 保持来源 endpoint DID 原样（见 §3.3）。
+- `content`：`MsgContent`，含 `title/format/content/machine/refs`。大对象放对象存储，用 `refs` 引用。
+- `proof`：来源签名/证明。
+- `thread`：`topic / reply_to / correlation_id` 语义线索。
+- `kind` / `created_at_ms` / `expires_at_ms` / `nonce` / `meta`。
 
-**MsgRecord 是“某个 owner 在某个 box 里对某条 MsgObject 的视图”**：
+**永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类。这些全部落在 record 层。投递失败、重试、回执只更新 `DeliveryRecord`，`MsgObject` 与投递结果彻底解耦。
 
-* 同一条 MsgObject 可以对应多个 MsgRecord：
+> 注：`thread.tunnel_id` 是历史遗留字段，冻结设计中删除（transport 信息属于 DeliveryEnvelope 层，不属于消息语义）。`thread.topic` 是消息携带的**语义 hint**，与本地 `session_id` 的关系见 §5.4。
 
-  * sender 的 outbox 记录（历史/删除策略独立）
-  * receiver 的 inbox 记录（已读状态独立）
-  * group chat 中每个 reader 的 read receipt / 或每 reader 的 record
+### 2.2 DeliveryEnvelope：一次确定投递的信封
 
-建议定义（伪结构）：
+历史上的 `RouteInfo` 承担了两个矛盾的角色：既像"路由输入"（给系统猜从哪发），又像"投递记录"。冻结设计将其重定义为 **DeliveryEnvelope**：`post_send` 对每个 `msg.to` 目标做确定性解析之后的**结果快照**，不是任何自动路由的输入。
 
 ```rust
-// 逻辑模型：可存 KV/对象存储/关系表
-pub struct MsgRecord {
-    pub record_id: String,      // 唯一，建议可推导：hash(owner + box + msg_id + variant)
-    pub owner: DID,             // 这个记录属于谁（agent did / user did / tunnel did / group did）
-    pub box_kind: BoxKind,      // INBOX / OUTBOX / GROUP_INBOX / TUNNEL_OUTBOX / ...
-    pub msg_id: ObjId,    // 指向不可变 MsgObject
-    pub state: MsgState,        // 记录状态（inbox/outbox 不同状态机）
+/// 一次确定投递的信封。post_send 解析完成后创建，之后不再改变。
+pub struct DeliveryEnvelope {
+    pub msg_id: ObjId,          // 引用不可变消息本体
+    pub target_did: DID,        // 本次投递的目标（msg.to 中的一个）
+    pub transport_did: DID,     // 投递执行者：MessageHub 服务 DID 或某个 tunnel 实例 DID
+    pub transport: TransportKind, // Native（MessageHub）/ Tunnel { platform, tunnel_instance_id }
+    pub address: Option<DeliverySnapshot>, // 解析后的地址快照（平台 chat/address 等）
+}
+```
+
+两条确定投递分支（也只有这两条）：
+
+- `target_did` 是 **shareable DID**（如 `did:bns:bob`、`did:bns:telegram.bob`）→ **MessageHub 原生投递**：解析 DID → 找到目标 Zone → POST MsgObject。Zone 解析发生在每次投递尝试时（如同 email 发送时才查 MX），但走的是确定性解析协议，不是策略选路。
+- `target_did` 是 **local shadow endpoint DID**（`did:msgtunnel:*`）→ **MessageTunnel 投递**：从 DID 内嵌的 `tunnel_instance_id` 在注册表查出 tunnel 实例，平台地址由 DID 内嵌的 account 信息与 tunnel 配置确定。
+
+任何解析失败（未注册的 tunnel 实例、无法解析的 DID、非法格式）都返回错误。**禁止 default tunnel、default chat、last-active fallback。**
+
+### 2.3 MailboxRecord：owner 对消息的本地引用
+
+```rust
+/// 某个 owner 在某个 mailbox 中对一条 MsgObject 的引用与状态。
+pub struct MailboxRecord {
+    pub record_id: String,       // 可推导：hash(owner + box_kind + msg_id + variant)，天然幂等
+    pub owner: DID,              // user / agent / group DID
+    pub box_kind: MailboxKind,   // INBOX / SENT / GROUP_INBOX / REQUEST_BOX
+    pub msg_id: ObjId,           // 指向不可变 MsgObject（只存引用，不复制内容）
+    pub state: RecipientState,   // 见 §2.5
+    pub session_id: String,      // 本地会话投影 key（见 §5.4）
+    pub sort_key: u64,           // 排序，通常 = msg.created_at_ms
+    pub tags: Vec<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
-
-
-    pub route: Option<RouteInfo>,        // tunnel / platform / chat_id / ext ids
-    pub delivery: Option<DeliveryInfo>,  // 重试次数、下一次重试时间、错误码等
-
-    // --- 可选索引字段 ---
-    pub thread_key: Option<String>,      // UI 聚合用（可从 msg.thread 派生缓存）
-    pub sort_key: u64,                   // 排序（通常 = msg.created_at_ms 或 record.created_at_ms）
-    pub tags: Vec<String>,               // archive/starred 等
 }
 
-pub enum BoxKind { INBOX, OUTBOX, GROUP_INBOX }
-
-pub enum MsgState {
-    // INBOX
-    UNREAD, READING, READED,
-    // OUTBOX
-    WAIT, SENDING, SENT, FAILED, DEAD,
-    // 通用
-    DELETED, ARCHIVED,
+pub enum MailboxKind {
+    INBOX,        // 收件：owner 是收件人（user/agent）
+    SENT,         // 发送历史：owner 是发送者。注意：SENT ≠ 投递成功，只表示"这条消息从我这里发出过"
+    GROUP_INBOX,  // 群权威收件箱：owner 是 group DID
+    REQUEST_BOX,  // 低信任消息暂存：owner 是收件人，待用户确认
 }
 ```
 
-> 为什么 route 放 MsgRecord 而不是 MsgObject：
-> 因为 route 往往是“投递实现细节”，会随 tunnel、账号、重试而变化；而 MsgObjectId 要保持“语义稳定”。现有规则并不禁止把 route 放 meta，但把投递细节沉到 record 层通常更省返工。
+同一条 `MsgObject` 可以被多个 `MailboxRecord`（和多个 `DeliveryRecord`）引用，但消息内容全系统只存一份。
 
----
+命名冻结（旧名 → 新名）：
 
-### 2.3 ReadReceipt（群聊必备）
+| 旧名 | 冻结名 | 语义 |
+|---|---|---|
+| `OUTBOX` | `SENT` | 发送历史 mailbox，**不代表最终投递成功** |
+| `TUNNEL_OUTBOX` | `DELIVERY_QUEUE` | 内部 transport 队列，不是 mailbox |
+| `TunnelOutboxRecord`（`TUNNEL_OUTBOX` 里的 `MsgRecord`） | `DeliveryRecord` | 投递队列条目 |
+| `RouteInfo` | `DeliveryEnvelope` / `DeliverySnapshot` | 确定投递的结果快照 |
+| `MsgRecord`（mailbox 语义部分） | `MailboxRecord` | owner 的本地消息引用 |
 
-完整实现参考ndn-lib::MsgReceiptObj
-
-群聊里消息“已读”跟随 reader（agent/user）走，因此 ReadReceipt 应该是独立对象（NamedObject）：
+### 2.4 DeliveryRecord：投递队列、重试和结果
 
 ```rust
-pub struct MsgReceiptObj {
-    pub msg_id: ObjId,
-    pub iss:DID,
-    pub reader:DID,
-    pub group_id:Option<DID>,
-    pub at_ms: u64,
-    pub status: ReceiptStatus,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub reason: Option<String>,
-}
-pub enum ReceiptStatus {
-    Accepted,
-    Rejected,
-    Quarantined,
+/// DELIVERY_QUEUE 中的一条投递任务。owner/executor 是 transport_did。
+pub struct DeliveryRecord {
+    pub delivery_id: String,        // 幂等键派生：hash(msg_id + target_did + transport_did)
+    pub envelope: DeliveryEnvelope, // 创建后不变
+    pub state: DeliveryState,       // 见 §2.5
+    pub attempts: u32,
+    pub next_retry_at_ms: Option<u64>,
+    pub external_msg_id: Option<String>, // transport 接受后的外部/远端 id
+    pub last_error: Option<DeliveryError>, // error_code / message / retryable / duplicate_risk
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
 }
 ```
 
-索引建议：
+**`DELIVERY_QUEUE` 是内部 transport 队列**，语义等价于 MTA 的发送队列：
 
-* `rr/{group}/{reader}/{msg_id} -> ReadReceiptId`
-* 或 `rr/{msg_id}/{reader} -> ReadReceiptId`
+- 消费者只有 delivery executor（MessageHub / 各 tunnel 实例），按 `transport_did` 分队列。
+- **UI 不允许把它当作会话历史读取**。UI 需要的投递进度由 SessionProjection 聚合提供（§5.3）。
+- 投递结果（成功、失败、重试、DEAD）只更新 `DeliveryRecord` 自身，不回写 `SENT` mailbox 的 `MailboxRecord`，更不改 `MsgObject`。
 
----
+### 2.5 三类状态，三个状态机
 
-## 3. 存储与索引（对象存储 + 轻索引）
+历史实现把三类无关的状态塞进了同一个 `MsgState` 枚举，是多数语义混乱的根源。冻结设计拆为三个独立状态机，分别属于不同的层：
 
-底层基于对象存储，通过 MsgObjectId 可以全系统得到 MsgObject。基于这个前提，MessageCenter 需要额外维护：
+```text
+RecipientState（属 MailboxRecord，owner 自己管理）:
+  UNREAD → READING → READ；任意状态 → ARCHIVED / DELETED
+  （SENT mailbox 无阅读语义，只使用 ARCHIVED / DELETED）
 
+DeliveryState（属 DeliveryRecord，executor 驱动）:
+  WAIT → SENDING → SENT
+               ↘ FAILED → WAIT   （可重试，带退避）
+                        ↘ DEAD   （不可重试或超次数，可诊断、可人工重投）
 
-1. `records/{record_id} -> MsgRecord`
-2. `box_index/{owner}/{box_kind}/... -> record_id 列表或有序集合`
+SessionState（易失，不落 mailbox/delivery）:
+  typing / active / status_line 等 UI 会话状态，独立通道，随时可丢
+```
 
-### 3.1 BoxIndex 的推荐 key 设计（便于分页/队列）
-
-一个可直接实现的 KV key：
-
-* `box/{owner}/{box_kind}/time/{sort_key}/{record_id} = 1`
-* `box/{owner}/{box_kind}/state/{state}/{sort_key}/{record_id} = 1`（可选，加速“拉未读/待发送”）
-
-这样能支持：
-
-* “按时间分页”
-* “按状态取队列”（比如 tunnel 取 WAIT）
-
----
-
-## 4. MessageCenter 对外 API 设计
-
-### 4.1 核心写入 API
-
-#### `dispatch(msg_obj, ingress_ctx)`
-
-用于**入站**：tunnel / 系统内部把消息投递到对应 inbox（或 group inbox）。
-
-* 幂等：同 msg_id 重复 dispatch 不应重复生成 record（或需要按业务允许生成“重复记录”时，用不同 record_id variant）。
-
-#### `post_send(msg_obj, send_ctx)`
-
-用于**出站**：agent/人/系统产生消息，进入 outbox，并创建投递计划（由 tunnel 消费）。
-
-> 在参考循环里已经有 dispatch/post_send 的最小版。
-> 下面是“可生产落地版”的职责补全。
+三个状态机互不迁移、互不共享取值。"收件人已读"不影响 DeliveryState；"投递失败"不产生 RecipientState；typing 永远不产生记录。
 
 ---
 
-### 4.2 Box 访问 API
+## 3. 入站流程
 
-#### `get_inbox(owner_did) -> MsgBoxHandle`
+### 3.1 固定流程
 
-* `get_next()`：取下一条未读（或按策略）
-* `peek(n)`：预览
-* `update_state(record_id, state)`：更新阅读状态
-* `list_by_time(...)`：分页拉取历史
+所有入站消息（tunnel、MessageHub、系统内部）走同一条五步流水：
 
-#### `get_outbox(owner_did) -> MsgBoxHandle`
-
-* `put(msg_id)`：创建 outbox 记录（通常由 post_send 做）
-* `list(...)`：UI 看历史
-
-#### `get_tunnel_outbox(tunnel_did) -> MsgBoxHandle`
-
-* tunnel 的 send_thread 从这里 `get_next()` 拉 WAIT/SENDING 进行发送。
-
----
-
-## 5. 核心流程与伪代码
-
-
-
-### 5.1 dispatch：入站投递（含群聊语义）
+```text
+validate envelope            校验来源、幂等键、格式；应用 ContactMgr 准入策略
+→ store immutable MsgObject  内容寻址幂等写入，已存在即跳过
+→ create recipient mailbox record   为每个本地收件方创建 MailboxRecord
+→ update session index       计算/关联 session_id，更新 (owner, session_id) 索引
+→ notify Agent/UI            发布变更通知（加速信号，失败不阻断写入）
+```
 
 ```python
-def message_center.dispatch(msg_obj, ingress_ctx=None):
-    """
-    入站入口：tunnel/system -> MessageCenter
+def dispatch(msg_obj, ingress_meta, idempotency_key):
+    # 1. validate envelope
+    ensure_valid(msg_obj)                       # from/to/kind/签名 格式校验
+    if seen(idempotency_key):                   # 入站幂等（持久化，非内存）
+        return already_dispatched()
+    decision = contact_mgr.check_access(msg_obj.from, owner=local_recipient(msg_obj))
+    if decision == Block:
+        record_drop(idempotency_key); return rejected()
 
-    msg_obj 约定：
-      - 1:1：msg_obj.from = author DID, msg_obj.source = None
-      - 群聊：msg_obj.from = group DID, msg_obj.source = author DID  
-    """
+    # 2. store immutable MsgObject（幂等）
+    named_store.put_if_absent(msg_obj.id, msg_obj)
 
-    msg_id = msg_obj.id  # canonical_json_hash(MsgObject)
-    # 1) 持久化 MsgObject（幂等：已存在则跳过）
-    object_store.put_if_absent(f"objects/msg/{msg_id}", msg_obj)
+    # 3+4. 事务内创建 mailbox record + session 索引
+    with rdb.tx():
+        for owner, box in mailbox_targets(msg_obj, decision):   # 见 3.2
+            rec = put_mailbox_record(owner, box, msg_obj.id,
+                                     state=UNREAD,
+                                     session_id=derive_session_id(owner, msg_obj))
+        mark_seen(idempotency_key)
 
-    # 2) 计算“逻辑 sender”（用于 block/策略）
-    sender = _logical_sender(msg_obj)  # 群聊取 source，否则取 from
-    if contact_mgr.is_block(sender, context=ingress_ctx):
-        return {"ok": False, "reason": "blocked"}
+    # 5. notify（尽力而为）
+    notify_owners(...)
+```
 
-    # 3) 决定投递目标（单聊 inbox / 群聊 inbox）
-    if _is_group_chat(msg_obj):
-        group_id = msg_obj.from
-        # 3.1 写入 group inbox（用于 UI / 归档 / 群维度历史）
-        _put_record(
-            owner=group_id,
-            box_kind="GROUP_INBOX",
-            msg_id=msg_id,
-            route=_route_from_ingress(ingress_ctx, msg_obj),
-            initial_state="UNREAD",  # 群 inbox 的 UNREAD 只是“群有新消息”，不代表某 agent 未读
-        )
+### 3.2 mailbox owner 规则
 
-        # 3.2 为群内订阅的 agent 创建“未读视图”或 read receipt 初始化
-        #     这里不要把 MsgObject 复制，只创建 per-agent 的“阅读状态对象/记录”
-        readers = contact_mgr.get_group_subscribers(group_id)  # 哪些 agent 需要收到这个群的消息
-        for agent_did in readers:
-            # 可选A：建立 inbox 记录（每 agent 的“群消息收件箱”）
-            _put_record(
-                owner=agent_did,
-                box_kind="INBOX",
-                msg_id=msg_id,
-                route=_route_from_ingress(ingress_ctx, msg_obj),
-                initial_state="UNREAD",
-                tags=["group:"+str(group_id)]
-            )
+| 场景 | mailbox owner | box_kind |
+|---|---|---|
+| 私聊（`kind=Chat`），收件方是本 Zone 的 user/agent | `msg.to` 中的每个本地 DID | `INBOX` |
+| 群聊（`kind=GroupMsg`） | group DID（`msg.to`） | `GROUP_INBOX`（群的权威 mailbox，唯一逻辑主线） |
+| 低信任来源（ContactMgr 判为 Stranger 等） | 本地收件人 | `REQUEST_BOX` |
 
-            # 可选B：只初始化 ReadReceipt（更纯粹的群聊实现）
-            # rr = ReadReceipt(msg_id=msg_id, reader=agent_did, group=group_id, state="UNREAD"?)
-            # object_store.put_if_absent(rr.key, rr)
+群消息只写一条 `GROUP_INBOX` 权威记录；订阅该群的本地 reader（agent/user）的"未读视图"是 per-reader 的投影记录或 read receipt（见 Self-Host-Group 文档），**不是把 MsgObject 复制多份群消息**。
 
-        _notify(group_id, msg_id)
-        for agent_did in readers:
-            _notify(agent_did, msg_id)
+### 3.3 入站身份：`from` 保持来源 endpoint DID
 
-        return {"ok": True, "delivered": {"group": group_id, "agents": readers}}
+外部平台入站消息的 `from` **保持 shadow endpoint DID 原样**（如 `did:msgtunnel:12345.user.tg-main-tunnel`）。
 
+ContactMgr 后续把这个 endpoint 关联到某个正式联系人，只影响**展示层**（UI 显示联系人名字与头像）与 ACL 判断；**不能改写消息来源**，不重写历史 `MsgObject`，也不重写 `MailboxRecord.session_id` 之外的任何字段。消息里记录的是"谁在哪个信道说的"，这是审计事实。
+
+### 3.4 群消息的 from/to
+
+```text
+from = actor endpoint DID（外部平台成员是 shadow DID；原生成员是真实 DID）
+to   = group shadow/real DID
+```
+
+**回复群聊使用 group `to`，不能回复 actor `from`。** 回复 `from` 等于绕开群、私聊那个成员——这必须是显式的用户动作，永远不是默认行为。
+
+---
+
+## 4. 发送流程
+
+### 4.1 职责固定
+
+```text
+msg.from      → SENT mailbox 的 owner（SenderRecord）
+msg.to        → 逐个解析为确定的 DeliveryEnvelope（解析规则见 §2.2）
+transport_did → DELIVERY_QUEUE 的 owner / DeliveryRecord 的 executor
+```
+
+`post_send()` 里**没有任何 ContactMgr 查询**。"给 Bob 的 Telegram 发消息"的选择发生在构造 `MsgObject` 之前——由用户在 UI 点选、或 Agent 沿用会话中已有的 endpoint DID——`post_send` 收到的 `msg.to` 必须已经是确定 DID。
+
+### 4.2 先验证，后写入
+
+```python
+def post_send(msg_obj, idempotency_key=None):
+    ensure(msg_obj.to)                       # 至少一个目标
+    ensure_local_sender(msg_obj.from)        # from 必须是本 Zone 的 user/agent/device
+
+    # 阶段一：解析所有目标（纯读、无副作用）。任一失败 => 整体失败，不写任何记录。
+    envelopes = []
+    for target in msg_obj.to:
+        env = resolve_delivery(msg_obj.id, target)   # §2.2 两条分支，无 fallback
+        if env is None:
+            raise NoDeliveryPath(target)             # 明确错误，调用方可见
+        envelopes.append(env)
+
+    # 阶段二：一个本地事务写入全部记录。
+    named_store.put_if_absent(msg_obj.id, msg_obj)
+    with rdb.tx():
+        put_mailbox_record(owner=msg_obj.from, box=SENT, msg_id=msg_obj.id,
+                           session_id=derive_session_id(msg_obj.from, msg_obj))
+        for env in envelopes:
+            put_delivery_record(env, state=WAIT)     # delivery_id 幂等，重复提交命中同一条
+
+    # 阶段三：通知各 executor（加速信号）。
+    notify([env.transport_did for env in envelopes])
+    return {"msg_id": msg_obj.id, "deliveries": [env.summary() for env in envelopes]}
+```
+
+要点：
+
+- **先验证所有目标，再写入 `SENT + DeliveryRecord`。** 杜绝历史实现中"路由失败但 OUTBOX 已经是 SENT"的脏状态：解析阶段失败时数据库里什么都没有。
+- `SENT` 记录表示"这条消息从我这里发出过"，是发送历史；**不代表最终投递成功**。投递进度看 DeliveryRecord 聚合。
+- 幂等：`msg_id` 内容寻址 + `record_id` / `delivery_id` 可推导，同一消息重复 `post_send` 不产生重复记录。
+
+### 4.3 多收件人语义
+
+**每个 `to` 生成独立的 `DeliveryRecord`，拥有独立的状态与结果。** 一个目标投递失败不污染其他目标：给 3 个人发消息，2 个 `SENT`、1 个 `FAILED` 是正常终态，UI 按目标分别展示。不存在"整条消息发送失败"这个聚合状态——只有创建期（阶段一）的整体失败和投递期的按目标结果。
+
+### 4.4 投递执行与回报
+
+executor（MessageHub / tunnel）通过 `get_next(transport_did, DELIVERY_QUEUE, WAIT, lock_on_take=true)` 以 CAS 抢占方式取任务（`WAIT → SENDING`），执行后调用：
+
+```python
+def report_delivery(delivery_id, result):
+    rec = delivery_store.get(delivery_id)
+    if result.ok:
+        rec.external_msg_id = result.external_msg_id
+        transition(rec, SENT)
+    elif result.retryable and rec.attempts < MAX_RETRY:
+        rec.last_error = result.error
+        rec.next_retry_at_ms = backoff(rec.attempts)
+        transition(rec, WAIT)           # FAILED → WAIT 由重试调度完成
     else:
-        # 1:1 或多播：按 to 列表投递 inbox
-        recipients = msg_obj.to or []  # 当前 MsgObject 有 to: Vec<DID>
-        delivered = []
-        for to_did in recipients:
-            if contact_mgr.is_block(sender, target=to_did, context=ingress_ctx):
-                continue
-            _put_record(
-                owner=to_did,
-                box_kind="INBOX",
-                msg_id=msg_id,
-                route=_route_from_ingress(ingress_ctx, msg_obj),
-                initial_state="UNREAD",
-            )
-            delivered.append(to_did)
-
-        _notify_many(delivered, msg_id)
-        return {"ok": True, "delivered": delivered}
-
-
-def _logical_sender(msg_obj):
-    # 群聊：source 是作者；否则 from 是作者
-    return msg_obj.source if msg_obj.source is not None else msg_obj.from
-
-def _is_group_chat(msg_obj):
-    # 最简单判断：source 存在且 from 是 group DID
-    return msg_obj.source is not None and contact_mgr.is_group_did(msg_obj.from)
+        rec.last_error = result.error
+        transition(rec, DEAD)           # 可诊断，支持人工重投
+    emit_session_change(rec)            # 触发 SessionProjection 的聚合状态更新
 ```
 
+处于 `SENDING` 超过租约时间的记录由定时 sweep 收回（→ `WAIT`，`attempts+1`，记录 duplicate risk），覆盖 executor 崩溃场景。
 
 ---
 
-### 5.2 post_send：出站排队（写 sender outbox + 写 tunnel outbox）
+## 5. Session Projection
 
-设计讨论里提到：tunnel 的 send_thread 从 `msg_center.get_outbox(self.tunnel_id)` 拉取发送。
-因此建议把出站拆成两层：
+### 5.1 Session 不是 MsgBox
 
-* **Owner OUTBOX**：给 UI/历史/删除策略使用
-* **Tunnel OUTBOX**：给投递使用（按 tunnel 分队列）
+Session 是**投影**：为 UI/Agent 把分散在多个 mailbox 和 delivery queue 里的记录聚合成"一个会话"的只读视图。它不持有独立真相：
 
-```python
-def message_center.post_send(msg_obj, send_ctx=None):
-    """
-    出站入口：agent/user/system -> MessageCenter
+- 删除全部 session 索引，不丢任何消息，可从 MailboxRecord 全量重建。
+- 写操作（标已读、归档、删除）落到对应的 `MailboxRecord` 上，session 视图随之变化。
+- Session 里"这条消息发送中/失败"的角标来自 DeliveryRecord 聚合，UI 不直接读 DELIVERY_QUEUE。
 
-    目标：
-      1) 存 MsgObject（幂等）
-      2) 写 sender OUTBOX record（用于历史/删除策略）
-      3) 通过 ContactMgr 选路由（选 tunnel endpoint）
-      4) 写入一个或多个 tunnel outbox record（用于实际发送）
-    """
-    msg_id = msg_obj.id
-    object_store.put_if_absent(f"objects/msg/{msg_id}", msg_obj)
+### 5.2 定义
 
-    author = _logical_sender_for_outbound(msg_obj)  # 群聊 msg.source 是作者；非群聊 msg.from 是作者
-    if contact_mgr.is_block(author, context=send_ctx):
-        return {"ok": False, "reason": "blocked_author"}
-
-    # 1) 写 author 的 OUTBOX 记录（历史副本）
-    _put_record(
-        owner=author,
-        box_kind="OUTBOX",
-        msg_id=msg_id,
-        route=None,              # 历史记录不一定绑定某个 tunnel
-        initial_state="SENT",    # 注意：这里的 SENT 表示“已产生”，不是“外部平台已投递成功”
-    )
-
-    # 2) 选路由：对每个“投递目标”得到 endpoint 列表
-    delivery_plans = contact_mgr.plan_delivery(msg_obj, context=send_ctx)
-    # delivery_plans: List[ {tunnel_did, address, target_did, mode, priority} ]
-
-    # 3) 将投递计划写入 tunnel outbox 队列（真正的 WAIT -> SENDING -> SENT）
-    created = []
-    for plan in delivery_plans:
-        tunnel_id = plan["tunnel_did"]
-        record_id = _put_record(
-            owner=tunnel_id,
-            box_kind="TUNNEL_OUTBOX",
-            msg_id=msg_id,
-            route=plan,               # 每条投递记录绑定 route（tunnel+address）
-            initial_state="WAIT",
-        )
-        created.append({"tunnel": tunnel_id, "record_id": record_id})
-
-    _notify_many([p["tunnel_did"] for p in delivery_plans], msg_id)
-    return {"ok": True, "msg_id": msg_id, "deliveries": created}
-
-
-def _logical_sender_for_outbound(msg_obj):
-    # 已确认：群聊 from=group, source=author；因此出站作者取 source
-    return msg_obj.source if msg_obj.source is not None else msg_obj.from
+```text
+SessionProjection(owner, session_id)
+  = RecipientRecord(owner 的 INBOX / GROUP_INBOX / REQUEST_BOX 中 session_id 匹配的记录)
+  + SenderRecord(owner 的 SENT 中 session_id 匹配的记录)
+  + aggregated DeliveryState（对每条出站消息，聚合其全部 DeliveryRecord）
+按 sort_key 合并成单一时间线。
 ```
+
+### 5.3 API
+
+```text
+list_sessions(owner, cursor, limit)
+  -> [ { session_id, peer/group 摘要, last_msg 摘要, unread_count, updated_at } ]
+
+list_session(owner, session_id, cursor, limit, with_object)
+  -> [ { record_id, msg_id, direction, sort_key,
+         recipient_state?,                  # 入站记录
+         delivery: {                        # 出站记录：聚合视图
+            overall: sending | delivered | partial_failed | failed,
+            per_target: [ { target_did, state, attempts, last_error? } ]
+         },
+         msg?                               # with_object=true 时附带 MsgObject
+       } ]
+```
+
+聚合规则：全部 target `SENT` → `delivered`；存在 `WAIT/SENDING` → `sending`；部分 `DEAD/FAILED` → `partial_failed`；全部 `DEAD` → `failed`。
+
+**一个传统私聊 UI 只需要调用一次 `list_session()`** 就能渲染完整会话（双向消息 + 已读状态 + 投递角标），不需要分别读取 Inbox、Sent、Delivery Queue——后两者对 UI 根本不可见。
+
+### 5.4 `thread.topic` 与 `session_id`
+
+| | `MsgObject.thread.topic` | `MailboxRecord.session_id` |
+|---|---|---|
+| 归属层 | 消息本体（不可变） | 本地记录（每 owner 独立） |
+| 语义 | 发送方携带的**语义 hint** | Personal Server 的**本地投影 key** |
+| 由谁定 | 消息作者 | 收/发方本地的 MessageCenter |
+| 可变性 | 永不可变 | 可由可信后端/Agent 重新归类 |
+
+MessageCenter 可以建立 `thread.topic → session_id` 的映射（同 topic 默认聚为同一会话），但**不能修改 MsgObject**。同一条消息在不同 owner 的视图中可以有不同 `session_id`。
 
 ---
 
-### 5.3 MsgBox：队列语义（给 agent / tunnel）
+## 6. 存储与索引
 
-下面给一个 **“取 next + 置状态”** 的实现骨架（保证并发安全、避免多消费者抢同一条）。
-（不使用系统内置的MsgQueue服务，是因为Message Center里的MsgObject的备份要求更高)
+### 6.1 总体模式
 
-```python
-class MsgBoxHandle:
-    def __init__(self, owner_did, box_kind):
-        self.owner = owner_did
-        self.box_kind = box_kind
+延续"**不可变对象 + RDB reference/index**"：
 
-    def get_next(self, state_filter=None):
-        """
-        从 box_index 按时间/优先级取一条符合状态的 record
-        并用 CAS 抢占（避免多线程/多实例重复消费）
-        """
-        candidates = box_index.scan(owner=self.owner, box=self.box_kind, state=state_filter, limit=10)
-        for record_id in candidates:
-            rec = record_store.get(record_id)
-            if state_filter and rec.state not in state_filter:
-                continue
+- `MsgObject` 存 named store（内容寻址，全系统一份）。**消息对象只存一份**，任意多个 `MailboxRecord` / `DeliveryRecord` 引用同一个 `msg_id`。
+- `MailboxRecord`、`DeliveryRecord` 与全部索引存本地 RDB（当前为 SQLite）。
+- SessionState（typing 等）存内存/易失存储，不进 RDB。
 
-            # 并发抢占：WAIT->SENDING 或 UNREAD->READING
-            new_state = _next_state_on_take(rec.state, self.box_kind)
-            if new_state is None:
-                continue
+### 6.2 索引
 
-            ok = record_store.cas_update_state(record_id, expected=rec.state, new=new_state)
-            if ok:
-                msg_obj = object_store.get(f"objects/msg/{rec.msg_id}")
-                return (record_id, rec, msg_obj)
+```text
+# mailbox 消费与列表（queue 式取件 + 分页）
+(owner, box_kind, state, sort_key)          → record_id
+(owner, box_kind, sort_key)                 → record_id
 
-        return None
+# Session 索引（list_session/list_sessions 的支撑）
+(owner, session_id, sort_key, record_id)
+(owner, updated_at)                          → session_id   # 会话列表排序
 
-    def update_state(self, record_id, new_state):
-        rec = record_store.get(record_id)
-        if not _state_transition_allowed(rec.state, new_state, self.box_kind):
-            raise Exception(f"invalid transition: {rec.state}->{new_state}")
-        record_store.update_state(record_id, new_state)
-        box_index.update_state(self.owner, self.box_kind, record_id, new_state)
-
-def _next_state_on_take(state, box_kind):
-    if box_kind == "INBOX" and state == "UNREAD":
-        return "READING"
-    if box_kind == "TUNNEL_OUTBOX" and state == "WAIT":
-        return "SENDING"
-    return None
+# Delivery 索引
+(transport_did, delivery_state, next_retry_at)   # executor 取件与重试调度
+(msg_id, target_did)                             # 唯一约束 + 出站聚合查询
 ```
 
-> 这与您参考循环的语义一致：agent/tunnel 取到后会将状态置 READING 或 SENDING。
+`(msg_id, target_did)`（配合 `transport_did` 构成幂等键）上有唯一约束：重复 `post_send`、重复扫描、崩溃重放都收敛到同一条 `DeliveryRecord`。
+
+### 6.3 事务边界
+
+- `MsgObject` 写 named store 在 RDB 事务**之前**完成（幂等，重复写无害）。
+- 一次 `dispatch`/`post_send` 的全部 record + 索引写入放在**单个本地 RDB 事务**里：不存在"SENT 写了、DeliveryRecord 没写"的中间态。
+- 变更通知在事务提交**之后**发出，失败不回滚事务（通知是加速信号）。
+
+### 6.3.1 `msg_idempotency`
+
+`msg_idempotency` 是 `dispatch` / `post_send` 的持久幂等边界。主键是
+`(scope, owner_scope, idempotency_key)`，其中 `scope` 取 `dispatch` 或
+`post_send`。`owner_scope` 对 dispatch 使用稳定的接收方 owner（tunnel 入站为
+`contact_mgr_owner`），对 post_send 使用消息 author；不同 owner 可以安全复用
+同一个调用方幂等键。
+每条记录包含：
+
+- `state`：`pending` 或 `completed`。
+- `msg_id`：已确定的内容寻址消息 id。
+- `result_json`：`completed` 记录保存对应 RPC result 的 JSON；`pending` 记录为空。
+- `retention_key`：清理分桶。外部入站按 platform + tunnel/bot account +
+  chat/topic 会话分桶，不得使用单条消息的发送者账号；本地出站按发送者和 topic
+  分桶。
+- `expires_at_ms`：清理候选时间。
+
+服务在同一个本地 RDB 事务内完成：占用幂等键为 `pending`，写入全部
+mailbox / delivery 副作用，再把同一行更新为 `completed` 并写入
+`result_json`。重复请求命中 `completed` 时直接返回 `result_json`，不重放
+副作用；命中未过期 `pending` 时必须稍后重试，不能再次执行。
+
+`expires_at_ms` 只作为物理清理依据，不作为幂等命中依据：只要 DB 中仍存在
+`completed` 记录，重复请求就必须返回已保存的 `result_json`，不能因为
+`expires_at_ms` 已过而重放副作用。DB 是唯一幂等命中源，不再维护内存
+幂等缓存。30 天是最短保留窗口，不是到点立即失效的逻辑 TTL。
+
+物理删除采用分桶和全局两层容量水位。单个 `retention_key` 超过 3,000 行时，
+按 `expires_at_ms` 从旧到新删除该 bucket 内已经过期的记录，并尽量降到 2,000
+行；未过期记录不得删除，其它 bucket 不受分桶清理影响。全表超过 100,000 行
+时启动全局清理，按相同顺序删除任意 bucket 的过期记录，逐轮降到 80,000 行。
+全局清理每批最多删除 10,000 行，避免服务启动或长期停机后在一个事务中清空
+大量记录。独立后台任务在服务启动时和之后每小时枚举并清理一次超限 bucket，
+再执行全局清理；全局清理每批让出执行权，直到降到目标水位或某批没有删满。
+清理不进入 dispatch/post_send 请求路径。30 天内的记录不受任一容量水位影响。
+
+`result_json` 使用 schema version 8 下 RPC result 的 serde JSON 表示，不再
+额外嵌套 envelope：
+
+- `scope=dispatch`：对象字段为 `ok: bool`、`msg_id: ObjId string`，以及可选的
+  `delivered_recipients: DID[]`、`dropped_recipients: DID[]`、
+  `delivered_group: DID`、`delivered_agents: DID[]`、`reason: string`；空数组和
+  `None` 字段序列化时省略。
+- `scope=post_send`：对象字段为 `ok: bool`、`msg_id: ObjId string`、可选的
+  `deliveries` 和 `reason`。每个 delivery 包含 `delivery_id`、`transport_did`、
+  `target_did`、`transport`；`transport` 为 `{"kind":"native"}`，或
+  `{"kind":"tunnel","platform":string,"tunnel_instance_id":string}`。
+
+`scope`、`owner_scope`、主键语义、`state` 状态机及上述结果字段在 version 8 内冻结；未来增加
+或改变结果字段必须提升 MessageCenter RDB schema version。当前共享 schema
+version 为 8，存放在 scheduler 下发的 msg-center RDB instance spec 中。
+beta2.2 尚处于 breaking-change 阶段，version 7 到 version 8 采用 no-compat
+策略：旧实例数据必须重建，不提供表内迁移。
+
+主要查询及索引：
+
+- `(scope, owner_scope, idempotency_key)` 精确命中由主键支持。
+- 超限 bucket 枚举和 bucket 行数统计由
+  `idx_msg_idempotency_retention_expire(retention_key, expires_at_ms)` 支持。
+- bucket 内按过期时间选择删除候选由同一索引支持；每小时的超限 bucket 枚举
+  会扫描该索引，是受 sweep 间隔控制的维护成本，不进入每次读取路径。
+- 全局清理的过期候选由 `idx_msg_idempotency_expire(expires_at_ms)` 支持，并受
+  全局水位和单批 10,000 行上限约束；连续批次由后台清理任务驱动。
+
+### 6.4 崩溃恢复
+
+1. **DELIVERY_QUEUE 扫描**：启动时与定时 sweep 扫 `WAIT`（到期重试）与 `SENDING`（租约超时收回 → `WAIT`，标注 duplicate risk）。实时通知丢失不影响最终投递。
+2. **入站幂等键持久化**：外部幂等键（`{platform}:{account}:{chat}:{external_message_id}`）落 RDB 带 TTL，重启后重复上报仍能去重。
+3. **通知补偿**：所有订阅方（Agent pump、UI、executor）必须周期性扫描自己的 mailbox/queue，kevent/通知只是加速。
+
+### 6.5 索引重建
+
+- Session 索引、box 索引：可从 `MailboxRecord` 全表重建（投影）。
+- `MailboxRecord` / `DeliveryRecord`：**权威状态**，不可从对象重建（阅读状态、投递结果只存在于 record），必须纳入备份。
+- `MsgObject`：named store 自身的备份策略负责。
 
 ---
 
-### 5.4 Tunnel 发送回执落地（建议 MessageCenter 提供一个统一接口）
+## 7. 对外 API 汇总
 
-参考实现里 tunnel 发送完只做 `update_msg_state(msg_obj.id, SENDED)`。
-生产系统通常还需要把外部 message_id/时间戳/错误码写入 record.delivery 或 record.route，避免重试导致重复发。
+```text
+# 写入
+dispatch(msg_obj, ingress_meta, idempotency_key)   # 入站（tunnel/hub/系统）
+post_send(msg_obj, idempotency_key)                # 出站（user/agent/系统）
+report_delivery(delivery_id, result)               # executor 回报投递结果
 
-建议统一接口：
+# Session（UI/Agent 的唯一读取面）
+list_sessions(owner, cursor, limit)
+list_session(owner, session_id, cursor, limit, with_object)
+update_record_state(owner, record_id, recipient_state)   # 已读/归档/删除
+set_session_state(owner, session_id, key, value)         # 易失 SessionState
 
-```python
-def message_center.report_delivery(record_id, result):
-    """
-    tunnel 在 send_message 后回调：
-      - success: external_msg_id / delivered_at_ms
-      - failure: error_code / retry_after_ms
-    """
-    rec = record_store.get(record_id)
-    assert rec.box_kind == "TUNNEL_OUTBOX"
-
-    if result["ok"]:
-        rec.delivery = {
-            "external_msg_id": result.get("external_msg_id"),
-            "delivered_at_ms": now_ms(),
-            "attempts": rec.delivery.get("attempts", 0) + 1 if rec.delivery else 1,
-        }
-        record_store.update(rec)
-        record_store.update_state(record_id, "SENT")
-        box_index.update_state(rec.owner, rec.box_kind, record_id, "SENT")
-    else:
-        # 可重试/不可重试分类
-        attempts = rec.delivery.get("attempts", 0) + 1 if rec.delivery else 1
-        rec.delivery = {"attempts": attempts, "last_error": result["error"]}
-        record_store.update(rec)
-
-        if attempts >= MAX_RETRY:
-            record_store.update_state(record_id, "DEAD")
-        else:
-            # 回到 WAIT，供下次 send_thread 再取
-            record_store.update_state(record_id, "WAIT")
-        box_index.update_state(rec.owner, rec.box_kind, record_id, record_store.get(record_id).state)
+# 队列（仅 executor / agent pump 使用，UI 不可见）
+get_next(owner, box_or_queue, state_filter, lock_on_take)
 ```
+
+群聊 read receipt（`MsgReceiptObj`，per-reader）见 Self-Host-Group 文档；其存储同样遵守"独立对象 + 索引"模式。
 
 ---
 
-### 5.5 群聊 ReadReceipt 的写入点
+## 8. 现状对照（冻结名 → 当前代码）
 
-在 Agent loop 中，文档提到群聊 reading 状态跟 agent id 走。
-因此 MessageCenter 提供原子接口：
+P3 实现迁移已于 2026-07-14 完成：代码与本文档使用同一套命名，无旧名兼容层
+（beta2.2 breaking change）。落点对照：
 
-```python
-def message_center.set_read_state(group_id, msg_id, reader_did, state):
-    """
-    群聊 read receipt：reader 维度
-    """
-    rr = ReadReceipt(msg_id=msg_id, reader=reader_did, group=group_id, state=state, at_ms=now_ms())
-    rr_id = rr.id  # 同样可以 canonical hash
-    object_store.put(f"objects/rr/{rr_id}", rr)
-
-    rr_index.put(f"rr/{group_id}/{reader_did}/{msg_id}", rr_id)
-    return rr_id
-```
-
-Agent 的处理流程示例（与文档一致，但把状态持久化）：
-
-```python
-def agent_on_group_msgs(agent_did, group_msgs):
-    for msg in group_msgs:
-        message_center.set_read_state(group_id=msg.from, msg_id=msg.id, reader_did=agent_did, state="READING")
-        process(msg)
-        message_center.set_read_state(group_id=msg.from, msg_id=msg.id, reader_did=agent_did, state="READED")
-```
-
----
+| 冻结概念 | 代码落点 |
+|---|---|
+| `MailboxRecord` / `MailboxKind`（INBOX/SENT/GROUP_INBOX/REQUEST_BOX） | `buckyos_api::msg_center_client`，存储表 `mailbox_records` |
+| `DeliveryRecord` / `DeliveryEnvelope` / `DeliverySnapshot` | 同上，存储表 `delivery_records`（`DELIVERY_QUEUE`） |
+| `RecipientState` / `DeliveryState` 两个状态机 | 两个独立枚举（`MsgState` 已删除；`READED` → `READ`） |
+| `transport_did` vs `tunnel_instance_id` | `DeliveryEnvelope.transport_did`；registry key 为 `tunnel_instance_id` |
+| `DeliveryExecutor` 接口 | `frame/msg_center/src/msg_tunnel.rs`；MessageHub 与 TgTunnel 共同实现 |
+| MessageHub（原生投递） | `frame/msg_center/src/message_hub.rs`（本 Zone 目标本地 dispatch；跨 Zone hop 待实现，失败明确 DEAD） |
+| `list_session/list_sessions` | `msg.list_session` / `msg.list_sessions` RPC + Session 索引；Desktop 集成代码已保留，MessageHub 页面当前使用 Mock DataModel，待专门集成测试通过后启用 |
+| （已删除）`thread.tunnel_id` | 已从 `ndn_lib::TopicThread` 移除（cyfs-ndn beta2.2） |

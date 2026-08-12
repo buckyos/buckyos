@@ -4,7 +4,7 @@
 
 应用看到的Path是一个在标准的linux FS，我们在标准的linux FS上做的扩展有
 
-> Agent也是一个应用，比如jarvis agent的权限 就是 appid = jarvis的权限
+> Agent也是一个应用，比如 Jarvis agent 的权限就是 appid = buckyos_jarvis 的权限
 
 /opt/buckyos/bin/$appid ：我们鼓励应用开发把二进制文件放在这个目录，这样脱离容器运行时改动也很小（比如容器变成了VM）
 
@@ -19,6 +19,32 @@
 /home/$username/shared/ =>cyfs://$zone_id/home/$username/shared/ : 用户级别的分享数据，通常只读
 
 > 用户存储配额由res_pool管理,各目录的实际可用空间受用户res_pool配置限制
+
+### Docker Worker Volume 视角
+
+正式 Docker 模式下,App/Agent 还会看到两类不属于用户 home 数据的运行卷:
+
+```
+/opt/buckyos/instance => 每个 app instance 私有 Docker volume,读写+可执行
+/opt/buckyos/tools    => 节点共享 ExtTool volume,只读+可执行
+```
+
+/opt/buckyos/instance 用来保存容器运行期需要写入、但不应进入用户数据目录的内容,例如:
+
+- `/opt/buckyos/instance/pkg/`: package 工作副本
+- `/opt/buckyos/instance/cache/`: deno/uv/npm/pip 等依赖缓存 upper
+- `/opt/buckyos/instance/tools/bin`: App 私有 runtime bin 视图
+- `/opt/buckyos/instance/tools/<agent_id>/<session_id>`: OpenDAN Agent Session Exec Bin
+
+/opt/buckyos/tools 是 ExtTool 共享只读卷,常见结构:
+
+- `/opt/buckyos/tools/store`: 系统/平台提供的可执行工具集合
+- `/opt/buckyos/tools/deno-cache`: 预热 deno cache lower
+- `/opt/buckyos/tools/uv-cache`: 预热 uv cache lower
+
+应用不能把运行时生成物写入 `/opt/buckyos/tools`;需要写入且可执行的内容放到 `/opt/buckyos/instance`。
+`/home/$username/.local/share/$appid` 仍是 app 的永久 user/app data,host 上对应
+`$buckyos_root/data/home/$username/.local/share/$appid`,不用于承载 session-bin 或依赖缓存 upper。
 
 当应用关闭兼容性开关后，应用使用buckyos-sdk访问cyfs://,所有的到cyfs://的自动mount都会消失，本地文件读写只有/tmp/会成功
 

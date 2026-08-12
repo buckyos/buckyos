@@ -170,6 +170,85 @@ pub struct LoginByPasswordResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SudoByPasswordRequest {
+    pub username: String,
+    pub password: String,
+    pub appid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_nonce: Option<u64>,
+}
+
+impl SudoByPasswordRequest {
+    pub fn new(
+        username: String,
+        password: String,
+        appid: String,
+        aud: Option<String>,
+        login_nonce: Option<u64>,
+    ) -> Self {
+        Self {
+            username,
+            password,
+            appid,
+            aud,
+            login_nonce,
+        }
+    }
+
+    pub fn to_json(&self) -> Result<Value> {
+        let mut params = Map::new();
+        params.insert("username".to_string(), Value::String(self.username.clone()));
+        params.insert("password".to_string(), Value::String(self.password.clone()));
+        params.insert("appid".to_string(), Value::String(self.appid.clone()));
+        if let Some(aud) = &self.aud {
+            params.insert("aud".to_string(), Value::String(aud.clone()));
+        }
+        if let Some(login_nonce) = self.login_nonce {
+            params.insert("login_nonce".to_string(), Value::Number(login_nonce.into()));
+        }
+        Ok(Value::Object(params))
+    }
+
+    pub fn from_json(
+        value: Value,
+    ) -> Result<(String, String, String, Option<String>, Option<u64>)> {
+        let params = value.as_object().cloned().ok_or_else(|| {
+            RPCErrors::ParseRequestError("Expected object params for sudo".to_string())
+        })?;
+
+        let username = params
+            .get("username")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RPCErrors::ParseRequestError("Missing username".to_string()))?
+            .to_string();
+        let password = params
+            .get("password")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RPCErrors::ParseRequestError("Missing password".to_string()))?
+            .to_string();
+        let appid = params
+            .get("appid")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RPCErrors::ParseRequestError("Missing appid".to_string()))?
+            .to_string();
+        let aud = params
+            .get("aud")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
+        let login_nonce = params.get("login_nonce").and_then(|value| value.as_u64());
+
+        Ok((username, password, appid, aud, login_nonce))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SudoByPasswordResponse {
+    pub session_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyTokenRequest {
     pub session_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -259,6 +338,19 @@ impl VerifyHubClient {
         }
     }
 
+    pub async fn logout(&self, refresh_jwt: &str) -> Result<bool> {
+        match self {
+            Self::InProcess(handler) => handler.handle_logout(refresh_jwt).await,
+            Self::KRPC(client) => {
+                let params = RefreshTokenRequest::new(refresh_jwt.to_string()).to_json()?;
+                let result = client.call("logout", params).await?;
+                let ok: bool = serde_json::from_value(result)
+                    .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
+                Ok(ok)
+            }
+        }
+    }
+
     pub async fn login_by_jwt(&self, jwt: &str, login_params: Option<Value>) -> Result<TokenPair> {
         match self {
             Self::InProcess(handler) => handler.handle_login_by_jwt(jwt, login_params).await,
@@ -296,6 +388,36 @@ impl VerifyHubClient {
                     serde_json::from_value(result)
                         .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
                 Ok(login_by_password_response)
+            }
+        }
+    }
+
+    pub async fn sudo_by_password(
+        &self,
+        username: String,
+        password: String,
+        appid: String,
+        aud: Option<String>,
+        login_nonce: Option<u64>,
+    ) -> Result<SudoByPasswordResponse> {
+        match self {
+            Self::InProcess(handler) => {
+                let login_nonce = login_nonce.unwrap_or_else(current_login_nonce_millis);
+                handler
+                    .handle_sudo_by_password(&username, &password, &appid, aud, login_nonce)
+                    .await
+            }
+            Self::KRPC(client) => {
+                client.reset_session_token().await;
+                let login_nonce = login_nonce.or_else(|| Some(current_login_nonce_millis()));
+                let params =
+                    SudoByPasswordRequest::new(username, password, appid, aud, login_nonce)
+                        .to_json()?;
+                let result = client.call("sudo_by_password", params).await?;
+                let sudo_by_password_response: SudoByPasswordResponse =
+                    serde_json::from_value(result)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
+                Ok(sudo_by_password_response)
             }
         }
     }
@@ -338,6 +460,8 @@ pub trait VerifyHubApiHandler: Send + Sync {
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair>;
 
+    async fn handle_logout(&self, refresh_jwt: &str) -> Result<bool>;
+
     async fn handle_login_by_password(
         &self,
         username: &str,
@@ -345,6 +469,15 @@ pub trait VerifyHubApiHandler: Send + Sync {
         appid: &str,
         login_nonce: u64,
     ) -> Result<LoginByPasswordResponse>;
+
+    async fn handle_sudo_by_password(
+        &self,
+        username: &str,
+        password: &str,
+        appid: &str,
+        aud: Option<String>,
+        login_nonce: u64,
+    ) -> Result<SudoByPasswordResponse>;
 }
 
 /// Adapter that exposes a VerifyHubHandler as a RPCHandler.
@@ -389,6 +522,24 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                         .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
                 )
             }
+            "sudo_by_password" => {
+                let (username, password, appid, aud, login_nonce) =
+                    SudoByPasswordRequest::from_json(req.params)?;
+                let fallback_nonce = if req.seq > 10_000_000_000_000 {
+                    req.seq / 1000
+                } else {
+                    req.seq
+                };
+                let login_nonce = login_nonce.unwrap_or(fallback_nonce);
+                let result = self
+                    .0
+                    .handle_sudo_by_password(&username, &password, &appid, aud, login_nonce)
+                    .await?;
+                RPCResult::Success(
+                    serde_json::to_value(result)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
+            }
             "refresh_token" => {
                 let refresh_jwt = RefreshTokenRequest::from_json(req.params)?;
                 let token_pair = self
@@ -397,6 +548,14 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                     .await?;
                 RPCResult::Success(
                     serde_json::to_value(token_pair)
+                        .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
+                )
+            }
+            "logout" => {
+                let refresh_jwt = RefreshTokenRequest::from_json(req.params)?;
+                let ok = self.0.handle_logout(&refresh_jwt.refresh_token).await?;
+                RPCResult::Success(
+                    serde_json::to_value(ok)
                         .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
                 )
             }
@@ -457,8 +616,10 @@ mod tests {
     struct MockCalls {
         login_jwt: Option<(String, Option<Value>)>,
         login_password: Option<(String, String, String, u64)>,
+        sudo_password: Option<(String, String, String, Option<String>, u64)>,
         verify_token: Option<(String, Option<String>)>,
         refresh_token: Option<String>,
+        logout: Option<String>,
     }
 
     #[derive(Clone)]
@@ -507,6 +668,27 @@ mod tests {
             })
         }
 
+        async fn handle_sudo_by_password(
+            &self,
+            username: &str,
+            password: &str,
+            appid: &str,
+            aud: Option<String>,
+            login_nonce: u64,
+        ) -> Result<SudoByPasswordResponse> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.sudo_password = Some((
+                username.to_string(),
+                password.to_string(),
+                appid.to_string(),
+                aud,
+                login_nonce,
+            ));
+            Ok(SudoByPasswordResponse {
+                session_token: "sudo-session-1".to_string(),
+            })
+        }
+
         async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair> {
             let mut calls = self.calls.lock().unwrap();
             calls.refresh_token = Some(refresh_jwt.to_string());
@@ -514,6 +696,12 @@ mod tests {
                 session_token: "session-2".to_string(),
                 refresh_token: "refresh-2".to_string(),
             })
+        }
+
+        async fn handle_logout(&self, refresh_jwt: &str) -> Result<bool> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.logout = Some(refresh_jwt.to_string());
+            Ok(true)
         }
 
         async fn handle_verify_token(
@@ -560,6 +748,21 @@ mod tests {
             .unwrap();
         assert!(verify_result);
 
+        let sudo_result = client
+            .sudo_by_password(
+                "alice".to_string(),
+                "password-hash".to_string(),
+                "control-panel".to_string(),
+                Some("system-config".to_string()),
+                Some(123),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sudo_result.session_token, "sudo-session-1");
+
+        let logout_result = client.logout("refresh-1").await.unwrap();
+        assert!(logout_result);
+
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-1");
@@ -567,6 +770,13 @@ mod tests {
         let (session_token, appid) = calls.verify_token.clone().unwrap();
         assert_eq!(session_token, "session-1");
         assert_eq!(appid, Some("kernel".to_string()));
+        let (username, password, appid, aud, login_nonce) = calls.sudo_password.clone().unwrap();
+        assert_eq!(username, "alice");
+        assert_eq!(password, "password-hash");
+        assert_eq!(appid, "control-panel");
+        assert_eq!(aud, Some("system-config".to_string()));
+        assert_eq!(login_nonce, 123);
+        assert_eq!(calls.logout.as_deref(), Some("refresh-1"));
     }
 
     #[tokio::test]
@@ -611,6 +821,44 @@ mod tests {
             _ => panic!("Expected success response"),
         }
 
+        let sudo_req = RPCRequest {
+            method: "sudo_by_password".to_string(),
+            params: json!({
+                "username": "alice",
+                "password": "password-hash",
+                "appid": "control-panel",
+                "aud": "system-config",
+                "login_nonce": 123
+            }),
+            seq: 10,
+            token: None,
+            trace_id: None,
+        };
+        let sudo_resp = rpc_handler.handle_rpc_call(sudo_req, ip).await.unwrap();
+        match sudo_resp.result {
+            RPCResult::Success(value) => {
+                let value: SudoByPasswordResponse = serde_json::from_value(value).unwrap();
+                assert_eq!(value.session_token, "sudo-session-1");
+            }
+            _ => panic!("Expected success response"),
+        }
+
+        let logout_req = RPCRequest {
+            method: "logout".to_string(),
+            params: json!({"refresh_token": "refresh-2"}),
+            seq: 9,
+            token: None,
+            trace_id: None,
+        };
+        let logout_resp = rpc_handler.handle_rpc_call(logout_req, ip).await.unwrap();
+        match logout_resp.result {
+            RPCResult::Success(value) => {
+                let value: bool = serde_json::from_value(value).unwrap();
+                assert!(value);
+            }
+            _ => panic!("Expected success response"),
+        }
+
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-2");
@@ -618,5 +866,12 @@ mod tests {
         let (session_token, appid) = calls.verify_token.clone().unwrap();
         assert_eq!(session_token, "session-1");
         assert_eq!(appid, Some("kernel".to_string()));
+        let (username, password, appid, aud, login_nonce) = calls.sudo_password.clone().unwrap();
+        assert_eq!(username, "alice");
+        assert_eq!(password, "password-hash");
+        assert_eq!(appid, "control-panel");
+        assert_eq!(aud, Some("system-config".to_string()));
+        assert_eq!(login_nonce, 123);
+        assert_eq!(calls.logout.as_deref(), Some("refresh-2"));
     }
 }

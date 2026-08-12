@@ -16,6 +16,7 @@
 - `node_private_key.pem`：本设备 Ed25519 私钥（`src/kernel/node_daemon/src/active_server.rs`）。
 - `node_identity.json`：设备与 Zone/Owner 的绑定信息（见下方 `NodeIdentityConfig` 最小字段视图）。
 - `start_config.json`：后续 boot.template 渲染所需的启动参数；激活会把 `ood_jwt` 写入其中（`src/kernel/node_daemon/src/active_server.rs`）。
+- `sn_zone_info.json`：激活完成后通过 `SnClient::get_zone_info()` 获取的 SN 运行态；下一次 node-daemon 启动生成首份 cyfs-gateway keep-tunnel 配置时优先使用非空 `relay_sn`，为 `null` 时使用 `ZoneBootConfig.sn`。
 - `node_device_config.json`：DeviceConfig 的 JSON 形式，供启动阶段读取（`src/kernel/node_daemon/src/active_server.rs`）。
 
 注意：激活阶段不会写入 `boot/config`；`boot/config` 由首次启动时的 scheduler `--boot` 路径生成（`src/kernel/scheduler/src/main.rs`）。
@@ -48,7 +49,7 @@ ZoneBootConfig 是引导阶段的“最小可信输入”，其目标是确保�
 
 实现与设计说明：
 - 设计讨论与安全边界：`new_doc/ref/notepads/再次整理zone-boot-config与zone-gateway.md`
-- scheduler 在 boot 阶段读取 `BUCKYOS_ZONE_BOOT_CONFIG` 环境变量（`src/kernel/scheduler/src/main.rs`）
+- scheduler 在 boot 阶段读取 `BUCKYOS_ZONE_DOC` 环境变量（`src/kernel/scheduler/src/main.rs`）
 
 ### 关键数据结构：ZoneBootConfig（最小字段视图）
 本仓库内 `ZoneBootConfig` 的字段定义主要来自 `name_lib`，结构体字段在 notepads 中被明确列出（以该 notepad 为准）：`new_doc/ref/notepads/再次整理zone-boot-config与zone-gateway.md`
@@ -71,7 +72,8 @@ pub struct ZoneBootConfig {
 ### ZoneBootConfig 在启动链路中的“形态转换”
 有一个容易误解的点：
 - 设计上 ZoneBootConfig 常被描述为“JWT”；
-- 但当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化（`serde_json::from_str`），也就是说 `BUCKYOS_ZONE_BOOT_CONFIG` 在当前实现里是“ZoneBootConfig 的 JSON 字符串”，而不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
+- node-daemon 的 `boot_resolve_zone_document()` 会优先调用 `resolve_did(zone_did, "zone")` 获取缓存或已经在线发布的完整 ZoneDocument；如果拿不到，则直接查询 DNS TXT 获取 ZoneBootConfig，并使用激活时保存在 `node_identity` 中的 owner key 验签后转换成 ZoneDocument。DNS boot fallback 不依赖尚未启动的 Zone HTTPS authority。
+- 当前 scheduler `--boot` 的实现是从环境变量读取并按 JSON 反序列化为 `ZoneDocument`，也就是说 `BUCKYOS_ZONE_DOC` 是“ZoneDocument 的 JSON 字符串”，不是 ZoneBootConfig JSON，也不是 JWT 字符串（`src/kernel/scheduler/src/main.rs`）。
 
 而这个环境变量是在 node-daemon 的启动流程里设置的（同一处还会设置 `BUCKYOS_THIS_DEVICE`）：`src/kernel/node_daemon/src/node_daemon.rs`。
 
@@ -89,7 +91,7 @@ Secure Boot 在 BuckyOS 中要解决的问题不是“单机镜像可信”，�
 ### Secure Boot Checks（从当前代码路径可见的约束点）
 这里不复述 notepad 的完整设计，只列出“能从代码直接读到的 gate / hard-fail 条件”，用于理解为什么系统会卡在 boot：
 
-- `BUCKYOS_ZONE_BOOT_CONFIG` 必须存在：scheduler `--boot` 若读不到会直接失败退出（`src/kernel/scheduler/src/main.rs`）。
+- `BUCKYOS_ZONE_DOC` 必须存在：scheduler `--boot` 若读不到会直接失败退出（`src/kernel/scheduler/src/main.rs`）。
 - `boot/config` 只能在首次 boot/init 阶段创建：scheduler `--boot` 会先 `get("boot/config")`，存在则返回错误（`src/kernel/scheduler/src/main.rs`）。
 - trust_keys 的刷新依赖 `boot/config`：scheduler `--boot` 在写入完 KV 并完成一次 `schedule_loop(true)` 后，会调用 `system_config_client.refresh_trust_keys()`（`src/kernel/scheduler/src/main.rs`）；system-config 侧会在 `handle_refresh_trust_keys()` 中读取 `boot/config` 并把 owner key / verify-hub public key 加入信任列表（`src/kernel/sys_config_service/src/main.rs`）。
 
@@ -138,7 +140,7 @@ secure_boot_for_ood():
 ## boot/config（ZoneConfig）的生成
 boot/config（KV 路径 `boot/config`）是 system-config 中保存 ZoneConfig 的关键位置：
 - scheduler 的 `--boot` 路径会检查 `boot/config` 是否已存在；不存在则生成初始化配置并写入（`src/kernel/scheduler/src/main.rs`）。
-- boot 阶段会写入 RBAC 基础数据（`system/rbac/base_policy`、`system/rbac/model`），以及 verify-hub 相关配置（`src/kernel/scheduler/src/main.rs`、`src/kernel/scheduler/src/system_config_builder.rs`）。
+- boot 阶段会写入 RBAC 动态策略尾部（`system/rbac/policy`），以及 verify-hub 相关配置（`src/kernel/scheduler/src/main.rs`、`src/kernel/scheduler/src/system_config_builder.rs`）。RBAC 默认 model/policy 是 API runtime 内置配置，不再作为 system-config KV 持久化。
 
 实现线索：
 - `src/kernel/scheduler/src/main.rs`：`do_boot_scheduler`、`create_init_list_by_template`。
@@ -148,20 +150,25 @@ boot/config（KV 路径 `boot/config`）是 system-config 中保存 ZoneConfig �
 下面列出 `--boot` 会直接创建/间接生成的一组核心 KV key（以代码中的字符串常量/字面量为准）：
 
 - `boot/config`：ZoneConfig（`src/kernel/scheduler/src/system_config_builder.rs`、`src/kernel/scheduler/src/main.rs`）。
-- `system/rbac/base_policy`、`system/rbac/model`：RBAC 的初始模型与基础策略（`src/kernel/scheduler/src/main.rs`，以及模板渲染后兜底注入）。
-- `system/verify-hub/key`：verify-hub 私钥（`src/kernel/scheduler/src/system_config_builder.rs`）。
+- `system/rbac/policy`：RBAC 动态策略尾部，主要是当前用户、节点、服务的分组行；完整 RBAC 配置由 API runtime 合成。
+- `security/verify-hub/key`：verify-hub 私钥（`src/kernel/scheduler/src/system_config_builder.rs`）。
 - `services/verify-hub/spec`、`services/scheduler/spec`、`services/repo-service/spec`、`services/control-panel/spec`：核心 kernel service 的 spec（`src/kernel/scheduler/src/system_config_builder.rs`）。
 - `users/root/settings`、`users/<admin>/settings`、`users/<admin>/doc`：默认账号与 owner doc（`src/kernel/scheduler/src/system_config_builder.rs`）。
 - `devices/<ood>/doc`：OOD 的 device doc（JWT，来自 `start_config.json` 的 `ood_jwt`，`src/kernel/scheduler/src/system_config_builder.rs`）。
 - `nodes/<ood>/config`、`nodes/<ood>/gateway_config`：节点初始配置（`src/kernel/scheduler/src/system_config_builder.rs`）。
 
-### 关键数据结构：ZoneConfig（最小字段视图，按“代码可见字段”）
-本仓库内 `ZoneConfig` 的完整字段同样来自 `name_lib`；本节只列出“在当前代码里被直接读取/依赖”的字段：
+### 关键数据结构：ZoneConfig 与 ZoneDocument
+当前实现把内部配置和公开身份文档分开：
 
-- `verify_hub_info.public_key`：system-config 在 `handle_refresh_trust_keys()` 里从 `boot/config` 取出并转换为 `DecodingKey`，用于信任 verify-hub token（`src/kernel/sys_config_service/src/main.rs`）。
-- `owner` + `get_default_key()`：system-config 会把 owner 的默认 key 加入 trust_keys，并额外加入 `root`、`$default`（`src/kernel/sys_config_service/src/main.rs`）。
+- `ZoneConfig`：保存在 `boot/config` 的内部配置。它包含 `zone_document` 字符串，以及 `verify_hub_info.public_key`、`docker_repo_base_url` 等内部字段。
+- `zone_document`：可解码为标准 `ZoneDocument` / DID Document。内部代码通过它读取 `id`、`owner`、owner default key、`oods`、`sn` 等公开身份和发现信息。
 
-### 伪代码：activation -> boot scheduler -> 写入 boot/config（含 BUCKYOS_ZONE_BOOT_CONFIG）
+代码直接依赖的边界：
+
+- `verify_hub_info.public_key`：system-config 在 `handle_refresh_trust_keys()` 里从 `ZoneConfig` 取出并转换为 `DecodingKey`，用于信任 verify-hub token（`src/kernel/sys_config_service/src/main.rs`）。
+- `zone_document.owner` + `zone_document.get_default_key()`：system-config 会把 owner 的默认 key 加入 trust_keys，并额外加入 `root`、`$default`（`src/kernel/sys_config_service/src/main.rs`）。
+
+### 伪代码：activation -> boot scheduler -> 写入 boot/config（含 BUCKYOS_ZONE_DOC）
 这段伪代码以“控制流 + 数据依赖”为核心，刻意忽略实现细节。
 
 ```text
@@ -170,14 +177,15 @@ activation_server(3182):                        // src/kernel/node_daemon/src/ac
   write /etc/node_private_key.pem
   write /etc/node_identity.json                 // NodeIdentityConfig
   write /etc/start_config.json                  // includes ood_jwt
+  write /etc/sn_zone_info.json                  // includes assigned relay_sn
   write /etc/node_device_config.json
 
 node_daemon_boot():                              // src/kernel/node_daemon/src/node_daemon.rs
   node_identity = read /etc/node_identity.json
   device_doc    = decode(node_identity.device_doc_jwt, node_identity.owner_public_key)
-  zone_boot_cfg = looking_zone_boot_config(node_identity)      // resolve via DNS/BNS/SN (impl)
+  zone_document = resolve_zone_document(node_identity)         // resolve zone first, boot fallback
 
-  setenv BUCKYOS_ZONE_BOOT_CONFIG = json(zone_boot_cfg)        // NOT JWT in current impl
+  setenv BUCKYOS_ZONE_DOC        = json(zone_document)
   setenv BUCKYOS_THIS_DEVICE      = json(device_doc)
 
   start system-config (3200)
@@ -187,21 +195,16 @@ node_daemon_boot():                              // src/kernel/node_daemon/src/n
     run scheduler --boot
 
 scheduler --boot:                                 // src/kernel/scheduler/src/main.rs
-  zone_boot_cfg_json = env[BUCKYOS_ZONE_BOOT_CONFIG]
-  zone_boot_cfg      = json_parse(zone_boot_cfg_json)
+  zone_document_json = env[BUCKYOS_ZONE_DOC]
+  zone_document      = json_parse(zone_document_json)
 
   assert system_config.get("boot/config") == KeyNotFound
 
   init_list = render(/etc/scheduler/boot.template.toml, /etc/start_config.json)
   builder   = SystemConfigBuilder(init_list)
-  builder.add_boot_config(start_config, verify_hub_public_key, zone_boot_cfg)
+  builder.add_boot_config(start_config, verify_hub_public_key, zone_document_json)
   ... add_verify_hub/add_scheduler/add_repo_service/add_control_panel/add_node ...
   init_list = builder.build()
-
-  // ensure boot/config is a ZoneConfig that carries boot info
-  zone_config = json_parse(init_list["boot/config"])
-  zone_config.init_by_boot_config(zone_boot_cfg, zone_boot_cfg_json)
-  init_list["boot/config"] = json_pretty(zone_config)
 
   for (k, v) in init_list:
     system_config.create(k, v)

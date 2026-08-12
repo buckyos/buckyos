@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "demo": "node app_client_demo.mjs",
+    "generate:pikg-samples": "node generate_pikg_samples.mjs",
     "test": "node --test app_installer_flow.test.mjs"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk"
+    "buckyos": "github:buckyos/buckyos-websdk#main"
   }
 }

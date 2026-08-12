@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{AiResponseSummary, Capability, CompleteStatus};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability};
 use common::*;
 use kRPC::RPCContext;
 use std::sync::Arc;
@@ -17,9 +17,9 @@ fn add_llm(
     lat: u64,
     r: std::result::Result<ProviderStartResult, ProviderError>,
 ) -> Arc<MockProvider> {
-    catalog.set_mapping(Capability::LlmRouter, "llm.plan.default", ptype, "m");
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", ptype, "m");
     let p = Arc::new(MockProvider::new(
-        mock_instance(id, ptype, vec![Capability::LlmRouter], vec!["plan".into()]),
+        mock_instance(id, ptype, vec![Capability::Llm], vec!["plan".into()]),
         CostEstimate {
             estimated_cost_usd: Some(cost),
             estimated_latency_ms: Some(lat),
@@ -46,10 +46,8 @@ async fn workflow_01_plan_generation_dag() {
         "a",
         0.01,
         10,
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("{\"steps\":[]}".into()),
-            tool_calls: vec![],
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("{\"steps\":[]}").message,
             usage: None,
             cost: None,
             finish_reason: Some("stop".into()),
@@ -64,7 +62,7 @@ async fn workflow_01_plan_generation_dag() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Succeeded
+        AiMethodStatus::Succeeded
     );
 }
 
@@ -95,8 +93,8 @@ async fn workflow_02_serial_dependency_blocking() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(a.status, CompleteStatus::Running);
-    assert_eq!(b.status, CompleteStatus::Failed);
+    assert_eq!(a.status, AiMethodStatus::Running);
+    assert_eq!(b.status, AiMethodStatus::Failed);
     assert!(!a.task_id.is_empty());
     assert!(!b.task_id.is_empty());
     assert_ne!(a.task_id, b.task_id);
@@ -176,7 +174,7 @@ async fn workflow_04_retryable_then_fallback_success() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert!(!resp.task_id.is_empty());
     assert_eq!(p1.start_calls(), 1);
     assert_eq!(p2.start_calls(), 1);
@@ -208,7 +206,7 @@ async fn workflow_05_fatal_step_abort() {
             .await
             .unwrap()
             .status,
-        CompleteStatus::Failed
+        AiMethodStatus::Failed
     );
 }
 
@@ -239,8 +237,8 @@ async fn workflow_06_replan_trigger_on_low_quality() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(a.status, CompleteStatus::Running);
-    assert_eq!(b.status, CompleteStatus::Failed);
+    assert_eq!(a.status, AiMethodStatus::Running);
+    assert_eq!(b.status, AiMethodStatus::Failed);
     assert!(!a.task_id.is_empty());
     assert!(!b.task_id.is_empty());
     assert_ne!(a.task_id, b.task_id);
@@ -279,7 +277,7 @@ async fn workflow_07_subtask_fallback_alias() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert!(!resp.task_id.is_empty());
     assert_eq!(p1.start_calls(), 1);
     assert_eq!(p2.start_calls(), 1);
@@ -308,7 +306,7 @@ async fn workflow_08_end_to_end_orchestration_smoke() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert!(!resp.task_id.is_empty());
     assert!(
         resp.event_ref
@@ -332,10 +330,8 @@ async fn workflow_01_plan_generates_valid_dag() {
         "a",
         0.01,
         10,
-        Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("{\"steps\":[]}".into()),
-            tool_calls: vec![],
-            artifacts: vec![],
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("{\"steps\":[]}").message,
             usage: None,
             cost: None,
             finish_reason: Some("stop".into()),
@@ -348,7 +344,7 @@ async fn workflow_01_plan_generates_valid_dag() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Succeeded);
+    assert_eq!(resp.status, AiMethodStatus::Succeeded);
     assert_eq!(p1.start_calls(), 1);
 }
 
@@ -374,8 +370,8 @@ async fn workflow_02_serial_dependency_blocks_until_ready() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(a.status, CompleteStatus::Running);
-    assert_eq!(b.status, CompleteStatus::Failed);
+    assert_eq!(a.status, AiMethodStatus::Running);
+    assert_eq!(b.status, AiMethodStatus::Failed);
     assert!(!a.task_id.is_empty());
     assert!(!b.task_id.is_empty());
     assert_ne!(a.task_id, b.task_id);
@@ -440,8 +436,8 @@ async fn workflow_04_replan_triggered_on_quality_threshold() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(a.status, CompleteStatus::Running);
-    assert_eq!(b.status, CompleteStatus::Failed);
+    assert_eq!(a.status, AiMethodStatus::Running);
+    assert_eq!(b.status, AiMethodStatus::Failed);
     assert!(!a.task_id.is_empty());
     assert!(!b.task_id.is_empty());
     assert_ne!(a.task_id, b.task_id);
@@ -475,7 +471,7 @@ async fn workflow_05_retryable_subtask_uses_fallback_alias() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert!(!resp.task_id.is_empty());
     assert_eq!(p1.start_calls(), 1);
     assert_eq!(p2.start_calls(), 1);
@@ -531,7 +527,7 @@ async fn workflow_07_each_step_routes_to_correct_capability() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert_eq!(p1.start_calls(), 1);
     assert!(resp.result.is_none());
     assert!(
@@ -577,7 +573,7 @@ async fn workflow_08_event_sequence_reflects_dag_structure() {
         .complete(base_request(), RPCContext::default())
         .await
         .unwrap();
-    assert_eq!(resp.status, CompleteStatus::Running);
+    assert_eq!(resp.status, AiMethodStatus::Running);
     assert_eq!(p1.start_calls(), 1);
     let events = sink.events_for(&resp.task_id);
     assert_eq!(events.len(), 1, "started task should emit a started event");

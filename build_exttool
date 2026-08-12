@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# build_exttool — build the paios/exttool image that seeds the
+# buckyos-exttool named volume (see notepads/paios容器需求.md §6.3).
+#
+# Unlike build_aios this script does not cross-compile any Rust code;
+# everything we ship is already OS packages, downloaded AppImages, and
+# pre-warmed language caches.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$ROOT_DIR/src"
+DEFAULT_IMAGE_NAME="paios/exttool"
+DEVENV_PATH="$ROOT_DIR/devenv.json"
+VERSION_FILE="$SRC_DIR/VERSION"
+EXTTOOL_DIR="$ROOT_DIR/publish/exttool"
+
+IMAGE_NAME="${IMAGE_NAME:-}"
+VERSION_TAG="${VERSION_TAG:-}"
+SUPPORTED_ARCHES=("amd64" "aarch64")
+SELECTED_ARCHES=()
+PUSH=0
+
+# FreeCAD AppImage URLs — picked by target arch. Override via env at build
+# time (FREECAD_APPIMAGE_URL_AMD64 / _AARCH64) to pin a specific release or
+# point at an internal mirror. Empty string means "ship a stub", which still
+# gives a working volume layout for tests that don't exercise FreeCAD.
+: "${FREECAD_APPIMAGE_URL_AMD64:=https://github.com/FreeCAD/FreeCAD/releases/download/1.0.1/FreeCAD_1.0.1-conda-Linux-x86_64-py311.AppImage}"
+: "${FREECAD_APPIMAGE_URL_AARCH64:=}"
+
+usage() {
+  cat <<'EOF'
+Usage: ./build_exttool [--push] [--image <name>] [--tag <tag>] [--arch <arch>]
+
+Builds the paios/exttool Docker image that seeds the `buckyos-exttool`
+named volume with:
+  * pre-warmed uv and Deno caches
+  * baked tool packages (FreeCAD CLI)
+  * the /opt/buckyos/tools/{store,bin,uv-cache,deno-cache} layout
+    (see paios容器需求.md §9)
+
+The image is published per arch so node_daemon can pick the correct
+variant when running the one-shot seeder:
+  - <image>:<tag>-amd64   / <image>:latest-amd64
+  - <image>:<tag>-aarch64 / <image>:latest-aarch64
+
+Options:
+  --push          Push arch-specific images and create multi-arch manifests
+  --image <name>  Override image name (default: devenv.json["exttool"] or paios/exttool)
+  --tag <tag>     Override version tag (default: src/VERSION)
+  --arch <arch>   Build only one arch (amd64|aarch64); repeatable
+  -h, --help      Show this help
+
+Env overrides:
+  FREECAD_APPIMAGE_URL_AMD64     FreeCAD AppImage URL for amd64
+  FREECAD_APPIMAGE_URL_AARCH64   FreeCAD AppImage URL for aarch64 (empty -> stub)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --push) PUSH=1; shift ;;
+    --image) IMAGE_NAME="$2"; shift 2 ;;
+    --tag) VERSION_TAG="$2"; shift 2 ;;
+    --arch) SELECTED_ARCHES+=("$2"); shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+log() { printf '[build_exttool] %s\n' "$*"; }
+
+resolve_python() {
+  if [[ -x "$ROOT_DIR/venv/bin/python" ]]; then echo "$ROOT_DIR/venv/bin/python"; return; fi
+  if [[ -x "$ROOT_DIR/venv/bin/python3" ]]; then echo "$ROOT_DIR/venv/bin/python3"; return; fi
+  if command -v python3 >/dev/null 2>&1; then command -v python3; return; fi
+  echo "python3 not found" >&2; exit 1
+}
+
+resolve_default_image_name() {
+  local python_bin resolved_image
+  if [[ -n "$IMAGE_NAME" ]]; then return; fi
+  if [[ ! -f "$DEVENV_PATH" ]]; then IMAGE_NAME="$DEFAULT_IMAGE_NAME"; return; fi
+  python_bin="$(resolve_python)"
+  resolved_image="$(
+    "$python_bin" - "$DEVENV_PATH" "$DEFAULT_IMAGE_NAME" <<'PY'
+import json, sys
+config_path, default_image = sys.argv[1], sys.argv[2]
+try:
+    with open(config_path, "r", encoding="utf-8") as fh:
+        config = json.load(fh)
+except Exception:
+    print(default_image); raise SystemExit(0)
+image = config.get("exttool")
+if isinstance(image, str) and image.strip():
+    print(image.strip())
+else:
+    print(default_image)
+PY
+  )"
+  IMAGE_NAME="${resolved_image:-$DEFAULT_IMAGE_NAME}"
+}
+
+resolve_version_tag() {
+  if [[ -n "$VERSION_TAG" ]]; then return; fi
+  if [[ ! -f "$VERSION_FILE" ]]; then
+    echo "Missing version file: $VERSION_FILE" >&2; exit 1
+  fi
+  VERSION_TAG="$(tr -d '[:space:]' < "$VERSION_FILE")"
+  [[ -n "$VERSION_TAG" ]] || { echo "Version file empty: $VERSION_FILE" >&2; exit 1; }
+}
+
+validate_arch() {
+  case "$1" in
+    amd64|aarch64) ;;
+    *) echo "Unsupported arch: $1" >&2; exit 1 ;;
+  esac
+}
+
+resolve_selected_arches() {
+  local -a resolved=()
+  if [[ ${#SELECTED_ARCHES[@]} -eq 0 ]]; then
+    resolved=("${SUPPORTED_ARCHES[@]}")
+  else
+    local arch
+    for arch in "${SELECTED_ARCHES[@]}"; do
+      validate_arch "$arch"
+      if [[ ! " ${resolved[*]} " =~ " ${arch} " ]]; then resolved+=("$arch"); fi
+    done
+  fi
+  printf '%s\n' "${resolved[@]}"
+}
+
+docker_platform_for_arch() {
+  case "$1" in
+    amd64) echo "linux/amd64" ;;
+    aarch64) echo "linux/arm64" ;;
+    *) echo "Unsupported arch: $1" >&2; exit 1 ;;
+  esac
+}
+
+ensure_buildx_support() {
+  local -a arches=("$@")
+  local builder_info platforms missing=()
+  if ! builder_info="$(docker buildx inspect 2>/dev/null)"; then
+    cat >&2 <<'EOF'
+docker buildx inspect failed.
+Ensure Docker Buildx is available and the current builder is healthy.
+EOF
+    exit 1
+  fi
+  platforms="$(printf '%s\n' "$builder_info" | sed -n 's/^Platforms:[[:space:]]*//p' | head -n1 | tr -d ' ')"
+  [[ -n "$platforms" ]] || { echo "Failed to detect buildx platforms" >&2; exit 1; }
+  local arch
+  for arch in "${arches[@]}"; do
+    if [[ ",$platforms," != *",$(docker_platform_for_arch "$arch"),"* ]]; then
+      missing+=("$arch")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    cat >&2 <<EOF
+Active buildx builder does not support: ${missing[*]}
+Builder platforms: $platforms
+Fix with: docker buildx inspect --bootstrap
+         docker run --privileged --rm tonistiigi/binfmt --install arm64
+EOF
+    exit 1
+  fi
+  log "Using buildx builder platforms: $platforms"
+}
+
+freecad_url_for_arch() {
+  case "$1" in
+    amd64) echo "$FREECAD_APPIMAGE_URL_AMD64" ;;
+    aarch64) echo "$FREECAD_APPIMAGE_URL_AARCH64" ;;
+    *) echo "" ;;
+  esac
+}
+
+build_image_for_arch() {
+  local arch="$1" context_dir="$2"
+  local platform version_arch_tag latest_arch_tag freecad_url
+  platform="$(docker_platform_for_arch "$arch")"
+  version_arch_tag="$IMAGE_NAME:$VERSION_TAG-$arch"
+  latest_arch_tag="$IMAGE_NAME:latest-$arch"
+  freecad_url="$(freecad_url_for_arch "$arch")"
+
+  log "Building $version_arch_tag (platform=$platform, FreeCAD=${freecad_url:-<stub>})"
+
+  local -a build_args=(
+    --platform "$platform"
+    --build-arg "TARGET_ARCH=$arch"
+    --build-arg "FREECAD_APPIMAGE_URL=$freecad_url"
+    --tag "$version_arch_tag"
+    --tag "$latest_arch_tag"
+    -f "$context_dir/Dockerfile"
+  )
+
+  if [[ "$PUSH" -eq 1 ]]; then
+    docker buildx build "${build_args[@]}" --push "$context_dir"
+  else
+    docker buildx build "${build_args[@]}" --load "$context_dir"
+  fi
+}
+
+publish_manifests() {
+  log "Publishing multi-arch manifests for $IMAGE_NAME"
+  docker buildx imagetools create \
+    --tag "$IMAGE_NAME:$VERSION_TAG" \
+    "$IMAGE_NAME:$VERSION_TAG-amd64" \
+    "$IMAGE_NAME:$VERSION_TAG-aarch64"
+  docker buildx imagetools create \
+    --tag "$IMAGE_NAME:latest" \
+    "$IMAGE_NAME:latest-amd64" \
+    "$IMAGE_NAME:latest-aarch64"
+}
+
+main() {
+  local tmp_root context_dir
+  local -a target_arches
+
+  if [[ ! -f "$EXTTOOL_DIR/Dockerfile" ]]; then
+    echo "Missing $EXTTOOL_DIR/Dockerfile" >&2; exit 1
+  fi
+  if [[ ! -f "$EXTTOOL_DIR/install_freecad.sh" ]]; then
+    echo "Missing $EXTTOOL_DIR/install_freecad.sh" >&2; exit 1
+  fi
+
+  resolve_default_image_name
+  resolve_version_tag
+  mapfile -t target_arches < <(resolve_selected_arches)
+
+  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/build_exttool.XXXXXX")"
+  trap "rm -rf '$tmp_root'" EXIT
+
+  ensure_buildx_support "${target_arches[@]}"
+
+  log "Version tag: $VERSION_TAG"
+  log "Image repo:  $IMAGE_NAME"
+  log "Target arches: ${target_arches[*]}"
+
+  for arch in "${target_arches[@]}"; do
+    context_dir="$tmp_root/$arch"
+    mkdir -p "$context_dir"
+    cp "$EXTTOOL_DIR/Dockerfile" "$context_dir/Dockerfile"
+    cp "$EXTTOOL_DIR/install_freecad.sh" "$context_dir/install_freecad.sh"
+    build_image_for_arch "$arch" "$context_dir"
+  done
+
+  if [[ "$PUSH" -eq 1 ]]; then publish_manifests; fi
+
+  log "Completed"
+  if [[ "$PUSH" -eq 1 ]]; then
+    log "Pushed: $IMAGE_NAME:$VERSION_TAG and $IMAGE_NAME:latest"
+  else
+    log "Loaded local images:"
+    for arch in "${target_arches[@]}"; do
+      log "  $IMAGE_NAME:$VERSION_TAG-$arch"
+      log "  $IMAGE_NAME:latest-$arch"
+    done
+    log "Seed the named volume with:"
+    log "  docker volume create buckyos-exttool"
+    log "  docker run --rm -v buckyos-exttool:/opt/buckyos/tools $IMAGE_NAME:latest-<arch>"
+  fi
+}
+
+main

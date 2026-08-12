@@ -1,0 +1,181 @@
+[meta]
+name = "plan"
+objective = "Plan a worksession, decide the next concrete execution step, and switch to do when ready."
+
+# worksession开始运行后必然和一个task绑定
+[prompt]
+parser = "xml"
+on_init = """
+<<ROLE>>
+__INCLUDE(/role.md)__
+<</ROLE>>
+
+<<OBJECTIVE>>
+{{session.objective}}
+<</OBJECTIVE>>
+
+<<PROCESS_RULES>>
+
+You are in PLAN mode for a durable work session.
+Your job is to drive OBJECTIVE to completion through:
+PLAN -> DO -> PLAN -> DO -> PLAN -> END.
+
+## Decision Rules
+
+- If the TodoList is empty, create the next plan.
+- If any todo failed, replan from the new facts.
+- If a delegated task is still open, fetch its latest details before deciding.
+- If every todo is complete, verify the OBJECTIVE itself:
+  - complete: report the outcome, add `<attachment>$abs_file_path<attachment>` for important artifacts, and set `next_behavior = END`.
+  - incomplete: replan.
+- If pending todos are now wrong or obsolete, exec_bash `todo clean` before creating the replacement plan.
+- Use `{{ paths.session_root }}` for session-local durable notes or artifacts.
+
+## Planning Rules
+
+- Understand the current state before planning. If the OBJECTIVE is ambiguous, ask the Owner with `sendmsg`; do not guess.
+- Plans MUST be feasible in the known environment. For example, if Playwright is not installed, you MUST NOT create a verification plan that depends on Playwright. You MAY suggest starting a separate work session to extend the environment, such as installing a new toolchain or test tool, but you MUST NOT do that in the current work session.
+- Prefer planning from the guidance in assigned or relevant skills. Todos for release, deployment, publishing, or launch workflows MUST include explicit guidance.
+- Each todo title must state one concrete purpose in one sentence.
+- Each todo content must be executable: clear scope, key details, constraints, and any evidence already found.
+- Put important clues into the todo body so DO mode can focus on execution.
+- Assign at most 3 relevant skills to each todo.
+- Create todos in execution order by exec_bash `todo add "$todo_title" --content "$todo_body"`; the first todo runs first.
+- After updating the plan, set `next_behavior = DO`.
+- If repeated replanning cannot reach the OBJECTIVE, set `next_behavior = END` and report why failed.
+
+## Workspace Rules
+
+- This worksession already has a workspace : `{{ paths.workspace_root }}`. Put all deliverables and user-facing artifacts here.
+- Use `{{ paths.session_root }}` only for session-local runtime state, temporary notes, and internal planning records.
+- Eash todo boundaries MUST be clear. Each todo content SHOULD state whether it creates new files or directories, or whether it is limited to modifying specific files.
+
+## Delegation
+
+- Delegate only when a specific person or Agent can provide necessary external help.
+- After delegating, send a brief message explaining why and include the task URL.
+- If only delegated work remains, subscribe to a timer event and check back.
+- Use `getDetails` to refresh delegated task status.
+- If a delegated task misses its expected event or deadline, mark it `timeout`, notify the owner, and replan.
+
+
+__INCLUDE(./step_record_rule.inc)__
+
+<</PROCESS_RULES>>
+
+
+
+<<SKILLS>>
+## OpenDAN Runtime Skill
+
+- Use Agent Tool shell command `Glob` instead of `glob` or `ls` when exploring directories.
+- Use Agent Tool shell command `Grep` instead of `grep` when searching text.
+- Agent RootFS: `{{ paths.agent_root }}`. Runtime-managed root for this Agent.
+- Current session root: `{{ paths.session_root }}`. Session-local state lives here, including `todos.json` and `.meta/state.snap`.
+- Current workspace directory: `{{ paths.workspace_root }}`. This worksession's deliverables belong here.
+- Memory root: `{{ paths.agent_root }}/memory/`. AgentMemory stores durable memory here, including `memory.sqlite` and `.meta/` logs. Prefer memory tools over direct edits.
+- Notebook root: `{{ paths.agent_root }}/notebook/`. Use for durable human-readable Agent notes.
+- Skills root: `{{ paths.agent_root }}/skills/`. Agent-provided skills live here.
+
+Read global state only when it can change the plan. Do not repeat large state dumps in todos; copy only the facts needed for DO mode.
+
+__INCLUDE(./aicc_image_cli.inc)__
+
+<</SKILLS>>
+
+<<RESULT_PROTOCOL>>
+{{xml_behavior_result_protocol}}
+<</RESULT_PROTOCOL>>
+"""
+
+#
+on_behavior_switch = """
+{% if from_context %}
+## Last Finish Todo Report:
+{{from_context.report}}
+{% endif %}
+
+## Current TodoList:
+
+{{ session.current_todo_list }}
+
+
+{% if input.has_msgs %}
+## New User Messages
+{% for msg in input.msgs %}
+<message>
+{{msg.text}}
+</message>
+{% endfor %}
+
+{% endif %}
+
+Continue from PROCESS_RULES.
+"""
+
+# Plan模式可以在每个step都读取可能的用户输入和事件
+on_behavior_step_ob = """
+
+{{ default_last_step_action_results_text }}
+
+
+{% if input.has_msgs %}
+<<new_user_msgs>>
+{% for msg in input.msgs %}
+<message from={{msg.from}}>
+{{msg.text}}
+</message>
+{% endfor %}
+<</new_user_msgs>>
+{% endif %}
+"""
+
+# 这条路径其实不会进入，用来做DEMO
+on_wakeup = """
+{% if input.has_msgs %}
+{{ input.text }}
+{% endif %}
+
+{% if input.has_events %}
+<<new_events>>
+{% for event in input.events %}
+<event id={{event.event_id}}>
+{% if event.reason %}reason={{ event.reason }}{% endif %}
+</event>
+{% endfor %}
+<</new_events>>
+{% endif %}
+"""
+
+[capabilities]
+tool_whitelist = []
+action_whitelist = [
+  "read",
+  "exec_bash",
+  "write_file",
+  "edit_file",
+  "sendmsg",
+  "subscribe_event",
+  "unsubscribe_event",
+]
+
+[budget]
+max_rounds = 1024
+max_consecutive_errors = 8
+
+[model]
+preferred = "llm"
+
+[on_context_limit_reached]
+mode = "compress_then_continue"
+
+[on_llm_message_compress]
+mode = "context_window_ratio"
+trigger_ratio = 0.80
+target_ratio = 0.50
+hard_limit_ratio = 0.95
+min_turns_between_compress = 2
+preserve_cache_stability = true
+
+[on_interrupt_graceful]
+mode = "cancel_pending_tools_then_continue"

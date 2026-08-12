@@ -1,8 +1,14 @@
 {
+    "app_configs": {
+      "web3-gateway": "../../cyfs-gateway/src/dev_configs/apps/web3-gateway.json"
+    },
     "nodes": {
       "sn": {
         "node_id": "sn",
         "vm_template": "ubuntu_sn",
+        "vm_params": {
+          "disk": "8G"
+        },
         "network": {
           "lan_id": "wan",
           "type": "bridge"
@@ -144,5 +150,3 @@
     },
     "instance_order": ["sn-web","sn", "alice-ood1", "bob-ood1", "charlie-ood1"]
   }
-  
-  

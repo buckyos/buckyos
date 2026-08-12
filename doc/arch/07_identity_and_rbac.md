@@ -169,7 +169,7 @@ notepads 已明确标注了传播延迟：`new_doc/ref/notepads/rbac.md`。
 ## 常见坑（调试时优先排查）
 
 ### 1) “改了权限不生效”
-- 先确认写的是 `system/rbac/policy`（不是 base_policy）。
+- 先确认写的是 `system/rbac/policy` 动态尾部；稳定角色规则来自 API runtime 内置默认配置。
 - 再确认缓存窗口：`CONFIG_CACHE_TIME = 10`（`src/kernel/buckyos-api/src/system_config.rs`）+ 分布式传播。
 - 观察点：`new_doc/ref/notepads/rbac.md` 明确写了“最长 10 秒”。
 

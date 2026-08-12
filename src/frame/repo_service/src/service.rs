@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::repo_db::{
     RepoDb, RepoDbStat, RepoObjectRecord as DbRecord, RepoProofRecord,
-    RepoReceiptRecord as ReceiptRecord, SqliteRepoDb,
+    RepoReceiptRecord as ReceiptRecord,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -17,34 +17,33 @@ use buckyos_api::{
     REPO_SERVICE_SERVICE_NAME, REPO_SERVICE_SERVICE_PORT, REPO_STATUS_COLLECTED,
     REPO_STATUS_PINNED,
 };
-use buckyos_kit::{buckyos_get_unix_timestamp, init_logging};
-use bytes::Bytes;
-use cyfs_gateway_lib::{
+use buckyos_http_server::Runner;
+use buckyos_http_server::{
     serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
     StreamInfo,
 };
+use buckyos_kit::{buckyos_get_unix_timestamp, init_logging};
+use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
 use log::{info, warn};
 use name_lib::decode_jwt_claim_without_verify;
-use named_store::{NamedLocalStore, NamedStoreMgr, StoreLayout, StoreTarget};
+use named_store::{NamedDataMgr, NamedLocalStore, StoreLayout, StoreTarget};
 use ndn_lib::{
     build_obj_id, load_named_object_from_obj_str, verify_named_object, ActionObject, ChunkId,
     InclusionProof, NamedObject, ObjId, ACTION_TYPE_DOWNLOAD, ACTION_TYPE_INSTALLED,
     ACTION_TYPE_SHARED,
 };
 use serde_json::{json, Value};
-use server_runner::Runner;
 use tokio::fs;
 
-const REPO_DB_FILE: &str = "repo.db";
 const ANNOUNCES_DIR: &str = "pending_announces";
 const READY_CHECK_STORE_DIR: &str = "ready_check_store";
 
 #[derive(Clone)]
 pub struct RepoService {
-    db: Arc<dyn RepoDb>,
+    db: Arc<RepoDb>,
     state: Arc<RepoState>,
 }
 
@@ -55,7 +54,7 @@ struct RepoState {
 }
 
 impl RepoService {
-    pub async fn new(data_dir: PathBuf) -> Result<Self> {
+    pub async fn new(db: Arc<RepoDb>, data_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&data_dir)
             .await
             .with_context(|| format!("create repo data dir failed: {}", data_dir.display()))?;
@@ -77,16 +76,11 @@ impl RepoService {
             announces_dir,
             ready_check_store_dir,
         });
-        let db = Arc::new(
-            SqliteRepoDb::open(data_dir.join(REPO_DB_FILE))
-                .await
-                .context("init repo-db failed")?,
-        );
         let service = Self { db, state };
         Ok(service)
     }
 
-    async fn get_named_store_mgr(&self) -> std::result::Result<NamedStoreMgr, RPCErrors> {
+    async fn get_named_store_mgr(&self) -> std::result::Result<NamedDataMgr, RPCErrors> {
         if let Ok(runtime) = get_buckyos_api_runtime() {
             return runtime.get_named_store().await.map_err(|err| {
                 RPCErrors::ReasonError(format!("open system named store failed: {err}"))
@@ -725,7 +719,13 @@ pub async fn run_service() -> Result<()> {
         .context("repo-service resolve data folder failed")?;
     set_buckyos_api_runtime(runtime).context("register repo-service runtime failed")?;
 
-    let service = RepoService::new(data_dir).await?;
+    let db = Arc::new(
+        RepoDb::open_from_service_spec()
+            .await
+            .map_err(|err| anyhow::anyhow!("init repo-db failed: {}", err))?,
+    );
+    info!("repo-service database initialized");
+    let service = RepoService::new(db, data_dir).await?;
     let server = Arc::new(RepoHttpServer::new(service));
     let runner = Runner::new(REPO_SERVICE_SERVICE_PORT);
     runner
@@ -748,7 +748,7 @@ pub async fn run_service() -> Result<()> {
     runner.run().await.context("repo-service runner failed")
 }
 
-fn to_rpc_error(err: anyhow::Error) -> RPCErrors {
+fn to_rpc_error<E: std::fmt::Display>(err: E) -> RPCErrors {
     RPCErrors::ReasonError(err.to_string())
 }
 
@@ -1145,7 +1145,7 @@ fn validate_receipt(
 
 async fn create_ready_check_store_mgr(
     store_root: &Path,
-) -> std::result::Result<NamedStoreMgr, RPCErrors> {
+) -> std::result::Result<NamedDataMgr, RPCErrors> {
     let store = NamedLocalStore::get_named_store_by_path(store_root.to_path_buf())
         .await
         .map_err(|err| {
@@ -1157,14 +1157,14 @@ async fn create_ready_check_store_mgr(
     let store_id = store.store_id().to_string();
     let store_ref = Arc::new(tokio::sync::Mutex::new(store));
 
-    let store_mgr = NamedStoreMgr::new();
+    let store_mgr = NamedDataMgr::new();
     store_mgr.register_store(store_ref).await;
     store_mgr
         .add_layout(StoreLayout::new(
             1,
             vec![StoreTarget {
                 store_id,
-                device_did: None,
+                device_did: String::new(),
                 capacity: None,
                 used: None,
                 readonly: false,
@@ -1186,7 +1186,7 @@ fn sanitize_content_id(content_id: &str) -> String {
 mod tests {
     use super::*;
 
-    use buckyos_api::{RepoClient, RepoListFilter};
+    use buckyos_api::{RdbBackend, RepoClient, RepoListFilter};
     use name_lib::DID;
     use ndn_lib::{FileObject, StoreMode};
     use ndn_toolkit::{cacl_file_object, CheckMode};
@@ -1195,7 +1195,14 @@ mod tests {
 
     async fn test_service() -> (TempDir, RepoService, RepoClient) {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let service = RepoService::new(dir.path().to_path_buf())
+        let db_path = dir.path().join("repo.db");
+        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
+        let db = Arc::new(
+            RepoDb::open(&conn, RdbBackend::Sqlite, None)
+                .await
+                .expect("open test repo db"),
+        );
+        let service = RepoService::new(db, dir.path().to_path_buf())
             .await
             .expect("init repo service");
         let client = RepoClient::new_in_process(Box::new(service.clone()));

@@ -12,7 +12,7 @@ It reads:
 - `publish.macos_pkg.apps.*` for macOS distribution package components.
 
 Before make pkg,make sure already build the latest buckyos-app, buckycli and buckyos.
-- uv run ./src/buckyos-build.py && uv run buckyos-install --all --target-rootfs=/opt/buckyosci/buckyos && uv run ./src/make_config.py release --rootfs /opt/buckyosci/buckyos
+- uv run ./src/buckyos-build.py && uv run buckyos-install --all --target-rootfs=/opt/buckyosci/buckyos && cd src && deno task make_config release --rootfs /opt/buckyosci/buckyos
 - copy BuckyOS.app to /opt/buckyosci/BuckyOSApp/BuckyOS.app
 """
 
@@ -29,9 +29,10 @@ import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import re
+import package_common as common
 
 try:
     import yaml  # type: ignore
@@ -51,25 +52,11 @@ IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
 
 def yaml_load_file(path: Path) -> Dict[str, Any]:
-    if yaml is None:
-        raise ImportError(
-            "PyYAML is required to read bucky_project.yaml. "
-            "Use your project venv (e.g. `./venv/bin/python ...`), "
-            "or install buckyos-devkit (recommended) / `pip install pyyaml`."
-        )
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML root must be a map: {path}")
-    return data
+    return common.yaml_load_file(path)
 
 
 def json_load_file(path: Path) -> Dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"JSON root must be a map: {path}")
-    return data
+    return common.json_load_file(path)
 
 
 def _expand_vars(s: str) -> str:
@@ -82,14 +69,7 @@ def _expand_vars(s: str) -> str:
 
 
 def _manifest_install_project(manifest_path: Path, project_key: str) -> Dict[str, Any]:
-    data = json_load_file(manifest_path)
-    install_projects = data.get("install_projects", {}) or {}
-    if not isinstance(install_projects, dict):
-        raise ValueError("manifest.install_projects must be a map")
-    project = install_projects.get(project_key)
-    if not isinstance(project, dict):
-        raise ValueError(f"manifest.install_projects.{project_key} missing or invalid")
-    return project
+    return common.manifest_install_project(manifest_path, project_key)
 
 
 @dataclass(frozen=True)
@@ -118,16 +98,13 @@ def _source_path_for(
     item_kind: str,
     source_root_override: Path | None = None,
 ) -> Path:
-    if source_root_override is not None:
-        override_rel = rel.strip().lstrip("/").rstrip("/")
-        candidate = source_root_override / override_rel
-        if candidate.exists():
-            return candidate
     mapping = layout.module_source_paths if item_kind == "module" else layout.data_source_paths
-    configured = mapping.get(rel)
-    if configured:
-        return Path(configured).resolve()
-    return _safe_join(layout.source_rootfs, rel)
+    return common.source_path_for(
+        source_rootfs=layout.source_rootfs,
+        rel=rel,
+        item_source_paths=mapping,
+        source_root_override=source_root_override,
+    )
 
 
 def load_app_layout(
@@ -137,7 +114,11 @@ def load_app_layout(
 ) -> AppLayout:
     data = yaml_load_file(project_yaml_path)
     apps = data.get("apps", {}) or {}
-    app_cfg = apps.get(app_key, {}) or {}
+    if not isinstance(apps, dict):
+        raise ValueError("apps must be a map")
+    app_cfg = apps.get(app_key)
+    if not isinstance(app_cfg, dict):
+        raise ValueError(f"apps.{app_key} missing or invalid")
 
     base_dir = str(data.get("base_dir", "."))
     project_base = (project_yaml_path.parent / base_dir).resolve()
@@ -150,9 +131,17 @@ def load_app_layout(
     target_rootfs = Path(_expand_vars(target_str)).resolve()
 
     modules = app_cfg.get("modules", {}) or {}
+    data_paths_raw = app_cfg.get("data_paths", []) or []
+    clean_paths_raw = app_cfg.get("clean_paths", []) or []
+    if not isinstance(modules, dict):
+        raise ValueError(f"apps.{app_key}.modules must be a map")
+    if not isinstance(data_paths_raw, list):
+        raise ValueError(f"apps.{app_key}.data_paths must be a list")
+    if not isinstance(clean_paths_raw, list):
+        raise ValueError(f"apps.{app_key}.clean_paths must be a list")
     module_paths = [str(p) for p in modules.values()]
-    data_paths = [str(p) for p in (app_cfg.get("data_paths", []) or [])]
-    clean_paths = [str(p) for p in (app_cfg.get("clean_paths", []) or [])]
+    data_paths = [str(p) for p in data_paths_raw]
+    clean_paths = [str(p) for p in clean_paths_raw]
 
     return AppLayout(
         source_rootfs=source_rootfs,
@@ -182,38 +171,14 @@ def load_app_layout_from_manifest(
     )
     target_str = target_override if target_override else default_target
 
-    def item_paths(name: str) -> List[str]:
-        items = app_cfg.get(name, []) or []
-        if not isinstance(items, list):
-            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
-        return [
-            str(item.get("raw_path") or item.get("target_dir_name") or "")
-            for item in items
-            if isinstance(item, dict) and str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
-        ]
-
-    def item_source_paths(name: str) -> Dict[str, str]:
-        items = app_cfg.get(name, []) or []
-        if not isinstance(items, list):
-            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
-        out: Dict[str, str] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            rel = str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
-            source_path = str(item.get("source_path") or "").strip()
-            if rel and source_path:
-                out[rel] = source_path
-        return out
-
     return AppLayout(
         source_rootfs=Path(source_rootfs_raw).resolve(),
         target_rootfs=Path(_expand_vars(target_str)).resolve(),
-        module_paths=item_paths("module_items"),
-        data_paths=item_paths("data_items"),
-        clean_paths=item_paths("clean_items"),
-        module_source_paths=item_source_paths("module_items"),
-        data_source_paths=item_source_paths("data_items"),
+        module_paths=common.item_paths(app_cfg, "module_items", project_key=app_key),
+        data_paths=common.item_paths(app_cfg, "data_items", project_key=app_key),
+        clean_paths=common.item_paths(app_cfg, "clean_items", project_key=app_key),
+        module_source_paths=common.item_source_paths(app_cfg, "module_items", project_key=app_key),
+        data_source_paths=common.item_source_paths(app_cfg, "data_items", project_key=app_key),
     )
 
 
@@ -240,6 +205,14 @@ def _as_str(v: Any) -> str:
     return str(v)
 
 
+def _parse_bool(value: Any, *, field_name: str, default: bool = False) -> bool:
+    return common.parse_bool(value, field_name=field_name, default=default)
+
+
+def _parse_component_type(value: Any, *, field_name: str) -> str:
+    return common.parse_component_type(value, field_name=field_name)
+
+
 def _sanitize_id(s: str) -> str:
     out = []
     for ch in s:
@@ -257,6 +230,7 @@ class PublishComponent:
     name: str
     kind: str  # "app" | "bundle"
     optional: bool
+    default_selected: bool
     src: str | None
     default_target: str
 
@@ -274,8 +248,12 @@ def load_macos_pkg_components(project_yaml_path: Path) -> List[PublishComponent]
         if not isinstance(cfg, dict):
             raise ValueError(f"publish.macos_pkg.apps.{key} must be a map")
         name = _as_str(cfg.get("name", key)).strip() or key
-        kind = _as_str(cfg.get("type", "")).strip() or "app"
-        optional = bool(cfg.get("optional", False))
+        kind = _parse_component_type(cfg.get("type", "app"), field_name=f"publish.macos_pkg.apps.{key}.type")
+        optional = _parse_bool(cfg.get("optional", False), field_name=f"publish.macos_pkg.apps.{key}.optional")
+        default_selected = _parse_bool(
+            cfg.get("default_selected", False),
+            field_name=f"publish.macos_pkg.apps.{key}.default_selected",
+        )
         src = _as_str(cfg.get("src", "")).strip() or None
         default_target = _as_str(cfg.get("default_target", "")).strip()
         if not default_target:
@@ -286,6 +264,7 @@ def load_macos_pkg_components(project_yaml_path: Path) -> List[PublishComponent]
                 name=name,
                 kind=kind,
                 optional=optional,
+                default_selected=default_selected,
                 src=src,
                 default_target=default_target,
             )
@@ -296,13 +275,9 @@ def load_macos_pkg_components(project_yaml_path: Path) -> List[PublishComponent]
 def load_macos_pkg_components_from_manifest(manifest_path: Path) -> List[PublishComponent]:
     data = json_load_file(manifest_path)
     install_projects = data.get("install_projects", {}) or {}
-    platforms = data.get("platforms", {}) or {}
-    macos_cfg = platforms.get("macos", {}) or {}
-    component_keys = macos_cfg.get("component_keys", []) or []
+    component_keys = common.manifest_component_keys(manifest_path, "macos")
     if not isinstance(install_projects, dict):
         raise ValueError("manifest.install_projects must be a map")
-    if not isinstance(component_keys, list):
-        raise ValueError("manifest.platforms.macos.component_keys must be a list")
 
     components: List[PublishComponent] = []
     for key in component_keys:
@@ -316,10 +291,22 @@ def load_macos_pkg_components_from_manifest(manifest_path: Path) -> List[Publish
             PublishComponent(
                 key=_as_str(platform_cfg.get("key", key)),
                 name=_as_str(platform_cfg.get("name", project.get("name", key))).strip() or _as_str(key),
-                kind=_as_str(platform_cfg.get("kind", project.get("kind", "app"))).strip() or "app",
-                optional=bool(platform_cfg.get("optional", False)),
+                kind=_parse_component_type(
+                    platform_cfg.get("kind", project.get("kind", "app")),
+                    field_name=f"manifest.install_projects.{key}.platforms.macos.kind",
+                ),
+                optional=_parse_bool(
+                    platform_cfg.get("optional", False),
+                    field_name=f"manifest.install_projects.{key}.platforms.macos.optional",
+                ),
+                default_selected=_parse_bool(
+                    platform_cfg.get("default_selected", False),
+                    field_name=f"manifest.install_projects.{key}.platforms.macos.default_selected",
+                ),
                 src=_as_str(platform_cfg.get("src", "")).strip() or None,
-                default_target=_as_str(platform_cfg.get("default_target", "")).strip(),
+                default_target=_as_str(
+                    platform_cfg.get("default_target_raw") or platform_cfg.get("default_target", "")
+                ).strip(),
             )
         )
     return components
@@ -342,6 +329,10 @@ def _resolve_component_target(component: PublishComponent) -> Path:
     # NOTE: "~" will be expanded at build time, which is machine/user-specific.
     # Prefer absolute paths in bucky_project.yaml for reproducible packages.
     return Path(_expand_vars(component.default_target))
+
+
+def _resolve_component_pkg_target(component: PublishComponent) -> Path:
+    return _resolve_component_target(component)
 
 
 def _copy_dir_contents(src_dir: Path, dst_dir: Path) -> None:
@@ -374,9 +365,15 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         rel_s = rel_s.rstrip("/")
         s = _source_path_for(layout, rel, item_kind="module", source_root_override=src_root)
         d = dst_root / rel_s
+        if not s.exists():
+            raise FileNotFoundError(
+                f"module source missing: '{rel}' -> '{s}'. "
+                f"Please ensure it exists under the publish root ({src_root}), "
+                f"or remove it from the app modules list."
+            )
         if s.is_dir():
             _copytree_filtered(s, d)
-        elif s.exists():
+        else:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
 
@@ -418,46 +415,6 @@ def _xml_escape(s: str) -> str:
     )
 
 
-def generate_welcome_html(components: Iterable["PublishComponent"], out_path: Path) -> None:
-    rows = []
-    for c in components:
-        rows.append(
-            "<tr>"
-            f"<td><b>{_xml_escape(c.name)}</b></td>"
-            f"<td><code>{_xml_escape(c.default_target)}</code></td>"
-            f"<td>{'Optional' if c.optional else 'Required'}</td>"
-            "</tr>"
-        )
-
-    html = """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      body { font-family: -apple-system, system-ui, sans-serif; font-size: 13px; }
-      table { border-collapse: collapse; width: 100%%; }
-      th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; }
-      th { background: #f6f6f6; text-align: left; }
-      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    </style>
-  </head>
-  <body>
-    <p>This installer contains multiple components. Install locations are shown below.</p>
-    <p><b>Note:</b> <code>~</code> means the current user's home directory.</p>
-    <table>
-      <thead>
-        <tr><th>Component</th><th>Install location</th><th>Required</th></tr>
-      </thead>
-      <tbody>
-        %s
-      </tbody>
-    </table>
-  </body>
-</html>
-""" % ("\n        ".join(rows))
-    out_path.write_text(html + "\n", encoding="utf-8")
-
-
 def _write_distribution_xml(
     *,
     title: str,
@@ -473,51 +430,8 @@ def _write_distribution_xml(
     lines.append('<installer-gui-script minSpecVersion="2">')
     lines.append(f"  <title>{_xml_escape(title)}</title>")
     lines.append('  <options customize="always" />')
-    lines.append('  <installation-check script="installationCheck()"/>')
-    lines.append("  <script><![CDATA[")
-    lines.append("    function pathExists(path) {")
-    lines.append("        try {")
-    lines.append("            return system.files.fileExistsAtPath(path);")
-    lines.append("        } catch (error) {")
-    lines.append("            system.log('pathExists failed for ' + path + ': ' + error);")
-    lines.append("            return false;")
-    lines.append("        }")
-    lines.append("    }")
-    lines.append("    function bundleExists(path) {")
-    lines.append("        try {")
-    lines.append("            var bundle = system.files.bundleAtPath(path);")
-    lines.append("            return bundle != null;")
-    lines.append("        } catch (error) {")
-    lines.append("            system.log('bundleExists failed for ' + path + ': ' + error);")
-    lines.append("            return false;")
-    lines.append("        }")
-    lines.append("    }")
-    lines.append("    function installationCheckFailure(message) {")
-    lines.append("            my.result.title = 'Docker Required';")
-    lines.append("            my.result.message = message;")
-    lines.append("            my.result.type = 'Fatal';")
-    lines.append("            return false;")
-    lines.append("    }")
-    lines.append("    function installationCheck() {")
-    lines.append("        var orbStackApp = bundleExists('/Applications/OrbStack.app');")
-    lines.append("        var dockerCli =")
-    lines.append("            pathExists('/opt/homebrew/bin/docker') ||")
-    lines.append("            pathExists('/usr/local/bin/docker') ||")
-    lines.append("            pathExists('/usr/bin/docker');")
-    lines.append("        var dockerSocket = pathExists('/var/run/docker.sock');")
-    lines.append("        if (!orbStackApp && !dockerCli) {")
-    lines.append(
-        "            return installationCheckFailure('Please install and start OrbStack first.\\nDownload: https://orbstack.dev/download');"
-    )
-    lines.append("        }")
-    lines.append("        if (!dockerSocket) {")
-    lines.append(
-        "            return installationCheckFailure('OrbStack appears to be installed, but Docker is not ready yet.\\nPlease start OrbStack first.\\nDownload: https://orbstack.dev/download');"
-    )
-    lines.append("        }")
-    lines.append("        return true;")
-    lines.append("    }")
-    lines.append("  ]]></script>")
+    # Docker availability is checked by buckyos_preinstall, so BuckyOSApp-only
+    # or buckycli-only installs are not blocked by a global Distribution check.
 
     # Optional HTML screens (if present in resources).
     for tag, filename in (("welcome", "welcome.html"), ("license", "license.html"), ("conclusion", "conclusion.html")):
@@ -537,8 +451,7 @@ def _write_distribution_xml(
         # In practice, `required="true"` alone may still allow the checkbox to be toggled
         # in some Installer versions. We lock required choices by also setting enabled="false".
         required_attr = ' required="true" enabled="false"' if not comp.optional else ' required="false" enabled="true"'
-        # Optional components are selected by default but can be deselected.
-        start_selected_attr = ' start_selected="true"'
+        start_selected_attr = f' start_selected="{str(comp.default_selected).lower()}"'
         desc = f"Will be installed to: {comp.default_target}"
         desc_attr = f' description="{_xml_escape(desc)}" description-mime-type="text/plain"'
         lines.append(
@@ -563,7 +476,6 @@ def build_macos_distribution_pkg(
     manifest_path: Path | None,
     app_publish_dir: Path,
     out_dir: Path,
-    extra_bundles: Optional[List[Path]] = None,
     dry_run: bool = False,
 ) -> Path:
     components = (
@@ -571,25 +483,6 @@ def build_macos_distribution_pkg(
         if manifest_path is not None
         else load_macos_pkg_components(project_yaml_path)
     )
-
-    # Inject extra bundle apps (not defined in bucky_project.yaml).
-    extras: List[PublishComponent] = []
-    for p in (extra_bundles or []):
-        p = p.expanduser().resolve()
-        if p.suffix != ".app":
-            raise ValueError(f"extra bundle must be a .app directory: {p}")
-        extras.append(
-            PublishComponent(
-                key=f"bundle-{p.stem}",
-                name=p.stem,
-                kind="bundle",
-                optional=True,
-                src=str(p),
-                default_target=str(Path("/Applications") / p.name),
-            )
-        )
-
-    components = components + extras
 
     work_dir = TMP_INSTALL_DIR / "distbuild"
     roots_dir = work_dir / "roots"
@@ -599,7 +492,7 @@ def build_macos_distribution_pkg(
 
     # Keep project scripts in sync with bucky_project.yaml before building.
     # This updates only marked AUTO-GENERATED blocks in existing scripts.
-    if (not dry_run) and (not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS"))):
+    if not dry_run:
         sync_macos_scripts(project_yaml_path, resources_dir / "scripts", manifest_path=manifest_path)
 
     if work_dir.exists() and not dry_run:
@@ -618,27 +511,28 @@ def build_macos_distribution_pkg(
             alt = app_publish_dir / "publish" / comp.key
             if alt.exists():
                 src = alt
-        if not src.exists():
+        if not src.exists() and not dry_run:
             raise FileNotFoundError(f"component source not found: {comp.key} -> {src}")
 
-        target = _resolve_component_target(comp)
+        target = _resolve_component_pkg_target(comp)
         target_rel = str(target).lstrip("/")
         component_root = roots_dir / comp.key
         if dry_run:
             print(f"[dry-run] stage component '{comp.key}': {src} -> {target}")
+            if not src.exists():
+                print(f"[dry-run] source missing for component '{comp.key}' (will fail during actual build)")
         else:
             if component_root.exists():
                 shutil.rmtree(component_root, ignore_errors=True)
             component_root.mkdir(parents=True, exist_ok=True)
 
             dst = component_root / target_rel
-            if comp.key == "buckyos":
-                # Special staging to honor data_paths overwrite-install semantics.
+            if comp.kind == "app":
                 layout = resolve_app_layout(
-                    app_key="buckyos",
+                    app_key=comp.key,
                     project_yaml_path=project_yaml_path,
                     manifest_path=manifest_path,
-                    target_override="/opt/buckyos",
+                    target_override=str(target),
                 )
                 _stage_buckyos_app_root(src_root=src, dst_root=dst, layout=layout)
             else:
@@ -674,7 +568,7 @@ def build_macos_distribution_pkg(
         # Attach scripts for any component that provides templates in publish/macos_pkg/scripts/.
         templates_dir = resources_dir / "scripts"
         has_templates = any(
-            (templates_dir / f"{comp.key}_{name}").exists() for name in ("preinstall", "postinstall", "uninstall")
+            (templates_dir / f"{comp.key}_{name}").exists() for name in ("preinstall", "postinstall")
         )
         if has_templates:
             scripts_dir = work_dir / "scripts" / comp.key
@@ -701,7 +595,12 @@ def build_macos_distribution_pkg(
 
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
-    out_pkg = out_dir / f"buckyos-apple-{architecture}-{version}.pkg"
+    out_pkg = out_dir / common.package_filename(
+        platform_key="macos",
+        architecture=architecture,
+        version=version,
+        package_format="pkg",
+    )
 
     product_cmd = [
         "productbuild",
@@ -778,7 +677,7 @@ def _is_macho_candidate(rel_path: str, p: Path) -> bool:
         return False
 
 
-def _parse_macho_arches(file_output: str) -> Optional[List[str]]:
+def _parse_macho_arches(file_output: str) -> List[str] | None:
     """
     Parse `file` output and return arch list for Mach-O files, else None.
     """
@@ -814,7 +713,7 @@ def _pkg_payload_files(pkg_component_dir: Path) -> List[str]:
     return [line.strip() for line in out.decode("utf-8", errors="ignore").splitlines() if line.strip()]
 
 
-def _pkg_script_text(pkg_component_dir: Path, script_name: str) -> Optional[str]:
+def _pkg_script_text(pkg_component_dir: Path, script_name: str) -> str | None:
     script_path = pkg_component_dir / "Scripts" / script_name
     if not script_path.exists():
         return None
@@ -864,31 +763,10 @@ def verify_pkg(
                 root = None
 
             if root is not None:
-                install_check = root.find(".//installation-check")
-                if install_check is None:
-                    failures.append("missing installation-check in Distribution")
-                else:
-                    if install_check.attrib.get("script") != "installationCheck()":
-                        failures.append(
-                            "Distribution installation-check should call installationCheck()"
-                        )
-
                 script_elem = root.find(".//script")
                 script_text = "" if script_elem is None or script_elem.text is None else script_elem.text
-                required_dist_script_snippets = [
-                    "function installationCheck()",
-                    "system.files.fileExistsAtPath(path)",
-                    "system.files.bundleAtPath(path)",
-                    "bundleExists('/Applications/OrbStack.app')",
-                    "pathExists('/var/run/docker.sock')",
-                    "my.result.type = 'Fatal'",
-                    "my.result.title = 'Docker Required'",
-                    "Please install and start OrbStack first.",
-                    "https://orbstack.dev/download",
-                ]
-                for snippet in required_dist_script_snippets:
-                    if snippet not in script_text:
-                        failures.append(f"Distribution script missing Docker installation-check snippet: {snippet}")
+                if "/var/run/docker.sock" in script_text:
+                    failures.append("Distribution must not require /var/run/docker.sock")
 
                 # Collect choices
                 choices = {c.attrib.get("id", ""): c for c in root.findall(".//choice")}
@@ -907,6 +785,12 @@ def verify_pkg(
                     else:
                         if required not in (None, "false"):
                             failures.append(f"component {comp.key} should be required=false, got {required}")
+                    start_selected = elem.attrib.get("start_selected")
+                    expected_selected = str(comp.default_selected).lower()
+                    if start_selected != expected_selected:
+                        failures.append(
+                            f"component {comp.key} should have start_selected={expected_selected}, got {start_selected}"
+                        )
 
         # Verify component packages exist and scripts attachment.
         # Embedded component packages are named by sanitized key: {sanitize(key)}.pkg
@@ -919,7 +803,7 @@ def verify_pkg(
 
             scripts_dir = subpkg_dir / "Scripts"
             expects_scripts = any(
-                (templates_dir / f"{comp.key}_{name}").exists() for name in ("preinstall", "postinstall", "uninstall")
+                (templates_dir / f"{comp.key}_{name}").exists() for name in ("preinstall", "postinstall")
             )
             if expects_scripts and not scripts_dir.exists():
                 failures.append(f"component {comp.key} should have Scripts/ but it is missing")
@@ -930,7 +814,7 @@ def verify_pkg(
         buckyosapp_pkg_dir = expanded / "buckyosapp.pkg"
         if buckyosapp_pkg_dir.exists():
             app_payload_files = set(_pkg_payload_files(buckyosapp_pkg_dir))
-            app_prefix = "Library/Application Support/BuckyOS/BuckyOS.app/Contents/"
+            app_prefix = "Applications/BuckyOS.app/Contents/"
             if not any(p.lstrip("./").lstrip("/").startswith(app_prefix) for p in app_payload_files):
                 failures.append(f"BuckyOSApp payload missing expected app bundle content under '{app_prefix}'")
 
@@ -938,10 +822,10 @@ def verify_pkg(
             if postinstall_text is None:
                 failures.append("BuckyOSApp missing postinstall script")
             else:
-                if 'rm -rf "$DEST_APP"' not in postinstall_text:
-                    failures.append('BuckyOSApp postinstall should remove existing "$DEST_APP" before copy')
-                if 'ditto "$STAGE_APP" "$DEST_APP"' not in postinstall_text:
-                    failures.append('BuckyOSApp postinstall should copy "$STAGE_APP" to "$DEST_APP"')
+                if 'DEST_APP="/Applications/BuckyOS.app"' not in postinstall_text:
+                    failures.append("BuckyOSApp postinstall should target /Applications/BuckyOS.app")
+                if "lsregister" not in postinstall_text:
+                    failures.append("BuckyOSApp postinstall should refresh LaunchServices registration")
 
         # Verify data_paths payload staging for buckyos.
         buckyos_pkg_dir = expanded / "buckyos.pkg"
@@ -1121,8 +1005,7 @@ def _remove_path(path: Path, dry_run: bool) -> None:
 
 def _copy_path(src: Path, dst: Path, overwrite: bool, dry_run: bool) -> None:
     if not src.exists() and not src.is_symlink():
-        print(f"[warn] source missing, skip: {src}")
-        return
+        raise FileNotFoundError(f"declared source path missing: {src}")
     if dry_run:
         mode = "overwrite" if overwrite else "no-overwrite"
         print(f"[dry-run] copy({mode}): {src} -> {dst}")
@@ -1152,6 +1035,8 @@ def action_update(layout: AppLayout, dry_run: bool = False) -> None:
     for rel in layout.data_paths:
         src = _source_path_for(layout, rel, item_kind="data")
         dst = _safe_join(layout.target_rootfs, rel)
+        if not src.exists():
+            raise FileNotFoundError(f"declared data_paths source missing: {src}")
         if dst.exists() or dst.is_symlink():
             continue
         if _is_dir_path(rel):
@@ -1214,14 +1099,10 @@ def _materialize_pkg_scripts_from_templates(component_key: str, templates_dir: P
     for dst_name, src_path in mapping.items():
         if not src_path.exists():
             continue
+        if not src_path.is_file():
+            raise ValueError(f"macOS hook must be a regular file: {src_path}")
         shutil.copy2(src_path, out_scripts_dir / dst_name)
         (out_scripts_dir / dst_name).chmod(0o755)
-    # Also ship the uninstall helper (not auto-executed by Installer).
-    uninstall_tpl = templates_dir / f"{component_key}_uninstall"
-    if uninstall_tpl.exists():
-        shutil.copy2(uninstall_tpl, out_scripts_dir / "uninstall")
-        (out_scripts_dir / "uninstall").chmod(0o755)
-
 
 AUTO_BEGIN = "# BEGIN AUTO-GENERATED:"
 AUTO_END = "# END AUTO-GENERATED:"
@@ -1351,14 +1232,6 @@ def sync_macos_scripts(
             txt = _replace_marked_block(txt, "data_paths", _data_copy_lines(root_var, defaults_var, layout.data_paths), indent="  ")
             post.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
 
-        un = scripts_dir / f"{app_key}_uninstall"
-        if un.exists():
-            txt = un.read_text(encoding="utf-8", errors="ignore")
-            root_var = _detect_root_var(txt)
-            txt = _replace_marked_block(txt, "modules", _rm_lines(root_var, layout.module_paths))
-            txt = _replace_marked_block(txt, "clean_paths", _rm_lines(root_var, layout.clean_paths))
-            un.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
-
 
 def build_pkg(architecture: str, version: str, **kwargs: Any) -> None:
     # Kept for backward compatibility with legacy callers.
@@ -1374,6 +1247,8 @@ def _legacy_build_main(argv: List[str]) -> int:
         version = argv[2]
         if architecture == "x86_64":
             architecture = "amd64"
+        if architecture == "aarch64":
+            architecture = "arm64"
         build_pkg(
             architecture,
             version,
@@ -1397,7 +1272,7 @@ def main(argv: List[str]) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_build = sub.add_parser("build-pkg", help="Build macOS .pkg (distribution with component choices)")
-    p_build.add_argument("architecture", help="amd64|aarch64 (x86_64 accepted)")
+    p_build.add_argument("architecture", help="amd64|arm64 (x86_64/aarch64 accepted)")
     p_build.add_argument("version", help="Version string")
     p_build.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
     p_build.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
@@ -1411,20 +1286,9 @@ def main(argv: List[str]) -> int:
         default=str(Path.cwd() / "publish"),
         help='Output directory for the final .pkg (default: "./publish")',
     )
-    p_build.add_argument(
-        "--no-sync-scripts",
-        action="store_true",
-        help="Do not auto-sync publish/macos_pkg/scripts from bucky_project.yaml before build",
-    )
-    p_build.add_argument(
-        "--extra-bundle",
-        action="append",
-        default=[],
-        help="Extra .app bundle path to include as an optional component (repeatable)",
-    )
     p_build.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
 
-    p_sync = sub.add_parser("sync-macos-scripts", help="Regenerate macos_pkg preinstall/postinstall/uninstall from bucky_project.yaml")
+    p_sync = sub.add_parser("sync-macos-scripts", help="Regenerate macos_pkg preinstall/postinstall from bucky_project.yaml")
     p_sync.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
     p_sync.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
 
@@ -1447,9 +1311,8 @@ def main(argv: List[str]) -> int:
         arch = args.architecture
         if arch == "x86_64":
             arch = "amd64"
-        extra_bundles = [Path(p) for p in (args.extra_bundle or [])]
-        if args.no_sync_scripts:
-            os.environ["BUCKYOS_PKG_NO_SYNC_SCRIPTS"] = "1"
+        if arch == "aarch64":
+            arch = "arm64"
         out_pkg = build_macos_distribution_pkg(
             architecture=arch,
             version=args.version,
@@ -1457,7 +1320,6 @@ def main(argv: List[str]) -> int:
             manifest_path=Path(args.manifest).resolve() if args.manifest else None,
             app_publish_dir=Path(args.app_publish_dir),
             out_dir=Path(args.out_dir),
-            extra_bundles=extra_bundles,
             dry_run=bool(args.dry_run),
         )
         print(f"pkg built: {out_pkg}")

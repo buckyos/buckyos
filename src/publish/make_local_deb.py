@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
+
+import package_common as common
 
 try:
     import yaml  # type: ignore
@@ -38,31 +41,17 @@ PROJECT_YAML = SRC_DIR / "bucky_project.yaml"
 RESULT_ROOT_DIR = Path(os.environ.get("BUCKYOS_BUILD_ROOT", "/opt/buckyosci"))
 TMP_INSTALL_DIR = RESULT_ROOT_DIR / "deb-build"
 
-DEB_TEMPLATE_DIR = Path(__file__).resolve().parent / "deb_template"
+DEB_PKG_DIR = Path(__file__).resolve().parent / "deb_pkg"
 BUCKYOS_DEFAULTS_SUBDIR = ".buckyos_installer_defaults"
 IGNORED_STAGE_NAMES = {".DS_Store", "__pycache__"}
 
 
 def yaml_load_file(path: Path) -> Dict[str, Any]:
-    if yaml is None:
-        raise ImportError(
-            "PyYAML is required to read bucky_project.yaml. "
-            "Use your project venv (e.g. `./venv/bin/python ...`), "
-            "or install buckyos-devkit (recommended) / `pip install pyyaml`."
-        )
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError(f"YAML root must be a map: {path}")
-    return data
+    return common.yaml_load_file(path)
 
 
 def json_load_file(path: Path) -> Dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"JSON root must be a map: {path}")
-    return data
+    return common.json_load_file(path)
 
 
 def _expand_vars(s: str) -> str:
@@ -75,14 +64,7 @@ def _expand_vars(s: str) -> str:
 
 
 def _manifest_install_project(manifest_path: Path, app_key: str) -> Dict[str, Any]:
-    data = json_load_file(manifest_path)
-    install_projects = data.get("install_projects", {}) or {}
-    if not isinstance(install_projects, dict):
-        raise ValueError("manifest.install_projects must be a map")
-    project = install_projects.get(app_key)
-    if not isinstance(project, dict):
-        raise ValueError(f"manifest.install_projects.{app_key} missing or invalid")
-    return project
+    return common.manifest_install_project(manifest_path, app_key)
 
 
 @dataclass(frozen=True)
@@ -111,16 +93,13 @@ def _source_path_for(
     item_kind: str,
     source_root_override: Path | None = None,
 ) -> Path:
-    if source_root_override is not None:
-        override_rel = rel.strip().lstrip("/").rstrip("/")
-        candidate = source_root_override / override_rel
-        if candidate.exists():
-            return candidate
     mapping = layout.module_source_paths if item_kind == "module" else layout.data_source_paths
-    configured = mapping.get(rel)
-    if configured:
-        return Path(configured).resolve()
-    return _safe_join(layout.source_rootfs, rel)
+    return common.source_path_for(
+        source_rootfs=layout.source_rootfs,
+        rel=rel,
+        item_source_paths=mapping,
+        source_root_override=source_root_override,
+    )
 
 
 def load_app_layout(
@@ -130,7 +109,11 @@ def load_app_layout(
 ) -> AppLayout:
     data = yaml_load_file(project_yaml_path)
     apps = data.get("apps", {}) or {}
-    app_cfg = apps.get(app_key, {}) or {}
+    if not isinstance(apps, dict):
+        raise ValueError("apps must be a map")
+    app_cfg = apps.get(app_key)
+    if not isinstance(app_cfg, dict):
+        raise ValueError(f"apps.{app_key} missing or invalid")
 
     base_dir = str(data.get("base_dir", "."))
     project_base = (project_yaml_path.parent / base_dir).resolve()
@@ -143,9 +126,17 @@ def load_app_layout(
     target_rootfs = Path(_expand_vars(target_str)).resolve()
 
     modules = app_cfg.get("modules", {}) or {}
+    data_paths_raw = app_cfg.get("data_paths", []) or []
+    clean_paths_raw = app_cfg.get("clean_paths", []) or []
+    if not isinstance(modules, dict):
+        raise ValueError(f"apps.{app_key}.modules must be a map")
+    if not isinstance(data_paths_raw, list):
+        raise ValueError(f"apps.{app_key}.data_paths must be a list")
+    if not isinstance(clean_paths_raw, list):
+        raise ValueError(f"apps.{app_key}.clean_paths must be a list")
     module_paths = [str(p) for p in modules.values()]
-    data_paths = [str(p) for p in (app_cfg.get("data_paths", []) or [])]
-    clean_paths = [str(p) for p in (app_cfg.get("clean_paths", []) or [])]
+    data_paths = [str(p) for p in data_paths_raw]
+    clean_paths = [str(p) for p in clean_paths_raw]
 
     return AppLayout(
         source_rootfs=source_rootfs,
@@ -175,38 +166,14 @@ def load_app_layout_from_manifest(
     )
     target_str = target_override if target_override else default_target
 
-    def item_paths(name: str) -> List[str]:
-        items = app_cfg.get(name, []) or []
-        if not isinstance(items, list):
-            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
-        return [
-            str(item.get("raw_path") or item.get("target_dir_name") or "")
-            for item in items
-            if isinstance(item, dict) and str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
-        ]
-
-    def item_source_paths(name: str) -> Dict[str, str]:
-        items = app_cfg.get(name, []) or []
-        if not isinstance(items, list):
-            raise ValueError(f"manifest install project '{app_key}'.{name} must be a list")
-        out: Dict[str, str] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            rel = str(item.get("raw_path") or item.get("target_dir_name") or "").strip()
-            source_path = str(item.get("source_path") or "").strip()
-            if rel and source_path:
-                out[rel] = source_path
-        return out
-
     return AppLayout(
         source_rootfs=Path(source_rootfs_raw).resolve(),
         target_rootfs=Path(_expand_vars(target_str)).resolve(),
-        module_paths=item_paths("module_items"),
-        data_paths=item_paths("data_items"),
-        clean_paths=item_paths("clean_items"),
-        module_source_paths=item_source_paths("module_items"),
-        data_source_paths=item_source_paths("data_items"),
+        module_paths=common.item_paths(app_cfg, "module_items", project_key=app_key),
+        data_paths=common.item_paths(app_cfg, "data_items", project_key=app_key),
+        clean_paths=common.item_paths(app_cfg, "clean_items", project_key=app_key),
+        module_source_paths=common.item_source_paths(app_cfg, "module_items", project_key=app_key),
+        data_source_paths=common.item_source_paths(app_cfg, "data_items", project_key=app_key),
     )
 
 
@@ -244,9 +211,15 @@ def _stage_buckyos_app_root(*, src_root: Path, dst_root: Path, layout: AppLayout
         rel_s = rel_s.rstrip("/")
         s = _source_path_for(layout, rel, item_kind="module", source_root_override=src_root)
         d = dst_root / rel_s
+        if not s.exists():
+            raise FileNotFoundError(
+                f"module source missing: '{rel}' -> '{s}'. "
+                f"Please ensure it exists under the buckyos publish root ({src_root}), "
+                "or remove it from apps.buckyos.modules."
+            )
         if s.is_dir():
             _copytree_filtered(s, d)
-        elif s.exists():
+        else:
             d.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(s, d)
 
@@ -296,19 +269,15 @@ def _run(cmd: List[str], dry_run: bool, cwd: Path | None = None) -> None:
 
 
 def _normalize_deb_arch(arch: str) -> str:
-    if arch == "x86_64":
-        return "amd64"
-    if arch == "aarch64":
-        return "arm64"
-    return arch
+    return common.canonical_arch(arch)
 
 
-def _adjust_control_file(dest_dir: Path, new_version: str, architecture: str) -> None:
-    control_file = dest_dir / "DEBIAN" / "control"
+def _render_control_file(*, new_version: str, architecture: str) -> str:
+    control_file = DEB_PKG_DIR / "control"
     content = control_file.read_text(encoding="utf-8")
     content = content.replace("{{package version here}}", new_version)
     content = content.replace("{{architecture}}", _normalize_deb_arch(architecture))
-    control_file.write_text(content, encoding="utf-8")
+    return content
 
 
 AUTO_BEGIN = "# BEGIN AUTO-GENERATED:"
@@ -368,42 +337,114 @@ def _replace_marked_block(text: str, block_name: str, new_lines: List[str], inde
     return "\n".join(replaced).rstrip("\n") + "\n"
 
 
-def sync_deb_scripts(
+def _linux_component_keys(project_yaml_path: Path, manifest_path: Path | None) -> List[str]:
+    if manifest_path is not None:
+        return common.manifest_component_keys(manifest_path, "linux")
+
+    data = yaml_load_file(project_yaml_path)
+    publish = data.get("publish", {}) or {}
+    linux_pkg = (publish.get("linux_pkg", {}) or {}) if isinstance(publish, dict) else {}
+    apps = (linux_pkg.get("apps", {}) or {}) if isinstance(linux_pkg, dict) else {}
+    if isinstance(apps, dict) and apps:
+        return [str(key) for key in apps.keys()]
+    return ["buckyos"]
+
+
+def _discover_linux_hook(component_key: str, step: str) -> Path | None:
+    return common.discover_component_hook(
+        scripts_dirs=(DEB_PKG_DIR,),
+        component_key=component_key,
+        step=step,
+        extensions=("", ".sh"),
+    )
+
+
+def _render_linux_hook_text(*, hook_path: Path, component_key: str, step: str, layout: AppLayout) -> str:
+    hook_text = hook_path.read_text(encoding="utf-8", errors="ignore")
+    if component_key == "buckyos" and step == "preinstall":
+        hook_text = _replace_marked_block(hook_text, "modules", _rm_lines("$BUCKYOS_ROOT", layout.module_paths))
+    if component_key == "buckyos" and step == "postinstall":
+        hook_text = _replace_marked_block(
+            hook_text,
+            "data_paths",
+            _data_copy_lines("$BUCKYOS_ROOT", "$DEFAULTS_DIR", layout.data_paths),
+            indent="  ",
+        )
+    return hook_text.rstrip("\n")
+
+
+def _shell_hook_lines(component_keys: List[str], step: str, *, layout: AppLayout) -> List[str]:
+    out: List[str] = []
+    for component_key in component_keys:
+        hook_path = _discover_linux_hook(component_key, step)
+        if hook_path is None:
+            continue
+        hook_text = _render_linux_hook_text(
+            hook_path=hook_path,
+            component_key=component_key,
+            step=step,
+            layout=layout,
+        )
+        out.extend(
+            [
+                f'echo "[buckyos] running {component_key}_{step} hook"',
+                f"# BEGIN COMPONENT HOOK: {component_key}_{step} ({hook_path})",
+                "(",
+            ]
+        )
+        out.extend(hook_text.rstrip("\n").splitlines())
+        out.extend(
+            [
+                ")",
+                f"# END COMPONENT HOOK: {component_key}_{step}",
+            ]
+        )
+    return out or [":"]
+
+
+def _render_deb_maintainer_script(*, step: str, component_keys: List[str], layout: AppLayout) -> str:
+    block_name = f"component_{step}_hooks"
+    lines = [
+        "#!/bin/bash",
+        "set -e",
+        f"# BEGIN AUTO-GENERATED: {block_name}",
+        *_shell_hook_lines(component_keys, step, layout=layout),
+        f"# END AUTO-GENERATED: {block_name}",
+    ]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def materialize_deb_control_dir(
     project_yaml_path: Path,
-    scripts_dir: Path,
+    debian_dir: Path,
     *,
+    version: str,
+    architecture: str,
     manifest_path: Path | None = None,
 ) -> None:
     """
-    Update debian maintainer scripts based on bucky_project.yaml.
-
-    Only updates sections wrapped by markers:
-      # BEGIN AUTO-GENERATED: <name>
-      ...
-      # END AUTO-GENERATED: <name>
+    Render DEBIAN/control, preinst and postinst from deb_pkg sources.
     """
     layout = resolve_app_layout(
         app_key="buckyos",
         project_yaml_path=project_yaml_path,
         manifest_path=manifest_path,
     )
+    component_keys = _linux_component_keys(project_yaml_path, manifest_path)
 
-    preinst = scripts_dir / "preinst"
-    if preinst.exists():
-        txt = preinst.read_text(encoding="utf-8", errors="ignore")
-        txt = _replace_marked_block(txt, "modules", _rm_lines("$BUCKYOS_ROOT", layout.module_paths))
-        preinst.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
-
-    postinst = scripts_dir / "postinst"
-    if postinst.exists():
-        txt = postinst.read_text(encoding="utf-8", errors="ignore")
-        txt = _replace_marked_block(
-            txt,
-            "data_paths",
-            _data_copy_lines("$BUCKYOS_ROOT", "$DEFAULTS_DIR", layout.data_paths),
-            indent="  ",
-        )
-        postinst.write_text(txt.rstrip("\n") + "\n", encoding="utf-8")
+    debian_dir.mkdir(parents=True, exist_ok=True)
+    (debian_dir / "control").write_text(
+        _render_control_file(new_version=version, architecture=architecture),
+        encoding="utf-8",
+    )
+    (debian_dir / "preinst").write_text(
+        _render_deb_maintainer_script(step="preinstall", component_keys=component_keys, layout=layout),
+        encoding="utf-8",
+    )
+    (debian_dir / "postinst").write_text(
+        _render_deb_maintainer_script(step="postinstall", component_keys=component_keys, layout=layout),
+        encoding="utf-8",
+    )
 
 
 def _resolve_buckyos_src(
@@ -411,6 +452,7 @@ def _resolve_buckyos_src(
     source_override: Path | None,
     app_publish_dir: Path,
     layout: AppLayout,
+    allow_missing: bool = False,
 ) -> Path:
     candidates: List[Path] = []
     if source_override:
@@ -421,6 +463,8 @@ def _resolve_buckyos_src(
     for c in candidates:
         if c.exists():
             return c
+    if allow_missing:
+        return candidates[0]
     raise FileNotFoundError(
         "buckyos source rootfs not found. Tried: "
         + ", ".join(str(c) for c in candidates)
@@ -447,16 +491,16 @@ def build_deb(
         shutil.rmtree(deb_dir, ignore_errors=True)
 
     if dry_run:
-        print(f"[dry-run] copy template: {DEB_TEMPLATE_DIR} -> {deb_dir}")
+        print(f"[dry-run] materialize deb control scripts: {DEB_PKG_DIR} -> {deb_dir / 'DEBIAN'}")
     else:
-        shutil.copytree(DEB_TEMPLATE_DIR, deb_dir, dirs_exist_ok=True)
-
-    # Keep copied maintainer scripts in sync with bucky_project.yaml without mutating repo files.
-    if (not dry_run) and (not bool(os.environ.get("BUCKYOS_PKG_NO_SYNC_SCRIPTS"))):
-        sync_deb_scripts(project_yaml_path, deb_dir / "DEBIAN", manifest_path=manifest_path)
-
-    if not dry_run:
-        _adjust_control_file(deb_dir, version, deb_arch)
+        deb_dir.mkdir(parents=True, exist_ok=True)
+        materialize_deb_control_dir(
+            project_yaml_path,
+            deb_dir / "DEBIAN",
+            version=version,
+            architecture=deb_arch,
+            manifest_path=manifest_path,
+        )
 
     payload_root = deb_dir / "opt" / "buckyos"
     layout = resolve_app_layout(
@@ -465,7 +509,12 @@ def build_deb(
         manifest_path=manifest_path,
         target_override="/opt/buckyos",
     )
-    src_root = _resolve_buckyos_src(source_override=source_rootfs, app_publish_dir=app_publish_dir, layout=layout)
+    src_root = _resolve_buckyos_src(
+        source_override=source_rootfs,
+        app_publish_dir=app_publish_dir,
+        layout=layout,
+        allow_missing=dry_run,
+    )
 
     if dry_run:
         print(f"[dry-run] stage buckyos: {src_root} -> {payload_root}")
@@ -486,7 +535,12 @@ def build_deb(
                 script_path.chmod(0o755)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_deb = out_dir / f"buckyos-linux-{deb_arch}-{version}.deb"
+    out_deb = out_dir / common.package_filename(
+        platform_key="linux",
+        architecture=deb_arch,
+        version=version,
+        package_format="deb",
+    )
     build_cmd = [
         "dpkg-deb",
         "--build",
@@ -502,6 +556,133 @@ def build_deb(
     return out_deb
 
 
+LINUX_REQUIRED_DEPS = ("python3", "curl", "openssl", "psmisc")
+LINUX_DOCKER_DEPS = ("docker.io", "docker-ce", "moby-engine", "docker-engine")
+
+
+def _dependency_present(dep_text: str, dep_name: str) -> bool:
+    return re.search(rf"(^|[,\s|()]){re.escape(dep_name)}([,\s|()<>:=]|$)", dep_text) is not None
+
+
+def _verify_linux_dependencies(dep_text: str, failures: List[str], *, package_kind: str) -> None:
+    for dep_name in LINUX_REQUIRED_DEPS:
+        if not _dependency_present(dep_text, dep_name):
+            failures.append(f"{package_kind} dependency missing: {dep_name}")
+    if not any(_dependency_present(dep_text, dep_name) for dep_name in LINUX_DOCKER_DEPS):
+        failures.append(f"{package_kind} dependency missing Docker provider alternative")
+
+
+def _linux_payload_allowlist(layout: AppLayout, *, include_systemd_service: bool) -> tuple[List[str], List[str]]:
+    root = "opt/buckyos"
+    defaults_root = f"{root}/{BUCKYOS_DEFAULTS_SUBDIR}"
+    allowed_prefixes: List[str] = []
+    allowed_exact = ["opt", root, defaults_root]
+
+    def add_prefix(prefix: str) -> None:
+        allowed_prefixes.append(prefix)
+        parts = prefix.split("/")[:-1]
+        while parts:
+            allowed_exact.append("/".join(parts))
+            parts = parts[:-1]
+
+    for rel in layout.module_paths:
+        rel_s = common.normalize_item_relpath(rel)
+        if rel_s:
+            add_prefix(f"{root}/{rel_s}")
+    for rel in layout.data_paths:
+        rel_s = common.normalize_item_relpath(rel)
+        if rel_s:
+            add_prefix(f"{defaults_root}/{rel_s}")
+    if include_systemd_service:
+        allowed_exact.extend(
+            [
+                "etc",
+                "etc/systemd",
+                "etc/systemd/system",
+                "etc/systemd/system/buckyos.service",
+            ]
+        )
+    return allowed_prefixes, allowed_exact
+
+
+def _verify_linux_component_keys(component_keys: List[str], failures: List[str], *, package_kind: str) -> None:
+    if "buckyos" not in component_keys:
+        failures.append(f"{package_kind} manifest must include linux component 'buckyos'")
+    for forbidden_key in ("BuckyOSApp", "buckycli"):
+        if forbidden_key in component_keys:
+            failures.append(f"{package_kind} linux package must not expose desktop component '{forbidden_key}'")
+
+
+def _verify_linux_payload_contract(
+    *,
+    payload_paths: List[str],
+    layout: AppLayout,
+    failures: List[str],
+    package_kind: str,
+    include_systemd_service: bool,
+) -> None:
+    normalized_paths = [common.normalize_payload_path(path) for path in payload_paths]
+    allowed_prefixes, allowed_exact = _linux_payload_allowlist(
+        layout,
+        include_systemd_service=include_systemd_service,
+    )
+    unexpected = common.unexpected_payload_paths(
+        normalized_paths,
+        allowed_prefixes=allowed_prefixes,
+        allowed_exact=allowed_exact,
+    )
+    if unexpected:
+        shown = ", ".join(unexpected[:20])
+        suffix = f" ... and {len(unexpected) - 20} more" if len(unexpected) > 20 else ""
+        failures.append(f"{package_kind} payload contains undeclared paths: {shown}{suffix}")
+
+    for bad_name in ("BuckyOS.app", "buckyosapp.exe"):
+        if any(bad_name.lower() in path.lower() for path in normalized_paths):
+            failures.append(f"{package_kind} payload must not include desktop app artifact: {bad_name}")
+
+    root = "opt/buckyos"
+    defaults_root = f"{root}/{BUCKYOS_DEFAULTS_SUBDIR}"
+    for rel in layout.data_paths:
+        rel_s = common.normalize_item_relpath(rel)
+        if not rel_s:
+            continue
+        real_prefix = f"{root}/{rel_s}"
+        defaults_prefix = f"{defaults_root}/{rel_s}"
+        real_present = any(common.payload_path_matches_prefix(path, real_prefix) for path in normalized_paths)
+        defaults_present = any(common.payload_path_matches_prefix(path, defaults_prefix) for path in normalized_paths)
+        if real_present:
+            failures.append(f"data_paths '{rel}' should NOT be in {package_kind} payload at '{real_prefix}'")
+        if not defaults_present:
+            failures.append(f"data_paths '{rel}' missing from {package_kind} defaults payload at '{defaults_prefix}'")
+
+
+def _verify_expected_linux_hooks(
+    *,
+    script_text: str,
+    component_keys: List[str],
+    step: str,
+    failures: List[str],
+    package_kind: str,
+) -> None:
+    for component_key in component_keys:
+        hook_path = _discover_linux_hook(component_key, step)
+        if hook_path is None:
+            continue
+        marker = f"BEGIN COMPONENT HOOK: {component_key}_{step}"
+        if marker not in script_text:
+            failures.append(f"{package_kind} {step} script missing expected component hook: {hook_path}")
+
+
+def _deb_control_field(pkg_path: Path, field_name: str) -> str:
+    result = subprocess.run(
+        ["dpkg-deb", "-f", str(pkg_path), field_name],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def verify_pkg(
     *,
     pkg_path: Path,
@@ -512,8 +693,11 @@ def verify_pkg(
     Verify a built Debian package using dpkg-deb.
 
     Checks:
-    - File exists and is a valid .deb (basic extraction)
+    - File exists and is a valid .deb
+    - Metadata and dependency declarations match the Linux package contract
+    - Payload paths are declared by module/data items
     - data_paths are staged under defaults, not in real locations
+    - Maintainer scripts contain generated hook/defaults/service blocks
     """
     if not pkg_path.exists():
         print(f"VERIFY FAIL: .deb not found: {pkg_path}")
@@ -533,7 +717,24 @@ def verify_pkg(
         with tempfile.TemporaryDirectory(prefix="buckyos-deb-verify-") as td:
             work = Path(td)
             extract_dir = work / "extract"
+            control_dir = work / "control"
             extract_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                package_name = _deb_control_field(pkg_path, "Package")
+                version = _deb_control_field(pkg_path, "Version")
+                architecture = _deb_control_field(pkg_path, "Architecture")
+                depends = _deb_control_field(pkg_path, "Depends")
+                if package_name != "buckyos":
+                    failures.append(f"deb Package should be buckyos, got {package_name!r}")
+                if not version:
+                    failures.append("deb Version is empty")
+                if architecture not in ("amd64", "arm64"):
+                    failures.append(f"deb Architecture should be amd64|arm64, got {architecture!r}")
+                _verify_linux_dependencies(depends, failures, package_kind="deb")
+            except subprocess.CalledProcessError as e:
+                failures.append(f"dpkg-deb control field read failed: {e}")
+
             try:
                 subprocess.run(["dpkg-deb", "-x", str(pkg_path), str(extract_dir)], check=True)
             except subprocess.CalledProcessError as e:
@@ -545,19 +746,72 @@ def verify_pkg(
                     manifest_path=manifest_path,
                     target_override="/opt/buckyos",
                 )
-                root = extract_dir / "opt" / "buckyos"
-                defaults_root = root / BUCKYOS_DEFAULTS_SUBDIR
+                component_keys = _linux_component_keys(project_yaml_path, manifest_path)
+                _verify_linux_component_keys(component_keys, failures, package_kind="deb")
+                payload_paths = [path.relative_to(extract_dir).as_posix() for path in extract_dir.rglob("*")]
+                _verify_linux_payload_contract(
+                    payload_paths=payload_paths,
+                    layout=layout,
+                    failures=failures,
+                    package_kind="deb",
+                    include_systemd_service=False,
+                )
 
-                for rel in layout.data_paths:
-                    rel_s = rel.strip().lstrip("/").rstrip("/")
-                    if not rel_s:
-                        continue
-                    real_path = root / rel_s
-                    defaults_path = defaults_root / rel_s
-                    if real_path.exists():
-                        failures.append(f"data_paths '{rel}' should NOT be in payload at '{real_path}'")
-                    if not defaults_path.exists():
-                        failures.append(f"data_paths '{rel}' missing from defaults payload at '{defaults_path}'")
+            try:
+                subprocess.run(["dpkg-deb", "-e", str(pkg_path), str(control_dir)], check=True)
+            except subprocess.CalledProcessError as e:
+                failures.append(f"dpkg-deb control extract failed: {e}")
+            else:
+                component_keys = _linux_component_keys(project_yaml_path, manifest_path)
+                preinst = control_dir / "preinst"
+                postinst = control_dir / "postinst"
+                if not preinst.exists():
+                    failures.append("deb control missing preinst")
+                    preinst_text = ""
+                else:
+                    preinst_text = preinst.read_text(encoding="utf-8", errors="ignore")
+                if not postinst.exists():
+                    failures.append("deb control missing postinst")
+                    postinst_text = ""
+                else:
+                    postinst_text = postinst.read_text(encoding="utf-8", errors="ignore")
+
+                required_preinst_snippets = [
+                    "# BEGIN AUTO-GENERATED: component_preinstall_hooks",
+                    'rm -rf "$BUCKYOS_ROOT/bin/"',
+                    "systemctl stop buckyos.service >/dev/null 2>&1 || true",
+                    "# BEGIN AUTO-GENERATED: modules",
+                ]
+                for snippet in required_preinst_snippets:
+                    if snippet not in preinst_text:
+                        failures.append(f"deb preinst missing required snippet: {snippet}")
+                _verify_expected_linux_hooks(
+                    script_text=preinst_text,
+                    component_keys=component_keys,
+                    step="preinstall",
+                    failures=failures,
+                    package_kind="deb",
+                )
+
+                required_postinst_snippets = [
+                    "# BEGIN AUTO-GENERATED: data_paths",
+                    "# BEGIN AUTO-GENERATED: component_postinstall_hooks",
+                    "ExecStart=/opt/buckyos/bin/node-daemon/node_daemon --enable_active",
+                    "systemctl stop buckyos.service >/dev/null 2>&1 || true",
+                    "systemctl daemon-reload",
+                    "systemctl enable buckyos.service",
+                    "systemctl start buckyos.service",
+                ]
+                for snippet in required_postinst_snippets:
+                    if snippet not in postinst_text:
+                        failures.append(f"deb postinst missing required snippet: {snippet}")
+                _verify_expected_linux_hooks(
+                    script_text=postinst_text,
+                    component_keys=component_keys,
+                    step="postinstall",
+                    failures=failures,
+                    package_kind="deb",
+                )
 
     # Basic size sanity check
     file_size = pkg_path.stat().st_size
@@ -600,8 +854,7 @@ def _remove_path(path: Path, dry_run: bool) -> None:
 
 def _copy_path(src: Path, dst: Path, overwrite: bool, dry_run: bool) -> None:
     if not src.exists() and not src.is_symlink():
-        print(f"[warn] source missing, skip: {src}")
-        return
+        raise FileNotFoundError(f"declared source path missing: {src}")
     if dry_run:
         mode = "overwrite" if overwrite else "no-overwrite"
         print(f"[dry-run] copy({mode}): {src} -> {dst}")
@@ -631,6 +884,8 @@ def action_update(layout: AppLayout, dry_run: bool = False) -> None:
     for rel in layout.data_paths:
         src = _source_path_for(layout, rel, item_kind="data")
         dst = _safe_join(layout.target_rootfs, rel)
+        if not src.exists():
+            raise FileNotFoundError(f"declared data_paths source missing: {src}")
         if dst.exists() or dst.is_symlink():
             continue
         if _is_dir_path(rel):
@@ -674,7 +929,7 @@ def action_uninstall(layout: AppLayout, dry_run: bool = False) -> None:
 def _legacy_build_main(argv: List[str]) -> int:
     # Backward compatibility:
     #   python make_local_deb.py <architecture> <version>
-    subcommands = {"build-pkg", "install", "update", "uninstall"}
+    subcommands = {"build-pkg", "render-control", "install", "update", "uninstall"}
     if len(argv) == 3 and (argv[1] not in subcommands) and (not argv[1].startswith("-")):
         architecture = argv[1]
         version = argv[2]
@@ -718,16 +973,22 @@ def main(argv: List[str]) -> int:
         help='Output directory for the final .deb (default: "./publish")',
     )
     p_build.add_argument(
-        "--no-sync-scripts",
-        action="store_true",
-        help="Do not auto-sync deb_template/DEBIAN scripts from bucky_project.yaml before build",
-    )
-    p_build.add_argument(
         "--source-rootfs",
         default=None,
         help="Override source rootfs path for buckyos payload",
     )
     p_build.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
+
+    p_render = sub.add_parser("render-control", help="Render final DEBIAN/control, preinst and postinst files")
+    p_render.add_argument("architecture", help="amd64|arm64 (x86_64 accepted)")
+    p_render.add_argument("version", help="Version string")
+    p_render.add_argument("--project", default=str(PROJECT_YAML), help="Path to bucky_project.yaml")
+    p_render.add_argument("--manifest", default=None, help="Path to generated project manifest JSON")
+    p_render.add_argument(
+        "--out-dir",
+        required=True,
+        help="Directory to write control, preinst and postinst into",
+    )
 
     p_verify = sub.add_parser("verify-pkg", help="Verify a built Debian .deb offline (no install)")
     p_verify.add_argument("pkg", help="Path to .deb")
@@ -748,8 +1009,6 @@ def main(argv: List[str]) -> int:
         arch = args.architecture
         if arch == "x86_64":
             arch = "amd64"
-        if args.no_sync_scripts:
-            os.environ["BUCKYOS_PKG_NO_SYNC_SCRIPTS"] = "1"
         out_deb = build_deb(
             architecture=arch,
             version=args.version,
@@ -761,6 +1020,25 @@ def main(argv: List[str]) -> int:
             dry_run=bool(args.dry_run),
         )
         print(f"deb built: {out_deb}")
+        return 0
+
+    if args.cmd == "render-control":
+        arch = args.architecture
+        if arch == "x86_64":
+            arch = "amd64"
+        out_dir = Path(args.out_dir)
+        materialize_deb_control_dir(
+            Path(args.project),
+            out_dir,
+            version=args.version,
+            architecture=arch,
+            manifest_path=Path(args.manifest).resolve() if args.manifest else None,
+        )
+        for script_name in ("preinst", "postinst"):
+            script_path = out_dir / script_name
+            if script_path.exists():
+                script_path.chmod(0o755)
+        print(f"deb control files rendered: {out_dir}")
         return 0
 
     if args.cmd == "verify-pkg":

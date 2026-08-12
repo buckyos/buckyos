@@ -148,5 +148,16 @@
     "error_copy_failed": "复制失败，请手动复制。",
     "wallet_device_owner": "设备将属于: {{user_name}} {{public_key}}",
     "dns_config_txt_tips":"请在激活前添加下面3条TXT记录到您的域名",
-    "language_label": "语言"
+    "language_label": "语言",
+    "region_probe_title": "网络区域",
+    "region_preference_label": "区域",
+    "region_auto_option": "自动（推荐）",
+    "region_probe_detecting": "正在探测距离更近的区域…",
+    "region_probe_selected": "当前探测区域：{{region}}",
+    "region_manual_status": "当前使用手工选择的区域：{{region}}",
+    "region_probe_unavailable": "区域探测暂不可用，注册将继续并由服务器自动选择。",
+    "region_probe_low_confidence": "置信度较低。",
+    "region_probe_cached": "已使用缓存结果。",
+    "region_server_fallback": "由服务器自动选择",
+    "retry_button": "重试"
 }

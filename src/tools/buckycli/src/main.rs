@@ -2,6 +2,7 @@ mod app;
 mod did;
 mod loader;
 mod ndn;
+mod node_cmd;
 #[allow(unused_mut, dead_code, unused_variables)]
 mod package_cmd;
 mod sys_config;
@@ -31,6 +32,7 @@ fn is_local_cmd(cmd_name: &str) -> bool {
         "register_user_to_sn",
         "build_did_docs",
         "load",
+        "node",
     ];
     LOCAL_COMMANDS.contains(&cmd_name)
 }
@@ -50,6 +52,7 @@ async fn main() -> Result<(), String> {
                 .required(false),
         )
         .subcommand(Command::new("version").about("buckycli version"))
+        .subcommand(node_cmd::build_node_command())
         .subcommand(
             Command::new("pub_pkg")
                 .about("publish packed raw package to local repo")
@@ -473,6 +476,15 @@ oods look like this 'ood1,ood2'.")
     let subcommand = matches.subcommand();
 
     let cmd_name = subcommand.clone().unwrap().0;
+
+    // `node` 子命令必须在 BuckyOS 完全不可用时也能工作（替代 start.py/stop.py/check.py），
+    // 因此在 init_buckyos_api_runtime 之前直接派发，不依赖 BUCKYOS_ROOT/etc 配置。
+    if cmd_name == "node" {
+        if let Some(("node", node_matches)) = subcommand {
+            return node_cmd::handle_node_command(node_matches).await;
+        }
+    }
+
     let mut runtime = init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient)
         .await
         .map_err(|e| {

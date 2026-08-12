@@ -1,0 +1,689 @@
+//! Behavior TOML config — per doc/opendan/Agent配置改进.md §5.
+//!
+//! A behavior lives at `<agent_root>/behaviors/<name>.toml`. The runtime
+//! reads it on session start and on every `switch_behavior(...)` outcome
+//! and translates the fields into an `LLMContextRequest` + `LLMContextDeps`
+//! pair consumable by the waist (`llm_context`).
+//!
+//! New schema groups fields into:
+//!   * `[meta]` — name / objective
+//!   * `[prompt]` — parser choice + per-event prompt templates
+//!     (`on_init` / `on_behavior_switch` / `on_behavior_step_ob` /
+//!     `on_input_event`) + output spec
+//!   * `[capabilities]` — tool_whitelist / approval_required / tool_plan
+//!     (v0 placeholder; §5.3 — will be redone in beta2.3 alongside skill
+//!     bundle / function-call tool unification)
+//!   * `[budget]` — round / error / token / wallclock caps
+//!   * `[model]` — preferred / fallbacks / temperature / provider options
+//!   * `[on_xxx]` — optional bypass switches (see [`HookPoint`])
+//!
+//! `mode` / `switch_mode` / `renderer` / `parser_strict` / `renderer_cfg`
+//! from the pre-beta2.2 schema are gone — `loop_mode` and `switch_mode`
+//! moved to the session class (`[session.<class>]` in `agent.toml`);
+//! renderer details default to runtime built-ins.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use llm_context::{
+    behavior_loop::{LLMResultParser, StepRenderer},
+    request::{
+        BudgetSpec, ErrorPolicy, HumanPolicy, ModelPolicy, OutputSpec, ToolMode, ToolPolicy,
+    },
+    step_record::XmlStepRenderer,
+    xml_behavior::XmlBehaviorParser,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::agent_config::LoopMode;
+use crate::hook_point::HookPoint;
+
+// ─── `[meta]` ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetaCfg {
+    pub name: String,
+    pub objective: String,
+}
+
+// ─── `[prompt]` ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum BehaviorOutput {
+    Text,
+    Json {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<serde_json::Value>,
+        #[serde(default)]
+        strict: bool,
+    },
+}
+
+impl Default for BehaviorOutput {
+    fn default() -> Self {
+        BehaviorOutput::Text
+    }
+}
+
+impl BehaviorOutput {
+    pub fn to_output_spec(&self) -> OutputSpec {
+        match self {
+            BehaviorOutput::Text => OutputSpec::Text,
+            BehaviorOutput::Json { schema, strict } => OutputSpec::Json {
+                schema: schema.clone(),
+                strict: *strict,
+            },
+        }
+    }
+}
+
+/// Prompt templates per "renders the prompt" event.
+///
+/// `on_init` / `on_behavior_switch` / `on_behavior_step_ob` / `on_wakeup` are rendered through
+/// `llm_context::PromptRenderEngine` (upon
+/// `{{ var }}` placeholders, `__VAR__` / `__ENV__` / `__INCLUDE__`
+/// directives) with the Phase-1 variable contract from
+/// `doc/opendan/Agent Enviroment.md` §15.1. `on_input_event` still uses the
+/// dynamic-payload-aware `{var}` substitution in `render_event_template` —
+/// this is a separate per-event format engine and is not affected by the
+/// system-prompt rendering pipeline.
+///
+/// **Per-event hook names map onto the actual prompt-construction sites
+/// the runtime has today**:
+///
+/// | template          | callsite                              | empty ⇒              |
+/// |-------------------|---------------------------------------|---------------------|
+/// | `on_init`              | `render_system_messages` (System body)| `role.md` + `self.md` + objective + readme fallback |
+/// | `on_behavior_switch`   | after `next_behavior` switch          | no synthetic input |
+/// | `on_behavior_step_ob`  | after behavior-loop action results    | default `<<last_step_action_results>>` user message |
+/// | `on_wakeup`            | idle / waiting pending-input wakeup   | built-in message / event formatting |
+/// | `on_input_event`  | behavior-wide event-format fallback   | falls through to subscription template, then to `format_event_for_turn_with_subscriptions` default |
+///
+/// Available variables:
+///   * `on_init` (upon syntax): full Phase-1 contract —
+///     `{{ session.id }}`, `{{ session.title }}`, `{{ behavior.name }}`,
+///     `{{ behavior.objective }}`, `{{ workspace.id }}`,
+///     `{{ paths.agent_root }}`, `{{ paths.session_root }}`,
+///     `{{ runtime.clock_unix_ms }}`, `{{ result_protocol }}`, … See `doc/opendan/Agent Enviroment.md`
+///     §15.1 for the complete set. Render-time extras: `{{ role_md }}`,
+///     `{{ self_md }}` (pre-read from `agent_root/role.md` and
+///     `agent_root/self.md`).
+///   * `on_input_event`: `{event_id}`, `{event_data}` plus any top-level
+///     scalar field of the JSON payload as `{<key>}`
+///   * `on_behavior_step_ob` (upon syntax): full Phase-1 contract plus render-time
+///     extras `{{ step }}`, `{{ step_result.default_user_message }}`,
+///     `{{ pending_inputs }}`, and `{{ pending_input_text }}`.
+///   * `on_wakeup` (upon syntax): full Phase-1 contract, with `input.*`
+///     populated from the driver-selected pending input.
+///
+/// `__INCLUDE__` path rules for `on_init`:
+///   * `/role.md` resolves from AgentRootFS, e.g. `<agent_root>/role.md`.
+///   * `./step_record_rule.inc` resolves relative to the current behavior
+///     TOML file; nested relative includes resolve relative to the included
+///     file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PromptCfg {
+    /// XML parser variant. v0 only accepts `"xml"`.
+    pub parser: String,
+    /// Strict-parse toggle for malformed `<actions>` blocks. Default
+    /// `false` ⇒ runtime salvages partials and continues.
+    pub parser_strict: bool,
+    pub on_init: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behavior_switch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behavior_step_ob: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_wakeup: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_input_event: Option<String>,
+    pub output: BehaviorOutput,
+}
+
+impl Default for PromptCfg {
+    fn default() -> Self {
+        Self {
+            parser: "xml".to_string(),
+            parser_strict: false,
+            on_init: String::new(),
+            on_behavior_switch: None,
+            on_behavior_step_ob: None,
+            on_wakeup: None,
+            on_input_event: None,
+            output: BehaviorOutput::Text,
+        }
+    }
+}
+
+// ─── `[capabilities]` (v0 placeholder — see doc §5.3) ──────────────────────
+
+/// Two invocation surfaces, two whitelists (beta2.2 split):
+///
+/// * `tool_whitelist` — provider-native function calls exposed by
+///   `ToolManager`. The waist only advertises listed names to the model
+///   and rejects any call back outside the list. **Empty ⇒ no tools at
+///   all.** This is the breaking-change semantic introduced in beta2.2;
+///   previous behavior (empty ⇒ "all tools") is gone, since the common
+///   behavior-loop case wants to disable provider tools entirely.
+///
+/// * `action_whitelist` — XML behavior-loop actions (`exec_bash`,
+///   `write_file`, `edit_file`, `read`, `sendmsg`, `subscribe_event`,
+///   `unsubscribe_event`). The parser will still extract any of the
+///   hardcoded tag set, but the policy gate drops anything not listed
+///   here. **Empty ⇒ XML actions disabled.** Prompt authors should keep
+///   the whitelist in sync with the action surface they expose in the
+///   prompt — listing an action here without prompting for it is harmless,
+///   but the reverse leaves the LLM emitting calls that get rejected.
+///
+/// * `approval_required` — applies to the post-parse invocation name on
+///   both surfaces (tools and actions). A name is matched after the
+///   waist/parser normalize it to the dispatch identifier.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CapabilitiesCfg {
+    pub tool_whitelist: Vec<String>,
+    pub action_whitelist: Vec<String>,
+    pub approval_required: Vec<String>,
+    pub disable_capabilities: Vec<String>,
+    /// Optional tool plan name (§9.2) — resolves to
+    /// `<agent_root>/tool_plans/<name>.toml`. Empty ⇒ no tombstones.
+    pub tool_plan: String,
+}
+
+// ─── `[budget]` ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BudgetCfg {
+    pub max_rounds: u32,
+    pub max_consecutive_errors: u32,
+    pub max_total_tokens: Option<u32>,
+    pub max_completion_tokens: Option<u32>,
+    pub max_wallclock_ms: Option<u64>,
+    pub max_cost_units: Option<u32>,
+}
+
+impl Default for BudgetCfg {
+    fn default() -> Self {
+        Self {
+            max_rounds: 16,
+            max_consecutive_errors: 3,
+            max_total_tokens: None,
+            max_completion_tokens: None,
+            max_wallclock_ms: None,
+            max_cost_units: None,
+        }
+    }
+}
+
+impl BudgetCfg {
+    pub fn to_budget_spec(&self) -> BudgetSpec {
+        BudgetSpec {
+            max_total_tokens: self.max_total_tokens,
+            max_completion_tokens: self.max_completion_tokens,
+            max_wallclock_ms: self.max_wallclock_ms,
+            max_cost_units: self.max_cost_units,
+            ..Default::default()
+        }
+    }
+}
+
+// ─── `[model]` ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ModelCfg {
+    pub preferred: String,
+    pub fallbacks: Vec<String>,
+    pub temperature: Option<f32>,
+    pub max_completion_tokens: Option<u32>,
+    pub provider_options: Option<serde_json::Value>,
+}
+
+impl ModelCfg {
+    pub fn to_model_policy(&self) -> ModelPolicy {
+        ModelPolicy {
+            preferred: self.preferred.clone(),
+            fallbacks: self.fallbacks.clone(),
+            temperature: self.temperature,
+            max_completion_tokens: self.max_completion_tokens,
+            provider_options: self.provider_options.clone(),
+        }
+    }
+}
+
+// ─── Behavior root ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BehaviorCfg {
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
+    pub meta: MetaCfg,
+    pub prompt: PromptCfg,
+    pub capabilities: CapabilitiesCfg,
+    pub budget: BudgetCfg,
+    pub model: ModelCfg,
+    /// Bypass switches — written ⇒ enable; omitted ⇒ runtime default.
+    /// See [`behavior_hooks`](crate::behavior_hooks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_context_limit_reached: Option<HookPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_llm_message_compress: Option<HookPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_provider_failed: Option<HookPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_interrupt_graceful: Option<HookPoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_interrupt_discard: Option<HookPoint>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BehaviorCfgError {
+    #[error("read {path}: {err}")]
+    Io { path: String, err: std::io::Error },
+    #[error("parse {path}: {err}")]
+    Parse { path: String, err: toml::de::Error },
+    #[error("invalid behavior `{name}`: {reason}")]
+    Invalid { name: String, reason: String },
+}
+
+impl BehaviorCfg {
+    pub fn from_toml_str(s: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+
+    pub fn load_from_file(path: &Path) -> Result<Self, BehaviorCfgError> {
+        let bytes = std::fs::read_to_string(path).map_err(|err| BehaviorCfgError::Io {
+            path: path.display().to_string(),
+            err,
+        })?;
+        let mut cfg: BehaviorCfg =
+            toml::from_str(&bytes).map_err(|err| BehaviorCfgError::Parse {
+                path: path.display().to_string(),
+                err,
+            })?;
+        cfg.source_path = Some(path.to_path_buf());
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    pub fn validate(&self) -> Result<(), BehaviorCfgError> {
+        if self.meta.name.trim().is_empty() {
+            return Err(BehaviorCfgError::Invalid {
+                name: self.meta.name.clone(),
+                reason: "meta.name must not be empty".to_string(),
+            });
+        }
+        match self.prompt.parser.as_str() {
+            "xml" | "agent" => {}
+            other => {
+                return Err(BehaviorCfgError::Invalid {
+                    name: self.meta.name.clone(),
+                    reason: format!("unknown parser `{other}` (expected `xml` or `agent`)"),
+                });
+            }
+        }
+        crate::behavior_hooks::resolve_llm_message_compress(self.on_llm_message_compress.as_ref())
+            .map_err(|err| BehaviorCfgError::Invalid {
+                name: self.meta.name.clone(),
+                reason: err.to_string(),
+            })?;
+        Ok(())
+    }
+
+    /// Convenience accessor — kept for callers that still want a single
+    /// `name` reference rather than `cfg.meta.name`.
+    pub fn name(&self) -> &str {
+        &self.meta.name
+    }
+
+    /// Convenience accessor mirroring [`Self::name`].
+    pub fn objective(&self) -> &str {
+        &self.meta.objective
+    }
+
+    pub fn to_tool_policy(&self) -> ToolPolicy {
+        let tool_mode = if self.capabilities.tool_whitelist.is_empty() {
+            ToolMode::None
+        } else {
+            ToolMode::Whitelist
+        };
+        let action_mode = if self.capabilities.action_whitelist.is_empty() {
+            ToolMode::None
+        } else {
+            ToolMode::Whitelist
+        };
+        ToolPolicy {
+            mode: tool_mode,
+            whitelist: self.capabilities.tool_whitelist.clone(),
+            action_mode,
+            action_whitelist: self.capabilities.action_whitelist.clone(),
+            disable_capabilities: self.capabilities.disable_capabilities.clone(),
+            max_rounds: self.budget.max_rounds,
+            ..Default::default()
+        }
+    }
+
+    pub fn to_human_policy(&self) -> HumanPolicy {
+        HumanPolicy {
+            approval_required: self.capabilities.approval_required.clone(),
+        }
+    }
+
+    pub fn to_error_policy(&self) -> ErrorPolicy {
+        ErrorPolicy {
+            max_consecutive_errors: self.budget.max_consecutive_errors,
+        }
+    }
+
+    pub fn to_budget_spec(&self) -> BudgetSpec {
+        self.budget.to_budget_spec()
+    }
+
+    pub fn to_output_spec(&self) -> OutputSpec {
+        self.prompt.output.to_output_spec()
+    }
+
+    pub fn to_model_policy(&self) -> ModelPolicy {
+        self.model.to_model_policy()
+    }
+
+    /// Build the parser+renderer Arc-pair to plug into `LLMContextDeps`.
+    /// The loop mode comes from the session class, not the behavior — pass
+    /// `LoopMode::Agent` to get `None` (traditional loop, no parser).
+    pub fn build_parser_and_renderer(
+        &self,
+        loop_mode: LoopMode,
+    ) -> Option<(Arc<dyn LLMResultParser>, Arc<dyn StepRenderer>)> {
+        if !matches!(loop_mode, LoopMode::Behavior) {
+            return None;
+        }
+        let parser: Arc<dyn LLMResultParser> = match self.prompt.parser.as_str() {
+            "xml" => Arc::new(XmlBehaviorParser {
+                strict: self.prompt.parser_strict,
+            }),
+            _ => return None,
+        };
+        let renderer: Arc<dyn StepRenderer> = Arc::new(XmlStepRenderer::new());
+        Some((parser, renderer))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_parse() {
+        let toml_src = r#"
+            [meta]
+            name = "ui_default"
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        assert_eq!(cfg.name(), "ui_default");
+        assert_eq!(cfg.prompt.parser, "xml");
+        // beta2.2: empty whitelists ⇒ both surfaces disabled.
+        let pol = cfg.to_tool_policy();
+        assert!(matches!(pol.mode, ToolMode::None));
+        assert!(matches!(pol.action_mode, ToolMode::None));
+        assert_eq!(cfg.budget.max_rounds, 16);
+    }
+
+    #[test]
+    fn whitelist_drives_tool_mode() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [capabilities]
+            tool_whitelist = ["try_create_worksession", "forward_msg"]
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        let pol = cfg.to_tool_policy();
+        assert!(matches!(pol.mode, ToolMode::Whitelist));
+        assert_eq!(pol.whitelist, vec!["try_create_worksession", "forward_msg"]);
+        // action surface independently disabled when its list is empty.
+        assert!(matches!(pol.action_mode, ToolMode::None));
+        assert!(pol.action_whitelist.is_empty());
+    }
+
+    #[test]
+    fn action_whitelist_drives_action_mode() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [capabilities]
+            action_whitelist = ["read", "exec_bash"]
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        let pol = cfg.to_tool_policy();
+        // Tool surface untouched ⇒ disabled.
+        assert!(matches!(pol.mode, ToolMode::None));
+        assert!(matches!(pol.action_mode, ToolMode::Whitelist));
+        assert_eq!(pol.action_whitelist, vec!["read", "exec_bash"]);
+    }
+
+    #[test]
+    fn both_surfaces_can_coexist() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [capabilities]
+            tool_whitelist = ["try_create_worksession"]
+            action_whitelist = ["read"]
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        let pol = cfg.to_tool_policy();
+        assert!(matches!(pol.mode, ToolMode::Whitelist));
+        assert!(matches!(pol.action_mode, ToolMode::Whitelist));
+        assert_eq!(pol.whitelist, vec!["try_create_worksession"]);
+        assert_eq!(pol.action_whitelist, vec!["read"]);
+    }
+
+    #[test]
+    fn disable_capabilities_round_trip_to_tool_policy() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [capabilities]
+            disable_capabilities = ["web_search"]
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        let pol = cfg.to_tool_policy();
+        assert_eq!(pol.disable_capabilities, vec!["web_search"]);
+    }
+
+    #[test]
+    fn reject_empty_name() {
+        let toml_src = r#"
+            [meta]
+            name = ""
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn reject_unknown_parser() {
+        let toml_src = r#"
+            [meta]
+            name = "bad"
+            [prompt]
+            parser = "yaml"
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn behavior_loop_mode_builds_xml_parser() {
+        let cfg = BehaviorCfg {
+            meta: MetaCfg {
+                name: "x".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(cfg.build_parser_and_renderer(LoopMode::Behavior).is_some());
+    }
+
+    #[test]
+    fn agent_loop_mode_no_parser() {
+        let cfg = BehaviorCfg {
+            meta: MetaCfg {
+                name: "x".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(cfg.build_parser_and_renderer(LoopMode::Agent).is_none());
+    }
+
+    #[test]
+    fn on_xxx_round_trip() {
+        let toml_src = r#"
+            [meta]
+            name = "x"
+
+            [on_context_limit_reached]
+            mode = "compress_then_continue"
+
+            [on_llm_message_compress]
+            mode = "context_window_ratio"
+            trigger_ratio = 0.8
+            target_ratio = 0.5
+
+            [on_provider_failed]
+            mode = "fallback_behavior"
+            target = "safe_mode"
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.on_context_limit_reached.as_ref().unwrap().mode,
+            "compress_then_continue"
+        );
+        assert_eq!(
+            cfg.on_llm_message_compress.as_ref().unwrap().mode,
+            "context_window_ratio"
+        );
+        assert_eq!(
+            cfg.on_provider_failed
+                .as_ref()
+                .unwrap()
+                .require_string("on_provider_failed", "target")
+                .unwrap(),
+            "safe_mode"
+        );
+    }
+
+    #[test]
+    fn prompt_on_init_round_trip() {
+        let toml_src = r#"
+            [meta]
+            name = "explorer"
+
+            [prompt]
+            parser = "xml"
+            on_init = "Hello {agent_name}, you are {behavior_name}."
+            on_behavior_switch = "Continue as {{ behavior.name }}."
+            on_behavior_step_ob = "Observe {{ step_result.default_user_message }}."
+            on_wakeup = "{{ input.text }}"
+        "#;
+        let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
+        assert!(cfg.prompt.on_init.contains("{agent_name}"));
+        assert_eq!(
+            cfg.prompt.on_behavior_switch.as_deref(),
+            Some("Continue as {{ behavior.name }}.")
+        );
+        assert_eq!(
+            cfg.prompt.on_behavior_step_ob.as_deref(),
+            Some("Observe {{ step_result.default_user_message }}.")
+        );
+        assert_eq!(cfg.prompt.on_wakeup.as_deref(), Some("{{ input.text }}"));
+    }
+
+    #[test]
+    fn jarvis_work_behaviors_define_runtime_prompt_hooks() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../rootfs/bin/buckyos_jarvis/behaviors");
+        let media_cli_prompt = std::fs::read_to_string(root.join("aicc_image_cli.inc")).unwrap();
+        for required in [
+            "gen_image",
+            "edit_image",
+            "inpaint_image",
+            "upscale_image",
+            "remove_bg",
+            "ocr_image",
+            "caption_image",
+            "detect_image",
+            "segment_image",
+            "text_to_speech",
+            "speech_to_text",
+            "gen_music",
+            "enhance_audio",
+            "gen_video",
+            "img2video",
+            "video2video",
+            "extend_video",
+            "upscale_video",
+            "ai_provider",
+            "ai_quota",
+            "named_object:<obj_id>",
+            "<attachment path=",
+        ] {
+            assert!(
+                media_cli_prompt.contains(required),
+                "AICC media CLI prompt must document `{required}`"
+            );
+        }
+        for name in ["chat_route", "plan", "do"] {
+            let path = root.join(format!("{name}.toml"));
+            let cfg = BehaviorCfg::load_from_file(&path).unwrap();
+            assert!(
+                cfg.prompt
+                    .on_init
+                    .contains("__INCLUDE(./aicc_image_cli.inc)__"),
+                "{} must include the AICC image CLI prompt",
+                path.display()
+            );
+        }
+        for name in ["plan", "do"] {
+            let path = root.join(format!("{name}.toml"));
+            let cfg = BehaviorCfg::load_from_file(&path).unwrap();
+            assert!(
+                cfg.prompt
+                    .on_behavior_switch
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty()),
+                "{} must define [prompt].on_behavior_switch",
+                path.display()
+            );
+            assert!(
+                cfg.prompt
+                    .on_behavior_step_ob
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty()),
+                "{} must define [prompt].on_behavior_step_ob",
+                path.display()
+            );
+            if name == "plan" {
+                assert!(
+                    cfg.prompt
+                        .on_wakeup
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty()),
+                    "{} must keep [prompt].on_wakeup parseable",
+                    path.display()
+                );
+            }
+        }
+    }
+}

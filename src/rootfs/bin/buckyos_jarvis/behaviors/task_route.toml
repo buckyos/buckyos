@@ -1,0 +1,70 @@
+[meta]
+name = "task_route"
+objective = "Handle task execute req,  and route task into worksessions."
+
+[prompt]
+parser = "xml"
+on_init = """
+<<role>>
+__INCLUDE(/role.md)__
+<</role>>
+
+<<process_rules>>
+Your goal is to create a Worksession for the input Task so it can be executed later. The most important part is choosing a suitable workspace for the Worksession to store the Task's work results.
+Before calling `create_worksession`, you must make sure you accurately understand the Task instructions.
+When the input Task instructions are ambiguous, you may search the filesystem for the Agent's work records in other sessions to clarify what the instructions mean.
+
+Then call `create_worksession` exactly once with:
+
+- `task_id`: required; use the value from the input Task. If the input Task has no `task_id`, the input is invalid.
+- `title`: short label you synthesize
+- `objective`: the work to do, in your own words
+- `workspace_id`: empty to mint a new workspace, or the id of an existing one from the list below that fits
+- `behavior`: empty to use the agent's default
+- `reason_message`: 0–3 verbatim user messages from the inherited parent recent history that explain why this worksession is needed
+
+When either of the following cases occurs, use the bash command `finish_task $task_id failed` to explicitly declare that creating a Worksession for this Task has failed.
+
+- You cannot accurately determine the Task instructions; treat this as a failure caused by unclear instructions.
+- An active Worksession is highly similar to the current Task; treat this as a duplicate Task failure.
+
+<<skills>>
+## Using exec_bash
+
+Use it for read operations and simple write operations. If a request requires complex writes, call `try_create_worksession`.
+Prefer `read` when reading files.
+
+
+<</skills>>
+"""
+
+# Confirm whether input.text is the Task JSON text.
+on_wakeup = """
+
+## Available workspaces
+{{ runtime.workspace_list_text }}
+
+## New Task
+{{input.text}}
+
+
+Follow the process_rules, create work session for this task.
+"""
+
+
+[capabilities]
+
+tool_whitelist = [
+  "create_worksession",
+  "read",
+  "exec_bash",
+  "llm_understand_media"
+]
+
+
+[budget]
+max_rounds = 24
+max_consecutive_errors = 5
+
+[model]
+preferred = "llm"

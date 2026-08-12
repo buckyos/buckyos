@@ -1,4 +1,6 @@
 {
+  "did": "__APP_DID__",
+  "doc_type": "app",
   "name": "__APP_ID__",
   "version": "__VERSION__",
   "show_name": "App Installer Static Web Fixture",
@@ -17,13 +19,13 @@
     }
   },
   "selector_type": "static",
-  "install_config_tips": {},
+  "service_config_tips": {},
   "pkg_list": {
     "web": {
       "pkg_id": "__WEB_PKG_ID__"
     }
   },
   "deps": {
-    "__APP_ID__-web": "__VERSION__"
+    "__WEB_PKG_NAME__": "__VERSION__"
   }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "agent_tool_cli_dev"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO", "waterflier", "codex5.3"]
+
+[dependencies]
+agent-did-object-lib = { path = "../agent-did-object-lib" }
+agent_tool = { path = "../agent_tool" }
+async-trait = { workspace = true }
+buckyos-api = { path = "../../kernel/buckyos-api" }
+chrono = { workspace = true }
+kRPC = { workspace = true }
+opendan = { path = "../opendan" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "agent_tool"
+path = "src/main.rs"

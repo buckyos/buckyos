@@ -3,14 +3,23 @@
 
 ## 1. 概述 (Overview)
 
-ContactMgr 是 MessageCenter 消息系统的核心组件，负责管理 **身份（Identity）** 与 **通讯路由（Routing）**。它不仅是“通讯录”，更是连接外部通讯平台（Telegram, Email 等）与内部系统（DID）的桥梁，同时承担着**访问控制（Access Control）和多端身份聚合**的职责。
+ContactMgr 是 MessageCenter 消息系统的核心组件，负责管理 **身份关联（Identity Association）** 与 **关系（Relationship）**。它是“通讯录 + 准入策略”，连接外部通讯平台（Telegram, Email 等）的 endpoint 与内部联系人（DID），同时承担**访问控制（Access Control）和多端身份聚合**的职责。
+
+术语与投递语义以两份主设计文档为准：[Message Center.md](<./Message Center.md>)、[Message Tunnel Design.md](<./Message Tunnel Design.md>)。
 
 ### 核心职责
 
-1. **身份解析**：将外部平台账号（如 `tg:12345`）映射为系统内部唯一标识（`DID`）。
-2. **生命周期管理**：管理联系人从“陌生人（Shadow）”到“熟人（Verified）”的转化。
-3. **身份聚合**：处理多渠道账号的合并（Merge），解决数据冲突。
-4. **动态访问控制**：基于关系（好友）或上下文（临时会话）管理消息投递权限。
+1. **关联**：登记与维护 shadow endpoint DID（`did:msgtunnel:*`）与正式联系人的 binding。
+2. **展示**：为 UI 提供联系人名片、头像、endpoint 列表与 reverse lookup（由 endpoint 反查联系人）。
+3. **生命周期管理**：管理联系人从“陌生人（Shadow）”到“熟人（Verified）”的转化。
+4. **身份聚合**：处理多渠道账号的合并（Merge），解决数据冲突。
+5. **动态访问控制（ACL）**：基于关系（好友）或上下文（临时会话）决定入站消息进入 `INBOX / REQUEST_BOX / DROP`。
+
+### 非职责（冻结）
+
+- **ContactMgr 不参与出站选路。** 发送目标由调用方在构造 `MsgObject` 之前显式确定（用户点选或 Agent 沿用会话中的 endpoint DID）；`post_send` 不查询 ContactMgr。**ContactMgr 的关联结果不得自动成为发送目的地。**
+- ContactMgr 的关联**不改写消息来源**：入站消息的 `from` 保持 shadow endpoint DID，关联只影响展示与 ACL。
+- 已废弃的发送模型（不得再出现）：`contact DID + selector`、发送路径上的 `resolve_target(contact, "telegram")`、`get_preferred_binding()` 参与投递、按 `last_active_at` 选信道、`preferred_tunnel` / default tunnel。
 
 ---
 
@@ -31,8 +40,10 @@ pub struct AccountBinding {
     pub platform: String,       // e.g., "telegram", "email", "wechat"
     pub account_id: String,     // 平台唯一ID, e.g., "123456789" (TG UserID)
     pub display_id: String,     // 可读ID, e.g., "@username"
-    pub tunnel_id: String,      // 绑定的 Tunnel ID (用于发送路由)
-    pub last_active_at: u64,    // 最后活跃时间 (用于合并时的活跃度判断)
+    pub tunnel_instance_id: String, // 稳定短实例 id (如 "tg-main-tunnel")，非 transport_did
+    pub account_type: String,   // 平台实体类型: user/group/channel/addr (非 endpoint 为空)
+    pub endpoint_did: Option<DID>, // shadow endpoint DID: did:msgtunnel:<enc>.<type>.<tunnel_instance_id>
+    pub last_active_at: u64,    // 最后活跃时间。仅限 UI 展示与 merge 冲突裁决使用，不参与投递选路
     pub meta: Map<String, String>, // 平台特定的额外数据 (头像URL等)
 }
 
@@ -96,15 +107,15 @@ pub struct Contact {
 
 ### 3.1 身份解析与自动创建 (Resolution & Shadowing)
 
-当 Tunnel 收到消息时，调用 ContactMgr 解析身份。
+当 Tunnel 收到消息时：
 
-1. **Lookup**: 查询 `(platform, account_id)` 是否已绑定某个 DID。
-2. **Hit**: 如果存在，返回 DID。
-3. **Miss (Auto-Create)**: 如果不存在：
-* 生成新的 `DID`。
+1. **Endpoint DID 确定性构造**：`resolve_endpoint_did(platform, account_id, account_type, tunnel_instance_id)` 得到 `did:msgtunnel:*`。这一步是纯函数，不依赖任何查询，消息的 `from` 就是它，且永不被后续关联改写。
+2. **Lookup**: 查询该 endpoint 是否已关联某个 Contact。
+3. **Hit**: 命中则用该 Contact 做 ACL 判断与 UI 展示。
+4. **Miss (Auto-Create)**: 未命中则创建 Shadow Contact：
 * 创建 `Contact`，标记 `source = AutoInferred`，`access_level = Stranger`。
-* 记录 `AccountBinding`。
-* 返回新 DID。
+* 登记 `AccountBinding`（含 `endpoint_did`）。
+* 该 Contact 只影响展示与 ACL；**不影响消息的 `from/to`，也不产生任何投递路径**。
 
 
 
@@ -154,17 +165,41 @@ pub struct Contact {
 class ContactMgr:
     
     # ==========================
-    # 1. 身份解析 (Tunnel 调用)
+    # 1. 身份关联 (Tunnel 入站 / 系统调用)
     # ==========================
-    def resolve_did(self, platform: str, account_id: str, profile_hint: dict = None) -> DID:
+    def resolve_endpoint_did(self, platform, account_id, account_type, tunnel_instance_id) -> DID:
         """
-        查找 DID。如果不存在，基于 profile_hint 自动创建 Shadow Contact。
+        确定性构造 shadow endpoint DID：
+        did:msgtunnel:<encoded_account_id>.<account_type>.<tunnel_instance_id>。
+        同一四元组始终得到同一 DID。这是外部平台实体进入 from/to 的唯一入口。
+        入参不全（缺 account_type 或 tunnel_instance_id）直接报错——
+        历史的 did:bns:mc-* shadow fallback 已删除，不再有降级路径。
         """
         pass
 
-    def get_preferred_binding(self, did: DID) -> AccountBinding:
+    def resolve_contact_for_endpoint(self, endpoint_did: DID) -> Optional[DID]:
+        """endpoint DID 反查归属的 canonical/contact DID（展示/审计用）。"""
+        pass
+
+    def resolve_canonical_did(self, did: DID) -> DID:
+        """把 merge 后的 alias/tombstone DID 解析为当前 canonical DID。"""
+        pass
+
+    def list_alias_dids(self, canonical_did: DID) -> List[DID]:
+        """列出 merge 到该 canonical DID 的所有 alias 源 DID。"""
+        pass
+
+    # ==========================
+    # 1.1 UI 辅助（不属于发送路径）
+    # ==========================
+    def list_endpoints(self, contact_did: DID) -> List[AccountBinding]:
         """
-        获取该联系人最近活跃或首选的发送通道 (用于 Outbox 路由)
+        列出联系人的全部 endpoint，供 UI 展示为"可发起会话的信道列表"。
+        用户点选其中一个 endpoint_did 作为 msg.to —— 这是构造 MsgObject
+        之前的显式选择。ContactMgr 不提供"首选/默认"信道语义
+        （get_preferred_binding 已删除），也不做任何自动挑选。
+        resolve_target(contact, selector) 同样已从核心发送 API 移除，
+        如保留仅作为联系人查看辅助（等价于 list_endpoints + 过滤）。
         """
         pass
 
@@ -199,7 +234,9 @@ class ContactMgr:
 
     def merge_contacts(self, target_did: DID, source_did: DID):
         """
-        手动合并两个 DID。
+        手动合并两个 DID。source 的 binding/grant/group/tag 迁移到 target，
+        但 source DID 不删除，而是登记为 target 的 alias/tombstone，使历史
+        MsgObject 和旧 session peer DID 仍可通过 resolve_canonical_did 解释。
         """
         pass
 

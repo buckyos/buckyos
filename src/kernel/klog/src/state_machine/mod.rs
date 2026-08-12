@@ -1,5 +1,5 @@
-mod memory;
+mod machine;
 mod snapshot;
 
-pub use memory::*;
+pub use machine::*;
 pub use snapshot::*;

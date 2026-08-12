@@ -1,0 +1,54 @@
+{
+  "format": "buckyos.aicc.provider-driver-metadata",
+  "schema_version": 3,
+  "schema_revision": 0,
+  "provider_driver": "minimax",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [],
+  "patterns": [
+    {
+      "pattern": "MiniMax-*",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.minimax", "llm.minimax.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": false,
+        "vision": false,
+        "max_context_tokens": 100000,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    }
+  ],
+  "defaults": {
+    "api_types": ["llm"],
+    "logical_mounts": ["llm.minimax", "llm.minimax.{model}"],
+    "capabilities": {
+      "streaming": false,
+      "tool_call": false,
+      "json_schema": false,
+      "web_search": false,
+      "vision": false
+    },
+    "pricing": {
+      "currency": "USD",
+      "estimated_cost": 0.01
+    },
+    "estimated_latency_ms": 1400
+  },
+  "variants": [
+    {
+      "name": "highspeed",
+      "mount_suffix": "highspeed",
+      "provider_options": { "latency_preference": "highspeed" }
+    }
+  ],
+  "signature": null
+}

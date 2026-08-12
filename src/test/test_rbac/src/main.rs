@@ -28,7 +28,7 @@ async fn test() -> std::result::Result<(), String> {
         return Err("user private key file not exists".to_string());
     }
 
-    let owner_config = OwnerConfig::load_owner_config(&user_config_file).map_err(|e| {
+    let owner_config = OwnerDocument::load_owner_document(&user_config_file).map_err(|e| {
         println!("Failed to load owner config: {}", e);
         e.to_string()
     })?;

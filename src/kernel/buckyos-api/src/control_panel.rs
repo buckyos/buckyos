@@ -1,12 +1,13 @@
 use crate::app_mgr::*;
 use crate::system_config::*;
-use crate::KVAction;
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
-use log::*;
-use name_lib::*;
+use name_lib::{DIDDocumentTrait, DeviceDocument, DeviceInfo, EncodedDocument, OwnerDocument, DID};
+pub use name_lib::{
+    ProfileContact, ProfileLink, ProfilePrivacyRule, ProfileVisibility, UserPrivateProfile,
+    UserProfile, UserProfilePrivacy,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ pub const CONTROL_PANEL_SERVICE_PORT: u16 = 4020;
 #[serde(try_from = "String", into = "String")]
 pub enum UserState {
     Active,
+    Pending,
     Suspended(String), //suspend reason
     Deleted,           //delete reason
     Banned(String),    //ban reason
@@ -31,6 +33,7 @@ impl TryFrom<String> for UserState {
         let reason = split_result.get(1).unwrap_or(&"");
         match state_str {
             "active" => Ok(UserState::Active),
+            "pending" => Ok(UserState::Pending),
             "suspended" => Ok(UserState::Suspended(reason.to_string())),
             "deleted" => Ok(UserState::Deleted),
             "banned" => Ok(UserState::Banned(reason.to_string())),
@@ -43,6 +46,7 @@ impl From<UserState> for String {
     fn from(value: UserState) -> Self {
         match value {
             UserState::Active => "active".to_string(),
+            UserState::Pending => "pending".to_string(),
             UserState::Suspended(reason) => format!("suspended:{}", reason),
             UserState::Deleted => "deleted".to_string(),
             UserState::Banned(reason) => format!("banned:{}", reason),
@@ -66,8 +70,13 @@ pub struct UserTunnelBinding {
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_id: Option<String>,
+    /// Stable tunnel instance id (e.g. `tg-main-tunnel`), NOT the transport DID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tunnel_id: Option<String>,
+    pub tunnel_instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<u64>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub meta: HashMap<String, String>,
 }
@@ -87,18 +96,19 @@ pub struct UserContactSettings {
 }
 
 //did:bns:$user_id user_id is-> UserSettings
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserSettings {
     pub user_id: String,
     //rename to type
     #[serde(rename = "type")]
     pub user_type: UserType,
-    pub show_name: String,
     pub password: String,
     pub state: UserState,
     pub res_pool_id: String,
+    #[serde(default)]
+    pub is_local: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contact: Option<UserContactSettings>,
+    pub allow_password_change: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -112,7 +122,7 @@ pub struct UserInfo {
 impl UserSettings {
     pub fn to_user_info(&self) -> UserInfo {
         UserInfo {
-            show_name: self.show_name.clone(),
+            show_name: self.user_id.clone(),
             user_id: self.user_id.clone(),
             state: self.state.clone(),
             user_type: self.user_type.clone(),
@@ -179,20 +189,9 @@ impl ControlPanelClient {
 
     //return (rbac_model,rbac_policy)
     pub async fn load_rbac_config(&self) -> Result<(String, String)> {
-        let rbac_model_path = "system/rbac/model";
-        let rbac_model_result = self.system_config_client.get(rbac_model_path).await;
-        if rbac_model_result.is_err() {
-            return Err(RPCErrors::ReasonError("rbac model not found".to_string()));
-        }
-        let rbac_model_result = rbac_model_result.unwrap();
-
-        let rbac_policy_path = "system/rbac/policy";
-        let rbac_policy_result = self.system_config_client.get(rbac_policy_path).await;
-        if rbac_policy_result.is_err() {
-            return Err(RPCErrors::ReasonError("rbac policy not found".to_string()));
-        }
-        let rbac_policy_result = rbac_policy_result.unwrap();
-        Ok((rbac_model_result.value, rbac_policy_result.value))
+        let rbac_config =
+            crate::load_current_rbac_config(self.system_config_client.as_ref()).await?;
+        Ok((rbac_config.model, rbac_config.policy))
     }
 
     pub async fn load_zone_config(&self) -> Result<ZoneConfig> {
@@ -226,7 +225,7 @@ impl ControlPanelClient {
         Ok(device_info)
     }
 
-    pub async fn get_device_config(&self, device_id: &str) -> Result<DeviceConfig> {
+    pub async fn get_device_config(&self, device_id: &str) -> Result<DeviceDocument> {
         let device_doc_path = format!("devices/{}/doc", device_id);
         let get_result = self
             .system_config_client
@@ -239,81 +238,24 @@ impl ControlPanelClient {
         let get_result = get_result.unwrap();
         let device_doc: EncodedDocument = EncodedDocument::from_str(get_result.value.clone())
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-        let device_doc: DeviceConfig = DeviceConfig::decode(&device_doc, None)
+        let device_doc: DeviceDocument = DeviceDocument::decode(&device_doc, None)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
         Ok(device_doc)
     }
 
-    pub async fn add_user(&self, user_config: &OwnerConfig, is_admin: bool) -> Result<u64> {
-        //0. check user_config.name is valid
-        //1. create users/{user_id}/doc
-        //2. create users/{user_id}/settings
-        //3. add user to rbac group
-        let user_id = user_config.name.clone();
+    pub async fn get_user_config(&self, user_id: &str) -> Result<OwnerDocument> {
         let user_doc_path = format!("users/{}/doc", user_id);
-        let user_settings_path = format!("users/{}/settings", user_id);
+        let get_result = self.system_config_client.get(user_doc_path.as_str()).await;
+        if get_result.is_err() {
+            return Err(RPCErrors::KeyNotExist(user_doc_path));
+        }
 
-        // 将用户配置序列化为 JSON 字符串
-        let user_doc_str = serde_json::to_string(user_config).map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to serialize user config: {}", e))
-        })?;
+        let get_result = get_result.unwrap();
+        let user_doc: OwnerDocument = serde_json::from_str(&get_result.value)
+            .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
-        // 创建默认用户设置
-        let default_settings = json!({
-            "theme": "light",
-            "language": "en",
-            "notifications": true
-        });
-        let settings_str = serde_json::to_string(&default_settings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Failed to serialize settings: {}", e)))?;
-
-        // 准备事务操作
-        let mut tx_actions = HashMap::new();
-
-        // 1. 创建用户文档
-        tx_actions.insert(user_doc_path, KVAction::Create(user_doc_str));
-
-        // 2. 创建用户设置
-        tx_actions.insert(user_settings_path, KVAction::Create(settings_str));
-
-        // // 3. 添加用户到 RBAC 组 => move to scheduler
-        // let rbac_policy = if is_admin {
-        //     format!("\ng, {}, admin", user_id)
-        // } else {
-        //     format!("\ng, {}, user", user_id)
-        // };
-        // tx_actions.insert("system/rbac/policy".to_string(), KVAction::Append(rbac_policy));
-
-        // 执行事务
-        self.system_config_client
-            .exec_tx(tx_actions, None)
-            .await
-            .map_err(|e| {
-                RPCErrors::ReasonError(format!(
-                    "Failed to execute user creation transaction: {}",
-                    e
-                ))
-            })?;
-
-        info!(
-            "Successfully added user {} with admin={}",
-            user_id, is_admin
-        );
-        Ok(0)
-    }
-
-    //TODO: help app installer dev easy to generate right app-index
-    pub async fn install_app_service(
-        &self,
-        user_id: &str,
-        app_config: &AppServiceSpec,
-        shortcut: Option<String>,
-    ) -> Result<u64> {
-        let _ = (user_id, app_config, shortcut);
-        Err(RPCErrors::ReasonError(
-            "NotImplemented: ControlPanelClient::install_app_service".to_string(),
-        ))
+        Ok(user_doc)
     }
 
     pub async fn get_user_list(&self) -> Result<Vec<String>> {
@@ -334,38 +276,6 @@ impl ControlPanelClient {
         let user_info: UserSettings = serde_json::from_str(&user_info.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(user_info)
-    }
-
-    pub async fn get_app_list(&self) -> Result<Vec<AppServiceSpec>> {
-        let user_list = self.get_user_list().await;
-        if user_list.is_err() {
-            return Err(RPCErrors::ReasonError("user list not found".to_string()));
-        }
-        let user_list = user_list.unwrap();
-        let mut result_app_list = Vec::new();
-        for user_id in user_list {
-            let app_list = self
-                .system_config_client
-                .list(format!("users/{}/apps", user_id).as_str())
-                .await;
-            if app_list.is_err() {
-                return Err(RPCErrors::ReasonError("app list not found".to_string()));
-            }
-            for app_id in app_list.unwrap() {
-                let app_config = self
-                    .system_config_client
-                    .get(format!("users/{}/apps/{}/config", user_id, app_id).as_str())
-                    .await;
-                if app_config.is_err() {
-                    return Err(RPCErrors::ReasonError("app config not found".to_string()));
-                }
-                let app_config = app_config.unwrap();
-                let app_config: AppServiceSpec = serde_json::from_str(&app_config.value)
-                    .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-                result_app_list.push(app_config);
-            }
-        }
-        Ok(result_app_list)
     }
 
     pub async fn update_service_instance_info(
@@ -408,29 +318,6 @@ impl ControlPanelClient {
         let service_info: ServiceInfo = serde_json::from_str(&service_info.value)
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         Ok(service_info)
-    }
-    // TODO: move to scheduler_service
-    // pub async fn get_valid_app_index(&self,_user_id:&str) -> Result<u64> {
-    //     unimplemented!();
-    // }
-
-    pub async fn remove_app(&self, _appid: &str) -> Result<u64> {
-        Err(RPCErrors::ReasonError(
-            "NotImplemented: ControlPanelClient::remove_app".to_string(),
-        ))
-    }
-
-    //disable means stop app service
-    pub async fn stop_app(&self, _appid: &str) -> Result<u64> {
-        Err(RPCErrors::ReasonError(
-            "NotImplemented: ControlPanelClient::stop_app".to_string(),
-        ))
-    }
-
-    pub async fn start_app(&self, _appid: &str) -> Result<u64> {
-        Err(RPCErrors::ReasonError(
-            "NotImplemented: ControlPanelClient::start_app".to_string(),
-        ))
     }
 }
 

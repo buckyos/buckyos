@@ -1,7 +1,7 @@
 use super::storage::{LogQueryRequest, LogRecords, LogStorage};
 use rusqlite::Connection;
 use slog::SystemLogRecord;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 struct SystemLogRecordResult {
@@ -28,7 +28,6 @@ impl TryInto<SystemLogRecord> for SystemLogRecordResult {
     }
 }
 pub struct SqliteLogStorage {
-    db_path: PathBuf,
     conn: Arc<Mutex<Connection>>,
 }
 
@@ -132,7 +131,6 @@ impl SqliteLogStorage {
         info!("Initialized SQLite log storage at {:?}", db_path);
 
         let ret = Self {
-            db_path: db_path.to_path_buf(),
             conn: Arc::new(Mutex::new(conn)),
         };
 

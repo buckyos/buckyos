@@ -84,12 +84,10 @@ fun_instance:用户安装的,只在工作流中存在的扩展应用,比如为�
 ## 系统数据
 
 /config/boot/config 系统ZoneConfig,该配置是所有人可读的
-/config/system/verify_hub/key 
+/config/security/verify-hub/key
 系统启动时构造的verify-hub私钥，公钥在boot/config里
 
-/config/system/rbac/model 系统RBAC模型数据，一般不修改
-/config/system/rbac/base_policy 系统RBAC的基础策略，一般不修改
-/config/system/rbac/policy 实际的系统RBAC策略，由调度器根据base_policy和系统的当前用户生成
+/config/system/rbac/policy 系统RBAC动态策略尾部，由调度器根据系统当前用户、节点、服务生成；完整RBAC配置由API runtime用内置默认配置与该尾部合成
 
 cyfs://$zone_id/srv/library/ 
 zone级别的库数据,对zone外不可见,zone内默认所有用户都有读写权限,但是只对自己创建的文件有删除权限。映射到 $buckyos_root/data/srv/library/
@@ -158,6 +156,7 @@ cyfs://$zone_id/home/$userid/  用户的全部个人数据
 ### 配置数据
 
 /config/users/$userid/settings 需要sudo才能写
+/config/users/$userid/profile 用户私有 Profile，普通用户可自行读写
 /config/users/$userid/apps/$appid/settings 普通权限即可读写
 
 ### 个人数据（传统的home文件夹)
@@ -165,7 +164,7 @@ cyfs://$zone_id/home/$userid/  用户的全部个人数据
 cyfs://$zone_id/home/$userid/ -> $buckyos_root/data/home/$userid/
 用户的全部私有个人数据,可以授权部分文件夹给指定应用访问
 
-### 应用数据
+## 应用数据
 
 cyfs://$zone_id/home/$userid/.local/share/$appid/ -> $buckyos_root/data/home/$userid/.local/share/$appid/
 app有读写权限的永久数据区,谨慎写入。默认在app卸载时删除,用户可选保留
@@ -208,6 +207,93 @@ library,publish,home,cache,var,storage,local,tmp,logs
 应用名必须是 `发行商-应用名` 形式,发行商名字中不能包含-
 
 
+## 应用容器内文件系统视图
+
+- BUCKYOS_ROOT基本固定到/opt/buckyos ，所以app总是可以在  /opt/buckyos/bin/$APP_ID 目录下看到自己的PKG_DIR(有读写权限)
+    - 原始目录不可写，在 /mnt/buckyos/pkg, 初始化私有卷时复制过去（这是一个固定的启动脚本）
+- 每个 App/Agent 都有一个自己的 Instance Volume,容器内挂载到 /opt/buckyos/instance,读写+可执行,不属于 user_data
+  - 典型用途: PKG_DIR 工作副本、运行时依赖缓存、App 私有可执行视图、Agent session-bin
+  - 该卷随 app instance 生命周期管理,不映射到 cyfs://home,也不作为用户个人数据备份入口
+- BuckyOS ExtTools 作为节点共享卷只读+可执行挂载到 /opt/buckyos/tools
+  - App/Agent 不允许写 /opt/buckyos/tools
+  - 系统工具入口约定为 /opt/buckyos/tools/store
+- /opt/buckyos/instance/tools/bin 每 App 一份,由 AppService 启动时根据
+  该 App 的 tool 授权清单渲染 symlink 到 /opt/buckyos/tools/store,挂载为可读+可执行
+  (App 内部可重建,修改通过控制平面的授权变更触发重新渲染)
+- ExtTools 卷里可能会包含固化好的deno-cache和uv-cache,减少磁盘占用
+  - lowerdir: /opt/buckyos/tools/deno-cache (ExtTools 卷,全局只读)
+  - upperdir: /opt/buckyos/instance/cache/deno (App 私有,记录本 App 新增的依赖)
+  - merged:   $DENO_DIR (容器内 deno 实际使用的路径)
+  - UV也使用同样的模式  /opt/buckyos/tools/uv-cache
+- 根据用户的授权，选择性挂载 （buckyos filebrowser相同视图)
+  - 在 /home/$userid/ 目录下看到授权后的 buckyos 用户数据
+  - 在 /opt/buckyos/storage/ 目录下看到named store的原始数据（
+  - 在 /mnt/$nodeid/ 目录下，看到非buckyos体系下的用户数据（用户设备上的数据)，此时已经开始走cyfs体系
+    - /mnt/self/ 可以看到当前zone的cyfs根目录
+    - /mnt/$zoneid/ 可以看到别的zone的cyfs目录
+    
+
+## Agent容器内文件系统视图 （分离数据和可执行文件)
+- Agent RootFS 在 app_data 目录下,容器内为 /home/$userid/.local/share/$agentid,host 上对应 $BUCKYOS_ROOT/data/home/$userid/.local/share/$agentid.通常是session data和交付记录.读写权限,不作为可执行层使用
+- Agent 的 session-bin 属于 Agent 所在 App 的 Instance Volume
+  渲染到 /opt/buckyos/instance/tools/$agent_id/$session_id/, 里面都是符号链接或 tombstone。有读写权限,可执行
+- Agent通过工具 exec_on("nodeid",cmdline) 在任意zone内设备上运行命令（或则是标准的ssh命令，还可以解决文件传输的问题)
 
 
 
+## 通用约定
+- BUCKYOS_ROOT=/opt/buckyos (固定)
+- 环境变量契约:BUCKYOS_APP_ID, BUCKYOS_DATA_DIR, BUCKYOS_INSTANCE_VOLUME, BUCKYOS_EXTTOOL_DIR, ...
+- /tmp: tmpfs, 1GB, 容器销毁清空
+
+
+## App 容器视图
+
+### 代码层 (只读为主)
+- /opt/buckyos/bin/$APP_ID/      # PKG_DIR, 建议视为只读,ScriptHost目录为可读写
+  source: /mnt/buckyos/pkg (只读挂载)
+  init: 首次启动 copy-on-init
+
+### Instance 层
+- /opt/buckyos/instance/         # 每 App 私有 Docker volume,读写+可执行,非 user_data
+- /opt/buckyos/instance/cache/   # 本 App 运行时依赖缓存 upper
+- /opt/buckyos/instance/tools/   # 本 App 可写可执行工具视图
+
+### 工具层
+- /opt/buckyos/tools/store/      # ExtTool 全局只读,所有 App 共享
+- /opt/buckyos/instance/tools/bin/ # 按本 App 授权渲染的 symlink,由 App 私有卷承载
+- /opt/buckyos/tools/deno-cache/ # OverlayFS lower
+- /opt/buckyos/tools/uv-cache/   # OverlayFS lower
+
+### 数据层
+- /home/$userid/.local/share/$appid/                              # 本 App 结构化数据,noexec
+  source: $BUCKYOS_ROOT/data/home/$userid/.local/share/$appid/
+- /mnt/self/                     # 当前 zone CYFS 根, noexec
+- /mnt/$zone_id/                 # 其他 zone CYFS 视图(按授权)
+- /mnt/$node_id/                 # 特定设备的host fs数据(按授权)
+
+## Agent 容器视图
+(继承 App 视图,增加 session 层)
+
+### Agent 工具层(扩展)
+- /opt/buckyos/instance/tools/$agentid/$sessionid/    # session-bin, 读写可执行
+
+
+### Agent Root (数据层，和App语义不同)
+- /home/$userid/.local/share/$agentid/
+  source: $BUCKYOS_ROOT/data/home/$userid/.local/share/$agentid/
+  ├── sessions/$SESSION_ID/      # ssession 交付物
+  ├── memory/                    # 跨 session 记忆
+  └── skills/                    # 通用技能
+
+
+## 权限矩阵
+| 卷                      | 读 | 写 | 执行 |
+|-------------------------|----|----|------|
+| PKG_DIR                 | ✓  | ✓  | ✓    |
+| ExtTool tools/store     | ✓  | ✗  | ✓    |
+| instance/               | ✓  | ✓  | ✓    |
+| instance/tools/bin (App)| ✓  | ✓  | ✓    |
+| instance/tools/$agentid/$sessionid(Agent) | ✓ | ✓ | ✓ |
+| app data/               | ✓  | ✓  | ✗    |
+| /mnt/<zone>             | ✓  | ✓* | ✗    |

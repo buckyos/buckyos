@@ -20,6 +20,8 @@
 
 1) 总览与差异点
 - `01_overview.md`
+- `认识BNS.md`
+- `BNS 去中心的名字系统.md`
 
 2) 启动与激活（Secure Boot / ZoneBootConfig / OOD 连接）
 - `02_boot_and_activation.md`
@@ -44,6 +46,12 @@
 
 9) 常见踩坑与工程建议
 - `09_pitfalls.md`
+
+10) 用户生命周期与权限：创建/删除用户、用户类型权限差异、系统 vs App 职责
+- `10_user_lifecycle_and_permissions.md`
+
+11) 环境变量协议：BUCKYOS_*、启动注入、worker env、测试覆盖变量
+- `11_env_contract.md`
 
 
 ## 术语与端口（当前实现的关键常量）

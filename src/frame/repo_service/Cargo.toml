@@ -22,7 +22,7 @@ async-recursion = { workspace = true }
 jsonwebtoken = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
-rusqlite = { workspace = true }
+sqlx = { workspace = true }
 sha2 = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 bytes = { workspace = true }
@@ -37,8 +37,7 @@ buckyos-kit = { workspace = true }
 named_store = { workspace = true }
 kRPC ={ workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
-server-runner = { workspace = true }
-cyfs-gateway-lib = { workspace = true }
+buckyos-http-server = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

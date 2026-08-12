@@ -1,993 +1,1489 @@
 use ::kRPC::*;
 use async_trait::async_trait;
+use bns_client::{BnsIndexerApi, BnsIndexerClient};
 use buckyos_api::*;
+use buckyos_http_server::{
+    serve_http_by_rpc_handler, server_err, HttpServer, Runner, ServerError, ServerErrorCode,
+    ServerResult, StreamInfo,
+};
 use buckyos_kit::*;
 use bytes::Bytes;
-use cyfs_gateway_lib::{
-    serve_http_by_rpc_handler, server_err, HttpServer, ServerError, ServerErrorCode, ServerResult,
-    StreamInfo,
+use cyfs_gateway_api::{
+    SnBnsPublishDocumentContent, SnBnsPublishDocumentReq, SnClient, SnDeviceOnlineReportReq,
+    SnZoneInfoResp,
 };
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use jsonwebtoken::jwk::Jwk;
-use jsonwebtoken::{DecodingKey, EncodingKey};
+use jsonwebtoken::{encode, Algorithm, DecodingKey, EncodingKey, Header};
 use log::*;
-use name_client::*;
+use name_client::GLOBAL_NAME_CLIENT;
 use name_lib::*;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use server_runner::*;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::net::IpAddr;
+use std::process::exit;
 use std::result::Result;
+use std::str::FromStr;
 use std::sync::Arc;
-use std::{net::IpAddr, process::exit};
+use std::time::{Duration, Instant};
+
+use crate::region_probe::RegionProbeController;
+use crate::sn_zone_info::save_sn_zone_info;
 
 const ACTIVE_SERVICE_MAIN_PORT: u16 = 3182;
-const START_CONFIG_OPTIONAL_FIELDS: &[&str] = &[
-    "ai_provider_config",
-    "jarvis_msg_tunnel_config",
-    "enabled_features",
-];
+const DEFAULT_RTCP_PORT: u32 = 2980;
+const MAX_INLINE_DOCUMENT: usize = 4096;
+const OWNER_DERIVATION_PATH: &str = "m/9777'/0'/0'";
+const EVM_DERIVATION_PATH: &str = "m/44'/60'/0'/0/0";
+const PROJECTION_DEADLINE: Duration = Duration::from_secs(60);
+
+fn parse_params<T: DeserializeOwned>(value: Value, type_name: &str) -> Result<T, RPCErrors> {
+    serde_json::from_value(value).map_err(|error| {
+        RPCErrors::ParseRequestError(format!("Failed to parse {}: {}", type_name, error))
+    })
+}
+
+macro_rules! impl_from_json {
+    ($type:ty) => {
+        impl $type {
+            pub fn from_json(value: Value) -> Result<Self, RPCErrors> {
+                parse_params(value, stringify!($type))
+            }
+        }
+    };
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ActiveNameMapping {
+    pub owner_name: String,
+    pub owner_did: DID,
+    pub zone_did: DID,
+    pub access_hostname: String,
+    pub bns_publish_name: String,
+    pub use_self_domain: bool,
+}
+
+impl ActiveNameMapping {
+    fn derive(
+        owner_document: &OwnerDocument,
+        access_hostname: &str,
+        use_self_domain: bool,
+    ) -> Self {
+        let access_hostname = access_hostname.trim().to_lowercase();
+        Self {
+            owner_name: owner_document.name.clone(),
+            owner_did: owner_document.id.clone(),
+            zone_did: if use_self_domain {
+                DID::new("web", access_hostname.as_str())
+            } else {
+                owner_document.id.clone()
+            },
+            access_hostname,
+            bns_publish_name: owner_document.name.clone(),
+            use_self_domain,
+        }
+    }
+
+    fn validate(&self, owner_document: &OwnerDocument) -> Result<(), RPCErrors> {
+        let expected = Self::derive(
+            owner_document,
+            self.access_hostname.as_str(),
+            self.use_self_domain,
+        );
+        if self != &expected {
+            return Err(RPCErrors::ReasonError(
+                "active name mapping is inconsistent with OwnerDocument".to_string(),
+            ));
+        }
+        validate_hostname(self.access_hostname.as_str())?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GatewayTopology {
+    pub net_id: String,
+    #[serde(default = "default_rtcp_port")]
+    pub rtcp_port: u32,
+    #[serde(default = "default_true")]
+    pub support_container: bool,
+    pub uses_sn_relay: bool,
+    pub sn_url: String,
+}
+
+fn default_rtcp_port() -> u32 {
+    DEFAULT_RTCP_PORT
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WebOwnerMaterial {
+    pub mnemonic_words: Vec<String>,
+    pub owner_public_jwk: Value,
+    pub owner_derivation_path: String,
+    pub evm_address: String,
+    pub evm_derivation_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ActiveServiceConfig {
+    sn_base_host: String,
+    http_schema: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PreparedActiveDocuments {
+    pub owner_document: OwnerDocument,
+    pub names: ActiveNameMapping,
+    pub topology: GatewayTopology,
+    pub boot_document: ZoneBootDocument,
+    pub device_document: DeviceDocument,
+    pub device_mini_document: DeviceMiniDocument,
+    pub device_info: DeviceInfo,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SignedActiveDocuments {
+    pub boot_document: ZoneBootDocument,
+    pub boot_document_jwt: String,
+    pub device_document: DeviceDocument,
+    pub device_document_jwt: String,
+    pub device_mini_document: DeviceMiniDocument,
+    pub device_mini_document_jwt: String,
+    pub zone_document: ZoneDocument,
+    pub zone_document_jwt: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateWebOwnerMaterialReq {}
+impl_from_json!(GenerateWebOwnerMaterialReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateDeviceKeyPairReq {}
+impl_from_json!(GenerateDeviceKeyPairReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartRegionProbeReq {
+    #[serde(default)]
+    pub force: bool,
+}
+impl_from_json!(StartRegionProbeReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetRegionProbeStatusReq {}
+impl_from_json!(GetRegionProbeStatusReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceKeyPair {
+    pub public_key: Value,
+    pub private_key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareActiveDocumentsReq {
+    pub owner_document: OwnerDocument,
+    pub names: ActiveNameMapping,
+    pub topology: GatewayTopology,
+    pub device_public_key: Value,
+}
+impl_from_json!(PrepareActiveDocumentsReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssembleZoneDocumentReq {
+    pub prepared: PreparedActiveDocuments,
+    pub boot_document_jwt: String,
+    pub device_document_jwt: String,
+    pub device_mini_document_jwt: String,
+}
+impl_from_json!(AssembleZoneDocumentReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignWebActiveDocumentsReq {
+    pub mnemonic_words: Vec<String>,
+    pub prepared: PreparedActiveDocuments,
+}
+impl_from_json!(SignWebActiveDocumentsReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalSystemSettings {
+    pub admin_password_hash: String,
+    #[serde(default)]
+    pub guest_access: bool,
+    #[serde(default)]
+    pub friend_passcode: String,
+    #[serde(default)]
+    pub enabled_features: Value,
+    #[serde(default)]
+    pub ai_provider_config: Value,
+    #[serde(default)]
+    pub jarvis_msg_tunnel_config: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnCommitConfig {
+    pub sn_url: String,
+    pub bns_url: String,
+    pub access_token: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommitActiveReq {
+    pub owner_document: OwnerDocument,
+    pub prepared: PreparedActiveDocuments,
+    pub signed_documents: SignedActiveDocuments,
+    pub device_private_key: String,
+    pub system_settings: LocalSystemSettings,
+    pub sn: SnCommitConfig,
+}
+impl_from_json!(CommitActiveReq);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommitActiveResp {
+    pub status: String,
+    pub access_hostname: String,
+}
 
 #[derive(Clone)]
 struct ActiveServer {
     device_mini_info: DeviceMiniInfo,
+    config: ActiveServiceConfig,
+    region_probe: RegionProbeController,
 }
 
 impl ActiveServer {
-    pub fn new() -> Self {
-        ActiveServer {
+    fn new(config: ActiveServiceConfig) -> Self {
+        let sn_url = format!(
+            "{}://sn.{}/kapi/sn",
+            config.http_schema, config.sn_base_host
+        );
+        Self {
             device_mini_info: DeviceMiniInfo::default(),
+            config,
+            region_probe: RegionProbeController::new(sn_url),
         }
     }
 
-    fn is_sensitive_param_key(key: &str) -> bool {
-        matches!(
-            key,
-            "private_key"
-                | "device_private_key"
-                | "boot_config_jwt"
-                | "device_doc_jwt"
-                | "device_mini_doc_jwt"
-                | "ood_jwt"
-                | "sn_rpc_token"
-                | "access_token"
-                | "admin_password_hash"
-                | "friend_passcode"
-        )
-    }
-
-    fn redact_sensitive_json(value: &Value) -> Value {
-        match value {
-            Value::Object(map) => {
-                let mut redacted = Map::new();
-                for (key, child_value) in map {
-                    if Self::is_sensitive_param_key(key.as_str()) {
-                        let value_len = child_value.as_str().map(|v| v.len()).unwrap_or(0);
-                        redacted.insert(
-                            key.clone(),
-                            Value::String(format!("[redacted:{} chars]", value_len)),
-                        );
-                    } else {
-                        redacted.insert(key.clone(), Self::redact_sensitive_json(child_value));
-                    }
-                }
-                Value::Object(redacted)
-            }
-            Value::Array(values) => {
-                Value::Array(values.iter().map(Self::redact_sensitive_json).collect())
-            }
-            _ => value.clone(),
+    async fn auto_fill_device_mini_info(&mut self) {
+        if let Err(error) = self.device_mini_info.auto_fill_by_system_info().await {
+            warn!("fill active device info failed: {}", error);
         }
-    }
-
-    async fn update_zone_boot_cache(zone_did: &DID, zone_boot_config: &ZoneBootConfig) {
-        let zone_boot_doc = match serde_json::to_value(zone_boot_config) {
-            Ok(doc) => EncodedDocument::JsonLd(doc),
-            Err(err) => {
-                warn!(
-                    "serialize zone boot document for cache failed, zone_did={:?}, err={}",
-                    zone_did, err
-                );
-                return;
-            }
-        };
-
-        if let Err(err) = update_did_cache(zone_did.clone(), Some("boot"), zone_boot_doc).await {
-            warn!(
-                "update zone boot did cache failed, zone_did={:?}, err={}",
-                zone_did, err
-            );
-        } else {
-            info!(
-                "update zone boot did cache success, zone_did={:?}",
-                zone_did
-            );
-        }
-    }
-
-    pub async fn auto_fill_device_mini_info(&mut self) {
-        self.device_mini_info
-            .auto_fill_by_system_info()
-            .await
-            .unwrap();
         self.device_mini_info.active_url = Some("./index.html".to_string());
     }
 
-    fn append_optional_start_config_fields(
-        req_params: &Value,
-        start_params: &mut Map<String, Value>,
-    ) {
-        for field in START_CONFIG_OPTIONAL_FIELDS {
-            if let Some(value) = req_params.get(*field) {
-                start_params.insert((*field).to_string(), value.clone());
-            }
-        }
+    fn generate_web_owner_material(&self) -> Result<WebOwnerMaterial, RPCErrors> {
+        let mnemonic = generate_buckyos_mnemonic()
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let owner = derive_bucky_key_from_mnemonic(mnemonic.as_str(), None, 0)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let evm = derive_evm_key_from_mnemonic(mnemonic.as_str(), None, 0)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        Ok(WebOwnerMaterial {
+            mnemonic_words: mnemonic
+                .split_whitespace()
+                .map(ToString::to_string)
+                .collect(),
+            owner_public_jwk: owner.public_jwk,
+            owner_derivation_path: OWNER_DERIVATION_PATH.to_string(),
+            evm_address: evm.address,
+            evm_derivation_path: EVM_DERIVATION_PATH.to_string(),
+        })
     }
 
-    async fn handle_active_by_wallet(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        // Required parameters: only JWT tokens and essential data
-        let boot_config_jwt = req.params.get("boot_config_jwt");
-        let device_doc_jwt = req.params.get("device_doc_jwt");
-        let device_mini_doc_jwt = req.params.get("device_mini_doc_jwt");
-        let device_private_key = req.params.get("device_private_key");
-        let device_info_param = req.params.get("device_info");
-
-        let user_name = req.params.get("user_name");
-        let zone_name = req.params.get("zone_name");
-        let is_self_domain_param = req.params.get("is_self_domain");
-        let owner_public_key_param = req.params.get("public_key");
-        let admin_password_hash = req.params.get("admin_password_hash");
-        let guest_access = req.params.get("guest_access");
-        let friend_passcode = req.params.get("friend_passcode");
-
-        let sn_url_param = req.params.get("sn_url");
-        let sn_username = req.params.get("sn_username");
-        let sn_rpc_token = req.params.get("sn_rpc_token");
-
-        if owner_public_key_param.is_none()
-            || device_doc_jwt.is_none()
-            || device_mini_doc_jwt.is_none()
-            || device_private_key.is_none()
-            || zone_name.is_none()
-        {
-            return Err(RPCErrors::ParseRequestError("Invalid params, missing required fields: owner_public_key_param, device_doc_jwt, device_mini_doc_jwt, device_private_key, zone_name".to_string()));
-        }
-
-        info!(
-            "handle_active_by_wallet params: {}",
-            Self::redact_sensitive_json(&req.params)
-        );
-
-        let boot_config_jwt = boot_config_jwt.unwrap().as_str().unwrap();
-        let zone_name = zone_name.unwrap().as_str().unwrap();
-        let is_self_domain = if is_self_domain_param.is_some() {
-            is_self_domain_param.unwrap().as_bool().unwrap()
-        } else {
-            false
-        };
-        let zone_did = DID::from_str(zone_name)
-            .map_err(|_| RPCErrors::ReasonError("Invalid zone name".to_string()))?;
-        let user_name = user_name.unwrap().as_str().unwrap();
-        let user_name = user_name.to_lowercase();
-        // Get owner public key from device_config (it should be in the JWT header or we need to verify)
-        // For now, we'll need owner_public_key to verify, but let's try to extract it from the request if available
-        // If not available, we'll decode without verification (less secure but works for now)
-        let owner_public_key: Jwk = if owner_public_key_param.is_some() {
-            serde_json::from_value(owner_public_key_param.unwrap().clone()).map_err(|e| {
-                warn!("Invalid owner public key format: {}", e);
-                RPCErrors::ReasonError("Invalid owner public key format".to_string())
-            })?
-        } else {
-            // Try to extract from device_config if available, otherwise use a placeholder
-            // In practice, owner_public_key should be provided or extracted from zone config
-            warn!("owner_public_key is required to verify JWT signatures");
-            return Err(RPCErrors::ParseRequestError(
-                "owner_public_key is required to verify JWT signatures".to_string(),
-            ));
-        };
-
-        let device_doc_jwt = device_doc_jwt.unwrap().as_str().unwrap();
-        let device_mini_doc_jwt = device_mini_doc_jwt.unwrap().as_str().unwrap();
-        let device_private_key = device_private_key.unwrap().as_str().unwrap();
-
-        // Decode device_doc_jwt to extract information
-        let encoded_device_doc =
-            EncodedDocument::from_str(device_doc_jwt.to_string()).map_err(|e| {
-                warn!("Invalid device_doc_jwt format: {}", e);
-                RPCErrors::ParseRequestError(format!("Invalid device_doc_jwt format: {}", e))
-            })?;
-
-        // First decode without verification to get owner public key hint, then verify
-        // For now, we'll decode without verification first to extract owner info
-        // In production, owner_public_key should be provided or extracted from zone config
-        let device_config = DeviceConfig::decode(&encoded_device_doc, None).map_err(|e| {
-            warn!("Failed to decode device_doc_jwt: {}", e);
-            RPCErrors::ParseRequestError(format!("Failed to decode device_doc_jwt: {}", e))
-        })?;
-
-        // Extract information from device_config
-        let device_did = device_config.id.clone();
-        let device_name = device_config.name.clone();
-        info!(
-            "device_did: {}, device_name: {}",
-            device_did.to_string(),
-            device_name
-        );
-
-        // Verify the JWT signatures with owner public key
-        let owner_decoding_key = DecodingKey::from_jwk(&owner_public_key).map_err(|e| {
-            warn!("Failed to create decoding key: {}", e);
-            RPCErrors::ReasonError(format!("Failed to create decoding key: {}", e))
-        })?;
-
-        // Re-decode with verification
-        let _verified_device_config =
-            DeviceConfig::decode(&encoded_device_doc, Some(&owner_decoding_key)).map_err(|e| {
-                warn!("Failed to verify device_doc_jwt: {}", e);
-                RPCErrors::ParseRequestError(format!("Failed to verify device_doc_jwt: {}", e))
-            })?;
-
-        let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
-            .map_err(|e| {
-                warn!("Invalid device private key: {}", e);
-                RPCErrors::ReasonError("Invalid device private key".to_string())
-            })?;
-
-        info!("device documents decoded success");
-
-        // Determine if SN registration is needed
-        let mut sn_url: Option<String> = None;
-        let mut need_sn = false;
-        if sn_url_param.is_some() {
-            sn_url = Some(sn_url_param.unwrap().as_str().unwrap().to_string());
-            if sn_url.as_ref().unwrap().len() > 5 {
-                need_sn = true;
-            }
-        }
-
-        // Register device to SN if needed
-        if need_sn {
-            let sn_url = sn_url.unwrap();
-            let sn_rpc_token = if sn_rpc_token.is_some() {
-                sn_rpc_token.unwrap().as_str().unwrap()
-            } else {
-                return Err(RPCErrors::ParseRequestError(
-                    "sn_rpc_token is required for SN registration".to_string(),
-                ));
-            };
-
-            let sn_username = if sn_username.is_some() {
-                sn_username.unwrap().as_str().unwrap()
-            } else {
-                return Err(RPCErrors::ParseRequestError(
-                    "sn_username is required for SN registration".to_string(),
-                ));
-            };
-
-            info!(
-                "Bind new zone boot config to sn: {}, boot_config_jwt_len={}",
-                sn_url,
-                boot_config_jwt.len()
-            );
-            let user_domain = if is_self_domain {
-                Some(zone_name.to_string())
-            } else {
-                None
-            };
-
-            let sn_result = sn_bind_zone_config(
-                sn_url.as_str(),
-                Some(sn_rpc_token.to_string()),
-                sn_username,
-                boot_config_jwt,
-                user_domain,
-            )
-            .await; //todo: user_domain?
-            if sn_result.is_err() {
-                return Err(RPCErrors::ReasonError(format!(
-                    "Failed to bind zone config to sn: {}",
-                    sn_result.err().unwrap()
-                )));
-            }
-
-            info!("Register {}(zone-gateway) to sn: {}", device_name, sn_url);
-            // device_info can be either a JSON string or a JSON object
-            let mut device_info: DeviceInfo = if device_info_param.is_some() {
-                let device_info_value = device_info_param.unwrap();
-                if device_info_value.is_string() {
-                    serde_json::from_str(device_info_value.as_str().unwrap()).map_err(|e| {
-                        RPCErrors::ParseRequestError(format!("Invalid device_info string: {}", e))
-                    })?
-                } else {
-                    serde_json::from_value(device_info_value.clone()).map_err(|e| {
-                        RPCErrors::ParseRequestError(format!("Invalid device_info object: {}", e))
-                    })?
-                }
-            } else {
-                // Create device_info from device_config if not provided
-                let mut info = DeviceInfo::from_device_doc(&device_config);
-                info.auto_fill_by_system_info().await.unwrap();
-                info
-            };
-
-            let device_info_json_final = serde_json::to_string(&device_info).unwrap();
-
-            let mut device_ip = "127.0.0.1".to_string();
-            if device_info.ips.len() > 0 {
-                device_ip = device_info.ips[0].clone().to_string();
-            }
-            if device_info.all_ip.len() > 0 {
-                device_ip = device_info.all_ip[0].clone().to_string();
-            }
-
-            let sn_result = sn_register_device(
-                sn_url.as_str(),
-                Some(sn_rpc_token.to_string()),
-                sn_username,
-                &device_name,
-                &device_did.to_string(),
-                &device_ip,
-                device_info_json_final.as_str(),
-                device_mini_doc_jwt,
-            )
-            .await;
-            if sn_result.is_err() {
-                return Err(RPCErrors::ReasonError(format!(
-                    "Failed to register device to sn: {}",
-                    sn_result.err().unwrap()
-                )));
-            }
-        } else {
-            info!("NO SN mode: Check if the zone txt records is already exists ...");
-            // let zone_boot = resolve_did(&zone_did, None).await
-            //     .map_err(|e|RPCErrors::ReasonError(format!("Failed to resolve zone did: {}", e)))?;
-            // let zone_boot_config = ZoneBootConfig::decode(&zone_boot, Some(&owner_decoding_key))
-            //     .map_err(|e|RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", e)))?;
-            info!("verify zone boot config success");
-        }
-
-        // Write device private key
-        let write_dir = get_buckyos_system_etc_dir();
-        let device_private_key_file = write_dir.join("node_private_key.pem");
-        tokio::fs::write(device_private_key_file, device_private_key.as_bytes())
-            .await
-            .map_err(|e| {
-                RPCErrors::ReasonError(format!("Failed to write device private key: {}", e))
-            })?;
-
-        // Write device identity
-        let zone_did = DID::from_str(zone_name)
-            .map_err(|_| RPCErrors::ReasonError("Invalid zone name".to_string()))?;
-        let owner_did = DID::from_str(&user_name).unwrap_or_else(|_| DID::new("bns", &user_name));
-        let node_identity = NodeIdentityConfig {
-            zone_did: zone_did.clone(),
-            owner_public_key: owner_public_key,
-            owner_did: owner_did,
-            device_doc_jwt: device_doc_jwt.to_string(),
-            zone_iat: (buckyos_get_unix_timestamp() as u32 - 3600),
-            device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
-        };
-        let device_identity_file = write_dir.join("node_identity.json");
-        let device_identity_str = serde_json::to_string(&node_identity).map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to serialize node identity: {}", e))
-        })?;
-        tokio::fs::write(device_identity_file, device_identity_str.as_bytes())
-            .await
-            .map_err(|_| {
-                RPCErrors::ReasonError("Failed to write node_identity.json".to_string())
-            })?;
-
-        // Write start config (minimal, only essential params)
-        let mut real_start_params = req.params.clone();
-        let mut real_start_params = real_start_params.as_object_mut().unwrap();
-        real_start_params.insert(
-            "ood_jwt".to_string(),
-            Value::String(device_doc_jwt.to_string()),
-        );
-        Self::append_optional_start_config_fields(&req.params, real_start_params);
-        let start_params_str = serde_json::to_string(&real_start_params).map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to serialize start params: {}", e))
-        })?;
-        let start_params_file = write_dir.join("start_config.json");
-        tokio::fs::write(start_params_file, start_params_str.as_bytes())
-            .await
-            .map_err(|_| RPCErrors::ReasonError("Failed to write start params".to_string()))?;
-
-        //write node_device_config.json
-        let node_device_config_file = write_dir.join("node_device_config.json");
-        let node_device_config_json_str = serde_json::to_string(&device_config).unwrap();
-        tokio::fs::write(
-            node_device_config_file,
-            node_device_config_json_str.as_bytes(),
-        )
-        .await
-        .map_err(|_| {
-            RPCErrors::ReasonError("Failed to write node_device_config.json".to_string())
-        })?;
-
-        let zone_boot_doc = match EncodedDocument::from_str(boot_config_jwt.to_string()) {
-            Ok(doc) => doc,
-            Err(err) => {
-                warn!(
-                    "parse zone boot document failed before cache update, zone_did={:?}, err={}",
-                    zone_did, err
-                );
-                return Err(RPCErrors::ReasonError(format!(
-                    "Failed to parse zone boot config: {}",
-                    err
-                )));
-            }
-        };
-        let zone_boot_config = ZoneBootConfig::decode(&zone_boot_doc, None).map_err(|err| {
-            RPCErrors::ReasonError(format!("Failed to decode zone boot config: {}", err))
-        })?;
-        Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
-
-        info!("ActiveByWallet Write Active files [node_private_key.pem,node_identity.json,start_config.json,node_device_config.json] success");
-
-        tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            exit(0);
-        });
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "code":0
-            })),
-            req.seq,
-        ))
-    }
-
-    async fn handle_prepare_params_for_active_by_wallet(
+    async fn prepare_active_documents(
         &self,
-        req: RPCRequest,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let user_name = req.params.get("user_name");
-        let zone_name = req.params.get("zone_name");
-        let net_id = req.params.get("net_id");
-        let owner_public_key = req.params.get("public_key");
-        let device_public_key = req.params.get("device_public_key");
-        let device_private_key = req.params.get("device_private_key");
-        let device_rtcp_port_param = req.params.get("device_rtcp_port");
-        let support_container = req.params.get("support_container");
-        let sn_username = req.params.get("sn_username");
-        let sn_url_param = req.params.get("sn_url");
-        let mut sn_url: Option<String> = None;
-        if sn_url_param.is_some() {
-            sn_url = Some(sn_url_param.unwrap().as_str().unwrap().to_string());
-        }
+        req: PrepareActiveDocumentsReq,
+    ) -> Result<PreparedActiveDocuments, RPCErrors> {
+        validate_owner_document(&req.owner_document)?;
+        req.names.validate(&req.owner_document)?;
+        validate_topology(&req.topology)?;
+        let device_public_key: Jwk = serde_json::from_value(req.device_public_key)
+            .map_err(|error| RPCErrors::ParseRequestError(error.to_string()))?;
+        validate_ed25519_jwk(&device_public_key, "device public key")?;
 
-        if user_name.is_none()
-            || zone_name.is_none()
-            || owner_public_key.is_none()
-            || device_public_key.is_none()
-            || device_private_key.is_none()
-        {
-            return Err(RPCErrors::ParseRequestError("Invalid params, user_name, zone_name, gateway_type, owner_public_key, device_public_key or device_private_key is none".to_string()));
-        }
-
-        let user_name = user_name.unwrap().as_str().unwrap();
-        let user_name = user_name.to_lowercase();
-        let zone_name = zone_name.unwrap().as_str().unwrap();
-        let zone_did = DID::from_str(zone_name)
-            .map_err(|_| RPCErrors::ReasonError("Invalid zone name".to_string()))?;
-
-        let net_id = if net_id.is_some() {
-            Some(net_id.unwrap().as_str().unwrap().to_string())
+        let boot_iat = buckyos_get_unix_timestamp();
+        let device_mini_iat = next_document_iat("BootDocument", boot_iat)?;
+        let device_iat = next_document_iat("DeviceMiniDocument", device_mini_iat)?;
+        let exp = boot_iat + DEFAULT_EXPIRE_TIME;
+        let ood_net_id = if req.topology.net_id == "nat" {
+            None
+        } else {
+            Some(req.topology.net_id.clone())
+        };
+        let ood =
+            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, ood_net_id, None);
+        let sn_relay_host = if req.topology.uses_sn_relay {
+            Some(sn_host_from_url(req.topology.sn_url.as_str())?)
         } else {
             None
         };
-
-        let owner_public_key = owner_public_key.unwrap();
-        let device_public_key = device_public_key.unwrap();
-        let device_private_key = device_private_key.unwrap().as_str().unwrap();
-        let mut device_rtcp_port = None;
-        if device_rtcp_port_param.is_some() {
-            let real_device_rtcp_port = device_rtcp_port_param.unwrap().as_u64().unwrap();
-            if real_device_rtcp_port != 2980 {
-                device_rtcp_port = Some(real_device_rtcp_port as u32);
-            }
-        }
-
-        let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
-            .map_err(|_| RPCErrors::ReasonError("Invalid device private key".to_string()))?;
-        let device_did = get_device_did_from_ed25519_jwk(&device_public_key)
-            .map_err(|_| RPCErrors::ReasonError("Invalid device public key".to_string()))?;
-        let device_public_jwk: Jwk = serde_json::from_value(device_public_key.clone())
-            .map_err(|_| RPCErrors::ReasonError("Invalid device public key format".to_string()))?;
-
-        let mut need_sn = false;
-        let mut is_support_container = true;
-        if support_container.is_some() {
-            is_support_container = support_container.unwrap().as_str().unwrap() == "true";
-        }
-
-        // Create device_config without signing
-        let mut ddns_sn_url: Option<String> = None;
-        if net_id.is_some() {
-            let real_net_id = net_id.as_ref().unwrap();
-            if real_net_id == "wan_dyn" {
-                ddns_sn_url = sn_url.clone();
-            }
-            if real_net_id == "portmap" {
-                ddns_sn_url = sn_url.clone();
-            }
-        }
-
-        let mut device_config = DeviceConfig::new_by_jwk("ood1", device_public_jwk);
-        device_config.net_id = net_id;
-        device_config.ddns_sn_url = ddns_sn_url;
-        device_config.support_container = is_support_container;
-        device_config.owner = DID::new("bns", user_name.as_str());
-        device_config.zone_did = Some(zone_did.clone());
-        device_config.rtcp_port = device_rtcp_port;
-
-        // Convert device_config to JSON (unsigned)
-        let device_config_json = serde_json::to_value(&device_config).map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to serialize device config: {}", e))
-        })?;
-
-        // Create device info for SN registration
-        let mut device_info = DeviceInfo::from_device_doc(&device_config);
-        device_info.auto_fill_by_system_info().await.unwrap();
-        let device_info_json = serde_json::to_string(&device_info).map_err(|e| {
-            RPCErrors::ReasonError(format!("Failed to serialize device info: {}", e))
-        })?;
-
-        // Check if SN registration is needed
-        if sn_url.is_some() {
-            if sn_url.as_ref().unwrap().len() > 5 {
-                need_sn = true;
-            }
-        }
-
-        let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
-        // Prepare RPC token for SN registration (if needed)
-        let rpc_token_json = if need_sn {
-            let rpc_token = ::kRPC::RPCSessionToken {
-                token_type: ::kRPC::RPCSessionTokenType::Normal,
-                appid: Some("active_service".to_string()),
-                jti: None,
-                session: None,
-                sub: Some(sn_username.clone()),
-                aud: Some("sn".to_string()), //sudo token MUST have aud filed
-                exp: Some(buckyos_get_unix_timestamp() + 60),
-                iss: Some(sn_username),
-                token: None,
-                extra: HashMap::new(),
-            };
-            Some(serde_json::to_value(&rpc_token).map_err(|e| {
-                RPCErrors::ReasonError(format!("Failed to serialize rpc token: {}", e))
-            })?)
-        } else {
-            None
-        };
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "device_config": device_config_json,
-                "rpc_token": rpc_token_json,
-                "device_info": device_info_json,
-            })),
-            req.seq,
-        ))
-    }
-
-    async fn handle_do_active(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        //info!("handle_do_active: {}",serde_json::to_string_pretty(&req.params).unwrap());
-        let user_name = req.params.get("user_name");
-        let zone_name = req.params.get("zone_name");
-        let net_id = req.params.get("net_id");
-        let owner_public_key = req.params.get("public_key");
-        let owner_private_key = req.params.get("private_key");
-        let owner_password_hash = req.params.get("admin_password_hash");
-        let enable_guest_access = req.params.get("guest_access");
-        let friend_passcode = req.params.get("friend_passcode");
-        let device_public_key = req.params.get("device_public_key");
-        let device_private_key = req.params.get("device_private_key");
-        let device_rtcp_port_param = req.params.get("device_rtcp_port");
-        let support_container = req.params.get("support_container");
-        let sn_url_param = req.params.get("sn_url");
-        let sn_username = req.params.get("sn_username");
-        let mut sn_url: Option<String> = None;
-        if sn_url_param.is_some() {
-            sn_url = Some(sn_url_param.unwrap().as_str().unwrap().to_string());
-        }
-        //let device_info = req.params.get("device_info");
-        if user_name.is_none()
-            || zone_name.is_none()
-            || owner_public_key.is_none()
-            || owner_private_key.is_none()
-            || device_public_key.is_none()
-            || device_private_key.is_none()
-        {
-            warn!("Invalid params, user_name, zone_name, owner_public_key, owner_private_key, device_public_key or device_private_key is none");
-            return Err(RPCErrors::ParseRequestError("Invalid params, user_name, zone_name, owner_public_key, owner_private_key, device_public_key or device_private_key is none".to_string()));
-        }
-
-        let user_name = user_name.unwrap().as_str().unwrap();
-        let user_name = user_name.to_lowercase();
-        let zone_name = zone_name.unwrap().as_str().unwrap();
-        let zone_did = DID::from_str(zone_name)
-            .map_err(|_| RPCErrors::ReasonError("Invalid zone name".to_string()))?;
-
-        let net_id = if net_id.is_some() {
-            Some(net_id.unwrap().as_str().unwrap().to_string())
-        } else {
-            None
-        };
-
-        let owner_public_key = owner_public_key.unwrap();
-        let owner_private_key = owner_private_key.unwrap().as_str().unwrap();
-        let device_public_key = device_public_key.unwrap();
-        let device_private_key = device_private_key.unwrap().as_str().unwrap();
-        let mut device_rtcp_port = None;
-        if device_rtcp_port_param.is_some() {
-            let real_device_rtcp_port = device_rtcp_port_param.unwrap().as_u64().unwrap();
-            if real_device_rtcp_port != 2980 {
-                device_rtcp_port = Some(real_device_rtcp_port as u32);
-            }
-        }
-
-        let owner_private_key_pem = EncodingKey::from_ed_pem(owner_private_key.as_bytes())
-            .map_err(|_| RPCErrors::ReasonError("Invalid owner private key".to_string()))?;
-        let device_private_key_pem = EncodingKey::from_ed_pem(device_private_key.as_bytes())
-            .map_err(|_| RPCErrors::ReasonError("Invalid device private key".to_string()))?;
-        let device_did = get_device_did_from_ed25519_jwk(&device_public_key)
-            .map_err(|_| RPCErrors::ReasonError("Invalid device public key".to_string()))?;
-        let device_public_jwk: Jwk = serde_json::from_value(device_public_key.clone()).unwrap();
-
-        //let device_ip:Option<IpAddr> = None;
-        let mut ddns_sn_url: Option<String> = None;
-        let mut need_sn = true;
-        if net_id.is_some() {
-            let real_net_id = net_id.as_ref().unwrap();
-            if real_net_id == "wan_dyn" {
-                ddns_sn_url = sn_url.clone();
-            }
-            if real_net_id == "portmap" {
-                ddns_sn_url = sn_url.clone();
-            }
-        }
-
-        let mut is_support_container = true;
-        if support_container.is_some() {
-            is_support_container = support_container.unwrap().as_str().unwrap() == "true";
-        }
-        //create device doc ,and sign it with owner private key
-        let mut device_config = DeviceConfig::new_by_jwk("ood1", device_public_jwk);
-        device_config.net_id = net_id;
-        device_config.ddns_sn_url = ddns_sn_url;
-        device_config.support_container = is_support_container;
-        device_config.owner = DID::new("bns", user_name.as_str());
-        device_config.zone_did = Some(zone_did.clone());
-        device_config.rtcp_port = device_rtcp_port;
-        //device_config.ip = device_ip;
-
-        let device_doc_jwt = device_config
-            .encode(Some(&owner_private_key_pem))
-            .map_err(|_| RPCErrors::ReasonError("Failed to encode device config".to_string()))?;
-
-        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
-        let device_mini_config_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
-        if sn_url.is_some() {
-            if sn_url.as_ref().unwrap().len() > 5 {
-                need_sn = true;
-            }
-        }
-
-        if need_sn {
-            //call sn_register_device by owner's token
-            let sn_url = sn_url.clone().unwrap();
-            let sn_username = sn_username.unwrap().as_str().unwrap().to_lowercase();
-            let rpc_token = ::kRPC::RPCSessionToken {
-                token_type: ::kRPC::RPCSessionTokenType::Normal,
-                appid: Some("active_service".to_string()),
-                jti: None,
-                session: None,
-                sub: Some(sn_username.to_string()),
-                aud: Some("sn".to_string()),
-                exp: Some(buckyos_get_unix_timestamp() + 60),
-                iss: Some(sn_username.to_string()),
-                token: None,
-                extra: HashMap::new(),
-            };
-
-            let user_rpc_token = rpc_token
-                .generate_jwt(None, &owner_private_key_pem)
-                .map_err(|_| {
-                    warn!("Failed to generate user rpc token");
-                    RPCErrors::ReasonError("Failed to generate user rpc token".to_string())
-                })?;
-
-            let mut device_info = DeviceInfo::from_device_doc(&device_config);
-            device_info.auto_fill_by_system_info().await.unwrap();
-            let device_info_json = serde_json::to_string(&device_info).unwrap();
-            let mut device_ip = "127.0.0.1".to_string();
-            if device_info.ips.len() > 0 {
-                device_ip = device_info.ips[0].clone().to_string();
-            }
-            if device_info.all_ip.len() > 0 {
-                device_ip = device_info.all_ip[0].clone().to_string();
-            }
-            info!("Register device ood1(zone-gateway) to sn: {}", sn_url);
-
-            let sn_result = sn_register_device(
-                sn_url.as_str(),
-                Some(user_rpc_token),
-                sn_username.as_str(),
-                "ood1",
-                &device_did.to_string(),
-                &device_ip,
-                device_info_json.as_str(),
-                &device_mini_config_jwt,
-            )
-            .await;
-            if sn_result.is_err() {
-                warn!(
-                    "Failed to register device to sn: {}",
-                    sn_result.as_ref().err().unwrap()
-                );
-                return Err(RPCErrors::ReasonError(format!(
-                    "Failed to register device to sn: {}",
-                    sn_result.as_ref().err().unwrap().to_string()
-                )));
-            }
-        }
-
-        //TODO: call resolve_did to check self domain config is correct?
-        //  check in ui is more smoothly
-
-        //write device private key
-        let write_dir = get_buckyos_system_etc_dir();
-        let device_private_key_file = write_dir.join("node_private_key.pem");
-        tokio::fs::write(device_private_key_file, device_private_key.as_bytes())
-            .await
-            .unwrap();
-        let owner_public_key: Jwk = serde_json::from_value(owner_public_key.clone()).unwrap();
-
-        //write device idenity，
-
-        let device_mini_config = DeviceMiniConfig::new_by_device_config(&device_config);
-        let device_mini_doc_jwt = device_mini_config.to_jwt(&owner_private_key_pem).unwrap();
-        let node_identity = NodeIdentityConfig {
-            zone_did: zone_did.clone(),
-            owner_public_key: owner_public_key, //TODO:how to update owner's public key? (update owner's did-doc)
-            owner_did: DID::new("bns", user_name.as_str()),
-            device_doc_jwt: device_doc_jwt.to_string(),
-            zone_iat: (buckyos_get_unix_timestamp() as u32 - 3600),
-            device_mini_doc_jwt: device_mini_doc_jwt.to_string(),
-        };
-        let device_identity_file = write_dir.join("node_identity.json");
-        let device_identity_str = serde_json::to_string(&node_identity).unwrap();
-        tokio::fs::write(device_identity_file, device_identity_str.as_bytes())
-            .await
-            .map_err(|_| {
-                RPCErrors::ReasonError("Failed to write node_identity.json".to_string())
-            })?;
-
-        //write start config ,TODO
-        let mut real_start_parms = req.params.clone();
-        let mut real_start_params = real_start_parms.as_object_mut().unwrap();
-        real_start_params.insert(
-            "ood_jwt".to_string(),
-            Value::String(device_doc_jwt.to_string()),
-        );
-        Self::append_optional_start_config_fields(&req.params, real_start_params);
-        let start_params_str = serde_json::to_string(&real_start_params).unwrap();
-        let start_params_file = write_dir.join("start_config.json");
-        tokio::fs::write(start_params_file, start_params_str.as_bytes())
-            .await
-            .map_err(|_| RPCErrors::ReasonError("Failed to write start params".to_string()))?;
-
-        //write node_device_config.json
-        let device_config_file = write_dir.join("node_device_config.json");
-        let device_config_json_str = serde_json::to_string(&device_config).unwrap();
-        tokio::fs::write(device_config_file, device_config_json_str.as_bytes())
-            .await
-            .map_err(|_| {
-                RPCErrors::ReasonError("Failed to write node_device_config.json".to_string())
-            })?;
-
-        let ood = if let Some(net_id) = device_config.net_id.as_ref() {
-            if net_id != "nat" {
-                OODDescriptionString::new(
-                    "ood1".to_string(),
-                    DeviceNodeType::OOD,
-                    Some(net_id.clone()),
-                    None,
-                )
-            } else {
-                OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None)
-            }
-        } else {
-            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None)
-        };
-
-        let zone_boot_sn = sn_url
-            .as_ref()
-            .filter(|url| url.len() > 5)
-            .and_then(|url| url::Url::parse(url).ok())
-            .and_then(|url| url.host_str().map(|host| host.to_string()));
-
-        let zone_boot_config = ZoneBootConfig {
-            id: None,
+        let boot_document = ZoneBootDocument {
+            id: Some(req.names.zone_did.clone()),
             oods: vec![ood],
-            sn: zone_boot_sn,
-            exp: buckyos_get_unix_timestamp() + 3600 * 24 * 365 * 10,
+            sn: sn_relay_host,
+            exp,
             owner: None,
             owner_key: None,
-            extra_info: HashMap::new(),
+            extra_info: HashMap::from([("iat".to_string(), json!(boot_iat))]),
         };
-        Self::update_zone_boot_cache(&zone_did, &zone_boot_config).await;
 
-        info!("DoAction Write Active files [node_private_key.pem,node_identity.json,start_config.json,node_device_config.json] success");
+        let device_did =
+            build_device_did("ood1", &req.names.zone_did).map_err(RPCErrors::ReasonError)?;
+        let mut device_document =
+            new_device_config_by_jwk_with_did("ood1", device_public_key, &device_did)
+                .map_err(RPCErrors::ReasonError)?;
+        device_document.owner = req.names.owner_did.clone();
+        device_document.zone_did = Some(req.names.zone_did.clone());
+        device_document.net_id = Some(req.topology.net_id.clone());
+        device_document.rtcp_port = Some(req.topology.rtcp_port);
+        device_document.support_container = req.topology.support_container;
+        device_document.ddns_sn_url = if req.topology.uses_sn_relay {
+            Some(req.topology.sn_url.clone())
+        } else {
+            None
+        };
+        device_document.iat = device_iat;
+        device_document.exp = exp;
+        let mut device_mini_document = DeviceMiniDocument::new_by_device_document(&device_document);
+        device_mini_document
+            .extra_info
+            .insert("iat".to_string(), json!(device_mini_iat));
+        let mut device_info = DeviceInfo::from_device_doc(&device_document);
+        device_info
+            .auto_fill_by_system_info()
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+
+        Ok(PreparedActiveDocuments {
+            owner_document: req.owner_document,
+            names: req.names,
+            topology: req.topology,
+            boot_document,
+            device_document,
+            device_mini_document,
+            device_info,
+        })
+    }
+
+    fn assemble_zone_document(
+        &self,
+        req: AssembleZoneDocumentReq,
+    ) -> Result<ZoneDocument, RPCErrors> {
+        assemble_zone_document_internal(
+            &req.prepared,
+            req.boot_document_jwt.as_str(),
+            req.device_document_jwt.as_str(),
+            req.device_mini_document_jwt.as_str(),
+        )
+    }
+
+    fn sign_web_active_documents(
+        &self,
+        req: SignWebActiveDocumentsReq,
+    ) -> Result<SignedActiveDocuments, RPCErrors> {
+        let mnemonic = req.mnemonic_words.join(" ");
+        let owner = derive_bucky_key_from_mnemonic(mnemonic.as_str(), None, 0)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let evm = derive_evm_key_from_mnemonic(mnemonic.as_str(), None, 0)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let owner_key = req
+            .prepared
+            .owner_document
+            .get_default_key()
+            .ok_or_else(|| RPCErrors::ReasonError("OwnerDocument key is missing".to_string()))?;
+        if serde_json::to_value(owner_key).ok() != Some(owner.public_jwk.clone()) {
+            return Err(RPCErrors::ReasonError(
+                "mnemonic owner key does not match OwnerDocument".to_string(),
+            ));
+        }
+        let wallet = owner_main_wallet(&req.prepared.owner_document)?;
+        if !wallet.address.eq_ignore_ascii_case(evm.address.as_str()) {
+            return Err(RPCErrors::ReasonError(
+                "mnemonic EVM address does not match OwnerDocument".to_string(),
+            ));
+        }
+        let signing_key = EncodingKey::from_ed_pem(owner.private_key_pem.as_bytes())
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let boot_document_jwt = req
+            .prepared
+            .boot_document
+            .encode(Some(&signing_key))
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
+            .to_string();
+        let device_mini_document_jwt = req
+            .prepared
+            .device_mini_document
+            .to_jwt(&signing_key)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let device_document_jwt = req
+            .prepared
+            .device_document
+            .encode(Some(&signing_key))
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
+            .to_string();
+        let zone_document = assemble_zone_document_internal(
+            &req.prepared,
+            boot_document_jwt.as_str(),
+            device_document_jwt.as_str(),
+            device_mini_document_jwt.as_str(),
+        )?;
+        let zone_document_jwt = zone_document
+            .encode(Some(&signing_key))
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
+            .to_string();
+        Ok(SignedActiveDocuments {
+            boot_document: req.prepared.boot_document,
+            boot_document_jwt,
+            device_document: req.prepared.device_document,
+            device_document_jwt,
+            device_mini_document: req.prepared.device_mini_document,
+            device_mini_document_jwt,
+            zone_document,
+            zone_document_jwt,
+        })
+    }
+
+    async fn commit_active(&self, req: CommitActiveReq) -> Result<CommitActiveResp, RPCErrors> {
+        validate_commit_request(&req, &self.config)?;
+        let mut effective_owner = req.owner_document.clone();
+        let needs_owner_publish = req.prepared.names.zone_did != effective_owner.id
+            && !effective_owner.is_bound_to_zone(&req.prepared.names.zone_did);
+        if needs_owner_publish {
+            effective_owner.set_default_zone_did(req.prepared.names.zone_did.clone());
+            validate_owner_document(&effective_owner)?;
+        }
+
+        let bns_client = BnsIndexerClient::new_bns_server_url(req.sn.bns_url.as_str(), None);
+        let sn_client =
+            SnClient::new_krpc(req.sn.sn_url.as_str(), Some(req.sn.access_token.clone()));
+
+        if req.prepared.names.use_self_domain {
+            let domain = req.prepared.names.access_hostname.as_str();
+            let result = sn_client.bind_domain(domain).await?;
+            if result.domain != domain {
+                return Err(RPCErrors::ReasonError(
+                    "SN verified a different custom domain".to_string(),
+                ));
+            }
+        }
+
+        if needs_owner_publish {
+            let owner_value = serde_json::to_value(&effective_owner)
+                .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+            let owner_bytes = canonical_json_bytes(&owner_value)?;
+            let request_id = content_request_id(
+                "owner",
+                req.prepared.names.owner_name.as_str(),
+                owner_bytes.as_slice(),
+            );
+            if !projection_matches_json(
+                &bns_client,
+                req.prepared.names.bns_publish_name.as_str(),
+                "owner",
+                &owner_value,
+            )
+            .await?
+            {
+                let document = owner_value.as_object().cloned().ok_or_else(|| {
+                    RPCErrors::ReasonError("OwnerDocument must serialize as object".to_string())
+                })?;
+                sn_client
+                    .publish_document(SnBnsPublishDocumentReq {
+                        name: req.prepared.names.bns_publish_name.clone(),
+                        doc_type: "owner".to_string(),
+                        document: SnBnsPublishDocumentContent::JsonObject(document),
+                        request_id: Some(request_id),
+                    })
+                    .await?;
+                wait_for_json_projection(
+                    &bns_client,
+                    req.prepared.names.bns_publish_name.as_str(),
+                    "owner",
+                    &owner_value,
+                )
+                .await?;
+            }
+        }
+
+        let zone_jwt = req.signed_documents.zone_document_jwt.as_str();
+        let zone_request_id = content_request_id(
+            "zone",
+            req.prepared.names.owner_name.as_str(),
+            zone_jwt.as_bytes(),
+        );
+        if !projection_matches_bytes(
+            &bns_client,
+            req.prepared.names.bns_publish_name.as_str(),
+            "zone",
+            zone_jwt.as_bytes(),
+        )
+        .await?
+        {
+            sn_client
+                .publish_document(SnBnsPublishDocumentReq {
+                    name: req.prepared.names.bns_publish_name.clone(),
+                    doc_type: "zone".to_string(),
+                    document: SnBnsPublishDocumentContent::Jwt(zone_jwt.to_string()),
+                    request_id: Some(zone_request_id),
+                })
+                .await?;
+            wait_for_bytes_projection(
+                &bns_client,
+                req.prepared.names.bns_publish_name.as_str(),
+                "zone",
+                zone_jwt.as_bytes(),
+            )
+            .await?;
+        }
+
+        let device_doc_type = req.prepared.device_document.name.as_str();
+        let device_jwt = req.signed_documents.device_document_jwt.as_str();
+        let device_request_id = content_request_id(
+            "device",
+            req.prepared.names.owner_name.as_str(),
+            device_jwt.as_bytes(),
+        );
+        if !projection_matches_bytes(
+            &bns_client,
+            req.prepared.names.bns_publish_name.as_str(),
+            device_doc_type,
+            device_jwt.as_bytes(),
+        )
+        .await?
+        {
+            sn_client
+                .publish_document(SnBnsPublishDocumentReq {
+                    name: req.prepared.names.bns_publish_name.clone(),
+                    doc_type: device_doc_type.to_string(),
+                    document: SnBnsPublishDocumentContent::Jwt(device_jwt.to_string()),
+                    request_id: Some(device_request_id),
+                })
+                .await?;
+            wait_for_bytes_projection(
+                &bns_client,
+                req.prepared.names.bns_publish_name.as_str(),
+                device_doc_type,
+                device_jwt.as_bytes(),
+            )
+            .await?;
+        }
+
+        let device_key_did = device_key_did_from_doc(&req.prepared.device_document)?;
+        sn_client
+            .register_device_online(build_sn_device_online_report(
+                req.prepared.device_document.name.as_str(),
+                device_key_did.as_str(),
+                &req.prepared.device_info,
+            )?)
+            .await?;
+        let zone_info = sn_client.get_zone_info().await?;
+        validate_sn_zone_info(&req, &zone_info)?;
+
+        persist_activation(&req, &effective_owner, &zone_info)?;
+
+        if let Some(name_client) = GLOBAL_NAME_CLIENT.get() {
+            if let Err(error) = name_client.add_verified_cache(
+                req.prepared.names.zone_did.clone(),
+                Some(DidDocType::Zone),
+                EncodedDocument::Jwt(req.signed_documents.zone_document_jwt.clone()),
+            ) {
+                warn!("project activated zone document into DID cache failed: {error}");
+            }
+        } else {
+            warn!("Name client not initialized; skip activated zone document cache projection");
+        }
 
         tokio::task::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             exit(0);
         });
 
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "code":0
-            })),
-            req.seq,
-        ))
-    }
-
-    async fn handle_generate_key_pair(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let (private_key, public_key) = generate_ed25519_key_pair();
-        let public_key_str = public_key.to_string();
-        let private_key_pem = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|e| {
-            warn!("Failed to parse generated private key: {}", e);
-            RPCErrors::ReasonError("Failed to parse generated private key".to_string())
-        })?;
-        let now = buckyos_get_unix_timestamp();
-        let key_id = public_key
-            .get("x")
-            .and_then(Value::as_str)
-            .unwrap_or(public_key_str.as_str())
-            .to_string();
-        let rpc_token = ::kRPC::RPCSessionToken {
-            token_type: ::kRPC::RPCSessionTokenType::Normal,
-            appid: Some("active_service".to_string()),
-            jti: Some(now.to_string()),
-            session: Some(now),
-            sub: Some("$owner".to_string()),
-            aud: None,
-            exp: Some(now + 60 * 15),
-            iss: None,
-            token: None,
-            extra: HashMap::new(),
-        };
-        let access_token = rpc_token
-            .generate_jwt(None, &private_key_pem)
-            .map_err(|e| {
-                warn!("Failed to generate access token for key pair: {}", e);
-                RPCErrors::ReasonError("Failed to generate access token".to_string())
-            })?;
-        return Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "private_key":private_key,
-                "public_key":public_key,
-                "access_token":access_token
-            })),
-            req.seq,
-        ));
-    }
-
-    async fn handle_get_device_info(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        let ood_desc: OODDescriptionString = "ood1".parse().unwrap_or_else(|_| {
-            OODDescriptionString::new("ood1".to_string(), DeviceNodeType::OOD, None, None)
-        });
-        let mut device_info = DeviceInfo::new(&ood_desc, DID::new("dns", "ood1"));
-        device_info.auto_fill_by_system_info().await.unwrap();
-        let device_info_json = serde_json::to_value(device_info).unwrap();
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "device_info":device_info_json
-            })),
-            req.seq,
-        ))
-    }
-
-    async fn handle_generate_zone_txt_records(
-        &self,
-        req: RPCRequest,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let zone_boot_config_str = req.params.get("zone_boot_config");
-        let device_mini_config_str = req.params.get("device_mini_config");
-        let private_key = req.params.get("private_key");
-
-        if zone_boot_config_str.is_none()
-            || private_key.is_none()
-            || device_mini_config_str.is_none()
-        {
-            return Err(RPCErrors::ParseRequestError(
-                "Invalid params, zone_boot_config, device_mini_config or private_key is none"
-                    .to_string(),
-            ));
-        }
-
-        let zone_config = zone_boot_config_str.unwrap().as_str().unwrap();
-        let private_key = private_key.unwrap().as_str().unwrap();
-
-        info!("will sign zone config, bytes={}", zone_config.len());
-        let mut zone_boot_config: ZoneBootConfig =
-            serde_json::from_str(zone_config).map_err(|e| {
-                RPCErrors::ParseRequestError(format!("Invalid zone config: {}", e.to_string()))
-            })?;
-        let private_key_pem = EncodingKey::from_ed_pem(private_key.as_bytes()).map_err(|e| {
-            RPCErrors::ParseRequestError(format!("Invalid private key: {}", e.to_string()))
-        })?;
-        let zone_boot_config_jwt =
-            zone_boot_config
-                .encode(Some(&private_key_pem))
-                .map_err(|e| {
-                    RPCErrors::ParseRequestError(format!(
-                        "Failed to encode zone config: {}",
-                        e.to_string()
-                    ))
-                })?;
-        info!(
-            "zone config jwt generated, bytes={}",
-            zone_boot_config_jwt.to_string().len()
-        );
-
-        let device_mini_config_str = device_mini_config_str.unwrap().as_str().unwrap();
-        info!(
-            "will sign device mini config, bytes={}",
-            device_mini_config_str.len()
-        );
-        let device_mini_config: DeviceMiniConfig = serde_json::from_str(device_mini_config_str)
-            .map_err(|e| {
-                RPCErrors::ParseRequestError(format!(
-                    "Invalid device mini config: {}",
-                    e.to_string()
-                ))
-            })?;
-        let device_mini_config_jwt = device_mini_config.to_jwt(&private_key_pem).map_err(|e| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to encode device mini config: {}",
-                e.to_string()
-            ))
-        })?;
-        info!(
-            "device mini config jwt generated, bytes={}",
-            device_mini_config_jwt.len()
-        );
-
-        return Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "BOOT":zone_boot_config_jwt.to_string(),
-                "DEV":device_mini_config_jwt,
-            })),
-            req.seq,
-        ));
+        Ok(CommitActiveResp {
+            status: "completed".to_string(),
+            access_hostname: req.prepared.names.access_hostname,
+        })
     }
 
     async fn handle_get_mini_device_info(
         &self,
         req: http::Request<BoxBody<Bytes, ServerError>>,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
-        let device_info_json = serde_json::to_string(&self.device_mini_info).unwrap();
-        info!("serve mini device info, bytes={}", device_info_json.len());
+        let device_info_json = serde_json::to_string(&self.device_mini_info)
+            .map_err(|error| server_err!(ServerErrorCode::InvalidData, "{}", error))?;
         Ok(http::Response::builder()
             .body(BoxBody::new(
                 Full::new(Bytes::from(device_info_json))
                     .map_err(|never: std::convert::Infallible| -> ServerError { match never {} })
                     .boxed(),
             ))
-            .map_err(|e| {
-                server_err!(
-                    ServerErrorCode::InvalidData,
-                    "Failed to build response: {}",
-                    e
-                )
-            })?)
+            .map_err(|error| server_err!(ServerErrorCode::InvalidData, "{}", error))?)
     }
+}
+
+fn validate_hostname(value: &str) -> Result<(), RPCErrors> {
+    if value.is_empty()
+        || value.len() > 253
+        || value.contains('/')
+        || value.contains(':')
+        || value.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        })
+    {
+        return Err(RPCErrors::ReasonError(
+            "invalid access hostname".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sn_zone_info(
+    req: &CommitActiveReq,
+    zone_info: &SnZoneInfoResp,
+) -> Result<(), RPCErrors> {
+    if zone_info.zone != req.owner_document.name {
+        return Err(RPCErrors::ReasonError(format!(
+            "SN zone mismatch: expected {}, got {}",
+            req.owner_document.name, zone_info.zone
+        )));
+    }
+    if let Some(relay_node) = zone_info.relay_sn.as_deref() {
+        validate_hostname(relay_node.trim())?;
+    }
+    Ok(())
+}
+
+fn validate_topology(topology: &GatewayTopology) -> Result<(), RPCErrors> {
+    if !matches!(
+        topology.net_id.as_str(),
+        "nat" | "wan_dyn" | "portmap" | "wan"
+    ) {
+        return Err(RPCErrors::ReasonError("invalid gateway net_id".to_string()));
+    }
+    if topology.rtcp_port == 0 || topology.rtcp_port > 65535 {
+        return Err(RPCErrors::ReasonError("invalid RTCP port".to_string()));
+    }
+    if topology.sn_url.trim().is_empty() {
+        return Err(RPCErrors::ReasonError(
+            "SN control-plane URL is required".to_string(),
+        ));
+    }
+    if topology.net_id == "wan" && topology.uses_sn_relay {
+        return Err(RPCErrors::ReasonError(
+            "WAN topology cannot use SN relay".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_prepared_relationships(prepared: &PreparedActiveDocuments) -> Result<(), RPCErrors> {
+    let names = &prepared.names;
+    let topology = &prepared.topology;
+    let boot = &prepared.boot_document;
+    let device = &prepared.device_document;
+    if boot.id.as_ref() != Some(&names.zone_did) {
+        return Err(RPCErrors::ReasonError(format!(
+            "BootDocument zone id mismatch: expected {:?}, got {:?}",
+            names.zone_did, boot.id
+        )));
+    }
+    if boot.owner.is_some() || boot.owner_key.is_some() {
+        return Err(RPCErrors::ReasonError(
+            "BootDocument must not embed owner or owner_key".to_string(),
+        ));
+    }
+    if boot.exp != device.exp {
+        return Err(RPCErrors::ReasonError(format!(
+            "BootDocument expiry mismatch: boot exp {}, device exp {}",
+            boot.exp, device.exp
+        )));
+    }
+    let boot_iat = extra_document_iat("BootDocument", &boot.extra_info)?;
+    let device_mini_iat = extra_document_iat(
+        "DeviceMiniDocument",
+        &prepared.device_mini_document.extra_info,
+    )?;
+    if device_mini_iat != next_document_iat("BootDocument", boot_iat)?
+        || device.iat != next_document_iat("DeviceMiniDocument", device_mini_iat)?
+    {
+        return Err(RPCErrors::ReasonError(format!(
+            "active document iat order mismatch: boot {}, device mini {}, device {}",
+            boot_iat, device_mini_iat, device.iat
+        )));
+    }
+    let expected_ood = OODDescriptionString::new(
+        "ood1".to_string(),
+        DeviceNodeType::OOD,
+        if topology.net_id == "nat" {
+            None
+        } else {
+            Some(topology.net_id.clone())
+        },
+        None,
+    );
+    let expected_sn = if topology.uses_sn_relay {
+        Some(sn_host_from_url(topology.sn_url.as_str())?)
+    } else {
+        None
+    };
+    if boot.oods != vec![expected_ood] || boot.sn != expected_sn {
+        return Err(RPCErrors::ReasonError(
+            "BootDocument OOD/SN topology mismatch".to_string(),
+        ));
+    }
+    let expected_device_did =
+        build_device_did("ood1", &names.zone_did).map_err(RPCErrors::ReasonError)?;
+    let expected_ddns_sn_url = topology.uses_sn_relay.then(|| topology.sn_url.clone());
+    if device.id != expected_device_did {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument id mismatch: expected {:?}, got {:?}",
+            expected_device_did, device.id
+        )));
+    }
+    if device.name != "ood1" {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument name mismatch: expected ood1, got {:?}",
+            device.name
+        )));
+    }
+    if device.owner != names.owner_did {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument owner mismatch: expected {:?}, got {:?}",
+            names.owner_did, device.owner
+        )));
+    }
+    if device.zone_did.as_ref() != Some(&names.zone_did) {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument zone_did mismatch: expected {:?}, got {:?}",
+            names.zone_did, device.zone_did
+        )));
+    }
+    if device.device_mini_document_jwt.is_some() {
+        return Err(RPCErrors::ReasonError(
+            "DeviceMiniDocument JWT must not be embedded in DeviceDocument".to_string(),
+        ));
+    }
+    if device.net_id.as_deref() != Some(topology.net_id.as_str()) {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument net_id mismatch: expected {:?}, got {:?}",
+            topology.net_id, device.net_id
+        )));
+    }
+    if device.rtcp_port != Some(topology.rtcp_port) {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument RTCP port mismatch: expected {}, got {:?}",
+            topology.rtcp_port, device.rtcp_port
+        )));
+    }
+    if device.support_container != topology.support_container {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument container support mismatch: expected {}, got {}",
+            topology.support_container, device.support_container
+        )));
+    }
+    if device.ddns_sn_url != expected_ddns_sn_url {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument DDNS SN URL mismatch: expected {:?}, got {:?}",
+            expected_ddns_sn_url, device.ddns_sn_url
+        )));
+    }
+    let mut expected_device_mini = DeviceMiniDocument::new_by_device_document(device);
+    expected_device_mini
+        .extra_info
+        .insert("iat".to_string(), json!(device_mini_iat));
+    if prepared.device_mini_document != expected_device_mini {
+        return Err(RPCErrors::ReasonError(
+            "DeviceMiniDocument differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.id != device.id {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo id differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.name != device.name {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo name differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.owner != device.owner {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo owner differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.zone_did != device.zone_did {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo zone_did differs from DeviceDocument".to_string(),
+        ));
+    }
+    if prepared.device_info.get_default_key() != device.get_default_key() {
+        return Err(RPCErrors::ReasonError(
+            "DeviceInfo default key differs from DeviceDocument".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn sn_host_from_url(sn_url: &str) -> Result<String, RPCErrors> {
+    url::Url::parse(sn_url)
+        .ok()
+        .and_then(|url| url.host_str().map(ToString::to_string))
+        .ok_or_else(|| RPCErrors::ReasonError("invalid SN URL".to_string()))
+}
+
+fn extra_document_iat(
+    doc_type: &str,
+    extra_info: &HashMap<String, Value>,
+) -> Result<u64, RPCErrors> {
+    extra_info
+        .get("iat")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{} iat is missing or invalid", doc_type)))
+}
+
+fn next_document_iat(doc_type: &str, iat: u64) -> Result<u64, RPCErrors> {
+    iat.checked_add(1)
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{} iat cannot be incremented", doc_type)))
+}
+
+fn normalize_endpoint(value: &str, label: &str) -> Result<url::Url, RPCErrors> {
+    let mut endpoint = url::Url::parse(value.trim())
+        .map_err(|error| RPCErrors::ReasonError(format!("invalid {}: {}", label, error)))?;
+    if endpoint.host_str().is_none()
+        || !matches!(endpoint.scheme(), "http" | "https")
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(RPCErrors::ReasonError(format!(
+            "{} must be an HTTP endpoint with a host and no credentials, query, or fragment",
+            label
+        )));
+    }
+    let normalized_path = endpoint.path().trim_end_matches('/').to_string();
+    endpoint.set_path(if normalized_path.is_empty() {
+        "/"
+    } else {
+        normalized_path.as_str()
+    });
+    Ok(endpoint)
+}
+
+fn validate_commit_endpoints(
+    req: &CommitActiveReq,
+    config: &ActiveServiceConfig,
+) -> Result<(), RPCErrors> {
+    let prepared_sn = normalize_endpoint(&req.prepared.topology.sn_url, "topology SN URL")?;
+    let commit_sn = normalize_endpoint(&req.sn.sn_url, "commit SN URL")?;
+    if prepared_sn != commit_sn {
+        return Err(RPCErrors::ReasonError(format!(
+            "SN endpoint mismatch: prepared {}, commit {}",
+            prepared_sn, commit_sn
+        )));
+    }
+    let commit_bns = normalize_endpoint(&req.sn.bns_url, "commit BNS URL")?;
+    if !matches!(config.http_schema.as_str(), "http" | "https") {
+        return Err(RPCErrors::ReasonError(format!(
+            "invalid active service HTTP schema {:?}",
+            config.http_schema
+        )));
+    }
+    let base_host = config.sn_base_host.trim().to_lowercase();
+    validate_hostname(base_host.as_str())?;
+    let expected_sn = normalize_endpoint(
+        format!("{}://sn.{}/kapi/sn", config.http_schema, base_host).as_str(),
+        "configured SN URL",
+    )?;
+    let expected_bns = normalize_endpoint(
+        format!("{}://bns.{}/kapi/bns", config.http_schema, base_host).as_str(),
+        "configured BNS URL",
+    )?;
+    if commit_sn != expected_sn {
+        return Err(RPCErrors::ReasonError(format!(
+            "commit SN endpoint differs from active service config: expected {}, got {}",
+            expected_sn, commit_sn
+        )));
+    }
+    if commit_bns != expected_bns {
+        return Err(RPCErrors::ReasonError(format!(
+            "commit BNS endpoint differs from active service config: expected {}, got {}",
+            expected_bns, commit_bns
+        )));
+    }
+    if !req.prepared.names.use_self_domain {
+        let expected = format!("{}.web3.{}", req.prepared.names.owner_name, base_host);
+        if req.prepared.names.access_hostname != expected {
+            return Err(RPCErrors::ReasonError(format!(
+                "default access hostname mismatch: expected {:?}, got {:?}",
+                expected, req.prepared.names.access_hostname
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_ed25519_jwk(jwk: &Jwk, label: &str) -> Result<(), RPCErrors> {
+    let value =
+        serde_json::to_value(jwk).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let valid = value.get("kty").and_then(Value::as_str) == Some("OKP")
+        && value.get("crv").and_then(Value::as_str) == Some("Ed25519")
+        && value
+            .get("x")
+            .and_then(Value::as_str)
+            .is_some_and(|x| !x.is_empty());
+    if !valid {
+        return Err(RPCErrors::ReasonError(format!(
+            "{} must be an Ed25519 JWK",
+            label
+        )));
+    }
+    DecodingKey::from_jwk(jwk)
+        .map(|_| ())
+        .map_err(|error| RPCErrors::ReasonError(format!("invalid {}: {}", label, error)))
+}
+
+fn owner_main_wallet(owner_document: &OwnerDocument) -> Result<&OwnerWallet, RPCErrors> {
+    let wallet = owner_document.wallets.get("main").ok_or_else(|| {
+        RPCErrors::ReasonError("OwnerDocument wallets.main is missing".to_string())
+    })?;
+    if wallet.wallet_type != "eth"
+        || wallet.address.len() != 42
+        || !wallet.address.starts_with("0x")
+        || !wallet.address[2..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return Err(RPCErrors::ReasonError(
+            "OwnerDocument wallets.main must be a valid EVM address".to_string(),
+        ));
+    }
+    Ok(wallet)
+}
+
+fn contains_sensitive_owner_field(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            let key = key.to_ascii_lowercase();
+            key.contains("mnemonic")
+                || key.contains("private_key")
+                || key.contains("password")
+                || key.contains("pwd_hash")
+                || key.contains("active_code")
+                || key.contains("token")
+                || key == "email"
+                || contains_sensitive_owner_field(value)
+        }),
+        Value::Array(values) => values.iter().any(contains_sensitive_owner_field),
+        _ => false,
+    }
+}
+
+fn validate_owner_document(owner_document: &OwnerDocument) -> Result<(), RPCErrors> {
+    let normalized_name = owner_document.name.trim().to_lowercase();
+    if normalized_name.is_empty()
+        || owner_document.name != normalized_name
+        || owner_document.id != DID::new("bns", normalized_name.as_str())
+    {
+        return Err(RPCErrors::ReasonError(
+            "OwnerDocument id/name mismatch".to_string(),
+        ));
+    }
+    let owner_key = owner_document.get_default_key().ok_or_else(|| {
+        RPCErrors::ReasonError("OwnerDocument default key is missing".to_string())
+    })?;
+    validate_ed25519_jwk(&owner_key, "OwnerDocument default key")?;
+    owner_main_wallet(owner_document)?;
+    let value = serde_json::to_value(owner_document)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    if contains_sensitive_owner_field(&value) {
+        return Err(RPCErrors::ReasonError(
+            "OwnerDocument contains sensitive fields".to_string(),
+        ));
+    }
+    let round_trip: OwnerDocument = serde_json::from_value(value.clone())
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    if &round_trip != owner_document {
+        return Err(RPCErrors::ReasonError(
+            "OwnerDocument round-trip mismatch".to_string(),
+        ));
+    }
+    if serde_json::to_vec(&value)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?
+        .len()
+        >= MAX_INLINE_DOCUMENT
+    {
+        return Err(RPCErrors::ReasonError(
+            "OwnerDocument exceeds 4KB".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn owner_decoding_key(owner_document: &OwnerDocument) -> Result<DecodingKey, RPCErrors> {
+    let jwk = owner_document.get_default_key().ok_or_else(|| {
+        RPCErrors::ReasonError("OwnerDocument default key is missing".to_string())
+    })?;
+    DecodingKey::from_jwk(&jwk)
+        .map_err(|error| RPCErrors::ReasonError(format!("invalid owner key: {}", error)))
+}
+
+fn assemble_zone_document_internal(
+    prepared: &PreparedActiveDocuments,
+    boot_document_jwt: &str,
+    device_document_jwt: &str,
+    device_mini_document_jwt: &str,
+) -> Result<ZoneDocument, RPCErrors> {
+    validate_owner_document(&prepared.owner_document)?;
+    prepared.names.validate(&prepared.owner_document)?;
+    let owner_key = owner_decoding_key(&prepared.owner_document)?;
+    let boot_document = ZoneBootDocument::decode(
+        &EncodedDocument::Jwt(boot_document_jwt.to_string()),
+        Some(&owner_key),
+    )
+    .map_err(|error| RPCErrors::ReasonError(format!("invalid Boot JWT: {}", error)))?;
+    if boot_document != prepared.boot_document {
+        return Err(RPCErrors::ReasonError(
+            "Boot JWT payload differs from prepared document".to_string(),
+        ));
+    }
+    let device_document = DeviceDocument::decode(
+        &EncodedDocument::Jwt(device_document_jwt.to_string()),
+        Some(&owner_key),
+    )
+    .map_err(|error| RPCErrors::ReasonError(format!("invalid Device JWT: {}", error)))?;
+    if device_document != prepared.device_document {
+        return Err(RPCErrors::ReasonError(
+            "Device JWT payload differs from prepared document".to_string(),
+        ));
+    }
+    let device_mini_document = DeviceMiniDocument::from_jwt(device_mini_document_jwt, &owner_key)
+        .map_err(|error| {
+        RPCErrors::ReasonError(format!("invalid DeviceMini JWT: {}", error))
+    })?;
+    if device_mini_document != prepared.device_mini_document {
+        return Err(RPCErrors::ReasonError(
+            "DeviceMini JWT payload differs from prepared document".to_string(),
+        ));
+    }
+
+    let owner_jwk = prepared.owner_document.get_default_key().ok_or_else(|| {
+        RPCErrors::ReasonError("OwnerDocument default key is missing".to_string())
+    })?;
+    let mut zone_document = ZoneDocument::new(
+        prepared.names.zone_did.clone(),
+        prepared.names.owner_did.clone(),
+        owner_jwk,
+    );
+    zone_document.init_by_boot_document(&prepared.boot_document, &boot_document_jwt.to_string());
+    zone_document.iat = next_document_iat("DeviceDocument", prepared.device_document.iat)?;
+    zone_document.hostname = prepared.names.access_hostname.clone();
+    zone_document.devices.insert(
+        prepared.device_document.name.clone(),
+        prepared.device_document.clone(),
+    );
+    zone_document.mini_device_jwts.insert(
+        prepared.device_document.name.clone(),
+        device_mini_document_jwt.to_string(),
+    );
+    Ok(zone_document)
+}
+
+fn verify_signed_documents(
+    prepared: &PreparedActiveDocuments,
+    signed: &SignedActiveDocuments,
+) -> Result<(), RPCErrors> {
+    if signed.boot_document != prepared.boot_document
+        || signed.device_document != prepared.device_document
+        || signed.device_mini_document != prepared.device_mini_document
+    {
+        return Err(RPCErrors::ReasonError(
+            "signed document payload differs from prepared document".to_string(),
+        ));
+    }
+    let expected_zone = assemble_zone_document_internal(
+        prepared,
+        signed.boot_document_jwt.as_str(),
+        signed.device_document_jwt.as_str(),
+        signed.device_mini_document_jwt.as_str(),
+    )?;
+    if signed.zone_document != expected_zone {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument nested documents are inconsistent".to_string(),
+        ));
+    }
+    let owner_key = owner_decoding_key(&prepared.owner_document)?;
+    let decoded_zone = ZoneDocument::decode(
+        &EncodedDocument::Jwt(signed.zone_document_jwt.clone()),
+        Some(&owner_key),
+    )
+    .map_err(|error| RPCErrors::ReasonError(format!("invalid Zone JWT: {}", error)))?;
+    if decoded_zone != expected_zone {
+        return Err(RPCErrors::ReasonError(
+            "Zone JWT payload differs from assembled ZoneDocument".to_string(),
+        ));
+    }
+    if signed.zone_document.boot_jwt != signed.boot_document_jwt {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument BootDocument JWT mismatch".to_string(),
+        ));
+    }
+    if signed
+        .zone_document
+        .devices
+        .get(prepared.device_document.name.as_str())
+        != Some(&signed.device_document)
+    {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument embedded DeviceDocument mismatch".to_string(),
+        ));
+    }
+    if signed
+        .zone_document
+        .mini_device_jwts
+        .get(prepared.device_document.name.as_str())
+        != Some(&signed.device_mini_document_jwt)
+    {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument DeviceMiniDocument JWT mismatch".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_document_times(prepared: &PreparedActiveDocuments) -> Result<(), RPCErrors> {
+    let now = buckyos_get_unix_timestamp();
+    if prepared.boot_document.exp <= now {
+        return Err(RPCErrors::ReasonError(format!(
+            "BootDocument expired: exp {}, now {}",
+            prepared.boot_document.exp, now
+        )));
+    }
+    if prepared.device_document.exp <= now {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument expired: exp {}, now {}",
+            prepared.device_document.exp, now
+        )));
+    }
+    if prepared.device_mini_document.exp <= now {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceMiniDocument expired: exp {}, now {}",
+            prepared.device_mini_document.exp, now
+        )));
+    }
+    if prepared.device_document.iat > now + 300 {
+        return Err(RPCErrors::ReasonError(format!(
+            "DeviceDocument issued too far in the future: iat {}, now {}",
+            prepared.device_document.iat, now
+        )));
+    }
+    Ok(())
+}
+
+fn validate_device_private_key(
+    private_key_pem: &str,
+    device_document: &DeviceDocument,
+) -> Result<(), RPCErrors> {
+    let encoding_key = EncodingKey::from_ed_pem(private_key_pem.as_bytes()).map_err(|error| {
+        RPCErrors::ReasonError(format!("invalid device private key: {}", error))
+    })?;
+    let claims = json!({
+        "iat": buckyos_get_unix_timestamp(),
+        "exp": buckyos_get_unix_timestamp() + 60
+    });
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.typ = None;
+    let jwt = encode(&header, &claims, &encoding_key)
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    let public_key = device_document.get_default_key().ok_or_else(|| {
+        RPCErrors::ReasonError("DeviceDocument default key is missing".to_string())
+    })?;
+    decode_json_from_jwt_with_default_pk(jwt.as_str(), &public_key).map_err(|_| {
+        RPCErrors::ReasonError(
+            "device private key does not match DeviceDocument public key".to_string(),
+        )
+    })?;
+    Ok(())
+}
+
+fn validate_commit_request(
+    req: &CommitActiveReq,
+    config: &ActiveServiceConfig,
+) -> Result<(), RPCErrors> {
+    validate_owner_document(&req.owner_document)?;
+    if req.owner_document != req.prepared.owner_document {
+        return Err(RPCErrors::ReasonError(
+            "commit OwnerDocument differs from prepared OwnerDocument".to_string(),
+        ));
+    }
+    req.prepared.names.validate(&req.owner_document)?;
+    validate_topology(&req.prepared.topology)?;
+    validate_commit_endpoints(req, config)?;
+    validate_prepared_relationships(&req.prepared)?;
+    verify_signed_documents(&req.prepared, &req.signed_documents)?;
+    validate_document_times(&req.prepared)?;
+    validate_device_private_key(
+        req.device_private_key.as_str(),
+        &req.prepared.device_document,
+    )?;
+    if req.signed_documents.zone_document_jwt.len() >= MAX_INLINE_DOCUMENT {
+        return Err(RPCErrors::ReasonError(
+            "ZoneDocument JWT exceeds 4KB".to_string(),
+        ));
+    }
+    if req.sn.access_token.trim().is_empty()
+        || req.sn.sn_url.trim().is_empty()
+        || req.sn.bns_url.trim().is_empty()
+    {
+        return Err(RPCErrors::ReasonError(
+            "SN access token and endpoints are required".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn device_info_report_ip(device_info: &DeviceInfo) -> String {
+    device_info
+        .all_ip
+        .first()
+        .or_else(|| device_info.ips.first())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn device_key_did_from_doc(device_doc: &DeviceDocument) -> Result<String, RPCErrors> {
+    let default_key = device_doc.get_default_key().ok_or_else(|| {
+        RPCErrors::ReasonError("DeviceDocument default key is missing".to_string())
+    })?;
+    let x =
+        get_x_from_jwk(&default_key).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    Ok(format!("did:dev:{}", x))
+}
+
+fn build_sn_device_online_report(
+    device_name: &str,
+    device_key_did: &str,
+    device_info: &DeviceInfo,
+) -> Result<SnDeviceOnlineReportReq, RPCErrors> {
+    Ok(SnDeviceOnlineReportReq {
+        device_name: device_name.to_string(),
+        device_did: Some(device_key_did.to_string()),
+        device_ip: device_info_report_ip(device_info),
+        device_info: serde_json::to_value(device_info)
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?,
+        endpoints: Vec::new(),
+        report_seq: None,
+        ttl: None,
+    })
+}
+
+fn content_request_id(operation: &str, owner_name: &str, bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!(
+        "node-active:{}:{}:{}",
+        operation,
+        owner_name,
+        hex::encode(digest)
+    )
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut keys: Vec<&String> = object.keys().collect();
+            keys.sort();
+            let mut canonical = Map::new();
+            for key in keys {
+                canonical.insert(key.clone(), canonical_json_value(&object[key]));
+            }
+            Value::Object(canonical)
+        }
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json_value).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, RPCErrors> {
+    serde_json::to_vec(&canonical_json_value(value))
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))
+}
+
+async fn projection_matches_bytes(
+    client: &dyn BnsIndexerApi,
+    name: &str,
+    doc_type: &str,
+    expected: &[u8],
+) -> Result<bool, RPCErrors> {
+    match client.resolve_document(name, doc_type).await {
+        Ok(result) => Ok(result.document_state.document.inline_document == expected),
+        Err(error)
+            if error.is_registry_code("DOCUMENT_NOT_FOUND")
+                || error.is_registry_code("NAME_NOT_FOUND") =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(RPCErrors::ReasonError(format!(
+            "BNS projection read failed: {}",
+            error
+        ))),
+    }
+}
+
+async fn projection_matches_json(
+    client: &dyn BnsIndexerApi,
+    name: &str,
+    doc_type: &str,
+    expected: &Value,
+) -> Result<bool, RPCErrors> {
+    match client.resolve_document(name, doc_type).await {
+        Ok(result) => serde_json::from_slice::<Value>(
+            result.document_state.document.inline_document.as_slice(),
+        )
+        .map(|value| value == *expected)
+        .map_err(|error| RPCErrors::ReasonError(format!("invalid projected JSON: {}", error))),
+        Err(error)
+            if error.is_registry_code("DOCUMENT_NOT_FOUND")
+                || error.is_registry_code("NAME_NOT_FOUND") =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(RPCErrors::ReasonError(format!(
+            "BNS projection read failed: {}",
+            error
+        ))),
+    }
+}
+
+async fn wait_for_bytes_projection(
+    client: &dyn BnsIndexerApi,
+    name: &str,
+    doc_type: &str,
+    expected: &[u8],
+) -> Result<(), RPCErrors> {
+    let started = Instant::now();
+    let mut delay = Duration::from_millis(200);
+    while started.elapsed() < PROJECTION_DEADLINE {
+        if projection_matches_bytes(client, name, doc_type, expected).await? {
+            return Ok(());
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(2));
+    }
+    Err(RPCErrors::ReasonError(format!(
+        "projection_timeout waiting for {}/{}",
+        name, doc_type
+    )))
+}
+
+async fn wait_for_json_projection(
+    client: &dyn BnsIndexerApi,
+    name: &str,
+    doc_type: &str,
+    expected: &Value,
+) -> Result<(), RPCErrors> {
+    let started = Instant::now();
+    let mut delay = Duration::from_millis(200);
+    while started.elapsed() < PROJECTION_DEADLINE {
+        if projection_matches_json(client, name, doc_type, expected).await? {
+            return Ok(());
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(2));
+    }
+    Err(RPCErrors::ReasonError(format!(
+        "projection_timeout waiting for {}/{}",
+        name, doc_type
+    )))
+}
+
+fn build_start_config(req: &CommitActiveReq, owner_document: &OwnerDocument) -> Value {
+    json!({
+        "user_name": owner_document.name,
+        "owner_document": owner_document,
+        "zone_name": req.prepared.names.zone_did.to_string(),
+        "access_hostname": req.prepared.names.access_hostname,
+        "zone_document_jwt": req.signed_documents.zone_document_jwt,
+        "boot_config_jwt": req.signed_documents.boot_document_jwt,
+        "device_doc_jwt": req.signed_documents.device_document_jwt,
+        "device_mini_doc_jwt": req.signed_documents.device_mini_document_jwt,
+        "ood_jwt": req.signed_documents.device_document_jwt,
+        "admin_password_hash": req.system_settings.admin_password_hash,
+        "guest_access": req.system_settings.guest_access,
+        "friend_passcode": req.system_settings.friend_passcode,
+        "enabled_features": req.system_settings.enabled_features,
+        "ai_provider_config": req.system_settings.ai_provider_config,
+        "jarvis_msg_tunnel_config": req.system_settings.jarvis_msg_tunnel_config
+    })
+}
+
+fn persist_activation(
+    req: &CommitActiveReq,
+    effective_owner: &OwnerDocument,
+    zone_info: &SnZoneInfoResp,
+) -> Result<(), RPCErrors> {
+    let etc_dir = get_buckyos_system_etc_dir();
+    let start_config = serde_json::to_vec_pretty(&build_start_config(req, effective_owner))
+        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    atomic_write(etc_dir.join("start_config.json").as_path(), &start_config)
+        .map_err(RPCErrors::ReasonError)?;
+    save_sn_zone_info(zone_info).map_err(RPCErrors::ReasonError)?;
+    save_zone_document_jwt(
+        etc_dir.as_path(),
+        req.signed_documents.zone_document_jwt.as_str(),
+    )
+    .map_err(RPCErrors::ReasonError)?;
+
+    let device = &req.prepared.device_document;
+    let node_identity = LocalNodeIdentityConfig::new(
+        req.prepared.names.zone_did.clone(),
+        req.prepared.names.owner_did.clone(),
+        effective_owner.get_default_key().ok_or_else(|| {
+            RPCErrors::ReasonError("OwnerDocument default key is missing".to_string())
+        })?,
+        device.name.clone(),
+        device.id.clone(),
+        req.signed_documents.zone_document.iat as u32,
+    );
+    save_local_device_identity(
+        etc_dir.as_path(),
+        &node_identity,
+        device,
+        req.signed_documents.device_document_jwt.as_str(),
+        req.signed_documents.device_mini_document_jwt.as_str(),
+        req.device_private_key.as_str(),
+    )
+    .map_err(RPCErrors::ReasonError)?;
+    Ok(())
+}
+
+fn rpc_success<T: Serialize>(value: T, seq: u64) -> Result<RPCResponse, RPCErrors> {
+    let value =
+        serde_json::to_value(value).map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+    Ok(RPCResponse::new(RPCResult::Success(value), seq))
 }
 
 #[async_trait]
@@ -995,29 +1491,51 @@ impl RPCHandler for ActiveServer {
     async fn handle_rpc_call(
         &self,
         req: RPCRequest,
-        ip_from: IpAddr,
+        _ip_from: IpAddr,
     ) -> Result<RPCResponse, RPCErrors> {
-        let method = req.method.clone();
-        let result = match req.method.as_str() {
-            "generate_key_pair" => self.handle_generate_key_pair(req).await,
-            "get_device_info" => self.handle_get_device_info(req).await,
-            "generate_zone_txt_records" => self.handle_generate_zone_txt_records(req).await,
-            "do_active" => self.handle_do_active(req).await,
-            "prepare_params_for_active_by_wallet" => {
-                self.handle_prepare_params_for_active_by_wallet(req).await
+        let seq = req.seq;
+        match req.method.as_str() {
+            "generate_web_owner_material" => {
+                GenerateWebOwnerMaterialReq::from_json(req.params)?;
+                rpc_success(self.generate_web_owner_material()?, seq)
             }
-            "do_active_by_wallet" => self.handle_active_by_wallet(req).await,
+            "generate_device_key_pair" => {
+                GenerateDeviceKeyPairReq::from_json(req.params)?;
+                let (private_key, public_key) = generate_ed25519_key_pair();
+                rpc_success(
+                    DeviceKeyPair {
+                        public_key,
+                        private_key,
+                    },
+                    seq,
+                )
+            }
+            "start_region_probe" => {
+                let params = StartRegionProbeReq::from_json(req.params)?;
+                rpc_success(self.region_probe.start(params.force).await, seq)
+            }
+            "get_region_probe_status" => {
+                GetRegionProbeStatusReq::from_json(req.params)?;
+                rpc_success(self.region_probe.status().await, seq)
+            }
+            "prepare_active_documents" => {
+                let params = PrepareActiveDocumentsReq::from_json(req.params)?;
+                rpc_success(self.prepare_active_documents(params).await?, seq)
+            }
+            "assemble_zone_document" => {
+                let params = AssembleZoneDocumentReq::from_json(req.params)?;
+                rpc_success(self.assemble_zone_document(params)?, seq)
+            }
+            "sign_web_active_documents" => {
+                let params = SignWebActiveDocumentsReq::from_json(req.params)?;
+                rpc_success(self.sign_web_active_documents(params)?, seq)
+            }
+            "commit_active" => {
+                let params = CommitActiveReq::from_json(req.params)?;
+                rpc_success(self.commit_active(params).await?, seq)
+            }
             _ => Err(RPCErrors::UnknownMethod(req.method)),
-        };
-        if result.is_err() {
-            error!(
-                "Failed to handle rpc call:{} {}",
-                method.as_str(),
-                result.as_ref().err().unwrap().to_string()
-            );
-            return Err(result.err().unwrap());
         }
-        return result;
     }
 }
 
@@ -1031,15 +1549,13 @@ impl HttpServer for ActiveServer {
         if *req.method() == Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
         }
-        if *req.method() == Method::GET {
-            if req.uri().path() == "/device" {
-                return self.handle_get_mini_device_info(req).await;
-            }
+        if *req.method() == Method::GET && req.uri().path() == "/device" {
+            return self.handle_get_mini_device_info(req).await;
         }
-        return Err(server_err!(
+        Err(server_err!(
             ServerErrorCode::BadRequest,
             "Method not allowed"
-        ));
+        ))
     }
 
     fn id(&self) -> String {
@@ -1056,42 +1572,321 @@ impl HttpServer for ActiveServer {
 }
 
 pub async fn start_node_active_service() {
-    let active_server = ActiveServer::new();
-
-    //active server config
     let active_server_dir = get_buckyos_system_bin_dir().join("node-active");
-
-    //start!
-    info!("start node active service...");
-
+    let config_path = active_server_dir.join("active_config.json");
+    let config = match std::fs::read(&config_path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            error!(
+                "Failed to load active service config from {:?}: {}",
+                config_path, error
+            );
+            return;
+        }
+    };
     let runner = Runner::new(ACTIVE_SERVICE_MAIN_PORT);
-
-    // 添加 RPC 服务
-    let mut active_server = ActiveServer::new();
+    let mut active_server = ActiveServer::new(config);
     active_server.auto_fill_device_mini_info().await;
-
     let active_server = Arc::new(active_server);
-    let add_result = runner.add_http_server("/kapi/active".to_string(), active_server.clone());
-    if add_result.is_err() {
-        error!("Failed to add http server: {}", add_result.err().unwrap());
+    if let Err(error) = runner.add_http_server("/kapi/active".to_string(), active_server.clone()) {
+        error!("Failed to add active server: {}", error);
         return;
     }
-
-    let add_result = runner.add_http_server("/device".to_string(), active_server.clone());
-    if add_result.is_err() {
-        error!("Failed to add http server: {}", add_result.err().unwrap());
+    if let Err(error) = runner.add_http_server("/device".to_string(), active_server) {
+        error!("Failed to add device endpoint: {}", error);
         return;
     }
-
-    // 添加静态文件服务
-    info!("active server dir: {}", active_server_dir.display());
-    let add_result = runner
+    if let Err(error) = runner
         .add_dir_handler("/".to_string(), active_server_dir)
-        .await;
-    if add_result.is_err() {
-        error!("Failed to add dir handler: {}", add_result.err().unwrap());
+        .await
+    {
+        error!("Failed to add active UI: {}", error);
         return;
     }
-
     runner.run().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner_document(mnemonic: &str) -> OwnerDocument {
+        let owner_key = derive_bucky_key_from_mnemonic(mnemonic, None, 0).unwrap();
+        let evm_key = derive_evm_key_from_mnemonic(mnemonic, None, 0).unwrap();
+        let mut owner = OwnerDocument::new(
+            DID::new("bns", "alice"),
+            "alice".to_string(),
+            "alice".to_string(),
+            serde_json::from_value(owner_key.public_jwk).unwrap(),
+        );
+        owner.wallets.insert(
+            "main".to_string(),
+            OwnerWallet {
+                wallet_type: "eth".to_string(),
+                address: evm_key.address,
+            },
+        );
+        owner
+    }
+
+    fn topology() -> GatewayTopology {
+        GatewayTopology {
+            net_id: "nat".to_string(),
+            rtcp_port: DEFAULT_RTCP_PORT,
+            support_container: true,
+            uses_sn_relay: true,
+            sn_url: "https://sn.example.com/kapi/sn".to_string(),
+        }
+    }
+
+    fn active_service_config() -> ActiveServiceConfig {
+        ActiveServiceConfig {
+            sn_base_host: "example.com".to_string(),
+            http_schema: "https".to_string(),
+        }
+    }
+
+    #[test]
+    fn every_request_struct_has_strict_parsing() {
+        assert!(GenerateWebOwnerMaterialReq::from_json(json!({})).is_ok());
+        assert!(GenerateDeviceKeyPairReq::from_json(json!({})).is_ok());
+        assert!(StartRegionProbeReq::from_json(json!({})).is_ok());
+        assert!(StartRegionProbeReq::from_json(json!({"force": true})).is_ok());
+        assert!(GetRegionProbeStatusReq::from_json(json!({})).is_ok());
+        assert!(GenerateWebOwnerMaterialReq::from_json(json!({"extra": true})).is_err());
+        assert!(StartRegionProbeReq::from_json(json!({"extra": true})).is_err());
+        assert!(GetRegionProbeStatusReq::from_json(json!({"extra": true})).is_err());
+        assert!(PrepareActiveDocumentsReq::from_json(json!({})).is_err());
+        assert!(AssembleZoneDocumentReq::from_json(json!({})).is_err());
+        assert!(SignWebActiveDocumentsReq::from_json(json!({})).is_err());
+        assert!(CommitActiveReq::from_json(json!({})).is_err());
+    }
+
+    #[test]
+    fn active_name_mapping_has_unambiguous_default_and_custom_domain_values() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let default = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
+        assert_eq!(default.owner_name, "alice");
+        assert_eq!(default.owner_did.to_string(), "did:bns:alice");
+        assert_eq!(default.zone_did.to_string(), "did:bns:alice");
+        assert_eq!(default.bns_publish_name, "alice");
+
+        let custom = ActiveNameMapping::derive(&owner, "home.example.com", true);
+        assert_eq!(custom.owner_did.to_string(), "did:bns:alice");
+        assert_eq!(custom.zone_did.to_string(), "did:web:home.example.com");
+        assert_eq!(custom.bns_publish_name, "alice");
+    }
+
+    #[tokio::test]
+    async fn web_signing_round_trip_builds_four_verified_documents() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
+        let (_, device_public_key) = generate_ed25519_key_pair();
+        let server = ActiveServer::new(active_service_config());
+        let prepared = server
+            .prepare_active_documents(PrepareActiveDocumentsReq {
+                owner_document: owner,
+                names,
+                topology: topology(),
+                device_public_key,
+            })
+            .await
+            .unwrap();
+        let boot_document = serde_json::to_value(&prepared.boot_document).unwrap();
+        assert!(boot_document.get("owner").is_none());
+        assert!(boot_document.get("owner_key").is_none());
+        let boot_iat = boot_document.get("iat").unwrap().as_u64().unwrap();
+        let device_mini_iat = serde_json::to_value(&prepared.device_mini_document)
+            .unwrap()
+            .get("iat")
+            .unwrap()
+            .as_u64()
+            .unwrap();
+        assert_eq!(device_mini_iat, boot_iat + 1);
+        assert_eq!(prepared.device_document.iat, device_mini_iat + 1);
+        let signed = server
+            .sign_web_active_documents(SignWebActiveDocumentsReq {
+                mnemonic_words: mnemonic
+                    .split_whitespace()
+                    .map(ToString::to_string)
+                    .collect(),
+                prepared: prepared.clone(),
+            })
+            .unwrap();
+        verify_signed_documents(&prepared, &signed).unwrap();
+        assert_eq!(signed.zone_document.iat, prepared.device_document.iat + 1);
+        assert_eq!(signed.zone_document.boot_jwt, signed.boot_document_jwt);
+        assert_eq!(
+            signed.zone_document.devices.get("ood1"),
+            Some(&signed.device_document)
+        );
+        assert!(
+            signed
+                .zone_document
+                .devices
+                .get("ood1")
+                .unwrap()
+                .device_mini_document_jwt
+                .is_none()
+        );
+        assert_eq!(
+            signed.zone_document.mini_device_jwts.get("ood1"),
+            Some(&signed.device_mini_document_jwt)
+        );
+        assert!(signed.zone_document_jwt.len() < MAX_INLINE_DOCUMENT);
+
+        let mut commit_req = CommitActiveReq {
+            owner_document: prepared.owner_document.clone(),
+            prepared: prepared.clone(),
+            signed_documents: signed,
+            device_private_key: "not-persisted-in-start-config".to_string(),
+            system_settings: LocalSystemSettings {
+                admin_password_hash: "required-admin-hash".to_string(),
+                guest_access: false,
+                friend_passcode: String::new(),
+                enabled_features: json!({}),
+                ai_provider_config: json!({}),
+                jarvis_msg_tunnel_config: json!({}),
+            },
+            sn: SnCommitConfig {
+                sn_url: "https://sn.example.com/kapi/sn/".to_string(),
+                bns_url: "https://bns.example.com/kapi/bns".to_string(),
+                access_token: "secret-access-token".to_string(),
+            },
+        };
+        validate_commit_endpoints(&commit_req, &active_service_config()).unwrap();
+        commit_req.sn.sn_url = "https://sn.other.example/kapi/sn".to_string();
+        assert!(
+            validate_commit_endpoints(&commit_req, &active_service_config())
+                .unwrap_err()
+                .to_string()
+                .contains("SN endpoint mismatch")
+        );
+        commit_req.sn.sn_url = "https://sn.example.com/kapi/sn".to_string();
+        commit_req.prepared.names.access_hostname = "other.example.com".to_string();
+        assert!(
+            validate_commit_endpoints(&commit_req, &active_service_config())
+                .unwrap_err()
+                .to_string()
+                .contains("default access hostname mismatch")
+        );
+        commit_req.prepared.names.access_hostname = "alice.web3.example.com".to_string();
+        let config = build_start_config(&commit_req, &prepared.owner_document);
+        let config_text = serde_json::to_string(&config).unwrap();
+        for forbidden in [
+            "mnemonic_words",
+            "device_private_key",
+            "secret-access-token",
+            "pwd_hash",
+        ] {
+            assert!(!config_text.contains(forbidden));
+        }
+
+        let mut zone_info = SnZoneInfoResp {
+            code: 0,
+            zone: "alice".to_string(),
+            bns_name: "alice".to_string(),
+            relay_sn: Some("relay.example.com".to_string()),
+            self_cert: false,
+            cert_checked_at: None,
+            cert_expires_at: None,
+            source_version: Some("v2".to_string()),
+            updated_at: 1,
+        };
+        validate_sn_zone_info(&commit_req, &zone_info).unwrap();
+        zone_info.relay_sn = None;
+        validate_sn_zone_info(&commit_req, &zone_info).unwrap();
+        zone_info.relay_sn = Some("relay.example.com".to_string());
+        zone_info.zone = "bob".to_string();
+        assert!(validate_sn_zone_info(&commit_req, &zone_info)
+            .unwrap_err()
+            .to_string()
+            .contains("SN zone mismatch"));
+    }
+
+    #[tokio::test]
+    async fn prepared_documents_cannot_change_after_signing() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
+        let (_, device_public_key) = generate_ed25519_key_pair();
+        let server = ActiveServer::new(active_service_config());
+        let mut prepared = server
+            .prepare_active_documents(PrepareActiveDocumentsReq {
+                owner_document: owner,
+                names,
+                topology: topology(),
+                device_public_key,
+            })
+            .await
+            .unwrap();
+        validate_prepared_relationships(&prepared).unwrap();
+        let device_mini_iat = extra_document_iat(
+            "DeviceMiniDocument",
+            &prepared.device_mini_document.extra_info,
+        )
+        .unwrap();
+        prepared
+            .device_mini_document
+            .extra_info
+            .insert("iat".to_string(), json!(prepared.device_document.iat));
+        assert!(validate_prepared_relationships(&prepared).is_err());
+        prepared
+            .device_mini_document
+            .extra_info
+            .insert("iat".to_string(), json!(device_mini_iat));
+        prepared.device_document.device_mini_document_jwt = Some("mini.jwt.value".to_string());
+        assert!(validate_prepared_relationships(&prepared).is_err());
+        prepared.device_document.device_mini_document_jwt = None;
+        prepared.topology.net_id = "wan".to_string();
+        prepared.topology.uses_sn_relay = false;
+        assert!(validate_prepared_relationships(&prepared).is_err());
+    }
+
+    #[tokio::test]
+    async fn tampered_nested_jwt_is_rejected() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let owner = owner_document(mnemonic);
+        let names = ActiveNameMapping::derive(&owner, "alice.web3.example.com", false);
+        let (_, device_public_key) = generate_ed25519_key_pair();
+        let server = ActiveServer::new(active_service_config());
+        let prepared = server
+            .prepare_active_documents(PrepareActiveDocumentsReq {
+                owner_document: owner,
+                names,
+                topology: topology(),
+                device_public_key,
+            })
+            .await
+            .unwrap();
+        let mut signed = server
+            .sign_web_active_documents(SignWebActiveDocumentsReq {
+                mnemonic_words: mnemonic
+                    .split_whitespace()
+                    .map(ToString::to_string)
+                    .collect(),
+                prepared: prepared.clone(),
+            })
+            .unwrap();
+        signed.device_mini_document_jwt.push('x');
+        assert!(verify_signed_documents(&prepared, &signed).is_err());
+    }
+
+    #[test]
+    fn owner_document_rejects_sensitive_fields_and_wrong_evm_wallet() {
+        let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let mut owner = owner_document(mnemonic);
+        owner
+            .extra_info
+            .insert("email".to_string(), json!("alice@example.com"));
+        assert!(validate_owner_document(&owner).is_err());
+        owner.extra_info.clear();
+        owner.wallets.get_mut("main").unwrap().address = "0x1234".to_string();
+        assert!(validate_owner_document(&owner).is_err());
+    }
 }

@@ -3,7 +3,7 @@ mod common;
 use aicc::{
     AIComputeCenter, CostEstimate, ModelCatalog, ProviderStartResult, Registry, TaskEventKind,
 };
-use buckyos_api::{AiResponseSummary, Capability, CompleteStatus, TaskFilter, TaskStatus};
+use buckyos_api::{AiMethodStatus, AiResponse, Capability, TaskOutcome, TaskPhase};
 use common::*;
 use std::sync::Arc;
 
@@ -16,25 +16,20 @@ use std::sync::Arc;
 async fn task_01_immediate_persists_completed() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
             estimated_latency_ms: Some(100),
         },
-        vec![Ok(ProviderStartResult::Immediate(AiResponseSummary {
-            text: Some("ok".to_string()),
+        vec![Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::text("ok").message,
             ..Default::default()
         }))],
     )));
@@ -46,27 +41,19 @@ async fn task_01_immediate_persists_completed() {
         .unwrap();
     assert_eq!(
         response.status,
-        CompleteStatus::Succeeded,
+        AiMethodStatus::Succeeded,
         "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch."
     );
 
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| {
-            t.data
-                .pointer("/aicc/external_task_id")
-                .and_then(|v| v.as_str())
-                == Some(response.task_id.as_str())
-        })
+        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
-        task.status,
-        TaskStatus::Completed,
+        (task.phase, task.outcome),
+        (TaskPhase::Terminal, Some(TaskOutcome::Succeeded)),
         "assert_eq failed in task_01_immediate_persists_completed: expected left == right; check this scenario's routing/status/error-code branch."
     );
 }
@@ -80,17 +67,12 @@ async fn task_01_immediate_persists_completed() {
 async fn task_02_started_persists_running_and_binding() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     let provider = Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -108,7 +90,7 @@ async fn task_02_started_persists_running_and_binding() {
         .unwrap();
     assert_eq!(
         response.status,
-        CompleteStatus::Running,
+        AiMethodStatus::Running,
         "assert_eq failed in task_02_started_persists_running_and_binding: expected left == right; check this scenario's routing/status/error-code branch."
     );
     let cancel = center
@@ -138,17 +120,12 @@ async fn task_02_started_persists_running_and_binding() {
 async fn task_03_queued_persists_pending_and_position() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
-    catalog.set_mapping(
-        Capability::LlmRouter,
-        "llm.plan.default",
-        "provider-a",
-        "m-a",
-    );
+    catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
     registry.add_provider(Arc::new(MockProvider::new(
         mock_instance(
             "p-a",
             "provider-a",
-            vec![Capability::LlmRouter],
+            vec![Capability::Llm],
             vec!["plan".into()],
         ),
         CostEstimate {
@@ -164,28 +141,27 @@ async fn task_03_queued_persists_pending_and_position() {
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
-    let tasks = taskmgr
-        .list_tasks(None::<TaskFilter>, None, None)
-        .await
-        .expect("list tasks");
+    let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| {
-            t.data
-                .pointer("/aicc/external_task_id")
-                .and_then(|v| v.as_str())
-                == Some(response.task_id.as_str())
-        })
+        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
-        task.status,
-        TaskStatus::Pending,
+        (task.phase, task.outcome),
+        (TaskPhase::Accepted, None),
         "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
-        task.data
-            .pointer("/aicc/events/0/kind")
-            .and_then(|v| v.as_str()),
+        typed_aicc_task_data(&task)
+            .and_then(|data| data.progress)
+            .and_then(|progress| progress.events.first().cloned())
+            .and_then(|event| {
+                event
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+            })
+            .as_deref(),
         Some("queued"),
         "assert_eq failed in task_03_queued_persists_pending_and_position: expected left == right; check this scenario's routing/status/error-code branch."
     );
@@ -212,7 +188,7 @@ async fn task_04_emit_error_event_with_code() {
         .unwrap();
     assert_eq!(
         response.status,
-        CompleteStatus::Failed,
+        AiMethodStatus::Failed,
         "assert_eq failed in task_04_emit_error_event_with_code: expected left == right; check this scenario's routing/status/error-code branch."
     );
     assert_eq!(
