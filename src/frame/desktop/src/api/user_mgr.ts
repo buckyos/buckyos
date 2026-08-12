@@ -1,4 +1,4 @@
-import { callRpc } from './rpc.ts'
+import { callRpc, type RpcCallOptions } from './rpc.ts'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +85,8 @@ export interface UserInfo {
   show_name: string
   user_type: UserType | string
   state: UserStateString
+  is_local?: boolean
+  allow_password_change?: boolean
 }
 
 export interface UsersListResponse {
@@ -113,6 +115,15 @@ export interface SimpleOkResponse {
   ok: boolean
   user_id?: string
   [key: string]: unknown
+}
+
+export interface UserCreateResponse extends SimpleOkResponse {
+  created: boolean
+  rbac_refreshed: boolean
+  user_id: string
+  user_type: UserType | string
+  state: UserStateString
+  warning?: string
 }
 
 export interface UserProfileResponse {
@@ -211,7 +222,10 @@ export const createUser = async (input: {
   showName?: string
   userType?: Exclude<UserType, 'root'>
   allowPasswordChange?: boolean
-}): Promise<{ data: SimpleOkResponse | null; error: unknown }> => {
+}, options: RpcCallOptions = {}): Promise<{
+  data: UserCreateResponse | null
+  error: unknown
+}> => {
   const params: Record<string, unknown> = {
     user_id: input.userId,
     password_hash: input.passwordHash,
@@ -221,7 +235,7 @@ export const createUser = async (input: {
   if (input.allowPasswordChange !== undefined) {
     params.allow_password_change = input.allowPasswordChange
   }
-  return callRpc<SimpleOkResponse>('user.create', params)
+  return callRpc<UserCreateResponse>('user.create', params, options)
 }
 
 /** Update basic user profile fields (currently `display_name`, via `show_name` RPC param). */

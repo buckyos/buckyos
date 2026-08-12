@@ -121,6 +121,17 @@ fn reject_root_user_settings(user_settings: &UserSettings) -> Result<()> {
     Ok(())
 }
 
+fn require_active_user_settings(user_settings: &UserSettings) -> Result<()> {
+    if matches!(user_settings.state, UserState::Active) {
+        Ok(())
+    } else {
+        Err(RPCErrors::NoPermission(format!(
+            "user '{}' is not active",
+            user_settings.user_id
+        )))
+    }
+}
+
 /// Generate a session token with specified parameters
 /// Session token is short-lived and used for API requests
 async fn generate_session_token(
@@ -832,6 +843,14 @@ impl VerifyHubApiHandler for VerifyHubServer {
             .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
         let session_id = get_token_session_id(&rpc_session_token)?;
 
+        let system_config_client = get_system_config_client().await?;
+        let control_panel_client = ControlPanelClient::new(system_config_client);
+        let user_settings = control_panel_client
+            .get_user_settings_by_username(&userid)
+            .await?;
+        reject_root_user_settings(&user_settings)?;
+        require_active_user_settings(&user_settings)?;
+
         info!("Handle refresh token request for session: {}", session_key);
 
         // Step 7: IMPORTANT - Invalidate the old refresh token immediately
@@ -882,6 +901,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
         let (user_settings, session_key) =
             validate_password_login(username, password, appid, login_nonce).await?;
         reject_root_user_settings(&user_settings)?;
+        require_active_user_settings(&user_settings)?;
 
         info!(
             "Password login successful for user: {}. Generating token pair.",
@@ -926,6 +946,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
         let (user_settings, session_key) =
             validate_password_login(username, password, appid, login_nonce).await?;
         reject_root_user_settings(&user_settings)?;
+        require_active_user_settings(&user_settings)?;
 
         let session_jti: u64;
         {
@@ -1287,6 +1308,32 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             matches!(sudo_result, Err(RPCErrors::NoPermission(_))),
             "verify-hub must reject root sudo password login"
         );
+    }
+
+    #[test]
+    fn only_active_users_can_receive_or_refresh_tokens() {
+        let settings = |state| UserSettings {
+            user_id: "alice".to_string(),
+            user_type: UserType::User,
+            password: "unused".to_string(),
+            state,
+            res_pool_id: "default".to_string(),
+            is_local: true,
+            allow_password_change: Some(true),
+        };
+
+        assert!(require_active_user_settings(&settings(UserState::Active)).is_ok());
+        for state in [
+            UserState::Pending,
+            UserState::Suspended("test".to_string()),
+            UserState::Deleted,
+            UserState::Banned("test".to_string()),
+        ] {
+            assert!(matches!(
+                require_active_user_settings(&settings(state)),
+                Err(RPCErrors::NoPermission(_))
+            ));
+        }
     }
 
     #[tokio::test]

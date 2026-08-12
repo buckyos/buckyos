@@ -91,9 +91,9 @@ p, ood, obj://*, all,allow
 p, root, obj://*, all,allow
 p, su_admin, obj://*, all,allow
 
-p, system, obj://*, all,allow
 p, system, obj://dfs/security/*,all,deny
 p, system, obj://config/security/*,all,deny
+p, system, obj://*, all,allow
 
 p, frame, obj://config/boot/*, read,allow
 p, frame, obj://config/system/*,read,allow
@@ -603,7 +603,16 @@ g, buckyos_filebrowser, app
 
         // The control surface sees its own user's tasks: this is the Task
         // Center's whole reason to exist.
-        assert!(rbac::enforce("devtest", "control-panel", "obj://task/devtest", "read", None).await);
+        assert!(
+            rbac::enforce(
+                "devtest",
+                "control-panel",
+                "obj://task/devtest",
+                "read",
+                None
+            )
+            .await
+        );
         assert!(rbac::enforce("bob", "control-panel", "obj://task/bob", "read", None).await);
 
         // ...but not another user's, even from the control surface.
@@ -612,10 +621,25 @@ g, buckyos_filebrowser, app
 
         // Ordinary apps and agents keep the doc §8.5 isolation: no cross-app
         // view even of their own user's tasks.
-        assert!(!rbac::enforce("devtest", "buckyos_jarvis", "obj://task/devtest", "read", None).await);
         assert!(
-            !rbac::enforce("devtest", "buckyos_filebrowser", "obj://task/devtest", "read", None)
-                .await
+            !rbac::enforce(
+                "devtest",
+                "buckyos_jarvis",
+                "obj://task/devtest",
+                "read",
+                None
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "devtest",
+                "buckyos_filebrowser",
+                "obj://task/devtest",
+                "read",
+                None
+            )
+            .await
         );
 
         // A sudo session is the zone owner: global task view.
@@ -631,7 +655,16 @@ g, buckyos_filebrowser, app
         );
 
         // The collection is a read view; it must not confer writes.
-        assert!(!rbac::enforce("devtest", "control-panel", "obj://task/devtest", "write", None).await);
+        assert!(
+            !rbac::enforce(
+                "devtest",
+                "control-panel",
+                "obj://task/devtest",
+                "write",
+                None
+            )
+            .await
+        );
     }
 
     #[tokio::test]
@@ -714,5 +747,42 @@ g, su_alice, su_admin
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn local_user_private_keys_are_restricted_to_kernel_root_and_sudo_admin() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let policy_tail = r#"
+g, alice, admin
+g, bob, users
+g, su_alice, su_admin
+g, gallery, app
+"#;
+        let config = build_current_rbac_config(Some(policy_tail));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let resource = "obj://config/security/dvlocal/key";
+
+        for action in ["read", "write"] {
+            assert!(!rbac::enforce("bob", "buckycli", resource, action, None).await);
+            assert!(!rbac::enforce("alice", "buckycli", resource, action, None).await);
+            assert!(!rbac::enforce("root", "repo-service", resource, action, None).await);
+            assert!(!rbac::enforce("root", "gallery", resource, action, None).await);
+            assert!(!rbac::enforce("root", "control-panel", resource, action, None).await);
+
+            assert!(rbac::enforce("root", "scheduler", resource, action, None).await);
+            assert!(
+                rbac::enforce(
+                    "alice",
+                    "buckycli",
+                    resource,
+                    action,
+                    Some(rbac::SudoMode::Sudo("su_alice".to_string())),
+                )
+                .await
+            );
+        }
     }
 }

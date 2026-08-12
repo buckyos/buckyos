@@ -1,153 +1,228 @@
 import { zodResolver } from '@hookform/resolvers/zod'
+import { buckyos } from 'buckyos'
+import { useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import {
   Alert,
   Button,
-  Checkbox,
-  FormControlLabel,
+  CircularProgress,
   IconButton,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
 } from '@mui/material'
-import {
-  ChevronLeft,
-  ChevronRight,
-  Link,
-  ShieldAlert,
-  UserPlus,
-  X,
-} from 'lucide-react'
-import { useState } from 'react'
-import type { LocalUserEntity, NewZoneUserInput } from '../../datamodel/types'
-import {
-  newZoneUserInputSchema,
-  storageQuotaOptions,
-  userAppOptions,
-} from '../../datamodel/types'
+import { ChevronLeft, ChevronRight, RefreshCw, UserPlus, X } from 'lucide-react'
+import { createUser, type UserCreateResponse } from '../../../../api/user_mgr'
+import { useSudoByPassword } from '../../../../components/sudo'
+import type { NewZoneUserInput } from '../../datamodel/types'
+import { newZoneUserInputSchema } from '../../datamodel/types'
 import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
 
 interface NewUserWizardProps {
   onClose: () => void
-  onCreated?: (userId: string) => void
+  onCreated?: (userId: string, result: UserCreateResponse) => void
 }
+
+type SubmitPhase = 'idle' | 'sudo' | 'creating' | 'reloading' | 'reload-failed'
 
 const defaultValues: NewZoneUserInput = {
-  source: 'primary-did',
-  identifier: '',
+  username: '',
   displayName: '',
-  userType: 'user',
-  storageQuota: '10 GB',
-  invitationExpiresIn: '7d',
-  localPassword: '',
-  availableApps: ['Files', 'MessageHub', 'Settings'],
+  password: '',
+  confirmPassword: '',
 }
 
-const stepLabels = ['Intent', 'Source', 'Identity', 'Apps', 'Review']
+const stepLabels = ['Account', 'Review']
 
-function slugify(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '')
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error ?? '')
 }
 
-function didFromIdentifier(identifier: string, source: NewZoneUserInput['source']) {
-  if (identifier.startsWith('did:')) return identifier
-  if (source === 'primary-did') return `did:bns:${identifier}`
-  return `did:bns:${identifier}.alice`
+function friendlyCreateError(error: unknown): string {
+  const message = errorText(error)
+  const lower = message.toLowerCase()
+  if (lower.includes('already exists') || lower.includes('duplicate')) {
+    return 'That username already exists. Choose another username.'
+  }
+  if (lower.includes('user_id') || lower.includes('username') || lower.includes('reserved')) {
+    return 'The username is invalid. Use 1–64 letters, numbers, underscores, hyphens, or dots.'
+  }
+  if (lower.includes('password_hash') || lower.includes('password')) {
+    return 'The password could not be processed. Check it and try again.'
+  }
+  if (lower.includes('permission') || lower.includes('admin')) {
+    return 'Administrator permission is required to create a local user.'
+  }
+  if (lower.includes('expired') || lower.includes('invalid token')) {
+    return 'The temporary administrator permission expired. Try again.'
+  }
+  if (lower.includes('network') || lower.includes('fetch') || lower.includes('connection')) {
+    return 'The request could not be confirmed because the connection was interrupted.'
+  }
+  if (
+    lower.includes('unavailable') ||
+    lower.includes('timeout') ||
+    lower.includes('failed to create user') ||
+    lower.includes('503')
+  ) {
+    return 'The account service is temporarily unavailable. Wait a moment and try again.'
+  }
+  return message || 'The user could not be created. Try again.'
 }
 
-function expiryDate(value: NewZoneUserInput['invitationExpiresIn']) {
-  const days = value === '24h' ? 1 : value === '7d' ? 7 : 30
-  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+function isUncertainCreateError(error: unknown): boolean {
+  const lower = errorText(error).toLowerCase()
+  return lower.includes('network') || lower.includes('fetch') || lower.includes('connection')
 }
 
 export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
   const [step, setStep] = useState(0)
+  const [phase, setPhase] = useState<SubmitPhase>('idle')
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [committedUserId, setCommittedUserId] = useState<string | null>(null)
+  const [createResult, setCreateResult] = useState<UserCreateResponse | null>(null)
+  const submissionRef = useRef(false)
   const store = useUsersAgentsStore()
+  const requestSudo = useSudoByPassword()
   const form = useForm<NewZoneUserInput>({
     resolver: zodResolver(newZoneUserInputSchema),
     defaultValues,
     mode: 'onChange',
   })
-
   const values = form.watch()
-  const source = values.source
-  const isPrimaryDid = source === 'primary-did'
+  const busy = phase === 'sudo' || phase === 'creating' || phase === 'reloading'
 
-  const validateStep = async () => {
-    if (step === 0 || step === 1) return true
-    if (step === 2) {
-      return form.trigger([
-        'identifier',
-        'displayName',
-        'userType',
-        ...(isPrimaryDid ? [] : (['localPassword'] as const)),
-      ])
+  const finishAfterReload = async (
+    userId: string,
+    result: UserCreateResponse,
+  ): Promise<boolean> => {
+    const snapshot = await store.reload()
+    if (!snapshot.localUsers.some((user) => user.id === userId)) {
+      return false
     }
-    if (step === 3) return form.trigger(['availableApps', 'storageQuota'])
-    return form.trigger()
+    onCreated?.(userId, result)
+    onClose()
+    return true
+  }
+
+  const markReloadUncertain = (userId: string, result: UserCreateResponse | null) => {
+    setCommittedUserId(userId)
+    setCreateResult(result)
+    setPhase('reload-failed')
+    setSubmitError(
+      'The user may already have been created. Retry reload before submitting again.',
+    )
+  }
+
+  const handleCreate = form.handleSubmit(async (data) => {
+    if (submissionRef.current || phase === 'reload-failed') return
+    submissionRef.current = true
+    setSubmitError(null)
+
+    const userId = data.username.trim().toLowerCase()
+    if (store.findEntity(userId)) {
+      setSubmitError('That username already exists. Choose another username.')
+      submissionRef.current = false
+      return
+    }
+
+    try {
+      setPhase('sudo')
+      const grant = await requestSudo({
+        aud: 'system-config',
+        title: 'Create local user',
+        description: 'Confirm your administrator password to create this Zone-local account.',
+        reason: `Create local user ${userId}`,
+        confirmLabel: 'Create user',
+      })
+      if (!grant) {
+        setPhase('idle')
+        return
+      }
+
+      setPhase('creating')
+      const passwordHash = buckyos.hashPassword(userId, data.password)
+      const { data: result, error } = await createUser(
+        {
+          userId,
+          showName: data.displayName.trim(),
+          passwordHash,
+          userType: 'user',
+          allowPasswordChange: true,
+        },
+        { sessionToken: grant.sessionToken },
+      )
+
+      if (error || !result?.ok || !result.created) {
+        if (isUncertainCreateError(error)) {
+          try {
+            setPhase('reloading')
+            const recoveredResult: UserCreateResponse = {
+              ok: true,
+              created: true,
+              rbac_refreshed: false,
+              warning: 'The creation response was lost; the account was found after reload.',
+              user_id: userId,
+              user_type: 'user',
+              state: 'active',
+            }
+            if (await finishAfterReload(userId, recoveredResult)) return
+          } catch {
+            // Fall through to the explicit uncertain-result state.
+          }
+          markReloadUncertain(userId, null)
+          return
+        }
+        setPhase('idle')
+        setSubmitError(friendlyCreateError(error ?? 'Invalid user.create response'))
+        return
+      }
+
+      setCreateResult(result)
+      setCommittedUserId(userId)
+      setPhase('reloading')
+      try {
+        if (await finishAfterReload(userId, result)) return
+      } catch {
+        // The committed account is reconciled through the retry path below.
+      }
+      markReloadUncertain(userId, result)
+    } catch (error) {
+      setPhase('idle')
+      setSubmitError(friendlyCreateError(error))
+    } finally {
+      submissionRef.current = false
+    }
+  })
+
+  const handleRetryReload = async () => {
+    if (!committedUserId || submissionRef.current) return
+    submissionRef.current = true
+    setPhase('reloading')
+    setSubmitError(null)
+    const result = createResult ?? {
+      ok: true,
+      created: true,
+      rbac_refreshed: false,
+      warning: 'The creation response was lost; the account was found after reload.',
+      user_id: committedUserId,
+      user_type: 'user',
+      state: 'active',
+    }
+    try {
+      if (await finishAfterReload(committedUserId, result)) return
+      setPhase('reload-failed')
+      setSubmitError('The account is not visible yet. Retry reload; do not submit it again.')
+    } catch {
+      setPhase('reload-failed')
+      setSubmitError('Reload failed. The user may already exist; retry reload when connected.')
+    } finally {
+      submissionRef.current = false
+    }
   }
 
   const handleNext = async () => {
-    if (await validateStep()) {
-      setStep((current) => Math.min(current + 1, stepLabels.length - 1))
-    }
+    if (await form.trigger()) setStep(1)
   }
-
-  const handleCreate = form.handleSubmit((data) => {
-    const now = new Date().toISOString()
-    const cleanId = slugify(data.identifier || data.displayName)
-    const id = `user-${cleanId}-${Date.now()}`
-    const did = didFromIdentifier(data.identifier.trim(), data.source)
-    const isInvite = data.source === 'primary-did'
-    const user: LocalUserEntity = {
-      id,
-      kind: 'local-user',
-      displayName: data.displayName.trim(),
-      did,
-      socialAccounts: [],
-      role: data.source === 'local-account' ? data.userType : data.userType,
-      source: data.source,
-      status: isInvite ? 'pending-invitation' : 'active',
-      credentialStatus: isInvite ? 'invite-pending' : 'password-set',
-      canChangePassword: !isInvite && data.userType !== 'limited',
-      storageUsed: '0 B',
-      storageQuota: data.storageQuota,
-      lastActive: now,
-      isOnline: false,
-      availableApps: data.availableApps,
-      defaultGroup: 'zone-members',
-      profile: {
-        nickname: data.displayName.trim(),
-        intro: isInvite
-          ? 'Pending primary DID invitation.'
-          : 'Local account created in this Zone.',
-      },
-      settings: {
-        source: isInvite ? 'Primary BNS / DID' : 'Local account',
-        credential: isInvite ? 'Invite pending' : 'Initial password',
-        passwordChange: isInvite
-          ? 'Managed outside this Zone'
-          : data.userType === 'limited'
-            ? 'Disabled'
-            : 'Allowed',
-        accountLimit: data.userType,
-      },
-      invitation: isInvite
-        ? {
-            inviteUrl: `https://alice.zone.buckyos.dev/invite/${cleanId}`,
-            targetZone: 'did:zone:alice',
-            requestedDid: did,
-            expiresAt: expiryDate(data.invitationExpiresIn),
-            bindedZoneListKey: 'binded_zone_list',
-          }
-        : undefined,
-      createdAt: now,
-    }
-
-    store.addLocalUser(user)
-    onCreated?.(id)
-    onClose()
-  })
 
   return (
     <form
@@ -164,264 +239,91 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <UserPlus size={16} style={{ color: 'var(--cp-accent)' }} />
-          <h3
-            className="font-display text-sm font-semibold"
-            style={{ color: 'var(--cp-text)' }}
-          >
-            New Zone User
+          <h3 className="font-display text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
+            New Local User
           </h3>
         </div>
-        <IconButton size="small" onClick={onClose} aria-label="Close new user wizard">
+        <IconButton
+          type="button"
+          size="small"
+          onClick={onClose}
+          aria-label="Close new user wizard"
+          disabled={busy}
+        >
           <X size={16} />
         </IconButton>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-1">
+      <div className="mb-4 flex items-center gap-1">
         {stepLabels.map((label, index) => (
           <div key={label} className="flex items-center gap-1">
             {index > 0 && (
               <div
-                className="h-[1px] w-5"
-                style={{
-                  background:
-                    index <= step
-                      ? 'var(--cp-accent)'
-                      : 'color-mix(in srgb, var(--cp-border) 60%, transparent)',
-                }}
+                className="h-[1px] w-8"
+                style={{ background: index <= step ? 'var(--cp-accent)' : 'var(--cp-border)' }}
               />
             )}
             <div
-              className="flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium"
-              style={{
-                background:
-                  index === step
-                    ? 'color-mix(in srgb, var(--cp-accent) 16%, transparent)'
-                    : 'transparent',
-                color: index <= step ? 'var(--cp-accent)' : 'var(--cp-muted)',
-              }}
+              className="rounded-full px-2 py-0.5 text-[11px] font-medium"
+              style={{ color: index <= step ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
             >
-              <span>{index + 1}</span>
-              <span>{label}</span>
+              {index + 1}. {label}
             </div>
           </div>
         ))}
       </div>
 
-      <div className="min-h-[280px]">
+      <div className="min-h-[260px]">
+        {submitError && <Alert severity={phase === 'reload-failed' ? 'warning' : 'error'}>{submitError}</Alert>}
+
         {step === 0 && (
-          <div className="space-y-3">
+          <div className="mt-3 space-y-3">
             <Alert severity="info">
-              This creates a real user who can log in to the current Zone. Use
-              My Network if you only want to add a friend or contact.
+              This creates an ordinary user who can sign in to this Zone immediately.
             </Alert>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div
-                className="rounded-[16px] px-4 py-3"
-                style={{
-                  background: 'color-mix(in srgb, var(--cp-surface) 80%, transparent)',
-                  border: '1px solid color-mix(in srgb, var(--cp-border) 40%, transparent)',
-                }}
-              >
-                <div className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-                  Primary DID invite
-                </div>
-                <p className="mt-1 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>
-                  Recommended for users with an identity that can move across Zones.
-                </p>
-              </div>
-              <div
-                className="rounded-[16px] px-4 py-3"
-                style={{
-                  background: 'color-mix(in srgb, var(--cp-surface) 80%, transparent)',
-                  border: '1px solid color-mix(in srgb, var(--cp-border) 40%, transparent)',
-                }}
-              >
-                <div className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-                  Local Limited account
-                </div>
-                <p className="mt-1 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>
-                  Useful for temporary Desktop access in this Zone only.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {step === 1 && (
-          <div className="space-y-3">
-            <ToggleButtonGroup
-              value={source}
-              exclusive
-              fullWidth
-              onChange={(_, value: NewZoneUserInput['source'] | null) => {
-                if (!value) return
-                form.setValue('source', value, { shouldDirty: true, shouldValidate: true })
-                form.setValue('userType', value === 'local-account' ? 'limited' : 'user')
-              }}
-              size="small"
-            >
-              <ToggleButton value="primary-did">
-                Invite primary BNS / DID
-              </ToggleButton>
-              <ToggleButton value="local-account">
-                Create local account
-              </ToggleButton>
-            </ToggleButtonGroup>
-
-            {isPrimaryDid ? (
-              <Alert icon={<ShieldAlert size={18} />} severity="warning">
-                The invited user must confirm the target Zone in their own
-                BNS ownerconfig. Never ask for their external password here.
-              </Alert>
-            ) : (
-              <Alert severity="warning">
-                Local accounts depend on this Zone. Temporary Desktop access
-                should stay Limited unless the admin explicitly changes it.
-              </Alert>
-            )}
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="space-y-3">
             <TextField
-              label={isPrimaryDid ? 'BNS name or DID' : 'Local username'}
+              label="Local username"
               size="small"
               fullWidth
               autoFocus
-              placeholder={isPrimaryDid ? 'carol or did:bns:carol' : 'dave'}
-              error={Boolean(form.formState.errors.identifier)}
-              helperText={form.formState.errors.identifier?.message}
-              {...form.register('identifier')}
+              autoComplete="off"
+              error={Boolean(form.formState.errors.username)}
+              helperText={form.formState.errors.username?.message ?? 'Saved in lowercase.'}
+              {...form.register('username')}
             />
             <TextField
               label="Display name"
               size="small"
               fullWidth
-              placeholder="Carol"
               error={Boolean(form.formState.errors.displayName)}
               helperText={form.formState.errors.displayName?.message}
               {...form.register('displayName')}
             />
-            <div>
-              <div
-                className="mb-1.5 text-[12px] font-medium"
-                style={{ color: 'var(--cp-muted)' }}
-              >
-                User type
-              </div>
-              <ToggleButtonGroup
-                value={values.userType}
-                exclusive
-                onChange={(_, value: NewZoneUserInput['userType'] | null) => {
-                  if (value) form.setValue('userType', value, { shouldValidate: true })
-                }}
-                size="small"
-              >
-                <ToggleButton value="admin">Admin</ToggleButton>
-                <ToggleButton value="user">User</ToggleButton>
-                <ToggleButton value="limited">Limited</ToggleButton>
-              </ToggleButtonGroup>
-            </div>
-            {!isPrimaryDid && (
-              <TextField
-                label="Initial local password"
-                type="password"
-                size="small"
-                fullWidth
-                error={Boolean(form.formState.errors.localPassword)}
-                helperText={
-                  form.formState.errors.localPassword?.message ??
-                  'Used only for this Zone-local account.'
-                }
-                {...form.register('localPassword')}
-              />
-            )}
+            <TextField
+              label="Initial password"
+              type="password"
+              size="small"
+              fullWidth
+              autoComplete="new-password"
+              error={Boolean(form.formState.errors.password)}
+              helperText={form.formState.errors.password?.message ?? 'At least 8 characters.'}
+              {...form.register('password')}
+            />
+            <TextField
+              label="Confirm password"
+              type="password"
+              size="small"
+              fullWidth
+              autoComplete="new-password"
+              error={Boolean(form.formState.errors.confirmPassword)}
+              helperText={form.formState.errors.confirmPassword?.message}
+              {...form.register('confirmPassword')}
+            />
           </div>
         )}
 
-        {step === 3 && (
-          <div className="space-y-3">
-            <div>
-              <div
-                className="mb-1.5 text-[12px] font-medium"
-                style={{ color: 'var(--cp-muted)' }}
-              >
-                Available apps
-              </div>
-              <div className="grid gap-1 sm:grid-cols-2">
-                {userAppOptions.map((app) => {
-                  const checked = values.availableApps.includes(app)
-                  return (
-                    <FormControlLabel
-                      key={app}
-                      control={
-                        <Checkbox
-                          size="small"
-                          checked={checked}
-                          onChange={(_, nextChecked) => {
-                            const next = nextChecked
-                              ? [...values.availableApps, app]
-                              : values.availableApps.filter((item) => item !== app)
-                            form.setValue('availableApps', next, { shouldValidate: true })
-                          }}
-                        />
-                      }
-                      label={app}
-                    />
-                  )
-                })}
-              </div>
-            </div>
-            <div>
-              <div
-                className="mb-1.5 text-[12px] font-medium"
-                style={{ color: 'var(--cp-muted)' }}
-              >
-                Storage quota
-              </div>
-              <ToggleButtonGroup
-                value={values.storageQuota}
-                exclusive
-                onChange={(_, value: NewZoneUserInput['storageQuota'] | null) => {
-                  if (value) form.setValue('storageQuota', value, { shouldValidate: true })
-                }}
-                size="small"
-              >
-                {storageQuotaOptions.map((quota) => (
-                  <ToggleButton key={quota} value={quota}>
-                    {quota}
-                  </ToggleButton>
-                ))}
-              </ToggleButtonGroup>
-            </div>
-            {isPrimaryDid && (
-              <div>
-                <div
-                  className="mb-1.5 text-[12px] font-medium"
-                  style={{ color: 'var(--cp-muted)' }}
-                >
-                  Invitation expiry
-                </div>
-                <ToggleButtonGroup
-                  value={values.invitationExpiresIn}
-                  exclusive
-                  onChange={(_, value: NewZoneUserInput['invitationExpiresIn'] | null) => {
-                    if (value) form.setValue('invitationExpiresIn', value)
-                  }}
-                  size="small"
-                >
-                  <ToggleButton value="24h">24h</ToggleButton>
-                  <ToggleButton value="7d">7d</ToggleButton>
-                  <ToggleButton value="30d">30d</ToggleButton>
-                </ToggleButtonGroup>
-              </div>
-            )}
-          </div>
-        )}
-
-        {step === 4 && (
-          <div className="space-y-3">
+        {step === 1 && (
+          <div className="mt-3 space-y-3">
             <div
               className="rounded-[16px] px-4 py-3"
               style={{
@@ -430,18 +332,14 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               }}
             >
               {[
-                ['Mode', isPrimaryDid ? 'Pending primary DID invitation' : 'Local account'],
-                ['Identity', values.identifier || '-'],
-                ['Display name', values.displayName || '-'],
-                ['User type', values.userType],
-                ['Default group', 'zone-members'],
-                ['Apps', values.availableApps.join(', ')],
+                ['Local username', values.username.trim().toLowerCase() || '-'],
+                ['Display name', values.displayName.trim() || '-'],
+                ['User type', 'User'],
+                ['State', 'Active'],
+                ['Password changes', 'Allowed'],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-baseline gap-3 py-1">
-                  <span
-                    className="w-28 shrink-0 text-[12px] font-medium"
-                    style={{ color: 'var(--cp-muted)' }}
-                  >
+                  <span className="w-36 shrink-0 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>
                     {label}
                   </span>
                   <span className="text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
@@ -450,44 +348,42 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
                 </div>
               ))}
             </div>
-            {isPrimaryDid ? (
-              <Alert icon={<Link size={18} />} severity="info">
-                Completing this step creates a pending user and invitation URL.
-                The target user activates it by updating binded_zone_list with
-                their own root key.
-              </Alert>
-            ) : (
-              <Alert severity="success">
-                The local account will be active immediately and joined to the
-                default base group.
-              </Alert>
-            )}
+            <Alert severity="warning">
+              This account exists only in the current Zone, depends on this Zone staying available,
+              can sign in immediately, and consumes local resources. No apps are installed or promised
+              for the new user by this action.
+            </Alert>
           </div>
         )}
       </div>
 
-      <div
-        className="mt-4 flex items-center justify-between border-t pt-3"
-        style={{ borderColor: 'color-mix(in srgb, var(--cp-border) 40%, transparent)' }}
-      >
+      <div className="mt-4 flex items-center justify-between border-t pt-3" style={{ borderColor: 'var(--cp-border)' }}>
         <Button
           type="button"
           size="small"
-          disabled={step === 0}
-          onClick={(event) => {
-            event.preventDefault()
-            setStep((current) => Math.max(current - 1, 0))
-          }}
+          disabled={step === 0 || busy || phase === 'reload-failed'}
+          onClick={() => setStep(0)}
           startIcon={<ChevronLeft size={14} />}
         >
           Back
         </Button>
 
-        {step < stepLabels.length - 1 ? (
+        {phase === 'reload-failed' ? (
           <Button
             type="button"
             size="small"
             variant="contained"
+            onClick={() => void handleRetryReload()}
+            startIcon={<RefreshCw size={14} />}
+          >
+            Retry reload
+          </Button>
+        ) : step === 0 ? (
+          <Button
+            type="button"
+            size="small"
+            variant="contained"
+            disabled={busy}
             onClick={(event) => {
               event.preventDefault()
               void handleNext()
@@ -501,9 +397,16 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
             size="small"
             variant="contained"
             type="submit"
-            startIcon={<UserPlus size={14} />}
+            disabled={busy}
+            startIcon={busy ? <CircularProgress color="inherit" size={14} /> : <UserPlus size={14} />}
           >
-            {isPrimaryDid ? 'Create Invitation' : 'Create User'}
+            {phase === 'sudo'
+              ? 'Waiting for permission…'
+              : phase === 'creating'
+                ? 'Creating…'
+                : phase === 'reloading'
+                  ? 'Reloading…'
+                  : 'Create User'}
           </Button>
         )}
       </div>

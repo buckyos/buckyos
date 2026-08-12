@@ -53,7 +53,9 @@ export class UsersAgentsStore {
     this.snapshot = this.buildSnapshot()
 
     if (!this.useMock) {
-      void this.reload()
+      void this.reload().catch((error) => {
+        console.warn('Failed to load users-agents datamodel from backend.', error)
+      })
     }
   }
 
@@ -64,19 +66,18 @@ export class UsersAgentsStore {
 
   getSnapshot = (): UsersAgentsSnapshot => this.snapshot
 
-  async reload() {
+  async reload(): Promise<UsersAgentsSnapshot> {
     if (this.useMock) {
-      this.applySnapshot(createMockUsersAgentsSnapshot())
+      const snapshot = createMockUsersAgentsSnapshot()
+      this.applySnapshot(snapshot)
       this.notify()
-      return
+      return snapshot
     }
 
-    try {
-      this.applySnapshot(await fetchUsersAgentsSnapshot())
-      this.notify()
-    } catch (error) {
-      console.warn('Failed to load users-agents datamodel from backend.', error)
-    }
+    const snapshot = await fetchUsersAgentsSnapshot()
+    this.applySnapshot(snapshot)
+    this.notify()
+    return snapshot
   }
 
   private applySnapshot(snapshot: UsersAgentsSnapshot) {
@@ -110,11 +111,6 @@ export class UsersAgentsStore {
       this.localUsers.find((user) => user.id === id) ??
       this.entityGroups.find((group) => group.id === id)
     )
-  }
-
-  addLocalUser(user: LocalUserEntity) {
-    this.localUsers = [...this.localUsers, user]
-    this.notify()
   }
 
   removeLocalUser(id: string) {

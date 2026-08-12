@@ -13,6 +13,7 @@ import { NewUserWizard } from '../shared/NewUserWizard'
 import { useEntity } from '../../hooks/use-users-agents-store'
 import { useMobileBackHandler } from '../../../../desktop/windows/MobileNavContext'
 import type { SidebarSelection } from '../../datamodel/types'
+import type { UserCreateResponse } from '../../../../api/user_mgr'
 
 function DetailRouter({ entityId, onRemoved }: { entityId: string; onRemoved?: () => void }) {
   const entity = useEntity(entityId)
@@ -36,6 +37,7 @@ export function UsersAgentsShell() {
   const [selection, setSelection] = useState<SidebarSelection | null>(null)
   const [showNewUser, setShowNewUser] = useState(false)
   const [agentNoticeOpen, setAgentNoticeOpen] = useState(false)
+  const [userNotice, setUserNotice] = useState<string | null>(null)
   const isMobile = useMediaQuery('(max-width: 767px)')
 
   const handleSelect = (sel: SidebarSelection) => {
@@ -52,9 +54,14 @@ export function UsersAgentsShell() {
     setAgentNoticeOpen(true)
   }
 
-  const handleUserCreated = (userId: string) => {
+  const handleUserCreated = (userId: string, result: UserCreateResponse) => {
     setShowNewUser(false)
     setSelection({ kind: 'entity', entityId: userId })
+    if (!result.rbac_refreshed) {
+      setUserNotice(
+        result.warning ?? 'User created. Permissions are still being reconciled.',
+      )
+    }
   }
 
   const handleEntityRemoved = () => {
@@ -74,6 +81,22 @@ export function UsersAgentsShell() {
     </Snackbar>
   )
 
+  const notices = (
+    <>
+      {agentNotice}
+      <Snackbar
+        open={Boolean(userNotice)}
+        autoHideDuration={6000}
+        onClose={() => setUserNotice(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="warning" variant="filled" onClose={() => setUserNotice(null)}>
+          {userNotice}
+        </Alert>
+      </Snackbar>
+    </>
+  )
+
   // Register back handler: any mobile sub-page that isn't the root sidebar
   const isOnSubPage = isMobile && (selection !== null || showNewUser)
   useMobileBackHandler(isOnSubPage ? handleBack : null)
@@ -90,7 +113,7 @@ export function UsersAgentsShell() {
             onAddUser={() => setShowNewUser(true)}
             onAddAgent={handleAddAgent}
           />
-          {agentNotice}
+          {notices}
         </>
       )
     }
@@ -102,7 +125,7 @@ export function UsersAgentsShell() {
           <div className="flex-1 overflow-y-auto desktop-scrollbar px-4 py-4">
             <NewUserWizard onClose={() => setShowNewUser(false)} onCreated={handleUserCreated} />
           </div>
-          {agentNotice}
+          {notices}
         </div>
       )
     }
@@ -114,7 +137,7 @@ export function UsersAgentsShell() {
             {selection?.kind === 'entity' ? <DetailRouter entityId={selection.entityId} onRemoved={handleEntityRemoved} /> : <EmptyPlaceholder />}
           </div>
         </main>
-        {agentNotice}
+        {notices}
       </div>
     )
   }
@@ -140,7 +163,7 @@ export function UsersAgentsShell() {
           )}
         </div>
       </main>
-      {agentNotice}
+      {notices}
     </div>
   )
 }

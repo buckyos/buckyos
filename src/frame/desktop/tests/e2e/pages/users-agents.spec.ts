@@ -55,10 +55,11 @@ function placeMyNetworkOnFirstPage() {
 }
 
 test.describe('Users & Agents app panel', () => {
-  test('desktop: internal entity manager renders and mutates mock state', async ({ page }) => {
+  test('desktop: internal entity manager renders and validates local-user form', async ({ page }) => {
     const consoleErrors: string[] = []
+    let currentAction = 'open page'
     page.on('console', (message) => {
-      if (message.type() === 'error') consoleErrors.push(message.text())
+      if (message.type() === 'error') consoleErrors.push(`${currentAction}: ${message.text()}`)
     })
 
     await page.setViewportSize({ width: 1440, height: 900 })
@@ -96,19 +97,27 @@ test.describe('Users & Agents app panel', () => {
     await win.getByLabel('Add Agent').click()
     await expect(page.getByText('Agent creation is coming soon.')).toBeVisible()
 
+    currentAction = 'open Add User'
     await win.getByLabel('Add User').click()
-    await expect(win.getByText('New Zone User')).toBeVisible()
-    await win.getByRole('button', { name: 'Next' }).click()
-    await win.getByRole('button', { name: 'Next' }).click()
-    await win.getByLabel('BNS name or DID').fill('maria')
+    await expect(win.getByText('New Local User')).toBeVisible()
+    await expect(win.getByText('Primary DID invite')).toHaveCount(0)
+    await expect(win.getByText('Available apps')).toHaveCount(0)
+    await expect(win.getByText('Storage quota')).toHaveCount(0)
+    await win.getByLabel('Local username').fill('Maria.Local')
     await win.getByLabel('Display name').fill('Maria')
+    await win.getByLabel('Initial password').fill('local-password-1')
+    await win.getByLabel('Confirm password').fill('different-password')
+    currentAction = 'validate password mismatch'
     await win.getByRole('button', { name: 'Next' }).click()
+    await expect(win.getByText('Passwords do not match.')).toBeVisible()
+    await win.getByLabel('Confirm password').fill('local-password-1')
+    currentAction = 'open review'
     await win.getByRole('button', { name: 'Next' }).click()
-    const createInvitation = win.getByRole('button', { name: 'Create Invitation', exact: true })
-    await expect(createInvitation).toBeVisible()
-    await createInvitation.evaluate((button) => (button as HTMLButtonElement).click())
-    await expect(win.getByRole('heading', { name: 'Maria' })).toBeVisible()
-    await expect(win.getByText('Pending DID Confirmation')).toBeVisible()
+    await expect(win.getByText('maria.local')).toBeVisible()
+    await expect(win.getByText('No apps are installed or promised')).toBeVisible()
+    await expect(win.getByRole('button', { name: 'Create User', exact: true })).toBeVisible()
+    currentAction = 'close wizard'
+    await win.getByLabel('Close new user wizard').click()
 
     expect(consoleErrors).toEqual([])
   })

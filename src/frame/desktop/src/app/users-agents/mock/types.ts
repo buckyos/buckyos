@@ -6,6 +6,4 @@ export type {
 export {
   newZoneUserInputSchema,
   socialAccountPlatformOptions,
-  storageQuotaOptions,
-  userAppOptions,
 } from '../datamodel/types'

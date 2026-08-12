@@ -166,9 +166,8 @@ function zoneUserType(type: UserType | string | undefined): ZoneUserType {
   return 'user'
 }
 
-function zoneUserSource(type: UserType | string | undefined): ZoneUserSource {
-  const normalized = String(type ?? 'user').toLowerCase()
-  return normalized === 'limited' || normalized === 'guest' ? 'local-account' : 'primary-did'
+function zoneUserSource(isLocal: boolean | undefined): ZoneUserSource {
+  return isLocal ? 'local-account' : 'primary-did'
 }
 
 function zoneUserStatus(state: UserStateString | undefined): ZoneUserStatus {
@@ -230,7 +229,7 @@ export function toLocalUserEntity(
   apps: AppSummary[],
   now: string,
 ): LocalUserEntity {
-  const source = zoneUserSource(user.user_type)
+  const source = zoneUserSource(user.is_local)
   const status = zoneUserStatus(user.state)
   const role = zoneUserType(user.user_type)
   const availableApps = apps
@@ -251,7 +250,7 @@ export function toLocalUserEntity(
       : source === 'primary-did'
         ? 'passkey-ready'
         : 'password-set',
-    canChangePassword: role !== 'limited' && status === 'active',
+    canChangePassword: (user.allow_password_change ?? role !== 'limited') && status === 'active',
     storageUsed: 'Unknown',
     storageQuota: 'Unknown',
     lastActive: now,

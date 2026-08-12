@@ -1,6 +1,6 @@
 # Beta 2.2：Add Local User E2E TODO
 
-> 状态：待实现  
+> 状态：实现与专项验收完成；全量 `cargo test` 仍有任务外既有失败
 > 整理日期：2026-08-11  
 > 目标：把已经可通过 Control Panel KAPI 创建并登录的 local user，收口为 Desktop 中可由管理员完整操作、可重复验证的 Beta 2.2 功能。
 
@@ -80,7 +80,7 @@ Admin 登录 Desktop
 
 ## P0：发布前安全与一致性
 
-### [ ] P0-1 把 local user 私钥移入 security namespace
+### [x] P0-1 把 local user 私钥移入 security namespace
 
 当前 `user.create` 把私钥写到 `users/{user_id}/key`，但 RBAC 设计定义的路径是 `security/{user_id}/key`。`users/*` 已有多种读取规则，不应保存私钥。
 
@@ -96,7 +96,7 @@ Admin 登录 Desktop
 - `src/frame/control_panel/src/user_mgr.rs`
 - `src/kernel/buckyos-api/src/rbac_config.rs`
 
-### [ ] P0-2 VerifyHub 只给 Active 用户签发或刷新 token
+### [x] P0-2 VerifyHub 只给 Active 用户签发或刷新 token
 
 当前密码校验读取 `UserSettings` 后只验证密码，没有验证状态；refresh token 也不会重新读取用户状态。
 
@@ -112,7 +112,7 @@ Admin 登录 Desktop
 - `src/kernel/verify_hub/src/main.rs`
 - `src/kernel/verify_hub` 对应测试
 
-### [ ] P0-3 明确定义 create 已提交但 RBAC refresh 失败的响应
+### [x] P0-3 明确定义 create 已提交但 RBAC refresh 失败的响应
 
 system-config 事务和 scheduler refresh 不是同一个事务。当前可能出现“用户已经创建，但 API 返回失败；再次提交又提示重复”的歧义。
 
@@ -125,7 +125,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 
 ## P0：Desktop 创建链路
 
-### [ ] P0-4 将 Add User 向导简化为 local user 表单
+### [x] P0-4 将 Add User 向导简化为 local user 表单
 
 要求：
 
@@ -142,7 +142,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 - `src/frame/desktop/src/app/users-agents/components/shared/NewUserWizard.tsx`
 - `src/frame/desktop/src/app/users-agents/datamodel/types.ts`
 
-### [ ] P0-5 接入现有 sudo 对话框
+### [x] P0-5 接入现有 sudo 对话框
 
 要求：
 
@@ -156,7 +156,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 - `src/frame/desktop/src/components/sudo.tsx`
 - `src/frame/desktop/src/app/users-agents/components/shared/NewUserWizard.tsx`
 
-### [ ] P0-6 让 `user.create` API 支持单次 session token override
+### [x] P0-6 让 `user.create` API 支持单次 session token override
 
 要求：
 
@@ -180,7 +180,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 - `src/frame/desktop/src/api/rpc.ts`
 - `src/frame/desktop/src/api/user_mgr.ts`
 
-### [ ] P0-7 用真实 reload 完成创建后的 UI 收敛
+### [x] P0-7 用真实 reload 完成创建后的 UI 收敛
 
 要求：
 
@@ -197,7 +197,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 - `src/frame/desktop/src/app/users-agents/components/shared/NewUserWizard.tsx`
 - 打开向导和处理 `onCreated` 的父组件
 
-### [ ] P0-8 完整错误状态和重复提交保护
+### [x] P0-8 完整错误状态和重复提交保护
 
 至少覆盖：
 
@@ -213,7 +213,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 
 ## P1：新用户登录与最小可用体验
 
-### [ ] P1-1 验证 Desktop 登录页的真实 local user 链路
+### [x] P1-1 验证 Desktop 登录页的真实 local user 链路
 
 要求：
 
@@ -223,7 +223,7 @@ system-config 事务和 scheduler refresh 不是同一个事务。当前可能�
 - `user.get` 返回当前用户本人、`state=active`、`is_local=true`、`user_type=user`。
 - 新用户不能调用 `user.create`，也不能读取或修改其他用户的敏感数据。
 
-### [ ] P1-2 定义新用户首次登录能看到什么
+### [x] P1-2 定义新用户首次登录能看到什么
 
 Beta 2.2 不做创建时 App 分配，但必须明确最小可用界面：
 
@@ -232,7 +232,7 @@ Beta 2.2 不做创建时 App 分配，但必须明确最小可用界面：
 - 未安装或未授权的功能显示正常 empty state，而不是 403/500 或无限 loading。
 - 不承诺 FileBrowser、Jarvis 等用户 App 自动可用；如基础系统入口实际依赖 App spec，需在此任务中明确补默认 provisioning，或从 Beta 2.2 验收范围移除对应入口。
 
-### [ ] P1-3 创建结果在服务重启后仍存在
+### [x] P1-3 创建结果在服务重启后仍存在
 
 要求：
 
@@ -242,7 +242,7 @@ Beta 2.2 不做创建时 App 分配，但必须明确最小可用界面：
 
 ## P1：自动化测试与门禁
 
-### [ ] P1-4 把 Control Panel user DV 纳入标准 test runner
+### [x] P1-4 把 Control Panel user DV 纳入标准 test runner
 
 要求：
 
@@ -257,7 +257,7 @@ Beta 2.2 不做创建时 App 分配，但必须明确最小可用界面：
 - `test/test_control_panel/test_user_mgr.ts`，或拆出的 local-user 专用 DV
 - `test/test_control_panel` 的 runner discovery 配置
 
-### [ ] P1-5 增加真实 UI DV Test
+### [x] P1-5 增加真实 UI DV Test
 
 Playwright 必须模拟真人完成：
 
@@ -277,7 +277,7 @@ Playwright 必须模拟真人完成：
 - 失败时保存 screenshot、浏览器 console、最后一次 RPC 错误和相关服务日志位置。
 - 测试密码只能来自环境变量或运行时生成，不能提交固定生产凭据。
 
-### [ ] P1-6 增加必要的后端回归测试
+### [x] P1-6 增加必要的后端回归测试
 
 - 普通 User 创建用户被拒绝。
 - 普通 admin session 创建用户被拒绝，sudo admin 创建成功。
@@ -292,18 +292,19 @@ Playwright 必须模拟真人完成：
 
 以下条件全部满足才算 Beta 2.2 Add Local User 完成：
 
-- [ ] 生产 UI 中只展示本期真实支持的 local user 字段和选项。
-- [ ] 管理员必须通过真实 sudo 才能创建用户。
-- [ ] 前端不再通过 fake entity 假装创建成功。
-- [ ] 创建请求经过 Gateway，并在 system-config 中形成完整、原子的用户记录。
-- [ ] 私钥保存在正确的 security namespace，并有 RBAC 回归测试。
-- [ ] scheduler 刷新后，新用户获得普通 users RBAC。
-- [ ] 新用户能通过 Desktop `auth.login` 登录并加载最小可用页面。
-- [ ] 新用户不能创建其他用户或访问其他用户的敏感数据。
-- [ ] Suspended、Deleted、Banned 用户不能登录、sudo 或 refresh token。
-- [ ] 服务重启后用户仍存在且可登录。
-- [ ] Service DV 和真实 UI DV 都通过，并进入标准测试入口。
-- [ ] `cargo test` 和 `uv run buckyos-build.py` 通过。
+- [x] 生产 UI 中只展示本期真实支持的 local user 字段和选项。
+- [x] 管理员必须通过真实 sudo 才能创建用户。
+- [x] 前端不再通过 fake entity 假装创建成功。
+- [x] 创建请求经过 Gateway，并在 system-config 中形成完整、原子的用户记录。
+- [x] 私钥保存在正确的 security namespace，并有 RBAC 回归测试。
+- [x] scheduler 刷新后，新用户获得普通 users RBAC。
+- [x] 新用户能通过 Desktop `auth.login` 登录并加载最小可用页面。
+- [x] 新用户不能创建其他用户或访问其他用户的敏感数据。
+- [x] Suspended、Deleted、Banned 用户不能登录、sudo 或 refresh token。
+- [x] 服务重启后用户仍存在且可登录。
+- [x] Service DV 和真实 UI DV 都通过，并进入标准测试入口。
+- [x] `uv run buckyos-build.py` 通过。
+- [ ] 全量 `cargo test` 通过。当前仅有两个与本任务无关的 AICC video adapter 测试失败，见第 8 节。
 
 ## 6. 建议实施顺序
 
@@ -316,3 +317,21 @@ Playwright 必须模拟真人完成：
 ## 7. 与旧 TODO 的关系
 
 `notepads/control_panel_gap_todo.md` 仍可作为完整 Users & Agents 长期缺口记录，但其中部分“当前现状”已经过时。Beta 2.2 实现和验收以本文的窄范围为准；DID 邀请、Limited、App 分配、Agent 和 Group 等内容后移，不应阻塞本期 Add Local User。
+
+## 8. 实施结果（2026-08-11）
+
+- 后端已将 local key 迁移到 `security/{user_id}/key`，补齐访问控制；VerifyHub 的登录、sudo、refresh 均只允许 Active 用户。
+- `user.create` 会校验原始 SHA-256 password hash，并用 `created`、`rbac_refreshed` 和 `warning` 明确表达事务已提交但 scheduler refresh 待重试的情况。
+- Desktop Add User 已收窄为两步 local user 向导，使用单次 sudo token 调用真实 KAPI，成功或结果不确定时均以后端 reload 收敛，不再创建 fake entity。
+- 新增标准 Service DV `local_user_dv`，覆盖 Gateway 创建、原子性、RBAC、状态限制、权限、重启持久性和软删除清理。
+- 新增真实 Playwright UI DV `local_user_ui_dv`，覆盖管理员登录、向导、sudo、真实列表、新用户登录和本人详情，并在 finally 中清理测试用户。
+
+验证结果：
+
+- `BUCKYOS_TEST_RESTART=1 uv run test/run.py -p local_user_dv`：通过。
+- `BUCKYOS_TEST_ADMIN_PASSWORD=<DV admin password> uv run test/run.py -p local_user_ui_dv`：通过。
+- `uv run buckyos-build.py`：Rust optimized build、Desktop build 和安装流程通过。
+- 相关 Rust 单元测试、Desktop build、目标 ESLint、TypeScript 检查和 mock Playwright 用例通过。
+- 全量 `cargo test` 编译和本任务测试通过，但仓库既有的 `adapter_gemini_video_img2video_returns_downloaded_artifact`、`adapter_openai_video_img2video_returns_downloaded_artifact` 仍失败：测试期待原始 base64，当前实现返回脱敏占位值。该问题不属于 Add Local User 修改范围。
+
+本任务没有新增第三方依赖，没有实现旧 key 路径的兼容读取，也没有扩展到 DID 邀请、App provisioning 或完整用户生命周期 UI。

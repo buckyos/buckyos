@@ -1,5 +1,6 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{kRPC, RPCErrors, RPCRequest, RPCResponse, RPCResult};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
     get_buckyos_api_runtime, ProfileLink, SchedulerClient, SystemConfigClient, SystemConfigError,
     UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
@@ -121,6 +122,20 @@ fn validate_username(name: &str) -> Result<(), RPCErrors> {
             "'{}' is a reserved username",
             name
         )));
+    }
+    Ok(())
+}
+
+fn validate_password_hash(password_hash: &str) -> Result<(), RPCErrors> {
+    let decoded = STANDARD.decode(password_hash).map_err(|_| {
+        RPCErrors::ParseRequestError(
+            "password_hash must be a base64-encoded SHA-256 digest".to_string(),
+        )
+    })?;
+    if decoded.len() != 32 {
+        return Err(RPCErrors::ParseRequestError(
+            "password_hash must be a base64-encoded SHA-256 digest".to_string(),
+        ));
     }
     Ok(())
 }
@@ -421,6 +436,35 @@ async fn refresh_rbac_by_scheduler(reason: &str) -> Result<(), RPCErrors> {
     Ok(())
 }
 
+fn user_create_result(
+    user_id: &str,
+    user_type: &UserType,
+    refresh_result: Result<(), RPCErrors>,
+) -> Value {
+    let (rbac_refreshed, warning) = match refresh_result {
+        Ok(()) => (true, None),
+        Err(error) => (
+            false,
+            Some(format!(
+                "User was created, but RBAC refresh is pending: {}",
+                error
+            )),
+        ),
+    };
+    let mut result = json!({
+        "ok": true,
+        "created": true,
+        "rbac_refreshed": rbac_refreshed,
+        "user_id": user_id,
+        "user_type": user_type,
+        "state": "active",
+    });
+    if let Some(warning) = warning {
+        result["warning"] = Value::String(warning);
+    }
+    result
+}
+
 async fn load_agent_runtime_info(agent_id: &str) -> Value {
     let runtime = match get_buckyos_api_runtime() {
         Ok(runtime) => runtime,
@@ -557,7 +601,11 @@ impl ControlPanelServer {
                                 info.show_name = show_name;
                             }
                         }
-                        if let Ok(v) = serde_json::to_value(&info) {
+                        if let Ok(mut v) = serde_json::to_value(&info) {
+                            v["is_local"] = Value::Bool(settings.is_local);
+                            v["allow_password_change"] =
+                                serde_json::to_value(settings.allow_password_change)
+                                    .unwrap_or(Value::Null);
                             users.push(v);
                         }
                     }
@@ -655,23 +703,19 @@ impl ControlPanelServer {
         validate_username(&user_id)?;
 
         let password_hash = Self::require_param_str(&req, "password_hash")?;
-        if password_hash.is_empty() {
-            return Err(RPCErrors::ParseRequestError(
-                "password_hash cannot be empty".to_string(),
-            ));
-        }
+        validate_password_hash(&password_hash)?;
 
         let show_name = Self::param_str(&req, "show_name").unwrap_or_else(|| user_id.clone());
         let user_type = Self::param_str(&req, "user_type")
             .map(|s| parse_user_type(&s))
             .transpose()?
             .unwrap_or(UserType::User);
-        let allow_password_change = Self::param_bool(&req, "allow_password_change");
+        let allow_password_change =
+            Some(Self::param_bool(&req, "allow_password_change").unwrap_or(true));
 
-        // Don't allow creating Root users
-        if matches!(user_type, UserType::Root) {
-            return Err(RPCErrors::ReasonError(
-                "Cannot create root users".to_string(),
+        if !matches!(user_type, UserType::User) {
+            return Err(RPCErrors::ParseRequestError(
+                "user.create only supports the ordinary User type".to_string(),
             ));
         }
 
@@ -714,7 +758,7 @@ impl ControlPanelServer {
 
         // Execute as transaction
         let doc_path = format!("users/{}/doc", user_id);
-        let key_path = format!("users/{}/key", user_id);
+        let key_path = format!("security/{}/key", user_id);
         let profile_path = format!("users/{}/profile", user_id);
         let mut tx = HashMap::new();
         tx.insert(settings_path, KVAction::Create(settings_json));
@@ -727,17 +771,22 @@ impl ControlPanelServer {
             .await
             .map_err(|e| RPCErrors::ReasonError(format!("Failed to create user: {}", e)))?;
 
-        refresh_rbac_by_scheduler("user.create").await?;
+        let refresh_result = refresh_rbac_by_scheduler("user.create").await;
+        if let Err(error) = &refresh_result {
+            warn!(
+                "User '{}' was committed but scheduler RBAC refresh failed: {}",
+                user_id, error
+            );
+        }
 
         info!("User '{}' created by '{}'", user_id, principal.username);
 
         Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "user_id": user_id,
-                "user_type": new_settings.user_type,
-                "state": "active",
-            })),
+            RPCResult::Success(user_create_result(
+                &user_id,
+                &new_settings.user_type,
+                refresh_result,
+            )),
             req.seq,
         ))
     }
@@ -2204,5 +2253,34 @@ impl ControlPanelServer {
             })),
             req.seq,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_hash_must_be_a_sha256_digest() {
+        assert!(validate_password_hash("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").is_ok());
+        assert!(validate_password_hash("").is_err());
+        assert!(validate_password_hash("not-base64").is_err());
+        assert!(validate_password_hash("YQ==").is_err());
+    }
+
+    #[test]
+    fn committed_create_reports_pending_rbac_refresh_as_success() {
+        let result = user_create_result(
+            "alice",
+            &UserType::User,
+            Err(RPCErrors::ReasonError("scheduler unavailable".to_string())),
+        );
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["created"], true);
+        assert_eq!(result["rbac_refreshed"], false);
+        assert!(result["warning"]
+            .as_str()
+            .unwrap()
+            .contains("RBAC refresh is pending"));
     }
 }

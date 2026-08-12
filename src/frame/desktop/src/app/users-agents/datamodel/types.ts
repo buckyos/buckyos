@@ -151,61 +151,36 @@ export interface UsersAgentsSnapshot {
 
 // ── New user wizard ──
 
-export const userAppOptions = ['Files', 'MessageHub', 'HomeStation', 'Settings'] as const
-export const storageQuotaOptions = ['1 GB', '5 GB', '10 GB', '50 GB', '100 GB'] as const
-
 export const newZoneUserInputSchema = z
   .object({
-    source: z.enum(['primary-did', 'local-account']),
-    identifier: z.string().trim().min(2).max(80),
-    displayName: z.string().trim().min(2).max(64),
-    userType: z.enum(['admin', 'user', 'limited']),
-    storageQuota: z.enum(storageQuotaOptions),
-    invitationExpiresIn: z.enum(['24h', '7d', '30d']),
-    localPassword: z.string().max(128).optional(),
-    availableApps: z.array(z.enum(userAppOptions)).min(1),
+    username: z
+      .string()
+      .trim()
+      .min(1, 'Enter a local username.')
+      .max(64, 'Use at most 64 characters.')
+      .regex(
+        /^[a-z0-9_.-]+$/i,
+        'Use only letters, numbers, underscores, hyphens, or dots.',
+      ),
+    displayName: z.string().trim().min(1, 'Enter a display name.').max(64),
+    password: z.string().min(8, 'Password must be at least 8 characters.').max(128),
+    confirmPassword: z.string().max(128),
   })
   .superRefine((value, ctx) => {
-    if (value.source === 'primary-did') {
-      const isDid = value.identifier.startsWith('did:')
-      const isBns = /^[a-z0-9][a-z0-9.-]{1,78}$/i.test(value.identifier)
-      if (!isDid && !isBns) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['identifier'],
-          message: 'Enter a primary DID or BNS name.',
-        })
-      }
-      return
-    }
-
-    if (!/^[a-z][a-z0-9_-]{1,31}$/i.test(value.identifier)) {
+    if (['root', 'system', 'admin', 'guest'].includes(value.username.trim().toLowerCase())) {
       ctx.addIssue({
         code: 'custom',
-        path: ['identifier'],
-        message: 'Use 2-32 letters, numbers, underscores, or hyphens.',
+        path: ['username'],
+        message: 'This username is reserved.',
       })
     }
-
-    if (!value.localPassword || value.localPassword.length < 8) {
+    if (value.password !== value.confirmPassword) {
       ctx.addIssue({
         code: 'custom',
-        path: ['localPassword'],
-        message: 'Local account password must be at least 8 characters.',
+        path: ['confirmPassword'],
+        message: 'Passwords do not match.',
       })
     }
   })
 
 export type NewZoneUserInput = z.infer<typeof newZoneUserInputSchema>
-
-export interface NewUserDraft {
-  step: number
-  source: ZoneUserSource
-  identifier: string
-  displayName: string
-  role: ZoneUserType
-  invitationExpiresIn: '24h' | '7d' | '30d'
-  initialPassword?: string
-  storageQuota: string
-  availableApps: string[]
-}
