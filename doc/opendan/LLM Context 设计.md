@@ -409,7 +409,7 @@ waist 自己不重新定义"LLM 边界类型"，直接消费下层 provider 抽�
 | `AiMessage` | `role`（system/user/assistant/tool）, `content: Vec<AiContent>` | `LLMContextRequest.input` / `ResumeFill::RewrittenHistory` / `accumulated` |
 | `AiToolCall` | `name`, `args`, `call_id` | provider 归一化后的 tool 调用；`PendingToolCall.call` 直接持有 |
 | `AiResponseSummary` | `text`, `tool_calls`, `artifacts`, `usage`, `cost`, `finish_reason`, `provider_task_ref` | `Outcome::Done.response` |
-| `AiUsage` | `input_tokens`, `output_tokens`, `total_tokens` | 各 outcome 的 `usage` |
+| `AiUsage` | `input_tokens`, `output_tokens`, `total_tokens`, `request_units` | 各 outcome 的 `usage` |
 | `AiCost` / `AiArtifact` | — | 嵌在 `AiResponseSummary` 里，waist 不单独暴露 |
 
 **为什么不再包一层**：零成本序列化路径；任何上层 scheduler 拿到 `Done.response` 就已经是 provider-agnostic 的归一化结构；换 provider 实现时 waist 完全不动。
@@ -800,7 +800,7 @@ src/frame/llm_context/src/
 
 - 模型计费 / billing；provider 专属参数（anthropic `cache_control` / openai `seed` / gemini `safety_settings`）—— 通过 `model_policy.provider_options` 透传，waist 不解释。
 - 模型能力探测（context window 大小 / 是否支持 vision / tool）—— provider adapter 内部决定。
-- token 分价规则（input vs output、cached vs uncached）—— waist 只暴露 `AiUsage` 三个数 + `AiResponseSummary.cost`。
+- token 分价规则（input vs output、cached vs uncached）—— waist 只暴露 `AiUsage` 的归一化计量字段 + `AiResponseSummary.cost`。
 - streaming 协议细节（SSE / chunked / batch）—— provider 适配层处理；waist 一次推理对外是原子的。
 - **function call 作为 loop 强制协议**：拒绝。各家 wire format 不同，本地模型常无原生支持。归一化到 `AiToolCall` 在 provider adapter 内部完成，waist 看见的是 §1.3 的 intent/effect/observation。
 - **Provider 层 retry / 退避 / jitter / 熔断 / 路由**：拒绝。属于 adapter 内部容错层；waist 看到的是兜底失败后的最终错误，自己绝不再做一层 retry。

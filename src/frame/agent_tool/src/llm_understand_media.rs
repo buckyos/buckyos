@@ -13,6 +13,7 @@ use ndn_lib::FileObject;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 
 use crate::run_local_llm::{ensure_buckyos_runtime, AiccLlmClient};
 use crate::{
@@ -29,6 +30,8 @@ const DEFAULT_SUMMARY_MODEL_ALIAS: &str = "llm.summary";
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
 const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
 const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
+const DEFAULT_VIDEO_FRAME_COUNT: usize = 8;
+const MAX_VIDEO_FRAME_COUNT: usize = 16;
 
 const SYSTEM_PROMPT: &str = r#"You are OpenDAN's controlled media-understanding side context.
 
@@ -86,7 +89,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand an media resource through a controlled LLM side context. Accepts media and goal only; media should be a named_object ResourceRef.".to_string(),
+            description: "Understand an image or video resource through a controlled LLM side context. Accepts media and goal only; media should be a named_object ResourceRef.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -262,16 +265,12 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Ok(media) => media,
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
     };
-    let mime = resolved_media.mime;
-    if !is_image_mime(&mime) {
-        return (
-            build_error_result(
-                &opts,
-                format!("unsupported media mime `{mime}`; v0 only supports image/*"),
-            ),
-            CLI_EXIT_ERROR,
-        );
-    }
+    let mime = resolved_media.mime.clone();
+    let source_kind = resource_source_kind(&resolved_media.source);
+    let media_content = match prepare_media_content(resolved_media).await {
+        Ok(content) => content,
+        Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
+    };
 
     let model_alias = match opts.model.clone().or_else(|| route_model(&mime)) {
         Some(model) => model,
@@ -307,13 +306,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
 
     let parent_history_count = purified.len();
     let compressed_history_count = compressed.len();
-    let source_kind = resource_source_kind(&resolved_media.source);
-    let request = build_request(
-        &opts,
-        resolved_media.source,
-        model_alias.clone(),
-        compressed,
-    );
+    let request = build_request(&opts, media_content, model_alias.clone(), compressed);
     let work_dir = opts
         .work_dir
         .clone()
@@ -369,20 +362,16 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
 
 fn build_request(
     opts: &RunOpts,
-    media: ResourceRef,
+    media_content: Vec<AiContent>,
     model_alias: String,
     parent_history: Vec<AiMessage>,
 ) -> OneShotRequest {
     let mut input = Vec::with_capacity(parent_history.len() + 2);
     input.push(AiMessage::text(AiRole::System, SYSTEM_PROMPT));
     input.extend(parent_history);
-    input.push(AiMessage::new(
-        AiRole::User,
-        vec![
-            AiContent::image(media),
-            AiContent::text(format!("Goal: {}", opts.goal)),
-        ],
-    ));
+    let mut user_content = media_content;
+    user_content.push(AiContent::text(format!("Goal: {}", opts.goal)));
+    input.push(AiMessage::new(AiRole::User, user_content));
 
     let mut req = OneShotRequest::new(opts.goal.clone(), input);
     req.model_policy = Some(ModelPolicy {
@@ -747,6 +736,7 @@ async fn resolve_media(media: &MediaArg) -> Result<ResolvedMedia, String> {
 
             let mime = object_mime
                 .or_else(|| sniff_image_mime(&bytes).map(str::to_string))
+                .or_else(|| sniff_video_mime(&bytes).map(str::to_string))
                 .or_else(|| media.mime_hint.as_deref().and_then(normalize_mime))
                 .ok_or_else(|| format!("cannot determine MIME for named_object {obj_id}"))?;
             let data_base64 = general_purpose::STANDARD.encode(bytes);
@@ -817,12 +807,36 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn sniff_video_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.get(4..8) == Some(b"ftyp") {
+        return Some("video/mp4");
+    }
+    if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        return Some("video/webm");
+    }
+    None
+}
+
 fn is_image_mime(mime: &str) -> bool {
     mime.starts_with("image/")
 }
 
+fn is_video_mime(mime: &str) -> bool {
+    mime.starts_with("video/")
+}
+
 fn route_model(mime: &str) -> Option<String> {
-    if is_image_mime(mime) {
+    if is_video_mime(mime) {
+        std::env::var("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                std::env::var("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .or_else(|| Some(DEFAULT_MODEL_ALIAS.to_string()))
+    } else if is_image_mime(mime) {
         std::env::var("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -830,6 +844,142 @@ fn route_model(mime: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+async fn prepare_media_content(media: ResolvedMedia) -> Result<Vec<AiContent>, String> {
+    if is_image_mime(&media.mime) {
+        return Ok(vec![AiContent::image(media.source)]);
+    }
+    if !is_video_mime(&media.mime) {
+        return Err(format!("unsupported media mime `{}`", media.mime));
+    }
+
+    let frames = extract_video_frames(&media).await?;
+    let mut content = Vec::with_capacity(frames.len() * 2 + 1);
+    content.push(AiContent::text(format!(
+        "The following {} images are representative video frames in chronological order.",
+        frames.len()
+    )));
+    for (timestamp, frame) in frames {
+        content.push(AiContent::text(format!("Frame at {timestamp:.3} seconds:")));
+        content.push(AiContent::image(frame));
+    }
+    Ok(content)
+}
+
+async fn extract_video_frames(media: &ResolvedMedia) -> Result<Vec<(f64, ResourceRef)>, String> {
+    let bytes = match &media.source {
+        ResourceRef::Base64 { data_base64, .. } => general_purpose::STANDARD
+            .decode(data_base64)
+            .map_err(|err| format!("decode video base64 failed: {err}"))?,
+        ResourceRef::Url { url, .. } => reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .map_err(|err| format!("download video failed: {err}"))?
+            .error_for_status()
+            .map_err(|err| format!("download video failed: {err}"))?
+            .bytes()
+            .await
+            .map_err(|err| format!("read downloaded video failed: {err}"))?
+            .to_vec(),
+        ResourceRef::NamedObject { .. } => {
+            return Err("named_object video was not resolved to bytes".to_string())
+        }
+    };
+    if bytes.is_empty() {
+        return Err("video has empty content".to_string());
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "llm-understand-video-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    tokio::fs::create_dir_all(&temp_dir)
+        .await
+        .map_err(|err| format!("create video frame temp dir failed: {err}"))?;
+    let input_path = temp_dir.join(if media.mime == "video/webm" {
+        "input.webm"
+    } else {
+        "input.mp4"
+    });
+    let result = async {
+        tokio::fs::write(&input_path, bytes)
+            .await
+            .map_err(|err| format!("write temporary video failed: {err}"))?;
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(&input_path)
+            .output()
+            .await
+            .map_err(|err| format!("start ffprobe failed: {err}"))?;
+        if !probe.status.success() {
+            return Err(format!(
+                "ffprobe failed: {}",
+                String::from_utf8_lossy(&probe.stderr).trim()
+            ));
+        }
+        let duration = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse::<f64>()
+            .map_err(|err| format!("parse video duration failed: {err}"))?;
+        if !duration.is_finite() || duration <= 0.0 {
+            return Err(format!("invalid video duration `{duration}`"));
+        }
+        let configured_count = std::env::var("LLM_UNDERSTAND_MEDIA_VIDEO_FRAMES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_VIDEO_FRAME_COUNT)
+            .clamp(1, MAX_VIDEO_FRAME_COUNT);
+        let frame_count = configured_count
+            .min((duration * 2.0).ceil() as usize)
+            .max(1);
+        let mut frames = Vec::with_capacity(frame_count);
+        for index in 0..frame_count {
+            let timestamp = duration * (index as f64 + 0.5) / frame_count as f64;
+            let frame_path = temp_dir.join(format!("frame-{index:02}.jpg"));
+            let output = Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-ss", &format!("{timestamp:.6}")])
+                .arg("-i")
+                .arg(&input_path)
+                .args(["-frames:v", "1", "-q:v", "2"])
+                .arg(&frame_path)
+                .output()
+                .await
+                .map_err(|err| format!("start ffmpeg failed: {err}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "extract video frame at {timestamp:.3}s failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            let frame_bytes = tokio::fs::read(&frame_path)
+                .await
+                .map_err(|err| format!("read extracted video frame failed: {err}"))?;
+            frames.push((
+                timestamp,
+                ResourceRef::Base64 {
+                    mime: "image/jpeg".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(frame_bytes),
+                },
+            ));
+        }
+        Ok(frames)
+    }
+    .await;
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    result
 }
 
 fn purify_history(history: &[AiMessage]) -> Vec<AiMessage> {
@@ -1324,10 +1474,10 @@ mod tests {
 
         let request = build_request(
             &opts,
-            ResourceRef::Base64 {
+            vec![AiContent::image(ResourceRef::Base64 {
                 mime: "image/png".to_string(),
                 data_base64: "AAAA".to_string(),
-            },
+            })],
             DEFAULT_MODEL_ALIAS.to_string(),
             Vec::new(),
         );
@@ -1338,6 +1488,49 @@ mod tests {
         assert!(tool_policy
             .disable_capabilities
             .contains(&"web_search".to_string()));
+    }
+
+    #[test]
+    fn video_mime_routes_to_vision_model_and_sniffs_common_containers() {
+        assert!(route_model("video/mp4").is_some());
+        assert_eq!(sniff_video_mime(b"\0\0\0\x18ftypisom"), Some("video/mp4"));
+        assert_eq!(
+            sniff_video_mime(&[0x1a, 0x45, 0xdf, 0xa3, 0x01]),
+            Some("video/webm")
+        );
+    }
+
+    #[test]
+    fn build_request_preserves_timestamped_video_frames() {
+        let opts = RunOpts {
+            media_value: json!({}),
+            goal: "find the action time".to_string(),
+            parent_history: Vec::new(),
+            work_dir: None,
+            model: None,
+            summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
+            target_tokens: DEFAULT_TARGET_TOKENS,
+            max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+        };
+        let media_content = vec![
+            AiContent::text("Frame at 1.250 seconds:"),
+            AiContent::image(ResourceRef::Base64 {
+                mime: "image/jpeg".to_string(),
+                data_base64: "AAAA".to_string(),
+            }),
+        ];
+        let request = build_request(
+            &opts,
+            media_content,
+            DEFAULT_MODEL_ALIAS.to_string(),
+            Vec::new(),
+        );
+        let user = request.input.last().expect("user message");
+        assert!(matches!(
+            &user.content[0],
+            AiContent::Text { text } if text.contains("1.250 seconds")
+        ));
+        assert!(matches!(&user.content[1], AiContent::Image { .. }));
     }
 
     #[test]
@@ -1360,6 +1553,7 @@ mod tests {
                 input_tokens: Some(1),
                 output_tokens: Some(2),
                 total_tokens: Some(3),
+                request_units: None,
             },
             response: AiResponse::text(raw),
             trace: llm_context::ContextRunTrace {

@@ -667,7 +667,7 @@ struct UsageLogContext {
     caller_app_id: Option<String>,
     capability: String,
     request_model: String,
-    provider_model: String,
+    provider_model: Arc<std::sync::RwLock<String>>,
     idempotency_key: Option<String>,
 }
 
@@ -729,7 +729,12 @@ impl UsageLoggingSink {
             idempotency_key: self.context.idempotency_key.clone(),
             capability: self.context.capability.clone(),
             request_model: self.context.request_model.clone(),
-            provider_model: self.context.provider_model.clone(),
+            provider_model: self
+                .context
+                .provider_model
+                .read()
+                .map(|model| model.clone())
+                .unwrap_or_else(|_| "unknown".to_string()),
             input_tokens,
             output_tokens,
             total_tokens,
@@ -4310,6 +4315,13 @@ impl AIComputeCenter {
         // Once we know the final provider model we can wrap the sink with a
         // usage-log layer: any Final event flowing through it (immediate call
         // or long-task completion) writes one durable row.
+        let selected_provider_model = Arc::new(std::sync::RwLock::new(
+            decision
+                .attempts()
+                .first()
+                .map(|attempt| attempt.exact_model.clone())
+                .unwrap_or_else(|| decision.provider_model.clone()),
+        ));
         let event_sink: Arc<dyn TaskEventSink> = if let Some(db) = self.usage_log_db.clone() {
             let context = UsageLogContext {
                 external_task_id: external_task_id.clone(),
@@ -4317,11 +4329,7 @@ impl AIComputeCenter {
                 caller_app_id: invoke_ctx.caller_app_id.clone(),
                 capability: capability_name(&request.capability).to_string(),
                 request_model: request.model.alias.clone(),
-                provider_model: decision
-                    .attempts()
-                    .first()
-                    .map(|attempt| attempt.exact_model.clone())
-                    .unwrap_or_else(|| decision.provider_model.clone()),
+                provider_model: selected_provider_model.clone(),
                 idempotency_key: request.idempotency_key.clone(),
             };
             Arc::new(UsageLoggingSink::new(event_sink, db, context))
@@ -4336,6 +4344,7 @@ impl AIComputeCenter {
                 resolved,
                 &decision,
                 event_sink.clone(),
+                selected_provider_model,
             )
             .await;
         self.record_route_trace(
@@ -4586,6 +4595,7 @@ impl AIComputeCenter {
         req: ResolvedRequest,
         decision: &RouteDecision,
         sink: Arc<dyn TaskEventSink>,
+        selected_provider_model: Arc<std::sync::RwLock<String>>,
     ) -> std::result::Result<(ProviderStartResult, String), RPCErrors> {
         let mut last_err: Option<ProviderError> = None;
         let _request_log = serde_json::to_string(&req.request)
@@ -4624,6 +4634,10 @@ impl AIComputeCenter {
                 "aicc.provider.start task_id={} tenant={} trace_id={:?} instance_id={} provider_model={}",
                 task_id, ctx.tenant_id, ctx.trace_id, attempt.instance_id, attempt.provider_model
             );
+
+            if let Ok(mut selected) = selected_provider_model.write() {
+                *selected = attempt.exact_model.clone();
+            }
 
             self.registry.mark_start_begin(attempt.instance_id.as_str());
             let started_at = Instant::now();

@@ -2737,6 +2737,7 @@ impl OpenAIProvider {
                         .and_then(|value| value.as_u64())
                 }),
             total_tokens: usage.get("total_tokens").and_then(|value| value.as_u64()),
+            request_units: None,
         });
 
         let cost = usage
@@ -2993,7 +2994,7 @@ impl OpenAIProvider {
 
         let summary = AiResponse {
             message: AiResponse::message_from_parts(revised_prompt, vec![], artifacts),
-            usage: None,
+            usage: Some(AiUsage::request_units(1)),
             cost: estimated_cost,
             finish_reason: Some("stop".to_string()),
             provider_task_ref: body
@@ -3723,6 +3724,7 @@ impl Provider for OpenAIProvider {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
             total_tokens: Some(input_tokens.saturating_add(output_tokens)),
+            request_units: None,
         };
 
         let estimated_cost_usd = self
@@ -5536,6 +5538,7 @@ data: [DONE]
                     input_tokens: Some(1_000_000),
                     output_tokens: Some(1_000_000),
                     total_tokens: Some(2_000_000),
+                    request_units: None,
                 },
             )
             .expect("OpenRouter usage cost should resolve");
@@ -5584,6 +5587,7 @@ data: [DONE]
                     input_tokens: Some(1_000_000),
                     output_tokens: Some(1_000_000),
                     total_tokens: Some(2_000_000),
+                    request_units: None,
                 },
             )
             .expect("OpenRouter fallback cost should resolve");

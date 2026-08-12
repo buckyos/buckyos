@@ -399,6 +399,7 @@ impl MiniMaxProvider {
                 .and_then(|value| value.as_u64())
                 .zip(usage.get("output_tokens").and_then(|value| value.as_u64()))
                 .map(|(input, output)| input.saturating_add(output)),
+            request_units: None,
         });
         let cost = usage
             .as_ref()
@@ -461,6 +462,7 @@ impl Provider for MiniMaxProvider {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
             total_tokens: Some(input_tokens.saturating_add(output_tokens)),
+            request_units: None,
         };
 
         CostEstimateOutput {

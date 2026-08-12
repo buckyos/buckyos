@@ -690,7 +690,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 }
 ```
 
-过渡实现中如果 `AiUsage` 结构尚未升级，扩展字段可以先进入 `AiResponseSummary.extra.usage_ext`；正式协议以本节分组结构为准。
+当前 `AiUsage` 已包含顶层 `request_units`，非 token provider 应至少上报该字段；其它媒体计量字段仍按本节分组结构逐步扩展。
 
 ### 3.5 Bounding Box
 

@@ -2485,6 +2485,33 @@ impl AIAgent {
             map.get(target_session_id).cloned()
         };
         let Some(target) = target else {
+            let meta_path = self
+                .config
+                .layout
+                .session_dir(target_session_id)
+                .join(".meta")
+                .join("session.json");
+            if meta_path.exists() {
+                let bytes = std::fs::read(&meta_path).map_err(|err| {
+                    anyhow!("forward_message: read {} failed: {err}", meta_path.display())
+                })?;
+                let meta: SessionMeta = serde_json::from_slice(&bytes).map_err(|err| {
+                    anyhow!("forward_message: parse {} failed: {err}", meta_path.display())
+                })?;
+                if matches!(meta.status, SessionStatus::Ended) {
+                    let summary = SessionSummary {
+                        session_id: meta.session_id,
+                        kind: meta.kind,
+                        title: meta.title,
+                        objective: meta.objective,
+                        status: meta.status,
+                        one_line_status: meta.one_line_status,
+                        workspace_id: meta.workspace_id,
+                        current_behavior: meta.current_behavior,
+                    };
+                    return Err(anyhow!("{}", ended_forward_message_guidance(&summary)));
+                }
+            }
             return Err(anyhow!(
                 "forward_message: target session `{target_session_id}` not found"
             ));
@@ -3842,6 +3869,31 @@ runner_id = "agent"
         assert!(msg.contains("try_create_worksession"));
         assert!(msg.contains("followup_routing.target_worksession_id"));
         assert!(msg.contains("title `Old task`"));
+        assert!(msg.contains("workspace `old-workspace`"));
+    }
+
+    #[tokio::test]
+    async fn forward_message_retired_ended_session_guides_new_worksession() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent = test_agent(dir.path().to_path_buf());
+        let mut meta = SessionMeta::new(
+            "work-ended".to_string(),
+            SessionKind::Work,
+            "work_default".to_string(),
+            "ui-1".to_string(),
+        );
+        meta.status = SessionStatus::Ended;
+        meta.title = "Old task".to_string();
+        meta.workspace_id = Some("old-workspace".to_string());
+        write_session_meta(&agent, meta);
+
+        let err = agent
+            .forward_message("work-ended", "ui-1", "follow-up")
+            .await
+            .expect_err("retired ended session should reject with routing guidance");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("target session `work-ended` has ended"));
+        assert!(msg.contains("try_create_worksession"));
         assert!(msg.contains("workspace `old-workspace`"));
     }
 

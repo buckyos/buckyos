@@ -1303,6 +1303,19 @@ pub struct AiUsage {
     pub output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_units: Option<u64>,
+}
+
+impl AiUsage {
+    pub fn request_units(request_units: u64) -> Self {
+        Self {
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            request_units: Some(request_units),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2464,6 +2477,7 @@ mod tests {
                         input_tokens: Some(4),
                         output_tokens: Some(8),
                         total_tokens: Some(12),
+                        request_units: None,
                     }),
                     cost: Some(AiCost {
                         amount: 0.001,

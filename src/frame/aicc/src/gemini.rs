@@ -2503,6 +2503,7 @@ impl GoogleGeminiProvider {
             total_tokens: usage
                 .get("totalTokenCount")
                 .and_then(|value| value.as_u64()),
+            request_units: None,
         });
 
         let cost = usage
@@ -2677,7 +2678,7 @@ impl GoogleGeminiProvider {
 
         let summary = AiResponse {
             message: AiResponse::message_from_parts(text, vec![], artifacts),
-            usage: None,
+            usage: Some(AiUsage::request_units(1)),
             cost: estimated_cost,
             finish_reason: body
                 .pointer("/candidates/0/finishReason")
@@ -2919,6 +2920,7 @@ impl GoogleGeminiProvider {
             total_tokens: usage
                 .get("totalTokenCount")
                 .and_then(|value| value.as_u64()),
+            request_units: None,
         });
         let cost = usage
             .as_ref()
@@ -3271,6 +3273,7 @@ impl GoogleGeminiProvider {
         );
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            usage: Some(AiUsage::request_units(1)),
             provider_task_ref: Some(operation_name),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
@@ -3334,6 +3337,7 @@ impl Provider for GoogleGeminiProvider {
             input_tokens: Some(input_tokens),
             output_tokens: Some(output_tokens),
             total_tokens: Some(input_tokens.saturating_add(output_tokens)),
+            request_units: None,
         };
 
         let estimated_cost_usd = self
