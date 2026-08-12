@@ -50,19 +50,25 @@ struct GeminiToolCallContext {
 }
 
 const GEMINI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
+    "aspect_ratio",
     "candidate_count",
     "max_output_tokens",
     "n",
+    "negative_prompt",
+    "output",
     "prompt",
+    "quality",
     "response_mime_type",
     "response_modalities",
     "seed",
+    "size",
     "stop",
     "temperature",
     "top_k",
     "top_p",
 ];
 const GEMINI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
+    "aspect_ratio",
     "candidate_count",
     "max_output_tokens",
     "n",
@@ -316,12 +322,9 @@ impl GoogleGeminiProvider {
         }
         for model in buckets.embedding.iter() {
             requests.push(
-                DriverModelResolveRequest::new(
-                    model.clone(),
-                    vec![ApiType::Embedding, ApiType::EmbeddingMultimodal],
-                )
-                .with_cost(Some(0.0001))
-                .with_latency(Some(800)),
+                DriverModelResolveRequest::new(model.clone(), vec![ApiType::Embedding])
+                    .with_cost(Some(0.0001))
+                    .with_latency(Some(800)),
             );
         }
         for model in buckets.tts.iter() {
@@ -340,7 +343,10 @@ impl GoogleGeminiProvider {
         }
         for model in buckets.video.iter() {
             requests.push(
-                DriverModelResolveRequest::new(model.clone(), vec![ApiType::VideoTextToVideo])
+                DriverModelResolveRequest::new(
+                    model.clone(),
+                    vec![ApiType::VideoTextToVideo, ApiType::VideoImageToVideo],
+                )
                     .with_cost(Some(0.50))
                     .with_latency(Some(120_000)),
             );
@@ -1575,8 +1581,7 @@ impl GoogleGeminiProvider {
                         .insert("responseModalities".to_string(), value.clone());
                 }
                 "response_mime_type" => {
-                    Self::ensure_generation_config(target)
-                        .insert("responseMimeType".to_string(), value.clone());
+                    Self::set_image_mime_type(target, value)?;
                 }
                 "max_output_tokens" => {
                     Self::ensure_generation_config(target)
@@ -1611,7 +1616,139 @@ impl GoogleGeminiProvider {
                 _ => {}
             }
         }
+        Self::merge_image_response_preferences(target, input_map)?;
         Ok(())
+    }
+
+    fn ensure_image_response_config(target: &mut Map<String, Value>) -> &mut Map<String, Value> {
+        let generation = Self::ensure_generation_config(target);
+        if !generation
+            .get("responseFormat")
+            .is_some_and(Value::is_object)
+        {
+            generation.insert("responseFormat".to_string(), json!({}));
+        }
+        let response_format = generation
+            .get_mut("responseFormat")
+            .and_then(Value::as_object_mut)
+            .expect("responseFormat should be an object");
+        if !response_format.get("image").is_some_and(Value::is_object) {
+            response_format.insert("image".to_string(), json!({}));
+        }
+        response_format
+            .get_mut("image")
+            .and_then(Value::as_object_mut)
+            .expect("responseFormat.image should be an object")
+    }
+
+    fn set_image_response_field(target: &mut Map<String, Value>, key: &str, value: Value) {
+        Self::ensure_image_response_config(target).insert(key.to_string(), value);
+    }
+
+    fn set_image_mime_type(
+        target: &mut Map<String, Value>,
+        value: &Value,
+    ) -> Result<(), ProviderError> {
+        let mime = value.as_str().ok_or_else(|| {
+            ProviderError::fatal("google gemini image output media type must be a string")
+        })?;
+        match mime.trim().to_ascii_lowercase().as_str() {
+            "image/png" => Ok(()),
+            "image/jpeg" | "image/jpg" | "image_jpeg" => {
+                Self::set_image_response_field(
+                    target,
+                    "mimeType",
+                    Value::String("IMAGE_JPEG".to_string()),
+                );
+                Ok(())
+            }
+            _ => Err(ProviderError::fatal(format!(
+                "google gemini image output supports PNG or JPEG, got {}",
+                mime
+            ))),
+        }
+    }
+
+    fn gemini_image_size(value: &Value) -> Result<Value, ProviderError> {
+        let raw = value
+            .as_str()
+            .ok_or_else(|| ProviderError::fatal("google gemini image size must be a string"))?;
+        let normalized =
+            match raw.trim().to_ascii_uppercase().as_str() {
+                "512" => "512",
+                "1K" => "1K",
+                "2K" => "2K",
+                "4K" => "4K",
+                _ => {
+                    let dimensions = raw.trim().to_ascii_lowercase().split_once('x').and_then(
+                        |(width, height)| {
+                            Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
+                        },
+                    );
+                    match dimensions.map(|(width, height)| width.max(height)) {
+                        Some(512) => "512",
+                        Some(1024) => "1K",
+                        Some(2048) => "2K",
+                        Some(4096) => "4K",
+                        _ => {
+                            return Err(ProviderError::fatal(format!(
+                            "google gemini image size must use a 512, 1K, 2K or 4K edge, got {}",
+                            raw
+                        )))
+                        }
+                    }
+                }
+            };
+        Ok(Value::String(normalized.to_string()))
+    }
+
+    fn merge_image_response_preferences(
+        target: &mut Map<String, Value>,
+        input: &Map<String, Value>,
+    ) -> Result<(), ProviderError> {
+        if let Some(aspect_ratio) = input.get("aspect_ratio") {
+            Self::set_image_response_field(target, "aspectRatio", aspect_ratio.clone());
+        }
+        if let Some(size) = input.get("size") {
+            Self::set_image_response_field(target, "imageSize", Self::gemini_image_size(size)?);
+        }
+        if let Some(media_type) = input
+            .get("output")
+            .and_then(Value::as_object)
+            .and_then(|output| output.get("media_type"))
+        {
+            Self::set_image_mime_type(target, media_type)?;
+        }
+        Ok(())
+    }
+
+    fn merge_image_prompt_preferences(target: &mut Map<String, Value>, input: &Map<String, Value>) {
+        let Some(prompt) = target.get("prompt").and_then(Value::as_str) else {
+            return;
+        };
+        let mut preferences = Vec::new();
+        if let Some(negative_prompt) = input
+            .get("negative_prompt")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            preferences.push(format!("Avoid: {}", negative_prompt));
+        }
+        if let Some(quality) = input
+            .get("quality")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            preferences.push(format!("Quality preference: {}", quality));
+        }
+        if !preferences.is_empty() {
+            target.insert(
+                "prompt".to_string(),
+                Value::String(format!("{}\n{}", prompt, preferences.join("\n"))),
+            );
+        }
     }
 
     fn merge_text2image_options(
@@ -1645,8 +1782,7 @@ impl GoogleGeminiProvider {
                         .insert("responseModalities".to_string(), value.clone());
                 }
                 "response_mime_type" | "output_format" => {
-                    Self::ensure_generation_config(target)
-                        .insert("responseMimeType".to_string(), value.clone());
+                    Self::set_image_mime_type(target, value)?;
                 }
                 "max_output_tokens" => {
                     Self::ensure_generation_config(target)
@@ -1683,6 +1819,7 @@ impl GoogleGeminiProvider {
                 }
             }
         }
+        Self::merge_image_response_preferences(target, options_map)?;
         Ok(ignored)
     }
 
@@ -1977,6 +2114,23 @@ impl GoogleGeminiProvider {
             .and_then(|value| value.as_str())
     }
 
+    fn video_inline_data(operation: &Value) -> Option<(&str, &str)> {
+        let video = operation
+            .pointer("/response/generateVideoResponse/generatedSamples/0/video")
+            .or_else(|| operation.pointer("/response/generatedVideos/0/video"))
+            .or_else(|| operation.pointer("/response/generated_videos/0/video"))?;
+        let data = video
+            .get("bytesBase64Encoded")
+            .or_else(|| video.pointer("/inlineData/data"))
+            .and_then(Value::as_str)?;
+        let mime = video
+            .get("mimeType")
+            .or_else(|| video.pointer("/inlineData/mimeType"))
+            .and_then(Value::as_str)
+            .unwrap_or("video/mp4");
+        Some((mime, data))
+    }
+
     fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
         let input = req.payload.input_json.as_ref()?;
         for key in keys {
@@ -1989,7 +2143,28 @@ impl GoogleGeminiProvider {
         None
     }
 
-    fn resource_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
+    fn content_resource_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
+        match resource {
+            ResourceRef::Url { url, mime_hint } => Ok(json!({
+                "fileData": {
+                    "fileUri": url,
+                    "mimeType": mime_hint.as_deref().unwrap_or("application/octet-stream")
+                }
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": data_base64
+                }
+            })),
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "google gemini provider cannot resolve named object resource {} without resolver bytes",
+                obj_id
+            ))),
+        }
+    }
+
+    fn veo_resource_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
         match resource {
             ResourceRef::Url { url, mime_hint } if url.starts_with("gs://") => Ok(json!({
                 "gcsUri": url,
@@ -2023,6 +2198,151 @@ impl GoogleGeminiProvider {
             ai_methods::AUDIO_MUSIC => "Generate music from the requested prompt.".to_string(),
             _ => "Process the request.".to_string(),
         }
+    }
+
+    fn tts_text(req: &AiMethodRequest) -> Option<&str> {
+        req.payload
+            .input_json
+            .as_ref()
+            .and_then(|value| value.get("text"))
+            .and_then(Value::as_str)
+            .or(req.payload.text.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    fn tts_prompt(req: &AiMethodRequest) -> Result<String, ProviderError> {
+        let text = Self::tts_text(req).ok_or_else(|| {
+            ProviderError::fatal("audio.tts requires text in input_json.text or payload.text")
+        })?;
+        let input = req.payload.input_json.as_ref();
+        let mut controls = Vec::new();
+        if let Some(style) = input
+            .and_then(|value| value.get("style"))
+            .and_then(Value::as_str)
+        {
+            controls.push(format!("Style: {}.", style));
+        }
+        if let Some(gender) = input
+            .and_then(|value| value.get("gender"))
+            .and_then(Value::as_str)
+        {
+            controls.push(format!("Voice gender: {}.", gender));
+        }
+        if let Some(speed) = input
+            .and_then(|value| value.get("speed"))
+            .and_then(Value::as_f64)
+        {
+            controls.push(format!("Speaking rate: {}x.", speed));
+        }
+        if controls.is_empty() {
+            Ok(text.to_string())
+        } else {
+            Ok(format!(
+                "{}\nRead the following text exactly:\n{}",
+                controls.join(" "),
+                text
+            ))
+        }
+    }
+
+    fn veo_video_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
+        match resource {
+            ResourceRef::Url { url, .. } => Ok(json!({ "uri": url })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": data_base64
+                }
+            })),
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "google gemini provider cannot resolve named object resource {} without resolver bytes",
+                obj_id
+            ))),
+        }
+    }
+
+    fn music_prompt(req: &AiMethodRequest) -> Result<String, ProviderError> {
+        let mut prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal("audio.music requires prompt in input_json.prompt or payload.text")
+        })?;
+        let input = req.payload.input_json.as_ref();
+        let instrumental = input
+            .and_then(|value| value.get("instrumental"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let lyrics = input
+            .and_then(|value| value.get("lyrics"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if instrumental && lyrics.is_some() {
+            return Err(ProviderError::fatal(
+                "audio.music cannot combine instrumental=true with explicit lyrics",
+            ));
+        }
+        if instrumental {
+            prompt.push_str("\nInstrumental only, no vocals.");
+        }
+        if let Some(duration) = input
+            .and_then(|value| value.get("duration"))
+            .and_then(Value::as_u64)
+        {
+            prompt.push_str(format!("\nTarget duration: {} seconds.", duration).as_str());
+        }
+        if let Some(lyrics) = lyrics {
+            prompt.push_str(format!("\nLyrics:\n{}", lyrics).as_str());
+        }
+        Ok(prompt)
+    }
+
+    fn merge_audio_response_preferences(
+        request: &mut Map<String, Value>,
+        req: &AiMethodRequest,
+    ) -> Result<(), ProviderError> {
+        let Some(input) = req.payload.input_json.as_ref() else {
+            return Ok(());
+        };
+        if let Some(seed) = input.get("seed") {
+            Self::ensure_generation_config(request).insert("seed".to_string(), seed.clone());
+        }
+        let output = input.get("output").and_then(Value::as_object);
+        if output.is_none() {
+            return Ok(());
+        }
+        let mut audio = Map::new();
+        if let Some(media_type) = output
+            .and_then(|value| value.get("media_type"))
+            .and_then(Value::as_str)
+        {
+            let mime_type = match media_type.trim().to_ascii_lowercase().as_str() {
+                "audio/mpeg" | "audio/mp3" => "AUDIO_MP3",
+                "audio/ogg" | "audio/opus" => "AUDIO_OGG_OPUS",
+                "audio/wav" | "audio/wave" => "AUDIO_WAV",
+                value if value.starts_with("audio/l16") => "AUDIO_L16",
+                _ => {
+                    return Err(ProviderError::fatal(format!(
+                        "google gemini audio output does not support {}",
+                        media_type
+                    )))
+                }
+            };
+            audio.insert("mimeType".to_string(), Value::String(mime_type.to_string()));
+        }
+        if let Some(sample_rate) = output.and_then(|value| value.get("sample_rate")) {
+            audio.insert("sampleRate".to_string(), sample_rate.clone());
+        }
+        if !audio.is_empty() {
+            let generation = Self::ensure_generation_config(request);
+            let response_format = generation
+                .entry("responseFormat".to_string())
+                .or_insert_with(|| json!({}));
+            response_format
+                .as_object_mut()
+                .expect("responseFormat should be an object")
+                .insert("audio".to_string(), Value::Object(audio));
+        }
+        Ok(())
     }
 
     fn parse_media_artifacts(body: &Value, default_mime: &str) -> Vec<AiArtifact> {
@@ -2248,6 +2568,9 @@ impl GoogleGeminiProvider {
                 "text2image request requires prompt in payload.text/messages/input_json/options",
             ));
         }
+        if let Some(input_json) = req.payload.input_json.as_ref().and_then(Value::as_object) {
+            Self::merge_image_prompt_preferences(&mut request_obj, input_json);
+        }
 
         let mut ignored_options = vec![];
         if let Some(options) = req.payload.options.as_ref() {
@@ -2389,13 +2712,32 @@ impl GoogleGeminiProvider {
             json!([{
                 "role": "user",
                 "parts": [
-                    Self::resource_part(&resource)?,
+                    Self::content_resource_part(&resource)?,
                     { "text": prompt }
                 ]
             }]),
         );
         Self::ensure_generation_config(&mut request_obj)
             .insert("responseModalities".to_string(), json!(["IMAGE"]));
+        if let Some(input) = req.payload.input_json.as_ref().and_then(Value::as_object) {
+            Self::merge_image_response_preferences(&mut request_obj, input)?;
+            if let Some(strength) = input.get("strength").and_then(Value::as_f64) {
+                let prompt = request_obj
+                    .get("contents")
+                    .and_then(Value::as_array)
+                    .and_then(|contents| contents.first())
+                    .and_then(|content| content.get("parts"))
+                    .and_then(Value::as_array)
+                    .and_then(|parts| parts.get(1))
+                    .and_then(|part| part.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                request_obj["contents"][0]["parts"][1]["text"] = Value::String(format!(
+                    "Apply the requested edit with strength {} on a scale from 0 to 1. {}",
+                    strength, prompt
+                ));
+            }
+        }
         let (status, body, latency_ms) = self
             .post_generate_content(provider_model, &request_obj)
             .await?;
@@ -2456,7 +2798,7 @@ impl GoogleGeminiProvider {
                 .cloned()
                 .or_else(|| Self::resource_from_input_json(req, &["image", "audio", "video"]))
             {
-                parts.push(Self::resource_part(&resource)?);
+                parts.push(Self::content_resource_part(&resource)?);
             }
         }
         if parts.is_empty() {
@@ -2533,7 +2875,7 @@ impl GoogleGeminiProvider {
             "contents": [{
                 "role": "user",
                 "parts": [
-                    Self::resource_part(&resource)?,
+                    Self::content_resource_part(&resource)?,
                     { "text": Self::prompt_for_method(method, req) }
                 ]
             }],
@@ -2605,8 +2947,12 @@ impl GoogleGeminiProvider {
         method: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let prompt = Self::prompt_for_method(method, req);
-        let request_obj = json!({
+        let prompt = if method == ai_methods::AUDIO_TTS {
+            Self::tts_prompt(req)?
+        } else {
+            Self::music_prompt(req)?
+        };
+        let mut request_obj = json!({
             "contents": [{
                 "role": "user",
                 "parts": [{ "text": prompt }]
@@ -2616,6 +2962,35 @@ impl GoogleGeminiProvider {
         .as_object()
         .cloned()
         .unwrap_or_default();
+        Self::merge_audio_response_preferences(&mut request_obj, req)?;
+        if method == ai_methods::AUDIO_TTS {
+            let input = req.payload.input_json.as_ref();
+            let voice_name = input
+                .and_then(|value| value.get("voice_id"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("Kore");
+            let speech_config = Self::ensure_generation_config(&mut request_obj)
+                .entry("speechConfig".to_string())
+                .or_insert_with(|| json!({}));
+            let speech_config = speech_config
+                .as_object_mut()
+                .expect("speechConfig should be an object");
+            speech_config.insert(
+                "voiceConfig".to_string(),
+                json!({ "prebuiltVoiceConfig": { "voiceName": voice_name } }),
+            );
+            if let Some(language) = input
+                .and_then(|value| value.get("language"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            {
+                speech_config.insert(
+                    "languageCode".to_string(),
+                    Value::String(language.to_string()),
+                );
+            }
+        }
         let (status, body, latency_ms) = self
             .post_generate_content(provider_model, &request_obj)
             .await?;
@@ -2657,6 +3032,17 @@ impl GoogleGeminiProvider {
                 "video.img2video requires an image input",
             ));
         }
+        if matches!(
+            method,
+            ai_methods::VIDEO_VIDEO2VIDEO | ai_methods::VIDEO_EXTEND
+        ) && req.payload.resources.is_empty()
+            && Self::resource_from_input_json(req, &["video"]).is_none()
+        {
+            return Err(ProviderError::fatal(format!(
+                "{} requires a video input",
+                method
+            )));
+        }
         let mut instance = Map::new();
         instance.insert(
             "prompt".to_string(),
@@ -2674,16 +3060,12 @@ impl GoogleGeminiProvider {
                 ai_methods::VIDEO_VIDEO2VIDEO | ai_methods::VIDEO_EXTEND => "video",
                 _ => "image",
             };
-            instance.insert(field.to_string(), Self::resource_part(&resource)?);
-        }
-        if let Some(handle) = req
-            .payload
-            .input_json
-            .as_ref()
-            .and_then(|value| value.get("continuation_handle"))
-            .cloned()
-        {
-            instance.insert("continuation_handle".to_string(), handle);
+            let part = if field == "video" {
+                Self::veo_video_part(&resource)?
+            } else {
+                Self::veo_resource_part(&resource)?
+            };
+            instance.insert(field.to_string(), part);
         }
         let mut request_obj = Map::new();
         request_obj.insert(
@@ -2697,6 +3079,27 @@ impl GoogleGeminiProvider {
         }
         if let Some(options) = req.payload.options.as_ref() {
             ignored_parameters.extend(Self::merge_video_parameters(&mut parameters, options));
+        }
+        if matches!(
+            method,
+            ai_methods::VIDEO_VIDEO2VIDEO | ai_methods::VIDEO_EXTEND
+        ) {
+            if let Some(duration) = parameters.remove("durationSeconds") {
+                if duration.as_u64() != Some(7) {
+                    return Err(ProviderError::fatal(
+                        "google gemini Veo 3.1 video extension has a fixed duration of 7 seconds",
+                    ));
+                }
+            }
+            if let Some(resolution) = parameters.get("resolution") {
+                if resolution.as_str() != Some("720p") {
+                    return Err(ProviderError::fatal(
+                        "google gemini Veo 3.1 video extension requires 720p resolution",
+                    ));
+                }
+            } else {
+                parameters.insert("resolution".to_string(), Value::String("720p".to_string()));
+            }
         }
         if !parameters.is_empty() {
             request_obj.insert("parameters".to_string(), Value::Object(parameters));
@@ -2799,26 +3202,41 @@ impl GoogleGeminiProvider {
             }
             operation = next_operation;
         }
-        let video_uri = Self::video_uri(&operation).ok_or_else(|| {
-            ProviderError::fatal("google gemini completed video response is missing video uri")
-        })?;
-        let (download_status, bytes, content_type) = self.download_video(video_uri).await?;
-        if !download_status.is_success() {
-            return Err(ProviderError::fatal(format!(
-                "google gemini video download returned status {}",
-                download_status.as_u16()
-            )));
-        }
-        let mime = if content_type.contains("video/") {
-            content_type
+        let video_uri = Self::video_uri(&operation).map(str::to_string);
+        let (mime, data_base64) = if let Some(video_uri) = video_uri.as_deref() {
+            let (download_status, bytes, content_type) = self.download_video(video_uri).await?;
+            if !download_status.is_success() {
+                return Err(ProviderError::fatal(format!(
+                    "google gemini video download returned status {}",
+                    download_status.as_u16()
+                )));
+            }
+            let mime = if content_type.contains("video/") {
+                content_type
+            } else {
+                "video/mp4".to_string()
+            };
+            (mime, general_purpose::STANDARD.encode(bytes))
+        } else if let Some((mime, data_base64)) = Self::video_inline_data(&operation) {
+            general_purpose::STANDARD
+                .decode(data_base64)
+                .map_err(|err| {
+                    ProviderError::fatal(format!(
+                        "google gemini completed video response contains invalid base64: {}",
+                        err
+                    ))
+                })?;
+            (mime.to_string(), data_base64.to_string())
         } else {
-            "video/mp4".to_string()
+            return Err(ProviderError::fatal(
+                "google gemini completed video response is missing video data",
+            ));
         };
         let artifact = AiArtifact {
             name: "video.mp4".to_string(),
             resource: ResourceRef::Base64 {
                 mime: mime.clone(),
-                data_base64: general_purpose::STANDARD.encode(bytes),
+                data_base64,
             },
             mime: Some(mime),
             metadata: None,
@@ -2843,10 +3261,9 @@ impl GoogleGeminiProvider {
             Value::String(operation_name.clone()),
         );
         if method == ai_methods::VIDEO_EXTEND {
-            extra.insert(
-                "continuation_handle".to_string(),
-                Value::String(video_uri.to_string()),
-            );
+            if let Some(video_uri) = video_uri {
+                extra.insert("continuation_handle".to_string(), Value::String(video_uri));
+            }
         }
         extra.insert(
             "provider_io".to_string(),
@@ -3977,10 +4394,142 @@ mod tests {
             .expect("veo model should exist");
         assert!(veo.api_types.contains(&ApiType::VideoTextToVideo));
         assert!(veo.api_types.contains(&ApiType::VideoImageToVideo));
+        assert!(veo.api_types.contains(&ApiType::VideoToVideo));
+        assert!(veo.api_types.contains(&ApiType::VideoExtend));
         assert!(veo
             .logical_mounts
             .iter()
             .any(|mount| mount == "video.img2video"));
+        assert!(veo
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "video.extend"));
+    }
+
+    #[test]
+    fn veo_inventory_capabilities_follow_metadata_patterns() {
+        let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
+            "gemini-primary",
+            ProviderType::CloudApi,
+            "google-gemini",
+            &GeminiModelBuckets {
+                video: vec![
+                    "veo-3.1-fast-preview".to_string(),
+                    "veo-3.1-fast-lite-preview".to_string(),
+                ],
+                ..Default::default()
+            },
+            &[],
+            Some("test".to_string()),
+        );
+        let full = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "veo-3.1-fast-preview")
+            .expect("full veo model should exist");
+        assert!(full.api_types.contains(&ApiType::VideoToVideo));
+        assert!(full.api_types.contains(&ApiType::VideoExtend));
+
+        let lite = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "veo-3.1-fast-lite-preview")
+            .expect("lite veo model should exist");
+        assert!(!lite.api_types.contains(&ApiType::VideoToVideo));
+        assert!(!lite.api_types.contains(&ApiType::VideoExtend));
+    }
+
+    #[test]
+    fn veo_video_input_uses_inline_data() {
+        let resource = ResourceRef::Base64 {
+            mime: "video/mp4".to_string(),
+            data_base64: "dmlkZW8=".to_string(),
+        };
+        assert_eq!(
+            GoogleGeminiProvider::veo_video_part(&resource).unwrap(),
+            json!({
+                "inlineData": {
+                    "mimeType": "video/mp4",
+                    "data": "dmlkZW8="
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn embedding_inventory_only_exposes_multimodal_for_embedding_2() {
+        let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
+            "gemini-primary",
+            ProviderType::CloudApi,
+            "google-gemini",
+            &GeminiModelBuckets {
+                embedding: vec![
+                    "gemini-embedding-001".to_string(),
+                    "gemini-embedding-2".to_string(),
+                ],
+                ..Default::default()
+            },
+            &[],
+            Some("test".to_string()),
+        );
+        let text_only = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-embedding-001")
+            .expect("embedding-001 should exist");
+        assert_eq!(text_only.api_types, vec![ApiType::Embedding]);
+        let multimodal = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-embedding-2")
+            .expect("embedding-2 should exist");
+        assert!(multimodal.api_types.contains(&ApiType::Embedding));
+        assert!(multimodal.api_types.contains(&ApiType::EmbeddingMultimodal));
+    }
+
+    #[test]
+    fn image_preferences_map_to_gemini_response_format() {
+        let input = json!({
+            "prompt": "draw a cat",
+            "negative_prompt": "blurry",
+            "aspect_ratio": "16:9",
+            "size": "2048x1152",
+            "output": { "media_type": "image/jpeg" }
+        });
+        let mut request = Map::new();
+        GoogleGeminiProvider::merge_text2image_input_json(&mut request, &input).unwrap();
+        GoogleGeminiProvider::merge_image_prompt_preferences(
+            &mut request,
+            input.as_object().expect("image input object"),
+        );
+        assert_eq!(
+            request.get("prompt"),
+            Some(&json!("draw a cat\nAvoid: blurry"))
+        );
+        assert_eq!(
+            request
+                .get("generationConfig")
+                .and_then(|value| value.pointer("/responseFormat/image")),
+            Some(&json!({
+                "aspectRatio": "16:9",
+                "imageSize": "2K",
+                "mimeType": "IMAGE_JPEG"
+            }))
+        );
+    }
+
+    #[test]
+    fn music_fields_are_preserved_in_prompt() {
+        let mut req = build_text2image_request(None);
+        req.payload.text = None;
+        req.payload.input_json = Some(json!({
+            "prompt": "an ambient synth track",
+            "duration": 45,
+            "lyrics": "Across the sky"
+        }));
+        let prompt = GoogleGeminiProvider::music_prompt(&req).unwrap();
+        assert!(prompt.contains("Target duration: 45 seconds"));
+        assert!(prompt.contains("Lyrics:\nAcross the sky"));
     }
 
     #[test]
@@ -3998,6 +4547,27 @@ mod tests {
         assert_eq!(
             GoogleGeminiProvider::video_uri(&operation),
             Some("https://example.com/video.mp4")
+        );
+    }
+
+    #[test]
+    fn video_inline_data_parses_gemini_operation_response() {
+        let operation = json!({
+            "done": true,
+            "response": {
+                "generateVideoResponse": {
+                    "generatedSamples": [{
+                        "video": {
+                            "mimeType": "video/mp4",
+                            "bytesBase64Encoded": "dmlkZW8="
+                        }
+                    }]
+                }
+            }
+        });
+        assert_eq!(
+            GoogleGeminiProvider::video_inline_data(&operation),
+            Some(("video/mp4", "dmlkZW8="))
         );
     }
 

@@ -299,6 +299,284 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
 }
 
 #[tokio::test]
+async fn adapter_gemini_video_extend_uses_video_inline_data() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"name":"operations/extend","done":true,"response":{"generateVideoResponse":{"generatedSamples":[{"video":{"uri":"extended.mp4"}}]}}}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: "extended-video".to_string(),
+            content_type: "video/mp4",
+            delay_ms: 0,
+        },
+    ])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = request_with_resource(ResourceRef::Base64 {
+        mime: "video/mp4".to_string(),
+        data_base64: openai_b64(b"previous-video"),
+    });
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({
+        "prompt": "continue into the garden",
+        "continuation_handle": "aicc-only-handle",
+        "resolution": "720p"
+    }));
+    request.payload.options = Some(serde_json::json!({ "response_format": "base64" }));
+    let task_id = "gemini-extend-task";
+    let sink_factory = Arc::new(CollectingSinkFactory::new());
+    let result = provider
+        .start(
+            InvokeCtx {
+                task_id: Some(task_id.to_string()),
+                ..Default::default()
+            },
+            "veo-3.1-generate-preview".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VIDEO_EXTEND, request),
+            sink_factory.build(&InvokeCtx::default(), task_id),
+        )
+        .await
+        .expect("gemini video extend should start");
+    assert!(matches!(result, ProviderStartResult::Started));
+
+    let request_body = captured_requests
+        .lock()
+        .expect("captured requests lock")
+        .first()
+        .cloned()
+        .expect("extend request should be captured");
+    assert_eq!(
+        request_body.pointer("/instances/0/video"),
+        Some(&serde_json::json!({
+            "inlineData": {
+                "mimeType": "video/mp4",
+                "data": openai_b64(b"previous-video")
+            }
+        }))
+    );
+    assert!(request_body
+        .pointer("/instances/0/continuation_handle")
+        .is_none());
+    assert_eq!(
+        request_body.pointer("/parameters/resolution"),
+        Some(&serde_json::json!("720p"))
+    );
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(event) = sink_factory
+                .events_for(task_id)
+                .into_iter()
+                .find(|event| matches!(event.kind, TaskEventKind::Final | TaskEventKind::Error))
+            {
+                break event;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("extend task should terminate");
+    assert!(
+        matches!(terminal.kind, TaskEventKind::Final),
+        "extend task failed: {:?}",
+        terminal.data
+    );
+}
+
+#[tokio::test]
+async fn adapter_gemini_img2img_uses_generate_content_inline_data() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![MockHttpReply {
+        status_code: 200,
+        body: format!(
+            r#"{{"candidates":[{{"content":{{"parts":[{{"inlineData":{{"mimeType":"image/png","data":"{}"}}}}]}}}}]}}"#,
+            openai_b64(b"edited")
+        ),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = request_with_resource(ResourceRef::Base64 {
+        mime: "image/png".to_string(),
+        data_base64: openai_b64(b"image"),
+    });
+    request.capability = Capability::Image;
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({
+        "prompt": "make it blue",
+        "strength": 0.7,
+        "output": { "media_type": "image/png" }
+    }));
+    request.payload.options = None;
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-3-pro-image-preview".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::IMAGE_IMG2IMG, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini img2img should succeed");
+    assert!(matches!(result, ProviderStartResult::Immediate(_)));
+
+    let request_body = captured_requests
+        .lock()
+        .expect("captured requests lock")
+        .first()
+        .cloned()
+        .expect("img2img request should be captured");
+    assert_eq!(
+        request_body.pointer("/contents/0/parts/0/inlineData"),
+        Some(&serde_json::json!({
+            "mimeType": "image/png",
+            "data": openai_b64(b"image")
+        }))
+    );
+    assert!(request_body
+        .pointer("/contents/0/parts/0/bytesBase64Encoded")
+        .is_none());
+    assert!(request_body
+        .pointer("/contents/0/parts/1/text")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.contains("strength 0.7")));
+}
+
+#[tokio::test]
+async fn adapter_gemini_vision_and_multimodal_embedding_use_content_parts() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"candidates":[{"content":{"parts":[{"text":"{\"text\":\"ok\"}"}]}}]}"#
+                .to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"embedding":{"values":[0.1,0.2]}}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+    ])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let resource = ResourceRef::Base64 {
+        mime: "image/png".to_string(),
+        data_base64: openai_b64(b"image"),
+    };
+
+    let mut vision_request = request_with_resource(resource.clone());
+    vision_request.capability = Capability::Vision;
+    vision_request.payload.text = None;
+    vision_request.payload.options = None;
+    provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-2.5-flash".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VISION_OCR, vision_request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini vision should succeed");
+
+    let mut embedding_request = request_with_resource(resource);
+    embedding_request.capability = Capability::Embedding;
+    embedding_request.payload.text = None;
+    embedding_request.payload.options = None;
+    provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-embedding-2".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::EMBEDDING_MULTIMODAL, embedding_request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini multimodal embedding should succeed");
+
+    let requests = captured_requests.lock().expect("captured requests lock");
+    assert_eq!(
+        requests[0].pointer("/contents/0/parts/0/inlineData/mimeType"),
+        Some(&serde_json::json!("image/png"))
+    );
+    assert_eq!(
+        requests[1].pointer("/content/parts/0/inlineData/mimeType"),
+        Some(&serde_json::json!("image/png"))
+    );
+    assert!(!requests[0].to_string().contains("bytesBase64Encoded"));
+    assert!(!requests[1].to_string().contains("bytesBase64Encoded"));
+}
+
+#[tokio::test]
+async fn adapter_gemini_tts_maps_text_voice_and_language() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![MockHttpReply {
+        status_code: 200,
+        body: format!(
+            r#"{{"candidates":[{{"content":{{"parts":[{{"inlineData":{{"mimeType":"audio/L16;rate=24000","data":"{}"}}}}]}}}}]}}"#,
+            openai_b64(b"audio")
+        ),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = base_request_for(Capability::Audio, ai_methods::AUDIO_TTS);
+    request.payload.text = None;
+    request.payload.input_json = Some(serde_json::json!({
+        "text": "你好，世界",
+        "voice_id": "Kore",
+        "language": "cmn-CN",
+        "style": "calm",
+        "speed": 0.9,
+        "output": { "media_type": "audio/wav", "sample_rate": 24000 }
+    }));
+    request.payload.options = None;
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-2.5-flash-preview-tts".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::AUDIO_TTS, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini tts should succeed");
+    assert!(matches!(result, ProviderStartResult::Immediate(_)));
+
+    let request_body = captured_requests
+        .lock()
+        .expect("captured requests lock")
+        .first()
+        .cloned()
+        .expect("tts request should be captured");
+    let prompt = request_body
+        .pointer("/contents/0/parts/0/text")
+        .and_then(|value| value.as_str())
+        .expect("tts prompt");
+    assert!(prompt.contains("你好，世界"));
+    assert!(prompt.contains("Style: calm"));
+    assert_eq!(
+        request_body
+            .pointer("/generationConfig/speechConfig/voiceConfig/prebuiltVoiceConfig/voiceName"),
+        Some(&serde_json::json!("Kore"))
+    );
+    assert_eq!(
+        request_body.pointer("/generationConfig/speechConfig/languageCode"),
+        Some(&serde_json::json!("cmn-CN"))
+    );
+    assert_eq!(
+        request_body.pointer("/generationConfig/responseFormat/audio"),
+        Some(&serde_json::json!({
+            "mimeType": "AUDIO_WAV",
+            "sampleRate": 24000
+        }))
+    );
+}
+
+#[tokio::test]
 async fn adapter_fal_video_upscale_runs_in_background() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,

@@ -3,21 +3,17 @@
   "schema_version": 3,
   "schema_revision": 1,
   "provider_driver": "google-gemini",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
     {
       "id": "gemini-embedding-001",
-      "api_types": ["embedding.text", "embedding.multimodal"],
+      "api_types": ["embedding.text"],
       "logical_mounts": [
         "embedding.text",
         "embedding.text.google",
         "embedding.text.gemini",
-        "embedding.text.{model}",
-        "embedding.multimodal",
-        "embedding.multimodal.google",
-        "embedding.multimodal.gemini",
-        "embedding.multimodal.{model}"
+        "embedding.text.{model}"
       ],
       "pricing": {
         "currency": "USD",
@@ -47,7 +43,7 @@
     },
     {
       "id": "veo-3.1-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video"],
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
       "logical_mounts": [
         "video.txt2video",
         "video.txt2video.google",
@@ -56,7 +52,15 @@
         "video.img2video",
         "video.img2video.google",
         "video.img2video.gemini",
-        "video.img2video.{model}"
+        "video.img2video.{model}",
+        "video.video2video",
+        "video.video2video.google",
+        "video.video2video.gemini",
+        "video.video2video.{model}",
+        "video.extend",
+        "video.extend.google",
+        "video.extend.gemini",
+        "video.extend.{model}"
       ],
       "pricing": {
         "currency": "USD",
@@ -67,7 +71,7 @@
   ],
   "patterns": [
     {
-      "pattern": "*embedding*",
+      "pattern": "gemini-embedding-2*",
       "api_types": ["embedding.text", "embedding.multimodal"],
       "logical_mounts": [
         "embedding.text",
@@ -78,6 +82,21 @@
         "embedding.multimodal.google",
         "embedding.multimodal.gemini",
         "embedding.multimodal.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
+      "estimated_latency_ms": 800
+    },
+    {
+      "pattern": "*embedding*",
+      "api_types": ["embedding.text"],
+      "logical_mounts": [
+        "embedding.text",
+        "embedding.text.google",
+        "embedding.text.gemini",
+        "embedding.text.{model}"
       ],
       "pricing": {
         "currency": "USD",
@@ -104,6 +123,52 @@
         "estimated_cost": 0.1
       },
       "estimated_latency_ms": 60000
+    },
+    {
+      "pattern": "veo-3.1-*lite*",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.google",
+        "video.txt2video.gemini",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "pattern": "veo-3.1-*",
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.google",
+        "video.txt2video.gemini",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}",
+        "video.video2video",
+        "video.video2video.google",
+        "video.video2video.gemini",
+        "video.video2video.{model}",
+        "video.extend",
+        "video.extend.google",
+        "video.extend.gemini",
+        "video.extend.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
+      "estimated_latency_ms": 120000
     },
     {
       "pattern": "veo-*",
