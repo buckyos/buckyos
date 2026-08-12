@@ -178,6 +178,40 @@ test('desktop flow opens settings window and supports locale switch', async ({
   expect(consoleErrors).toEqual([])
 })
 
+test('double-clicking a window title bar toggles maximize and restore', async ({
+  page,
+}) => {
+  await page.goto('/?scenario=normal')
+
+  await page.getByTestId('desktop-app-settings').click()
+
+  const settingsWindow = page.getByTestId('window-settings')
+  const titleBar = page.getByTestId('window-drag-settings')
+  const windowedBounds = await settingsWindow.boundingBox()
+
+  await titleBar.dblclick()
+
+  await expect(
+    settingsWindow.getByRole('button', { name: 'Restore' }),
+  ).toBeVisible()
+  await expect(page.getByTestId('window-resize-right-settings')).toHaveCount(0)
+  const maximizedBounds = await settingsWindow.boundingBox()
+  expect(maximizedBounds?.width).toBeGreaterThan(windowedBounds?.width ?? 0)
+  expect(maximizedBounds?.height).toBeGreaterThan(windowedBounds?.height ?? 0)
+
+  await titleBar.dblclick()
+
+  await expect(
+    settingsWindow.getByRole('button', { name: 'Maximize' }),
+  ).toBeVisible()
+  await expect(page.getByTestId('window-resize-right-settings')).toBeVisible()
+  const restoredBounds = await settingsWindow.boundingBox()
+  expect(restoredBounds?.x).toBeCloseTo(windowedBounds?.x ?? 0, 0)
+  expect(restoredBounds?.y).toBeCloseTo(windowedBounds?.y ?? 0, 0)
+  expect(restoredBounds?.width).toBeCloseTo(windowedBounds?.width ?? 0, 0)
+  expect(restoredBounds?.height).toBeCloseTo(windowedBounds?.height ?? 0, 0)
+})
+
 test('desktop layout restores AI Center launcher entry and opens panel content', async ({
   page,
 }) => {
