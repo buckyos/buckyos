@@ -102,7 +102,7 @@ Available bash CLI commands:
 - `DiscoverEvent '{"title":"...","phase":"active","evidence":[{"round_index":1,"entry_seq":1,"entry_kind":"message","role":"user","text_excerpt":"..."}],"confidence":0.9}'`
 - `DiscoverObjectObservation '{"object":{"mention_text":"...","entity_type":"project","is_user_private_entity":true},"observation":"...","observation_type":"status","evidence":[...],"confidence":0.9}'`
 - `DiscoverRelationship '{"subject":{"mention_text":"...","entity_type":"person"},"predicate":"uses","object":{"mention_text":"...","entity_type":"component"},"evidence":[...],"confidence":0.9}'`
-- `DiscoverSkillCoverageGap '{"title":"...","task_description":"...","assigned_skills":[],"used_skills":[],"critical_actions":["..."],"result_status":"success","gap_kind":"success_without_skill","gap_description":"...","evidence":[...],"confidence":0.75,"stage2_hints":{"suggested_action":"consider_skill_coverage_gap","retention_hint":"requires_more_evidence","privacy_scope":"mixed","recall_candidate_hint":false}}'`
+- `DiscoverSkillCoverageGap '{"title":"...","task_description":"...","assigned_skills":[],"used_skills":[],"critical_actions":["..."],"result_status":"success","gap_kind":"success_without_skill","gap_description":"...","evidence":[...],"confidence":0.75,"stage2_hints":{"suggested_action":"consider_skill_coverage_gap","retention_hint":"requires_more_evidence","privacy_scope":"mixed","recall_candidate_hint":false} }'`
 - `CompleteAttentionSignalExtraction`
 - `commit_session_history_improved session_id=<session_id> round_index=<round_index>`
 

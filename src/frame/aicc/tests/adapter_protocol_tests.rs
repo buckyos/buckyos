@@ -299,7 +299,7 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
 }
 
 #[tokio::test]
-async fn adapter_gemini_video_extend_uses_predict_long_running_bytes() {
+async fn adapter_gemini_video_extend_uses_generated_video_uri() {
     let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![
         MockHttpReply {
             status_code: 200,
@@ -323,7 +323,7 @@ async fn adapter_gemini_video_extend_uses_predict_long_running_bytes() {
     request.payload.text = None;
     request.payload.input_json = Some(serde_json::json!({
         "prompt": "continue into the garden",
-        "continuation_handle": "aicc-only-handle",
+        "continuation_handle": "https://generativelanguage.googleapis.com/v1beta/files/generated-video",
         "resolution": "720p"
     }));
     request.payload.options = Some(serde_json::json!({ "response_format": "base64" }));
@@ -352,8 +352,7 @@ async fn adapter_gemini_video_extend_uses_predict_long_running_bytes() {
     assert_eq!(
         request_body.pointer("/instances/0/video"),
         Some(&serde_json::json!({
-            "mimeType": "video/mp4",
-            "bytesBase64Encoded": openai_b64(b"previous-video")
+            "uri": "https://generativelanguage.googleapis.com/v1beta/files/generated-video"
         }))
     );
     assert!(request_body
@@ -381,6 +380,77 @@ async fn adapter_gemini_video_extend_uses_predict_long_running_bytes() {
         matches!(terminal.kind, TaskEventKind::Final),
         "extend task failed: {:?}",
         terminal.data
+    );
+}
+
+#[tokio::test]
+async fn adapter_gemini_video_edit_uses_interactions_protocol() {
+    let output = openai_b64(b"edited-video");
+    let (base_url, captured_requests) =
+        spawn_fake_http_server_with_requests(vec![MockHttpReply {
+            status_code: 200,
+            body: format!(
+                r#"{{"id":"interaction-edit","status":"completed","steps":[{{"type":"model_output","content":[{{"type":"video","mime_type":"video/mp4","data":"{}"}}]}}]}}"#,
+                output
+            ),
+            content_type: "application/json",
+            delay_ms: 0,
+        }])
+        .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = request_with_resource(ResourceRef::Base64 {
+        mime: "video/mp4".to_string(),
+        data_base64: openai_b64(b"source-video"),
+    });
+    request.payload.text = Some("make the video warmer".to_string());
+    request.payload.options = Some(serde_json::json!({
+        "provider_options": { "protocol": "interactions" }
+    }));
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-omni-flash-preview".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::VIDEO_VIDEO2VIDEO, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini video edit should succeed");
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini video edit should complete immediately");
+    };
+    let artifacts = summary.artifacts();
+    assert_eq!(artifacts.len(), 1);
+    assert!(matches!(artifacts[0].resource, ResourceRef::Base64 { .. }));
+
+    let request_body = captured_requests
+        .lock()
+        .expect("captured requests lock")
+        .first()
+        .cloned()
+        .expect("interactions request should be captured");
+    assert_eq!(
+        request_body.pointer("/input/0/type"),
+        Some(&serde_json::json!("user_input"))
+    );
+    assert_eq!(
+        request_body.pointer("/input/0/content/0"),
+        Some(&serde_json::json!({
+            "type": "video",
+            "mime_type": "video/mp4",
+            "data": openai_b64(b"source-video")
+        }))
+    );
+    assert_eq!(
+        request_body.pointer("/input/0/content/1"),
+        Some(&serde_json::json!({
+            "type": "text",
+            "text": "make the video warmer"
+        }))
+    );
+    assert_eq!(
+        request_body.pointer("/generation_config/video_config/task"),
+        Some(&serde_json::json!("edit"))
     );
 }
 
@@ -949,6 +1019,71 @@ async fn adapter_gemini_01_http_200_success() {
         }
         _ => panic!("expected immediate summary"),
     }
+}
+
+#[tokio::test]
+async fn adapter_gemini_retries_with_thinking_tokens_outside_completion_budget() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"candidates":[{"content":{"parts":[{"text":"{"} ]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":8,"thoughtsTokenCount":2000,"totalTokenCount":2108}}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+        MockHttpReply {
+            status_code: 200,
+            body: r#"{"candidates":[{"content":{"parts":[{"text":"complete"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":12,"thoughtsTokenCount":2000,"totalTokenCount":2112}}"#.to_string(),
+            content_type: "application/json",
+            delay_ms: 0,
+        },
+    ])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = base_request();
+    request.payload.options = Some(serde_json::json!({
+        "temperature": 0.2,
+        "max_completion_tokens": 2048
+    }));
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-2.5-flash".to_string(),
+            ResolvedRequest::new(request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini thinking retry should succeed");
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini thinking retry should complete immediately");
+    };
+    assert_eq!(summary.text_content(), "complete");
+    assert_eq!(
+        summary
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("thinking_tokens"))
+            .and_then(|value| value.as_u64()),
+        Some(4000)
+    );
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.input_tokens),
+        Some(200)
+    );
+
+    let requests = captured_requests.lock().expect("captured requests lock");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].pointer("/generationConfig/maxOutputTokens"),
+        Some(&serde_json::json!(2048))
+    );
+    assert_eq!(
+        requests[1].pointer("/generationConfig/maxOutputTokens"),
+        Some(&serde_json::json!(4048))
+    );
+    assert!(requests[1]
+        .pointer("/generationConfig/thinkingConfig")
+        .is_none());
 }
 
 #[tokio::test]

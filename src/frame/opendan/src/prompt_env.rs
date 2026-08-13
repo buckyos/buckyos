@@ -1542,4 +1542,19 @@ switch={{ switch.from }}|{{ switch.to }}|{{ from_behavior }}|{{ switch.from_cont
         let cfg = build_engine_config(&env);
         assert_eq!(cfg.include_roots.len(), 2);
     }
+
+    #[tokio::test]
+    async fn self_improve_signal_prompt_renders_literal_json_examples() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../rootfs/bin/buckyos_jarvis/behaviors/self_improve_signals.toml",
+        );
+        let cfg = crate::behavior_cfg::BehaviorCfg::load_from_file(&path)
+            .expect("self improve behavior should load");
+        let rendered = render_template(&cfg.prompt.on_init, &sample_env(), &[])
+            .await
+            .expect("self improve prompt should render");
+
+        assert!(rendered.contains("DiscoverSkillCoverageGap '{\"title\":\"...\""));
+        assert!(rendered.contains("\"recall_candidate_hint\":false} }'"));
+    }
 }

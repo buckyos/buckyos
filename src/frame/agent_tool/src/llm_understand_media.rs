@@ -28,7 +28,10 @@ pub const TOOL_LLM_UNDERSTAND_MEDIA: &str = "llm_understand_media";
 const DEFAULT_MODEL_ALIAS: &str = "llm.vision";
 const DEFAULT_SUMMARY_MODEL_ALIAS: &str = "llm.summary";
 const DEFAULT_TARGET_TOKENS: u32 = 24_000;
-const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 2_048;
+const DEFAULT_MAX_COMPLETION_TOKENS: u32 = 4_096;
+const MAX_MEDIA_COMPLETION_TOKENS: u32 = 8_192;
+const DEFAULT_THINKING_BUDGET: u32 = 0;
+const MAX_MEDIA_THINKING_BUDGET: u32 = 512;
 const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
 const DEFAULT_VIDEO_FRAME_COUNT: usize = 8;
 const MAX_VIDEO_FRAME_COUNT: usize = 16;
@@ -102,6 +105,18 @@ impl AgentTool for LlmUnderstandMediaTool {
                     "goal": {
                         "type": "string",
                         "description": "What to understand or answer from the media."
+                    },
+                    "max_completion_tokens": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8192,
+                        "description": "Final answer budget. Defaults to 4096; use 8192 for detailed video timelines."
+                    },
+                    "thinking_budget": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 512,
+                        "description": "Gemini thinking budget. Defaults to 0 for factual extraction; use up to 512 when inference is required."
                     }
                 }
             }),
@@ -180,6 +195,7 @@ struct RunOpts {
     summary_model: String,
     target_tokens: u32,
     max_completion_tokens: u32,
+    thinking_budget: u32,
 }
 
 impl RunOpts {
@@ -234,6 +250,21 @@ impl RunOpts {
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(DEFAULT_MAX_COMPLETION_TOKENS);
+        if max_completion_tokens == 0 || max_completion_tokens > MAX_MEDIA_COMPLETION_TOKENS {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "max_completion_tokens must be between 1 and {MAX_MEDIA_COMPLETION_TOKENS}"
+            )));
+        }
+        let thinking_budget = map
+            .get("thinking_budget")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(DEFAULT_THINKING_BUDGET);
+        if thinking_budget > MAX_MEDIA_THINKING_BUDGET {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "thinking_budget must be at most {MAX_MEDIA_THINKING_BUDGET}"
+            )));
+        }
 
         Ok(Self {
             media_value,
@@ -244,6 +275,7 @@ impl RunOpts {
             summary_model,
             target_tokens,
             max_completion_tokens,
+            thinking_budget,
         })
     }
 }
@@ -379,7 +411,7 @@ fn build_request(
         fallbacks: Vec::new(),
         temperature: Some(0.0),
         max_completion_tokens: Some(opts.max_completion_tokens),
-        provider_options: None,
+        provider_options: Some(json!({ "thinking_budget": opts.thinking_budget })),
     });
     req.tool_policy = Some(ToolPolicy {
         mode: ToolMode::None,
@@ -1302,6 +1334,8 @@ Options:
   --history-file <path>   JSON Vec<AiMessage> parent history snapshot.
   --work-dir <path>       LocalLLMContext working directory.
   --model <alias>         AICC logical model alias; default image route is llm.vision.
+  --max-completion-tokens <n>  Final answer budget, 1..8192; default 4096.
+  --thinking-budget <n>   Thinking budget, 0..512; default 0.
   -h, --help              Show this help.
 "#;
 
@@ -1312,6 +1346,8 @@ struct CliOpts {
     history_file: Option<PathBuf>,
     work_dir: Option<PathBuf>,
     model: Option<String>,
+    max_completion_tokens: Option<u32>,
+    thinking_budget: Option<u32>,
 }
 
 impl CliOpts {
@@ -1335,7 +1371,10 @@ impl CliOpts {
             model: self.model,
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
-            max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            max_completion_tokens: self
+                .max_completion_tokens
+                .unwrap_or(DEFAULT_MAX_COMPLETION_TOKENS),
+            thinking_budget: self.thinking_budget.unwrap_or(DEFAULT_THINKING_BUDGET),
         })
     }
 
@@ -1345,6 +1384,8 @@ impl CliOpts {
         let mut history_file: Option<PathBuf> = None;
         let mut work_dir: Option<PathBuf> = None;
         let mut model: Option<String> = None;
+        let mut max_completion_tokens = None;
+        let mut thinking_budget = None;
 
         let mut idx = 0;
         while idx < args.len() {
@@ -1365,6 +1406,22 @@ impl CliOpts {
                     work_dir = Some(PathBuf::from(next_value(args, &mut idx, "--work-dir")?));
                 }
                 "--model" => model = Some(next_value(args, &mut idx, "--model")?),
+                "--max-completion-tokens" => {
+                    max_completion_tokens = Some(parse_bounded_u32(
+                        &next_value(args, &mut idx, "--max-completion-tokens")?,
+                        "--max-completion-tokens",
+                        1,
+                        MAX_MEDIA_COMPLETION_TOKENS,
+                    )?);
+                }
+                "--thinking-budget" => {
+                    thinking_budget = Some(parse_bounded_u32(
+                        &next_value(args, &mut idx, "--thinking-budget")?,
+                        "--thinking-budget",
+                        0,
+                        MAX_MEDIA_THINKING_BUDGET,
+                    )?);
+                }
                 other => return Err(ParseError::Bad(format!("unknown flag `{other}`"))),
             }
             idx += 1;
@@ -1379,6 +1436,8 @@ impl CliOpts {
             history_file,
             work_dir,
             model,
+            max_completion_tokens,
+            thinking_budget,
         })
     }
 }
@@ -1393,6 +1452,18 @@ fn next_value(args: &[String], idx: &mut usize, flag: &str) -> Result<String, Pa
     args.get(*idx)
         .cloned()
         .ok_or_else(|| ParseError::Bad(format!("{flag} requires a value")))
+}
+
+fn parse_bounded_u32(raw: &str, flag: &str, min: u32, max: u32) -> Result<u32, ParseError> {
+    let value = raw
+        .parse::<u32>()
+        .map_err(|_| ParseError::Bad(format!("{flag} must be an integer")))?;
+    if !(min..=max).contains(&value) {
+        return Err(ParseError::Bad(format!(
+            "{flag} must be between {min} and {max}"
+        )));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -1470,6 +1541,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            thinking_budget: DEFAULT_THINKING_BUDGET,
         };
 
         let request = build_request(
@@ -1482,6 +1554,12 @@ mod tests {
             Vec::new(),
         );
 
+        let model_policy = request.model_policy.expect("model policy");
+        assert_eq!(model_policy.max_completion_tokens, Some(4_096));
+        assert_eq!(
+            model_policy.provider_options,
+            Some(json!({ "thinking_budget": 0 }))
+        );
         let tool_policy = request.tool_policy.expect("tool policy");
         assert_eq!(tool_policy.mode, ToolMode::None);
         assert_eq!(tool_policy.action_mode, ToolMode::None);
@@ -1501,6 +1579,32 @@ mod tests {
     }
 
     #[test]
+    fn media_budget_can_be_raised_for_detailed_inference() {
+        let opts = RunOpts::from_tool_args(json!({
+            "media": { "kind": "url", "url": "https://example.test/video.mp4" },
+            "goal": "produce a detailed timeline",
+            "max_completion_tokens": 8192,
+            "thinking_budget": 512
+        }))
+        .expect("detailed media budget should be accepted");
+        let request = build_request(
+            &opts,
+            vec![AiContent::image(ResourceRef::Base64 {
+                mime: "image/jpeg".to_string(),
+                data_base64: "AAAA".to_string(),
+            })],
+            DEFAULT_MODEL_ALIAS.to_string(),
+            Vec::new(),
+        );
+        let policy = request.model_policy.unwrap();
+        assert_eq!(policy.max_completion_tokens, Some(8_192));
+        assert_eq!(
+            policy.provider_options,
+            Some(json!({ "thinking_budget": 512 }))
+        );
+    }
+
+    #[test]
     fn build_request_preserves_timestamped_video_frames() {
         let opts = RunOpts {
             media_value: json!({}),
@@ -1511,6 +1615,7 @@ mod tests {
             summary_model: DEFAULT_SUMMARY_MODEL_ALIAS.to_string(),
             target_tokens: DEFAULT_TARGET_TOKENS,
             max_completion_tokens: DEFAULT_MAX_COMPLETION_TOKENS,
+            thinking_budget: DEFAULT_THINKING_BUDGET,
         };
         let media_content = vec![
             AiContent::text("Frame at 1.250 seconds:"),

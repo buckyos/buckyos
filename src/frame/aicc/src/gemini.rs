@@ -36,7 +36,8 @@ const DEFAULT_GEMINI_IMAGE_MODELS: &str =
 const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
 const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
-const DEFAULT_GEMINI_VIDEO_MODELS: &str = "veo-3.1-generate-preview";
+const DEFAULT_GEMINI_VIDEO_MODELS: &str =
+    "gemini-omni-flash-preview,veo-3.1-generate-preview";
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
@@ -376,6 +377,71 @@ impl GoogleGeminiProvider {
                     .map(|model| model.capabilities.supports_feature_combination(combination))
             })
             .unwrap_or(false)
+    }
+
+    fn model_max_output_tokens(&self, provider_model: &str) -> Option<u64> {
+        self.inventory.read().ok().and_then(|inventory| {
+            inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == provider_model)
+                .and_then(|model| model.capabilities.max_output_tokens)
+        })
+    }
+
+    fn thinking_retry_output_limit(
+        request_obj: &Map<String, Value>,
+        body: &Value,
+        completion_tokens: u64,
+        model_max_output_tokens: Option<u64>,
+    ) -> Option<u64> {
+        if body
+            .pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str)
+            != Some("MAX_TOKENS")
+        {
+            return None;
+        }
+        let thinking_tokens = body
+            .pointer("/usageMetadata/thoughtsTokenCount")
+            .and_then(Value::as_u64)
+            .filter(|tokens| *tokens > 0)?;
+        let current_output_limit = request_obj
+            .get("generationConfig")
+            .and_then(Value::as_object)
+            .and_then(|config| config.get("maxOutputTokens"))
+            .and_then(Value::as_u64)?;
+        let combined = completion_tokens.saturating_add(thinking_tokens);
+        let combined = model_max_output_tokens
+            .map(|limit| combined.min(limit))
+            .unwrap_or(combined);
+        (combined > current_output_limit).then_some(combined)
+    }
+
+    fn apply_separate_thinking_budget(
+        request_obj: &mut Map<String, Value>,
+        model_max_output_tokens: Option<u64>,
+    ) -> Option<u64> {
+        let generation = request_obj
+            .get("generationConfig")
+            .and_then(Value::as_object)?;
+        let completion_tokens = generation.get("maxOutputTokens")?.as_u64()?;
+        let thinking_tokens = generation
+            .get("thinkingConfig")
+            .and_then(Value::as_object)
+            .and_then(|thinking| thinking.get("thinkingBudget"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if thinking_tokens == 0 {
+            return Some(completion_tokens);
+        }
+        let combined = completion_tokens.saturating_add(thinking_tokens);
+        let combined = model_max_output_tokens
+            .map(|limit| combined.min(limit))
+            .unwrap_or(combined);
+        Self::ensure_generation_config(request_obj)
+            .insert("maxOutputTokens".to_string(), Value::from(combined));
+        Some(completion_tokens)
     }
 
     pub fn start_inventory_refresh(self: Arc<Self>) {
@@ -1495,6 +1561,14 @@ impl GoogleGeminiProvider {
             if key == "model" || key == "messages" {
                 continue;
             }
+            if key == "provider_options" {
+                ignored.extend(Self::merge_llm_options(
+                    target,
+                    value,
+                    json_output_required,
+                )?);
+                continue;
+            }
             if key == "protocol" || key == "process_name" || key == "tool_messages" {
                 ignored.push(key.clone());
                 continue;
@@ -1516,6 +1590,16 @@ impl GoogleGeminiProvider {
                 "max_tokens" | "max_completion_tokens" | "max_output_tokens" => {
                     Self::ensure_generation_config(target)
                         .insert("maxOutputTokens".to_string(), value.clone());
+                }
+                "thinking_budget" | "thinkingBudget" => {
+                    let generation = Self::ensure_generation_config(target);
+                    let thinking = generation
+                        .entry("thinkingConfig".to_string())
+                        .or_insert_with(|| json!({}));
+                    thinking
+                        .as_object_mut()
+                        .expect("thinkingConfig should be an object")
+                        .insert("thinkingBudget".to_string(), value.clone());
                 }
                 "candidate_count" => {
                     Self::ensure_generation_config(target)
@@ -2036,6 +2120,50 @@ impl GoogleGeminiProvider {
         Ok((status, body, latency_ms))
     }
 
+    async fn post_interaction(
+        &self,
+        request_obj: &Map<String, Value>,
+    ) -> Result<(StatusCode, Value, u64), ProviderError> {
+        let url = format!("{}/interactions", self.base_url);
+        let started_at = std::time::Instant::now();
+        let response = self
+            .client
+            .post(url.as_str())
+            .header("x-goog-api-key", self.api_token.as_str())
+            .json(request_obj)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() || err.is_connect() {
+                    ProviderError::retryable(format!(
+                        "google gemini interactions request failed: {}",
+                        err
+                    ))
+                } else {
+                    ProviderError::fatal(format!(
+                        "google gemini interactions request failed: {}",
+                        err
+                    ))
+                }
+            })?;
+        let latency_ms = started_at.elapsed().as_millis() as u64;
+        let status = response.status();
+        let body = response.json::<Value>().await.map_err(|err| {
+            if status.as_u16() == 429 || status.is_server_error() {
+                ProviderError::retryable(format!(
+                    "failed to parse google gemini interactions response: {}",
+                    err
+                ))
+            } else {
+                ProviderError::fatal(format!(
+                    "failed to parse google gemini interactions response: {}",
+                    err
+                ))
+            }
+        })?;
+        Ok((status, body, latency_ms))
+    }
+
     async fn get_video_operation(
         &self,
         operation_name: &str,
@@ -2246,25 +2374,91 @@ impl GoogleGeminiProvider {
         }
     }
 
-    fn veo_video_part(resource: &ResourceRef) -> Result<Value, ProviderError> {
+    fn interactions_resource_part(
+        resource: &ResourceRef,
+        media_type: &str,
+    ) -> Result<Value, ProviderError> {
         match resource {
-            ResourceRef::Url { url, mime_hint } if url.starts_with("gs://") => Ok(json!({
-                "gcsUri": url,
-                "mimeType": mime_hint.as_deref().unwrap_or("video/mp4")
-            })),
-            ResourceRef::Url { url, .. } => Err(ProviderError::fatal(format!(
-                "google gemini Veo requires base64 data or a gs:// URI, got {}",
-                url
-            ))),
             ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
-                "mimeType": mime,
-                "bytesBase64Encoded": data_base64
+                "type": media_type,
+                "mime_type": mime,
+                "data": data_base64
+            })),
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "document",
+                "uri": url
             })),
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "google gemini provider cannot resolve named object resource {} without resolver bytes",
                 obj_id
             ))),
         }
+    }
+
+    fn provider_protocol(req: &AiMethodRequest) -> Option<&str> {
+        req.payload
+            .options
+            .as_ref()
+            .and_then(|options| options.get("provider_options"))
+            .and_then(|options| options.get("protocol"))
+            .and_then(Value::as_str)
+    }
+
+    fn interactions_video_artifact(body: &Value) -> Result<AiArtifact, ProviderError> {
+        let video = body
+            .get("steps")
+            .and_then(Value::as_array)
+            .and_then(|steps| {
+                steps.iter().rev().find_map(|step| {
+                    step.get("content")
+                        .and_then(Value::as_array)
+                        .and_then(|content| {
+                            content.iter().find(|item| {
+                                item.get("type").and_then(Value::as_str) == Some("video")
+                            })
+                        })
+                })
+            })
+            .ok_or_else(|| {
+                ProviderError::fatal(
+                    "google gemini interactions response is missing video output",
+                )
+            })?;
+        let mime = video
+            .get("mime_type")
+            .or_else(|| video.get("mimeType"))
+            .and_then(Value::as_str)
+            .unwrap_or("video/mp4")
+            .to_string();
+        let resource = if let Some(data_base64) = video.get("data").and_then(Value::as_str) {
+            general_purpose::STANDARD
+                .decode(data_base64)
+                .map_err(|err| {
+                    ProviderError::fatal(format!(
+                        "google gemini interactions video contains invalid base64: {}",
+                        err
+                    ))
+                })?;
+            ResourceRef::Base64 {
+                mime: mime.clone(),
+                data_base64: data_base64.to_string(),
+            }
+        } else if let Some(url) = video.get("uri").and_then(Value::as_str) {
+            ResourceRef::Url {
+                url: url.to_string(),
+                mime_hint: Some(mime.clone()),
+            }
+        } else {
+            return Err(ProviderError::fatal(
+                "google gemini interactions video output has neither data nor uri",
+            ));
+        };
+        Ok(AiArtifact {
+            name: "video.mp4".to_string(),
+            resource,
+            mime: Some(mime),
+            metadata: None,
+        })
     }
 
     fn music_prompt(req: &AiMethodRequest) -> Result<String, ProviderError> {
@@ -2452,16 +2646,21 @@ impl GoogleGeminiProvider {
             );
         }
 
+        let model_max_output_tokens = self.model_max_output_tokens(provider_model);
+        let completion_tokens =
+            Self::apply_separate_thinking_budget(&mut request_obj, model_max_output_tokens);
+
         let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
         info!(
             "aicc.gemini.llm.input provider_instance_name={} model={} trace_id={:?} request={}",
             self.instance.provider_instance_name, provider_model, ctx.trace_id, request_log
         );
 
-        let (status, body, latency_ms) = self
+        let (mut status, mut body, mut latency_ms) = self
             .post_generate_content(provider_model, &request_obj)
             .await?;
-        let response_log = redacted_json_log(&body);
+        let mut response_log = redacted_json_log(&body);
+        let mut previous_usage_metadata = None;
 
         if !status.is_success() {
             warn!(
@@ -2487,6 +2686,48 @@ impl GoogleGeminiProvider {
             ));
         }
 
+        let thinking_retry = completion_tokens.and_then(|completion_tokens| {
+            Self::thinking_retry_output_limit(
+                &request_obj,
+                &body,
+                completion_tokens,
+                model_max_output_tokens,
+            )
+        });
+        if let Some(retry_output_limit) = thinking_retry {
+            previous_usage_metadata = body.get("usageMetadata").cloned();
+            let thinking_tokens = body
+                .pointer("/usageMetadata/thoughtsTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            Self::ensure_generation_config(&mut request_obj).insert(
+                "maxOutputTokens".to_string(),
+                Value::from(retry_output_limit),
+            );
+            info!(
+                "aicc.gemini retrying truncated response with separate thinking budget: provider_instance_name={} model={} trace_id={:?} thinking_tokens={} max_output_tokens={}",
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                thinking_tokens,
+                retry_output_limit
+            );
+            let (retry_status, retry_body, retry_latency_ms) = self
+                .post_generate_content(provider_model, &request_obj)
+                .await?;
+            status = retry_status;
+            body = retry_body;
+            latency_ms = latency_ms.saturating_add(retry_latency_ms);
+            response_log = redacted_json_log(&body);
+            if !status.is_success() {
+                let message = body
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("google gemini retry returned non-success status");
+                return Err(Self::classify_api_error(status, message.to_string()));
+            }
+        }
+
         info!(
             "aicc.gemini.llm.output provider_instance_name={} model={} trace_id={:?} status={} response={}",
             self.instance.provider_instance_name,
@@ -2498,16 +2739,25 @@ impl GoogleGeminiProvider {
 
         let content = Self::extract_text_content(&body);
         let tool_calls = Self::extract_tool_calls(&body);
-        let usage = body.get("usageMetadata").map(|usage| AiUsage {
-            input_tokens: usage
-                .get("promptTokenCount")
-                .and_then(|value| value.as_u64()),
-            output_tokens: usage
-                .get("candidatesTokenCount")
-                .and_then(|value| value.as_u64()),
-            total_tokens: usage
-                .get("totalTokenCount")
-                .and_then(|value| value.as_u64()),
+        let usage_metadata = body.get("usageMetadata");
+        let usage_value = |key: &str| {
+            let previous = previous_usage_metadata
+                .as_ref()
+                .and_then(|usage| usage.get(key))
+                .and_then(Value::as_u64);
+            let current = usage_metadata
+                .and_then(|usage| usage.get(key))
+                .and_then(Value::as_u64);
+            match (previous, current) {
+                (Some(left), Some(right)) => Some(left.saturating_add(right)),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            }
+        };
+        let usage = (usage_metadata.is_some() || previous_usage_metadata.is_some()).then(|| AiUsage {
+            input_tokens: usage_value("promptTokenCount"),
+            output_tokens: usage_value("candidatesTokenCount"),
+            total_tokens: usage_value("totalTokenCount"),
             request_units: None,
         });
 
@@ -2525,6 +2775,9 @@ impl GoogleGeminiProvider {
             Value::String(provider_model.to_string()),
         );
         extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        if let Some(thinking_tokens) = usage_value("thoughtsTokenCount") {
+            extra.insert("thinking_tokens".to_string(), Value::from(thinking_tokens));
+        }
         extra.insert(
             "provider_io".to_string(),
             json!({
@@ -3128,6 +3381,115 @@ impl GoogleGeminiProvider {
         }))
     }
 
+    async fn start_interactions_video(
+        &self,
+        provider_model: &str,
+        method: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let prompt = Self::prompt_for_method(method, req);
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "video"]));
+        let input = if let Some(resource) = resource {
+            let media_type = if method == ai_methods::VIDEO_VIDEO2VIDEO {
+                "video"
+            } else {
+                "image"
+            };
+            let content = vec![
+                Self::interactions_resource_part(&resource, media_type)?,
+                json!({ "type": "text", "text": prompt }),
+            ];
+            if method == ai_methods::VIDEO_VIDEO2VIDEO {
+                json!([{ "type": "user_input", "content": content }])
+            } else {
+                Value::Array(content)
+            }
+        } else {
+            Value::String(prompt)
+        };
+
+        let task = match method {
+            ai_methods::VIDEO_TXT2VIDEO => "text_to_video",
+            ai_methods::VIDEO_IMG2VIDEO => "image_to_video",
+            ai_methods::VIDEO_VIDEO2VIDEO => "edit",
+            _ => {
+                return Err(ProviderError::fatal(format!(
+                    "google gemini interactions protocol does not support {}",
+                    method
+                )))
+            }
+        };
+        let mut response_format = json!({ "type": "video" });
+        if let Some(aspect_ratio) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|input| input.get("aspect_ratio"))
+            .and_then(Value::as_str)
+        {
+            response_format
+                .as_object_mut()
+                .expect("response_format should be an object")
+                .insert(
+                    "aspect_ratio".to_string(),
+                    Value::String(aspect_ratio.to_string()),
+                );
+        }
+        let mut request_obj = json!({
+            "model": provider_model,
+            "input": input,
+            "response_format": response_format,
+            "generation_config": {
+                "video_config": { "task": task }
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("interactions request should be an object");
+        if let Some(previous_interaction_id) = req
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|input| input.get("previous_interaction_id"))
+            .and_then(Value::as_str)
+        {
+            request_obj.insert(
+                "previous_interaction_id".to_string(),
+                Value::String(previous_interaction_id.to_string()),
+            );
+        }
+
+        let (status, body, latency_ms) = self.post_interaction(&request_obj).await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("google gemini interactions video returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let artifact = Self::interactions_video_artifact(&body)?;
+        let provider_task_ref = body.get("id").and_then(Value::as_str).map(str::to_string);
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            usage: Some(AiUsage::request_units(1)),
+            provider_task_ref,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(json!({
+                "provider": "google_gemini",
+                "method": method,
+                "model": provider_model,
+                "latency_ms": latency_ms,
+                "provider_io": { "input": request_obj, "output": body }
+            })),
+            ..Default::default()
+        }))
+    }
+
     async fn start_video(
         &self,
         ctx: &crate::aicc::InvokeCtx,
@@ -3155,29 +3517,43 @@ impl GoogleGeminiProvider {
                 method
             )));
         }
+        if Self::provider_protocol(req) == Some("interactions") {
+            return self
+                .start_interactions_video(provider_model, method, req)
+                .await;
+        }
+        if method == ai_methods::VIDEO_VIDEO2VIDEO {
+            return Err(ProviderError::fatal(
+                "google gemini predictLongRunning does not support arbitrary video editing",
+            ));
+        }
         let mut instance = Map::new();
         instance.insert(
             "prompt".to_string(),
             Value::String(Self::prompt_for_method(method, req)),
         );
-        if let Some(resource) = req
+        if method == ai_methods::VIDEO_EXTEND {
+            let continuation_handle = req
+                .payload
+                .input_json
+                .as_ref()
+                .and_then(|input| input.get("continuation_handle"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    ProviderError::fatal(
+                        "google gemini Veo video.extend requires continuation_handle from a previous Veo generation",
+                    )
+                })?;
+            instance.insert("video".to_string(), json!({ "uri": continuation_handle }));
+        } else if let Some(resource) = req
             .payload
             .resources
             .first()
             .cloned()
-            .or_else(|| Self::resource_from_input_json(req, &["image", "video"]))
+            .or_else(|| Self::resource_from_input_json(req, &["image"]))
         {
-            let field = match method {
-                ai_methods::VIDEO_IMG2VIDEO => "image",
-                ai_methods::VIDEO_VIDEO2VIDEO | ai_methods::VIDEO_EXTEND => "video",
-                _ => "image",
-            };
-            let part = if field == "video" {
-                Self::veo_video_part(&resource)?
-            } else {
-                Self::veo_resource_part(&resource)?
-            };
-            instance.insert(field.to_string(), part);
+            instance.insert("image".to_string(), Self::veo_resource_part(&resource)?);
         }
         let mut request_obj = Map::new();
         request_obj.insert(
@@ -3192,10 +3568,7 @@ impl GoogleGeminiProvider {
         if let Some(options) = req.payload.options.as_ref() {
             ignored_parameters.extend(Self::merge_video_parameters(&mut parameters, options));
         }
-        if matches!(
-            method,
-            ai_methods::VIDEO_VIDEO2VIDEO | ai_methods::VIDEO_EXTEND
-        ) {
+        if method == ai_methods::VIDEO_EXTEND {
             if let Some(duration) = parameters.remove("durationSeconds") {
                 if duration.as_u64() != Some(7) {
                     return Err(ProviderError::fatal(
@@ -3430,7 +3803,10 @@ impl Provider for GoogleGeminiProvider {
         }
         if matches!(
             input.api_type,
-            ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+            ApiType::VideoTextToVideo
+                | ApiType::VideoImageToVideo
+                | ApiType::VideoToVideo
+                | ApiType::VideoExtend
         ) {
             return CostEstimateOutput {
                 estimated_cost_usd: 0.5,
@@ -3776,6 +4152,27 @@ fn is_deprecated_gemini_entry(id: &str, display_name: &str, description: &str) -
 }
 
 fn classify_gemini_model(id: &str, methods: &HashSet<String>) -> Option<GeminiModelKind> {
+    let configured = resolve_driver_inventory(
+        "gemini-classifier",
+        ProviderType::CloudApi,
+        "google-gemini",
+        &[DriverModelResolveRequest::new(id.to_string(), vec![ApiType::Llm])],
+        None,
+    );
+    if configured.models.first().is_some_and(|model| {
+        model.api_types.iter().any(|api_type| {
+            matches!(
+                api_type,
+                ApiType::VideoTextToVideo
+                    | ApiType::VideoImageToVideo
+                    | ApiType::VideoToVideo
+                    | ApiType::VideoExtend
+                    | ApiType::VideoUpscale
+            )
+        })
+    }) {
+        return Some(GeminiModelKind::Video);
+    }
     let lowered = id.to_ascii_lowercase();
 
     if lowered.contains("embedding") || methods.contains("embedcontent") {
@@ -4490,13 +4887,16 @@ mod tests {
     }
 
     #[test]
-    fn veo_inventory_exposes_text_and_image_to_video() {
+    fn gemini_video_inventory_uses_configured_protocols() {
         let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
             "gemini-primary",
             ProviderType::CloudApi,
             "google-gemini",
             &GeminiModelBuckets {
-                video: vec!["veo-3.1-generate-preview".to_string()],
+                video: vec![
+                    "gemini-omni-flash-preview".to_string(),
+                    "veo-3.1-generate-preview".to_string(),
+                ],
                 ..Default::default()
             },
             &[],
@@ -4509,8 +4909,15 @@ mod tests {
             .expect("veo model should exist");
         assert!(veo.api_types.contains(&ApiType::VideoTextToVideo));
         assert!(veo.api_types.contains(&ApiType::VideoImageToVideo));
-        assert!(veo.api_types.contains(&ApiType::VideoToVideo));
+        assert!(!veo.api_types.contains(&ApiType::VideoToVideo));
         assert!(veo.api_types.contains(&ApiType::VideoExtend));
+        assert_eq!(
+            veo.provider_options
+                .as_ref()
+                .and_then(|options| options.get("protocol"))
+                .and_then(Value::as_str),
+            Some("predict_long_running")
+        );
         assert!(veo
             .logical_mounts
             .iter()
@@ -4519,6 +4926,21 @@ mod tests {
             .logical_mounts
             .iter()
             .any(|mount| mount == "video.extend"));
+
+        let omni = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-omni-flash-preview")
+            .expect("omni model should exist");
+        assert!(omni.api_types.contains(&ApiType::VideoToVideo));
+        assert!(!omni.api_types.contains(&ApiType::VideoExtend));
+        assert_eq!(
+            omni.provider_options
+                .as_ref()
+                .and_then(|options| options.get("protocol"))
+                .and_then(Value::as_str),
+            Some("interactions")
+        );
     }
 
     #[test]
@@ -4542,7 +4964,7 @@ mod tests {
             .iter()
             .find(|model| model.provider_model_id == "veo-3.1-fast-preview")
             .expect("full veo model should exist");
-        assert!(full.api_types.contains(&ApiType::VideoToVideo));
+        assert!(!full.api_types.contains(&ApiType::VideoToVideo));
         assert!(full.api_types.contains(&ApiType::VideoExtend));
 
         let lite = inventory
@@ -4555,18 +4977,86 @@ mod tests {
     }
 
     #[test]
-    fn veo_video_input_uses_predict_long_running_bytes() {
+    fn interactions_video_input_uses_video_content_part() {
         let resource = ResourceRef::Base64 {
             mime: "video/mp4".to_string(),
             data_base64: "dmlkZW8=".to_string(),
         };
         assert_eq!(
-            GoogleGeminiProvider::veo_video_part(&resource).unwrap(),
+            GoogleGeminiProvider::interactions_resource_part(&resource, "video").unwrap(),
             json!({
-                "mimeType": "video/mp4",
-                "bytesBase64Encoded": "dmlkZW8="
+                "type": "video",
+                "mime_type": "video/mp4",
+                "data": "dmlkZW8="
             })
         );
+    }
+
+    #[test]
+    fn nested_provider_options_configure_thinking_budget() {
+        let mut target = Map::new();
+        let ignored = GoogleGeminiProvider::merge_llm_options(
+            &mut target,
+            &json!({
+                "provider_options": {
+                    "protocol": "generate_content",
+                    "thinking_budget": 0
+                }
+            }),
+            false,
+        )
+        .expect("provider options should merge");
+
+        let target = Value::Object(target);
+        assert_eq!(
+            target.pointer("/generationConfig/thinkingConfig/thinkingBudget"),
+            Some(&json!(0))
+        );
+        assert_eq!(ignored, vec!["protocol".to_string()]);
+    }
+
+    #[test]
+    fn thinking_budget_is_added_outside_completion_budget_and_capped() {
+        let mut request = json!({
+            "generationConfig": {
+                "maxOutputTokens": 4096,
+                "thinkingConfig": { "thinkingBudget": 512 }
+            }
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        assert_eq!(
+            GoogleGeminiProvider::apply_separate_thinking_budget(&mut request, Some(4_500)),
+            Some(4_096)
+        );
+        assert_eq!(
+            Value::Object(request)
+                .pointer("/generationConfig/maxOutputTokens")
+                .and_then(Value::as_u64),
+            Some(4_500)
+        );
+    }
+
+    #[test]
+    fn gemini_25_metadata_uses_current_output_limit() {
+        let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
+            "gemini-primary",
+            ProviderType::CloudApi,
+            "google-gemini",
+            &GeminiModelBuckets {
+                llm: vec!["gemini-2.5-flash".to_string()],
+                ..Default::default()
+            },
+            &[],
+            Some("test".to_string()),
+        );
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gemini-2.5-flash")
+            .unwrap();
+        assert_eq!(model.capabilities.max_output_tokens, Some(65_536));
     }
 
     #[test]

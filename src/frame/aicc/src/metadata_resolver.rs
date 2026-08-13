@@ -138,6 +138,8 @@ pub struct DriverModelRule {
     #[serde(default)]
     pub parameter_scale: Option<String>,
     #[serde(default)]
+    pub provider_options: serde_json::Value,
+    #[serde(default)]
     pub api_types: Option<Vec<ApiType>>,
     #[serde(default)]
     pub logical_mounts: Option<Vec<String>>,
@@ -382,6 +384,7 @@ fn resolve_driver_model(
     let mut latency_class = LatencyClass::Normal;
     let mut cost_class = CostClass::Medium;
     let mut model_driver = origin.driver.clone();
+    let mut provider_options = None;
     if let Some(rule) = rule {
         if let Some(next) = rule.model_driver.as_ref() {
             model_driver = next.clone();
@@ -400,6 +403,9 @@ fn resolve_driver_model(
         apply_capabilities_patch(&mut capabilities, &rule.capabilities);
         if rule.parameter_scale.is_some() {
             parameter_scale = rule.parameter_scale.clone();
+        }
+        if !rule.provider_options.is_null() {
+            provider_options = Some(rule.provider_options.clone());
         }
         if let Some(rule_pricing) = rule.pricing.as_ref() {
             pricing.currency.clone_from(&rule_pricing.currency);
@@ -451,7 +457,7 @@ fn resolve_driver_model(
         model_driver,
         origin_model_id: Some(origin.model),
         provider_actual_model_id: None,
-        provider_options: None,
+        provider_options,
         parameter_scale,
         api_types,
         logical_mounts,

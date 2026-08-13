@@ -1,7 +1,7 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 3,
-  "schema_revision": 2,
+  "schema_revision": 3,
   "provider_driver": "google-gemini",
   "revision_seq": 3,
   "required_features": [],
@@ -56,8 +56,9 @@
       "estimated_latency_ms": 60000
     },
     {
-      "id": "veo-3.1-generate-preview",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "id": "gemini-omni-flash-preview",
+      "provider_options": { "protocol": "interactions" },
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
       "logical_mounts": [
         "video.txt2video",
         "video.txt2video.google",
@@ -70,7 +71,27 @@
         "video.video2video",
         "video.video2video.google",
         "video.video2video.gemini",
-        "video.video2video.{model}",
+        "video.video2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "id": "veo-3.1-generate-preview",
+      "provider_options": { "protocol": "predict_long_running" },
+      "api_types": ["video.txt2video", "video.img2video", "video.extend"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.google",
+        "video.txt2video.gemini",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}",
         "video.extend",
         "video.extend.google",
         "video.extend.gemini",
@@ -159,7 +180,8 @@
     },
     {
       "pattern": "veo-3.1-*",
-      "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+      "provider_options": { "protocol": "predict_long_running" },
+      "api_types": ["video.txt2video", "video.img2video", "video.extend"],
       "logical_mounts": [
         "video.txt2video",
         "video.txt2video.google",
@@ -169,10 +191,6 @@
         "video.img2video.google",
         "video.img2video.gemini",
         "video.img2video.{model}",
-        "video.video2video",
-        "video.video2video.google",
-        "video.video2video.gemini",
-        "video.video2video.{model}",
         "video.extend",
         "video.extend.google",
         "video.extend.gemini",
@@ -484,6 +502,12 @@
     }
   ],
   "capability_overrides": [
+    {
+      "pattern": "gemini-2.5-*",
+      "capabilities": {
+        "max_output_tokens": 65536
+      }
+    },
     {
       "pattern": "gemini-2.*",
       "api_types": ["llm"],
