@@ -34,14 +34,9 @@ fn managed_settings(enabled: bool, base_url: &str) -> Value {
 #[test]
 fn task009_derives_endpoints_from_bare_host_and_https_origin() {
     let bare = derive_sn_ai_provider_endpoints(Some(" sn.buckyos.io ")).unwrap();
-    assert_eq!(bare.models_url, "https://sn.buckyos.io/api/v1/ai/models");
     assert_eq!(bare.responses_url, "https://sn.buckyos.io/api/v1/ai/");
 
     let origin = derive_sn_ai_provider_endpoints(Some("https://sn.example:8443/")).unwrap();
-    assert_eq!(
-        origin.models_url,
-        "https://sn.example:8443/api/v1/ai/models"
-    );
     assert_eq!(origin.responses_url, "https://sn.example:8443/api/v1/ai/");
 }
 

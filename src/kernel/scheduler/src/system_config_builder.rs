@@ -1,5 +1,5 @@
-use ::kRPC::{RPCSessionToken, RPCSessionTokenType};
 use anyhow::{anyhow, Result};
+use buckyos_api::load_local_node_identity_config;
 use buckyos_api::msg_queue::{
     generate_kmsg_service_doc, KMSG_SERVICE_MAIN_PORT, KMSG_SERVICE_UNIQUE_ID,
 };
@@ -15,23 +15,22 @@ use buckyos_api::{
     UserTunnelBinding, UserType, ZoneConfig, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
     SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
-use buckyos_api::{load_local_device_private_key, load_local_node_identity_config};
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
     CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID,
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
-use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_system_etc_dir};
+use buckyos_kit::get_buckyos_system_etc_dir;
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, DID};
 use package_lib::PackageId;
-use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use url::Url;
 
 const DEFAULT_OOD_ID: &str = "ood1";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
@@ -41,7 +40,6 @@ const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
-    pub models_url: String,
     pub responses_url: String,
 }
 
@@ -76,18 +74,11 @@ pub(crate) fn derive_sn_ai_provider_endpoints(
     }
 
     origin.set_path("/");
-    let models_url = origin
-        .join("api/v1/ai/models")
-        .map_err(|err| anyhow!("failed to derive SN AI models URL: {err}"))?
-        .to_string();
     let responses_url = origin
         .join("api/v1/ai/")
         .map_err(|err| anyhow!("failed to derive SN AI responses URL: {err}"))?
         .to_string();
-    Ok(SnAiProviderEndpoints {
-        models_url,
-        responses_url,
-    })
+    Ok(SnAiProviderEndpoints { responses_url })
 }
 
 pub(crate) fn reconcile_managed_sn_ai_provider(
@@ -480,16 +471,8 @@ impl SystemConfigBuilder {
         } else {
             None
         };
-        let sn_ai_provider_models = if let Some(endpoints) = sn_ai_provider_endpoints.as_ref() {
-            fetch_sn_ai_provider_models(config.user_name.as_str(), endpoints).await
-        } else {
-            None
-        };
-        let settings = build_aicc_settings_with_endpoints(
-            config,
-            sn_ai_provider_endpoints.as_ref(),
-            sn_ai_provider_models.as_deref(),
-        );
+        let settings =
+            build_aicc_settings_with_endpoints(config, sn_ai_provider_endpoints.as_ref());
         self.insert_json_if_absent("services/aicc/settings", &settings)?;
         Ok(self)
     }
@@ -837,23 +820,14 @@ fn build_zone_user_contact_settings(
 
 #[cfg(test)]
 fn build_aicc_settings(config: &StartConfigSummary) -> Value {
-    build_aicc_settings_with_sn_models(config, None)
-}
-
-#[cfg(test)]
-fn build_aicc_settings_with_sn_models(
-    config: &StartConfigSummary,
-    sn_ai_provider_models: Option<&[String]>,
-) -> Value {
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai"))
         .expect("test SN AI endpoint must be valid");
-    build_aicc_settings_with_endpoints(config, Some(&endpoints), sn_ai_provider_models)
+    build_aicc_settings_with_endpoints(config, Some(&endpoints))
 }
 
 fn build_aicc_settings_with_endpoints(
     config: &StartConfigSummary,
     sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
-    sn_ai_provider_models: Option<&[String]>,
 ) -> Value {
     const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
     let mut settings = serde_json::Map::new();
@@ -883,7 +857,7 @@ fn build_aicc_settings_with_endpoints(
     if config.llm_router_enabled() {
         let endpoints = sn_ai_provider_endpoints
             .expect("SN AI endpoints are validated before building enabled provider settings");
-        let sn_model_settings = build_sn_ai_provider_model_settings(sn_ai_provider_models);
+        let sn_model_settings = build_sn_ai_provider_model_settings();
         if !sn_ai_provider_alias_map.contains_key("llm.default") {
             sn_ai_provider_alias_map.insert(
                 "llm.default".to_string(),
@@ -1018,22 +992,11 @@ struct SnAIProviderModelSettings {
     default_image_model: String,
 }
 
-fn build_sn_ai_provider_model_settings(
-    sn_ai_provider_models: Option<&[String]>,
-) -> SnAIProviderModelSettings {
-    let mut models = sn_ai_provider_models
-        .unwrap_or(&[])
+fn build_sn_ai_provider_model_settings() -> SnAIProviderModelSettings {
+    let models = DEFAULT_SN_AI_PROVIDER_MODELS
         .iter()
-        .map(|item| item.trim())
-        .filter(|item| !item.is_empty())
         .map(|item| item.to_string())
         .collect::<Vec<_>>();
-    if models.is_empty() {
-        models = DEFAULT_SN_AI_PROVIDER_MODELS
-            .iter()
-            .map(|item| item.to_string())
-            .collect::<Vec<_>>();
-    }
 
     let default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
         .unwrap_or_else(|| models[0].clone());
@@ -1081,122 +1044,12 @@ fn is_image_model(model_id: &str) -> bool {
         || value.contains("vision")
 }
 
-async fn fetch_sn_ai_provider_models(
-    user_name: &str,
-    endpoints: &SnAiProviderEndpoints,
-) -> Option<Vec<String>> {
-    match fetch_sn_ai_provider_models_impl(user_name, endpoints).await {
-        Ok(models) => Some(models),
-        Err(err) => {
-            warn!(
-                "fetch sn-ai-provider models from {} failed: {}",
-                endpoints.models_url, err
-            );
-            None
-        }
-    }
-}
-
-async fn fetch_sn_ai_provider_models_impl(
-    user_name: &str,
-    endpoints: &SnAiProviderEndpoints,
-) -> Result<Vec<String>> {
-    let token = build_device_jwt_token_for_sn(user_name)?;
-    let client = Client::new();
-    let response = client
-        .get(endpoints.models_url.as_str())
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|err| anyhow!("request failed: {}", err))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(anyhow!("request failed with status {}", status));
-    }
-    let response_text = response
-        .text()
-        .await
-        .map_err(|err| anyhow!("failed to read models response body: {}", err))?;
-    info!(
-        "sn-ai-provider models endpoint raw response: {}",
-        response_text
-    );
-    let body: Value = serde_json::from_str(response_text.as_str())
-        .map_err(|err| anyhow!("invalid models response json: {}", err))?;
-    let models = extract_model_ids_from_response(&body);
-    if models.is_empty() {
-        return Err(anyhow!("models response does not contain model ids"));
-    }
-
-    info!(
-        "fetched {} sn-ai-provider models: {:?}",
-        models.len(),
-        models
-    );
-    Ok(models)
-}
-
-fn build_device_jwt_token_for_sn(user_name: &str) -> Result<String> {
-    let node_identity_path = get_buckyos_system_etc_dir().join("node_identity.json");
-    let node_identity = load_local_node_identity_config(node_identity_path.as_path())
-        .map_err(|err| anyhow!("failed to load node identity: {}", err))?;
-    let device_name = node_identity.device_name.clone();
-    let private_key = load_local_device_private_key(&node_identity.device_did)
-        .map_err(|err| anyhow!("failed to load device private key: {}", err))?;
-    let now = buckyos_get_unix_timestamp();
-    let claims = RPCSessionToken {
-        token_type: RPCSessionTokenType::JWT,
-        token: None,
-        aud: None,
-        exp: Some(now + 60 * 15),
-        iss: Some(device_name),
-        jti: None,
-        sub: Some(user_name.to_string()),
-        appid: Some("aicc".to_string()),
-        sudo: false,
-        extra: HashMap::new(),
-    };
-    claims
-        .generate_jwt(None, &private_key)
-        .map_err(|err| anyhow!("generate sn models jwt failed: {}", err))
-}
-
 fn read_default_device_subject() -> String {
     let node_identity_path = get_buckyos_system_etc_dir().join("node_identity.json");
     if let Ok(node_identity) = load_local_node_identity_config(node_identity_path.as_path()) {
         return node_identity.device_name;
     }
     DEFAULT_OOD_ID.to_string()
-}
-
-fn extract_model_ids_from_response(payload: &Value) -> Vec<String> {
-    let mut result = Vec::<String>::new();
-
-    if let Some(items) = payload.get("items").and_then(|value| value.as_array()) {
-        for item in items {
-            if let Some(model_id) = item
-                .get("model")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                result.push(model_id.to_string());
-            }
-        }
-    }
-
-    if let Some(default_model) = payload
-        .get("default_model")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        result.push(default_model.to_string());
-    }
-
-    result.sort_unstable();
-    result.dedup();
-    result
 }
 
 fn build_msg_center_settings(config: &StartConfigSummary) -> Result<Value> {
@@ -1411,10 +1264,9 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_aicc_settings, build_aicc_settings_with_sn_models, build_default_jarvis_agent_spec,
-        build_kernel_service_spec, build_msg_center_settings, build_zone_user_contact_settings,
-        extract_model_ids_from_response, StartConfigSummary, SystemConfigBuilder,
-        TELEGRAM_TUNNEL_INSTANCE_ID,
+        build_aicc_settings, build_default_jarvis_agent_spec, build_kernel_service_spec,
+        build_msg_center_settings, build_zone_user_contact_settings, StartConfigSummary,
+        SystemConfigBuilder, TELEGRAM_TUNNEL_INSTANCE_ID,
     };
     use buckyos_api::{
         generate_verify_hub_service_doc, AppDoc, AppServiceSpec, AppType, OPENDAN_SERVICE_PORT,
@@ -1635,24 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_model_ids_from_response_supports_items_models_and_data_shapes() {
-        let payload = json!({
-            "items": [
-                { "provider": "openai", "model": "gpt-5.4" },
-                { "provider": "openai", "model": "gpt-5.4-mini" }
-            ],
-            "default_model": "gpt-5.4-mini",
-            "models": ["legacy-ignored"],
-            "data": [{ "model_id": "legacy-ignored" }]
-        });
-        let models = extract_model_ids_from_response(&payload);
-        assert!(models.iter().any(|m| m == "gpt-5.4"));
-        assert!(models.iter().any(|m| m == "gpt-5.4-mini"));
-        assert!(!models.iter().any(|m| m == "legacy-ignored"));
-    }
-
-    #[test]
-    fn build_aicc_settings_uses_fetched_sn_model_list() {
+    fn build_aicc_settings_uses_static_sn_model_fallback() {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
@@ -1661,21 +1496,15 @@ mod tests {
             "sn_active_code": "invite-code-001"
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
-        let sn_models = vec![
-            "gpt-5".to_string(),
-            "gpt-5-mini".to_string(),
-            "gpt-image-1".to_string(),
-        ];
-
-        let settings = build_aicc_settings_with_sn_models(&summary, Some(sn_models.as_slice()));
+        let settings = build_aicc_settings(&summary);
 
         assert_eq!(
             settings["sn-ai-provider"]["instances"][0]["models"],
-            json!(["gpt-5", "gpt-5-mini", "gpt-image-1"])
+            json!(["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"])
         );
         assert_eq!(
             settings["sn-ai-provider"]["instances"][0]["default_image_model"],
-            "gpt-image-1"
+            "dall-e-3"
         );
     }
 
