@@ -3234,7 +3234,7 @@ impl GoogleGeminiProvider {
             .ok_or_else(|| {
                 ProviderError::fatal("vision request requires image/document resource")
             })?;
-        let request_obj = json!({
+        let mut request_obj = json!({
             "contents": [{
                 "role": "user",
                 "parts": [
@@ -3247,6 +3247,13 @@ impl GoogleGeminiProvider {
         .as_object()
         .cloned()
         .unwrap_or_default();
+        if let Some(options) = req.payload.options.as_ref() {
+            Self::merge_llm_options(&mut request_obj, options, true)?;
+        }
+        Self::apply_separate_thinking_budget(
+            &mut request_obj,
+            self.model_max_output_tokens(provider_model),
+        );
         let (status, body, latency_ms) = self
             .post_generate_content(provider_model, &request_obj)
             .await?;

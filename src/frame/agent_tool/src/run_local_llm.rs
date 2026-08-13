@@ -493,6 +493,14 @@ impl LlmClient for AiccLlmClient {
         if let Some(n) = max_completion_tokens {
             options.insert("max_tokens".into(), json!(n));
         }
+        if let Some(extra) = provider_options {
+            match extra {
+                Value::Object(extra) => options.extend(extra),
+                extra => {
+                    options.insert("provider_options".into(), extra);
+                }
+            }
+        }
         let options_value = if options.is_empty() {
             Some(json!({}))
         } else {
@@ -516,7 +524,7 @@ impl LlmClient for AiccLlmClient {
             must_features.push("json_output".to_string());
         }
 
-        let mut requirements_extra = provider_options;
+        let mut requirements_extra = None;
         if !disable_capabilities.is_empty() {
             let mut obj = match requirements_extra.take() {
                 Some(Value::Object(obj)) => obj,
