@@ -206,7 +206,7 @@ impl RunItemControl for KernelServiceRunItem {
         let device_doc = runtime.device_config.as_ref().unwrap();
         let device_private_key = runtime.device_private_key.as_ref().unwrap();
         let (device_session_token_jwt, _) = generate_service_login_jwt(
-            device_doc.owner.id.as_str(),
+            device_doc.name.as_str(),
             app_id.as_str(),
             device_doc.name.as_str(),
             device_private_key,

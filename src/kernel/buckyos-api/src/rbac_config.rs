@@ -231,6 +231,36 @@ mod tests {
         static ref TEST_LOCK: Mutex<()> = Mutex::new(());
     }
 
+    #[tokio::test]
+    async fn device_principal_and_kernel_service_can_access_zone_state() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, ood1, ood"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        assert!(
+            rbac::enforce(
+                "ood1",
+                "node-daemon",
+                "obj://config/nodes/ood1/config",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "ood1",
+                "node-daemon",
+                "obj://config/devices/ood1/info",
+                "write",
+                None,
+            )
+            .await
+        );
+    }
+
     #[test]
     fn overlap_rbac_policy_appends_tail_to_default() {
         let policy = overlap_rbac_policy(

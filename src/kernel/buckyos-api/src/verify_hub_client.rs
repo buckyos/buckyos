@@ -17,17 +17,17 @@ pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60 * 10; //10 minutes
 pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
 
 pub fn generate_service_login_jwt(
-    owner_user_id: &str,
+    subject_id: &str,
     appid: &str,
     device_name: &str,
     device_private_key: &EncodingKey,
 ) -> Result<(String, RPCSessionToken)> {
-    let owner_user_id = owner_user_id.trim();
+    let subject_id = subject_id.trim();
     let appid = appid.trim();
     let device_name = device_name.trim();
-    if owner_user_id.is_empty() || appid.is_empty() || device_name.is_empty() {
+    if subject_id.is_empty() || appid.is_empty() || device_name.is_empty() {
         return Err(RPCErrors::ReasonError(
-            "owner_user_id, appid and device_name are required".to_string(),
+            "subject_id, appid and device_name are required".to_string(),
         ));
     }
 
@@ -42,7 +42,7 @@ pub fn generate_service_login_jwt(
         exp: Some(now + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
         iss: Some(device_name.to_string()),
         jti: Some(random::<u64>().to_string()),
-        sub: Some(owner_user_id.to_string()),
+        sub: Some(subject_id.to_string()),
         appid: Some(appid.to_string()),
         sudo: false,
         extra: HashMap::new(),
@@ -668,6 +668,25 @@ mod tests {
         let parsed = RPCSessionToken::from_string(&jwt).unwrap();
         assert_eq!(parsed.sub.as_deref(), Some("alice"));
         assert_eq!(parsed.appid.as_deref(), Some("control-panel"));
+        assert_eq!(parsed.iss.as_deref(), Some("ood1"));
+    }
+
+    #[test]
+    fn system_service_login_jwt_uses_device_as_subject_and_issuer() {
+        let private_key = EncodingKey::from_ed_pem(
+            b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let (jwt, token) =
+            generate_service_login_jwt("ood1", "node-daemon", "ood1", &private_key).unwrap();
+
+        assert_eq!(token.sub.as_deref(), Some("ood1"));
+        assert_eq!(token.appid.as_deref(), Some("node-daemon"));
+        assert_eq!(token.iss.as_deref(), Some("ood1"));
+
+        let parsed = RPCSessionToken::from_string(&jwt).unwrap();
+        assert_eq!(parsed.sub.as_deref(), Some("ood1"));
+        assert_eq!(parsed.appid.as_deref(), Some("node-daemon"));
         assert_eq!(parsed.iss.as_deref(), Some("ood1"));
     }
 

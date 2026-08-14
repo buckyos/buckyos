@@ -555,22 +555,6 @@ impl BuckyOSRuntime {
                     error!("Failed to load local device config: {}", e);
                     RPCErrors::ReasonError(format!("Failed to load local device config: {}", e))
                 })?;
-            if self.app_owner_id.is_none()
-                && matches!(
-                    self.runtime_type,
-                    BuckyOSRuntimeType::Kernel
-                        | BuckyOSRuntimeType::KernelService
-                        | BuckyOSRuntimeType::FrameService
-                )
-            {
-                let owner_user_id = device_config.owner.id.trim();
-                if owner_user_id.is_empty() {
-                    return Err(RPCErrors::ReasonError(
-                        "device owner_user_id is empty".to_string(),
-                    ));
-                }
-                self.app_owner_id = Some(owner_user_id.to_string());
-            }
             self.device_config = Some(device_config);
             let zone_did = node_identity_config.zone_did.clone();
             self.zone_id = zone_did.clone();
@@ -1084,13 +1068,9 @@ impl BuckyOSRuntime {
         if self.device_private_key.is_some() && self.device_config.is_some() {
             let device_private_key = self.device_private_key.as_ref().unwrap();
             let device_config = self.device_config.as_ref().unwrap();
-            let owner_user_id = self.app_owner_id.as_deref().ok_or_else(|| {
-                RPCErrors::ReasonError(
-                    "service owner_user_id is required for device-signed login".to_string(),
-                )
-            })?;
+            let subject_id = self.device_signed_login_subject(device_config.name.as_str())?;
             let (jwt, token) = generate_service_login_jwt(
-                owner_user_id,
+                subject_id,
                 self.app_id.as_str(),
                 device_config.name.as_str(),
                 device_private_key,
@@ -1294,13 +1274,10 @@ impl BuckyOSRuntime {
                 {
                     info!("buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
                     let device_config = self.device_config.as_ref().unwrap();
-                    let owner_user_id = self.app_owner_id.as_deref().ok_or_else(|| {
-                        RPCErrors::ReasonError(
-                            "service owner_user_id is required for device-signed login".to_string(),
-                        )
-                    })?;
+                    let subject_id =
+                        self.device_signed_login_subject(device_config.name.as_str())?;
                     let (session_token_str, real_session_token) = generate_service_login_jwt(
-                        owner_user_id,
+                        subject_id,
                         self.app_id.as_str(),
                         device_config.name.as_str(),
                         self.device_private_key.as_ref().unwrap(),
@@ -1695,6 +1672,23 @@ impl BuckyOSRuntime {
         self.app_owner_id.clone()
     }
 
+    fn device_signed_login_subject<'a>(&'a self, device_name: &'a str) -> Result<&'a str> {
+        if matches!(
+            self.runtime_type,
+            BuckyOSRuntimeType::Kernel
+                | BuckyOSRuntimeType::KernelService
+                | BuckyOSRuntimeType::FrameService
+        ) {
+            return Ok(device_name);
+        }
+
+        self.app_owner_id.as_deref().ok_or_else(|| {
+            RPCErrors::ReasonError(
+                "service owner_user_id is required for device-signed login".to_string(),
+            )
+        })
+    }
+
     pub fn get_zone_config(&self) -> Option<&ZoneConfig> {
         self.zone_config.as_ref()
     }
@@ -1731,13 +1725,20 @@ impl BuckyOSRuntime {
             if now < exp.saturating_sub(10) {
                 return session_token_str;
             } else {
-                if let (Some(device_private_key), Some(device_config), Some(owner_user_id)) = (
+                if let (Some(device_private_key), Some(device_config)) = (
                     self.device_private_key.as_ref(),
                     self.device_config.as_ref(),
-                    self.app_owner_id.as_deref(),
                 ) {
+                    let subject_id =
+                        match self.device_signed_login_subject(device_config.name.as_str()) {
+                            Ok(subject_id) => subject_id,
+                            Err(error) => {
+                                warn!("resolve device-signed login subject failed: {}", error);
+                                return "".to_string();
+                            }
+                        };
                     let jwt_result = generate_service_login_jwt(
-                        owner_user_id,
+                        subject_id,
                         self.app_id.as_str(),
                         device_config.name.as_str(),
                         device_private_key,
@@ -2558,6 +2559,19 @@ fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_signed_login_subject_depends_on_runtime_type() {
+        let kernel = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
+        assert_eq!(kernel.device_signed_login_subject("ood1").unwrap(), "ood1");
+
+        let app = BuckyOSRuntime::new(
+            "demo-app",
+            Some("alice".to_string()),
+            BuckyOSRuntimeType::AppService,
+        );
+        assert_eq!(app.device_signed_login_subject("ood1").unwrap(), "alice");
+    }
 
     #[tokio::test]
     async fn reuses_shared_system_config_client_and_syncs_token() {

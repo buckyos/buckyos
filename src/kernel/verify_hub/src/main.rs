@@ -45,9 +45,32 @@ struct VerifyServiceConfig {
     start_time: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrustedIssuerKind {
+    VerifyHub,
+    Root,
+    User,
+    Device,
+}
+
+#[derive(Clone)]
+struct TrustedKey {
+    key: DecodingKey,
+    issuer_kind: TrustedIssuerKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionPrincipalKind {
+    User,
+    Device,
+}
+
 const VERIFY_HUB_ISSUER: &str = "verify-hub";
 const VERIFY_HUB_SERVICE_MAIN_PORT: u16 = 3300;
 const ROOT_USER_ID: &str = "root";
+const PRINCIPAL_KIND_FIELD: &str = "principal_kind";
+const PRINCIPAL_KIND_USER: &str = "user";
+const PRINCIPAL_KIND_DEVICE: &str = "device";
 
 lazy_static! {
     static ref VERIFY_HUB_PRIVATE_KEY: Arc<RwLock<EncodingKey>> = {
@@ -66,7 +89,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
     // When a refresh token is used, the old one is invalidated and replaced with new one
     static ref REFRESH_TOKEN_CACHE: Arc<Mutex<HashMap<String, RPCSessionToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    static ref TRUSTKEY_CACHE: Arc<Mutex<HashMap<String, DecodingKey>>> =
+    static ref TRUSTKEY_CACHE: Arc<Mutex<HashMap<String, TrustedKey>>> =
         Arc::new(Mutex::new(HashMap::new()));
     static ref VERIFY_SERVICE_CONFIG: Arc<Mutex<Option<VerifyServiceConfig>>> =
         Arc::new(Mutex::new(None));
@@ -77,6 +100,31 @@ fn set_token_session_id(token: &mut RPCSessionToken, session_id: u64) {
     token
         .extra
         .insert(SESSION_FIELD.to_string(), Value::from(session_id));
+}
+
+fn set_token_principal_kind(token: &mut RPCSessionToken, principal_kind: SessionPrincipalKind) {
+    let value = match principal_kind {
+        SessionPrincipalKind::User => PRINCIPAL_KIND_USER,
+        SessionPrincipalKind::Device => PRINCIPAL_KIND_DEVICE,
+    };
+    token.extra.insert(
+        PRINCIPAL_KIND_FIELD.to_string(),
+        Value::String(value.to_string()),
+    );
+}
+
+fn get_token_principal_kind(token: &RPCSessionToken) -> Result<SessionPrincipalKind> {
+    match token
+        .extra
+        .get(PRINCIPAL_KIND_FIELD)
+        .and_then(Value::as_str)
+    {
+        Some(PRINCIPAL_KIND_USER) => Ok(SessionPrincipalKind::User),
+        Some(PRINCIPAL_KIND_DEVICE) => Ok(SessionPrincipalKind::Device),
+        _ => Err(RPCErrors::InvalidToken(
+            "Missing or invalid principal_kind".to_string(),
+        )),
+    }
 }
 
 fn get_token_session_id(token: &RPCSessionToken) -> Result<u64> {
@@ -142,6 +190,7 @@ async fn generate_session_token(
     duration: u64,
     aud: Option<String>,
     sudo: bool,
+    principal_kind: SessionPrincipalKind,
 ) -> Result<RPCSessionToken> {
     reject_root_session_subject(userid)?;
     let now = buckyos_get_unix_timestamp();
@@ -160,6 +209,7 @@ async fn generate_session_token(
         extra: HashMap::new(),
     };
     set_token_session_id(&mut session_token, session);
+    set_token_principal_kind(&mut session_token, principal_kind);
 
     {
         let private_key = VERIFY_HUB_PRIVATE_KEY.read().await;
@@ -178,6 +228,7 @@ async fn generate_refresh_token(
     jti: u64,
     session: u64,
     duration: u64,
+    principal_kind: SessionPrincipalKind,
 ) -> Result<RPCSessionToken> {
     reject_root_session_subject(userid)?;
     let now = buckyos_get_unix_timestamp();
@@ -196,6 +247,7 @@ async fn generate_refresh_token(
         extra: HashMap::new(),
     };
     set_token_session_id(&mut refresh_token, session);
+    set_token_principal_kind(&mut refresh_token, principal_kind);
 
     {
         let private_key = VERIFY_HUB_PRIVATE_KEY.read().await;
@@ -214,6 +266,7 @@ async fn generate_token_pair(
     appid: &str,
     userid: &str,
     session_id: u64,
+    principal_kind: SessionPrincipalKind,
 ) -> Result<(TokenPair, RPCSessionToken, RPCSessionToken)> {
     // Generate random jti (JWT ID) for both tokens
     let session_jti: u64;
@@ -233,6 +286,7 @@ async fn generate_token_pair(
         SESSION_TOKEN_EXPIRE_SECONDS,
         None,
         false,
+        principal_kind,
     )
     .await?;
 
@@ -243,6 +297,7 @@ async fn generate_token_pair(
         refresh_jti,
         session_id,
         REFRESH_TOKEN_EXPIRE_SECONDS,
+        principal_kind,
     )
     .await?;
 
@@ -356,16 +411,35 @@ async fn validate_active_refresh_token(refresh_jwt: &str) -> Result<(RPCSessionT
     Ok((rpc_session_token, session_key))
 }
 
+async fn validate_refresh_principal(
+    userid: &str,
+    principal_kind: SessionPrincipalKind,
+) -> Result<()> {
+    let system_config_client = get_system_config_client().await?;
+    let control_panel_client = ControlPanelClient::new(system_config_client);
+    match principal_kind {
+        SessionPrincipalKind::User => {
+            let user_settings = control_panel_client
+                .get_user_settings_by_username(userid)
+                .await?;
+            reject_root_user_settings(&user_settings)?;
+            require_active_user_settings(&user_settings)
+        }
+        SessionPrincipalKind::Device => {
+            control_panel_client.get_device_config(userid).await?;
+            Ok(())
+        }
+    }
+}
+
 async fn get_my_krpc_token() -> Result<RPCSessionToken> {
     let now = buckyos_get_unix_timestamp();
-    let owner_user_id = VERIFY_SERVICE_CONFIG
+    let device_id = VERIFY_SERVICE_CONFIG
         .lock()
         .await
         .as_ref()
         .unwrap()
-        .zone_document
-        .owner
-        .id
+        .device_id
         .clone();
 
     let my_rpc_token = MY_RPC_TOKEN.lock().await;
@@ -385,7 +459,7 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
         appid: Some("verify-hub".to_string()),
         jti: None,
         aud: None,
-        sub: Some(owner_user_id),
+        sub: Some(device_id),
         token: None,
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
@@ -484,21 +558,25 @@ async fn cache_token(key: &str, token: RPCSessionToken) {
     TOKEN_CACHE.lock().await.insert(key.to_string(), token);
 }
 
-async fn load_trustkey_from_cache(kid: &str) -> Option<DecodingKey> {
+async fn load_trustkey_from_cache(kid: &str) -> Option<TrustedKey> {
     let cache = TRUSTKEY_CACHE.lock().await;
     cache.get(kid).cloned()
 }
 
-async fn cache_trustkey(kid: &str, key: DecodingKey) {
-    TRUSTKEY_CACHE.lock().await.insert(kid.to_string(), key);
+async fn cache_trustkey(kid: &str, key: DecodingKey, issuer_kind: TrustedIssuerKind) {
+    TRUSTKEY_CACHE
+        .lock()
+        .await
+        .insert(kid.to_string(), TrustedKey { key, issuer_kind });
 }
 
 async fn remove_trustkey_from_cache(kid: &str) {
     TRUSTKEY_CACHE.lock().await.remove(kid);
 }
 
-async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
+async fn load_trust_public_key_from_source(iss: &str) -> Result<TrustedKey> {
     let result_key: DecodingKey;
+    let issuer_kind: TrustedIssuerKind;
     if iss == "root" {
         //load zone config from system config service
         let owner_auth_key = VERIFY_SERVICE_CONFIG
@@ -512,6 +590,7 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
                 "Owner public key not found".to_string(),
             ))?;
         result_key = owner_auth_key.0;
+        issuer_kind = TrustedIssuerKind::Root;
         info!("load owner public key from zone config");
     } else {
         let system_config_client = get_system_config_client().await?;
@@ -523,6 +602,7 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
                 ))?;
                 result_key = DecodingKey::from_jwk(&owner_key)
                     .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+                issuer_kind = TrustedIssuerKind::User;
                 info!("load user public key from system config for iss={}", iss);
             }
             Err(RPCErrors::KeyNotExist(_)) => {
@@ -545,6 +625,7 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
                             "Device public key not found".to_string(),
                         ))?;
                 result_key = result_device_key.0;
+                issuer_kind = TrustedIssuerKind::Device;
                 info!("load device public key from system config for iss={}", iss);
             }
             Err(err) => {
@@ -557,11 +638,15 @@ async fn load_trust_public_key_from_source(iss: &str) -> Result<DecodingKey> {
         }
     }
 
-    cache_trustkey(iss, result_key.clone()).await;
-    Ok(result_key)
+    let trusted_key = TrustedKey {
+        key: result_key,
+        issuer_kind,
+    };
+    cache_trustkey(iss, trusted_key.key.clone(), issuer_kind).await;
+    Ok(trusted_key)
 }
 
-async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<DecodingKey> {
+async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<TrustedKey> {
     let cached_key = load_trustkey_from_cache(iss).await;
     if let Some(cached_key) = cached_key {
         return Ok(cached_key);
@@ -571,7 +656,7 @@ async fn get_trust_public_key(iss: &str, _kid: &Option<String>) -> Result<Decodi
 }
 
 // return (kid, payload)
-async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
+async fn verify_trusted_jwt(jwt: &str) -> Result<(Value, TrustedIssuerKind)> {
     let header: jsonwebtoken::Header = jsonwebtoken::decode_header(jwt).map_err(|error| {
         error!("JWT decode header error: {}", error);
         RPCErrors::ReasonError("JWT decode header error".to_string())
@@ -600,10 +685,10 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
         .unwrap_or(VERIFY_HUB_ISSUER);
 
     // try get public key from header.kid
-    let public_key = get_trust_public_key(iss, &header.kid).await?;
+    let trusted_key = get_trust_public_key(iss, &header.kid).await?;
 
     // verify jwt
-    let decoded_token = match jsonwebtoken::decode::<Value>(jwt, &public_key, &validation) {
+    let decoded_token = match jsonwebtoken::decode::<Value>(jwt, &trusted_key.key, &validation) {
         Ok(decoded_token) => decoded_token,
         Err(error) => {
             let should_retry = matches!(error.kind(), ErrorKind::InvalidSignature);
@@ -614,7 +699,7 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
                 );
                 remove_trustkey_from_cache(iss).await;
                 let refreshed_key = load_trust_public_key_from_source(iss).await?;
-                jsonwebtoken::decode::<Value>(jwt, &refreshed_key, &validation).map_err(
+                jsonwebtoken::decode::<Value>(jwt, &refreshed_key.key, &validation).map_err(
                     |retry_error| {
                         error!(
                             "JWT verify error after trust-key reload for iss={}: {}",
@@ -630,7 +715,7 @@ async fn verify_trusted_jwt(jwt: &str) -> Result<Value> {
         }
     };
 
-    Ok(decoded_token.claims)
+    Ok((decoded_token.claims, trusted_key.issuer_kind))
 }
 
 async fn verify_verify_hub_jwt(jwt: &str, expected_audience: Option<&str>) -> Result<Value> {
@@ -674,7 +759,7 @@ async fn verify_verify_hub_jwt(jwt: &str, expected_audience: Option<&str>) -> Re
     }
 
     let decoded_token =
-        jsonwebtoken::decode::<Value>(jwt, &public_key, &validation).map_err(|error| {
+        jsonwebtoken::decode::<Value>(jwt, &public_key.key, &validation).map_err(|error| {
             error!("JWT verify error: {}", error);
             RPCErrors::ReasonError("JWT verify error".to_string())
         })?;
@@ -763,7 +848,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
         // Step 1: Verify JWT signature (include exp) and extract payload
         // The incoming JWT is signed by a trusted entity (device/owner)
-        let jwt_payload = verify_trusted_jwt(jwt).await?;
+        let (jwt_payload, issuer_kind) = verify_trusted_jwt(jwt).await?;
 
         // Step 2: Extract required fields from JWT payload
         let rpc_session_token: RPCSessionToken =
@@ -786,6 +871,13 @@ impl VerifyHubApiHandler for VerifyHubServer {
         let token_jti = rpc_session_token
             .jti
             .ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
+        let principal_kind = if issuer_kind == TrustedIssuerKind::Device
+            && rpc_session_token.iss.as_deref() == Some(userid.as_str())
+        {
+            SessionPrincipalKind::Device
+        } else {
+            SessionPrincipalKind::User
+        };
         //let token_jti = rpc_session_token.jti.ok_or(RPCErrors::ReasonError("Missing jti".to_string()))?;
 
         // ============================================================
@@ -812,7 +904,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
         // Step 6: Generate new token pair (session_token + refresh_token)
         let (token_pair, session_token, refresh_token) =
-            generate_token_pair(appid.as_str(), userid.as_str(), session_id).await?;
+            generate_token_pair(appid.as_str(), userid.as_str(), session_id, principal_kind)
+                .await?;
 
         // Step 7: Cache both tokens
         // Cache by original session_key to mark login JWT as used
@@ -844,14 +937,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
             .clone()
             .ok_or(RPCErrors::ReasonError("Missing appid".to_string()))?;
         let session_id = get_token_session_id(&rpc_session_token)?;
-
-        let system_config_client = get_system_config_client().await?;
-        let control_panel_client = ControlPanelClient::new(system_config_client);
-        let user_settings = control_panel_client
-            .get_user_settings_by_username(&userid)
-            .await?;
-        reject_root_user_settings(&user_settings)?;
-        require_active_user_settings(&user_settings)?;
+        let principal_kind = get_token_principal_kind(&rpc_session_token)?;
+        validate_refresh_principal(userid.as_str(), principal_kind).await?;
 
         info!("Handle refresh token request for session: {}", session_key);
 
@@ -862,7 +949,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
         // Step 8: Generate new token pair (session_token + refresh_token)
         let (token_pair, session_token, refresh_token) =
-            generate_token_pair(appid.as_str(), userid.as_str(), session_id).await?;
+            generate_token_pair(appid.as_str(), userid.as_str(), session_id, principal_kind)
+                .await?;
 
         // Step 9: Cache the new tokens
         cache_token(session_key.as_str(), session_token).await;
@@ -914,7 +1002,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
         // session_token: short-lived (15 minutes) for API requests
         // refresh_token: long-lived (7 days) for obtaining new token pairs
         let (token_pair, session_token, refresh_token) =
-            generate_token_pair(appid, username, session_id).await?;
+            generate_token_pair(appid, username, session_id, SessionPrincipalKind::User).await?;
 
         // Step 6: Cache both tokens
         cache_token(session_key.as_str(), session_token).await;
@@ -964,6 +1052,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             SUDO_SESSION_TOKEN_EXPIRE_SECONDS,
             aud,
             true,
+            SessionPrincipalKind::User,
         )
         .await?;
 
@@ -1105,7 +1194,12 @@ async fn load_service_config() -> Result<()> {
     let verify_hub_info = zone_config.verify_hub_info.as_ref().unwrap();
     let verify_hub_pub_key = DecodingKey::from_jwk(&verify_hub_info.public_key)
         .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
-    cache_trustkey("verify-hub", verify_hub_pub_key).await;
+    cache_trustkey(
+        "verify-hub",
+        verify_hub_pub_key,
+        TrustedIssuerKind::VerifyHub,
+    )
+    .await;
     info!("verify_hub public key loaded from system config service OK!");
     let zone_document = zone_config
         .zone_document()
@@ -1189,9 +1283,9 @@ mod test {
         let test_pk = DecodingKey::from_jwk(&public_key_jwk).unwrap();
 
         // Cache trust keys for verify-hub and root
-        cache_trustkey("verify-hub", test_pk.clone()).await;
-        cache_trustkey("root", test_pk.clone()).await;
-        cache_trustkey("ood1", test_pk).await;
+        cache_trustkey("verify-hub", test_pk.clone(), TrustedIssuerKind::VerifyHub).await;
+        cache_trustkey("root", test_pk.clone(), TrustedIssuerKind::Root).await;
+        cache_trustkey("ood1", test_pk, TrustedIssuerKind::Device).await;
 
         let test_owner_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
@@ -1218,6 +1312,35 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         assert_eq!(session_token.appid.as_deref(), Some("control-panel"));
         assert_eq!(refresh_token.sub.as_deref(), Some("alice"));
         assert_eq!(refresh_token.appid.as_deref(), Some("control-panel"));
+        assert_eq!(
+            get_token_principal_kind(&refresh_token).unwrap(),
+            SessionPrincipalKind::User
+        );
+    }
+
+    #[tokio::test]
+    async fn device_service_login_preserves_device_subject() {
+        let private_key = setup_test_environment().await;
+        let (login_jwt, _) =
+            generate_service_login_jwt("ood1", "node-daemon", "ood1", &private_key).unwrap();
+
+        let token_pair = VerifyHubServer::new()
+            .handle_login_by_jwt(login_jwt.as_str(), None)
+            .await
+            .unwrap();
+        let session_token = RPCSessionToken::from_string(&token_pair.session_token).unwrap();
+        let refresh_token = RPCSessionToken::from_string(&token_pair.refresh_token).unwrap();
+
+        assert_eq!(session_token.sub.as_deref(), Some("ood1"));
+        assert_eq!(session_token.appid.as_deref(), Some("node-daemon"));
+        assert_eq!(
+            get_token_principal_kind(&session_token).unwrap(),
+            SessionPrincipalKind::Device
+        );
+        assert_eq!(
+            get_token_principal_kind(&refresh_token).unwrap(),
+            SessionPrincipalKind::Device
+        );
     }
 
     /// Helper function to create a login JWT for testing
@@ -1368,6 +1491,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             SESSION_TOKEN_EXPIRE_SECONDS,
             None,
             false,
+            SessionPrincipalKind::User,
         )
         .await;
         assert!(
@@ -1381,6 +1505,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             5679,
             12345,
             REFRESH_TOKEN_EXPIRE_SECONDS,
+            SessionPrincipalKind::User,
         )
         .await;
         assert!(
@@ -1388,7 +1513,8 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             "root refresh token generation must fail"
         );
 
-        let token_pair_result = generate_token_pair("control-panel", "root", 12345).await;
+        let token_pair_result =
+            generate_token_pair("control-panel", "root", 12345, SessionPrincipalKind::User).await;
         assert!(
             matches!(token_pair_result, Err(RPCErrors::NoPermission(_))),
             "root token pair generation must fail"
@@ -1643,7 +1769,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         println!("\n=== Test: Token pair generation ===");
 
         let (token_pair, session_token, refresh_token) =
-            generate_token_pair("test-app", "test-user", 12345)
+            generate_token_pair("test-app", "test-user", 12345, SessionPrincipalKind::User)
                 .await
                 .unwrap();
 
@@ -1704,6 +1830,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             SUDO_SESSION_TOKEN_EXPIRE_SECONDS,
             Some("system-config".to_string()),
             true,
+            SessionPrincipalKind::User,
         )
         .await
         .unwrap();

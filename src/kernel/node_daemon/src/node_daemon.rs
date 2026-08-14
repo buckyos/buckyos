@@ -1581,7 +1581,7 @@ fn generate_node_daemon_login_token(
     device_private_key: &EncodingKey,
 ) -> std::result::Result<String, String> {
     generate_service_login_jwt(
-        device_doc.owner.id.as_str(),
+        device_doc.name.as_str(),
         "node-daemon",
         device_doc.name.as_str(),
         device_private_key,
@@ -1943,7 +1943,6 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             return String::from("fill policy by load config failed!");
         })?;
 
-        runtime.app_owner_id = Some(device_doc.owner.id.clone());
         runtime.device_config = Some(device_doc);
         runtime.device_private_key = Some(device_private_key);
         runtime.zone_id = node_identity.zone_did.clone();
