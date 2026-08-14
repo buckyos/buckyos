@@ -7,6 +7,7 @@ import { ArgError, bailArgError, COMMON_OPTIONS_HELP, flagInt, parseArgvOrExit, 
 import { initRuntime } from "../lib/runtime.ts";
 import { callAicc, commonPolicyOptions, describeFailure, requestNamedObjectOutput } from "../lib/aicc.ts";
 import { pickArtifact, resolveInputResource, saveArtifactToPath, suffixPathByMime } from "../lib/io.ts";
+import { aiResponseExtraString } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
   emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
@@ -18,7 +19,7 @@ const METHOD = "video.extend";
 export const HELP = `Usage: extend_video <previous_video> <prompt> <output_video> [options]
 
 Options:
-  --continuation-handle <provider_handle>
+  --continuation-handle <provider_handle>  Required; returned by a compatible previous generation
   --duration <seconds>
   --resolution <720p|1080p|4k>
 ${COMMON_OPTIONS_HELP}`;
@@ -36,7 +37,12 @@ export async function run(argv: string[]): Promise<never> {
   let inputResource;
   try {
     const handle = requireString(parsed.flags, "continuation-handle");
-    if (handle !== undefined) input.continuation_handle = handle;
+    if (handle === undefined) {
+      throw new ArgError(
+        "--continuation-handle is required; video.extend only continues a compatible previous generation",
+      );
+    }
+    input.continuation_handle = handle;
     const duration = flagInt(parsed.flags, "duration");
     if (duration !== undefined) input.duration = duration;
     const resolution = requireString(parsed.flags, "resolution");
@@ -75,9 +81,12 @@ export async function run(argv: string[]): Promise<never> {
   try { saved = await saveArtifactToPath(artifact, suffixPathByMime(outputPath, "video/mp4"), ndmProxy); }
   catch (err) { bailIoError(TOOL, call.taskId, err); }
 
+  const continuationHandle = aiResponseExtraString(call.summary, "continuation_handle");
+
   emitAndExit(
     successResult(TOOL, `${TOOL} => done`, `${TOOL} wrote ${saved.path}`, {
       method: METHOD, capability: "video", task_id: call.taskId,
+      ...(continuationHandle ? { continuation_handle: continuationHandle } : {}),
       files: [{ path: saved.path, mime: saved.mime ?? null, bytes: saved.bytes, source_kind: saved.source_kind }],
     }),
     EXIT_SUCCESS,

@@ -33,19 +33,19 @@ const RAW_OUTPUT_LOG_PREVIEW_CHARS: usize = 2_000;
 const DEFAULT_VIDEO_FRAME_COUNT: usize = 8;
 const MAX_VIDEO_FRAME_COUNT: usize = 16;
 
-const SYSTEM_PROMPT: &str = r#"You are OpenDAN's controlled media-understanding side context.
+const SYSTEM_PROMPT: &str = r#"You are OpenDAN's controlled attachment-understanding side context.
 
-You must inspect the target media and answer the user's goal as a JSON object with exactly these fields:
+You must inspect the target attachment and answer the user's goal as a JSON object with exactly these fields:
 - observations: array of objects with id and description.
 - reasoning: string.
 - conclusion: string.
 - confidence: one of "Observed", "Inferred", "Uncertain".
 
 Rules:
-1. Produce observations first in causal order. Observations are objective facts visible in the media. Each observation must have a stable id such as "obs-1".
+1. Produce observations first in causal order. Observations are objective facts observable in the attachment. Each observation must have a stable id such as "obs-1".
 2. Reasoning must come after observations and must only cite facts that trace to observation ids. If a step needs information not in observations, mark it as speculation.
 3. Conclusions that cannot be derived only from observations must be marked in reasoning as speculation and reflected by confidence "Inferred" or "Uncertain".
-4. Do not invent visual details to support a likely answer.
+4. Do not invent attachment details to support a likely answer.
 5. Return only JSON. Do not call tools."#;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,7 +89,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand an image or video resource through a controlled LLM side context. Accepts media, goal, and max_completion_tokens only; media should be a named_object ResourceRef.".to_string(),
+            description: "Understand an attachment through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. Accepts media, goal, and max_completion_tokens only; media should be a named_object ResourceRef.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -748,8 +748,13 @@ async fn resolve_media(media: &MediaArg) -> Result<ResolvedMedia, String> {
             }
 
             let mime = object_mime
+                .clone()
+                .filter(|mime| mime != "application/octet-stream")
+                .or_else(|| sniff_archive_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_image_mime(&bytes).map(str::to_string))
                 .or_else(|| sniff_video_mime(&bytes).map(str::to_string))
+                .or_else(|| sniff_document_mime(&bytes).map(str::to_string))
+                .or(object_mime)
                 .or_else(|| media.mime_hint.as_deref().and_then(normalize_mime))
                 .ok_or_else(|| format!("cannot determine MIME for named_object {obj_id}"))?;
             let data_base64 = general_purpose::STANDARD.encode(bytes);
@@ -830,6 +835,38 @@ fn sniff_video_mime(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+fn sniff_document_mime(bytes: &[u8]) -> Option<&'static str> {
+    bytes.starts_with(b"%PDF-").then_some("application/pdf")
+}
+
+fn sniff_archive_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x07\x08")
+    {
+        return Some("application/zip");
+    }
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return Some("application/gzip");
+    }
+    if bytes.starts_with(&[0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]) {
+        return Some("application/x-7z-compressed");
+    }
+    if bytes.starts_with(b"Rar!\x1a\x07") {
+        return Some("application/vnd.rar");
+    }
+    if bytes.starts_with(b"BZh") {
+        return Some("application/x-bzip2");
+    }
+    if bytes.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
+        return Some("application/x-xz");
+    }
+    if bytes.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        return Some("application/zstd");
+    }
+    (bytes.get(257..262) == Some(b"ustar")).then_some("application/x-tar")
+}
+
 fn is_image_mime(mime: &str) -> bool {
     mime.starts_with("image/")
 }
@@ -838,33 +875,59 @@ fn is_video_mime(mime: &str) -> bool {
     mime.starts_with("video/")
 }
 
+fn is_archive_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "application/zip"
+            | "application/x-7z-compressed"
+            | "application/x-rar-compressed"
+            | "application/vnd.rar"
+            | "application/gzip"
+            | "application/x-gzip"
+            | "application/x-tar"
+            | "application/x-compressed-tar"
+            | "application/zstd"
+            | "application/x-bzip2"
+            | "application/x-xz"
+    )
+}
+
+fn configured_model(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn route_model(mime: &str) -> Option<String> {
-    if is_video_mime(mime) {
-        std::env::var("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                std::env::var("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-            })
-            .or_else(|| Some(DEFAULT_MODEL_ALIAS.to_string()))
+    let specific = if is_video_mime(mime) {
+        configured_model("LLM_UNDERSTAND_MEDIA_VIDEO_MODEL")
     } else if is_image_mime(mime) {
-        std::env::var("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| Some(DEFAULT_MODEL_ALIAS.to_string()))
+        configured_model("LLM_UNDERSTAND_MEDIA_IMAGE_MODEL")
+    } else if is_archive_mime(mime) {
+        return None;
     } else {
         None
-    }
+    };
+    specific
+        .or_else(|| configured_model("LLM_UNDERSTAND_MEDIA_MODEL"))
+        .or_else(|| Some(DEFAULT_MODEL_ALIAS.to_string()))
 }
 
 async fn prepare_media_content(media: ResolvedMedia) -> Result<Vec<AiContent>, String> {
     if is_image_mime(&media.mime) {
         return Ok(vec![AiContent::image(media.source)]);
     }
+    if is_archive_mime(&media.mime) {
+        return Err(format!(
+            "archive attachment mime `{}` must be extracted first",
+            media.mime
+        ));
+    }
     if !is_video_mime(&media.mime) {
-        return Err(format!("unsupported media mime `{}`", media.mime));
+        return Ok(vec![AiContent::Document {
+            source: media.source,
+            title: Some("attachment input".to_string()),
+        }]);
     }
 
     let frames = extract_video_frames(&media).await?;
@@ -1601,13 +1664,62 @@ mod tests {
     }
 
     #[test]
-    fn video_mime_routes_to_vision_model_and_sniffs_common_containers() {
+    fn non_archive_attachment_mime_routes_to_model_and_sniffs_common_containers() {
         assert!(route_model("video/mp4").is_some());
+        assert!(route_model("audio/mpeg").is_some());
+        assert!(route_model("application/pdf").is_some());
+        assert!(route_model("text/plain").is_some());
+        assert!(route_model("application/octet-stream").is_some());
+        assert!(route_model("application/zip").is_none());
         assert_eq!(sniff_video_mime(b"\0\0\0\x18ftypisom"), Some("video/mp4"));
         assert_eq!(
             sniff_video_mime(&[0x1a, 0x45, 0xdf, 0xa3, 0x01]),
             Some("video/webm")
         );
+        assert_eq!(sniff_document_mime(b"%PDF-1.7"), Some("application/pdf"));
+        assert_eq!(
+            sniff_archive_mime(b"PK\x03\x04archive"),
+            Some("application/zip")
+        );
+    }
+
+    #[tokio::test]
+    async fn non_archive_attachments_are_forwarded_inline() {
+        for mime in [
+            "audio/mpeg",
+            "application/pdf",
+            "text/plain",
+            "application/octet-stream",
+        ] {
+            let content = prepare_media_content(ResolvedMedia {
+                source: ResourceRef::Base64 {
+                    mime: mime.to_string(),
+                    data_base64: "AAAA".to_string(),
+                },
+                mime: mime.to_string(),
+            })
+            .await
+            .expect("non-archive attachment should be forwarded");
+            assert!(matches!(
+                &content[0],
+                AiContent::Document {
+                    source: ResourceRef::Base64 { mime: actual, .. },
+                    ..
+                } if actual == mime
+            ));
+        }
+
+        let err = prepare_media_content(ResolvedMedia {
+            source: ResourceRef::Base64 {
+                mime: "application/zip".to_string(),
+                data_base64: "AAAA".to_string(),
+            },
+            mime: "application/zip".to_string(),
+        })
+        .await
+        .expect_err("archives must be extracted before understanding");
+        assert!(err.contains("must be extracted first"));
+
     }
 
     #[test]

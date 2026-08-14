@@ -111,6 +111,15 @@ export function aiResponseArtifacts(response: AiResponse): AiArtifact[] {
   });
 }
 
+export function aiResponseExtraString(response: AiResponse, key: string): string | undefined {
+  const extra = response.extra;
+  if (extra === null || extra === undefined || Array.isArray(extra) || typeof extra !== "object") {
+    return undefined;
+  }
+  const value = extra[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 export type AiccMethodResponse = {
   task_id: string;
   status: "succeeded" | "running" | "failed";

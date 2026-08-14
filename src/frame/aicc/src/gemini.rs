@@ -3752,10 +3752,8 @@ impl GoogleGeminiProvider {
             "operation_name".to_string(),
             Value::String(operation_name.clone()),
         );
-        if method == ai_methods::VIDEO_EXTEND {
-            if let Some(video_uri) = video_uri {
-                extra.insert("continuation_handle".to_string(), Value::String(video_uri));
-            }
+        if let Some(video_uri) = video_uri {
+            extra.insert("continuation_handle".to_string(), Value::String(video_uri));
         }
         extra.insert(
             "provider_io".to_string(),

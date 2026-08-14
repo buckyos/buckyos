@@ -296,6 +296,14 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
         }
         other => panic!("unexpected video artifact: {:?}", other),
     }
+    assert_eq!(
+        summary
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("continuation_handle"))
+            .and_then(|value| value.as_str()),
+        Some("video.mp4")
+    );
 }
 
 #[tokio::test]

@@ -499,14 +499,14 @@ video2video <input_video> <prompt> <output_video>
 视频续写。映射到 `video.extend`。
 
 ```bash
-extend_video previous.mp4 "Continue the shot over the rooftops." result.mp4
+extend_video previous.mp4 "Continue the shot over the rooftops." result.mp4 --continuation-handle <provider_handle>
 ```
 
 参数：
 
 ```text
 extend_video <input_video> <prompt> <output_video>
-  --continuation-handle <provider_handle>
+  --continuation-handle <provider_handle>  # required; from a compatible previous generation
   --duration <seconds>
   --resolution <720p|1080p|4k>
 ```
