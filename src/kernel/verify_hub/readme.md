@@ -2,7 +2,7 @@
 
 ## 典型流程
 
-1. node_daemon用自己的设备签名构造合适的service jwt
+1. node_daemon用自己的设备签名构造合适的service jwt，其中`iss`是设备名，`sub`是Service安装用户（OwnerUserId），`appid`是Service自己的AppId
 2. node_daemon启动app service,并将jwt传递给app service
 4. [login]app service用session jwt初始化自己的krpc_client,其中krpc会与veriy_hub建立连接,并将jwt传递给verify_hub。verify_hub验证jwt，然后生成`session_token`返回给app service
 5. app service用krpc_client向其它的内核服务发起请求（比如读取system_config）

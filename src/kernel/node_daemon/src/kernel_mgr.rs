@@ -4,18 +4,14 @@ use crate::service_pkg::*;
 use async_trait::async_trait;
 use buckyos_api::*;
 use buckyos_kit::*;
-use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
-use name_lib::DeviceDocument;
 use ndn_lib::ObjId;
 use package_lib::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use tokio::sync::RwLock;
 //use package_installer::*;
 
 use crate::run_item::*;
@@ -205,34 +201,24 @@ impl RunItemControl for KernelServiceRunItem {
 
     async fn start(&self, params: Option<&Vec<String>>) -> Result<()> {
         self.ensure_exact_pkg_meta_indexed().await?;
-        let timestamp = buckyos_get_unix_timestamp();
         let app_id = self.service_name.clone();
         let runtime = get_buckyos_api_runtime().unwrap();
         let device_doc = runtime.device_config.as_ref().unwrap();
         let device_private_key = runtime.device_private_key.as_ref().unwrap();
-        let device_session_token = kRPC::RPCSessionToken {
-            token_type: kRPC::RPCSessionTokenType::Normal,
-            appid: Some(app_id.clone()),
-            jti: Some(timestamp.to_string()),
-            sub: Some(device_doc.name.clone()),
-            aud: None,
-            exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
-            iss: Some(device_doc.name.clone()),
-            token: None,
-            sudo: false,
-            extra: HashMap::new(),
-        };
-
-        let device_session_token_jwt = device_session_token
-            .generate_jwt(None, device_private_key)
-            .map_err(|err| {
-                error!(
-                    "generate session token for {} failed! {}",
-                    self.resolved_pkg_id(),
-                    err
-                );
-                return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
-            })?;
+        let (device_session_token_jwt, _) = generate_service_login_jwt(
+            device_doc.owner.id.as_str(),
+            app_id.as_str(),
+            device_doc.name.as_str(),
+            device_private_key,
+        )
+        .map_err(|err| {
+            error!(
+                "generate session token for {} failed! {}",
+                self.resolved_pkg_id(),
+                err
+            );
+            return ControlRuntItemErrors::ExecuteError("start".to_string(), err.to_string());
+        })?;
 
         let env_key = get_session_token_env_key(&self.service_name, false);
         unsafe {

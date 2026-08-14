@@ -46,7 +46,9 @@ let system_config = runtime.get_system_config_client().await?;
 
 - AppClient 可以用用户私钥签发。
 - AppService 通常由 node-daemon 在启动服务时用本机 device private key 签发，并通过环境变量注入。
-- Kernel/Frame service 可以使用设备身份或启动环境传入的 token。
+- Kernel/Frame service 使用设备私钥签名或启动环境传入的 token，token 的主体是 Service 安装用户。
+
+设备签名身份和服务授权主体是两个概念。设备签名的 Service 登录 JWT 使用设备名作为 `iss`，使用 Service 的 OwnerUserId 作为 `sub`，并使用 Service 自己的 AppId 作为 `appid`。设备只证明该登录 JWT 来自受信节点，不作为 Service 日常请求的用户身份。
 
 当前 runtime 对私钥加载有一个重要约束：`login()` 不会隐式读取设备私钥。AppClient 会在 `fill_by_load_config()` 中尝试加载 `user_private_key.pem`；设备私钥只会在组件显式调用 `load_device_private_key()` 后进入 runtime。普通 AppService 不应该自己读取设备私钥，而是使用 node-daemon 注入的登录 JWT。
 
@@ -59,7 +61,7 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 | 字段 | 含义 |
 | --- | --- |
 | `iss` | 签发者。verify-hub 签发的 token 为 `verify-hub` |
-| `sub` | 当前主体，通常是 username 或 user id |
+| `sub` | 当前主体；用户请求使用请求用户，Service 自身请求使用 OwnerUserId |
 | `appid` | token 绑定的应用 |
 | `exp` | 过期时间 |
 | `jti` | token id |
@@ -83,7 +85,7 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 | `AppClient` | buckycli、桌面外部客户端、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | 客户端通常没有本机 node-gateway，必须能找到 zone host/boot config |
 | `AppService` | 用户安装的 app service | `app_instance_config` 解析 app/owner；node-daemon 注入 `<FULL_APPID>_TOKEN` 或 `<APPID>_TOKEN` | 必须有 owner_user_id；不要用 app-service 自己的 token 冒充页面用户 |
 | `FrameService` | frame 系统服务 | 设备配置、service env token；可从 `app_instance_config` 补 app/owner | `login()` 后会加载 RBAC 和 trust keys |
-| `KernelService` | scheduler、task-manager 等 kernel service | `<APP>_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE` 等启动环境 | 需要 device config；通常由 node-daemon/boot 流程准备；不会自动读设备私钥 |
+| `KernelService` | scheduler、task-manager 等 kernel service | `<APP>_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE` 等启动环境 | OwnerUserId 来自 Device Document owner；通常由 node-daemon/boot 流程准备；不会自动读设备私钥 |
 | `Kernel` | node-daemon、cyfs-gateway 等基础进程 | 本地设备配置和特殊启动逻辑 | 属于基础系统自举路径；只有明确需要设备签名时才显式加载设备私钥 |
 
 环境变量名由 `get_session_token_env_key()` 生成：非 app service 使用 `*_SESSION_TOKEN`，app service 使用 `*_TOKEN`。`-` 会转为 `_` 并转成大写。
@@ -98,7 +100,7 @@ sequenceDiagram
   participant VH as verify-hub
   participant Svc as system service
 
-  ND->>ND: 用 device private key 生成登录 JWT
+  ND->>ND: 用 device private key 为 OwnerUserId + AppId 生成登录 JWT
   ND->>App: 注入 app_instance_config 和 *_TOKEN
   App->>App: init_buckyos_api_runtime()
   App->>CP: runtime.login() 拉取 zone_config
@@ -177,7 +179,7 @@ SDK 使用者通常不直接验签，而是使用 api-runtime 和 service client
 
 system-config 的 trust keys 来自 `boot/config` 里的 owner/root key、verify-hub key，以及当前设备 key；运行中也能按 issuer 加载受信用户或设备的公钥。Frame/Kernel service 的 api-runtime 会在 login 后加载 RBAC 和 trust keys，并在后台刷新 trust keys。
 
-对于普通业务服务，推荐只把 verify-hub 签发的 `session_token` 当作外部用户请求凭证。app-service 自己主动发起的后台任务可以使用自身 runtime token，但用户请求链路必须传递页面用户的 token。当前 session token 表达的是调用链源头的 `sub + appid` 身份，不绑定某个下游 service-specific audience，因此服务把同一用户请求继续委托给 TaskMgr 等系统服务时应透传原 token；不能用 service runtime token 覆盖源头身份。
+对于普通业务服务，推荐只把 verify-hub 签发的 `session_token` 当作外部用户请求凭证。app-service 自己主动发起的后台任务使用自身 runtime token，其 `sub` 是 OwnerUserId、`appid` 是 Service 自己的 AppId；用户请求链路必须传递页面用户的 token。当前 session token 表达的是调用链源头的 `sub + appid` 身份，不绑定某个下游 service-specific audience，因此服务把同一用户请求继续委托给 TaskMgr 等系统服务时应透传原 token；不能用 service runtime token 覆盖源头身份。
 
 ## sudo 不是普通登录
 

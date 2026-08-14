@@ -1,8 +1,11 @@
 use ::kRPC::*;
 use async_trait::async_trait;
+use jsonwebtoken::EncodingKey;
 use name_lib::DID;
+use rand::random;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,6 +15,42 @@ pub const VERIFY_HUB_UNIQUE_ID: &str = "verify-hub";
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
 pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60 * 10; //10 minutes
 pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
+
+pub fn generate_service_login_jwt(
+    owner_user_id: &str,
+    appid: &str,
+    device_name: &str,
+    device_private_key: &EncodingKey,
+) -> Result<(String, RPCSessionToken)> {
+    let owner_user_id = owner_user_id.trim();
+    let appid = appid.trim();
+    let device_name = device_name.trim();
+    if owner_user_id.is_empty() || appid.is_empty() || device_name.is_empty() {
+        return Err(RPCErrors::ReasonError(
+            "owner_user_id, appid and device_name are required".to_string(),
+        ));
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut login_token = RPCSessionToken {
+        token_type: RPCSessionTokenType::Normal,
+        token: None,
+        aud: None,
+        exp: Some(now + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
+        iss: Some(device_name.to_string()),
+        jti: Some(random::<u64>().to_string()),
+        sub: Some(owner_user_id.to_string()),
+        appid: Some(appid.to_string()),
+        sudo: false,
+        extra: HashMap::new(),
+    };
+    let jwt = login_token.generate_jwt(Some(device_name.to_string()), device_private_key)?;
+    login_token.token = Some(jwt.clone());
+    Ok((jwt, login_token))
+}
 
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize)]
@@ -611,6 +650,26 @@ mod tests {
     use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn service_login_jwt_uses_owner_as_subject_and_device_as_issuer() {
+        let private_key = EncodingKey::from_ed_pem(
+            b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let (jwt, token) =
+            generate_service_login_jwt("alice", "control-panel", "ood1", &private_key).unwrap();
+
+        assert_eq!(token.sub.as_deref(), Some("alice"));
+        assert_eq!(token.appid.as_deref(), Some("control-panel"));
+        assert_eq!(token.iss.as_deref(), Some("ood1"));
+        assert!(token.jti.is_some());
+
+        let parsed = RPCSessionToken::from_string(&jwt).unwrap();
+        assert_eq!(parsed.sub.as_deref(), Some("alice"));
+        assert_eq!(parsed.appid.as_deref(), Some("control-panel"));
+        assert_eq!(parsed.iss.as_deref(), Some("ood1"));
+    }
 
     #[derive(Default, Debug)]
     struct MockCalls {

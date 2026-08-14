@@ -555,6 +555,22 @@ impl BuckyOSRuntime {
                     error!("Failed to load local device config: {}", e);
                     RPCErrors::ReasonError(format!("Failed to load local device config: {}", e))
                 })?;
+            if self.app_owner_id.is_none()
+                && matches!(
+                    self.runtime_type,
+                    BuckyOSRuntimeType::Kernel
+                        | BuckyOSRuntimeType::KernelService
+                        | BuckyOSRuntimeType::FrameService
+                )
+            {
+                let owner_user_id = device_config.owner.id.trim();
+                if owner_user_id.is_empty() {
+                    return Err(RPCErrors::ReasonError(
+                        "device owner_user_id is empty".to_string(),
+                    ));
+                }
+                self.app_owner_id = Some(owner_user_id.to_string());
+            }
             self.device_config = Some(device_config);
             let zone_did = node_identity_config.zone_did.clone();
             self.zone_id = zone_did.clone();
@@ -1067,11 +1083,16 @@ impl BuckyOSRuntime {
 
         if self.device_private_key.is_some() && self.device_config.is_some() {
             let device_private_key = self.device_private_key.as_ref().unwrap();
-            let device_uid = self.device_config.as_ref().unwrap().name.clone();
-            let (jwt, token) = RPCSessionToken::generate_jwt_token(
-                device_uid.as_str(),
+            let device_config = self.device_config.as_ref().unwrap();
+            let owner_user_id = self.app_owner_id.as_deref().ok_or_else(|| {
+                RPCErrors::ReasonError(
+                    "service owner_user_id is required for device-signed login".to_string(),
+                )
+            })?;
+            let (jwt, token) = generate_service_login_jwt(
+                owner_user_id,
                 self.app_id.as_str(),
-                None,
+                device_config.name.as_str(),
                 device_private_key,
             )?;
             return Ok((jwt, token));
@@ -1272,14 +1293,18 @@ impl BuckyOSRuntime {
                     && session_token.is_empty()
                 {
                     info!("buckyos-api-runtime: session token is empty,runtime_type:{:?},try to create session token by device_private_key",self.runtime_type);
-                    let device_name = &self.device_config.as_ref().unwrap().name;
-                    let (session_token_str, real_session_token) =
-                        RPCSessionToken::generate_jwt_token(
-                            device_name.as_str(),
-                            self.app_id.as_str(),
-                            None,
-                            self.device_private_key.as_ref().unwrap(),
-                        )?;
+                    let device_config = self.device_config.as_ref().unwrap();
+                    let owner_user_id = self.app_owner_id.as_deref().ok_or_else(|| {
+                        RPCErrors::ReasonError(
+                            "service owner_user_id is required for device-signed login".to_string(),
+                        )
+                    })?;
+                    let (session_token_str, real_session_token) = generate_service_login_jwt(
+                        owner_user_id,
+                        self.app_id.as_str(),
+                        device_config.name.as_str(),
+                        self.device_private_key.as_ref().unwrap(),
+                    )?;
                     *session_token = session_token_str;
                     generated_session_token = Some(real_session_token);
                 }
@@ -1706,15 +1731,15 @@ impl BuckyOSRuntime {
             if now < exp.saturating_sub(10) {
                 return session_token_str;
             } else {
-                if let (Some(device_private_key), Some(device_config)) = (
+                if let (Some(device_private_key), Some(device_config), Some(owner_user_id)) = (
                     self.device_private_key.as_ref(),
                     self.device_config.as_ref(),
+                    self.app_owner_id.as_deref(),
                 ) {
-                    let device_uid = device_config.name.clone();
-                    let jwt_result = RPCSessionToken::generate_jwt_token(
-                        device_uid.as_str(),
+                    let jwt_result = generate_service_login_jwt(
+                        owner_user_id,
                         self.app_id.as_str(),
-                        None,
+                        device_config.name.as_str(),
                         device_private_key,
                     )
                     .map_err(|e| {

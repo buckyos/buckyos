@@ -1545,25 +1545,19 @@ async fn node_daemon_main_loop(
     Ok(())
 }
 
-async fn generate_device_session_token(
+async fn generate_boot_session_token(
     device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
-    is_boot: bool,
 ) -> std::result::Result<String, String> {
     let now = SystemTime::now();
     let since_the_epoch = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
     let timestamp = since_the_epoch.as_secs();
     let login_jti = timestamp.to_string();
-    let mut userid = "kernel".to_string();
-    if !is_boot {
-        userid = device_doc.name.clone();
-    }
-
     let device_session_token = kRPC::RPCSessionToken {
         token_type: kRPC::RPCSessionTokenType::Normal,
         appid: Some("node-daemon".to_string()),
         jti: Some(login_jti),
-        sub: Some(userid),
+        sub: Some("kernel".to_string()),
         aud: None,
         exp: Some(timestamp + 60 * 15),
         iss: Some(device_doc.name.clone()),
@@ -1580,6 +1574,20 @@ async fn generate_device_session_token(
         })?;
 
     return Ok(device_session_token_jwt);
+}
+
+fn generate_node_daemon_login_token(
+    device_doc: &DeviceDocument,
+    device_private_key: &EncodingKey,
+) -> std::result::Result<String, String> {
+    generate_service_login_jwt(
+        device_doc.owner.id.as_str(),
+        "node-daemon",
+        device_doc.name.as_str(),
+        device_private_key,
+    )
+    .map(|(jwt, _)| jwt)
+    .map_err(|err| err.to_string())
 }
 
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
@@ -1827,13 +1835,12 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
 
     info!("set env var BUCKYOS_ZONE_DOC,BUCKYOS_THIS_DEVICE OK!");
 
-    let device_session_token_jwt =
-        generate_device_session_token(&device_doc, &device_private_key, true)
-            .await
-            .map_err(|err| {
-                error!("generate device session token failed! {}", err);
-                return String::from("generate device session token failed!");
-            })?;
+    let device_session_token_jwt = generate_boot_session_token(&device_doc, &device_private_key)
+        .await
+        .map_err(|err| {
+            error!("generate device session token failed! {}", err);
+            return String::from("generate device session token failed!");
+        })?;
 
     //init kernel_service:system_config service
     let mut syc_cfg_client: SystemConfigClient;
@@ -1924,17 +1931,24 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         }
         info!("-------------BuckyOS Booted-----------------");
 
+        let node_daemon_login_token_jwt =
+            generate_node_daemon_login_token(&device_doc, &device_private_key).map_err(|err| {
+                error!("generate node-daemon login token failed! {}", err);
+                String::from("generate node-daemon login token failed!")
+            })?;
+
         let mut runtime = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
         runtime.fill_policy_by_load_config().await.map_err(|err| {
             error!("fill policy by load config failed! {}", err);
             return String::from("fill policy by load config failed!");
         })?;
 
+        runtime.app_owner_id = Some(device_doc.owner.id.clone());
         runtime.device_config = Some(device_doc);
         runtime.device_private_key = Some(device_private_key);
         runtime.zone_id = node_identity.zone_did.clone();
         runtime.zone_config = Some(zone_config);
-        runtime.session_token = Arc::new(RwLock::new(device_session_token_jwt.clone()));
+        runtime.session_token = Arc::new(RwLock::new(node_daemon_login_token_jwt));
         runtime.force_https = false;
         set_buckyos_api_runtime(runtime).map_err(|err| {
             error!("register global runtime failed: {}", err);
@@ -1949,6 +1963,11 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
             role.as_str(),
             keep_tunnels.len()
         );
+        let node_daemon_login_token_jwt =
+            generate_node_daemon_login_token(&device_doc, &device_private_key).map_err(|err| {
+                error!("generate node-daemon login token failed! {}", err);
+                String::from("generate node-daemon login token failed!")
+            })?;
         let mut runtime = init_buckyos_api_runtime("node-daemon", None, BuckyOSRuntimeType::Kernel)
             .await
             .map_err(|e| {
@@ -1961,7 +1980,7 @@ async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {
         runtime.device_private_key = Some(device_private_key.clone());
         {
             let mut session_token = runtime.session_token.write().await;
-            *session_token = device_session_token_jwt.clone();
+            *session_token = node_daemon_login_token_jwt;
         }
 
         // 重试 login。两类失败都会进入 retry：

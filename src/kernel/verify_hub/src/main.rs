@@ -358,12 +358,14 @@ async fn validate_active_refresh_token(refresh_jwt: &str) -> Result<(RPCSessionT
 
 async fn get_my_krpc_token() -> Result<RPCSessionToken> {
     let now = buckyos_get_unix_timestamp();
-    let device_id = VERIFY_SERVICE_CONFIG
+    let owner_user_id = VERIFY_SERVICE_CONFIG
         .lock()
         .await
         .as_ref()
         .unwrap()
-        .device_id
+        .zone_document
+        .owner
+        .id
         .clone();
 
     let my_rpc_token = MY_RPC_TOKEN.lock().await;
@@ -383,7 +385,7 @@ async fn get_my_krpc_token() -> Result<RPCSessionToken> {
         appid: Some("verify-hub".to_string()),
         jti: None,
         aud: None,
-        sub: Some(device_id),
+        sub: Some(owner_user_id),
         token: None,
         iss: Some(VERIFY_HUB_ISSUER.to_string()),
         exp: Some(exp),
@@ -1188,7 +1190,8 @@ mod test {
 
         // Cache trust keys for verify-hub and root
         cache_trustkey("verify-hub", test_pk.clone()).await;
-        cache_trustkey("root", test_pk).await;
+        cache_trustkey("root", test_pk.clone()).await;
+        cache_trustkey("ood1", test_pk).await;
 
         let test_owner_private_key_pem = r#"
 -----BEGIN PRIVATE KEY-----
@@ -1196,6 +1199,25 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
 -----END PRIVATE KEY-----
 "#;
         EncodingKey::from_ed_pem(test_owner_private_key_pem.as_bytes()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn service_login_preserves_owner_subject() {
+        let private_key = setup_test_environment().await;
+        let (login_jwt, _) =
+            generate_service_login_jwt("alice", "control-panel", "ood1", &private_key).unwrap();
+
+        let token_pair = VerifyHubServer::new()
+            .handle_login_by_jwt(login_jwt.as_str(), None)
+            .await
+            .unwrap();
+        let session_token = RPCSessionToken::from_string(&token_pair.session_token).unwrap();
+        let refresh_token = RPCSessionToken::from_string(&token_pair.refresh_token).unwrap();
+
+        assert_eq!(session_token.sub.as_deref(), Some("alice"));
+        assert_eq!(session_token.appid.as_deref(), Some("control-panel"));
+        assert_eq!(refresh_token.sub.as_deref(), Some("alice"));
+        assert_eq!(refresh_token.appid.as_deref(), Some("control-panel"));
     }
 
     /// Helper function to create a login JWT for testing

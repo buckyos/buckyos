@@ -4,7 +4,7 @@
 
 ## 正确发起zone内请求
 大部分service的请求都是来自客户端的，因此请使用客户端请求的session_token来进行下一步操作
-自己主动发起的请求（比如基于timer的自检操作）通常是不被鼓励的，但一定需要的时候，使用自己的启动身份 （user-id是当前的device_id)
+自己主动发起的请求（比如基于timer的自检操作）使用自己的启动身份：user-id是Service安装用户（OwnerUserId），app-id是Service自己的AppId
 - 使用session_token和servcie_name初始化kRPCClient
 - 使用kRPCClient初始化各种 ServiceClient
 
@@ -28,7 +28,6 @@
 ## 使用NDN网络
 - 发布内容到语义路径
 - 可信的获取别的Zone发布的NamedObject
-
 
 
 
