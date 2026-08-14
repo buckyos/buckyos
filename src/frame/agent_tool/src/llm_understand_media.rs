@@ -89,7 +89,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand an image or video resource through a controlled LLM side context. Media should be a named_object ResourceRef.".to_string(),
+            description: "Understand an image or video resource through a controlled LLM side context. Accepts media, goal, and max_completion_tokens only; media should be a named_object ResourceRef.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -1563,6 +1563,28 @@ mod tests {
             request.budget.unwrap().max_total_tokens,
             Some(DEFAULT_TARGET_TOKENS + 16_384)
         );
+    }
+
+    #[test]
+    fn omitted_media_output_budget_uses_default() {
+        let opts = RunOpts::from_tool_args(json!({
+            "media": { "kind": "url", "url": "https://example.test/image.png" },
+            "goal": "describe the image"
+        }))
+        .expect("omitted media budget should use the default");
+        assert_eq!(opts.max_completion_tokens, DEFAULT_MAX_COMPLETION_TOKENS);
+    }
+
+    #[test]
+    fn media_tool_schema_requires_caller_budget() {
+        let spec = LlmUnderstandMediaTool::new().spec();
+        let required = spec.args_schema["required"]
+            .as_array()
+            .expect("required array");
+        assert!(required.contains(&json!("media")));
+        assert!(required.contains(&json!("goal")));
+        assert!(required.contains(&json!("max_completion_tokens")));
+        assert_eq!(spec.args_schema["additionalProperties"], json!(false));
     }
 
     #[test]
