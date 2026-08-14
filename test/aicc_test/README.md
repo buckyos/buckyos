@@ -80,6 +80,23 @@ pnpm run test:fal
 
 退出码：`0` 全部通过；`1` 有失败；`2` 全部 skipped（未配置 fal）。
 
+## 运行 Issue #24 SN SSO E2E
+
+```bash
+cd test/aicc_test
+pnpm run test:issue24-sso
+```
+
+该入口严格使用标准 AppClient 和 Gateway，依次验证 SN Provider inventory、
+`provider.refresh_models`、两次连续 `llm.chat` 以及不存在 Provider 的错误路径。
+默认实例名为 `sn-ai-provider-default`，可用 `ISSUE24_PROVIDER_NAME` 和
+`ISSUE24_MODEL_ALIAS` 覆盖。报告写入 `reports/issue24-sn-sso-*.json`。
+
+连续推理通过只能证明同一会话窗口内链路可用，不能单独证明 Token 缓存命中。如果新
+Provider 在脱敏响应元数据中暴露 cache/reuse/login_count 等证据，可设置
+`ISSUE24_REQUIRE_CACHE_EVIDENCE=1` 将“有缓存证据”升级为强制断言。Refresh Token
+轮换、并发合并和首次 401 重试仍由 Mock SN 请求计数器验证。
+
 smoke 用例会通过 `../test_helpers/buckyos_client.ts` 的 `initTestRuntime()` 初始化标准 AppClient runtime，然后从 runtime 获取 AICC 和 task-manager client。
 
 ## 运行多模态 LLM 推理
