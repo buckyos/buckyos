@@ -164,6 +164,14 @@ pub struct DriverCapabilityOverride {
     #[serde(default)]
     pub api_types: Vec<ApiType>,
     #[serde(default)]
+    pub add_api_types: Vec<ApiType>,
+    #[serde(default)]
+    pub add_logical_mounts: Vec<String>,
+    #[serde(default)]
+    pub remove_api_types: Vec<ApiType>,
+    #[serde(default)]
+    pub remove_logical_mounts: Vec<String>,
+    #[serde(default)]
     pub capabilities: DriverCapabilitiesPatch,
 }
 
@@ -431,7 +439,10 @@ fn resolve_driver_model(
     }
     apply_capability_overrides(
         provider_model_id,
-        api_types.as_slice(),
+        provider_driver,
+        &origin,
+        &mut api_types,
+        &mut logical_mounts,
         &mut capabilities,
         sources,
     );
@@ -619,8 +630,13 @@ pub(crate) fn validate_driver_metadata_document(
     for (index, rule) in document.capability_overrides.iter().enumerate() {
         let location = format!("capability_overrides[{}]", index);
         validate_trimmed_value(rule.pattern.as_str(), &format!("{}.pattern", location))?;
-        if !rule.capabilities.has_any() {
-            return Err(format!("{}.capabilities cannot be empty", location));
+        if !rule.capabilities.has_any()
+            && rule.add_api_types.is_empty()
+            && rule.add_logical_mounts.is_empty()
+            && rule.remove_api_types.is_empty()
+            && rule.remove_logical_mounts.is_empty()
+        {
+            return Err(format!("{} must add or patch metadata", location));
         }
         let mut api_types = HashSet::new();
         for api_type in &rule.api_types {
@@ -628,6 +644,32 @@ pub(crate) fn validate_driver_metadata_document(
                 return Err(format!("{}.api_types contains duplicate value", location));
             }
         }
+        let mut added_api_types = HashSet::new();
+        for api_type in &rule.add_api_types {
+            if !added_api_types.insert(api_type) {
+                return Err(format!(
+                    "{}.add_api_types contains duplicate value",
+                    location
+                ));
+            }
+        }
+        let mut removed_api_types = HashSet::new();
+        for api_type in &rule.remove_api_types {
+            if !removed_api_types.insert(api_type) {
+                return Err(format!(
+                    "{}.remove_api_types contains duplicate value",
+                    location
+                ));
+            }
+        }
+        validate_string_list(
+            rule.add_logical_mounts.as_slice(),
+            format!("{}.add_logical_mounts", location).as_str(),
+        )?;
+        validate_string_list(
+            rule.remove_logical_mounts.as_slice(),
+            format!("{}.remove_logical_mounts", location).as_str(),
+        )?;
         validate_capabilities_patch(&rule.capabilities, location.as_str())?;
     }
 
@@ -1063,7 +1105,10 @@ fn find_pattern_rule<'a>(
 
 fn apply_capability_overrides(
     provider_model_id: &str,
-    api_types: &[ApiType],
+    provider_driver: &str,
+    origin: &DriverOriginIdentity,
+    api_types: &mut Vec<ApiType>,
+    logical_mounts: &mut Vec<String>,
     capabilities: &mut ModelCapabilities,
     sources: &[DriverMetadataSource],
 ) {
@@ -1082,6 +1127,26 @@ fn apply_capability_overrides(
                     .any(|required| api_types.contains(required))
             {
                 continue;
+            }
+            for api_type in &rule.remove_api_types {
+                api_types.retain(|current| current != api_type);
+            }
+            for mount in &rule.remove_logical_mounts {
+                let mount =
+                    expand_mount_template(mount, provider_driver, provider_model_id, origin);
+                logical_mounts.retain(|current| current != &mount);
+            }
+            for api_type in &rule.add_api_types {
+                if !api_types.contains(api_type) {
+                    api_types.push(api_type.clone());
+                }
+            }
+            for mount in &rule.add_logical_mounts {
+                let mount =
+                    expand_mount_template(mount, provider_driver, provider_model_id, origin);
+                if !logical_mounts.contains(&mount) {
+                    logical_mounts.push(mount);
+                }
             }
             apply_capabilities_patch(capabilities, &rule.capabilities);
         }
@@ -1195,34 +1260,31 @@ fn variant_logical_mounts(base_mounts: &[String], suffix: &str) -> Vec<String> {
 fn wildcard_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.to_ascii_lowercase();
     let value = value.to_ascii_lowercase();
-    if pattern == "*" {
-        return true;
-    }
-    let parts = pattern.split('*').collect::<Vec<_>>();
-    if parts.len() == 1 {
-        return pattern == value;
-    }
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let (mut pattern_index, mut value_index) = (0usize, 0usize);
+    let (mut star_index, mut star_value_index) = (None, 0usize);
 
-    let mut rest = value.as_str();
-    let mut first = true;
-    for part in parts.iter().filter(|part| !part.is_empty()) {
-        if first && !pattern.starts_with('*') {
-            if !rest.starts_with(part) {
-                return false;
-            }
-            rest = &rest[part.len()..];
-        } else if let Some(index) = rest.find(part) {
-            rest = &rest[index + part.len()..];
+    while value_index < value.len() {
+        if pattern_index < pattern.len() && pattern[pattern_index] == value[value_index] {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            star_value_index = value_index;
+        } else if let Some(star) = star_index {
+            star_value_index += 1;
+            value_index = star_value_index;
+            pattern_index = star + 1;
         } else {
             return false;
         }
-        first = false;
     }
-    pattern.ends_with('*')
-        || parts
-            .last()
-            .map(|part| rest.ends_with(part))
-            .unwrap_or(true)
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
 }
 
 fn conservative_capabilities() -> ModelCapabilities {
@@ -1733,6 +1795,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wildcard_matching_supports_internal_and_multiple_stars() {
+        assert!(wildcard_matches("gemini-*-latest", "gemini-pro-latest"));
+        assert!(wildcard_matches(
+            "gemini-3*flash*",
+            "gemini-3.5-flash-lite"
+        ));
+        assert!(wildcard_matches("openai/*:*", "openai/gpt-5:fast"));
+        assert!(!wildcard_matches("gemini-3*pro*", "gemini-3.5-flash"));
+        assert!(!wildcard_matches("gemini-*-latest", "gemini-pro-preview"));
+    }
+
+    #[test]
     fn builtin_driver_metadata_passes_semantic_validation() {
         for driver in [
             "openai",
@@ -1784,6 +1858,13 @@ mod tests {
                 capability_overrides: vec![DriverCapabilityOverride {
                     pattern: "gemini-2.*".to_string(),
                     api_types: vec![ApiType::Llm],
+                    add_api_types: vec![ApiType::AudioAsr],
+                    add_logical_mounts: vec![
+                        "audio.asr".to_string(),
+                        "audio.asr.{model}".to_string(),
+                    ],
+                    remove_api_types: Vec::new(),
+                    remove_logical_mounts: Vec::new(),
                     capabilities: DriverCapabilitiesPatch {
                         unsupported_feature_combinations: Some(vec![vec![
                             "tool_calling".to_string(),
@@ -1796,22 +1877,69 @@ mod tests {
             },
         );
         let mut llm = ModelCapabilities::default();
+        let origin = DriverOriginIdentity {
+            driver: "google-gemini".to_string(),
+            model: "gemini-2.5-flash".to_string(),
+        };
+        let mut llm_api_types = vec![ApiType::Llm];
+        let mut llm_mounts = Vec::new();
         apply_capability_overrides(
             "gemini-2.5-flash",
-            &[ApiType::Llm],
+            "google-gemini",
+            &origin,
+            &mut llm_api_types,
+            &mut llm_mounts,
             &mut llm,
             &[source.clone()],
         );
         assert!(!llm.supports_feature_combination(&["tool_calling", "web_search"]));
+        assert!(llm_api_types.contains(&ApiType::AudioAsr));
+        assert_eq!(llm_mounts, vec!["audio.asr", "audio.asr.gemini-2-5-flash"]);
 
         let mut image = ModelCapabilities::default();
+        let mut image_api_types = vec![ApiType::ImageTextToImage];
+        let mut image_mounts = Vec::new();
         apply_capability_overrides(
             "gemini-2.5-flash-image-preview",
-            &[ApiType::ImageTextToImage],
+            "google-gemini",
+            &origin,
+            &mut image_api_types,
+            &mut image_mounts,
             &mut image,
             &[source],
         );
         assert!(image.supports_feature_combination(&["tool_calling", "web_search"]));
+        assert!(!image_api_types.contains(&ApiType::AudioAsr));
+        assert!(image_mounts.is_empty());
+
+        let removal_source = DriverMetadataSource::new(
+            "cloud".to_string(),
+            DriverMetadataDocument {
+                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
+                capability_overrides: vec![DriverCapabilityOverride {
+                    pattern: "gemini-2.5-flash".to_string(),
+                    api_types: vec![ApiType::AudioAsr],
+                    remove_api_types: vec![ApiType::AudioAsr],
+                    remove_logical_mounts: vec![
+                        "audio.asr".to_string(),
+                        "audio.asr.{model}".to_string(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        apply_capability_overrides(
+            "gemini-2.5-flash",
+            "google-gemini",
+            &origin,
+            &mut llm_api_types,
+            &mut llm_mounts,
+            &mut llm,
+            &[removal_source],
+        );
+        assert!(!llm_api_types.contains(&ApiType::AudioAsr));
+        assert!(llm_mounts.is_empty());
     }
 
     #[test]

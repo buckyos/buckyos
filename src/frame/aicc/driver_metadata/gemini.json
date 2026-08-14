@@ -1,9 +1,9 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 3,
-  "schema_revision": 3,
+  "schema_revision": 4,
   "provider_driver": "google-gemini",
-  "revision_seq": 3,
+  "revision_seq": 4,
   "required_features": [],
   "models": [
     {
@@ -502,6 +502,36 @@
     }
   ],
   "capability_overrides": [
+    {
+      "pattern": "gemini-2.5-flash*",
+      "api_types": ["llm"],
+      "add_api_types": ["audio.asr"],
+      "add_logical_mounts": ["audio.asr", "audio.asr.google", "audio.asr.gemini", "audio.asr.{model}"]
+    },
+    {
+      "pattern": "gemini-2.5-pro*",
+      "api_types": ["llm"],
+      "add_api_types": ["audio.asr"],
+      "add_logical_mounts": ["audio.asr", "audio.asr.google", "audio.asr.gemini", "audio.asr.{model}"]
+    },
+    {
+      "pattern": "gemini-3*flash*",
+      "api_types": ["llm"],
+      "add_api_types": ["audio.asr"],
+      "add_logical_mounts": ["audio.asr", "audio.asr.google", "audio.asr.gemini", "audio.asr.{model}"]
+    },
+    {
+      "pattern": "gemini-3*pro*",
+      "api_types": ["llm"],
+      "add_api_types": ["audio.asr"],
+      "add_logical_mounts": ["audio.asr", "audio.asr.google", "audio.asr.gemini", "audio.asr.{model}"]
+    },
+    {
+      "pattern": "gemini-*-latest",
+      "api_types": ["llm"],
+      "add_api_types": ["audio.asr"],
+      "add_logical_mounts": ["audio.asr", "audio.asr.google", "audio.asr.gemini", "audio.asr.{model}"]
+    },
     {
       "pattern": "gemini-2.5-*",
       "capabilities": {

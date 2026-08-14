@@ -733,6 +733,79 @@ async fn adapter_gemini_tts_maps_text_voice_and_language() {
 }
 
 #[tokio::test]
+async fn adapter_gemini_asr_maps_audio_and_transcript() {
+    let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![MockHttpReply {
+        status_code: 200,
+        body: r#"{"candidates":[{"content":{"parts":[{"text":"{\"text\":\"hello world\",\"segments\":[{\"id\":\"seg-1\",\"start_seconds\":0.0,\"end_seconds\":1.2,\"text\":\"hello world\",\"speaker\":\"SPEAKER_0\",\"confidence\":0.98}]}"}]} }],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":8,"totalTokenCount":20}}"#.to_string(),
+        content_type: "application/json",
+        delay_ms: 0,
+    }])
+    .await;
+    let provider = gemini_provider(base_url, 500);
+    let mut request = base_request_for(Capability::Audio, ai_methods::AUDIO_ASR);
+    request.payload.resources = vec![ResourceRef::Base64 {
+        mime: "audio/mpeg".to_string(),
+        data_base64: openai_b64(b"audio"),
+    }];
+    request.payload.input_json = Some(serde_json::json!({
+        "language": "en-US",
+        "timestamps": "segment",
+        "diarization": true
+    }));
+    request.payload.options = None;
+
+    let result = provider
+        .start(
+            InvokeCtx::default(),
+            "gemini-2.5-flash".to_string(),
+            ResolvedRequest::new_with_method(ai_methods::AUDIO_ASR, request),
+            Arc::new(NoopSink),
+        )
+        .await
+        .expect("gemini ASR should succeed");
+    let ProviderStartResult::Immediate(summary) = result else {
+        panic!("gemini ASR should complete immediately");
+    };
+    assert_eq!(summary.text_content(), "hello world");
+    assert_eq!(
+        summary
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.pointer("/asr/segments/0/speaker")),
+        Some(&serde_json::json!("SPEAKER_0"))
+    );
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.total_tokens),
+        Some(20)
+    );
+
+    let request_body = captured_requests
+        .lock()
+        .expect("captured requests lock")
+        .first()
+        .cloned()
+        .expect("ASR request should be captured");
+    assert_eq!(
+        request_body.pointer("/contents/0/parts/0/inlineData/mimeType"),
+        Some(&serde_json::json!("audio/mpeg"))
+    );
+    assert_eq!(
+        request_body.pointer("/generationConfig/responseJsonSchema/additionalProperties"),
+        Some(&serde_json::json!(false))
+    );
+    assert!(request_body
+        .pointer("/generationConfig/responseSchema")
+        .is_none());
+    let prompt = request_body
+        .pointer("/contents/0/parts/1/text")
+        .and_then(serde_json::Value::as_str)
+        .expect("ASR prompt");
+    assert!(prompt.contains("en-US"));
+    assert!(prompt.contains("segment"));
+    assert!(prompt.contains("true"));
+}
+
+#[tokio::test]
 async fn adapter_fal_video_upscale_runs_in_background() {
     let base_url = spawn_fake_http_server(vec![MockHttpReply {
         status_code: 200,

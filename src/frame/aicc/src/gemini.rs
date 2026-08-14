@@ -38,6 +38,7 @@ const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
 const DEFAULT_GEMINI_VIDEO_MODELS: &str =
     "gemini-omni-flash-preview,veo-3.1-generate-preview";
+
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
@@ -1617,7 +1618,7 @@ impl GoogleGeminiProvider {
                 }
                 "response_schema" => {
                     let generation = Self::ensure_generation_config(target);
-                    generation.insert("responseSchema".to_string(), value.clone());
+                    generation.insert("responseJsonSchema".to_string(), value.clone());
                     if !generation.contains_key("responseMimeType") {
                         generation.insert(
                             "responseMimeType".to_string(),
@@ -2323,6 +2324,7 @@ impl GoogleGeminiProvider {
             ai_methods::VISION_DETECT => "Detect objects in the image. Return JSON detections with label, score and bbox.".to_string(),
             ai_methods::VISION_SEGMENT => "Segment the requested subject in the image. Return JSON masks or mask descriptions.".to_string(),
             ai_methods::AUDIO_TTS => "Synthesize the requested text as speech.".to_string(),
+            ai_methods::AUDIO_ASR => "Transcribe the supplied audio.".to_string(),
             ai_methods::AUDIO_MUSIC => "Generate music from the requested prompt.".to_string(),
             _ => "Process the request.".to_string(),
         }
@@ -3311,6 +3313,136 @@ impl GoogleGeminiProvider {
         }))
     }
 
+    async fn start_asr(
+        &self,
+        _ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["audio"]))
+            .ok_or_else(|| ProviderError::fatal("audio.asr requires an audio resource"))?;
+        let input = req.payload.input_json.as_ref();
+        let language = input
+            .and_then(|value| value.get("language"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty());
+        let timestamps = input
+            .and_then(|value| value.get("timestamps"))
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let diarization = input
+            .and_then(|value| value.get("diarization"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let language_instruction = language
+            .map(|value| format!(" The expected language is {value}."))
+            .unwrap_or_default();
+        let prompt = format!(
+            "Transcribe the supplied audio accurately.{language_instruction} Return JSON with the complete transcript in `text` and chronological segments in `segments`. Timestamp detail: {timestamps}. Speaker diarization: {diarization}. Use empty segments only when the audio contains no speech."
+        );
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text", "segments"],
+            "properties": {
+                "text": { "type": "string" },
+                "segments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["id", "start_seconds", "end_seconds", "text"],
+                        "properties": {
+                            "id": { "type": "string" },
+                            "start_seconds": { "type": "number" },
+                            "end_seconds": { "type": "number" },
+                            "text": { "type": "string" },
+                            "speaker": { "type": "string" },
+                            "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                        }
+                    }
+                }
+            }
+        });
+        let mut request_obj = json!({
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    Self::content_resource_part(&resource)?,
+                    { "text": prompt }
+                ]
+            }],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("Gemini ASR request should be an object");
+        if let Some(options) = req.payload.options.as_ref() {
+            Self::merge_llm_options(&mut request_obj, options, true)?;
+        }
+        Self::apply_separate_thinking_budget(
+            &mut request_obj,
+            self.model_max_output_tokens(provider_model),
+        );
+        let (status, body, latency_ms) = self
+            .post_generate_content(provider_model, &request_obj)
+            .await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("google gemini transcription returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let raw_text = Self::extract_text_content(&body).unwrap_or_default();
+        let parsed = serde_json::from_str::<Value>(raw_text.trim()).unwrap_or_else(|_| {
+            json!({
+                "text": raw_text,
+                "segments": []
+            })
+        });
+        let text = parsed
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let segments = parsed
+            .get("segments")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(vec![]));
+        let usage = body.get("usageMetadata").map(|usage| AiUsage {
+            input_tokens: usage.get("promptTokenCount").and_then(Value::as_u64),
+            output_tokens: usage.get("candidatesTokenCount").and_then(Value::as_u64),
+            total_tokens: usage.get("totalTokenCount").and_then(Value::as_u64),
+            request_units: None,
+        });
+        let cost = usage
+            .as_ref()
+            .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(Some(text), vec![], vec![]),
+            usage,
+            cost,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(json!({
+                "asr": {
+                    "segments": segments,
+                    "provider_io": { "input": request_obj, "output": body },
+                    "latency_ms": latency_ms
+                }
+            })),
+            ..Default::default()
+        }))
+    }
+
     async fn start_audio_media(
         &self,
         _ctx: &crate::aicc::InvokeCtx,
@@ -3899,6 +4031,10 @@ impl Provider for GoogleGeminiProvider {
                     &req.request,
                 )
                 .await
+            }
+            ai_methods::AUDIO_ASR => {
+                self.start_asr(&ctx, provider_model.as_str(), &req.request)
+                    .await
             }
             ai_methods::VIDEO_TXT2VIDEO
             | ai_methods::VIDEO_IMG2VIDEO
@@ -4630,6 +4766,37 @@ mod tests {
     }
 
     #[test]
+    fn gemini_response_schema_uses_json_schema_field() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["answer"],
+            "properties": { "answer": { "type": "string" } }
+        });
+        let mut request = Map::new();
+
+        GoogleGeminiProvider::merge_llm_options(
+            &mut request,
+            &json!({ "response_schema": schema.clone() }),
+            true,
+        )
+        .expect("response schema should be accepted");
+
+        let request = Value::Object(request);
+        assert_eq!(
+            request.pointer("/generationConfig/responseJsonSchema"),
+            Some(&schema)
+        );
+        assert!(request
+            .pointer("/generationConfig/responseSchema")
+            .is_none());
+        assert_eq!(
+            request.pointer("/generationConfig/responseMimeType"),
+            Some(&json!("application/json"))
+        );
+    }
+
+    #[test]
     fn gemini_2_5_rejects_combined_builtin_and_function_tools() {
         let request = build_llm_request(
             vec![
@@ -5062,6 +5229,75 @@ mod tests {
             .find(|model| model.provider_model_id == "gemini-2.5-flash")
             .unwrap();
         assert_eq!(model.capabilities.max_output_tokens, Some(65_536));
+        assert!(model.api_types.contains(&ApiType::AudioAsr));
+        assert!(model
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "audio.asr"));
+    }
+
+    #[test]
+    fn audio_asr_inventory_uses_metadata_model_patterns() {
+        let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
+            "gemini-primary",
+            ProviderType::CloudApi,
+            "google-gemini",
+            &GeminiModelBuckets {
+                llm: vec![
+                    "gemini-pro-latest".to_string(),
+                    "gemini-2.5-pro".to_string(),
+                    "gemini-3.1-pro-preview".to_string(),
+                    "gemini-3.1-pro-preview-001".to_string(),
+                    "gemini-3.5-flash-lite".to_string(),
+                    "gemini-deepthink-preview".to_string(),
+                    "gemini-future-model".to_string(),
+                ],
+                tts: vec![
+                    "gemini-2.5-flash-preview-tts".to_string(),
+                    "gemini-2.5-pro-preview-tts".to_string(),
+                ],
+                image: vec!["gemini-3.1-flash-image".to_string()],
+                ..Default::default()
+            },
+            &[],
+            Some("test".to_string()),
+        );
+
+        for id in [
+            "gemini-pro-latest",
+            "gemini-2.5-pro",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-pro-preview-001",
+            "gemini-3.5-flash-lite",
+        ] {
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap();
+            assert!(model.api_types.contains(&ApiType::AudioAsr), "{id}");
+        }
+        for id in [
+            "gemini-deepthink-preview",
+            "gemini-future-model",
+            "gemini-2.5-flash-preview-tts",
+            "gemini-2.5-pro-preview-tts",
+            "gemini-3.1-flash-image",
+        ] {
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .unwrap();
+            assert!(!model.api_types.contains(&ApiType::AudioAsr), "{id}");
+            assert!(
+                !model
+                    .logical_mounts
+                    .iter()
+                    .any(|mount| mount.starts_with("audio.asr")),
+                "{id}"
+            );
+        }
     }
 
     #[test]
