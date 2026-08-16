@@ -7,7 +7,7 @@
 
 use crate::taskdata::TaskDataProgress;
 use crate::{
-    AppDocType, AppServiceSpec, MountPointConfig, PermissionItem, ServiceSettings,
+    AppClass, AppDocType, AppServiceSpec, MountPointConfig, PermissionItem, ServiceSettings,
     ServiceSpecConfig, TaskId, TaskOutcome, TaskPhase, TaskWaitReason, TaskWaitReasonKind,
 };
 use name_lib::DID;
@@ -19,7 +19,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// Task.data、InstallPlan 与 install_record 的当前持久格式版本。
-pub const APP_INSTALL_SCHEMA_VERSION: u32 = 2;
+pub const APP_INSTALL_SCHEMA_VERSION: u32 = 3;
 
 /// `apps.install_package` staging handle 的 digest 形式前缀。
 /// 完整形式：`pikg:sha256:<hex>`，解析到 staging root 下的 immutable 文件。
@@ -979,6 +979,8 @@ pub struct InstallRecord {
     pub schema_version: u32,
     pub app: AppDocumentRef,
     pub user_id: String,
+    pub app_instance_id: String,
+    pub app_class: AppClass,
     pub resolution: DidResolutionSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_meta_ids: Vec<ObjId>,
@@ -997,9 +999,16 @@ pub struct InstallRecord {
 }
 
 /// install_record 的 system-config key（app 与 agent 分树）。
-pub fn install_record_key(user_id: &str, app_name: &str, is_agent: bool) -> String {
+pub fn install_record_key(
+    app_class: AppClass,
+    user_id: &str,
+    app_name: &str,
+    is_agent: bool,
+) -> String {
     if is_agent {
         format!("users/{}/agents/{}/install_record", user_id, app_name)
+    } else if app_class == AppClass::ZoneInstalled {
+        format!("zone/apps/{}/install_record", app_name)
     } else {
         format!("users/{}/apps/{}/install_record", user_id, app_name)
     }

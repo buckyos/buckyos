@@ -149,11 +149,12 @@ const account = await buckyos.login();
 | `username` | 登录用户名 |
 | `password` | 不是明文密码，而是 SDK 生成的派生值 |
 | `appid` | 本次登录绑定的 appid |
+| `app_instance_id` | 完整目标实例，格式为 `<appid>@<owner_user_id>`；个人 App 不允许只提交基础 `appid` |
 | `login_nonce` | 一次性 nonce，通常使用当前毫秒时间 |
 
 前端登录页调用 `buckyos.hashPassword(username, password, nonce)` 后再提交。verify-hub 会用 `UserSettings.password + login_nonce` 计算 SHA-256，并和提交值比较。
 
-因此，直接调用 raw RPC 时不要把明文密码传给 verify-hub；也不要复用 `login_nonce`。同一 `username + appid + login_nonce` 成功后会进入缓存，再次使用会被当成重放。
+因此，直接调用 raw RPC 时不要把明文密码传给 verify-hub；也不要复用 `login_nonce`。同一 `username + app_instance_id + login_nonce` 成功后会进入缓存，再次使用会被当成重放。verify-hub 会在密码登录、用户 JWT/SSO、sudo 和 refresh 前重新检查用户状态及 App–User 可用关系，失败时返回 `AppAccessDenied`。
 
 ## Web SSO 与 runtime login 的关系
 
@@ -174,7 +175,7 @@ SDK 使用者通常不直接验签，而是使用 api-runtime 和 service client
 1. 服务端先解析 `session_token`。
 2. 根据 JWT header/claims 里的 `kid` 或 `iss` 找 trust key。
 3. 验证 EdDSA 签名和 `exp`。
-4. 取出 `sub` 和 `appid`。
+4. 取出 `sub`、`appid`、`principal_kind`；用户 token 还必须包含 `app_instance_id`，非系统 App 必须包含与实例 Owner 一致的 `app_owner_user_id`。
 5. 用 RBAC 判断 `sub + appid` 是否允许访问目标资源和 action。
 
 system-config 的 trust keys 来自 `boot/config` 里的 owner/root key、verify-hub key，以及当前设备 key；运行中也能按 issuer 加载受信用户或设备的公钥。Frame/Kernel service 的 api-runtime 会在 login 后加载 RBAC 和 trust keys，并在后台刷新 trust keys。
@@ -183,7 +184,7 @@ system-config 的 trust keys 来自 `boot/config` 里的 owner/root key、verify
 
 ## sudo 不是普通登录
 
-`sudo_by_password` 会返回一个短期 sudo `session_token`，当前有效期是 3 分钟，不返回 refresh token。
+`sudo_by_password` 必须同时提交 `appid` 与 `app_instance_id`，并返回一个短期 sudo `session_token`；当前有效期是 3 分钟，不返回 refresh token。
 
 当前实现中 sudo token 由 verify-hub 签发，并设置 `sudo=true`；旧文档里“用户私钥自签代表 sudo”的说法不再适合作为当前实现依据。最终能否执行敏感操作仍由 RBAC 决定，sudo 只是给授权判断提供一个额外身份，例如默认的 `su_<userid>`。
 
@@ -203,9 +204,9 @@ runtime 没有从环境变量读到 token，也没有足够的本地私钥材料
 - Kernel/Frame service 缺少 `BUCKYOS_THIS_DEVICE` 或启动环境注入的 `*_SESSION_TOKEN`。
 - 组件确实需要用设备私钥重新生成登录 JWT，但没有在初始化阶段显式调用 `load_device_private_key()`。
 
-### `Session token is not valid` 或 `appid mismatch`
+### `Session token is not valid`、`appid mismatch` 或 `app_instance_id mismatch`
 
-token 绑定的 `appid` 和当前 runtime/app 不一致。不要复用其它 app 的 token，也不要用 control-panel 登录 token 调自己的 app service。
+token 绑定的逻辑 App 或具体 Owner 实例和当前 runtime/app 不一致。不要在同名不同 Owner 的实例之间复用 token，也不要用 control-panel 登录 token 调自己的 app service。
 
 在 `app-web-page -> app-service -> system service` 链路里，app-service 必须继续传递页面用户的 token，不能改用 app-service 自己的 token。否则会出现越权风险、审计主体错误，或者 RBAC 因主体不对而拒绝。
 
@@ -245,7 +246,7 @@ refresh token 的 `aud` 是 `verify-hub`，只能发给 verify-hub。业务请�
 | access token / refresh token | 当前 API 字段是 `session_token` / `refresh_token` |
 | JWT 有统一 `token_use` 字段 | 当前 `RPCSessionToken` 主要用 `aud=verify-hub` 区分 refresh token，用 `sudo` bool 区分 sudo |
 | service bootstrap JWT 包含 `target_service_id`、独立 nonce 等完整目标方案 | 当前 node-daemon 注入的是设备签名登录 JWT，`jti` 用于重放检测 |
-| `verify_token` 返回用户/app/exp | 当前 `verify_token` 返回 `bool`，并可选校验 `appid` |
+| `verify_token` 返回用户/app/exp | 当前 `verify_token` 返回 `bool`，可分别校验 `appid` 与 `app_instance_id`，且用户 token 缺少实例 claim 时拒绝 |
 | sudo 是用户私钥自签特权 token | 当前 `sudo_by_password` 返回 verify-hub 签发的短期 sudo token |
 
 ## 使用者检查清单

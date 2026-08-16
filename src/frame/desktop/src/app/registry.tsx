@@ -41,6 +41,14 @@ const appLoaders = {
   workflow: WorkflowAppPanel,
 } as const
 
+const logicalAppAliases: Readonly<Record<string, keyof typeof appLoaders>> = {
+  'content-store': 'market',
+}
+
+export function desktopCatalogIdForLogicalApp(appId: string): string {
+  return logicalAppAliases[appId] ?? appId
+}
+
 export function resolveDesktopApps(
   apps: AppDefinition[],
   formFactor: FormFactor,
@@ -49,7 +57,9 @@ export function resolveDesktopApps(
     .filter((app) => supportsFormFactor(app, formFactor))
     .map((app) => ({
       ...app,
-      loader: appLoaders[app.id as keyof typeof appLoaders],
+      loader: appLoaders[
+        desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id) as keyof typeof appLoaders
+      ],
     }))
 }
 

@@ -16,10 +16,10 @@ use crate::system_config_builder::{
 };
 use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
-    get_buckyos_api_runtime, AppServiceSpec, KernelServiceSpec, NodeConfig,
-    SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState, SystemConfigClient,
-    UserSettings, UserState, UserType as ApiUserType, ZoneConfig, ZoneGatewaySettings,
-    CONTROL_PANEL_SERVICE_PORT,
+    get_buckyos_api_runtime, zone_app_spec_key, AppClass, AppServiceSpec, KernelServiceSpec,
+    NodeConfig, SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState,
+    SystemConfigClient, UserSettings, UserState, UserType as ApiUserType, ZoneConfig,
+    ZoneGatewaySettings, CONTROL_PANEL_SERVICE_PORT, SYSTEM_APP_OWNER_ID,
 };
 use buckyos_kit::*;
 use name_client::*;
@@ -173,6 +173,11 @@ pub fn create_scheduler_by_system_config(
                             );
                             e
                         })?;
+                    if app_config.app_class != AppClass::UserInstalled
+                        || app_config.user_id != user_id
+                    {
+                        return Err(anyhow::anyhow!("invalid user app spec at {key}"));
+                    }
                     if app_config.app_doc.selector_type != SelectorType::Static {
                         let service_spec = create_service_spec_by_app_config(
                             full_appid.as_str(),
@@ -203,6 +208,28 @@ pub fn create_scheduler_by_system_config(
                     if user_id == "root" {
                         scheduler_ctx.default_user_id = user_settings.user_id.clone();
                     }
+                }
+            }
+        }
+
+        if key.starts_with("zone/apps/") && key.ends_with("/spec") {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() == 4 {
+                let app_id = parts[2];
+                let app_config: AppServiceSpec = serde_json::from_str(value.as_str())?;
+                if app_config.app_class != AppClass::ZoneInstalled
+                    || app_config.user_id != SYSTEM_APP_OWNER_ID
+                {
+                    return Err(anyhow::anyhow!("invalid zone app spec at {key}"));
+                }
+                if app_config.app_doc.selector_type != SelectorType::Static {
+                    let full_appid = app_config.app_instance_id();
+                    let service_spec = create_service_spec_by_app_config(
+                        full_appid.as_str(),
+                        SYSTEM_APP_OWNER_ID,
+                        &app_config,
+                    );
+                    scheduler_ctx.add_service_spec(service_spec);
                 }
             }
         }
@@ -500,12 +527,25 @@ pub fn get_app_spec_by_spec_id(
     input_system_config: &HashMap<String, String>,
 ) -> Result<AppServiceSpec> {
     let (app_id, user_id) = get_appid_and_userid_from_spec_id(spec_id)?;
-    for key in [
+    let mut keys = vec![
         format!("users/{}/apps/{}/spec", user_id, app_id),
         format!("users/{}/agents/{}/spec", user_id, app_id),
-    ] {
+    ];
+    if user_id == SYSTEM_APP_OWNER_ID {
+        keys.insert(0, zone_app_spec_key(&app_id));
+    }
+    for key in keys {
         if let Some(app_spec) = input_system_config.get(&key) {
             let app_spec: AppServiceSpec = serde_json::from_str(app_spec.as_str())?;
+            let valid_scope = if key.starts_with("zone/apps/") {
+                app_spec.app_class == AppClass::ZoneInstalled
+                    && app_spec.user_id == SYSTEM_APP_OWNER_ID
+            } else {
+                app_spec.app_class == AppClass::UserInstalled && app_spec.user_id == user_id
+            };
+            if !valid_scope || app_spec.app_id() != app_id {
+                return Err(anyhow::anyhow!("invalid app spec at {key}"));
+            }
             return Ok(app_spec);
         }
     }
@@ -591,6 +631,10 @@ pub fn get_web_app_list(
                         );
                         e
                     })?;
+                if app_config.app_class != AppClass::UserInstalled || app_config.user_id != user_id
+                {
+                    return Err(anyhow::anyhow!("invalid user app spec at {key}"));
+                }
                 let is_web_app = app_config.app_doc.selector_type == SelectorType::Static;
                 let is_gateway_visible = app_config.enable
                     && !matches!(
@@ -599,6 +643,25 @@ pub fn get_web_app_list(
                     );
                 if is_web_app && is_gateway_visible {
                     info!("found web app: {}", full_appid);
+                    web_app_list.push(app_config);
+                }
+            }
+        } else if key.starts_with("zone/apps/") && key.ends_with("/spec") {
+            let parts: Vec<&str> = key.split('/').collect();
+            if parts.len() == 4 {
+                let app_config: AppServiceSpec = serde_json::from_str(value.as_str())?;
+                if app_config.app_class != AppClass::ZoneInstalled
+                    || app_config.user_id != SYSTEM_APP_OWNER_ID
+                {
+                    return Err(anyhow::anyhow!("invalid zone app spec at {key}"));
+                }
+                let is_web_app = app_config.app_doc.selector_type == SelectorType::Static;
+                let is_gateway_visible = app_config.enable
+                    && !matches!(
+                        app_config.state,
+                        ServiceState::Deleted | ServiceState::Stopped | ServiceState::Stopping
+                    );
+                if is_web_app && is_gateway_visible {
                     web_app_list.push(app_config);
                 }
             }
@@ -667,6 +730,8 @@ struct NodeGatewayServiceInfoEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct NodeGatewayAppInfoEntry {
     app_id: String,
+    app_instance_id: String,
+    app_owner_user_id: String,
     sdk_version: u32,
     access_mode: NodeGatewayAccessMode,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -832,6 +897,8 @@ fn build_app_host_entry(
     };
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
+        app_instance_id: app_spec.app_instance_id(),
+        app_owner_user_id: app_spec.user_id.clone(),
         sdk_version: parse_sdk_version(app_spec),
         access_mode,
         node_id: Some(pick_instance.node_id.clone()),
@@ -878,6 +945,8 @@ fn build_app_host_entry_from_persisted_service_info(
     };
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
+        app_instance_id: app_spec.app_instance_id(),
+        app_owner_user_id: app_spec.user_id.clone(),
         sdk_version: parse_sdk_version(app_spec),
         access_mode,
         node_id: Some(node_id.clone()),
@@ -895,8 +964,19 @@ fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGate
 
     Some(NodeGatewayAppInfoEntry {
         app_id: app_spec.app_id().to_string(),
+        app_instance_id: app_spec.app_instance_id(),
+        app_owner_user_id: app_spec.user_id.clone(),
         sdk_version: parse_sdk_version(app_spec),
-        access_mode: NodeGatewayAccessMode::Public,
+        access_mode: if app_spec
+            .spec_config
+            .expose_config
+            .values()
+            .any(|config| config.allow_guest)
+        {
+            NodeGatewayAccessMode::Public
+        } else {
+            NodeGatewayAccessMode::Private
+        },
         node_id: None,
         port: None,
         dir_pkg_id: Some(dir_pkg_id),
@@ -1769,6 +1849,7 @@ mod tests {
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
@@ -1808,6 +1889,7 @@ mod tests {
             app_doc,
             app_index: 2,
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
@@ -1839,11 +1921,29 @@ mod tests {
             app_doc,
             app_index: 3,
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
             spec_config: install_config,
         }
+    }
+
+    #[test]
+    fn zone_app_spec_uses_zone_scope_and_rejects_wrong_class() {
+        let mut spec = create_test_app_spec();
+        spec.user_id = SYSTEM_APP_OWNER_ID.to_string();
+        spec.app_class = AppClass::ZoneInstalled;
+        let key = zone_app_spec_key(spec.app_id());
+        let mut input = HashMap::from([(key.clone(), serde_json::to_string(&spec).unwrap())]);
+
+        let loaded = get_app_spec_by_spec_id("files@system", &input).unwrap();
+        assert_eq!(loaded.app_class, AppClass::ZoneInstalled);
+        assert_eq!(loaded.user_id, SYSTEM_APP_OWNER_ID);
+
+        spec.app_class = AppClass::UserInstalled;
+        input.insert(key, serde_json::to_string(&spec).unwrap());
+        assert!(get_app_spec_by_spec_id("files@system", &input).is_err());
     }
 
     fn create_expected_node_gateway_info_for_files_app(
@@ -1879,6 +1979,8 @@ mod tests {
 
         let files_entry = NodeGatewayAppEntry::App(NodeGatewayAppInfoEntry {
             app_id: "files".to_string(),
+            app_instance_id: "files@alice".to_string(),
+            app_owner_user_id: "alice".to_string(),
             sdk_version: 10,
             access_mode: NodeGatewayAccessMode::Private,
             node_id: Some("ood2".to_string()),
@@ -2976,12 +3078,23 @@ mod tests {
             _ => panic!("portal should resolve to an app entry"),
         };
         assert_eq!(portal.app_id, "portal");
+        assert_eq!(portal.app_instance_id, "portal@alice");
+        assert_eq!(portal.app_owner_user_id, "alice");
         assert_eq!(portal.sdk_version, 0);
-        assert_eq!(portal.access_mode, NodeGatewayAccessMode::Public);
+        assert_eq!(portal.access_mode, NodeGatewayAccessMode::Private);
         assert_eq!(portal.node_id, None);
         assert_eq!(portal.port, None);
         assert_eq!(portal.dir_pkg_id.as_deref(), Some("portal-web"));
         assert_eq!(portal.dir_pkg_objid.as_deref(), Some("pkg:1234567890"));
+
+        web_app_spec
+            .spec_config
+            .expose_config
+            .get_mut("www")
+            .unwrap()
+            .allow_guest = true;
+        let public_portal = build_static_web_app_host_entry(&web_app_spec).unwrap();
+        assert_eq!(public_portal.access_mode, NodeGatewayAccessMode::Public);
     }
 
     #[tokio::test]

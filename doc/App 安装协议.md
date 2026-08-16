@@ -1389,7 +1389,7 @@ Package Meta 对象“已存在”本身不等于该 package 内容就绪。Insp
 
 ### 11.4 InstallPlan
 
-`InstallPlan` 是 Inspect Stage 的输出，定义在 `buckyos_api::app_install`。当前持久化格式由 `APP_INSTALL_SCHEMA_VERSION = 2` 标识；这是 beta 2.2 breaking schema，缺少或不等于当前版本的 Task/Plan 必须拒绝，不做旧字段兼容。
+`InstallPlan` 是 Inspect Stage 的输出，定义在 `buckyos_api::app_install`。当前持久化格式由 `APP_INSTALL_SCHEMA_VERSION = 3` 标识；这是 beta 2.2 breaking schema，缺少或不等于当前版本的 Task/Plan 必须拒绝，不做旧字段兼容。v3 把安装分类和稳定 App 实例身份写入任务与长期记录。
 
 ```rust
 pub struct InstallPlan {
@@ -1489,7 +1489,7 @@ pub struct PlanReadiness {
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "app": {
     "did": "did:bns:pikg-docker.root",
     "object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
@@ -1611,14 +1611,16 @@ pub struct DidResolutionSnapshot {
 
 #### AppInstallTaskData / InstallRecord
 
-- in-flight 事务：`Task.data` → `AppInstallTaskData { schema_version, request, state: InstallTransactionState }`（含 `plan` / `approval` / `verification` / `prepared` 等）。`AppUpdateTaskData` 使用相同的 `schema_version` 和状态结构。
-- 长期记录：`users/{uid}/apps|agents/{app_name}/install_record` → `InstallRecord`。
+- in-flight 事务：`Task.data` → `AppInstallTaskData { schema_version, request, state: InstallTransactionState }`（含 `plan` / `approval` / `verification` / `prepared` 等）。`request.app_class` 固定本次安装为 `user_installed` 或 `zone_installed`；`AppUpdateTaskData` 使用相同的 `schema_version` 和状态结构。
+- 长期记录：个人 App/Agent 写 `users/{uid}/apps|agents/{app_name}/install_record`；Zone App 写 `zone/apps/{app_name}/install_record`。
 
 ```rust
 pub struct InstallRecord {
     pub schema_version: u32,
     pub app: AppDocumentRef,
     pub user_id: String,
+    pub app_instance_id: String,
+    pub app_class: AppClass,
     pub resolution: DidResolutionSnapshot,
     pub package_meta_ids: Vec<ObjId>,
     pub pikg_digest: Option<String>,
@@ -1633,7 +1635,7 @@ pub struct InstallRecord {
 }
 ```
 
-`AppServiceSpec` 只承载调度/部署所需的 `app_doc`、`permission`、`spec_config` 等，不复制解析证据与任务历史。
+`AppServiceSpec` 只承载调度/部署所需的 `app_doc`、`app_class`、`permission`、`spec_config` 等，不复制解析证据与任务历史。其稳定实例身份为 `<app_doc.name>@<user_id>`；Zone App 的 `user_id` 固定为 `system`。
 
 ### 11.6 App 类型变体
 
@@ -1647,6 +1649,20 @@ pub struct InstallRecord {
 | `Agent` | `agent` | `agent`，可选 `agent_skills` / `agent_tools` | AI Agent |
 
 同一 App Document 可通过多个 subpackage 组合前端、服务、Agent 等能力；发行方也可采用更严格的系统签名与升级策略，但这不是单独的 `AppType` 枚举值。Docker 容器与 Script Host 是 `AppService` 下的部署形态差异（由 `pkg_list` 选用 `*_docker_image` 或 `script` 等 key 表达），不是额外的顶层类型。
+
+### 11.7 安装分类与作用域
+
+`AppType` 描述运行形态，`AppClass` 描述安装及生命周期作用域，两者正交：
+
+| `app_class` | 创建方式 | spec / install_record | Owner 与默认用户范围 |
+|---|---|---|---|
+| `system_builtin` | 随 BuckyOS 交付，Installer 不可创建 | 由系统 registry 合成 | Owner=`system`；所有有效用户 |
+| `user_installed` | 用户为自己安装；管理员可代装 | `users/{owner}/apps/{app}/...` | Owner 为安装用户；默认仅 Owner |
+| `zone_installed` | 仅 Admin/Root 可安装 | `zone/apps/{app}/...` | Owner=`system`；所有当前及未来有效用户 |
+
+`apps.install` 与 `apps.install_package` 必须显式或默认提交 `app_class`；默认是 `user_installed`。Agent 只能是 `user_installed`。升级、启动、停止和卸载以 `app_instance_id` 为外部操作主键，不能用基础 `app_id` 猜测实例。Zone App 只保存一份 spec，不复制到各用户目录。
+
+App–User 自定义可用关系独立保存在 Control Panel 命名空间，不写入安装记录，也不改变 `app_class`。个人 App 分享给 `users` 组后仍是 `user_installed`，生命周期仍属于原 Owner。
 
 ---
 ## 12. 命名、版本与生命周期
@@ -1773,9 +1789,9 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 #### D3. 安装记录真相源
 
 - in-flight 安装事务的唯一真相源是 TaskManager 的 `Task.data`（`AppInstallTaskData`，可恢复 transaction）。
-- 长期安装记录独立保存在 system-config：`users/{uid}/apps/{app_name}/install_record` 与 `users/{uid}/agents/{app_name}/install_record`（`InstallRecord` JSON）。
+- 长期安装记录独立保存在 system-config：个人安装写 `users/{uid}/apps/{app_name}/install_record` 或 `users/{uid}/agents/{app_name}/install_record`，Zone 安装写 `zone/apps/{app_name}/install_record`（`InstallRecord` JSON）。
 - 写入顺序：Prepare 完成先写 `install_record(state=prepared)` → 写 spec（Deploy 的开始点）→ Activate 与健康检查成功后更新 `install_record(state=installed)` → 写 installed proof → Task Completed。失败与回滚更新同一记录。
-- `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec 与最终批准的 `permission`，不复制解析证据与任务历史。
+- `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec、`app_class` 与最终批准的 `permission`，不复制解析证据与任务历史。
 
 #### D4. LOCAL_DEVELOPER authority override
 

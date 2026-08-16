@@ -53,6 +53,7 @@ impl ControlPanelServer {
         let password = Self::require_param_str(&req, "password")?;
         let requested_appid =
             Self::param_str(&req, "appid").unwrap_or(CONTROL_PANEL_AUTH_APPID.to_string());
+        let requested_app_instance_id = Self::param_str(&req, "app_instance_id");
         let redirect_url = Self::param_str(&req, "redirect_url");
         let login_nonce = req
             .params
@@ -80,9 +81,35 @@ impl ControlPanelServer {
             }
             None => requested_appid.clone(),
         };
+        let app_instance_id = match redirect_url.as_deref() {
+            Some(redirect_url) => Self::resolve_sso_target_app_instance_id(
+                Some(redirect_url),
+                runtime.zone_id.to_host_name().as_str(),
+            )?
+            .ok_or_else(|| {
+                RPCErrors::ParseRequestError(
+                    "redirect_url does not resolve to an app instance".to_string(),
+                )
+            })?,
+            None => requested_app_instance_id.unwrap_or_else(|| {
+                format!("{}@{}", requested_appid, buckyos_api::SYSTEM_APP_OWNER_ID)
+            }),
+        };
+        let (instance_app_id, _) = buckyos_api::parse_app_instance_id(&app_instance_id)?;
+        if instance_app_id != appid {
+            return Err(RPCErrors::ParseRequestError(format!(
+                "appid `{appid}` does not match app_instance_id `{app_instance_id}`"
+            )));
+        }
         let verify_hub_client = runtime.get_verify_hub_client().await?;
         let login_result = verify_hub_client
-            .login_by_password(username.clone(), password, appid.clone(), login_nonce)
+            .login_by_password(
+                username.clone(),
+                password,
+                appid.clone(),
+                app_instance_id.clone(),
+                login_nonce,
+            )
             .await?;
         let sso_nonce = if redirect_url.is_some() {
             // Frontend reads this field through JSON as a JS number, so keep it within
@@ -99,11 +126,12 @@ impl ControlPanelServer {
             )
             .await;
             info!(
-                "prepared pending sso login pid={} username='{}' requested_appid='{}' resolved_appid='{}' login_nonce={:?} req_seq={} sso_nonce={} redirect_url='{}'",
+                "prepared pending sso login pid={} username='{}' requested_appid='{}' resolved_appid='{}' app_instance_id='{}' login_nonce={:?} req_seq={} sso_nonce={} redirect_url='{}'",
                 std::process::id(),
                 username,
                 requested_appid,
                 appid,
+                app_instance_id,
                 login_nonce,
                 req.seq,
                 nonce,
@@ -721,15 +749,12 @@ impl ControlPanelServer {
                     "redirect_url host is outside current zone".to_string(),
                 )
             })?;
-            prefix
-                .split(['.', '-'])
-                .next()
-                .map(|value| value.trim().to_string())
+            Some(prefix.trim().to_string())
                 .filter(|value| {
                     !value.is_empty()
                         && value
                             .chars()
-                            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
                 })
                 .ok_or_else(|| {
                     RPCErrors::ParseRequestError(
@@ -771,6 +796,73 @@ impl ControlPanelServer {
                     app_key
                 ))
             })
+    }
+
+    fn resolve_sso_target_app_instance_id(
+        redirect_url: Option<&str>,
+        zone_host: &str,
+    ) -> Result<Option<String>, RPCErrors> {
+        let redirect_url = match redirect_url.map(str::trim) {
+            Some(value) if !value.is_empty() => value,
+            _ => return Ok(None),
+        };
+        let zone_host = zone_host.trim().trim_matches('.').to_ascii_lowercase();
+        let url = url::Url::parse(redirect_url).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Invalid redirect_url: {error}"))
+        })?;
+        let host = url
+            .host_str()
+            .map(|value| value.trim().trim_matches('.').to_ascii_lowercase())
+            .ok_or_else(|| RPCErrors::ParseRequestError("redirect_url missing host".to_string()))?;
+        let app_key = if host == zone_host {
+            "_".to_string()
+        } else {
+            let suffix = format!(".{zone_host}");
+            host.strip_suffix(&suffix)
+                .map(str::to_string)
+                .filter(|value| {
+                    !value.is_empty()
+                        && value
+                            .chars()
+                            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+                })
+                .ok_or_else(|| {
+                    RPCErrors::ParseRequestError(
+                        "redirect_url host is outside current zone".to_string(),
+                    )
+                })?
+        };
+        let gateway_info_path = gateway_etc_dir().join("node_gateway_info.json");
+        let content = std::fs::read_to_string(&gateway_info_path).map_err(|error| {
+            RPCErrors::ReasonError(format!("read node_gateway_info.json failed: {error}"))
+        })?;
+        let value: Value = serde_json::from_str(&content).map_err(|error| {
+            RPCErrors::ReasonError(format!("parse node_gateway_info.json failed: {error}"))
+        })?;
+        let app_info = value
+            .get("app_info")
+            .and_then(|value| value.get(&app_key))
+            .ok_or_else(|| {
+                RPCErrors::ParseRequestError(format!(
+                    "redirect_url app `{app_key}` is not present in gateway info"
+                ))
+            })?;
+        if let Some(instance_id) = app_info.get("app_instance_id").and_then(Value::as_str) {
+            return Ok(Some(instance_id.to_string()));
+        }
+        let service_id = app_info
+            .get("service_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                RPCErrors::ParseRequestError(format!(
+                    "redirect_url app `{app_key}` has no app_instance_id"
+                ))
+            })?;
+        Ok(Some(format!(
+            "{}@{}",
+            service_id,
+            buckyos_api::SYSTEM_APP_OWNER_ID
+        )))
     }
 
     pub(super) fn extract_rpc_session_token(req: &RPCRequest) -> Option<String> {
@@ -843,6 +935,17 @@ impl ControlPanelServer {
 
         let runtime = get_buckyos_api_runtime()?;
         let parsed = runtime.verify_trusted_session_token(&token).await?;
+        let is_user_session = parsed
+            .extra
+            .get(buckyos_api::TOKEN_PRINCIPAL_KIND_CLAIM)
+            .and_then(Value::as_str)
+            == Some(buckyos_api::TOKEN_PRINCIPAL_KIND_USER);
+        let is_control_panel_session = parsed.appid.as_deref() == Some(CONTROL_PANEL_AUTH_APPID)
+            && parsed
+                .extra
+                .get(buckyos_api::APP_INSTANCE_ID_CLAIM)
+                .and_then(Value::as_str)
+                == Some("control-panel@system");
         let username = parsed
             .sub
             .map(|value| value.trim().to_string())
@@ -885,6 +988,8 @@ impl ControlPanelServer {
             username,
             user_type: user_settings.user_type,
             owner_did,
+            is_user_session,
+            is_control_panel_session,
         }))
     }
 

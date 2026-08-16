@@ -1,10 +1,12 @@
 use buckyos_api::{
-    get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppStartTaskData, AppStartTaskRequest,
-    AppType, AppUninstallTaskData, AppUninstallTaskRequest, InstallPolicy, RepoClient,
+    app_availability_audit_key, app_availability_policy_key, get_buckyos_api_runtime,
+    parse_app_instance_id, zone_app_spec_key, AppAvailabilityPolicy, AppClass, AppDoc,
+    AppServiceSpec, AppStartTaskData, AppStartTaskRequest, AppType, AppUninstallTaskData,
+    AppUninstallTaskRequest, AvailabilityEffect, InstallPolicy, RepoClient,
     ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SubPkgDesc, SystemConfigClient,
-    SystemConfigError, TaskManagerClient,
+    SystemConfigError, TaskManagerClient, APP_AVAILABILITY_SCHEMA_VERSION, SYSTEM_APP_OWNER_ID,
 };
-use buckyos_kit::buckyos_get_unix_timestamp;
+use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use kRPC::RPCErrors;
@@ -15,6 +17,7 @@ use ndn_toolkit::{cacl_file_object, CheckMode};
 use package_lib::{PackageId, PackageMeta};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs::File as StdFile;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -219,14 +222,102 @@ impl AppInstaller {
         Ok(())
     }
 
+    async fn mark_spec_deleted(
+        client: &SystemConfigClient,
+        spec_key: &str,
+        spec: &mut AppServiceSpec,
+        updated_by: &str,
+    ) -> Result<(), RPCErrors> {
+        spec.state = ServiceState::Deleted;
+        if spec.app_class != AppClass::UserInstalled {
+            return Self::set_spec_at(client, spec_key, spec).await;
+        }
+        for expose in spec.spec_config.expose_config.values_mut() {
+            expose.allow_guest = false;
+        }
+
+        let app_instance_id = spec.app_instance_id();
+        let policy_key = app_availability_policy_key(&app_instance_id);
+        let stored_policy = match client.get(&policy_key).await {
+            Ok(value) => value,
+            Err(SystemConfigError::KeyNotFound(_)) => {
+                return Self::set_spec_at(client, spec_key, spec).await;
+            }
+            Err(error) => return Err(Self::to_rpc_error(error)),
+        };
+        let mut policy: AppAvailabilityPolicy = serde_json::from_str(&stored_policy.value)
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "Failed to parse availability policy `{policy_key}`: {error}"
+                ))
+            })?;
+        if policy.schema_version != APP_AVAILABILITY_SCHEMA_VERSION
+            || policy.app_instance_id != app_instance_id
+        {
+            return Err(RPCErrors::ReasonError(format!(
+                "Availability policy `{policy_key}` does not match the app instance"
+            )));
+        }
+
+        let old_revision = policy.revision;
+        policy.revision += 1;
+        policy.default_effect = AvailabilityEffect::Deny;
+        policy.group_rules.clear();
+        policy.user_rules.clear();
+        policy.updated_by = updated_by.to_string();
+        policy.updated_at = buckyos_get_unix_timestamp();
+
+        let spec_raw = serde_json::to_string(spec).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to serialize app spec `{spec_key}`: {error}"
+            ))
+        })?;
+        let policy_raw = serde_json::to_string(&policy).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to serialize availability policy `{policy_key}`: {error}"
+            ))
+        })?;
+        let audit_key = app_availability_audit_key(&app_instance_id, policy.revision);
+        let audit_raw = json!({
+            "schema_version": APP_AVAILABILITY_SCHEMA_VERSION,
+            "app_instance_id": app_instance_id,
+            "updated_by": updated_by,
+            "updated_at": policy.updated_at,
+            "old_revision": old_revision,
+            "new_revision": policy.revision,
+            "change": "uninstall_reset",
+            "group_rule_count": 0,
+            "user_rule_count": 0,
+            "guest_allowed": false,
+        })
+        .to_string();
+        let mut actions = HashMap::new();
+        actions.insert(spec_key.to_string(), KVAction::Update(spec_raw));
+        actions.insert(policy_key.clone(), KVAction::Update(policy_raw));
+        actions.insert(audit_key, KVAction::Create(audit_raw));
+        client
+            .exec_tx(actions, Some((policy_key, stored_policy.version)))
+            .await
+            .map_err(Self::to_rpc_error)?;
+        Ok(())
+    }
+
     async fn find_matching_specs(
         &self,
         app_id: &str,
         user_id: Option<&str>,
     ) -> Result<Vec<(String, AppServiceSpec)>, RPCErrors> {
         let client = self.system_config_client().await?;
-        let users = Self::list_children(&client, "users").await?;
         let mut matches = Vec::new();
+
+        if user_id.is_none() || user_id == Some(SYSTEM_APP_OWNER_ID) {
+            let key = zone_app_spec_key(app_id);
+            if let Some(spec) = Self::get_optional_json::<AppServiceSpec>(&client, &key).await? {
+                matches.push((key, spec));
+            }
+        }
+
+        let users = Self::list_children(&client, "users").await?;
 
         for current_user in users {
             if let Some(expected_user) = user_id {
@@ -464,6 +555,7 @@ impl AppInstaller {
         user_id: Option<String>,
         is_remove_data: bool,
         task_id: String,
+        requested_by: String,
     ) -> Result<(), RPCErrors> {
         let client = self.system_config_client().await?;
         let (spec_key, mut spec) = self
@@ -493,8 +585,7 @@ impl AppInstaller {
                 .await;
         }
 
-        spec.state = ServiceState::Deleted;
-        Self::set_spec_at(&client, &spec_key, &spec).await?;
+        Self::mark_spec_deleted(&client, &spec_key, &mut spec, &requested_by).await?;
         Self::log_spec_state_change(
             &spec,
             ServiceState::Deleted,
@@ -599,6 +690,7 @@ impl AppInstaller {
         app_id: &str,
         user_id: Option<&str>,
         is_remove_data: bool,
+        requested_by: &str,
     ) -> Result<String, RPCErrors> {
         let spec = self.get_app_service_spec(app_id, user_id).await?;
         let (task_id, _root_id) = self
@@ -613,7 +705,7 @@ impl AppInstaller {
                     },
                     result: None,
                 })?,
-                spec.user_id.as_str(),
+                requested_by,
                 app_id,
             )
             .await?;
@@ -627,9 +719,16 @@ impl AppInstaller {
         let app_id = app_id.to_string();
         let user_id = Some(spec.user_id.clone());
         let spawned_task_id = task_id.clone();
+        let requested_by = requested_by.to_string();
         tokio::spawn(async move {
             if let Err(error) = installer
-                .run_uninstall_task(app_id, user_id, is_remove_data, spawned_task_id.clone())
+                .run_uninstall_task(
+                    app_id,
+                    user_id,
+                    is_remove_data,
+                    spawned_task_id.clone(),
+                    requested_by,
+                )
                 .await
             {
                 warn!("uninstall app task {} failed: {}", spawned_task_id, error);
@@ -736,12 +835,7 @@ impl AppInstaller {
                 warn!("start app task {} failed: {}", spawned_task_id, error);
                 if let Ok(task_mgr) = installer.task_mgr_client().await {
                     let _ = task_mgr
-                        .runner_fail(
-                            &spawned_task_id,
-                            "start_failed",
-                            error.to_string(),
-                            None,
-                        )
+                        .runner_fail(&spawned_task_id, "start_failed", error.to_string(), None)
                         .await;
                 }
             }
@@ -758,6 +852,22 @@ impl AppInstaller {
         user_id: Option<&str>,
     ) -> Result<AppServiceSpec, RPCErrors> {
         let (_, spec) = self.get_single_matching_spec(app_id, user_id).await?;
+        Ok(spec)
+    }
+
+    pub async fn get_app_service_spec_by_instance(
+        &self,
+        app_instance_id: &str,
+    ) -> Result<AppServiceSpec, RPCErrors> {
+        let (app_id, owner_user_id) = parse_app_instance_id(app_instance_id)?;
+        let spec = self
+            .get_app_service_spec(&app_id, Some(&owner_user_id))
+            .await?;
+        if spec.app_instance_id() != app_instance_id {
+            return Err(RPCErrors::ReasonError(format!(
+                "installed app spec does not match `{app_instance_id}`"
+            )));
+        }
         Ok(spec)
     }
 
@@ -1766,6 +1876,48 @@ impl ControlPanelServer {
         }
     }
 
+    fn require_app_lifecycle_scope(
+        principal: &RpcAuthPrincipal,
+        spec: &AppServiceSpec,
+    ) -> Result<(), RPCErrors> {
+        match spec.app_class {
+            AppClass::SystemBuiltin => Err(RPCErrors::NoPermission(
+                "system_builtin apps follow the BuckyOS lifecycle".to_string(),
+            )),
+            AppClass::ZoneInstalled if Self::principal_is_admin(principal) => Ok(()),
+            AppClass::ZoneInstalled => Err(RPCErrors::NoPermission(
+                "zone_installed app lifecycle requires admin privileges".to_string(),
+            )),
+            AppClass::UserInstalled
+                if spec.user_id == principal.username || Self::principal_is_admin(principal) =>
+            {
+                Ok(())
+            }
+            AppClass::UserInstalled => Err(RPCErrors::NoPermission(
+                "only the app owner or an admin can manage this app".to_string(),
+            )),
+        }
+    }
+
+    fn parse_install_class(
+        req: &RPCRequest,
+        principal: &RpcAuthPrincipal,
+    ) -> Result<AppClass, RPCErrors> {
+        let raw = Self::param_str(req, "app_class").unwrap_or_else(|| "user_installed".to_string());
+        let app_class = AppClass::try_from(raw.as_str())
+            .map_err(|_| RPCErrors::ParseRequestError(format!("invalid app_class `{raw}`")))?;
+        match app_class {
+            AppClass::UserInstalled => Ok(app_class),
+            AppClass::ZoneInstalled if Self::principal_is_admin(principal) => Ok(app_class),
+            AppClass::ZoneInstalled => Err(RPCErrors::NoPermission(
+                "zone_installed requires admin privileges".to_string(),
+            )),
+            AppClass::SystemBuiltin => Err(RPCErrors::NoPermission(
+                "system_builtin apps are delivered by BuckyOS".to_string(),
+            )),
+        }
+    }
+
     fn install_error_to_rpc(error: buckyos_api::InstallError) -> RPCErrors {
         RPCErrors::ReasonError(serde_json::to_string(&error).unwrap_or_else(|_| error.to_string()))
     }
@@ -1775,6 +1927,7 @@ impl ControlPanelServer {
         source: buckyos_api::InstallSource,
         app_hint: &str,
         user_id: String,
+        app_class: AppClass,
         policy: InstallPolicy,
         options: Option<Value>,
         seq: u64,
@@ -1782,6 +1935,7 @@ impl ControlPanelServer {
         let request = buckyos_api::AppInstallTaskRequest {
             source,
             user_id,
+            app_class,
             policy,
             options,
         };
@@ -1811,8 +1965,14 @@ impl ControlPanelServer {
         let identifier = Self::require_param_str(&req, "identifier")?;
         let referrer = Self::param_str(&req, "referrer");
         let options = req.params.get("options").cloned();
-        let user_id = Self::resolve_target_user_id(&req, principal);
-        Self::require_install_scope(principal, user_id.as_str())?;
+        let app_class = Self::parse_install_class(&req, principal)?;
+        let user_id = if app_class == AppClass::ZoneInstalled {
+            principal.username.clone()
+        } else {
+            let user_id = Self::resolve_target_user_id(&req, principal);
+            Self::require_install_scope(principal, user_id.as_str())?;
+            user_id
+        };
         let policy = Self::parse_install_policy(principal, options.as_ref())?;
 
         info!(
@@ -1823,6 +1983,7 @@ impl ControlPanelServer {
             buckyos_api::InstallSource::identifier(identifier.clone(), referrer),
             identifier.as_str(),
             user_id,
+            app_class,
             policy,
             options,
             req.seq,
@@ -1840,8 +2001,14 @@ impl ControlPanelServer {
         let principal = Self::require_rpc_principal(principal)?;
         let staging_handle = Self::require_param_str(&req, "staging_handle")?;
         let options = req.params.get("options").cloned();
-        let user_id = Self::resolve_target_user_id(&req, principal);
-        Self::require_install_scope(principal, user_id.as_str())?;
+        let app_class = Self::parse_install_class(&req, principal)?;
+        let user_id = if app_class == AppClass::ZoneInstalled {
+            principal.username.clone()
+        } else {
+            let user_id = Self::resolve_target_user_id(&req, principal);
+            Self::require_install_scope(principal, user_id.as_str())?;
+            user_id
+        };
         let policy = Self::parse_install_policy(principal, options.as_ref())?;
 
         info!(
@@ -1852,6 +2019,7 @@ impl ControlPanelServer {
             buckyos_api::InstallSource::local_pikg(staging_handle.clone()),
             staging_handle.as_str(),
             user_id,
+            app_class,
             policy,
             options,
             req.seq,
@@ -1961,7 +2129,7 @@ impl ControlPanelServer {
         ))
     }
 
-    /// apps.update { app_id, options? } -> { task_id }
+    /// apps.update { app_instance_id, options? } -> { task_id }
     /// v0.5：升级走与安装同一条 Stage 流水线（Resolve -> ... -> Prepare 完成
     /// 后才切换旧版本；Activate 失败自动恢复旧 spec）。升级判定以权威
     /// Resolve 的 App Document 为准，不再从 Repo 选 semver 最新。
@@ -1971,22 +2139,28 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_id = Self::require_param_str(&req, "app_id")?;
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let (app_id, _) = parse_app_instance_id(&app_instance_id)?;
         let options = req.params.get("options").cloned();
-        let user_id = Self::resolve_target_user_id(&req, principal);
-        Self::require_install_scope(principal, user_id.as_str())?;
         let policy = Self::parse_install_policy(principal, options.as_ref())?;
 
         // 已安装 spec 是升级入口的真相源：App DID 从中取得。
         let current_spec = self
             .app_installer
-            .get_app_service_spec(app_id.as_str(), Some(user_id.as_str()))
+            .get_app_service_spec_by_instance(&app_instance_id)
             .await?;
+        Self::require_app_lifecycle_scope(principal, &current_spec)?;
         let app_did = current_spec.app_doc.app_did().clone();
+        let task_user_id = if current_spec.app_class == AppClass::ZoneInstalled {
+            principal.username.clone()
+        } else {
+            current_spec.user_id.clone()
+        };
 
         let request = buckyos_api::AppUpdateTaskRequest {
             source: buckyos_api::InstallSource::identifier(app_did.to_string(), None),
-            user_id,
+            user_id: task_user_id,
+            app_class: current_spec.app_class,
             app_id: app_id.clone(),
             policy,
             options,
@@ -2012,14 +2186,24 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_id = Self::require_param_str(&req, "app_id")?;
-        let user_id = Self::resolve_target_user_id(&req, principal);
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let (app_id, owner_user_id) = parse_app_instance_id(&app_instance_id)?;
+        let spec = self
+            .app_installer
+            .get_app_service_spec_by_instance(&app_instance_id)
+            .await?;
+        Self::require_app_lifecycle_scope(principal, &spec)?;
         let remove_data = Self::param_bool(&req, "remove_data")
             .or_else(|| Self::param_bool(&req, "is_remove_data"))
             .unwrap_or(false);
         let task_id = self
             .app_installer
-            .uninstall_app(app_id.as_str(), Some(user_id.as_str()), remove_data)
+            .uninstall_app(
+                app_id.as_str(),
+                Some(owner_user_id.as_str()),
+                remove_data,
+                &principal.username,
+            )
             .await?;
 
         Ok(RPCResponse::new(
@@ -2036,11 +2220,16 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_id = Self::require_param_str(&req, "app_id")?;
-        let user_id = Self::resolve_target_user_id(&req, principal);
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let (app_id, owner_user_id) = parse_app_instance_id(&app_instance_id)?;
+        let spec = self
+            .app_installer
+            .get_app_service_spec_by_instance(&app_instance_id)
+            .await?;
+        Self::require_app_lifecycle_scope(principal, &spec)?;
         let task_id = self
             .app_installer
-            .start_app(app_id.as_str(), Some(user_id.as_str()))
+            .start_app(app_id.as_str(), Some(owner_user_id.as_str()))
             .await?;
 
         Ok(RPCResponse::new(
@@ -2058,10 +2247,15 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_id = Self::require_param_str(&req, "app_id")?;
-        let user_id = Self::resolve_target_user_id(&req, principal);
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let (app_id, owner_user_id) = parse_app_instance_id(&app_instance_id)?;
+        let spec = self
+            .app_installer
+            .get_app_service_spec_by_instance(&app_instance_id)
+            .await?;
+        Self::require_app_lifecycle_scope(principal, &spec)?;
         self.app_installer
-            .stop_app(app_id.as_str(), Some(user_id.as_str()))
+            .stop_app(app_id.as_str(), Some(owner_user_id.as_str()))
             .await?;
 
         Ok(RPCResponse::new(

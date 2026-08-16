@@ -135,6 +135,11 @@ export interface WindowManifest {
 
 export interface AppDefinition {
   id: string
+  /** Logical app id; `id` is the instance id for backend-provided apps. */
+  logicalAppId?: string
+  appInstanceId?: string
+  ownerUserId?: string
+  appClass?: 'system_builtin' | 'user_installed' | 'zone_installed'
   iconKey: string
   labelKey: string
   summaryKey: string

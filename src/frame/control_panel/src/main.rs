@@ -5,11 +5,11 @@ mod app_install_engine;
 mod app_install_planner;
 mod app_install_resolver;
 mod app_install_runner;
-mod ndn_download;
 mod app_installer;
 mod app_package_namespace;
 mod app_servcie_mgr;
 mod dashboard;
+mod ndn_download;
 mod pikg;
 mod sys_auth_backend;
 mod sys_log_mgr;
@@ -110,6 +110,8 @@ struct RpcAuthPrincipal {
     username: String,
     user_type: UserType,
     owner_did: String,
+    is_user_session: bool,
+    is_control_panel_session: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -928,6 +930,18 @@ impl RPCHandler for ControlPanelServer {
             "apps.list" => self.handle_apps_list(req, principal.as_ref()).await,
             "apps.details" | "app.details" => {
                 self.handle_app_detials(req, principal.as_ref()).await
+            }
+            "apps.availability.get" => {
+                self.handle_app_availability_get(req, principal.as_ref())
+                    .await
+            }
+            "apps.availability.set" => {
+                self.handle_app_availability_set(req, principal.as_ref())
+                    .await
+            }
+            "apps.availability.check" => {
+                self.handle_app_availability_check(req, principal.as_ref())
+                    .await
             }
             //"apps.version.list" => self.handle_apps_version_list(req).await,
             //AppInstaller

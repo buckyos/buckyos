@@ -145,7 +145,6 @@ export interface UserInviteRecord {
   show_name?: string | null
   default_user_type: UserType | string
   groups?: string[]
-  app_ids?: string[]
   accepted_at?: number | null
   accepted_user_id?: string | null
 }
@@ -397,7 +396,6 @@ export const createUserInvite = async (input: {
   expiresAt?: number
   ttlSecs?: number
   groups?: string[]
-  appIds?: string[]
 }): Promise<{ data: UserInviteResponse | null; error: unknown }> => {
   const params: Record<string, unknown> = {}
   if (input.inviteId !== undefined) params.invite_id = input.inviteId
@@ -408,7 +406,6 @@ export const createUserInvite = async (input: {
   if (input.expiresAt !== undefined) params.expires_at = input.expiresAt
   if (input.ttlSecs !== undefined) params.ttl_secs = input.ttlSecs
   if (input.groups !== undefined) params.groups = input.groups
-  if (input.appIds !== undefined) params.app_ids = input.appIds
   return callRpc<UserInviteResponse>('user.invite.create', params)
 }
 

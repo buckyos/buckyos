@@ -36,8 +36,6 @@ struct UserInviteRecord {
     default_user_type: UserType,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     groups: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    app_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     accepted_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1176,11 +1174,11 @@ impl ControlPanelServer {
         if !groups.iter().any(|group| group == DEFAULT_USERS_GROUP) {
             groups.push(DEFAULT_USERS_GROUP.to_string());
         }
-        let app_ids: Vec<String> = req
-            .params
-            .get("app_ids")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default();
+        if req.params.get("app_ids").is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "app_ids was removed; App access is managed by apps.availability.set".to_string(),
+            ));
+        }
 
         let invite = UserInviteRecord {
             invite_id: invite_id.clone(),
@@ -1193,7 +1191,6 @@ impl ControlPanelServer {
             show_name: show_name.clone(),
             default_user_type: default_user_type.clone(),
             groups: groups.clone(),
-            app_ids,
             accepted_at: None,
             accepted_user_id: None,
         };

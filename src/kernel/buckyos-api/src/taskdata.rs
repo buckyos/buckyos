@@ -495,7 +495,7 @@ impl TypedTaskData {
             TaskDataType::AiccCompute => parse_data(task_data_type, data.clone())
                 .map(Self::AiccCompute)
                 .or_else(|_| parse_aicc_compute_legacy(data).map(Self::AiccCompute)),
-            // beta 2.2 schema v2：app.install/app.update 不做旧 schema legacy parser。
+            // beta 2.2 schema v3：app.install/app.update 不做旧 schema legacy parser。
             TaskDataType::AppInstall => parse_data(task_data_type, data).map(Self::AppInstall),
             TaskDataType::AppUninstall => parse_data(task_data_type, data.clone())
                 .map(Self::AppUninstall)
@@ -1180,7 +1180,7 @@ pub struct AiccComputeTaskResult {
     pub provider_output: Option<Value>,
 }
 
-/// App 安装任务的可恢复 transaction 数据（beta 2.2 schema v2）。
+/// App 安装任务的可恢复 transaction 数据（beta 2.2 schema v3）。
 /// request 保存原始 source/options/policy；中间态全部在 `state` 中，
 /// 每个 Stage 成功后先完整写入 Task.data 再进入下一 Stage。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1195,6 +1195,7 @@ pub struct AppInstallTaskData {
 pub struct AppInstallTaskRequest {
     pub source: crate::app_install::InstallSource,
     pub user_id: String,
+    pub app_class: crate::AppClass,
     #[serde(default)]
     pub policy: crate::app_install::InstallPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1248,7 +1249,7 @@ pub struct AppStartTaskRequest {
     pub user_id: String,
 }
 
-/// App 升级任务的可恢复 transaction 数据（beta 2.2 schema v2）。
+/// App 升级任务的可恢复 transaction 数据（beta 2.2 schema v3）。
 /// 与安装共用同一 Stage 流水线与中间态；旧 spec 回滚材料保存在
 /// `state.prepared.previous_spec`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1263,6 +1264,7 @@ pub struct AppUpdateTaskData {
 pub struct AppUpdateTaskRequest {
     pub source: crate::app_install::InstallSource,
     pub user_id: String,
+    pub app_class: crate::AppClass,
     /// 已安装应用的 app_id（app_doc.name）。
     pub app_id: String,
     #[serde(default)]
@@ -2082,6 +2084,7 @@ mod tests {
                 "request": {
                     "source": { "kind": "identifier", "identifier": "did:bns:demo.tester" },
                     "user_id": "user",
+                    "app_class": "user_installed",
                     "policy": "NORMAL"
                 },
                 "stage": "resolve",

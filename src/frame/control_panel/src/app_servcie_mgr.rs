@@ -1,182 +1,122 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    get_buckyos_api_runtime, AppDoc, AppServiceSpec, AppType, ServiceSpecConfig, ServiceState,
-    SystemConfigClient, SystemConfigError,
+    app_availability_audit_key, app_availability_policy_key, get_buckyos_api_runtime,
+    validate_availability_rules, AppAvailabilityGroupRule, AppAvailabilityPolicy,
+    AppAvailabilityResolver, AppAvailabilityUserRule, AppClass, AvailabilityEffect,
+    AvailabilityMatch, ResolvedAppInstallation, SystemConfigClient, UserType,
+    APP_AVAILABILITY_SCHEMA_VERSION,
 };
-use log::warn;
-use name_lib::DID;
+use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
-/*
-/configs/users/{$userid}/apps/{$appid}/spec -> AppServiceSpec
-
-用户安装的标准App的分类
-    - StaticWeb
-    - ScriptHost(但还是跑在)
-    - Agent
-    - 标准AppService(Docker Image)
-
-已安装App的自动升级(待实现)
-    - 获取自动更新
-    - 构造提示
-    - 应用升级
-
-系统应用(跟着系统版本升级自动添加)
-    - MessageHub
-    - HomeStation
-    - Content Store
-
-应用信息的来源
-    - AppSpec.AppDoc
-    - 非结构化数据（Icon)统一得到ObjectId,然后通过 ndn/$objid 构造url
-    - 构造 res/$appname/appicon.png 的url
-
-桌面配置
-    - 默认是在新窗口打开，还是用桌面窗口打开(AppSpec)
-
-
-*/
-
-// 系统内置应用清单：跟随系统版本升级，始终对所有用户可见
-const SYSTEM_BUILTIN_APPS: &[&str] = &["messagehub", "homestation", "content-store"];
-const SYSTEM_APP_AUTHOR: &str = "did:bns:buckyos";
 const SYSTEM_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn principal_is_admin(principal: &RpcAuthPrincipal) -> bool {
+    matches!(principal.user_type, UserType::Admin | UserType::Root)
+}
+
+fn require_self_or_admin(
+    principal: &RpcAuthPrincipal,
+    target_user_id: &str,
+) -> Result<(), RPCErrors> {
+    if principal.username == target_user_id || principal_is_admin(principal) {
+        Ok(())
+    } else {
+        Err(RPCErrors::NoPermission(
+            "ordinary users cannot list another user's apps".to_string(),
+        ))
+    }
+}
+
+fn policy_guest_allowed(policy: &AppAvailabilityPolicy) -> bool {
+    policy
+        .group_rules
+        .iter()
+        .any(|rule| rule.group_id == "guest" && rule.effect == AvailabilityEffect::Allow)
+}
+
 impl ControlPanelServer {
-    // 构造系统内置应用的合成 AppServiceSpec。
-    // 这些应用不存在于 system_config 的 users/{uid}/apps 路径下，而是跟系统版本一起发布，
-    // 所以这里按 app_id 在代码里硬编码元信息并用 AppDoc::builder 动态构造。
-    async fn get_system_app_spec(&self, app_id: &str) -> Result<AppServiceSpec, RPCErrors> {
-        let (show_name, icon_url, description, app_index) = match app_id {
-            "messagehub" => (
-                "Message Hub",
-                "res/messagehub/appicon.png",
-                "BuckyOS 内置的统一消息中心",
-                100u16,
-            ),
-            "homestation" => (
-                "Home Station",
-                "res/homestation/appicon.png",
-                "BuckyOS 内置的家庭门户",
-                101u16,
-            ),
-            "content-store" => (
-                "Content Store",
-                "res/content-store/appicon.png",
-                "BuckyOS 内置的内容仓库",
-                102u16,
-            ),
-            _ => {
-                return Err(RPCErrors::ReasonError(format!(
-                    "Unknown system app `{}`",
-                    app_id
-                )));
-            }
-        };
-
-        let owner = DID::from_str(SYSTEM_APP_AUTHOR).map_err(|err| {
-            RPCErrors::ReasonError(format!("Failed to build system owner DID: {}", err))
-        })?;
-
-        let app_doc = AppDoc::builder(
-            AppType::Service,
-            app_id,
-            SYSTEM_APP_VERSION,
-            SYSTEM_APP_AUTHOR,
-            &owner,
-        )
-        .show_name(show_name)
-        .app_icon_url(icon_url)
-        .description_detail(description)
-        .build()
-        .map_err(|err| {
-            RPCErrors::ReasonError(format!(
-                "Failed to build system app doc `{}`: {}",
-                app_id, err
-            ))
-        })?;
-
-        Ok(AppServiceSpec {
-            permission: app_doc.permissions.clone(),
-            app_doc,
-            app_index,
-            user_id: String::new(),
-            enable: true,
-            expected_instance_count: 1,
-            state: ServiceState::Running,
-            spec_config: ServiceSpecConfig::default(),
+    fn build_app_summary(
+        installation: &ResolvedAppInstallation,
+        availability_match: Option<AvailabilityMatch>,
+    ) -> Value {
+        let spec = &installation.spec;
+        let state = serde_json::to_value(&spec.state)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        json!({
+            "app_id": spec.app_doc.name,
+            "app_instance_id": spec.app_instance_id(),
+            "app_class": spec.app_class,
+            "runtime_type": spec.app_doc.get_app_type().to_string(),
+            "owner_user_id": spec.user_id,
+            "availability_match": availability_match,
+            "show_name": spec.app_doc.show_name,
+            "version": spec.app_doc.version,
+            "app_icon_url": spec.app_doc.app_icon_url(),
+            "icon_res_url": format!("res/{}/appicon.png", spec.app_doc.name),
+            "author": spec.app_doc.author,
+            "tags": spec.app_doc.tags,
+            "categories": spec.app_doc.categories,
+            "app_index": spec.app_index,
+            "enable": spec.enable,
+            "state": state,
+            "expected_instance_count": spec.expected_instance_count,
+            "spec_path": installation.spec_path,
         })
     }
 
-    //输入用户名，返回用户可用应用服务列表（含系统默认应用，但不含系统服务和 Agent)
-    // 返回值包括 名字、描述、图标的ObjectId,类型,版本 以及其他的Meta信息
+    async fn app_service_system_config_client() -> Result<Arc<SystemConfigClient>, RPCErrors> {
+        get_buckyos_api_runtime()?.get_system_config_client().await
+    }
+
+    async fn app_availability_resolver() -> Result<AppAvailabilityResolver, RPCErrors> {
+        Ok(AppAvailabilityResolver::new(
+            Self::app_service_system_config_client().await?,
+            SYSTEM_APP_VERSION,
+        ))
+    }
+
     pub(crate) async fn handle_apps_list(
         &self,
         req: RPCRequest,
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let user_id = Self::resolve_target_user_id(&req, principal);
-        let client = Self::app_service_system_config_client().await?;
+        let user_id =
+            Self::param_str(&req, "user_id").unwrap_or_else(|| principal.username.clone());
+        require_self_or_admin(principal, &user_id)?;
 
-        let mut apps: Vec<Value> = Vec::new();
-
-        // 1) 用户已安装的普通 app
-        let base_key = format!("users/{}/apps", user_id);
-        let app_ids = match client.list(&base_key).await {
-            Ok(items) => items,
-            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
-            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
-        };
-
-        for app_id in app_ids {
-            let spec_key = format!("{}/{}/spec", base_key, app_id);
-            let record = match client.get(&spec_key).await {
-                Ok(record) => record,
-                Err(SystemConfigError::KeyNotFound(_)) => continue,
-                Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
-            };
-
-            match serde_json::from_str::<AppServiceSpec>(&record.value) {
-                Ok(spec) => {
-                    if spec.app_doc.get_app_type() == AppType::Agent {
-                        warn!(
-                            "skip agent app `{}` for user `{}` from apps.list",
-                            app_id, user_id
-                        );
-                        continue;
-                    }
-                    apps.push(Self::build_app_summary(&spec, false, &spec_key));
-                }
-                Err(error) => {
-                    warn!(
-                        "skip app `{}` for user `{}`: failed to parse spec `{}`: {}",
-                        app_id, user_id, spec_key, error
-                    );
-                }
-            }
-        }
-
-        // 2) 系统内置应用（MessageHub / HomeStation / Content Store 等）
-        for system_app_id in SYSTEM_BUILTIN_APPS {
-            match self.get_system_app_spec(system_app_id).await {
-                Ok(mut spec) => {
-                    spec.user_id = user_id.clone();
-                    let spec_key = format!("system/apps/{}/spec", system_app_id);
-                    apps.push(Self::build_app_summary(&spec, true, &spec_key));
-                }
-                Err(error) => {
-                    warn!("skip built-in system app `{}`: {}", system_app_id, error);
-                }
-            }
-        }
-
-        apps.sort_by(|a, b| {
-            let ai = a.get("app_index").and_then(|v| v.as_u64()).unwrap_or(0);
-            let bi = b.get("app_index").and_then(|v| v.as_u64()).unwrap_or(0);
-            ai.cmp(&bi)
+        let resolver = Self::app_availability_resolver().await?;
+        let mut apps = resolver
+            .list_user_installations(&user_id)
+            .await?
+            .into_iter()
+            .filter_map(|(installation, decision)| {
+                decision
+                    .availability_match
+                    .map(|matched| Self::build_app_summary(&installation, Some(matched)))
+            })
+            .collect::<Vec<_>>();
+        apps.sort_by(|left, right| {
+            left.get("app_index")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                .cmp(
+                    &right
+                        .get("app_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                )
+                .then_with(|| {
+                    left.get("app_instance_id")
+                        .and_then(Value::as_str)
+                        .cmp(&right.get("app_instance_id").and_then(Value::as_str))
+                })
         });
 
         Ok(RPCResponse::new(
@@ -189,112 +129,245 @@ impl ControlPanelServer {
         ))
     }
 
-    //获得一个app的全部详细信息，包括详细的安装配置
     pub(crate) async fn handle_app_detials(
         &self,
         req: RPCRequest,
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_id = Self::require_param_str(&req, "app_id")?;
-        let user_id = Self::resolve_target_user_id(&req, principal);
-        let client = Self::app_service_system_config_client().await?;
-
-        let spec_key = format!("users/{}/apps/{}/spec", user_id, app_id);
-        let record = match client.get(&spec_key).await {
-            Ok(record) => Some(record),
-            Err(SystemConfigError::KeyNotFound(_)) => None,
-            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
-        };
-
-        if let Some(record) = record {
-            let spec: AppServiceSpec = serde_json::from_str(&record.value).map_err(|error| {
-                RPCErrors::ReasonError(format!("Failed to parse spec `{}`: {}", spec_key, error))
-            })?;
-            if spec.app_doc.get_app_type() == AppType::Agent {
-                return Err(RPCErrors::ReasonError(format!(
-                    "App `{}` not found for user `{}`",
-                    app_id, user_id
-                )));
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let resolver = Self::app_availability_resolver().await?;
+        let installation = resolver.resolve_installation(&app_instance_id).await?;
+        let can_manage = principal_is_admin(principal)
+            || (installation.spec.app_class == AppClass::UserInstalled
+                && installation.spec.user_id == principal.username);
+        let availability_match = if can_manage {
+            resolver
+                .check_user(&principal.username, &app_instance_id)
+                .await
+                .ok()
+                .and_then(|decision| decision.availability_match)
+        } else {
+            let decision = resolver
+                .check_user(&principal.username, &app_instance_id)
+                .await?;
+            if !decision.allowed {
+                return Err(RPCErrors::NoPermission("AppAccessDenied".to_string()));
             }
-            let spec_value = serde_json::to_value(&spec).map_err(|error| {
-                RPCErrors::ReasonError(format!("Failed to serialize spec: {}", error))
-            })?;
-            let summary = Self::build_app_summary(&spec, false, &spec_key);
+            decision.availability_match
+        };
+        let summary = Self::build_app_summary(&installation, availability_match);
+        let spec = serde_json::to_value(&installation.spec).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to serialize app spec: {error}"))
+        })?;
 
-            return Ok(RPCResponse::new(
-                RPCResult::Success(json!({
-                    "app_id": spec.app_id(),
-                    "user_id": spec.user_id,
-                    "is_system": false,
-                    "spec_path": spec_key,
-                    "summary": summary,
-                    "spec": spec_value,
-                })),
-                req.seq,
-            ));
-        }
-
-        // 用户 apps 下找不到时，回退到系统内置应用
-        if let Ok(mut spec) = self.get_system_app_spec(&app_id).await {
-            spec.user_id = user_id.clone();
-            let spec_key = format!("system/apps/{}/spec", app_id);
-            let spec_value = serde_json::to_value(&spec).map_err(|error| {
-                RPCErrors::ReasonError(format!("Failed to serialize spec: {}", error))
-            })?;
-            let summary = Self::build_app_summary(&spec, true, &spec_key);
-
-            return Ok(RPCResponse::new(
-                RPCResult::Success(json!({
-                    "app_id": spec.app_id(),
-                    "user_id": spec.user_id,
-                    "is_system": true,
-                    "spec_path": spec_key,
-                    "summary": summary,
-                    "spec": spec_value,
-                })),
-                req.seq,
-            ));
-        }
-
-        Err(RPCErrors::ReasonError(format!(
-            "App `{}` not found for user `{}`",
-            app_id, user_id
-        )))
+        Ok(RPCResponse::new(
+            RPCResult::Success(json!({
+                "app_id": installation.spec.app_id(),
+                "app_instance_id": installation.spec.app_instance_id(),
+                "app_class": installation.spec.app_class,
+                "owner_user_id": installation.spec.user_id,
+                "spec_path": installation.spec_path,
+                "summary": summary,
+                "spec": spec,
+            })),
+            req.seq,
+        ))
     }
 
-    async fn app_service_system_config_client() -> Result<Arc<SystemConfigClient>, RPCErrors> {
-        let runtime = get_buckyos_api_runtime()?;
-        runtime.get_system_config_client().await
+    pub(crate) async fn handle_app_availability_get(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let resolver = Self::app_availability_resolver().await?;
+        let installation = resolver.resolve_installation(&app_instance_id).await?;
+        if !principal_is_admin(principal) && installation.spec.user_id != principal.username {
+            return Err(RPCErrors::NoPermission(
+                "only the app owner or an admin can inspect the policy".to_string(),
+            ));
+        }
+        if installation.spec.app_class != AppClass::UserInstalled {
+            return Err(RPCErrors::NoPermission(
+                "system and zone app availability is implicit".to_string(),
+            ));
+        }
+        let policy = resolver
+            .load_policy(&app_instance_id)
+            .await?
+            .map(|(policy, _)| policy)
+            .unwrap_or_else(|| AppAvailabilityPolicy::owner_default(app_instance_id));
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::to_value(policy).map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to serialize policy: {error}"))
+            })?),
+            req.seq,
+        ))
     }
 
-    // 将 AppServiceSpec 压扁成一份适合前端列表展示的摘要
-    fn build_app_summary(spec: &AppServiceSpec, is_system: bool, spec_path: &str) -> Value {
-        let app_type = spec.app_doc.get_app_type().to_string();
-        let state = serde_json::to_value(&spec.state)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_else(|| "unknown".to_string());
-        // 即使 app_icon_url 缺失，也给前端一个约定好的 res/$appname/appicon.png 回退地址
-        let icon_res_url = format!("res/{}/appicon.png", spec.app_doc.name);
+    pub(crate) async fn handle_app_availability_set(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        if !principal.is_user_session || !principal.is_control_panel_session {
+            return Err(RPCErrors::NoPermission(
+                "availability changes require a user-authenticated Control Panel session"
+                    .to_string(),
+            ));
+        }
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let expected_revision = Self::param_u64(&req, "expected_revision")
+            .ok_or_else(|| RPCErrors::ParseRequestError("missing expected_revision".to_string()))?;
+        let group_rules: Vec<AppAvailabilityGroupRule> = serde_json::from_value(
+            req.params
+                .get("group_rules")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|error| RPCErrors::ParseRequestError(format!("invalid group_rules: {error}")))?;
+        let user_rules: Vec<AppAvailabilityUserRule> = serde_json::from_value(
+            req.params
+                .get("user_rules")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|error| RPCErrors::ParseRequestError(format!("invalid user_rules: {error}")))?;
+        validate_availability_rules(&group_rules, &user_rules)?;
 
-        json!({
-            "app_id": spec.app_doc.name,
-            "show_name": spec.app_doc.show_name,
-            "version": spec.app_doc.version,
-            "app_type": app_type,
-            "app_icon_url": spec.app_doc.app_icon_url(),
-            "icon_res_url": icon_res_url,
-            "author": spec.app_doc.author,
-            "tags": spec.app_doc.tags,
-            "categories": spec.app_doc.categories,
-            "app_index": spec.app_index,
-            "enable": spec.enable,
-            "state": state,
-            "expected_instance_count": spec.expected_instance_count,
-            "is_system": is_system,
-            "spec_path": spec_path,
-            "user_id": spec.user_id,
+        let client = Self::app_service_system_config_client().await?;
+        let resolver = AppAvailabilityResolver::new(client.clone(), SYSTEM_APP_VERSION);
+        let installation = resolver.resolve_installation(&app_instance_id).await?;
+        if installation.spec.app_class != AppClass::UserInstalled {
+            return Err(RPCErrors::NoPermission(
+                "system and zone app availability is implicit".to_string(),
+            ));
+        }
+        if installation.spec.user_id != principal.username {
+            return Err(RPCErrors::NoPermission(
+                "only the app owner can modify availability".to_string(),
+            ));
+        }
+        for rule in &user_rules {
+            resolver.get_user_settings(&rule.user_id).await?;
+        }
+
+        let current = resolver.load_policy(&app_instance_id).await?;
+        let (current_revision, system_revision) = match current {
+            Some((policy, revision)) => (policy.revision, Some(revision)),
+            None => (0, None),
+        };
+        if current_revision != expected_revision {
+            return Err(RPCErrors::ReasonError(format!(
+                "availability revision conflict: expected {expected_revision}, current {current_revision}"
+            )));
+        }
+
+        let next_revision = current_revision + 1;
+        let policy = AppAvailabilityPolicy {
+            schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
+            app_instance_id: app_instance_id.clone(),
+            default_effect: AvailabilityEffect::Deny,
+            group_rules,
+            user_rules,
+            revision: next_revision,
+            updated_by: principal.username.clone(),
+            updated_at: buckyos_get_unix_timestamp(),
+        };
+        let policy_key = app_availability_policy_key(&app_instance_id);
+        let policy_value = serde_json::to_string(&policy).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to serialize availability policy: {error}"))
+        })?;
+        let audit_key = app_availability_audit_key(&app_instance_id, next_revision);
+        let audit_value = json!({
+            "schema_version": APP_AVAILABILITY_SCHEMA_VERSION,
+            "app_instance_id": app_instance_id,
+            "updated_by": principal.username,
+            "updated_at": policy.updated_at,
+            "old_revision": current_revision,
+            "new_revision": next_revision,
+            "group_rule_count": policy.group_rules.len(),
+            "user_rule_count": policy.user_rules.len(),
+            "guest_allowed": policy_guest_allowed(&policy),
         })
+        .to_string();
+
+        let mut actions = HashMap::new();
+        actions.insert(
+            policy_key.clone(),
+            if system_revision.is_some() {
+                KVAction::Update(policy_value)
+            } else {
+                KVAction::Create(policy_value)
+            },
+        );
+        actions.insert(audit_key, KVAction::Create(audit_value));
+        if !installation.spec.spec_config.expose_config.is_empty() {
+            let guest_allowed = policy_guest_allowed(&policy);
+            let mut paths = HashMap::new();
+            for service_name in installation.spec.spec_config.expose_config.keys() {
+                paths.insert(
+                    format!("/spec_config/expose_config/{service_name}/allow_guest"),
+                    Some(Value::Bool(guest_allowed)),
+                );
+            }
+            actions.insert(
+                installation.spec_path.clone(),
+                KVAction::SetByJsonPath(paths),
+            );
+        }
+
+        client
+            .exec_tx(
+                actions,
+                system_revision.map(|revision| (policy_key, revision)),
+            )
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("availability CAS update failed: {error}"))
+            })?;
+
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::to_value(policy).map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to serialize policy: {error}"))
+            })?),
+            req.seq,
+        ))
+    }
+
+    pub(crate) async fn handle_app_availability_check(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let user_id =
+            Self::param_str(&req, "user_id").unwrap_or_else(|| principal.username.clone());
+        let resolver = Self::app_availability_resolver().await?;
+        let installation = resolver.resolve_installation(&app_instance_id).await?;
+        let can_diagnose = principal_is_admin(principal)
+            || principal.username == user_id
+            || (installation.spec.app_class == AppClass::UserInstalled
+                && installation.spec.user_id == principal.username);
+        if !can_diagnose {
+            return Err(RPCErrors::NoPermission(
+                "not allowed to diagnose this app availability relation".to_string(),
+            ));
+        }
+        let decision = if user_id == "guest" {
+            resolver.check_guest(&app_instance_id).await?
+        } else {
+            resolver.check_user(&user_id, &app_instance_id).await?
+        };
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::to_value(decision).map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to serialize decision: {error}"))
+            })?),
+            req.seq,
+        ))
     }
 }

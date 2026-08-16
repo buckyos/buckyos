@@ -24,6 +24,7 @@ mod zone_gateway;
 
 mod aicc_client;
 mod aicc_usage_log;
+mod app_availability;
 mod app_doc;
 pub mod app_install;
 mod app_mgr;
@@ -43,6 +44,7 @@ pub mod test_config;
 
 pub use aicc_client::*;
 pub use aicc_usage_log::*;
+pub use app_availability::*;
 pub use app_doc::*;
 pub use app_install::*;
 pub use content_mgr_client::*;
@@ -296,9 +298,9 @@ mod tests {
 
     use super::{
         get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
-        parse_app_identity_from_instance_config, AppDoc, AppServiceInstanceConfig, AppServiceSpec,
-        AppType, BuckyOSRuntimeType, ServiceInstanceState, ServiceSpecConfig, ServiceState,
-        SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
+        parse_app_identity_from_instance_config, AppClass, AppDoc, AppServiceInstanceConfig,
+        AppServiceSpec, AppType, BuckyOSRuntimeType, ServiceInstanceState, ServiceSpecConfig,
+        ServiceState, SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
     };
 
     fn test_env_lock() -> &'static Mutex<()> {
@@ -342,6 +344,7 @@ mod tests {
                 app_doc,
                 app_index: 1,
                 user_id: "devtest".to_string(),
+                app_class: AppClass::UserInstalled,
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::Running,

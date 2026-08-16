@@ -159,20 +159,21 @@ Agent 在系统中有**两副面孔**，需要区分：
 
 ### 4.4 应用管理 (App — 服务维度)
 
-由 `app_servcie_mgr` + `app_installer` 管理。读操作合并两个来源：用户 `apps/*`、系统内置 `system/apps/*`（系统应用 `app_index` 100+，始终排在前）。Agent 读取走 `agent.list` / `agent.get`，不会出现在 `apps.list`。
+由 `app_servcie_mgr` + `app_installer` 管理。`apps.list` 从系统内置 registry、`zone/apps/*` 和所有用户 `apps/*` 计算目标用户的最终授权集合；Agent 读取走 `agent.list` / `agent.get`，不会出现在 `apps.list`。App 的稳定操作和授权主键是 `app_instance_id=<app_id>@<owner_user_id>`。
 
 | 方法 | 返回 | 说明 |
 |---|---|---|
-| `apps.list` | `{user_id, total, apps[]}` | 列出当前用户可见应用（不含 Agent，含系统内置） |
-| `apps.details` / `app.details` | `{app_id, is_system, spec, ...}` | 应用详情 |
-| `apps.install` | `{task_id}` | v0.5：入参 `{identifier, referrer?, options?}`，identifier 为 App DID / 名称 / Object ID / 内嵌 ObjId 的 URL；旧 `app_id+version` 语义已删除，见 §5 |
-| `apps.install_package` | `{task_id}` | v0.5：本地 `.pikg` 安装，入参 `{staging_handle, options?}`；只接受 staging handle（`pikg:sha256:<hex>` 或 NDN chunk id），不接受服务端路径（D5） |
+| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；Admin 可指定 `user_id`。每项含 `app_instance_id/app_class/runtime_type/owner_user_id/availability_match` |
+| `apps.details` / `app.details` | `{app_instance_id, app_class, owner_user_id, spec, ...}` | Owner/Admin 或最终允许用户读取实例详情 |
+| `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略、审计和 Gateway 输入 |
+| `apps.install` | `{task_id}` | 入参 `{identifier, referrer?, app_class?, options?}`；`app_class` 默认 `user_installed`，`zone_installed` 仅 Admin |
+| `apps.install_package` | `{task_id}` | 本地 `.pikg` 安装，入参 `{staging_handle, app_class?, options?}`；只接受 staging handle（`pikg:sha256:<hex>` 或 NDN chunk id），不接受服务端路径（D5） |
 | `apps.install.confirm` | `{task_id}` | 确认 `WaitingForApproval` 的安装：`{task_id, target?, install_params?}`；权限批准使用 `install_params.permissions: PermissionItem[]`，target/params 变化会重算 plan 并重新绑定 fingerprint |
 | `apps.install.retry` | `{task_id}` | 从失败/暂停 Stage 重试（不可重试错误会拒绝） |
 | `apps.install.cancel` | `{task_id}` | 取消：Prepare 前直接取消；spec 已写后先回滚再取消 |
-| `apps.update` | `{task_id}` | v0.5：`{app_id, options?}`，走与安装同一条 Stage 流水线（见 §5.3） |
-| `apps.uninstall` | `{task_id}` | 卸载（可选 `remove_data`） |
-| `apps.start` / `apps.stop` | `{task_id}` / `{ok}` | 启停 |
+| `apps.update` | `{task_id}` | `{app_instance_id, options?}`，走与安装同一条 Stage 流水线（见 §5.3） |
+| `apps.uninstall` | `{task_id}` | `{app_instance_id, remove_data?}`；卸载个人 App 时清空授权并记录审计 tombstone |
+| `apps.start` / `apps.stop` | `{task_id}` / `{ok}` | 均以 `app_instance_id` 操作；Zone App 仅 Admin 管理 |
 | `app.publish` | `{ok, obj_id, app_did, app_doc_id, pikg_handle, pikg_digest, pikg_path, app_doc, publish_status}` | 开发者发布：产出带 `did/doc_type` 的 App Document、`.pikg`（同一 PikgReader 自校验）并推到仓库；`publish_status=repo_stored_candidate` 表示尚未权威发布 App DID |
 
 * **权限**：所有 handler 要求已认证主体；目标用户默认取 `principal.username`（为自己安装），给他人安装需 admin；`SYSTEM_INTERNAL` 策略（可 auto-confirm）仅限 admin。confirm/retry/cancel 只能操作本人任务（admin 例外）。
@@ -184,7 +185,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 
 **(a) 登录鉴权层**（`sys_auth_backend`）—— 处理登入/登出与 token：
 
-* `auth.login`：取 `username` + `password`（+可选 `appid` / `redirect_url` / `login_nonce`），经 `verify_hub_client.login_by_password(...)` 校验，签发 token pair；若带 `redirect_url` 走 SSO（生成 pending nonce，经目标 App origin 的 `/sso_callback` 回跳并写 cookie）。
+* `auth.login`：取 `username` + `password`（+可选 `appid` / `app_instance_id` / `redirect_url` / `login_nonce`），从 Gateway/redirect 解出完整 App 实例后经 `verify_hub_client.login_by_password(...)` 校验可用性并签发 token pair；若带 `redirect_url` 走 SSO（生成 pending nonce，经目标 App origin 的 `/sso_callback` 回跳并写 cookie）。
 * `auth.refresh` / `auth.verify` / `auth.logout` / `auth.issue_sso_token`：刷新 / 校验 / 注销 / 签发 SSO token。
 * HTTP 侧：`/sso_callback` 同时写入 host-only 的短期 `buckyos_session_token`（供 gateway 在 App 页面加载前鉴权）和 host-only、`HttpOnly` 的 `buckyos_refresh_token`；`/sso_refresh` 只读取并轮换 refresh cookie，同时更新 session cookie；`/sso_logout` 吊销 refresh token 并清理两种 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散到父域或其它 App 子域。
 * **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），从 `sub` 解出 username，加载 `users/{username}/settings` 校验状态为 `Active`，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。

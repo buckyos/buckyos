@@ -8,7 +8,7 @@ use crate::app_loader::{
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
-    AppDoc, AppServiceInstanceConfig, AppServiceSpec, AppType, LocalAppInstanceConfig,
+    AppClass, AppDoc, AppServiceInstanceConfig, AppServiceSpec, AppType, LocalAppInstanceConfig,
     ServiceEndpointConfig, ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc,
 };
 use name_lib::DID;
@@ -116,6 +116,7 @@ fn build_service_loader(
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,
@@ -153,6 +154,7 @@ fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
             app_doc,
             app_index: 1,
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             enable: true,
             expected_instance_count: 1,
             state: ServiceState::Running,

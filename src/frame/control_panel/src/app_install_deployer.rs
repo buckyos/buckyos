@@ -14,12 +14,13 @@
 use crate::app_install_driver::ProductionInstallDriver;
 use crate::app_install_engine::InstallTaskView;
 use buckyos_api::{
-    get_buckyos_api_runtime, install_record_key, AppDoc, AppInstallTaskData, AppServiceSpec,
-    AppType, ContentLocation, InstallError, InstallErrorCode, InstallParams, InstallRecord,
-    InstallRecordState, InstallStage, InstallTaskResult, MountPointConfig, PreparedDeployment,
-    ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteTips, ServiceInstanceReportInfo,
-    ServiceInstanceState, ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError,
-    APP_INSTALL_SCHEMA_VERSION,
+    app_instance_id, get_buckyos_api_runtime, install_record_key, zone_app_spec_key, AppClass,
+    AppDoc, AppInstallTaskData, AppServiceSpec, AppType, ContentLocation, InstallError,
+    InstallErrorCode, InstallParams, InstallRecord, InstallRecordState, InstallStage,
+    InstallTaskResult, MountPointConfig, PreparedDeployment, ServiceEndpointConfig,
+    ServiceExposeConfig, ServiceExposeRouteTips, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError,
+    APP_INSTALL_SCHEMA_VERSION, SYSTEM_APP_OWNER_ID,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
@@ -114,12 +115,33 @@ impl ProductionInstallDriver {
             )
         })?;
 
-        let user_id = data.request.user_id.clone();
+        let user_id = match data.request.app_class {
+            AppClass::UserInstalled => data.request.user_id.clone(),
+            AppClass::ZoneInstalled => SYSTEM_APP_OWNER_ID.to_string(),
+            AppClass::SystemBuiltin => {
+                return Err(stage_err(
+                    InstallStage::Prepare,
+                    InstallErrorCode::ConfigBlocked,
+                    false,
+                    "system built-in apps are not created by the installer",
+                ))
+            }
+        };
         let app_id = app_doc.name.clone();
         let is_agent = app_doc.get_app_type() == AppType::Agent;
+        if is_agent && data.request.app_class != AppClass::UserInstalled {
+            return Err(stage_err(
+                InstallStage::Prepare,
+                InstallErrorCode::ConfigBlocked,
+                false,
+                "agents can only be user_installed",
+            ));
+        }
         let is_update = view.task_type == buckyos_api::TASK_DATA_TYPE_APP_UPDATE;
         let spec_path = if is_agent {
             format!("users/{user_id}/agents/{app_id}/spec")
+        } else if data.request.app_class == AppClass::ZoneInstalled {
+            zone_app_spec_key(&app_id)
         } else {
             format!("users/{user_id}/apps/{app_id}/spec")
         };
@@ -180,7 +202,20 @@ impl ProductionInstallDriver {
         let materialized = self.materialize_for_deploy(data).await?;
 
         // 端口冲突检查（expose_port 与现有 spec 冲突即 CONFIG_BLOCKED）。
-        let install_config = plan.service_spec_config.clone();
+        let mut install_config = plan.service_spec_config.clone();
+        let guest_allowed = data.request.app_class == AppClass::UserInstalled
+            && previous_spec
+                .as_ref()
+                .map(|spec| {
+                    spec.spec_config
+                        .expose_config
+                        .values()
+                        .any(|config| config.allow_guest)
+                })
+                .unwrap_or(false);
+        for expose in install_config.expose_config.values_mut() {
+            expose.allow_guest = guest_allowed;
+        }
         check_expose_conflicts(&client, &install_config, &spec_path).await?;
 
         // app_index：升级沿用旧值；新装用 CAS 序列 key 分配（修扫描竞态）。
@@ -192,6 +227,7 @@ impl ProductionInstallDriver {
             app_doc,
             app_index,
             user_id: user_id.clone(),
+            app_class: data.request.app_class,
             permission: plan.install_params.permissions.clone(),
             enable: plan.install_params.auto_start,
             expected_instance_count: 1,
@@ -211,7 +247,7 @@ impl ProductionInstallDriver {
 
         // 先写 install_record(state=prepared)，成功后（Deploy）才写 spec。
         let record = build_install_record(view, data, InstallRecordState::Prepared, None)?;
-        write_install_record(&client, &user_id, &record, is_agent).await?;
+        write_install_record(&client, &record, is_agent).await?;
 
         Ok(prepared)
     }
@@ -261,7 +297,7 @@ impl ProductionInstallDriver {
 
         let is_agent = prepared.spec_path.contains("/agents/");
         let record = build_install_record(view, data, InstallRecordState::Deploying, None)?;
-        write_install_record(&client, &data.request.user_id, &record, is_agent).await?;
+        write_install_record(&client, &record, is_agent).await?;
         Ok(())
     }
 
@@ -296,20 +332,20 @@ impl ProductionInstallDriver {
 
         // 健康检查通过：更新 install_record=installed -> 写 installed proof。
         let record = build_install_record(view, data, InstallRecordState::Installed, None)?;
-        write_install_record(&client, &data.request.user_id, &record, is_agent).await?;
+        write_install_record(&client, &record, is_agent).await?;
 
         let proof_id = write_installed_proof(view, data, &prepared).await?;
         if proof_id.is_some() {
             let mut record_with_proof = record.clone();
             record_with_proof.proof_id = proof_id.clone();
             record_with_proof.updated_at = buckyos_get_unix_timestamp();
-            write_install_record(&client, &data.request.user_id, &record_with_proof, is_agent)
-                .await?;
+            write_install_record(&client, &record_with_proof, is_agent).await?;
         }
 
         Ok(InstallTaskResult {
             install_record_key: Some(install_record_key(
-                data.request.user_id.as_str(),
+                prepared.new_spec.app_class,
+                prepared.new_spec.user_id.as_str(),
                 prepared.new_spec.app_doc.name.as_str(),
                 is_agent,
             )),
@@ -386,7 +422,7 @@ impl ProductionInstallDriver {
             InstallRecordState::RolledBack,
             data.state.last_error.clone(),
         )?;
-        write_install_record(&client, &data.request.user_id, &record, is_agent).await?;
+        write_install_record(&client, &record, is_agent).await?;
         Ok(())
     }
 
@@ -791,48 +827,53 @@ async fn check_expose_conflicts(
         return Ok(());
     }
 
-    let users = match client.list("users").await {
-        Ok(users) => users,
-        Err(_) => return Ok(()),
-    };
-    for user in users {
-        for base in ["apps", "agents"] {
-            let Ok(apps) = client.list(format!("users/{user}/{base}").as_str()).await else {
-                continue;
-            };
-            for app in apps {
-                let key = format!("users/{user}/{base}/{app}/spec");
-                if key == own_spec_path {
-                    continue;
-                }
-                let Ok(value) = client.get(&key).await else {
-                    continue;
-                };
-                let Ok(spec) = serde_json::from_str::<AppServiceSpec>(&value.value) else {
-                    continue;
-                };
-                // 已删除的 spec 在 GC 前仍会保留，不再占用端口。
-                if spec.state == ServiceState::Deleted {
-                    continue;
-                }
-                for expose in spec.spec_config.expose_config.values() {
-                    if let Some(port) = expose.expose_port() {
-                        if requested.contains(&port) {
-                            return Err(stage_err(
-                                InstallStage::Prepare,
-                                InstallErrorCode::ConfigBlocked,
-                                false,
-                                format!(
-                                    "expose port {port} conflicts with installed app at `{key}`"
-                                ),
-                            ));
-                        }
-                    }
+    for key in installed_spec_paths(client).await {
+        if key == own_spec_path {
+            continue;
+        }
+        let Ok(value) = client.get(&key).await else {
+            continue;
+        };
+        let Ok(spec) = serde_json::from_str::<AppServiceSpec>(&value.value) else {
+            continue;
+        };
+        // 已删除的 spec 在 GC 前仍会保留，不再占用端口。
+        if spec.state == ServiceState::Deleted {
+            continue;
+        }
+        for expose in spec.spec_config.expose_config.values() {
+            if let Some(port) = expose.expose_port() {
+                if requested.contains(&port) {
+                    return Err(stage_err(
+                        InstallStage::Prepare,
+                        InstallErrorCode::ConfigBlocked,
+                        false,
+                        format!("expose port {port} conflicts with installed app at `{key}`"),
+                    ));
                 }
             }
         }
     }
     Ok(())
+}
+
+async fn installed_spec_paths(client: &SystemConfigClient) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Ok(users) = client.list("users").await {
+        for user in users {
+            for base in ["apps", "agents"] {
+                if let Ok(apps) = client.list(format!("users/{user}/{base}").as_str()).await {
+                    for app in apps {
+                        paths.push(format!("users/{user}/{base}/{app}/spec"));
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(apps) = client.list("zone/apps").await {
+        paths.extend(apps.into_iter().map(|app| format!("zone/apps/{app}/spec")));
+    }
+    paths
 }
 
 /// app_index 分配：专用序列 key + exec_tx CAS，修"扫描 max+1"并发竞态。
@@ -902,22 +943,10 @@ pub(crate) async fn allocate_app_index(client: &SystemConfigClient) -> Result<u1
 
 async fn scan_max_app_index(client: &SystemConfigClient) -> Result<u16, InstallError> {
     let mut max_index = 0u16;
-    let users = match client.list("users").await {
-        Ok(users) => users,
-        Err(_) => return Ok(0),
-    };
-    for user in users {
-        for base in ["apps", "agents"] {
-            let Ok(apps) = client.list(format!("users/{user}/{base}").as_str()).await else {
-                continue;
-            };
-            for app in apps {
-                let key = format!("users/{user}/{base}/{app}/spec");
-                if let Ok(value) = client.get(&key).await {
-                    if let Ok(spec) = serde_json::from_str::<AppServiceSpec>(&value.value) {
-                        max_index = max_index.max(spec.app_index);
-                    }
-                }
+    for key in installed_spec_paths(client).await {
+        if let Ok(value) = client.get(&key).await {
+            if let Ok(spec) = serde_json::from_str::<AppServiceSpec>(&value.value) {
+                max_index = max_index.max(spec.app_index);
             }
         }
     }
@@ -942,7 +971,18 @@ fn build_install_record(
     Ok(InstallRecord {
         schema_version: APP_INSTALL_SCHEMA_VERSION,
         app: plan.app.clone(),
-        user_id: data.request.user_id.clone(),
+        user_id: match data.request.app_class {
+            AppClass::ZoneInstalled => SYSTEM_APP_OWNER_ID.to_string(),
+            _ => data.request.user_id.clone(),
+        },
+        app_instance_id: app_instance_id(
+            plan.app.name.as_str(),
+            match data.request.app_class {
+                AppClass::ZoneInstalled => SYSTEM_APP_OWNER_ID,
+                _ => data.request.user_id.as_str(),
+            },
+        ),
+        app_class: data.request.app_class,
         resolution: plan.resolution.clone(),
         package_meta_ids: plan
             .selected_packages
@@ -967,11 +1007,15 @@ fn build_install_record(
 
 async fn write_install_record(
     client: &SystemConfigClient,
-    user_id: &str,
     record: &InstallRecord,
     is_agent: bool,
 ) -> Result<(), InstallError> {
-    let key = install_record_key(user_id, record.app.name.as_str(), is_agent);
+    let key = install_record_key(
+        record.app_class,
+        record.user_id.as_str(),
+        record.app.name.as_str(),
+        is_agent,
+    );
     let raw = serde_json::to_string(record).map_err(|err| {
         stage_err(
             InstallStage::Prepare,

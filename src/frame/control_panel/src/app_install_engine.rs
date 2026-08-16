@@ -1275,9 +1275,9 @@ mod tests {
     use crate::app_install_resolver::fake as resolver_fake;
     use crate::app_install_resolver::AppDidResolver;
     use buckyos_api::{
-        AppDoc, AppDocumentRef, AppInstallTaskRequest, AppServiceSpec, AppType, DocumentStatus,
-        InstallPolicy, InstallSource, PlanReadiness, ReadinessState, ServiceSpecConfig,
-        ServiceState, SubPkgDesc, VerificationCheck, VerificationReport,
+        AppClass, AppDoc, AppDocumentRef, AppInstallTaskRequest, AppServiceSpec, AppType,
+        DocumentStatus, InstallPolicy, InstallSource, PlanReadiness, ReadinessState,
+        ServiceSpecConfig, ServiceState, SubPkgDesc, VerificationCheck, VerificationReport,
         APP_INSTALL_SCHEMA_VERSION,
     };
     use name_lib::DID;
@@ -1586,6 +1586,7 @@ mod tests {
                 app_doc,
                 app_index: 7,
                 user_id: data.request.user_id.clone(),
+                app_class: AppClass::UserInstalled,
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::New,
@@ -1669,6 +1670,7 @@ mod tests {
         AppInstallTaskRequest {
             source: InstallSource::identifier(app_did.to_string(), None),
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             policy,
             options: if auto {
                 Some(json!({"auto_confirm": true}))
@@ -1971,6 +1973,7 @@ mod tests {
         let request = buckyos_api::AppUpdateTaskRequest {
             source: InstallSource::identifier(app_did.to_string(), None),
             user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
             app_id: "demo_web".to_string(),
             policy: InstallPolicy::SystemInternal,
             options: Some(json!({"auto_confirm": true})),

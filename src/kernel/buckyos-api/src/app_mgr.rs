@@ -1,6 +1,8 @@
 //system control panel client
 
-use crate::{AppDoc, InstanceVolumeConfig, PermissionItem, RdbInstanceConfig, ServiceProtocol};
+use crate::{
+    AppClass, AppDoc, InstanceVolumeConfig, PermissionItem, RdbInstanceConfig, ServiceProtocol,
+};
 use ::kRPC::*;
 use name_lib::DID;
 use serde::{Deserialize, Serialize};
@@ -284,6 +286,7 @@ pub struct AppServiceSpec {
     pub app_doc: AppDoc,
     pub app_index: u16,  //app index in user's app list
     pub user_id: String, //app's owner userid,注意不应该假设所有的请求都来自该用户
+    pub app_class: AppClass,
     pub permission: Vec<PermissionItem>,
 
     //与调度器相关的关键参数
@@ -300,6 +303,10 @@ pub struct AppServiceSpec {
 impl AppServiceSpec {
     pub fn app_id(&self) -> &str {
         self.app_doc.name.as_str()
+    }
+
+    pub fn app_instance_id(&self) -> String {
+        format!("{}@{}", self.app_id(), self.user_id)
     }
 }
 

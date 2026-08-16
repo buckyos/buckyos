@@ -50,6 +50,9 @@
 | `users/<id>/doc` | control_panel / scheduler | 用户 DID 文档 |
 | `users/<id>/apps/<app_id>/spec` | control_panel / scheduler | 用户安装的 App 规格 |
 | `users/<id>/agents/<agent_id>/spec`、`.../settings` | scheduler | 用户的 Agent 配置 |
+| `zone/apps/<app_id>/spec`、`.../install_record` | control_panel | Zone 级 App 的唯一安装记录；不按用户复制 |
+| `services/control_panel/app_availability/policies/<app_instance_id>` | control_panel | 个人 App 的 App–User 可用性策略（revision/CAS） |
+| `services/control_panel/app_availability/audit/<app_instance_id>/<revision>` | control_panel | 可用性策略变更审计 |
 | `system/rbac/policy` | **scheduler（`ood` 身份）** | 动态策略尾部：按用户/节点/服务生成的分组行 |
 | API runtime 内置 RBAC 配置 | API runtime / scheduler 二进制 | Casbin model + 稳定角色权限；运行时与 `system/rbac/policy` 合成生效策略 |
 
@@ -59,7 +62,7 @@
 
 `Active → Suspended / Banned / Deleted`。
 
-> ⚠️ **重要现状**：当前删除是“软删除”（仅把 `state` 置为 `Deleted`），但**登录路径不检查 `state`**（`src/kernel/verify_hub/src/main.rs` 的 `handle_login_by_password` 只校验口令哈希）。因此 `Suspended` / `Banned` / `Deleted` 用户当前仍能登录并拿到合法 token。这是标准与实现的关键差距，详见 §4.3 与 §7。
+删除仍是“软删除”（仅把 `state` 置为 `Deleted`），但 Verify Hub 的密码登录、用户主体 JWT/SSO 登录及 refresh 都会读取最新 `UserSettings`，只有 `Active` 用户可以取得新 token。App 可用性解析同样把 `Suspended` / `Banned` / `Deleted` 视为拒绝。
 
 ---
 
@@ -156,7 +159,20 @@ allow = enforce(appid, resource, action)   // App 角色是否允许
 | RBAC 分组 | 用 service token 追加当前用户类型对应的角色分组（`Admin -> admin`，`User -> users`，`Limited -> limited`）；失败仅告警不致命，scheduler `update_rbac` 会在下一轮重建 | ⚠️ |
 | DID 密钥对 | **运行期不生成密钥对**（与引导期 `OwnerConfig` 不对称，doc 无公钥字段） | ⚠️ |
 | Home 目录 / 数据目录 | **不创建**（见下「App 标准」） | ❌（标准要求显式 provision） |
-| 默认 App / Agent | **不安装** | ❌（标准要求可配默认集） |
+| 默认 App / Agent | 不复制个人 App；新用户通过动态规则自动获得系统内置 App 与 Zone App | ✅（个人预装集仍需显式安装） |
+
+### 3.3 新用户的有效 App 集
+
+创建用户时不枚举或复制系统 App、Zone App 和共享授权。首次调用 `apps.list` 时，Control Panel 根据当前用户状态和类型动态计算：
+
+```text
+system_builtin
++ zone_installed
++ 用户自己的 user_installed
++ 其他 Owner 通过系统组或精确用户规则分享的 user_installed
+```
+
+结果以 `<app_id>@<owner_user_id>` 为稳定主键；同名不同 Owner 的实例不会合并。系统组只来自可信 `UserType`（`admins` / `users` / `limited`），禁止使用用户可编辑的 Profile/contact groups。用户类型变化会在下一次列表查询、登录或 refresh 时立即参与重新判定。
 
 ### 3.2 App 应遵循的标准职责
 
@@ -192,7 +208,8 @@ allow = enforce(appid, resource, action)   // App 角色是否允许
 | 清理 `users/<id>/apps/*`、`users/<id>/agents/*` | 全部成为孤儿 | ❌ |
 | 级联通知 App / 调度器 | 无任何回调、无 kevent | ❌ |
 | 删除用户名下 DFS / Home 数据 | 不删，全部留盘 | ❌ |
-| **登录拦截被删用户** | `handle_login_by_password` 不看 `state` → **被删用户仍能登录** | ❌（安全缺陷，优先级最高） |
+| **登录拦截被删用户** | 密码、用户 JWT/SSO 与 refresh 都要求 `state=Active` | ✅ |
+| **阻止已删 Owner 的共享 App 新登录** | AppAvailabilityResolver 要求个人 App Owner 保持 Active | ✅ |
 
 ### 4.3 App 应遵循的标准职责
 
@@ -216,6 +233,12 @@ allow = enforce(appid, resource, action)   // App 角色是否允许
 | **创建用户** | 写 `users/<id>/settings`+`/doc`；按类型生成 RBAC 分组（admin 即时、其余 scheduler 补齐）；引导期预装默认 App/Agent | 首次访问 lazy 初始化自身 per-user 数据；按 `owner_user_id` 隔离；只认 session-token；权限交给系统 enforce |
 | **删除用户** | （现状）软删除置 `state=Deleted`。（标准）应级联清 RBAC/孤儿 key、拦截登录、发 `onUserDelete` | （标准）订阅 `onUserDelete` 后清理本 App 名下该用户数据，遵守 `persistence`，幂等 |
 | **隔离边界** | 强制：数据路径烘焙 `owner_user_id`；RBAC 按 `{user}`/`{app}` 绑定；容器不可越界写 | 遵守：不跨用户、不跨 App 读写；不自建身份/权限体系 |
+
+### 5.1 App–User 可用性不是 App 内部 ACL
+
+App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；无精确规则时 deny 组优先于 allow 组；默认拒绝。系统 App 与 Zone App 对所有有效登录用户隐式允许。
+
+session token 同时绑定 `appid`、`app_instance_id` 和非系统 App 的 `app_owner_user_id`。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。匿名 `guest` 不经过 Verify Hub，其 allow 规则由 Control Panel 同步为 App expose 配置，scheduler 编译为 Gateway `Public`；删除规则后重新编译为 `Private`。
 
 ---
 

@@ -83,8 +83,8 @@ token 有效期：
 
 ### verify_token：集中验证接口（可选路径）
 verify-hub 提供 `verify_token` 协议（`src/kernel/verify_hub/README.md`）：
-- request: `{ "method": "verify_token", "params": { "session_token": "$session_token" } }`
-- response: `{ "userid": "...", "appid": "...", "exp": 123... }`
+- request: `{ "method": "verify_token", "params": { "session_token": "$session_token", "appid": "notes", "app_instance_id": "notes@alice" } }`；两个期望目标字段可选，但业务 App 应同时提交。
+- response: `true`；签名、有效期、token 类型和期望 App 身份任一不匹配都会返回错误。用户 token 必须自带 `principal_kind=user`、`app_instance_id`，非系统 App 还必须带匹配的 `app_owner_user_id`。
 
 这条路径适用于“验证方不想/不能维护 trust keys”的场景：把 token 发给 verify-hub 由其验证。
 
@@ -109,7 +109,7 @@ service_handle(req):
   if local_has_trust_keys:
      (userid, appid) = local_verify_jwt(req.session_token)
   else:
-     (userid, appid) = verify_hub.verify_token(req.session_token)
+     valid = verify_hub.verify_token(req.session_token, expected_appid, expected_app_instance_id)
 
   // 4) enforce
   allowed = rbac.enforce(userid, appid, req.resource_path, req.action)

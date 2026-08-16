@@ -14,7 +14,19 @@ export type AppState =
   | 'deleted'
   | 'unknown'
 
-export type AppType = 'service' | 'dapp' | 'web'
+export type AppRuntimeType = 'service' | 'dapp' | 'web' | 'agent'
+export type AppClass = 'system_builtin' | 'user_installed' | 'zone_installed'
+export type AvailabilityMatchType =
+  | 'system_builtin'
+  | 'owner'
+  | 'zone_all_users'
+  | 'group'
+  | 'exact_user'
+
+export interface AvailabilityMatch {
+  type: AvailabilityMatchType
+  subject?: string
+}
 
 /**
  * Flattened summary of an app, returned by `apps.list` and embedded in
@@ -22,9 +34,14 @@ export type AppType = 'service' | 'dapp' | 'web'
  */
 export interface AppSummary {
   app_id: string
+  /** Stable Zone-wide identity used by routing, authorization, and UI actions. */
+  app_instance_id: string
+  app_class: AppClass
+  runtime_type: AppRuntimeType
+  owner_user_id: string
+  availability_match: AvailabilityMatch | null
   show_name: string | null
   version: string
-  app_type: AppType
   /** Icon URL as declared in AppDoc; may be null/empty. */
   app_icon_url: string | null
   /** Convention-based fallback: `res/<app_id>/appicon.png`. */
@@ -36,10 +53,7 @@ export interface AppSummary {
   enable: boolean
   state: AppState | string
   expected_instance_count: number
-  /** True for BuckyOS built-in apps (MessageHub, HomeStation, Content Store). */
-  is_system: boolean
   spec_path: string
-  user_id: string
 }
 
 export interface AppsListResponse {
@@ -50,12 +64,46 @@ export interface AppsListResponse {
 
 export interface AppDetailsResponse {
   app_id: string
-  user_id: string
-  is_system: boolean
+  app_instance_id: string
+  app_class: AppClass
+  owner_user_id: string
   spec_path: string
   summary: AppSummary
   /** Full `AppServiceSpec` as serialized by the backend. */
   spec: Record<string, unknown>
+}
+
+export type AvailabilityEffect = 'allow' | 'deny'
+
+export interface AvailabilityGroupRule {
+  group_id: 'admins' | 'users' | 'limited' | 'guest'
+  effect: AvailabilityEffect
+}
+
+export interface AvailabilityUserRule {
+  user_id: string
+  effect: AvailabilityEffect
+}
+
+export interface AppAvailabilityPolicy {
+  schema_version: number
+  app_instance_id: string
+  default_effect: 'deny'
+  group_rules: AvailabilityGroupRule[]
+  user_rules: AvailabilityUserRule[]
+  revision: number
+  updated_by: string
+  updated_at: number
+}
+
+export interface AppAvailabilityDecision {
+  allowed: boolean
+  app_id: string
+  app_instance_id: string
+  app_class: AppClass
+  owner_user_id: string
+  availability_match?: AvailabilityMatch
+  reason: string
 }
 
 
@@ -66,8 +114,7 @@ export interface AppDetailsResponse {
 /**
  * Fetch the list of apps available to the caller (or an explicit user).
  *
- * The backend returns user-installed apps from `users/{uid}/apps/*`,
- * followed by BuckyOS built-in system apps (marked `is_system: true`).
+ * The backend returns the effective authorized set for the target user.
  */
 export const fetchAppList = async (
   options: { userId?: string } = {},
@@ -86,12 +133,38 @@ export const fetchAppList = async (
  * so that callers can always inspect e.g. `messagehub`.
  */
 export const fetchAppDetails = async (
-  appId: string,
-  options: { userId?: string } = {},
+  appInstanceId: string,
 ): Promise<{ data: AppDetailsResponse | null; error: unknown }> => {
-  const params: Record<string, unknown> = { app_id: appId }
-  if (options.userId) {
-    params.user_id = options.userId
-  }
-  return callRpc<AppDetailsResponse>('apps.details', params)
+  return callRpc<AppDetailsResponse>('apps.details', {
+    app_instance_id: appInstanceId,
+  })
 }
+
+export const fetchAppAvailability = async (
+  appInstanceId: string,
+): Promise<{ data: AppAvailabilityPolicy | null; error: unknown }> =>
+  callRpc<AppAvailabilityPolicy>('apps.availability.get', {
+    app_instance_id: appInstanceId,
+  })
+
+export const setAppAvailability = async (
+  appInstanceId: string,
+  expectedRevision: number,
+  groupRules: AvailabilityGroupRule[],
+  userRules: AvailabilityUserRule[],
+): Promise<{ data: AppAvailabilityPolicy | null; error: unknown }> =>
+  callRpc<AppAvailabilityPolicy>('apps.availability.set', {
+    app_instance_id: appInstanceId,
+    expected_revision: expectedRevision,
+    group_rules: groupRules,
+    user_rules: userRules,
+  })
+
+export const checkAppAvailability = async (
+  appInstanceId: string,
+  userId?: string,
+): Promise<{ data: AppAvailabilityDecision | null; error: unknown }> =>
+  callRpc<AppAvailabilityDecision>('apps.availability.check', {
+    app_instance_id: appInstanceId,
+    ...(userId ? { user_id: userId } : {}),
+  })

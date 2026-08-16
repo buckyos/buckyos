@@ -76,20 +76,29 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
   const [
     usersResult,
     selfResult,
-    appsResult,
     agentsResult,
   ] = await Promise.all([
     fetchUserList(),
     fetchUserDetail(selfUserId ? { userId: selfUserId } : {}),
-    fetchAppList(selfUserId ? { userId: selfUserId } : {}),
     fetchAgentListWithRuntime(),
   ])
+
+  const targetUserIds = new Set<string>()
+  if (selfUserId) targetUserIds.add(selfUserId)
+  for (const user of usersResult.data?.users ?? []) {
+    if (user.user_id) targetUserIds.add(user.user_id)
+  }
+  const appsByUser = new Map<string, NonNullable<Awaited<ReturnType<typeof fetchAppList>>['data']>['apps']>()
+  await Promise.all([...targetUserIds].map(async (userId) => {
+    const result = await fetchAppList({ userId })
+    if (result.data) appsByUser.set(userId, result.data.apps)
+  }))
 
   const selfDetail = selfResult.data ?? (accountInfo ? accountDetail(accountInfo) : null)
   const hasCoreData = Boolean(
     selfDetail ||
       usersResult.data ||
-      appsResult.data ||
+      appsByUser.size > 0 ||
       agentsResult.data,
   )
   if (!hasCoreData) {
@@ -97,11 +106,11 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
   }
 
   const empty = createEmptyUsersAgentsSnapshot()
-  const apps = appsResult.data?.apps ?? []
-  const self = toSelfEntity(selfDetail, apps, empty.self)
+  const selfApps = selfUserId ? appsByUser.get(selfUserId) ?? [] : []
+  const self = toSelfEntity(selfDetail, selfApps, empty.self)
   const now = new Date().toISOString()
   const localUsers = usersResult.data
-    ? toVisibleLocalUserEntities(usersResult.data.users, apps, self.id, now)
+    ? toVisibleLocalUserEntities(usersResult.data.users, appsByUser, self.id, now)
     : []
 
   const agents = agentsResult.data

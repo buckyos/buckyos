@@ -11,10 +11,14 @@ use anyhow::Result;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
 fn app_service_spec_key_candidates(user_id: &str, app_id: &str) -> Vec<String> {
-    vec![
+    let mut keys = vec![
         format!("users/{}/apps/{}/spec", user_id, app_id),
         format!("users/{}/agents/{}/spec", user_id, app_id),
-    ]
+    ];
+    if user_id == SYSTEM_APP_OWNER_ID {
+        keys.insert(0, zone_app_spec_key(app_id));
+    }
+    keys
 }
 
 fn load_app_service_spec(
@@ -27,6 +31,17 @@ fn load_app_service_spec(
             let spec: AppServiceSpec = serde_json::from_str(raw.as_str()).map_err(|err| {
                 anyhow::anyhow!("app_config {} is not a valid json: {}", key, err)
             })?;
+            let expected_class = if user_id == SYSTEM_APP_OWNER_ID {
+                AppClass::ZoneInstalled
+            } else {
+                AppClass::UserInstalled
+            };
+            if spec.app_class != expected_class || spec.user_id != user_id {
+                return Err(anyhow::anyhow!(
+                    "app_config {} has mismatched class or owner",
+                    key
+                ));
+            }
             return Ok((key, spec));
         }
     }

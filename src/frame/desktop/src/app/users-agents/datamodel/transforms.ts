@@ -232,9 +232,7 @@ export function toLocalUserEntity(
   const source = zoneUserSource(user.is_local)
   const status = zoneUserStatus(user.state)
   const role = zoneUserType(user.user_type)
-  const availableApps = apps
-    .filter((app) => app.user_id === user.user_id)
-    .map((app) => app.show_name || app.app_id)
+  const availableApps = apps.map((app) => app.show_name || app.app_id)
 
   return {
     id: user.user_id,
@@ -273,7 +271,7 @@ export function toLocalUserEntity(
 
 export function toVisibleLocalUserEntities(
   users: UserInfo[],
-  apps: AppSummary[],
+  appsByUser: ReadonlyMap<string, AppSummary[]>,
   selfUserId: string,
   now: string,
 ): LocalUserEntity[] {
@@ -290,7 +288,7 @@ export function toVisibleLocalUserEntities(
       continue
     }
     seenUserIds.add(userId)
-    visibleUsers.push(toLocalUserEntity(user, apps, now))
+    visibleUsers.push(toLocalUserEntity(user, appsByUser.get(userId) ?? [], now))
   }
 
   return visibleUsers

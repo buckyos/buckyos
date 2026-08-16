@@ -23,7 +23,12 @@
  *   - 正式环境                                              → initByReal
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import { resolveDesktopApps, findDesktopAppById } from '../app/registry'
+import { fetchAppList, type AppSummary } from '../api/app_mgr'
+import {
+  desktopCatalogIdForLogicalApp,
+  resolveDesktopApps,
+  findDesktopAppById,
+} from '../app/registry'
 import type { DesktopAppItem } from '../app/types'
 import {
   getDesktopWindowPositionBounds,
@@ -48,6 +53,7 @@ import type {
   DesktopSyncData,
   FormFactor,
   LayoutState,
+  LayoutItem,
   MockScenario,
   RuntimeContainer,
   SupportedLocale,
@@ -234,6 +240,109 @@ function buildSyncData(
     appItemLayout: layout ? extractAppItemLayout(layout) : emptyAppLayout,
     widgetLayout: layout ? extractWidgetLayout(layout) : emptyWidgetLayout,
   }
+}
+
+const CONTROL_PANEL_APP_IDS = new Set([
+  'settings',
+  'diagnostics',
+  'users-agents',
+  'my-network',
+  'app-service',
+])
+
+function buildAuthorizedAppDefinitions(
+  catalog: AppDefinition[],
+  authorizedApps: AppSummary[],
+): AppDefinition[] {
+  const catalogById = new Map(catalog.map((app) => [app.id, app]))
+  const controlPanelApps = catalog.filter((app) => CONTROL_PANEL_APP_IDS.has(app.id))
+  const installedApps = authorizedApps.map((summary): AppDefinition => {
+    const catalogEntry = catalogById.get(desktopCatalogIdForLogicalApp(summary.app_id))
+    const fallback: AppDefinition = {
+      id: summary.app_instance_id,
+      iconKey: summary.app_id,
+      labelKey: summary.show_name || summary.app_id,
+      summaryKey: summary.app_id,
+      accent: 'var(--cp-accent)',
+      tier: 'external',
+      manifest: {
+        defaultMode: 'windowed',
+        allowMinimize: true,
+        allowMaximize: true,
+        allowClose: true,
+        allowFullscreen: true,
+        mobileFullscreenBehavior: 'cover_dead_zone',
+        mobileStatusBarMode: 'standard',
+        titleBarMode: 'system',
+        placement: 'inplace',
+      },
+    }
+    return {
+      ...(catalogEntry ?? fallback),
+      id: summary.app_instance_id,
+      logicalAppId: summary.app_id,
+      appInstanceId: summary.app_instance_id,
+      ownerUserId: summary.owner_user_id,
+      appClass: summary.app_class,
+    }
+  })
+  return [...controlPanelApps, ...installedApps]
+}
+
+function buildAuthorizedDefaultLayout(
+  layout: LayoutState,
+  definitions: AppDefinition[],
+): LayoutState {
+  const instancesByLogicalId = new Map<string, AppDefinition[]>()
+  for (const definition of definitions) {
+    if (!definition.logicalAppId) continue
+    const catalogId = desktopCatalogIdForLogicalApp(definition.logicalAppId)
+    const current = instancesByLogicalId.get(catalogId) ?? []
+    current.push(definition)
+    instancesByLogicalId.set(catalogId, current)
+  }
+
+  const placed = new Set<string>()
+  const pages = layout.pages.map((page) => ({
+    ...page,
+    items: page.items.flatMap<LayoutItem>((item): LayoutItem[] => {
+      if (item.type !== 'app') return [item]
+      if (CONTROL_PANEL_APP_IDS.has(item.appId)) return [item]
+      const instances = instancesByLogicalId.get(item.appId) ?? []
+      return instances
+        .filter((definition) => !placed.has(definition.id))
+        .map((definition, index) => {
+          placed.add(definition.id)
+          return {
+            ...item,
+            id: `app-${definition.id}`,
+            appId: definition.id,
+            ...(index > 0
+              ? { x: undefined, y: undefined, slotIndex: undefined, placementType: 'auto' as const }
+              : {}),
+          }
+        })
+    }),
+  }))
+
+  const unplaced = definitions.filter(
+    (definition) => definition.logicalAppId && !placed.has(definition.id),
+  )
+  if (unplaced.length > 0) {
+    const target = pages.at(-1) ?? { id: `${layout.formFactor}-page-1`, items: [] }
+    if (pages.length === 0) pages.push(target)
+    target.items.push(...unplaced.map((definition, index) => ({
+      id: `app-${definition.id}`,
+      type: 'app' as const,
+      appId: definition.id,
+      w: 1,
+      h: 1,
+      placementType: 'auto' as const,
+      seq: target.items.length + index,
+    })))
+  }
+
+  return { ...layout, pages }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,8 +594,69 @@ export class DesktopUIStore {
    * TODO: 对接真实后端后实现。
    */
   private async initByReal(formFactor: FormFactor) {
-    // 暂时回退到 mock 数据，后续替换为真实 API 调用
-    await this.initByMock(formFactor, 'normal')
+    this.update({
+      status: 'loading',
+      error: null,
+      formFactor,
+      scenario: 'normal',
+      runtime: {
+        windows: [],
+        isSystemSidebarOpen: false,
+        viewportProgress: 0,
+      },
+    })
+
+    try {
+      const [payload, appsResult] = await Promise.all([
+        fetchDesktopPayload({ formFactor, scenario: 'normal' }),
+        fetchAppList(),
+      ])
+      if (!appsResult.data) {
+        throw appsResult.error ?? new Error('apps.list unavailable')
+      }
+
+      const authorizedDefinitions = buildAuthorizedAppDefinitions(payload.apps, appsResult.data.apps)
+      const defaultLayout = buildAuthorizedDefaultLayout(
+        payload.layout,
+        authorizedDefinitions,
+      )
+      const authorizedPayload = {
+        ...payload,
+        apps: authorizedDefinitions,
+        layout: defaultLayout,
+      }
+      this.defaultPayload = authorizedPayload
+      const apps = resolveDesktopApps(authorizedDefinitions, formFactor)
+      const stored = readJson<LayoutState>(layoutStorageKey(formFactor))
+      let layoutState = stored
+        ? migrateDeadZone(stored, formFactor)
+        : defaultLayout
+      layoutState = reconcileLayoutWithDefaultApps(
+        layoutState,
+        defaultLayout,
+        apps,
+        formFactor,
+      )
+      const { gridCols, gridRows } = this.snapshot.runtime
+      layoutState = migrateToSlotModel(layoutState, gridCols, gridRows)
+      layoutState = invalidatePositions(layoutState, gridCols, gridRows)
+
+      this.snapshot.syncData.appItemConfig = { apps: authorizedDefinitions }
+      this.update({
+        status: 'success',
+        apps,
+        layoutState,
+        appearance: {
+          wallpaper: payload.wallpaper,
+          deadZone: layoutState.deadZone,
+        },
+      })
+    } catch (err) {
+      this.update({
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   // ========================================================================
