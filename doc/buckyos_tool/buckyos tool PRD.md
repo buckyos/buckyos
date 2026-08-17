@@ -1,8 +1,8 @@
 # BuckyOS Tool PRD
 
-> 状态：Draft v0.2  
-> 目标版本：Beta 2.2 以后  
-> 命令名称：`buckyos`  
+> 状态：Draft v0.3
+> 目标版本：Beta 2.2 以后
+> 命令名称：`buckyos`
 > 实现语言与运行时：TypeScript + Deno
 
 ## 1. 背景
@@ -19,7 +19,8 @@ Agent 稳定调用的生产接口。
 - 不自动读取、合并或迁移 `~/.buckycli`、`~/buckycli` 中的任何配置；
 - 通过正式 BuckyOS SDK、kRPC 服务和受控的本机控制桥执行操作；
 - 业务模块是薄客户端，不在 CLI 内复制 scheduler、installer、MessageHub 等服务逻辑；
-- 默认输出稳定的机器可读 JSON，适合 Jarvis 和其它 Agent 调用。
+- 单次命令默认输出稳定的机器可读 JSON，适合 Jarvis 和其它 Agent 调用；显式进入交互命令行
+  时提供面向人工运维的持续 session 和显示方式。
 
 Beta 2.2 是 breaking change，本工具不承担旧命令、旧参数、旧输出和旧配置兼容。
 
@@ -83,6 +84,7 @@ session/identity 认证及 HostControlClient 抽象，不在业务模块中散�
 
 ```text
 buckyos [global-options] <module> <verb> [primary-selector] [action-options]
+buckyos [session-options] --cli
 ```
 
 示例：
@@ -93,6 +95,7 @@ buckyos --profile production user get alice
 buckyos --zone corp.example.com --identity ops app restart --app-instance notes@alice
 buckyos --output json system status
 buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --app-instance notes@alice
+buckyos --profile production --identity ops --cli
 ```
 
 约束：
@@ -104,6 +107,7 @@ buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --
 - 同一字段同时出现在 `--input` 和 option 中时直接报参数冲突，不做隐式覆盖。
 - 不提供行为不明确的缩写和隐式别名。
 - `--help`、`--version` 和 shell completion 是命令树的框架级例外。
+- `--cli` 是另一个框架级入口；进入时不得同时给出 module/verb。
 
 ### 4.2 标准动词
 
@@ -141,6 +145,7 @@ buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --
 | `--security-root <path>` | 显式指定本次命令的 security root |
 | `--session-token <token>` | 直接使用外部 session token |
 | `--session-token-file <path>` | 从文件读取临时 session token |
+| `--cli` | 解析连接与身份后进入有状态的交互命令行 |
 | `--output <format>` | 输出模式，可选 json/jsonl/table/text/raw，默认 `json` |
 | `--input <path-or-stdin>` | 从文件读取动作 JSON；值为 `-` 时读取 stdin |
 | `--timeout <duration>` | 本地请求或等待超时，例如 `30s`、`5m` |
@@ -157,7 +162,62 @@ buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --
 环境变量或 `--session-token-file`。框架必须在 help、日志、错误和 effective config 中统一
 脱敏 token。
 
-### 4.4 框架内置模块
+### 4.4 交互命令行
+
+旧 `buckycli sys-config connect` 的 readline 循环可以作为交互体验参考，但新 Tool 的交互模式
+不是 `system-config` 专用终端，也不恢复任意 KV 读写能力。它是同一 Command Registry 之上的
+全模块 REPL：
+
+```text
+$ buckyos --profile production --identity ops --cli
+buckyos[production|corp.example.com|ops]> user list
+buckyos[production|corp.example.com|ops]> app status notes@alice
+buckyos[production|corp.example.com|ops]> task wait 01J...
+```
+
+进入 REPL 后，每一行的正式命令语法固定为：
+
+```text
+<module> <verb> [primary-selector] [action-options]
+```
+
+不再重复 `buckyos`、profile、Zone 和 identity。每行仍由标准 argv parser、Command Registry、
+input schema 和 handler 处理，不允许维护第二套命令实现。REPL parser 必须支持引号、转义和
+空格参数，不能使用简单的 `split_whitespace`。
+
+通用参数在交互模式下分为两类：
+
+- session 参数：`--config-dir`、`--profile`、`--zone`、`--endpoint`、`--identity`、
+  `--identity-root`、`--security-root`、`--session-token`、`--session-token-file` 等在进入时解析
+  并冻结，禁止在某一条命令里隐式切换 Zone 或身份；需要切换时退出并重建 session；
+- command 参数：`--input`、`--timeout`、`--trace-id`、`--idempotency-key`、`--wait`、`--yes`、
+  `--output` 可以作为当前命令的 action options 出现在 verb 之后，只影响当前命令。trace id
+  默认逐条生成，idempotency key、确认结果和 deadline 不得继承到下一条命令。
+
+`--cli` 与 `--non-interactive` 冲突。因为 stdin 已由行编辑器占用，REPL 内禁止
+`--input -`；复杂 JSON 使用 `--input <file>`。未显式设置 `--output` 时，交互模式默认
+`table`，单次命令仍默认 `json`；这是由显式参数决定的行为，不得根据 TTY 自动改变协议。
+
+core 至少提供以下冒号前缀的 REPL 内置命令，避免与业务 module 冲突：
+
+- `:help`：显示 REPL 使用方法和已注册模块；
+- `:context`：显示脱敏后的 profile、Zone、endpoint、identity 和输出默认值；
+- `:session`：显示当前 principal、appid、登录方式和 token 过期时间，不显示凭证；
+- `:history`：显示本 session 的安全命令历史；
+- `:reconnect`：使用冻结的 session 参数重建连接并重新解析凭证；
+- `:exit` / `:quit`：结束交互 session。
+
+交互行为要求：
+
+- 普通命令失败只输出该命令的错误，REPL 继续运行；只有初始化失败或内部不可恢复错误才退出；
+- 空闲时 Ctrl-C 清除当前输入，执行请求或本地等待时 Ctrl-C 只取消当前本地操作，不隐式取消
+  远程 Task；Ctrl-D、`:exit` 和 `:quit` 正常退出；
+- prompt、banner 和补全信息是终端 UI，不得进入命令的 JSON stdout envelope；
+- 支持 module/verb/option 补全；补全来源必须是同一 Command Registry；
+- 命令历史默认保存到 `~/.buckyos_tool/state/repl_history`，限制条数并使用仅当前用户可读写的
+  权限；命令 schema 标记为 secret 的输入或凭证操作整条不落盘。
+
+### 4.5 框架内置模块
 
 以下模块由 core 提供，不属于业务模块：
 
@@ -187,6 +247,7 @@ buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --
 │   └── <encoded-did>/
 ├── cache/
 └── state/
+    └── repl_history
 ```
 
 - Tool 自己拥有的 config/state JSON 必须包含 `schema_version`；DID Document 和 keyref 等身份
@@ -195,7 +256,8 @@ buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --
 - profile 保存 Zone、endpoint、identity DID/名称和默认输出，不嵌入私钥、密码或 token。
 - `local/identity` 和 `security` 遵循 BuckyOS IdentityRoots 路径协议，分别存放公开身份材料和
   私钥/keyref；不得在 profile JSON 中内嵌私钥。
-- 第一阶段不持久化 session token 或 refresh token，也不实现 refresh 流程。
+- 第一阶段不持久化 session token 或 refresh token，也不实现 refresh token 流程；交互模式只在
+  当前进程内复用或重新签发短期 session token。
 - 写配置使用临时文件 + rename，避免中途退出产生半文件。
 - 日志和错误不得打印 private key、refresh token、session token 或数据库完整连接串。
 
@@ -286,9 +348,15 @@ Tool 私有身份材料使用 IdentityRoots 布局，例如：
 4. 按 §5.3 找到的 UserDocument + authentication private key/keyref；
 5. 交互式密码登录。
 
-命令生命周期通常很短，第一阶段不申请、不保存也不刷新 refresh token。使用身份私钥时，
-Tool 在当前命令进程内构造登录 JWT，通过 verify-hub 换取可用 session token，并只在内存中
-使用到命令结束。
+单次命令生命周期通常很短，第一阶段不申请、不保存也不刷新 refresh token。使用身份私钥时，
+Tool 在当前进程内构造登录 JWT，通过 verify-hub 换取可用 session token，并只在内存中使用。
+交互模式复用该 token、principal、连接和 service clients；token 临近过期时可用同一私钥重新
+签发，不能把 refresh token 或 session token 写入 state/profile。使用密码登录时需要重新认证
+则安全地再次提示密码，不能缓存密码。
+
+外部 token 的更新边界必须明确：`--session-token-file` 可由 `:reconnect` 重新读取；argv 或环境
+变量提供的 token 失效后返回稳定的 `SESSION_EXPIRED`，不得冒用其它身份自动续期。认证错误不
+销毁 REPL，用户可以在排除问题后执行 `:reconnect`，或退出后用新凭证重建 session。
 
 Tool 默认使用稳定 appid `buckycli` 登录。使用外部 session token 时，以 token claims 中的
 appid/app instance 为有效调用方，禁止强行改写成 `buckycli`；CommandContext 和审计输出必须
@@ -329,6 +397,8 @@ src/tools/buckyos-tool/
 │   ├── errors.ts
 │   ├── confirm.ts
 │   ├── task.ts
+│   ├── repl.ts
+│   ├── history.ts
 │   └── context.ts
 ├── modules/
 │   └── <module>/
@@ -426,6 +496,31 @@ interface CommandContext {
 - 业务模块新增文件、进程或网络权限时，必须在模块 PRD 和命令元数据中声明。
 - 普通在线模块不得申请 `--allow-run`。
 
+### 6.6 InteractiveSession
+
+交互命令行由 core 维护单个 `InteractiveSession`。启动时完成一次配置解析、身份解析、登录、
+endpoint 建连和 client registry 初始化，之后复用稳定的基础状态：
+
+```ts
+interface InteractiveSession {
+  connection: ResolvedConnection;
+  principal: ResolvedPrincipal;
+  authentication: InMemoryAuthentication;
+  clients: ServiceClientRegistry;
+  output: OutputPolicy;
+  startedAt: number;
+}
+```
+
+每执行一条正式命令，都基于该基础状态创建新的 `CommandContext`，并重新生成 trace id、deadline、
+确认状态和其它 command-scoped 字段。InteractiveSession 可以在内存中复用有效 session token，
+也可以按 §5.5 重签或 reconnect；不得缓存密码，不得把 token 落盘。
+
+sudo token 只允许在当前进程内、有效期内复用，而且每条命令都必须重新校验 token 的
+scope/action/resource，不能把一次 sudo 确认升级成整个 REPL 的无限 sudo 状态。业务 handler
+无法区分命令来自单次执行还是 REPL，除 `CommandContext.interactive` 所表达的确认能力外，两种
+入口的认证、授权、审计、错误和结果协议必须一致。
+
 ## 7. 输入、输出和错误协议
 
 ### 7.1 默认 JSON 输出
@@ -466,6 +561,8 @@ interface CommandContext {
 
 - stdout 只写最终数据协议。
 - 进度、确认、警告、诊断和日志写 stderr。
+- 交互模式的 prompt、banner 和行编辑 UI 写终端控制通道；每条正式命令的结果仍遵守所选
+  output 格式，`--output json` 时每条结果都是独立完整的 envelope。
 - `jsonl` 用于 watch、tail 和持续任务事件，每行都是完整、可独立解析的 envelope。
 - `table` 和 `text` 只用于人类显示，不作为自动化稳定接口。
 - `raw` 仅用于明确声明支持原始字节的命令；使用 raw 时不得混入 JSON 或进度。
@@ -551,7 +648,8 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 
 ## 9. Agent First 要求
 
-1. 默认 JSON，不依赖 TTY 检测改变协议。
+1. 单次命令默认 JSON，不依赖 TTY 检测改变协议；只有显式 `--cli` 才启用 REPL 的
+   人工显示默认值。
 2. `command list/describe` 提供机器可读的自描述能力。
 3. 复杂输入支持 stdin JSON，避免 shell escaping 和 argv 长度限制。
 4. 不在非交互模式询问问题；缺参数、确认或 sudo 时立即返回稳定错误。
@@ -593,6 +691,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 - `command list/describe`；
 - 新配置目录、profile 和覆盖优先级；
 - JSON envelope、stderr、退出码；
+- `--cli` 入口、REPL parser、内置命令、history 和补全骨架；
 - mock `CommandContext` 和单元测试。
 
 ### Phase 1：认证和最小在线闭环
@@ -601,6 +700,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 - BuckyOS TS runtime 和 service client registry；
 - `auth whoami/session-status`；
 - `system status`；
+- InteractiveSession、短期 session 复用、过期重签和 `:reconnect`；
 - trace、timeout 和错误归一化。
 
 ### Phase 2：写操作框架
@@ -644,6 +744,15 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 10. Deno 正式 launcher 不使用 `-A`。
 11. Windows Desktop 可从本机 Deno 开发入口、Jarvis 容器和 paios 临时容器执行同一只读命令。
 12. Linux 与 macOS 可使用同一命令 schema 和 JSON 输出执行同一在线操作。
+13. `buckyos --profile production --cli` 只解析并登录一次；连续执行至少两条
+    `<module> <verb>` 命令时复用同一 InteractiveSession，handler 与单次命令一致。
+14. REPL 内一条参数、权限、网络或领域错误不会结束 session；Ctrl-C、Ctrl-D 和
+    `:exit/:quit` 行为符合 §4.4。
+15. REPL 不允许逐条切换 identity/Zone，不继承 idempotency key、trace id、deadline 或确认结果。
+16. 身份私钥登录的 session 过期后可在内存中重签；外部 token 失效时返回
+    `SESSION_EXPIRED`，不会静默更换身份。
+17. `repl_history` 不包含 schema 标记为 secret 的命令、session token、密码或 sudo 凭证。
+18. REPL 的 module/verb/option 补全与 `command describe` 来自同一 Command Registry。
 
 ## 13. 已确认设计决策
 
@@ -658,3 +767,8 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 5. 无副作用预演的标准动词使用 kebab-case 的 `dry-run`，执行使用 `apply`。
 6. Tool 自行登录时使用稳定 appid `buckycli`；外部 session token 的 appid/app instance 以
    token claims 为准。
+7. 通用参数 `--cli` 进入全模块 REPL。连接、Zone、身份和 authenticated session 在
+   当前进程内稳定复用；后续命令只写 `<module> <verb> [参数]`，不提供任意
+   `system-config` 直写能力。
+8. 第一阶段仍不申请、保存或刷新 refresh token。私钥身份可以在交互进程内重新签发短期
+   session token；外部 token 只能由其原始来源更新。
