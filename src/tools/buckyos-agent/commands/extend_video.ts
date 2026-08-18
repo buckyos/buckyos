@@ -10,7 +10,7 @@ import { pickArtifact, resolveInputResource, saveArtifactToPath, suffixPathByMim
 import { aiResponseExtraString } from "../lib/types.ts";
 import {
   bailAiccError, bailAiccFailed, bailIoError, bailNoArtifact, bailRuntimeError,
-  emitAndExit, errorResult, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
+  emitAndExit, errorResult, EXIT_AICC_FAILED, EXIT_ARG_ERROR, EXIT_SUCCESS, successResult,
 } from "../lib/result.ts";
 
 const TOOL = "extend_video";
@@ -19,7 +19,7 @@ const METHOD = "video.extend";
 export const HELP = `Usage: extend_video <previous_video> <prompt> <output_video> [options]
 
 Options:
-  --continuation-handle <provider_handle>  Required; returned by a compatible previous generation
+  --continuation-handle <provider_handle>  Optional; AICC restores it from the source task when available
   --duration <seconds>
   --resolution <720p|1080p|4k>
 ${COMMON_OPTIONS_HELP}`;
@@ -37,12 +37,7 @@ export async function run(argv: string[]): Promise<never> {
   let inputResource;
   try {
     const handle = requireString(parsed.flags, "continuation-handle");
-    if (handle === undefined) {
-      throw new ArgError(
-        "--continuation-handle is required; video.extend only continues a compatible previous generation",
-      );
-    }
-    input.continuation_handle = handle;
+    if (handle !== undefined) input.continuation_handle = handle;
     const duration = flagInt(parsed.flags, "duration");
     if (duration !== undefined) input.duration = duration;
     const resolution = requireString(parsed.flags, "resolution");
@@ -70,7 +65,25 @@ export async function run(argv: string[]): Promise<never> {
     });
   } catch (err) { bailAiccError(TOOL, METHOD, err); }
   if (call.status === "failed" || !call.summary) {
-    bailAiccFailed(TOOL, METHOD, call.taskId, describeFailure(call));
+    const reason = describeFailure(call);
+    if (reason.toLowerCase().includes("requires continuation_handle")) {
+      emitAndExit(
+        errorResult(
+          TOOL,
+          `${TOOL} => native_continuation_unavailable`,
+          "Native continuation is unavailable; a fallback may generate and join a follow-up clip.",
+          {
+            method: METHOD,
+            task_id: call.taskId,
+            reason_code: "native_continuation_unavailable",
+            fallback_allowed: true,
+            error: reason,
+          },
+        ),
+        EXIT_AICC_FAILED,
+      );
+    }
+    bailAiccFailed(TOOL, METHOD, call.taskId, reason);
   }
 
   const artifact = pickArtifact(call.summary, "video");
