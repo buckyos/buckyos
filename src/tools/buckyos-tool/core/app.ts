@@ -5,13 +5,15 @@ import type { RegisteredCommand } from './command.ts'
 import {
   type ConfigStore,
   type Environment,
+  type ImplicitDeviceIdentity,
   localResolvedConfig,
   readEnvironment,
   resolveConfig,
   type ResolvedConfig,
 } from './config.ts'
 import type { CommandContext } from './context.ts'
-import { EXIT_SUCCESS, normalizeError, ToolError, UsageError } from './errors.ts'
+import { EXIT_PERMISSION, EXIT_SUCCESS, normalizeError, ToolError, UsageError } from './errors.ts'
+import { applyImplicitDeviceIdentity } from './identity.ts'
 import { errorEnvelope, renderError, renderSuccess, successEnvelope } from './output.ts'
 import { CommandRegistry } from './registry.ts'
 import { runRepl } from './repl.ts'
@@ -45,6 +47,7 @@ export interface ApplicationDependencies {
     config: ResolvedConfig,
     authentication: SessionController,
   ) => ServiceClientRegistry
+  confirmDeviceIdentity?: (identity: ImplicitDeviceIdentity) => Promise<boolean>
   repl?: typeof runRepl
 }
 
@@ -60,6 +63,7 @@ export class BuckyOSToolApplication {
     config: ResolvedConfig,
     authentication: SessionController,
   ) => ServiceClientRegistry
+  readonly #confirmDeviceIdentity: (identity: ImplicitDeviceIdentity) => Promise<boolean>
   readonly #repl: typeof runRepl
 
   constructor(dependencies: ApplicationDependencies = {}) {
@@ -73,6 +77,7 @@ export class BuckyOSToolApplication {
     this.#runtime = dependencies.runtime ?? new BuckyOSRuntimeAdapter()
     this.#createClients = dependencies.createClients ??
       ((config, authentication) => new BuckyOSServiceClientRegistry(config, authentication))
+    this.#confirmDeviceIdentity = dependencies.confirmDeviceIdentity ?? confirmDeviceIdentity
     this.#repl = dependencies.repl ?? runRepl
   }
 
@@ -170,6 +175,7 @@ export class BuckyOSToolApplication {
       cwd: this.#cwd,
       homeDir: this.#homeDir,
     })
+    setup.resolved = await applyImplicitDeviceIdentity(setup.resolved, this.#environment)
     const session = await this.#createSession(setup.resolved)
     await this.#repl({
       registry: this.registry,
@@ -301,10 +307,14 @@ export class BuckyOSToolApplication {
     global: GlobalOptions,
   ): Promise<{ resolved: ResolvedConfig; store: ConfigStore }> {
     if (command.requiresSession || (command.module === 'config' && command.verb === 'check')) {
-      return await resolveConfig(global, this.#environment, {
+      const setup = await resolveConfig(global, this.#environment, {
         cwd: this.#cwd,
         homeDir: this.#homeDir,
       })
+      if (command.requiresSession) {
+        setup.resolved = await applyImplicitDeviceIdentity(setup.resolved, this.#environment)
+      }
+      return setup
     }
     return localResolvedConfig(global, this.#environment, {
       cwd: this.#cwd,
@@ -313,6 +323,7 @@ export class BuckyOSToolApplication {
   }
 
   async #createSession(config: ResolvedConfig): Promise<InteractiveSession> {
+    await this.#approveImplicitDeviceIdentity(config)
     const authentication = this.#createAuthentication(config)
     return await InteractiveSession.create(
       config,
@@ -320,6 +331,29 @@ export class BuckyOSToolApplication {
       this.#runtime,
       this.#createClients(config, authentication),
     )
+  }
+
+  async #approveImplicitDeviceIdentity(config: ResolvedConfig): Promise<void> {
+    const identity = config.implicitDeviceIdentity
+    if (!identity || config.yes) return
+    if (config.nonInteractive) {
+      throw new ToolError(
+        'CONFIRMATION_REQUIRED',
+        'using the current device identity requires --yes in non-interactive mode',
+        EXIT_PERMISSION,
+        false,
+        { identity: identity.did },
+      )
+    }
+    if (!await this.#confirmDeviceIdentity(identity)) {
+      throw new ToolError(
+        'CONFIRMATION_DECLINED',
+        'current device identity confirmation was declined',
+        EXIT_PERMISSION,
+        false,
+        { identity: identity.did },
+      )
+    }
   }
 
   async #readInputObject(path: string): Promise<Record<string, unknown>> {
@@ -374,7 +408,7 @@ function topLevelHelp(registry: CommandRegistry): string {
     '  --session-token <token> | --session-token-file <path>',
     '    Prefer --session-token-file for automation; argv tokens may appear in process listings.',
     '  --output <json|jsonl|table|text|raw>  --input <path|->',
-    '  --timeout <duration>  --trace-id <id>  --non-interactive',
+    '  --timeout <duration>  --trace-id <id>  --non-interactive  --yes',
     '  --cli  --help  --version',
     '',
     'Use `buckyos command describe <module> <verb>` for machine-readable schemas.',
@@ -431,4 +465,23 @@ function defaultStdio(): ToolStdio {
     },
     readStdin: async () => await new Response(Deno.stdin.readable).text(),
   }
+}
+
+async function confirmDeviceIdentity(identity: ImplicitDeviceIdentity): Promise<boolean> {
+  if (!Deno.stdin.isTerminal()) {
+    throw new ToolError(
+      'CONFIRMATION_REQUIRED',
+      'using the current device identity requires an interactive terminal or --yes',
+      EXIT_PERMISSION,
+      false,
+      { identity: identity.did },
+    )
+  }
+  const prompt = `Use current device identity ${identity.name} (${identity.did})? ` +
+    'This identity may have broad privileges. Continue? [y/N] '
+  await Deno.stderr.write(new TextEncoder().encode(prompt))
+  const buffer = new Uint8Array(32)
+  const count = await Deno.stdin.read(buffer)
+  const answer = count ? new TextDecoder().decode(buffer.subarray(0, count)).trim() : ''
+  return answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes'
 }

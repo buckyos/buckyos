@@ -1,8 +1,8 @@
 use crate::{gateway_etc_dir, ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
-    get_buckyos_api_runtime, LoginByPasswordResponse, UserInfo, UserPrivateProfile, UserSettings,
-    UserState,
+    get_buckyos_api_runtime, ControlPanelClient, LoginByPasswordResponse, UserInfo,
+    UserPrivateProfile, UserSettings, UserState, UserType,
 };
 use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult, StreamInfo};
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -935,11 +935,9 @@ impl ControlPanelServer {
 
         let runtime = get_buckyos_api_runtime()?;
         let parsed = runtime.verify_trusted_session_token(&token).await?;
-        let is_user_session = parsed
-            .extra
-            .get(buckyos_api::TOKEN_PRINCIPAL_KIND_CLAIM)
-            .and_then(Value::as_str)
-            == Some(buckyos_api::TOKEN_PRINCIPAL_KIND_USER);
+        let principal_kind = token_principal_kind(&parsed);
+        let is_user_session = principal_kind == Some(buckyos_api::TOKEN_PRINCIPAL_KIND_USER);
+        let is_device_session = principal_kind == Some(buckyos_api::TOKEN_PRINCIPAL_KIND_DEVICE);
         let is_control_panel_session = parsed.appid.as_deref() == Some(CONTROL_PANEL_AUTH_APPID)
             && parsed
                 .extra
@@ -953,6 +951,21 @@ impl ControlPanelServer {
             .ok_or_else(|| RPCErrors::InvalidToken("session token missing subject".to_string()))?;
         let runtime = get_buckyos_api_runtime()?;
         let system_config_client = runtime.get_system_config_client().await?;
+        if is_device_session {
+            let device = ControlPanelClient::from_shared(system_config_client)
+                .get_device_config(username.as_str())
+                .await
+                .map_err(|error| {
+                    RPCErrors::InvalidToken(format!("failed to load device identity: {}", error))
+                })?;
+            return Ok(Some(RpcAuthPrincipal {
+                username,
+                user_type: UserType::Root,
+                owner_did: device.owner.to_string(),
+                is_user_session: false,
+                is_control_panel_session: false,
+            }));
+        }
         let settings_path = format!("users/{}/settings", username);
         let settings_val = system_config_client
             .get(&settings_path)
@@ -1005,6 +1018,13 @@ impl ControlPanelServer {
     }
 }
 
+fn token_principal_kind(token: &RPCSessionToken) -> Option<&str> {
+    token
+        .extra
+        .get(buckyos_api::TOKEN_PRINCIPAL_KIND_CLAIM)
+        .and_then(Value::as_str)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,6 +1049,36 @@ mod tests {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#);
         let payload = URL_SAFE_NO_PAD.encode(json!({ "exp": exp }).to_string());
         format!("{}.{}.signature", header, payload)
+    }
+
+    #[test]
+    fn device_principal_kind_is_distinct_from_user() {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            buckyos_api::TOKEN_PRINCIPAL_KIND_CLAIM.to_string(),
+            Value::String(buckyos_api::TOKEN_PRINCIPAL_KIND_DEVICE.to_string()),
+        );
+        let token = RPCSessionToken {
+            token_type: ::kRPC::RPCSessionTokenType::Normal,
+            token: None,
+            aud: None,
+            exp: None,
+            iss: Some("verify-hub".to_string()),
+            jti: Some("1".to_string()),
+            sub: Some("ood1".to_string()),
+            appid: Some("buckycli".to_string()),
+            sudo: false,
+            extra,
+        };
+
+        assert_eq!(
+            token_principal_kind(&token),
+            Some(buckyos_api::TOKEN_PRINCIPAL_KIND_DEVICE)
+        );
+        assert_ne!(
+            token_principal_kind(&token),
+            Some(buckyos_api::TOKEN_PRINCIPAL_KIND_USER)
+        );
     }
 
     #[test]

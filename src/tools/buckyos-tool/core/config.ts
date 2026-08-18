@@ -19,6 +19,16 @@ export interface ProfileConfig {
   output?: OutputFormat
 }
 
+export interface ImplicitDeviceIdentity {
+  did: string
+  name: string
+  zoneDid: string
+  buckyosRoot: string
+  nodeIdentityPath: string
+  publicRoot: string
+  securityRoot: string
+}
+
 export interface ResolvedConfig {
   configDir: string
   profileName?: string
@@ -39,6 +49,7 @@ export interface ResolvedConfig {
   yes: boolean
   noColor: boolean
   verbose: boolean
+  implicitDeviceIdentity?: ImplicitDeviceIdentity
   sources: Record<string, string>
 }
 

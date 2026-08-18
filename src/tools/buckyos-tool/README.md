@@ -24,6 +24,8 @@ or use Deno's `-A` permission.
 ## Configuration and online commands
 
 ```bash
+./buckyos system status
+./buckyos --non-interactive --yes system status
 ./buckyos --config-dir /tmp/buckyos-tool config set zone \
   --value test.buckyos.io --profile-name dev
 ./buckyos --config-dir /tmp/buckyos-tool config use dev
@@ -31,6 +33,11 @@ or use Deno's `-A` permission.
 ./buckyos --profile dev --session-token-file /run/secrets/buckyos.jwt system status
 ./buckyos --profile dev --identity alice --cli
 ```
+
+With no token, identity, Zone, or endpoint configured, an online command reads the current device
+from `$BUCKYOS_ROOT/etc/node_identity.json` and uses the local NodeGateway. Interactive terminals
+must confirm this high-privilege fallback once per process. Non-interactive execution must provide
+`--yes`; an explicitly selected identity or connection target never triggers the fallback.
 
 Identity lookup uses only the PRD IdentityRoots order. It never scans `~/.buckycli` or `~/buckycli`.
 Session and refresh tokens are never persisted by the tool.

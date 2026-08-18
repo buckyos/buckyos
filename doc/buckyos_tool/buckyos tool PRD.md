@@ -312,6 +312,13 @@ Tool 私有身份材料使用 IdentityRoots 布局，例如：
 认证材料后停止；不扫描 `~/.buckycli`。旧 buckycli 只作为实现行为参考，不是身份来源。
 `--identity-root` 和 `--security-root` 必须成对出现，禁止把两个不同优先级的 root 隐式拼在一起。
 
+当在线命令没有提供 session token、identity、Zone、endpoint，也没有从环境变量或 profile
+解析出这些值时，Tool 读取 `$BUCKYOS_ROOT/etc/node_identity.json`，选择当前设备 DID，固定通过
+本机 NodeGateway `http://127.0.0.1:3180` 运行，并直接使用同一 `$BUCKYOS_ROOT` 下的
+`local/identity` 和 `security`。设备身份通常权限较高，交互终端必须在登录前二次确认；`--yes`
+可以跳过确认，`--non-interactive` 未同时提供 `--yes` 时返回稳定的 `CONFIRMATION_REQUIRED`。
+只要用户显式选择了身份或连接目标，就不得自动回退到当前设备身份。
+
 ### 5.4 配置覆盖优先级
 
 最终 `CommandContext` 按以下优先级构造，前者覆盖后者：
@@ -346,7 +353,8 @@ Tool 私有身份材料使用 IdentityRoots 布局，例如：
 2. `--session-token-file`；
 3. 注入的 `BUCKYOS_APPCLIENT_SESSION_TOKEN`；
 4. 按 §5.3 找到的 UserDocument + authentication private key/keyref；
-5. 交互式密码登录。
+5. §5.3 定义的、经过确认的当前设备身份；
+6. 交互式密码登录。
 
 单次命令生命周期通常很短，第一阶段不申请、不保存也不刷新 refresh token。使用身份私钥时，
 Tool 在当前进程内构造登录 JWT，通过 verify-hub 换取可用 session token，并只在内存中使用。
@@ -753,6 +761,8 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
     `SESSION_EXPIRED`，不会静默更换身份。
 17. `repl_history` 不包含 schema 标记为 secret 的命令、session token、密码或 sudo 凭证。
 18. REPL 的 module/verb/option 补全与 `command describe` 来自同一 Command Registry。
+19. 无额外身份和连接配置的在线命令会在确认后使用当前设备身份和本地 NodeGateway；
+    `--non-interactive` 必须同时提供 `--yes`，显式远端目标不得触发设备身份回退。
 
 ## 13. 已确认设计决策
 
@@ -772,3 +782,5 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
    `system-config` 直写能力。
 8. 第一阶段仍不申请、保存或刷新 refresh token。私钥身份可以在交互进程内重新签发短期
    session token；外部 token 只能由其原始来源更新。
+9. 保留原 `buckyos <module> <verb>` 的本机运维习惯：没有任何身份和连接配置时使用当前设备
+   身份，但必须经过交互确认或显式 `--yes`，避免无提示使用高权限设备凭证。

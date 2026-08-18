@@ -1,7 +1,9 @@
 import { join } from 'node:path'
 import { namelib } from 'buckyos'
 import { type Environment, readEnvironment, type ResolvedConfig } from './config.ts'
-import { EXIT_AUTH, ToolError, UsageError } from './errors.ts'
+import { EXIT_AUTH, EXIT_PERMISSION, ToolError, UsageError } from './errors.ts'
+
+const LOCAL_NODE_GATEWAY_ENDPOINT = 'http://127.0.0.1:3180'
 
 export interface IdentityMaterial {
   did: string
@@ -18,6 +20,88 @@ export interface IdentityRootPair {
   publicRoot: string
   securityRoot: string
   source: 'explicit' | 'tool' | 'environment' | 'buckyos-root'
+}
+
+export async function applyImplicitDeviceIdentity(
+  config: ResolvedConfig,
+  environment: Environment = readEnvironment(),
+): Promise<ResolvedConfig> {
+  if (
+    config.sessionToken || config.sessionTokenFile || config.identity || config.zone ||
+    config.endpoint
+  ) {
+    return config
+  }
+  const device = await readCurrentDeviceIdentity(environment)
+  if (!device) return config
+  return {
+    ...config,
+    identity: device.did,
+    zone: device.zoneDid,
+    endpoint: LOCAL_NODE_GATEWAY_ENDPOINT,
+    identityRoot: device.publicRoot,
+    securityRoot: device.securityRoot,
+    defaultProtocol: 'http://',
+    implicitDeviceIdentity: device,
+    sources: {
+      ...config.sources,
+      identity: 'current-device',
+      zone: 'current-device',
+      endpoint: 'local-node-gateway',
+      identity_root: 'current-device',
+      security_root: 'current-device',
+    },
+  }
+}
+
+export async function readCurrentDeviceIdentity(
+  environment: Environment = readEnvironment(),
+): Promise<NonNullable<ResolvedConfig['implicitDeviceIdentity']> | undefined> {
+  const buckyosRoot = environment.BUCKYOS_ROOT ?? defaultBuckyOSRoot(environment)
+  const nodeIdentityPath = join(buckyosRoot, 'etc', 'node_identity.json')
+  let value: unknown
+  try {
+    value = JSON.parse(await Deno.readTextFile(nodeIdentityPath))
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined
+    if (error instanceof Deno.errors.PermissionDenied) {
+      throw new ToolError(
+        'DEVICE_IDENTITY_READ_FAILED',
+        `permission denied reading current device identity: ${nodeIdentityPath}`,
+        EXIT_PERMISSION,
+      )
+    }
+    throw new ToolError(
+      'DEVICE_IDENTITY_READ_FAILED',
+      `failed to read current device identity: ${nodeIdentityPath}`,
+      EXIT_AUTH,
+    )
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidDeviceIdentity(nodeIdentityPath)
+  }
+  const document = value as Record<string, unknown>
+  const did = nonEmptyString(document.device_did)
+  const name = nonEmptyString(document.device_name)
+  const zoneDid = nonEmptyString(document.zone_did)
+  if (document.schema !== 'buckyos.node_identity.v2' || !did || !name || !zoneDid) {
+    throw invalidDeviceIdentity(nodeIdentityPath)
+  }
+  try {
+    namelib.DID.fromStr(did)
+    namelib.DID.fromStr(zoneDid)
+  } catch {
+    throw invalidDeviceIdentity(nodeIdentityPath)
+  }
+  return {
+    did,
+    name,
+    zoneDid,
+    buckyosRoot,
+    nodeIdentityPath,
+    publicRoot: join(buckyosRoot, 'local', 'identity'),
+    securityRoot: join(buckyosRoot, 'security'),
+  }
 }
 
 export function identityRootPairs(
@@ -48,7 +132,7 @@ export function identityRootPairs(
       })
     }
   }
-  const buckyosRoot = environment.BUCKYOS_ROOT ?? defaultBuckyOSRoot()
+  const buckyosRoot = environment.BUCKYOS_ROOT ?? defaultBuckyOSRoot(environment)
   pairs.push({
     publicRoot: join(buckyosRoot, 'local', 'identity'),
     securityRoot: join(buckyosRoot, 'security'),
@@ -155,12 +239,24 @@ function identityMatches(document: Record<string, unknown>, selected: string): b
   return typeof document.name === 'string' && document.name === selected
 }
 
-function defaultBuckyOSRoot(): string {
+export function defaultBuckyOSRoot(environment: Environment = readEnvironment()): string {
   if (Deno.build.os === 'windows') {
-    const appData = Deno.env.get('APPDATA')
+    const appData = environment.APPDATA
     return appData ? join(appData, 'buckyos') : 'C:\\BuckyOS'
   }
   return '/opt/buckyos'
+}
+
+function invalidDeviceIdentity(path: string): ToolError {
+  return new ToolError(
+    'INVALID_DEVICE_IDENTITY',
+    `current device identity is invalid: ${path}`,
+    EXIT_AUTH,
+  )
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 function deduplicatePairs(pairs: IdentityRootPair[]): IdentityRootPair[] {

@@ -3,6 +3,7 @@ import { BuckyOSToolApplication, type ToolStdio } from '../core/app.ts'
 import type { ResolvedConfig } from '../core/config.ts'
 import type { RpcCallOptions, RuntimeAdapter, ServiceClientRegistry } from '../core/runtime.ts'
 import { assert, assertEquals } from './test_helpers.ts'
+import { join } from 'node:path'
 
 class CaptureStdio implements ToolStdio {
   stdoutText = ''
@@ -96,6 +97,118 @@ Deno.test('errors use a stable JSON envelope and exit code', async () => {
   const envelope = JSON.parse(io.stdoutText)
   assertEquals(envelope.ok, false)
   assertEquals(envelope.error.code, 'UNKNOWN_MODULE')
+})
+
+Deno.test('zero-config online command uses current device identity after confirmation', async () => {
+  const root = await Deno.makeTempDir()
+  try {
+    const home = join(root, 'home')
+    const buckyosRoot = join(root, 'buckyos')
+    await writeNodeIdentity(buckyosRoot)
+    const io = new CaptureStdio()
+    let resolved: ResolvedConfig | undefined
+    let confirmedDid: string | undefined
+    const app = new BuckyOSToolApplication({
+      environment: { HOME: home, BUCKYOS_ROOT: buckyosRoot },
+      homeDir: home,
+      stdio: io,
+      confirmDeviceIdentity: (identity) => {
+        confirmedDid = identity.did
+        return Promise.resolve(true)
+      },
+      createAuthentication: (config) => {
+        resolved = config
+        return new FakeAuthentication(config)
+      },
+      runtime: {
+        initialize: (config) =>
+          Promise.resolve({
+            zone: config.zone!,
+            endpoint: config.endpoint!,
+            defaultProtocol: config.defaultProtocol,
+          }),
+      },
+      createClients: () => ({
+        call: <T>() => Promise.resolve({ state: 'online' } as T),
+      }),
+    })
+    assertEquals(await app.run(['system', 'status']), 0)
+    assertEquals(confirmedDid, 'did:web:ood1.test.buckyos.io')
+    assertEquals(resolved?.identity, 'did:web:ood1.test.buckyos.io')
+    assertEquals(resolved?.zone, 'did:web:test.buckyos.io')
+    assertEquals(resolved?.endpoint, 'http://127.0.0.1:3180')
+    assertEquals(resolved?.identityRoot, join(buckyosRoot, 'local', 'identity'))
+    assertEquals(resolved?.securityRoot, join(buckyosRoot, 'security'))
+    assertEquals(resolved?.sources.identity, 'current-device')
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test('non-interactive device fallback requires yes', async () => {
+  const root = await Deno.makeTempDir()
+  try {
+    const home = join(root, 'home')
+    const buckyosRoot = join(root, 'buckyos')
+    await writeNodeIdentity(buckyosRoot)
+    const io = new CaptureStdio()
+    let authenticationCreated = false
+    const app = new BuckyOSToolApplication({
+      environment: { HOME: home, BUCKYOS_ROOT: buckyosRoot },
+      homeDir: home,
+      stdio: io,
+      confirmDeviceIdentity: () => Promise.resolve(true),
+      createAuthentication: (config) => {
+        authenticationCreated = true
+        return new FakeAuthentication(config)
+      },
+    })
+    assertEquals(await app.run(['--non-interactive', 'system', 'status']), 4)
+    assertEquals(authenticationCreated, false)
+    const envelope = JSON.parse(io.stdoutText)
+    assertEquals(envelope.error.code, 'CONFIRMATION_REQUIRED')
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test('non-interactive device fallback accepts yes', async () => {
+  const root = await Deno.makeTempDir()
+  try {
+    const home = join(root, 'home')
+    const buckyosRoot = join(root, 'buckyos')
+    await writeNodeIdentity(buckyosRoot)
+    const io = new CaptureStdio()
+    let confirmationCalled = false
+    const app = new BuckyOSToolApplication({
+      environment: { HOME: home, BUCKYOS_ROOT: buckyosRoot },
+      homeDir: home,
+      stdio: io,
+      confirmDeviceIdentity: () => {
+        confirmationCalled = true
+        return Promise.resolve(false)
+      },
+      createAuthentication: (config) => new FakeAuthentication(config),
+      runtime: {
+        initialize: (config) =>
+          Promise.resolve({
+            zone: config.zone!,
+            endpoint: config.endpoint!,
+            defaultProtocol: config.defaultProtocol,
+          }),
+      },
+      createClients: () => ({
+        call: <T>() => Promise.resolve({ state: 'online' } as T),
+      }),
+    })
+    assertEquals(
+      await app.run(['--non-interactive', '--yes', 'system', 'status']),
+      0,
+    )
+    assertEquals(confirmationCalled, false)
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
 })
 
 Deno.test('interactive commands reuse one session and reset command-scoped state', async () => {
@@ -218,3 +331,17 @@ Deno.test('one online command failure does not prevent the next REPL command', a
     await Deno.remove(root, { recursive: true })
   }
 })
+
+async function writeNodeIdentity(buckyosRoot: string): Promise<void> {
+  const etc = join(buckyosRoot, 'etc')
+  await Deno.mkdir(etc, { recursive: true })
+  await Deno.writeTextFile(
+    join(etc, 'node_identity.json'),
+    JSON.stringify({
+      schema: 'buckyos.node_identity.v2',
+      zone_did: 'did:web:test.buckyos.io',
+      device_name: 'ood1',
+      device_did: 'did:web:ood1.test.buckyos.io',
+    }),
+  )
+}
