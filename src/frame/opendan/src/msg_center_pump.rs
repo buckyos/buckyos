@@ -28,7 +28,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, Event, EventReader, KEventClient, KEventError, MailboxKind,
     MailboxRecordWithObject, MsgCenterClient, RecipientState,
 };
-use llm_context::{parse_msg_object_text_attachments, MsgParseOutput};
+use llm_context::{parse_msg_object_structured_text, MsgParseOutput};
 use ndn_lib::MsgObjKind;
 
 use crate::command_dispatcher::BUILTIN_COMMANDS;
@@ -327,7 +327,7 @@ async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bo
     // §3 — slash-command interception. The parser applies the registered
     // command whitelist at the protocol boundary, so user text like
     // `/etc/nginx ...` flows back into LLM inference unchanged.
-    let inbound = match parse_msg_object_text_attachments(msg, BUILTIN_COMMANDS) {
+    let inbound = match parse_msg_object_structured_text(msg, BUILTIN_COMMANDS) {
         MsgParseOutput::ControlCommand(cmd) => Inbound::Command {
             record_id,
             from,

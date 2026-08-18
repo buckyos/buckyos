@@ -40,9 +40,9 @@ pub use msg_parser::{
     ai_message_to_msg_object_with_base_validated,
     ai_message_to_msg_object_with_base_validated_async,
     ai_message_to_msg_object_with_base_validated_with_options, msg_object_control_command,
-    msg_object_to_ai_message, msg_object_to_ai_message_text_attachments,
-    msg_object_to_ai_message_with_role, msg_object_to_ai_message_with_role_text_attachments,
-    parse_msg_object, parse_msg_object_text_attachments, AttachmentTag, AttachmentValidation,
+    msg_object_to_ai_message, msg_object_to_ai_message_structured_text,
+    msg_object_to_ai_message_with_role, msg_object_to_ai_message_with_role_structured_text,
+    parse_msg_object, parse_msg_object_structured_text, AttachmentTag, AttachmentValidation,
     AttachmentValidator, LocalFileResolver, MsgEgressOptions, MsgParseOutput, MsgParserError,
     PermissiveAttachmentValidator, SystemControlCommand,
 };

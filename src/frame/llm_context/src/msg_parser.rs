@@ -149,14 +149,17 @@ pub fn parse_msg_object(msg: &MsgObject, registered_commands: &[&str]) -> MsgPar
     }
 }
 
-pub fn parse_msg_object_text_attachments(
+/// Parse a message for text-only agent ingress while preserving one explicit
+/// envelope per source message. Body text, attachments, and message references
+/// remain separate even if a later stage concatenates adjacent text blocks.
+pub fn parse_msg_object_structured_text(
     msg: &MsgObject,
     registered_commands: &[&str],
 ) -> MsgParseOutput {
     if let Some(command) = msg_object_control_command(msg, registered_commands) {
         MsgParseOutput::ControlCommand(command)
     } else {
-        MsgParseOutput::Message(msg_object_to_ai_message_text_attachments(msg))
+        MsgParseOutput::Message(msg_object_to_ai_message_structured_text(msg))
     }
 }
 
@@ -167,8 +170,8 @@ pub fn msg_object_to_ai_message(msg: &MsgObject) -> AiMessage {
     msg_object_to_ai_message_with_role(msg, AiRole::User)
 }
 
-pub fn msg_object_to_ai_message_text_attachments(msg: &MsgObject) -> AiMessage {
-    msg_object_to_ai_message_with_role_text_attachments(msg, AiRole::User)
+pub fn msg_object_to_ai_message_structured_text(msg: &MsgObject) -> AiMessage {
+    msg_object_to_ai_message_with_role_structured_text(msg, AiRole::User)
 }
 
 pub fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMessage {
@@ -199,30 +202,40 @@ pub fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMe
     AiMessage::new(role, blocks)
 }
 
-pub fn msg_object_to_ai_message_with_role_text_attachments(
+pub fn msg_object_to_ai_message_with_role_structured_text(
     msg: &MsgObject,
     role: AiRole,
 ) -> AiMessage {
     let mut blocks = Vec::new();
-    let mut text_parts = Vec::new();
     let text = msg.content.content.trim();
     let generic_attachment_text = matches!(text, "[attachment]" | "[image]" | "[document]");
-    if !text.is_empty() && !(generic_attachment_text && !msg.content.refs.is_empty()) {
-        text_parts.push(text.to_string());
-    }
+    let body = if text.is_empty() || (generic_attachment_text && !msg.content.refs.is_empty()) {
+        ""
+    } else {
+        text
+    };
+    let mut attachments = Vec::new();
 
-    for item in &msg.content.refs {
-        if let Some(text) = ref_item_to_text_attachment(item, msg.content.format.as_ref()) {
-            text_parts.push(text);
+    for (index, item) in msg.content.refs.iter().enumerate() {
+        if let Some(attachment) =
+            ref_item_to_structured_attachment(index, item, msg.content.format.as_ref())
+        {
+            attachments.push(attachment);
         } else if let Some(block) = ref_item_to_ai_content(item, msg.content.format.as_ref()) {
             blocks.push(block);
         }
     }
 
-    let text = text_parts.join("\n");
-    if !text.trim().is_empty() {
-        blocks.insert(0, AiContent::text(text));
-    }
+    let envelope = json!({
+        "schema": "opendan.message/v1",
+        "body": {
+            "text": body,
+        },
+        "attachments": attachments,
+        "message_references": [],
+    });
+    let envelope = serde_json::to_string(&envelope).expect("serializing a JSON value cannot fail");
+    blocks.insert(0, AiContent::text(envelope));
 
     if let Some(machine) = &msg.content.machine {
         if let Ok(value) = serde_json::to_value(machine) {
@@ -492,10 +505,11 @@ fn ref_item_to_ai_content(
     }
 }
 
-fn ref_item_to_text_attachment(
+fn ref_item_to_structured_attachment(
+    index: usize,
     item: &RefItem,
     msg_format: Option<&MsgContentFormat>,
-) -> Option<String> {
+) -> Option<Value> {
     let RefTarget::DataObj { obj_id, uri_hint } = &item.target else {
         return None;
     };
@@ -505,19 +519,16 @@ fn ref_item_to_text_attachment(
         "document"
     };
     let display_obj_id = attachment_display_obj_id(obj_id, uri_hint.as_deref());
-    let mut fields = vec![
-        format!("{kind} attachment"),
-        format!("obj_id=\"{}\"", escape_text_field(&display_obj_id)),
-    ];
-    if let Some(label) = item
-        .label
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        fields.push(format!("label=\"{}\"", escape_text_field(label)));
-    }
-    Some(format!("[{}]", fields.join("; ")))
+    Some(json!({
+        "index": index,
+        "kind": kind,
+        "role": ref_role_name(item.role),
+        "source": {
+            "type": "named_object",
+            "obj_id": display_obj_id,
+        },
+        "label": item.label.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+    }))
 }
 
 fn attachment_display_obj_id(obj_id: &ObjId, uri_hint: Option<&str>) -> String {
@@ -940,10 +951,6 @@ fn escape_attr(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn escape_text_field(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 fn unescape_attr(value: &str) -> String {
     value
         .replace("&quot;", "\"")
@@ -1084,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn msg_object_text_attachment_mode_renders_ref_as_text() {
+    fn msg_object_structured_text_keeps_body_and_attachment_separate() {
         let msg = MsgObject {
             content: MsgContent {
                 format: Some(MsgContentFormat::ImagePng),
@@ -1102,16 +1109,18 @@ mod tests {
             ..MsgObject::default()
         };
 
-        let out = msg_object_to_ai_message_text_attachments(&msg);
+        let out = msg_object_to_ai_message_structured_text(&msg);
         assert_eq!(out.role, AiRole::User);
         assert_eq!(out.content.len(), 1);
         let text = out.text_content();
-        assert!(!text.contains("[attachment]\n"));
-        assert!(text.contains("image attachment"));
-        assert!(text.contains("obj_id=\""));
-        assert!(text.contains("label=\"photo.png\""));
-        assert!(!text.contains("uri_hint="));
-        assert!(!text.contains("llm_understand_media"));
+        let payload = structured_message_payload(&text);
+        assert_eq!(payload["schema"], "opendan.message/v1");
+        assert_eq!(payload["body"]["text"], "");
+        assert_eq!(payload["attachments"][0]["index"], 0);
+        assert_eq!(payload["attachments"][0]["kind"], "image");
+        assert_eq!(payload["attachments"][0]["role"], "input");
+        assert_eq!(payload["attachments"][0]["label"], "photo.png");
+        assert_eq!(payload["message_references"], json!([]));
         assert!(!out
             .content
             .iter()
@@ -1119,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn text_attachment_uses_cyfs_uri_hint_as_display_obj_id() {
+    fn structured_attachment_uses_cyfs_uri_hint_as_display_obj_id() {
         let msg = MsgObject {
             content: MsgContent {
                 format: Some(MsgContentFormat::ImageJpeg),
@@ -1137,17 +1146,18 @@ mod tests {
             ..MsgObject::default()
         };
 
-        let out = msg_object_to_ai_message_text_attachments(&msg);
+        let out = msg_object_to_ai_message_structured_text(&msg);
         let text = out.text_content();
-        assert!(text.contains(
-            "[image attachment; obj_id=\"cyfile:20ace92837ced8d14805d63cb5305ca5d7f2df5a56d9d8cd288ed8118d098cc3\"; label=\"image/jpeg\"]"
-        ));
-        assert!(!text.contains("uri_hint="));
-        assert!(!text.contains("inspect_with="));
+        let payload = structured_message_payload(&text);
+        assert_eq!(payload["body"]["text"], "San Jose能参加活动么");
+        assert_eq!(
+            payload["attachments"][0]["source"]["obj_id"],
+            "cyfile:20ace92837ced8d14805d63cb5305ca5d7f2df5a56d9d8cd288ed8118d098cc3"
+        );
     }
 
     #[test]
-    fn parse_text_attachment_mode_keeps_registered_commands() {
+    fn parse_structured_text_mode_keeps_registered_commands() {
         let msg = MsgObject {
             content: MsgContent {
                 format: Some(MsgContentFormat::TextPlain),
@@ -1157,10 +1167,14 @@ mod tests {
             ..MsgObject::default()
         };
 
-        match parse_msg_object_text_attachments(&msg, &["help"]) {
+        match parse_msg_object_structured_text(&msg, &["help"]) {
             MsgParseOutput::ControlCommand(cmd) => assert_eq!(cmd.command, "help"),
             other => panic!("expected control command, got {other:?}"),
         }
+    }
+
+    fn structured_message_payload(text: &str) -> Value {
+        serde_json::from_str(text).expect("structured message JSON")
     }
 
     #[test]

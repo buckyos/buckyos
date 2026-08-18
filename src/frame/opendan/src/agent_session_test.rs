@@ -514,6 +514,30 @@ fn compose_turn_message_preserves_structured_blocks() {
 }
 
 #[test]
+fn compose_turn_message_preserves_message_envelope_boundaries() {
+    let first = AiMessage::text(
+        AiRole::User,
+        "{\"schema\":\"opendan.message/v1\",\"body\":{\"text\":\"first\"},\"attachments\":[{\"index\":0}]}",
+    );
+    let second = AiMessage::text(
+        AiRole::User,
+        "{\"schema\":\"opendan.message/v1\",\"body\":{\"text\":\"second\"},\"attachments\":[]}",
+    );
+
+    let out = compose_turn_message(&[first, second]).unwrap();
+    let text = out.text_content();
+    let envelopes = text
+        .split("\n\n")
+        .map(|part| serde_json::from_str::<serde_json::Value>(part).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(envelopes.len(), 2);
+    assert_eq!(envelopes[0]["body"]["text"], "first");
+    assert_eq!(envelopes[0]["attachments"][0]["index"], 0);
+    assert_eq!(envelopes[1]["body"]["text"], "second");
+    assert_eq!(envelopes[1]["attachments"], serde_json::json!([]));
+}
+
+#[test]
 fn prepare_turn_messages_embeds_worksession_user_supplement_before_continue() {
     let prepared = prepare_turn_messages_for_run(
         vec![
