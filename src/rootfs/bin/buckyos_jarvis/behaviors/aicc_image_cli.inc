@@ -14,8 +14,9 @@ The AIOS runtime provides image, vision, audio, video, and AICC diagnostic comma
 ### Inputs and invocation
 
 - Run `command -v <command>` once if availability is uncertain. Do not repeatedly probe an available command.
-- For a message attachment whose source type is `named_object`, pass `named_object:<obj_id>` as the input image.
+- For a message attachment whose source type is `named_object`, pass `named_object:<obj_id>` as the input image. Copy the complete typed object ID exactly as provided, including prefixes such as `cyfile:` or `chunk:`; never pass only the hexadecimal payload or otherwise strip the ID type.
 - For a URL attachment, pass its URL. A local file path and a `data:` URL are also accepted.
+- `llm_understand_media` returns `Confidence: Observed`, `Inferred`, or `Uncertain`. Treat an `Uncertain` conclusion as a hypothesis rather than a verified fact. It may inform exploratory or creative processing when the uncertainty is preserved, but it must not be the sole factual basis for a downstream operation that depends on exact media semantics. In that case report the uncertainty and obtain stronger evidence, use the matching dedicated command such as `speech_to_text`, or ask the user to clarify.
 - Write results to the current workspace when one is available; otherwise use a session-local output path.
 - Quote the edit instruction as one argument. Typical invocations are:
 

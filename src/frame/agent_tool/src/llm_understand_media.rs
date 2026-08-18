@@ -46,7 +46,8 @@ Rules:
 2. Reasoning must come after observations and must only cite facts that trace to observation ids. If a step needs information not in observations, mark it as speculation.
 3. Conclusions that cannot be derived only from observations must be marked in reasoning as speculation and reflected by confidence "Inferred" or "Uncertain".
 4. Do not invent attachment details to support a likely answer.
-5. Return only JSON. Do not call tools."#;
+5. For audio, distinguish clearly intelligible speech from a sound that merely resembles speech. An exact transcription is "Observed" only when the words are clearly audible and supported by an observation that explicitly states the speech is unambiguous. If the clip is short, noisy, ambiguous, or could instead be a non-speech sound, mark any proposed transcription "Uncertain" and present it only as a candidate, not as an observed fact.
+6. Return only JSON. Do not call tools."#;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObservationItem {
@@ -269,6 +270,8 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Ok(media) => media,
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_USAGE),
     };
+    let input_source_kind = resource_source_kind(&media.source);
+    let media_id = masked_resource_id(&media.source);
 
     if let Err(err) = ensure_buckyos_runtime().await {
         return (
@@ -282,7 +285,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
     };
     let mime = resolved_media.mime.clone();
-    let source_kind = resource_source_kind(&resolved_media.source);
+    let resolved_source_kind = resource_source_kind(&resolved_media.source);
     let media_content = match prepare_media_content(resolved_media).await {
         Ok(content) => content,
         Err(err) => return (build_error_result(&opts, err), CLI_EXIT_ERROR),
@@ -343,11 +346,13 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         run_id
     );
     log::info!(
-        "llm_understand_media: started; work_dir={} run_id={} mime={} source_kind={} model={} parent_history_count={} compressed_history_count={} goal={}",
+        "llm_understand_media: started; work_dir={} run_id={} mime={} input_source_kind={} resolved_source_kind={} media_id={} model={} parent_history_count={} compressed_history_count={} goal={}",
         work_dir.display(),
         run_id,
         mime,
-        source_kind,
+        input_source_kind,
+        resolved_source_kind,
+        media_id,
         model_alias,
         parent_history_count,
         compressed_history_count,
@@ -373,7 +378,7 @@ async fn run(opts: RunOpts) -> (AgentToolResult, i32) {
         }
     };
 
-    build_outcome_result(outcome, &mime, &work_dir, &run_id, &opts.goal)
+    build_outcome_result(outcome, &mime, &work_dir, &run_id, &opts.goal, &media_id)
 }
 
 fn build_request(
@@ -424,6 +429,7 @@ fn build_outcome_result(
     work_dir: &PathBuf,
     run_id: &str,
     goal: &str,
+    media_id: &str,
 ) -> (AgentToolResult, i32) {
     match outcome {
         LLMContextOutcome::Done {
@@ -433,6 +439,15 @@ fn build_outcome_result(
             ..
         } => match parse_report_output(&output) {
             Ok(report) => {
+                log::info!(
+                    "llm_understand_media: completed; work_dir={} run_id={} mime={} media_id={} confidence={:?} conclusion={}",
+                    work_dir.display(),
+                    run_id,
+                    mime,
+                    media_id,
+                    report.confidence,
+                    truncate_for_summary(&report.conclusion, 200)
+                );
                 let rendered = render_report(&report);
                 let summary = truncate_for_summary(&report.conclusion, 200);
                 (
@@ -716,6 +731,7 @@ async fn resolve_media(media: &MediaArg) -> Result<ResolvedMedia, String> {
             })
         }
         ResourceRef::NamedObject { obj_id } => {
+            let masked_obj_id = masked_resource_id(&media.source);
             let runtime = get_buckyos_api_runtime()
                 .map_err(|err| format!("get buckyos runtime failed: {err}"))?;
             let named_store = runtime
@@ -729,7 +745,7 @@ async fn resolve_media(media: &MediaArg) -> Result<ResolvedMedia, String> {
                     log::warn!(
                         "llm_understand_media: load named_object metadata failed: {}; obj_id={}",
                         err,
-                        obj_id
+                        masked_obj_id
                     );
                     None
                 }
@@ -784,6 +800,31 @@ fn resource_source_kind(source: &ResourceRef) -> &'static str {
         ResourceRef::Base64 { .. } => "base64",
         ResourceRef::Url { .. } => "url",
         ResourceRef::NamedObject { .. } => "named_object",
+    }
+}
+
+fn masked_resource_id(source: &ResourceRef) -> String {
+    let ResourceRef::NamedObject { obj_id } = source else {
+        return "<none>".to_string();
+    };
+    let value = obj_id.to_string();
+    let (kind, payload) = value
+        .split_once(':')
+        .map(|(kind, payload)| (Some(kind), payload))
+        .unwrap_or((None, value.as_str()));
+    let chars = payload.chars().collect::<Vec<_>>();
+    let masked_payload = if chars.len() <= 16 {
+        payload.to_string()
+    } else {
+        format!(
+            "{}…{}",
+            chars[..8].iter().collect::<String>(),
+            chars[chars.len() - 8..].iter().collect::<String>()
+        )
+    };
+    match kind {
+        Some(kind) => format!("{kind}:{masked_payload}"),
+        None => masked_payload,
     }
 }
 
@@ -1568,6 +1609,16 @@ mod tests {
     }
 
     #[test]
+    fn masked_resource_id_preserves_type_and_masks_payload() {
+        let source: ResourceRef = serde_json::from_value(json!({
+            "kind": "named_object",
+            "obj_id": "cyfile:d05ec9f1d9ff3713fda374c2ad1e1a9ff1b168c941772df29769935fbbb49fdd"
+        }))
+        .unwrap();
+        assert_eq!(masked_resource_id(&source), "cyfile:d05ec9f1…bbb49fdd");
+    }
+
+    #[test]
     fn build_request_disables_web_search_for_media_side_context() {
         let opts = RunOpts {
             media_value: json!({}),
@@ -1787,8 +1838,14 @@ mod tests {
             behavior_result: None,
         };
 
-        let (result, exit_code) =
-            build_outcome_result(outcome, "image/png", &work_dir, run_id, "describe image");
+        let (result, exit_code) = build_outcome_result(
+            outcome,
+            "image/png",
+            &work_dir,
+            run_id,
+            "describe image",
+            "cyfile:12345678…90abcdef",
+        );
 
         assert_eq!(exit_code, CLI_EXIT_ERROR);
         assert_eq!(result.status, AgentToolStatus::Error);
