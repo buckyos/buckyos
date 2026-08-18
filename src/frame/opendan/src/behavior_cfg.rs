@@ -612,8 +612,15 @@ mod tests {
 
     #[test]
     fn jarvis_work_behaviors_define_runtime_prompt_hooks() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../rootfs/bin/buckyos_jarvis/behaviors");
+        let jarvis_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rootfs/bin/buckyos_jarvis");
+        let root = jarvis_root.join("behaviors");
+        let role_prompt = std::fs::read_to_string(jarvis_root.join("role.md")).unwrap();
+        assert!(
+            role_prompt.contains("originating message's language")
+                && role_prompt.contains("after background work resumes"),
+            "Jarvis role prompt must preserve the originating task language after background work"
+        );
         let media_cli_prompt = std::fs::read_to_string(root.join("aicc_image_cli.inc")).unwrap();
         for required in [
             "gen_image",
