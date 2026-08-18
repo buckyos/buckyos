@@ -7,6 +7,6 @@
     "test": "pnpm run dv"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#main"
+    "buckyos": "git+https://github.com//buckyos-websdk#main"
   }
 }

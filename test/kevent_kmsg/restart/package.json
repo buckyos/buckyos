@@ -6,6 +6,6 @@
     "test": "deno run --config deno.json --allow-net --allow-read --allow-write --allow-env --allow-run --unsafely-ignore-certificate-errors kevent_kmsg_restart_dv.ts"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#main"
+    "buckyos": "git+https://github.com//buckyos-websdk#main"
   }
 }

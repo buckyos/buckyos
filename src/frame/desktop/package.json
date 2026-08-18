@@ -21,7 +21,7 @@
     "@tanstack/react-virtual": "^3.13.23",
     "@xyflow/react": "^12.10.2",
     "autoprefixer": "^10.4.27",
-    "buckyos": "github:buckyos/buckyos-websdk#main",
+    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
     "postcss": "^8.5.8",

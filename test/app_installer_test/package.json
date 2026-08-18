@@ -8,6 +8,6 @@
     "test": "node --test app_installer_flow.test.mjs"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#main"
+    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
   }
 }
