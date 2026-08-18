@@ -30,6 +30,13 @@ img2video 'named_object:<obj_id>' 'Slow camera push-in with natural motion.' './
 
 Use `<command> --help` when non-default options are needed.
 
+### High-latency execution
+
+- Media generation may legitimately take longer than the default shell deadline. For image, vision, speech, and audio commands, pass `--timeout 240` to the command and set `exec_bash.timeout_ms` to `300000`.
+- For video and music generation commands, pass `--timeout 540` to the command and set `exec_bash.timeout_ms` to `600000`.
+- In behavior XML, use `<exec_bash timeout_ms="300000">... --timeout 240</exec_bash>` for image/audio work and `<exec_bash timeout_ms="600000">... --timeout 540</exec_bash>` for video/music work. In provider-native tool calls, set the numeric `timeout_ms` field on `exec_bash`.
+- Do not launch another billable generation attempt merely because the normal 60-second deadline elapsed. Wait for the extended command result, then retry only after a structured failure.
+
 ### Reading and extending the tools
 
 - The read-only installed TypeScript sources are under `/opt/buckyos/bin/opendan/buckyos-agent/`.

@@ -29,7 +29,7 @@ use tokio::sync::watch;
 use tokio::time;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_GEMINI_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_GEMINI_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_GEMINI_MODELS: &str = "gemini-2.5-flash,gemini-2.5-pro";
 const DEFAULT_GEMINI_IMAGE_MODELS: &str =
     "gemini-2.0-flash-exp-image-generation,gemini-2.5-flash-image-preview";
@@ -4622,6 +4622,11 @@ mod tests {
     use crate::aicc::ModelCatalog;
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
+
+    #[test]
+    fn default_timeout_covers_high_latency_media() {
+        assert_eq!(default_timeout_ms(), 300_000);
+    }
 
     fn build_llm_request(
         must_features: Vec<Feature>,

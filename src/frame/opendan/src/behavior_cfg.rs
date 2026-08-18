@@ -638,6 +638,10 @@ mod tests {
             "ai_quota",
             "named_object:<obj_id>",
             "<attachment path=",
+            "timeout_ms=\"300000\"",
+            "timeout_ms=\"600000\"",
+            "--timeout 240",
+            "--timeout 540",
         ] {
             assert!(
                 media_cli_prompt.contains(required),
