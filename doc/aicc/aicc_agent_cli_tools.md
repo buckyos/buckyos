@@ -394,6 +394,8 @@ speech_to_text <input_audio> [output_text]
 
 `--format txt` 写 transcript。`json`、`vtt`、`srt` 对应 AICC `output_formats`。
 
+该命令适用于转写明确的语音；音效、音乐或噪声的描述应使用媒体理解。Provider 将低可信候选保留为诊断信息，CLI 的 transcript 正文保持为空。
+
 ### 5.3 `gen_music`
 
 音乐生成。映射到 `audio.music`。

@@ -44,6 +44,61 @@ const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GEMINI_MODELS_MAX_PAGES: usize = 10;
+const MIN_RELIABLE_ASR_CONFIDENCE: f64 = 0.75;
+
+#[derive(Debug, PartialEq)]
+struct GeminiAsrAssessment {
+    transcript: String,
+    candidate_text: String,
+    segments: Value,
+    speech_detected: bool,
+    confidence: f64,
+    status: &'static str,
+}
+
+fn assess_gemini_asr(parsed: &Value) -> GeminiAsrAssessment {
+    let candidate_text = parsed
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let segments = parsed
+        .get("segments")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(vec![]));
+    let speech_detected = parsed
+        .get("speech_detected")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let confidence = parsed
+        .get("transcript_confidence")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let reliable =
+        speech_detected && !candidate_text.is_empty() && confidence >= MIN_RELIABLE_ASR_CONFIDENCE;
+    let status = if reliable {
+        "reliable"
+    } else if speech_detected {
+        "uncertain"
+    } else {
+        "no_speech"
+    };
+
+    GeminiAsrAssessment {
+        transcript: if reliable {
+            candidate_text.clone()
+        } else {
+            String::new()
+        },
+        candidate_text,
+        segments,
+        speech_detected,
+        confidence,
+        status,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GeminiToolCallContext {
@@ -3343,13 +3398,15 @@ impl GoogleGeminiProvider {
             .map(|value| format!(" The expected language is {value}."))
             .unwrap_or_default();
         let prompt = format!(
-            "Transcribe the supplied audio accurately.{language_instruction} Return JSON with the complete transcript in `text` and chronological segments in `segments`. Timestamp detail: {timestamps}. Speaker diarization: {diarization}. Use empty segments only when the audio contains no speech."
+            "First determine whether the supplied audio contains clear, intelligible human speech. Classify sound effects, tones, music, noise, and ambiguous vocal-like sounds as non-speech. Base the transcript strictly on clearly audible words.{language_instruction} Return JSON with `speech_detected`, calibrated `transcript_confidence` from 0 to 1, the complete transcript in `text`, and chronological `segments`. Use an empty `text` and empty `segments` for non-speech audio, and use a low confidence when words are ambiguous. Timestamp detail: {timestamps}. Speaker diarization: {diarization}."
         );
         let schema = json!({
             "type": "object",
             "additionalProperties": false,
-            "required": ["text", "segments"],
+            "required": ["speech_detected", "transcript_confidence", "text", "segments"],
             "properties": {
+                "speech_detected": { "type": "boolean" },
+                "transcript_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
                 "text": { "type": "string" },
                 "segments": {
                     "type": "array",
@@ -3405,19 +3462,13 @@ impl GoogleGeminiProvider {
         let raw_text = Self::extract_text_content(&body).unwrap_or_default();
         let parsed = serde_json::from_str::<Value>(raw_text.trim()).unwrap_or_else(|_| {
             json!({
+                "speech_detected": false,
+                "transcript_confidence": 0,
                 "text": raw_text,
                 "segments": []
             })
         });
-        let text = parsed
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let segments = parsed
-            .get("segments")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(vec![]));
+        let assessment = assess_gemini_asr(&parsed);
         let usage = body.get("usageMetadata").map(|usage| AiUsage {
             input_tokens: usage.get("promptTokenCount").and_then(Value::as_u64),
             output_tokens: usage.get("candidatesTokenCount").and_then(Value::as_u64),
@@ -3428,13 +3479,17 @@ impl GoogleGeminiProvider {
             .as_ref()
             .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
         Ok(ProviderStartResult::Immediate(AiResponse {
-            message: AiResponse::message_from_parts(Some(text), vec![], vec![]),
+            message: AiResponse::message_from_parts(Some(assessment.transcript), vec![], vec![]),
             usage,
             cost,
             finish_reason: Some("stop".to_string()),
             extra: Some(json!({
                 "asr": {
-                    "segments": segments,
+                    "status": assessment.status,
+                    "speech_detected": assessment.speech_detected,
+                    "confidence": assessment.confidence,
+                    "candidate_text": assessment.candidate_text,
+                    "segments": assessment.segments,
                     "provider_io": { "input": request_obj, "output": body },
                     "latency_ms": latency_ms
                 }
@@ -4626,6 +4681,47 @@ mod tests {
     #[test]
     fn default_timeout_covers_high_latency_media() {
         assert_eq!(default_timeout_ms(), 300_000);
+    }
+
+    #[test]
+    fn asr_rejects_text_when_no_speech_was_detected() {
+        let assessment = assess_gemini_asr(&json!({
+            "speech_detected": false,
+            "transcript_confidence": 0.98,
+            "text": "Welcome.",
+            "segments": []
+        }));
+
+        assert_eq!(assessment.status, "no_speech");
+        assert!(assessment.transcript.is_empty());
+        assert_eq!(assessment.candidate_text, "Welcome.");
+    }
+
+    #[test]
+    fn asr_keeps_uncertain_candidate_out_of_response_text() {
+        let assessment = assess_gemini_asr(&json!({
+            "speech_detected": true,
+            "transcript_confidence": 0.4,
+            "text": "Possible words",
+            "segments": []
+        }));
+
+        assert_eq!(assessment.status, "uncertain");
+        assert!(assessment.transcript.is_empty());
+        assert_eq!(assessment.candidate_text, "Possible words");
+    }
+
+    #[test]
+    fn asr_returns_clear_speech_as_transcript() {
+        let assessment = assess_gemini_asr(&json!({
+            "speech_detected": true,
+            "transcript_confidence": 0.95,
+            "text": "Clear speech",
+            "segments": [{ "text": "Clear speech" }]
+        }));
+
+        assert_eq!(assessment.status, "reliable");
+        assert_eq!(assessment.transcript, "Clear speech");
     }
 
     fn build_llm_request(

@@ -1497,6 +1497,8 @@ Response mapping：
 2. segments 写 `AiResponseSummary.extra.asr.segments`。
 3. subtitles 和结构化转录 artifact 写 `AiResponseSummary.artifacts`。
 
+Provider 能够评估语音可靠性时，在 `AiResponseSummary.extra.asr` 中附加 `status`、`speech_detected`、`confidence` 和仅供诊断的 `candidate_text`。`status` 为 `uncertain` 或 `no_speech` 时，候选文字保留在诊断信息中，transcript 正文保持为空。
+
 当 request 指定多个 `output_formats` 时，response `artifacts` 的 key 必须与 format 名一致，例如 `vtt`、`srt`、`json`。
 
 ### 10.3 `audio.music`

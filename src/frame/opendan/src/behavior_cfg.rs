@@ -649,6 +649,9 @@ mod tests {
             "timeout_ms=\"600000\"",
             "--timeout 240",
             "--timeout 540",
+            "use `llm_understand_media` for a general description or classification of audio",
+            "reserve `speech_to_text` for established speech or explicit transcription requests",
+            "present its diagnostic `candidate_text` only as an uncertain candidate",
         ] {
             assert!(
                 media_cli_prompt.contains(required),
