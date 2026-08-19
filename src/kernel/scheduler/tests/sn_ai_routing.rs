@@ -15,15 +15,12 @@ fn managed_settings(enabled: bool, base_url: &str) -> Value {
                 {
                     "id": "custom-provider",
                     "provider_driver": "openai",
-                    "auth_mode": "api_key",
                     "base_url": "https://custom.example/v1/"
                 },
                 {
                     "id": "system-sn-provider",
                     "provider_driver": "sn-ai-provider",
-                    "auth_mode": "runtime_session",
-                    "base_url": base_url,
-                    "models": ["gpt-5.4-mini"]
+                    "base_url": base_url
                 }
             ]
         },
@@ -60,7 +57,7 @@ fn task009_rejects_missing_or_unsafe_zone_sn_values() {
 }
 
 #[test]
-fn task009_patches_only_the_managed_runtime_session_instance() {
+fn task009_patches_only_the_managed_sn_instance() {
     let current = managed_settings(true, "https://sn.buckyos.ai/api/v1/ai/");
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
     let next = reconcile_managed_sn_ai_provider(&current, Ok(&endpoints))
@@ -70,7 +67,6 @@ fn task009_patches_only_the_managed_runtime_session_instance() {
     let instances = next["sn-ai-provider"]["instances"].as_array().unwrap();
     assert_eq!(instances[0]["base_url"], "https://custom.example/v1/");
     assert_eq!(instances[1]["base_url"], "https://sn.buckyos.io/api/v1/ai/");
-    assert_eq!(instances[1]["models"], json!(["gpt-5.4-mini"]));
     assert_eq!(next["unrelated"], current["unrelated"]);
 }
 
@@ -115,8 +111,7 @@ fn task009_reconciliation_is_noop_without_a_managed_instance_or_change() {
             "sn-ai-provider": {
                 "enabled": true,
                 "instances": [{
-                    "provider_driver": "openai",
-                    "auth_mode": "api_key"
+                    "provider_driver": "openai"
                 }]
             }
         }),

@@ -344,6 +344,73 @@ pub fn resolve_driver_inventory(
     }
 }
 
+pub(crate) fn driver_model_has_specific_metadata(
+    provider_driver: &str,
+    provider_model_id: &str,
+) -> bool {
+    let (sources, _) = load_driver_metadata_sources(provider_driver);
+    find_exact_rule(provider_model_id, sources.as_slice()).is_some()
+        || find_pattern_rule(provider_model_id, sources.as_slice()).is_some()
+}
+
+pub(crate) fn driver_metadata_model_ids(provider_driver: &str, api_type: &ApiType) -> Vec<String> {
+    let (sources, _) = load_driver_metadata_sources(provider_driver);
+    let mut models = Vec::<String>::new();
+    for source in sources {
+        for rule in source.document.models {
+            let Some(model_id) = rule.id.map(|value| value.trim().to_string()) else {
+                continue;
+            };
+            if model_id.is_empty() {
+                continue;
+            }
+            models.retain(|current| !current.eq_ignore_ascii_case(model_id.as_str()));
+            if !rule.exclude
+                && rule
+                    .api_types
+                    .as_ref()
+                    .map(|api_types| api_types.contains(api_type))
+                    .unwrap_or(false)
+            {
+                models.push(model_id);
+            }
+        }
+    }
+    models
+}
+
+pub(crate) fn max_driver_metadata_cost(
+    provider_driver: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Option<(f64, String)> {
+    let (sources, _) = load_driver_metadata_sources(provider_driver);
+    sources
+        .iter()
+        .flat_map(|source| {
+            source
+                .document
+                .models
+                .iter()
+                .chain(source.document.patterns.iter())
+                .chain(std::iter::once(&source.document.defaults))
+        })
+        .filter_map(|rule| rule.pricing.as_ref())
+        .filter(|pricing| pricing.currency.eq_ignore_ascii_case("USD"))
+        .filter_map(|pricing| {
+            let amount = match (pricing.input_token, pricing.output_token) {
+                (Some(input_price), Some(output_price)) => {
+                    (input_tokens as f64 * input_price) + (output_tokens as f64 * output_price)
+                }
+                _ => pricing.estimated_cost?,
+            };
+            amount
+                .is_finite()
+                .then(|| (amount, pricing.currency.clone()))
+        })
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+}
+
 fn resolve_driver_model(
     provider_instance_name: &str,
     provider_type: ProviderType,
@@ -1025,7 +1092,8 @@ fn apply_origin_transforms(
 fn load_builtin_driver_metadata(provider_driver: &str) -> Option<DriverMetadataDocument> {
     let normalized = normalize_driver(provider_driver);
     let raw = match normalized.as_str() {
-        "openai" | "sn-ai-provider" => include_str!("../driver_metadata/openai.json"),
+        "openai" => include_str!("../driver_metadata/openai.json"),
+        "sn-ai-provider" => include_str!("../driver_metadata/sn-ai-provider.json"),
         "openrouter" => include_str!("../driver_metadata/openrouter.json"),
         "claude" | "anthropic" => include_str!("../driver_metadata/claude.json"),
         "google-gemini" | "gemini" => include_str!("../driver_metadata/gemini.json"),
@@ -1797,10 +1865,7 @@ mod tests {
     #[test]
     fn wildcard_matching_supports_internal_and_multiple_stars() {
         assert!(wildcard_matches("gemini-*-latest", "gemini-pro-latest"));
-        assert!(wildcard_matches(
-            "gemini-3*flash*",
-            "gemini-3.5-flash-lite"
-        ));
+        assert!(wildcard_matches("gemini-3*flash*", "gemini-3.5-flash-lite"));
         assert!(wildcard_matches("openai/*:*", "openai/gpt-5:fast"));
         assert!(!wildcard_matches("gemini-3*pro*", "gemini-3.5-flash"));
         assert!(!wildcard_matches("gemini-*-latest", "gemini-pro-preview"));
@@ -1810,6 +1875,7 @@ mod tests {
     fn builtin_driver_metadata_passes_semantic_validation() {
         for driver in [
             "openai",
+            "sn-ai-provider",
             "openrouter",
             "claude",
             "google-gemini",
@@ -1820,6 +1886,28 @@ mod tests {
             validate_driver_metadata_document(&document)
                 .unwrap_or_else(|err| panic!("{} metadata is invalid: {}", driver, err));
         }
+    }
+
+    #[test]
+    fn sn_metadata_uses_independent_driver_and_maximum_unknown_cost() {
+        let document = load_builtin_driver_metadata("sn-ai-provider").expect("sn metadata");
+        assert_eq!(document.provider_driver, "sn-ai-provider");
+        assert_eq!(
+            driver_metadata_model_ids("sn-ai-provider", &ApiType::Llm),
+            vec!["gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano"]
+        );
+        assert!(driver_model_has_specific_metadata(
+            "sn-ai-provider",
+            "gpt-5.4"
+        ));
+        assert!(!driver_model_has_specific_metadata(
+            "sn-ai-provider",
+            "vendor-new-model"
+        ));
+        assert_eq!(
+            max_driver_metadata_cost("sn-ai-provider", 1_000, 1_000),
+            Some((1.2, "USD".to_string()))
+        );
     }
 
     #[test]

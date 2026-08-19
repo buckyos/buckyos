@@ -694,17 +694,6 @@ fn build_provider_instance_settings(params: &Value) -> std::result::Result<Value
     if !endpoint.trim().is_empty() {
         instance.insert("base_url".to_string(), Value::String(endpoint));
     }
-    instance.insert(
-        "auth_mode".to_string(),
-        Value::String(
-            if provider_type == "sn_router" {
-                "runtime_session"
-            } else {
-                "bearer"
-            }
-            .to_string(),
-        ),
-    );
     instance.insert("timeout_ms".to_string(), json!(300_000u64));
     if let Some(name) = param_string(params, "name") {
         instance.insert("name".to_string(), Value::String(name));
@@ -715,7 +704,6 @@ fn build_provider_instance_settings(params: &Value) -> std::result::Result<Value
     if let Some(auto_sync) = param_bool(params, "auto_sync_models") {
         instance.insert("auto_sync_models".to_string(), Value::Bool(auto_sync));
     }
-
     let mut wrapped = Map::new();
     wrapped.insert("section".to_string(), Value::String(section.to_string()));
     wrapped.insert("instance".to_string(), Value::Object(instance));
