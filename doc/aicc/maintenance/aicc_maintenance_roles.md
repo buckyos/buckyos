@@ -212,7 +212,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 - **新增或修改 Provider 授权**：用户可以在自己的 system_config / AICC settings 中维护 `services/aicc/settings`，配置 API Key、`base_url`、Provider instance、`provider_driver`、`provider_type`、启用状态和 models 列表。
 - **使用 OpenAI-compatible 新厂商**：如果新厂商兼容 OpenAI-compatible 协议，用户可以新增一个 Provider instance，填入厂商提供的 `base_url` 和 API Key，然后调用 `reload_settings`。
-- **使用官方 SN Provider**：`sn-ai-provider` 支持 `runtime_session` 这类非普通 API Key 的授权模式。用户不应把自己的第三方 API Key 交给 BuckyOS 官方云端保存。
+- **使用官方 SN Provider**：`sn-ai-provider` 使用设备签名登录 SN，并缓存短期 `sn-sso` session，不使用普通 API Key，也不透传 BuckyOS `verify-hub` session。用户不应把自己的第三方 API Key 交给 BuckyOS 官方云端保存。
 - **期望效果**：`models.list` 能看到该 Provider，并列出用户配置或 Provider `/models` 返回的新模型。
 - **验收方法**：配置后调用 `reload_settings`，再调用 `models.list`。如果 Provider 不出现，优先检查启用状态、`provider_driver`、`base_url` 和授权；如果 Provider 出现但模型不出现，检查 models 列表或 Provider `/models` 兼容性。
 

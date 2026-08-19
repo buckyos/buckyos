@@ -418,7 +418,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
           value={
             <span className="inline-flex items-center gap-2">
               {managedSn
-                ? t('aiCenter.providers.currentSessionAuth', 'Current BuckyOS session')
+                ? t('aiCenter.providers.snDeviceSessionAuth', 'SN SSO via device login')
                 : config.auth_mode ?? '-'}
               <StatusBadge status={authStatusVariant(status.auth_status)} label={authStatusLabel(status.auth_status, t)} />
             </span>

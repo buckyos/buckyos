@@ -1695,17 +1695,28 @@ fn update_managed_sn_ai_provider(
         let zone_document = zone_config
             .zone_document()
             .map_err(|err| anyhow::anyhow!("decode ZoneDocument from boot/config failed: {err}"))?;
-        derive_sn_ai_provider_endpoints(zone_document.sn.as_deref())
+        let user_name = zone_document.owner.id.trim();
+        if user_name.is_empty() {
+            return Err(anyhow::anyhow!("ZoneDocument owner has no SN user name"));
+        }
+        Ok((
+            derive_sn_ai_provider_endpoints(zone_document.sn.as_deref())?,
+            user_name.to_string(),
+        ))
     })();
 
     let reconciled = match &endpoints {
-        Ok(endpoints) => reconcile_managed_sn_ai_provider(&current_settings, Ok(endpoints))?,
+        Ok((endpoints, user_name)) => reconcile_managed_sn_ai_provider(
+            &current_settings,
+            Ok(endpoints),
+            Some(user_name.as_str()),
+        )?,
         Err(err) => {
             warn!(
                 "disable managed SN AI provider because Zone SN endpoint is invalid: {}",
                 err
             );
-            reconcile_managed_sn_ai_provider(&current_settings, Err(err))?
+            reconcile_managed_sn_ai_provider(&current_settings, Err(err), None)?
         }
     };
     let Some(reconciled) = reconciled else {

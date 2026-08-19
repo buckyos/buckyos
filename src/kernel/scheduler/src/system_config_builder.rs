@@ -40,6 +40,7 @@ const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
+    pub login_url: String,
     pub responses_url: String,
 }
 
@@ -74,16 +75,24 @@ pub(crate) fn derive_sn_ai_provider_endpoints(
     }
 
     origin.set_path("/");
+    let login_url = origin
+        .join("api/user/login_by_device_token")
+        .map_err(|err| anyhow!("failed to derive SN user login URL: {err}"))?
+        .to_string();
     let responses_url = origin
         .join("api/v1/ai/")
         .map_err(|err| anyhow!("failed to derive SN AI responses URL: {err}"))?
         .to_string();
-    Ok(SnAiProviderEndpoints { responses_url })
+    Ok(SnAiProviderEndpoints {
+        login_url,
+        responses_url,
+    })
 }
 
 pub(crate) fn reconcile_managed_sn_ai_provider(
     current: &Value,
     endpoints: std::result::Result<&SnAiProviderEndpoints, &anyhow::Error>,
+    user_name: Option<&str>,
 ) -> Result<Option<Value>> {
     let mut next = current.clone();
     let Some(provider) = next
@@ -114,6 +123,24 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
                     Value::String(endpoints.responses_url.clone()),
                 );
                 changed = true;
+            }
+            if instance.get("login_url").and_then(Value::as_str)
+                != Some(endpoints.login_url.as_str())
+            {
+                instance.insert(
+                    "login_url".to_string(),
+                    Value::String(endpoints.login_url.clone()),
+                );
+                changed = true;
+            }
+            if let Some(user_name) = user_name.map(str::trim).filter(|value| !value.is_empty()) {
+                if instance.get("user_name").and_then(Value::as_str) != Some(user_name) {
+                    instance.insert(
+                        "user_name".to_string(),
+                        Value::String(user_name.to_string()),
+                    );
+                    changed = true;
+                }
             }
         }
     }
@@ -789,6 +816,8 @@ fn build_aicc_settings_with_endpoints(
             "provider_type": "cloud_api",
             "provider_driver": "sn-ai-provider",
             "base_url": endpoints.responses_url,
+            "login_url": endpoints.login_url,
+            "user_name": config.user_name,
             "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
         });
         sn_ai_provider_instances.push(instance);

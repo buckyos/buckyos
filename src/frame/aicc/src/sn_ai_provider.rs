@@ -18,8 +18,9 @@ use crate::openai_protocol::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, value_to_object_map, AiContent, AiMethodRequest,
-    AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, ResourceRef,
+    ai_methods, generate_sn_user_device_token, login_sn_user_by_device_token, value_to_object_map,
+    AiContent, AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage,
+    ResourceRef,
 };
 use log::{error, info, warn};
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
@@ -29,8 +30,9 @@ use serde_json::{json, Map, Value};
 use std::error::Error as _;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time;
 
 const SN_AI_PROVIDER_SETTINGS_KEY: &str = "sn-ai-provider";
@@ -55,6 +57,8 @@ struct SettingsSnAIProviderInstanceConfig {
     provider_type: String,
     #[serde(default = "default_base_url")]
     base_url: String,
+    login_url: String,
+    user_name: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
 }
@@ -64,18 +68,29 @@ struct SnAIProviderInstanceConfig {
     provider_instance_name: String,
     provider_type: String,
     base_url: String,
+    login_url: String,
+    user_name: String,
     timeout_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SnAIProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
     base_url: String,
+    login_url: String,
+    user_name: String,
     provider_type: ProviderType,
     inventory_refresh_interval: Duration,
     refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
+    auth_session: AsyncMutex<Option<CachedSnSession>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSnSession {
+    session_token: String,
+    expires_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,16 +155,7 @@ fn parse_sn_ai_provider_settings(settings: &Value) -> Result<Option<SnAIProvider
 fn build_sn_ai_provider_instances(
     settings: &SnAIProviderSettings,
 ) -> Result<Vec<SnAIProviderInstanceConfig>> {
-    let raw_instances = if settings.instances.is_empty() {
-        vec![SettingsSnAIProviderInstanceConfig {
-            provider_instance_name: default_instance_id(),
-            provider_type: default_provider_type(),
-            base_url: default_base_url(),
-            timeout_ms: default_timeout_ms(),
-        }]
-    } else {
-        settings.instances.clone()
-    };
+    let raw_instances = settings.instances.clone();
 
     raw_instances
         .into_iter()
@@ -158,6 +164,8 @@ fn build_sn_ai_provider_instances(
                 provider_instance_name: raw_instance.provider_instance_name,
                 provider_type: raw_instance.provider_type,
                 base_url: raw_instance.base_url,
+                login_url: raw_instance.login_url,
+                user_name: raw_instance.user_name,
                 timeout_ms: raw_instance.timeout_ms,
             })
         })
@@ -166,6 +174,12 @@ fn build_sn_ai_provider_instances(
 
 impl SnAIProvider {
     fn new(cfg: SnAIProviderInstanceConfig) -> Result<Self> {
+        if cfg.login_url.trim().is_empty() {
+            return Err(anyhow!("sn-ai-provider login_url is required"));
+        }
+        if cfg.user_name.trim().is_empty() {
+            return Err(anyhow!("sn-ai-provider user_name is required"));
+        }
         let timeout_ms = if cfg.timeout_ms == 0 {
             DEFAULT_SN_AI_PROVIDER_TIMEOUT_MS
         } else {
@@ -198,11 +212,14 @@ impl SnAIProvider {
             inventory: Arc::new(RwLock::new(inventory)),
             client,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            login_url: cfg.login_url,
+            user_name: cfg.user_name,
             provider_type,
             inventory_refresh_interval: Duration::from_secs(
                 DEFAULT_INVENTORY_REFRESH_INTERVAL_SECS,
             ),
             refresh_task: Arc::new(Mutex::new(None)),
+            auth_session: AsyncMutex::new(None),
         })
     }
 
@@ -449,28 +466,38 @@ impl SnAIProvider {
         Ok(inventory)
     }
 
-    async fn build_auth_token(&self, ctx: &InvokeCtx) -> Result<String, ProviderError> {
-        if let Some(token) = ctx
-            .session_token
-            .as_ref()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-        {
-            return Ok(token.to_string());
+    async fn build_auth_token(&self, _ctx: &InvokeCtx) -> Result<String, ProviderError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut cached = self.auth_session.lock().await;
+        if let Some(session) = cached.as_ref() {
+            if session.expires_at > now.saturating_add(30) {
+                return Ok(session.session_token.clone());
+            }
         }
-        let runtime = get_buckyos_api_runtime().map_err(|err| {
-            ProviderError::fatal(format!(
-                "sn-ai-provider runtime_session auth requires runtime: {}",
-                err
-            ))
+        let device_token = generate_sn_user_device_token(self.user_name.as_str())
+            .map_err(|err| ProviderError::fatal(err.to_string()))?;
+        let session = login_sn_user_by_device_token(
+            &self.client,
+            self.login_url.as_str(),
+            device_token.as_str(),
+        )
+        .await
+        .map_err(|err| {
+            if err.is_retryable() {
+                ProviderError::retryable(err.to_string())
+            } else {
+                ProviderError::fatal(err.to_string())
+            }
         })?;
-        let token = runtime.get_session_token().await;
-        if token.trim().is_empty() {
-            return Err(ProviderError::fatal(
-                "sn-ai-provider runtime_session auth requires non-empty session token",
-            ));
-        }
-        Ok(token)
+        let session_token = session.session_token;
+        *cached = Some(CachedSnSession {
+            session_token: session_token.clone(),
+            expires_at: now.saturating_add(session.expires_in),
+        });
+        Ok(session_token)
     }
 
     fn format_error_chain(err: &reqwest::Error) -> String {
@@ -560,7 +587,7 @@ impl SnAIProvider {
         let lower = message.to_ascii_lowercase();
         if status.as_u16() == 401 {
             return ProviderError::fatal(format!(
-                "{}; SN AI Provider requires a valid BuckyOS runtime session through the SN AI gateway",
+                "{}; SN AI Provider requires a valid sn-sso session obtained from device login",
                 message
             ));
         }
@@ -1230,6 +1257,8 @@ mod tests {
             provider_instance_name: "sn-ai-provider-1".to_string(),
             provider_type: "cloud_api".to_string(),
             base_url: default_base_url(),
+            login_url: "https://sn.buckyos.ai/api/user/login_by_device_token".to_string(),
+            user_name: "alice".to_string(),
             timeout_ms: default_timeout_ms(),
         }
     }
@@ -1242,6 +1271,8 @@ mod tests {
                 provider_instance_name: "sn-ai-provider-1".to_string(),
                 provider_type: "cloud_api".to_string(),
                 base_url: "https://sn.buckyos.ai/api/v1/ai/".to_string(),
+                login_url: "https://sn.buckyos.ai/api/user/login_by_device_token".to_string(),
+                user_name: "alice".to_string(),
                 timeout_ms: default_timeout_ms(),
             }],
         };
@@ -1255,7 +1286,14 @@ mod tests {
     fn provider_uses_metadata_models_without_hardcoded_features() {
         let instances = build_sn_ai_provider_instances(&SnAIProviderSettings {
             enabled: true,
-            instances: vec![],
+            instances: vec![SettingsSnAIProviderInstanceConfig {
+                provider_instance_name: "sn-ai-provider-default".to_string(),
+                provider_type: "cloud_api".to_string(),
+                base_url: default_base_url(),
+                login_url: "https://sn.buckyos.ai/api/user/login_by_device_token".to_string(),
+                user_name: "alice".to_string(),
+                timeout_ms: default_timeout_ms(),
+            }],
         })
         .expect("instances");
 
@@ -1280,7 +1318,9 @@ mod tests {
                 "enabled": true,
                 "instances": [
                     {
-                        "instance_id": "sn-ai-provider-alias"
+                        "instance_id": "sn-ai-provider-alias",
+                        "login_url": "https://sn.buckyos.ai/api/user/login_by_device_token",
+                        "user_name": "alice"
                     }
                 ]
             }
@@ -1473,8 +1513,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_session_auth_prefers_invocation_token() {
+    async fn sn_auth_ignores_invocation_session_and_uses_cached_sn_session() {
         let provider = SnAIProvider::new(test_instance_config()).expect("provider");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        *provider.auth_session.lock().await = Some(CachedSnSession {
+            session_token: "sn-sso-session".to_string(),
+            expires_at: now + 300,
+        });
         let ctx = InvokeCtx {
             session_token: Some("caller-session".to_string()),
             ..Default::default()
@@ -1482,7 +1530,7 @@ mod tests {
 
         assert_eq!(
             provider.build_auth_token(&ctx).await.expect("token"),
-            "caller-session"
+            "sn-sso-session"
         );
     }
 
