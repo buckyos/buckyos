@@ -1,0 +1,521 @@
+{
+  "format": "buckyos.aicc.provider-driver-metadata",
+  "schema_version": 3,
+  "schema_revision": 0,
+  "provider_driver": "sn-ai-provider",
+  "revision_seq": 1,
+  "required_features": [],
+  "models": [
+    {
+      "id": "gpt-5.4",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.{driver}", "llm.sn-ai-provider.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": { "currency": "USD", "estimated_cost": 0.01 },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.{driver}", "llm.sn-ai-provider.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": { "currency": "USD", "estimated_cost": 0.01 },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.{driver}", "llm.sn-ai-provider.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": { "currency": "USD", "estimated_cost": 0.01 },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.{driver}", "llm.sn-ai-provider.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": { "currency": "USD", "estimated_cost": 0.01 },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "id": "sora-2",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.4
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "id": "sora-2-pro",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 1.2
+      },
+      "estimated_latency_ms": 180000
+    },
+    {
+      "id": "gpt-image-1",
+      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+      "logical_mounts": [
+        "image.txt2img.{driver}",
+        "image.txt2img.gpt_image",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}",
+        "image.inpaint",
+        "image.inpaint.{driver}",
+        "image.inpaint.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 5000,
+      "quality_score": 0.9
+    },
+    {
+      "id": "dall-e-3",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 5000
+    },
+    {
+      "id": "dall-e-2",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.02
+      },
+      "estimated_latency_ms": 5000
+    },
+    {
+      "id": "text-embedding-3-large",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
+      "estimated_latency_ms": 800
+    },
+    {
+      "id": "text-embedding-3-small",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
+      "estimated_latency_ms": 800
+    },
+    {
+      "id": "whisper-1",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.006
+      },
+      "estimated_latency_ms": 5000
+    },
+    {
+      "id": "gpt-4o-mini-transcribe",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.006
+      },
+      "estimated_latency_ms": 5000
+    },
+    {
+      "id": "tts-1",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
+      "estimated_latency_ms": 3000
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
+      "estimated_latency_ms": 3000
+    }
+  ],
+  "patterns": [
+    {
+      "pattern": "sora-*",
+      "api_types": ["video.txt2video", "video.img2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.{driver}",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.{driver}",
+        "video.img2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.4
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
+      "pattern": "*transcribe*",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.006
+      },
+      "estimated_latency_ms": 5000
+    },
+    {
+      "pattern": "*-tts*",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.015
+      },
+      "estimated_latency_ms": 3000
+    },
+    {
+      "pattern": "*audio*",
+      "exclude": true
+    },
+    {
+      "pattern": "*realtime*",
+      "exclude": true
+    },
+    {
+      "pattern": "dall-e-*",
+      "api_types": ["image.txt2img"],
+      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 5000
+    },
+    {
+      "pattern": "gpt-image-*",
+      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+      "logical_mounts": [
+        "image.txt2img.{driver}",
+        "image.txt2img.gpt_image",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}",
+        "image.inpaint",
+        "image.inpaint.{driver}",
+        "image.inpaint.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.04
+      },
+      "estimated_latency_ms": 5000,
+      "quality_score": 0.9
+    },
+    {
+      "pattern": "text-embedding-*",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.0001
+      },
+      "estimated_latency_ms": 800
+    },
+    {
+      "pattern": "gpt-*",
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.sn-ai-provider.{model}",
+        "rerank",
+        "rerank.sn-ai-provider",
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "pattern": "chatgpt-*",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.{driver}", "llm.sn-ai-provider.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200
+    },
+    {
+      "pattern": "o*",
+      "api_types": ["llm"],
+      "logical_mounts": ["llm.{driver}", "llm.gpt", "llm.sn-ai-provider.{model}"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200
+    }
+  ],
+  "defaults": {
+    "api_types": ["llm"],
+    "logical_mounts": ["llm.{driver}", "llm.{driver}.{model}"],
+    "capabilities": {
+      "streaming": false,
+      "tool_call": false,
+      "json_schema": false,
+      "web_search": false,
+      "vision": false
+    },
+    "pricing": {
+      "currency": "USD",
+      "estimated_cost": 0.01
+    },
+    "estimated_latency_ms": 1200
+  },
+  "variants": [
+    {
+      "name": "reasoning.low",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.high",
+      "mount_suffix": "reasoning-high",
+      "provider_options": { "reasoning": { "effort": "high" } }
+    }
+  ],
+  "version_rules": [
+    {
+      "family": "gpt",
+      "tier": "standard",
+      "model_pattern": "gpt-*",
+      "exclude_tier_tokens": ["pro", "mini", "nano", "nono"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": {
+        "unstable_tokens": ["preview", "experimental", "beta"],
+        "current_requires_stable": true
+      },
+      "current_mount": "llm.gpt-standard",
+      "version_mount": "llm.sn-ai-provider.{model}",
+      "auto_mounts": [
+        "llm.gpt",
+        "llm.gpt-standard",
+        "llm.gpt-pro",
+        "llm.gpt-mini",
+        "llm.gpt-nano",
+        "llm",
+        "llm.summarize",
+        "llm.swift",
+        "llm.plan",
+        "llm.reason",
+        "llm.code"
+      ],
+      "exclude_snapshot_date_suffix": true,
+      "capabilities": {
+        "vision": true
+      }
+    },
+    {
+      "family": "gpt",
+      "tier": "pro",
+      "model_pattern": "gpt-*",
+      "tier_tokens": ["pro"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": {
+        "unstable_tokens": ["preview", "experimental", "beta"],
+        "current_requires_stable": true
+      },
+      "current_mount": "llm.gpt-pro",
+      "version_mount": "llm.sn-ai-provider.{model}",
+      "auto_mounts": [
+        "llm.gpt",
+        "llm.gpt-standard",
+        "llm.gpt-pro",
+        "llm.gpt-mini",
+        "llm.gpt-nano",
+        "llm",
+        "llm.summarize",
+        "llm.swift",
+        "llm.plan",
+        "llm.reason",
+        "llm.code"
+      ],
+      "exclude_snapshot_date_suffix": true
+    },
+    {
+      "family": "gpt",
+      "tier": "mini",
+      "model_pattern": "gpt-*",
+      "tier_tokens": ["mini"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": {
+        "unstable_tokens": ["preview", "experimental", "beta"],
+        "current_requires_stable": true
+      },
+      "current_mount": "llm.gpt-mini",
+      "version_mount": "llm.sn-ai-provider.{model}",
+      "auto_mounts": [
+        "llm.gpt",
+        "llm.gpt-standard",
+        "llm.gpt-pro",
+        "llm.gpt-mini",
+        "llm.gpt-nano",
+        "llm",
+        "llm.summarize",
+        "llm.swift",
+        "llm.plan",
+        "llm.reason",
+        "llm.code"
+      ],
+      "exclude_snapshot_date_suffix": true
+    },
+    {
+      "family": "gpt",
+      "tier": "nano",
+      "model_pattern": "gpt-*",
+      "tier_tokens": ["nano", "nono"],
+      "version_rank": { "prefix": "gpt" },
+      "stability": {
+        "unstable_tokens": ["preview", "experimental", "beta"],
+        "current_requires_stable": true
+      },
+      "current_mount": "llm.gpt-nano",
+      "version_mount": "llm.sn-ai-provider.{model}",
+      "auto_mounts": [
+        "llm.gpt",
+        "llm.gpt-standard",
+        "llm.gpt-pro",
+        "llm.gpt-mini",
+        "llm.gpt-nano",
+        "llm",
+        "llm.summarize",
+        "llm.swift",
+        "llm.plan",
+        "llm.reason",
+        "llm.code"
+      ],
+      "exclude_snapshot_date_suffix": true
+    }
+  ],
+  "signature": null
+}
