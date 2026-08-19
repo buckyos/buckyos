@@ -17,7 +17,7 @@ import { getEmptySeed, getPopulatedSeed, model } from './seed'
 
 function getScenarioFromURL(): 'empty' | 'populated' {
   const params = new URLSearchParams(window.location.search)
-  return params.get('scenario') === 'populated' ? 'populated' : 'empty'
+  return (params.get('aiccScenario') ?? params.get('scenario')) === 'populated' ? 'populated' : 'empty'
 }
 
 function namespaceFromApiType(apiType: string): ApiNamespace {
@@ -168,6 +168,9 @@ export class MockDataStore {
     const instanceName = draft.provider_instance_name ?? `${providerType}-${Date.now().toString(36)}`
     const models = modelsForDraft(draft, instanceName)
     const isSnRouter = providerType === 'sn_router'
+    if (isSnRouter) {
+      throw new Error('sn_router_is_system_managed')
+    }
 
     const view: ProviderView = {
       config: {
@@ -175,10 +178,10 @@ export class MockDataStore {
         name: draft.name || providerType,
         provider_type: providerType,
         provider_instance_name: instanceName,
-        provider_runtime_type: isSnRouter ? 'proxy_unknown' : 'cloud_api',
-        provider_driver: isSnRouter ? 'sn' : providerType,
-        provider_origin: isSnRouter ? 'builtin' : 'user_config',
-        auth_mode: draft.api_key ? 'api_key' : 'oauth',
+        provider_runtime_type: 'cloud_api',
+        provider_driver: providerType,
+        provider_origin: 'user_config',
+        auth_mode: draft.api_key ? 'api_key' : undefined,
         endpoint: draft.endpoint || undefined,
         protocol_type: draft.protocol_type ?? undefined,
         auto_sync_models: draft.auto_sync_models,
@@ -186,9 +189,9 @@ export class MockDataStore {
       },
       inventory: {
         provider_instance_name: instanceName,
-        provider_type: isSnRouter ? 'proxy_unknown' : 'cloud_api',
-        provider_driver: isSnRouter ? 'sn' : providerType,
-        provider_origin: isSnRouter ? 'builtin' : 'user_config',
+        provider_type: 'cloud_api',
+        provider_driver: providerType,
+        provider_origin: 'user_config',
         inventory_revision: `${instanceName}-rev-now`,
         version: 'mock',
         models,
@@ -207,11 +210,10 @@ export class MockDataStore {
       account: {
         provider_instance_name: instanceName,
         usage_supported: true,
-        cost_supported: !isSnRouter,
+        cost_supported: true,
         balance_supported: providerType !== 'custom',
-        pricing_mode: isSnRouter ? 'free_quota' : 'per_token',
-        balance_unit: isSnRouter ? 'credit' : 'usd',
-        balance_value: isSnRouter ? 500 : undefined,
+        pricing_mode: 'per_token',
+        balance_unit: 'usd',
       },
     }
 
@@ -221,11 +223,14 @@ export class MockDataStore {
   }
 
   deleteProvider(id: string): void {
+    if (this.providers.get(id)?.config.provider_driver === 'sn-ai-provider') {
+      throw new Error('sn_router_is_system_managed')
+    }
     this.providers.delete(id)
     this.notify()
   }
 
-  refreshProviderModels(_id: string): void {
+  refreshProviderModels(): void {
     this.notify()
   }
 
@@ -359,7 +364,7 @@ export class MockDataStore {
     }
   }
 
-  getUsageTrend(_granularity: string): UsageTrendPoint[] {
+  getUsageTrend(): UsageTrendPoint[] {
     return this.usageTrend
   }
 

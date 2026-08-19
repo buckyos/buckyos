@@ -311,6 +311,26 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
   expect(consoleErrors).toEqual([])
 })
 
+test('SN Router is shown as a system-managed provider', async ({ page }) => {
+  await page.goto('/?scenario=normal&aiccScenario=populated')
+
+  await page.getByTestId('desktop-app-ai-center').click()
+  await page.getByRole('button', { name: 'Providers', exact: true }).click()
+
+  await expect(page.getByText('SN Router', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('System managed', { exact: true }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Provider actions' }).click()
+  await expect(page.getByText('Refresh Models', { exact: true })).toBeVisible()
+  await expect(page.getByText('Update Key', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Delete', { exact: true })).toHaveCount(0)
+
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Add Provider' }).click()
+  const snRouter = page.getByRole('button', { name: /SN Router/ })
+  await expect(snRouter).toBeDisabled()
+  await expect(snRouter).toContainText('System managed')
+})
+
 test('systest opens its zone subdomain inside a desktop window', async ({ page }) => {
   const consoleErrors: string[] = []
   page.on('console', (message) => {

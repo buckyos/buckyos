@@ -6,7 +6,7 @@ import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { LongField } from '../shared/LongField'
-import type { AuthStatus, ModelMetadata, ProviderView } from '../../../../api/aicc_mgr'
+import { isManagedSnProvider, type AuthStatus, type ModelMetadata, type ProviderView } from '../../../../api/aicc_mgr'
 
 type TFn = (k: string, f: string) => string
 type FilterKey = 'apiType' | 'logicalMount' | 'health' | 'costClass' | 'latencyClass' | 'tier'
@@ -108,6 +108,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const actionsRef = useRef<HTMLDivElement | null>(null)
 
   const { config, status, account, inventory } = provider
+  const managedSn = isManagedSnProvider(provider)
   const models = status.discovered_models
   const degradedCount = models.filter((m) => m.health.status === 'degraded').length
   const quotaWarningCount = models.filter((m) => m.health.quota_state === 'near_limit' || m.health.quota_state === 'exhausted').length
@@ -228,7 +229,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
   const balanceDisplay = account.balance_supported && account.balance_value != null
     ? `${account.balance_unit === 'usd' ? '$' : ''}${account.balance_value}${account.balance_unit === 'credit' ? ' Credit' : ''}`
-    : t('aiCenter.providers.usageOnly', 'Usage only')
+    : account.usage_supported
+      ? t('aiCenter.providers.usageOnly', 'Usage only')
+      : t('aiCenter.providers.balanceUnavailable', 'Not available')
   const routingWeightLabel = routingWeight === 0
     ? t('aiCenter.providers.routingDisabled', 'Disabled for routing')
     : routingWeight < 1
@@ -286,16 +289,16 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                 <div className="relative w-full rounded-t-xl p-3 shadow-lg" style={{ background: 'var(--cp-surface)', borderTop: '1px solid var(--cp-border)' }}>
                   <div className="mx-auto mb-3 h-1 w-10 rounded-full" style={{ background: 'var(--cp-border)' }} />
                   <div className="flex flex-col gap-1 pb-[env(safe-area-inset-bottom)]">
-                    <MenuAction
-                      icon={<ShieldCheck size={16} />}
-                      label={t('aiCenter.providers.updateKey', 'Update Key')}
-                      onClick={() => {
-                        setActionsOpen(false)
-                        setShowKeyDialog(true)
-                        setKeyError(null)
-                        setKeyFeedback(null)
-                      }}
-                    />
+                    {!managedSn && <MenuAction
+                        icon={<ShieldCheck size={16} />}
+                        label={t('aiCenter.providers.updateKey', 'Update Key')}
+                        onClick={() => {
+                          setActionsOpen(false)
+                          setShowKeyDialog(true)
+                          setKeyError(null)
+                          setKeyFeedback(null)
+                        }}
+                      />}
                     <MenuAction
                       icon={<RefreshCw size={16} className={refreshingModels ? 'animate-spin' : ''} />}
                       label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
@@ -305,7 +308,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                       }}
                       disabled={refreshingModels}
                     />
-                    <MenuAction
+                    {!managedSn && <MenuAction
                       icon={<Trash2 size={16} />}
                       label={t('aiCenter.providers.delete', 'Delete')}
                       onClick={() => {
@@ -314,7 +317,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                         setDeleteError(null)
                       }}
                       danger
-                    />
+                    />}
                   </div>
                 </div>
               </div>
@@ -323,7 +326,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
               className="absolute right-0 top-10 z-10 flex w-48 flex-col rounded-lg p-1 shadow-lg"
               style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
             >
-              <MenuAction
+              {!managedSn && <MenuAction
                 icon={<ShieldCheck size={14} />}
                 label={t('aiCenter.providers.updateKey', 'Update Key')}
                 onClick={() => {
@@ -332,7 +335,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   setKeyError(null)
                   setKeyFeedback(null)
                 }}
-              />
+              />}
               <MenuAction
                 icon={<RefreshCw size={14} className={refreshingModels ? 'animate-spin' : ''} />}
                 label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
@@ -342,7 +345,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                 }}
                 disabled={refreshingModels}
               />
-              <MenuAction
+              {!managedSn && <MenuAction
                 icon={<Trash2 size={14} />}
                 label={t('aiCenter.providers.delete', 'Delete')}
                 onClick={() => {
@@ -351,7 +354,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   setDeleteError(null)
                 }}
                 danger
-              />
+              />}
             </div>
             )
           )}
@@ -388,6 +391,11 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
       {activeSection === 'overview' && (
       <>
+      {managedSn && (
+        <InlineNotice tone="success">
+          {t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')}
+        </InlineNotice>
+      )}
       <div className="md:hidden">
         <MetricCarousel metrics={providerMetrics} />
       </div>
@@ -404,12 +412,14 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
-        <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />
+        {!managedSn && <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />}
         <Row
           label={t('aiCenter.providers.auth', 'Authentication')}
           value={
             <span className="inline-flex items-center gap-2">
-              {config.auth_mode ?? '-'}
+              {managedSn
+                ? t('aiCenter.providers.currentSessionAuth', 'Current BuckyOS session')
+                : config.auth_mode ?? '-'}
               <StatusBadge status={authStatusVariant(status.auth_status)} label={authStatusLabel(status.auth_status, t)} />
             </span>
           }
@@ -533,7 +543,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         </div>
       )}
 
-      <UpdateKeyDialog
+      {!managedSn && <UpdateKeyDialog
         open={showKeyDialog}
         apiKey={apiKeyDraft}
         error={keyError}
@@ -551,9 +561,9 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
             setKeyError(null)
           }
         }}
-      />
+      />}
 
-      <ConfirmDialog
+      {!managedSn && <ConfirmDialog
         open={confirmDelete}
         title={t('aiCenter.providers.deleteTitle', 'Delete Provider')}
         message={t('aiCenter.providers.deleteConfirm', 'Are you sure you want to delete this provider? This action cannot be undone.')}
@@ -564,7 +574,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         onCancel={() => {
           if (!deleting) setConfirmDelete(false)
         }}
-      />
+      />}
     </div>
   )
 }
@@ -926,7 +936,7 @@ function ModelInventoryRow({ model, t, compact = false, groupLabel }: { model: M
         <Chip label={t('aiCenter.providers.quality', 'quality')} value={model.attributes.quality_score?.toString() ?? '-'} />
         <Chip label={t('aiCenter.providers.tier', 'tier')} value={model.attributes.tier ?? '-'} />
         <Chip label={t('aiCenter.providers.latency', 'latency')} value={`${model.attributes.latency_class}${model.health.p95_latency_ms ? ` p95 ${model.health.p95_latency_ms}ms` : ''}`} />
-        <Chip label={t('aiCenter.providers.cost', 'cost')} value={model.attributes.cost_class} />
+        <Chip label={t('aiCenter.providers.cost', 'cost')} value={formatModelPricing(model)} />
         <Chip label={t('aiCenter.providers.quota', 'quota')} value={model.health.quota_state} />
       </div>
     </div>
@@ -1190,6 +1200,18 @@ function variantKind(model: ModelMetadata): 'base' | 'variant' {
 
 function formatWeight(weight: number): string {
   return weight.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function formatModelPricing(model: ModelMetadata): string {
+  if (model.pricing.estimated_cost_usd != null) {
+    return `$${model.pricing.estimated_cost_usd.toFixed(4)} est.`
+  }
+  if (model.pricing.input_token_usd != null || model.pricing.output_token_usd != null) {
+    const input = model.pricing.input_token_usd != null ? `$${model.pricing.input_token_usd}` : '-'
+    const output = model.pricing.output_token_usd != null ? `$${model.pricing.output_token_usd}` : '-'
+    return `${input} / ${output}`
+  }
+  return model.attributes.cost_class
 }
 
 function formatTimestamp(value?: string): string {

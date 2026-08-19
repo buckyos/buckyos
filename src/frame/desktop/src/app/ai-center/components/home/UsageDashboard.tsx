@@ -437,8 +437,10 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
             {
               icon: <CreditCard size={18} />,
               title: t('aiCenter.home.credit', 'SN Credit'),
-              value: snCredit != null ? `${snCredit} Credit` : '-',
-              subtitle: snProvider ? `${snProvider.account.pricing_mode} / top up available` : undefined,
+              value: snCredit != null ? `${snCredit} Credit` : t('aiCenter.home.unavailable', 'Not available'),
+              subtitle: snProvider
+                ? t('aiCenter.home.snBalanceUnavailable', 'SN Router does not expose a balance query.')
+                : undefined,
               tone: 'accent',
             },
             {
@@ -469,8 +471,8 @@ export function UsageDashboard({ mode = 'home' }: { mode?: 'home' | 'usage' }) {
         <SummaryCard
           icon={<CreditCard size={18} />}
           title={t('aiCenter.home.credit', 'SN Credit')}
-          value={snCredit != null ? `${snCredit} Credit` : '—'}
-          subtitle={snProvider ? `${snProvider.account.pricing_mode} · top up available` : undefined}
+          value={snCredit != null ? `${snCredit} Credit` : t('aiCenter.home.unavailable', 'Not available')}
+          subtitle={snProvider ? t('aiCenter.home.snBalanceUnavailable', 'SN Router does not expose a balance query.') : undefined}
         />
         <SummaryCard
           icon={<DollarSign size={18} />}
