@@ -1,8 +1,8 @@
 import { Network, Zap, Cpu, Globe, Cloud, Server } from 'lucide-react'
 import { StatusBadge } from '../shared/StatusBadge'
 import { LongField } from '../shared/LongField'
-import type { ProviderView } from '../../../../api/aicc_mgr'
-import type { AuthStatus } from '../../../../api/aicc_mgr'
+import { isManagedSnProvider, type AuthStatus, type ProviderView } from '../../../../api/aicc_mgr'
+import { useI18n } from '../../../../i18n/provider'
 
 const providerIcons: Record<string, typeof Network> = {
   sn_router: Network,
@@ -29,9 +29,14 @@ interface ProviderCardProps {
 }
 
 export function ProviderCard({ provider, selected, onClick }: ProviderCardProps) {
+  const { t } = useI18n()
   const Icon = providerIcons[provider.config.provider_type] ?? Server
   const modelCount = provider.status.discovered_models.length
   const degradedCount = provider.status.discovered_models.filter((m) => m.health.status !== 'available').length
+  const managedSn = isManagedSnProvider(provider)
+  const statusVariant = provider.status.model_sync_status === 'failed'
+    ? 'warning'
+    : authStatusToVariant(provider.status.auth_status)
 
   return (
     <button
@@ -51,9 +56,19 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
           tone="muted"
           copyable={false}
         />
+        {managedSn && (
+          <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
+            {t('aiCenter.providers.systemManaged', 'System managed')}
+          </span>
+        )}
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
-        <StatusBadge status={authStatusToVariant(provider.status.auth_status)} />
+        <StatusBadge
+          status={statusVariant}
+          label={provider.status.model_sync_status === 'failed'
+            ? t('aiCenter.providers.syncFailedShort', 'Sync failed')
+            : undefined}
+        />
         <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
           {modelCount}{degradedCount > 0 ? `/${degradedCount}` : ''}
         </span>

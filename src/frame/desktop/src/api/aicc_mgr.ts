@@ -914,7 +914,6 @@ function slugify(value: string): string {
 
 function defaultProviderEndpoint(providerType: ProviderType | null): string {
   switch (providerType) {
-    case 'sn_router': return 'https://sn.buckyos.ai/api/v1/ai/'
     case 'openai': return 'https://api.openai.com/v1'
     case 'anthropic': return 'https://api.anthropic.com/v1'
     case 'google': return 'https://generativelanguage.googleapis.com/v1beta'
@@ -947,6 +946,9 @@ function toAiProviderCard(provider: ProviderView): AiProviderCard {
 
 function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
   const providerType = draft.provider_type ?? 'custom'
+  if (providerType === 'sn_router') {
+    throw new Error('sn_router_is_system_managed')
+  }
   const endpoint = draft.endpoint.trim() || defaultProviderEndpoint(providerType)
   const instanceName = draft.provider_instance_name ?? defaultProviderInstanceName(providerType, draft.name)
   const providerName = draft.name.trim() || providerDisplayName(providerType, instanceName)
@@ -1519,10 +1521,18 @@ function toProviderView(inventory: ProviderInventory): ProviderView {
   const providerType = inferProviderType(inventory.provider_driver, inventory.provider_instance_name)
   const models = inventory.models
   const hasUnavailable = models.some((model) => model.health.status === 'unavailable')
+  const costSupported = models.some((model) =>
+    model.pricing.input_token_usd != null ||
+    model.pricing.output_token_usd != null ||
+    model.pricing.cache_input_token_usd != null ||
+    model.pricing.estimated_cost_usd != null,
+  )
 
   const config: ProviderConfig = {
     id: providerId,
-    name: inventory.name ?? providerDisplayName(providerType, inventory.provider_instance_name),
+    name: providerType === 'sn_router'
+      ? 'SN Router'
+      : inventory.name ?? providerDisplayName(providerType, inventory.provider_instance_name),
     provider_type: providerType,
     provider_instance_name: inventory.provider_instance_name,
     provider_runtime_type: inventory.provider_type,
@@ -1537,7 +1547,7 @@ function toProviderView(inventory: ProviderInventory): ProviderView {
     is_connected: models.length > 0 && !models.every((model) => model.health.status === 'unavailable'),
     auth_status: models.length === 0 ? 'unknown' : hasUnavailable ? 'unknown' : 'ok',
     usage_supported: false,
-    balance_supported: providerType === 'sn_router',
+    balance_supported: false,
     discovered_models: models,
     model_sync_status: models.length > 0 ? 'ok' : 'failed',
   }
@@ -1549,11 +1559,9 @@ function toProviderView(inventory: ProviderInventory): ProviderView {
     account: {
       provider_instance_name: inventory.provider_instance_name,
       usage_supported: false,
-      cost_supported: providerType !== 'sn_router',
-      balance_supported: providerType === 'sn_router',
-      pricing_mode: providerType === 'sn_router' ? 'free_quota' : inferPricingMode(models),
-      balance_unit: providerType === 'sn_router' ? 'credit' : undefined,
-      balance_value: providerType === 'sn_router' ? 15 : undefined,
+      cost_supported: costSupported,
+      balance_supported: false,
+      pricing_mode: inferPricingMode(models),
     },
   }
 }
@@ -1618,6 +1626,8 @@ function toModelMetadata(
       input_token_usd: asOptionalNumber(pricing.input_token_usd),
       output_token_usd: asOptionalNumber(pricing.output_token_usd),
       cache_input_token_usd: asOptionalNumber(pricing.cache_input_token_usd),
+      estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd)
+        ?? asOptionalNumber(pricing.estimated_cost),
     },
     health: {
       status,
@@ -1972,8 +1982,9 @@ function requiredFeatures(raw: RawRecord): string[] {
 }
 
 function inferProviderType(driver: string, instanceName: string): ProviderType {
+  const normalizedDriver = driver.trim().toLowerCase()
+  if (normalizedDriver === 'sn-ai-provider') return 'sn_router'
   const value = `${driver} ${instanceName}`.toLowerCase()
-  if (value.includes('sn')) return 'sn_router'
   if (value.includes('openai')) return 'openai'
   if (value.includes('anthropic') || value.includes('claude')) return 'anthropic'
   if (value.includes('google') || value.includes('gemini')) return 'google'
@@ -1994,10 +2005,16 @@ function providerDisplayName(providerType: ProviderType, instanceName: string): 
   return labelFromPath(instanceName)
 }
 
+export function isManagedSnProvider(provider: ProviderView): boolean {
+  return provider.config.provider_driver.trim().toLowerCase() === 'sn-ai-provider'
+}
+
 function inferPricingMode(models: ModelMetadata[]): PricingMode {
   return models.some((model) =>
     model.pricing.input_token_usd != null ||
-    model.pricing.output_token_usd != null,
+    model.pricing.output_token_usd != null ||
+    model.pricing.cache_input_token_usd != null ||
+    model.pricing.estimated_cost_usd != null,
   ) ? 'per_token' : 'unknown'
 }
 
