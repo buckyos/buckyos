@@ -95,7 +95,7 @@ services/control_panel/ai_models/provider_secrets
 
 | Provider type | settings section | instance 字段 |
 | --- | --- | --- |
-| `sn_router` | `sn-ai-provider` | `provider_instance_name`, `provider_type`, `base_url`, `timeout_ms` |
+| `sn_router` | `sn-ai-provider` | `provider_instance_name`, `provider_type`, `base_url`, `login_url`, `user_name`, `timeout_ms` |
 | `openai` / `openrouter` / `custom` | `openai` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms` |
 | `google` | `google` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `image_models`, `default_image_model`, `features`, `alias_map` |
 | `anthropic` | `claude` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `features`, `alias_map` |
@@ -293,7 +293,7 @@ minimax    -> minimax
 - OpenAI instance 支持显式配置 `provider_driver`。OpenAI 使用 `openai`，OpenRouter 使用 `openrouter`，自定义 OpenAI-compatible provider 使用与其 driver metadata 文件一致的 driver id。后端 inventory 会原样返回该值，并用它选择对应的模型 metadata。
 - `provider_type` 只表示部署类型（例如 `cloud_api`），不能代替 `provider_driver`。未配置 `provider_driver` 时回退为 `openai`；因此 OpenRouter 和 custom instance 应显式配置该字段。
 
-`sn-ai-provider` 使用独立 adapter，不通过 `OpenAIProvider` 注册。它固定使用 `runtime_session` 鉴权，通过 SN 的 `/models` 刷新 inventory，并通过 `/responses` 执行 `llm.chat`；配置中不接受普通 API key。初始模型取独立 `sn-ai-provider` driver metadata 的 `models[].id` 中声明支持 LLM 的项目，随后由 `/models` 返回的真实 inventory 刷新。metadata 未描述的模型按该 metadata 中的最高价格估算。
+`sn-ai-provider` 使用独立 adapter，不通过 `OpenAIProvider` 注册。它使用本机设备私钥签发 Device JWT，向配置的 `login_url` 调用 `/api/user/login_by_device_token` 换取 `sn-sso` session，再通过 SN 的 `/models` 刷新 inventory、通过 `/responses` 执行 `llm.chat`；配置中不接受普通 API key，也不透传 BuckyOS `verify-hub` session。`user_name` 是设备在 SN 注册时所属的 Zone 用户名。初始模型取独立 `sn-ai-provider` driver metadata 的 `models[].id` 中声明支持 LLM 的项目，随后由 `/models` 返回的真实 inventory 刷新。metadata 未描述的模型按该 metadata 中的最高价格估算。
 
 ### 4.4 `provider.delete`
 

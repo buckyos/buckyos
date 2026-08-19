@@ -21,11 +21,12 @@ mod sn_ai_provider;
 use ::kRPC::*;
 use anyhow::Result;
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
-    AiccServerHandler, BuckyOSRuntimeType, DriverMetadataRuntimeApply, DriverMetadataUpdateGetReq,
-    DriverMetadataUpdateSetReq, DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus,
-    DriverMetadataUpdateView, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
-    QueryUsageResponse, SystemConfigClient, SystemConfigError, AICC_SERVICE_SERVICE_NAME,
+    ai_methods, generate_sn_user_device_token, get_buckyos_api_runtime, init_buckyos_api_runtime,
+    login_sn_user_by_device_token, set_buckyos_api_runtime, AiccServerHandler, BuckyOSRuntimeType,
+    DriverMetadataRuntimeApply, DriverMetadataUpdateGetReq, DriverMetadataUpdateSetReq,
+    DriverMetadataUpdateSetResponse, DriverMetadataUpdateStatus, DriverMetadataUpdateView,
+    QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
+    SystemConfigClient, SystemConfigError, AICC_SERVICE_SERVICE_NAME,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -610,10 +611,17 @@ fn provider_instance_in_section(settings: &Value, section: &str, instance_name: 
         .unwrap_or(false)
 }
 
-fn managed_sn_provider_endpoint(
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ManagedSnProviderConfig {
+    endpoint: String,
+    login_url: String,
+    user_name: String,
+}
+
+fn managed_sn_provider_config(
     settings: Option<&Value>,
     requested_instance_name: Option<&str>,
-) -> std::result::Result<String, RPCErrors> {
+) -> std::result::Result<ManagedSnProviderConfig, RPCErrors> {
     let section = settings
         .and_then(|settings| settings.get("sn-ai-provider"))
         .and_then(Value::as_object)
@@ -635,13 +643,20 @@ fn managed_sn_provider_endpoint(
             })
         })
         .ok_or_else(|| RPCErrors::ReasonError("sn_router_not_activated".to_string()))?;
-    instance
-        .get("base_url")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| RPCErrors::ReasonError("sn_router_endpoint_missing".to_string()))
+    let required = |field: &str, error: &str| {
+        instance
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| RPCErrors::ReasonError(error.to_string()))
+    };
+    Ok(ManagedSnProviderConfig {
+        endpoint: required("base_url", "sn_router_endpoint_missing")?,
+        login_url: required("login_url", "sn_router_login_url_missing")?,
+        user_name: required("user_name", "sn_router_user_name_missing")?,
+    })
 }
 
 fn collect_provider_display_names(settings: &Value) -> HashMap<String, String> {
@@ -882,6 +897,7 @@ fn collect_model_id_from_entry(entry: &Value) -> Option<String> {
         entry
             .get("id")
             .or_else(|| entry.get("name"))
+            .or_else(|| entry.get("model"))
             .or_else(|| entry.get("provider_model_id"))
             .or_else(|| entry.get("provider_actual_model_id"))
             .and_then(Value::as_str)
@@ -901,7 +917,7 @@ fn collect_model_id_from_entry(entry: &Value) -> Option<String> {
 fn collect_model_ids(body: &Value) -> Vec<String> {
     let mut ids = Vec::<String>::new();
     let mut seen = HashSet::<String>::new();
-    for key in ["data", "models"] {
+    for key in ["data", "models", "items"] {
         let Some(items) = body.get(key).and_then(Value::as_array) else {
             continue;
         };
@@ -959,17 +975,28 @@ async fn discover_openai_compatible_models(
 async fn discover_sn_ai_provider_models(
     client: &reqwest::Client,
     endpoint: &str,
-    session_token: Option<&str>,
+    login_url: &str,
+    user_name: &str,
 ) -> std::result::Result<Vec<String>, Value> {
-    let token = session_token
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| validation_issue("auth", "SN Router requires a BuckyOS session"))?;
+    let device_token = generate_sn_user_device_token(user_name)
+        .map_err(|err| validation_issue("auth", err.to_string()))?;
+    let session = login_sn_user_by_device_token(client, login_url, device_token.as_str())
+        .await
+        .map_err(|err| {
+            validation_issue(
+                if err.is_retryable() {
+                    "endpoint"
+                } else {
+                    "auth"
+                },
+                err.to_string(),
+            )
+        })?;
     let body = send_discovery_request(
         "sn-ai-provider",
         client
             .get(openai_models_endpoint(endpoint).as_str())
-            .bearer_auth(token),
+            .bearer_auth(session.session_token),
     )
     .await?;
     let ids = collect_model_ids(&body);
@@ -1243,11 +1270,14 @@ impl AiccHttpServer {
             param_string(&params, "provider_type").unwrap_or_else(|| "custom".into());
         if provider_type == "sn_router" {
             let settings = self.metadata_settings_tx.borrow().clone();
-            let endpoint = managed_sn_provider_endpoint(
+            let config = managed_sn_provider_config(
                 settings.as_ref(),
                 param_string(&params, "provider_instance_name").as_deref(),
             )?;
-            settings_object(&mut params).insert("endpoint".to_string(), Value::String(endpoint));
+            let params = settings_object(&mut params);
+            params.insert("endpoint".to_string(), Value::String(config.endpoint));
+            params.insert("sn_login_url".to_string(), Value::String(config.login_url));
+            params.insert("sn_user_name".to_string(), Value::String(config.user_name));
         }
         let validation_cache_key = provider_validation_cache_key(&params);
         let validation_fingerprint = provider_validation_fingerprint(validation_cache_key.as_str());
@@ -1294,8 +1324,15 @@ impl AiccHttpServer {
                 })?;
             let discovery = match provider_type.as_str() {
                 "sn_router" => {
-                    discover_sn_ai_provider_models(&client, endpoint.as_str(), req.token.as_deref())
-                        .await
+                    let login_url = param_string(&params, "sn_login_url").unwrap_or_default();
+                    let user_name = param_string(&params, "sn_user_name").unwrap_or_default();
+                    discover_sn_ai_provider_models(
+                        &client,
+                        endpoint.as_str(),
+                        login_url.as_str(),
+                        user_name.as_str(),
+                    )
+                    .await
                 }
                 "openai" => {
                     discover_openai_compatible_models(
@@ -2342,19 +2379,39 @@ mod tests {
     }
 
     #[test]
-    fn managed_sn_provider_endpoint_comes_from_settings() {
+    fn collect_model_ids_supports_sn_models_response() {
+        assert_eq!(
+            collect_model_ids(&json!({
+                "items": [
+                    {"model": "gpt-5.4"},
+                    {"model": "gemini-3-flash"}
+                ],
+                "default_model": "gpt-5.4"
+            })),
+            vec!["gpt-5.4".to_string(), "gemini-3-flash".to_string()]
+        );
+    }
+
+    #[test]
+    fn managed_sn_provider_config_comes_from_settings() {
         let settings = json!({
             "sn-ai-provider": {
                 "enabled": true,
                 "instances": [{
                     "provider_instance_name": "sn-ai-provider-default",
-                    "base_url": "https://sn.example/api/v1/ai/"
+                    "base_url": "https://sn.example/api/v1/ai/",
+                    "login_url": "https://sn.example/api/user/login_by_device_token",
+                    "user_name": "alice"
                 }]
             }
         });
         assert_eq!(
-            managed_sn_provider_endpoint(Some(&settings), Some("sn-ai-provider-default")).unwrap(),
-            "https://sn.example/api/v1/ai/"
+            managed_sn_provider_config(Some(&settings), Some("sn-ai-provider-default")).unwrap(),
+            ManagedSnProviderConfig {
+                endpoint: "https://sn.example/api/v1/ai/".to_string(),
+                login_url: "https://sn.example/api/user/login_by_device_token".to_string(),
+                user_name: "alice".to_string(),
+            }
         );
         assert!(provider_instance_in_section(
             &settings,
@@ -2364,7 +2421,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_sn_provider_endpoint_requires_activated_instance() {
-        assert!(managed_sn_provider_endpoint(Some(&json!({})), None).is_err());
+    fn managed_sn_provider_config_requires_activated_instance() {
+        assert!(managed_sn_provider_config(Some(&json!({})), None).is_err());
     }
 }
