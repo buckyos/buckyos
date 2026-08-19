@@ -109,7 +109,6 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
     );
 }
 
-
 #[test]
 fn self_check_behavior_end_keeps_session_idle() {
     assert_eq!(
@@ -515,26 +514,60 @@ fn compose_turn_message_preserves_structured_blocks() {
 
 #[test]
 fn compose_turn_message_preserves_message_envelope_boundaries() {
-    let first = AiMessage::text(
+    let first = AiMessage::new(
         AiRole::User,
-        "{\"schema\":\"opendan.message/v1\",\"body\":{\"text\":\"first\"},\"attachments\":[{\"index\":0}]}",
+        vec![
+            AiContent::text("first"),
+            AiContent::Image {
+                source: buckyos_api::ResourceRef::url(
+                    "https://example.test/first.png".to_string(),
+                    Some("image/png".to_string()),
+                ),
+            },
+            AiContent::ProviderState {
+                provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
+                value: serde_json::json!({
+                    "attachments": [{
+                        "index": 0,
+                        "kind": "image",
+                        "role": "input",
+                        "source": {"type": "url", "url": "https://example.test/first.png"},
+                        "label": "first.png",
+                        "text_marker": "[image: first.png]"
+                    }],
+                    "message_references": []
+                }),
+            },
+        ],
     );
-    let second = AiMessage::text(
+    let second = AiMessage::new(
         AiRole::User,
-        "{\"schema\":\"opendan.message/v1\",\"body\":{\"text\":\"second\"},\"attachments\":[]}",
+        vec![
+            AiContent::text("second"),
+            AiContent::ProviderState {
+                provider: llm_context::PROVIDER_MSG_METADATA.to_string(),
+                value: serde_json::json!({
+                    "attachments": [],
+                    "message_references": [{"relation": "reply_to", "obj_id": "cymsg:02"}]
+                }),
+            },
+        ],
     );
 
     let out = compose_turn_message(&[first, second]).unwrap();
-    let text = out.text_content();
-    let envelopes = text
-        .split("\n\n")
-        .map(|part| serde_json::from_str::<serde_json::Value>(part).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(envelopes.len(), 2);
-    assert_eq!(envelopes[0]["body"]["text"], "first");
-    assert_eq!(envelopes[0]["attachments"][0]["index"], 0);
-    assert_eq!(envelopes[1]["body"]["text"], "second");
-    assert_eq!(envelopes[1]["attachments"], serde_json::json!([]));
+    let batch: serde_json::Value = serde_json::from_str(&out.text_content()).unwrap();
+    assert_eq!(batch["schema"], "od.msg/1");
+    assert_eq!(batch["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(batch["messages"][0]["text"], "first");
+    assert_eq!(batch["messages"][0]["attachments"][0]["index"], 0);
+    assert_eq!(
+        batch["messages"][0]["attachments"][0]["src"]["url"],
+        "https://example.test/first.png"
+    );
+    assert!(batch["messages"][0].get("refs").is_none());
+    assert_eq!(batch["messages"][1]["text"], "second");
+    assert_eq!(batch["messages"][1]["refs"][0], "cymsg:02");
+    assert!(batch["messages"][1].get("attachments").is_none());
 }
 
 #[test]

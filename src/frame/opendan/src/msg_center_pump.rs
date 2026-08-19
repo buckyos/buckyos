@@ -28,7 +28,7 @@ use buckyos_api::{
     get_buckyos_api_runtime, Event, EventReader, KEventClient, KEventError, MailboxKind,
     MailboxRecordWithObject, MsgCenterClient, RecipientState,
 };
-use llm_context::{parse_msg_object_structured_text, MsgParseOutput};
+use llm_context::{parse_msg_object_structured, MsgParseOutput};
 use ndn_lib::MsgObjKind;
 
 use crate::command_dispatcher::BUILTIN_COMMANDS;
@@ -327,7 +327,30 @@ async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bo
     // §3 — slash-command interception. The parser applies the registered
     // command whitelist at the protocol boundary, so user text like
     // `/etc/nginx ...` flows back into LLM inference unchanged.
-    let inbound = match parse_msg_object_structured_text(msg, BUILTIN_COMMANDS) {
+    let inbound = lower_inbound_message(
+        msg, record_id, from, from_did, from_name, tunnel_did, session_id, group_id,
+    );
+    if let Err(err) = cfg.inbox_tx.send(inbound).await {
+        warn!(
+            "opendan.msg_pump[{}]: inbox send failed (receiver closed): {err}",
+            cfg.agent_name
+        );
+        return false;
+    }
+    true
+}
+
+fn lower_inbound_message(
+    msg: &ndn_lib::MsgObject,
+    record_id: String,
+    from: String,
+    from_did: Option<String>,
+    from_name: Option<String>,
+    tunnel_did: Option<String>,
+    session_id: Option<String>,
+    group_id: Option<String>,
+) -> Inbound {
+    match parse_msg_object_structured(msg, BUILTIN_COMMANDS) {
         MsgParseOutput::ControlCommand(cmd) => Inbound::Command {
             record_id,
             from,
@@ -344,18 +367,10 @@ async fn deliver_record(cfg: &PumpConfig, record: MailboxRecordWithObject) -> bo
             tunnel_did,
             session_id,
             group_id,
-            text,
+            text: msg.content.content.trim().to_string(),
             ai_message,
         },
-    };
-    if let Err(err) = cfg.inbox_tx.send(inbound).await {
-        warn!(
-            "opendan.msg_pump[{}]: inbox send failed (receiver closed): {err}",
-            cfg.agent_name
-        );
-        return false;
     }
-    true
 }
 
 fn append_all_inbox_boxes(target: &mut Vec<MailboxKind>) {
@@ -532,5 +547,53 @@ mod tests {
         assert!(parse_owner_did("did:dev:alice").is_some());
         assert!(parse_owner_did("").is_none());
         assert!(parse_owner_did("   ").is_none());
+    }
+
+    #[test]
+    fn pump_lowering_keeps_messagehub_attachment_structured() {
+        use buckyos_api::AiContent;
+        use ndn_lib::{
+            MsgContent, MsgContentFormat, MsgObject, ObjId, RefItem, RefRole, RefTarget,
+        };
+
+        let msg = MsgObject {
+            content: MsgContent {
+                format: Some(MsgContentFormat::ImagePng),
+                content: "use this image".into(),
+                refs: vec![RefItem {
+                    role: RefRole::Input,
+                    target: RefTarget::DataObj {
+                        obj_id: ObjId::new("cyfile:010203").unwrap(),
+                        uri_hint: None,
+                    },
+                    label: Some("input.png".into()),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let inbound = lower_inbound_message(
+            &msg,
+            "record-1".into(),
+            "alice".into(),
+            None,
+            Some("Alice".into()),
+            None,
+            None,
+            None,
+        );
+        let Inbound::Msg { ai_message, .. } = inbound else {
+            panic!("expected message inbound");
+        };
+        assert!(ai_message
+            .content
+            .iter()
+            .any(|block| matches!(block, AiContent::Image { .. })));
+        assert!(ai_message.content.iter().any(|block| matches!(
+            block,
+            AiContent::ProviderState { provider, .. }
+                if provider == llm_context::PROVIDER_MSG_METADATA
+        )));
     }
 }

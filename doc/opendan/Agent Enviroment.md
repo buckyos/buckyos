@@ -161,6 +161,7 @@ Session title: {{ session.title }}
 | `text` | string | 系统从 `content` 渲染出的默认纯文本视图，包含标准 attachment marker |
 | `content` | array of `MsgContentBlock` | 结构化消息内容块，转自 `AiMessage.content` |
 | `attachments` | array of `AttachmentRef` | `content` 中图片、文档等非文本附件块的快捷索引 |
+| `message_references` | array | 来自 `MsgObject.thread` 的历史消息关系；当前包含 `{ relation: "reply_to", obj_id }` |
 
 `raw_text`、`text` 和 `content` 的区别：
 
@@ -173,6 +174,10 @@ Session title: {{ session.title }}
 系统会为复杂结构提供默认文本渲染，命名统一使用 `default_*_text` 或直接使用对象的 `text` 字段。`input.msg.text` 是 `MsgRef.content` 的默认文本视图：文本块按顺序输出，附件块以 `AttachmentRef.text_marker` 形式输出。模板只需要自然语言输入时优先使用 `input.msg.text` / `input.text`；需要精确判断图片、文档或 object id 时再读 `input.msg.content` / `input.msg.attachments`。
 
 附件不应只靠普通字符串表示。当前 MessageHub 入站模型中，文本在 `MsgContent.content`，附件在 `MsgContent.refs`；降到 LLMContext 后会成为 `AiContent::Image` / `AiContent::Document`。`AiMessage::text_content()` 只返回文本块，会跳过图片和文档。因此 `MsgRef.text` 必须由 OpenDAN 自己渲染，并保留结构化 `content` / `attachments`。
+
+MessageHub 入站消息在 OpenDAN 内部保持为独立 `AiMessage`：正文和附件分别使用 `AiContent::Text`、`AiContent::Image` / `AiContent::Document`，附件的原始 kind、role、label、MIME 和 `reply_to` 由 `buckyos.msg.metadata` ProviderState 保存。该 ProviderState 是内部结构化 IR，不作为普通 machine block 暴露给 Behavior。
+
+需要生成纯文本 user prompt 时，系统在最后一步统一渲染为一个合法 JSON 文档。schema 为 `od.msg/1`，同轮源消息放入 `messages` 数组且 schema 只出现一次。每条消息直接使用 `text`、`attachments`、`refs`；附件来源缩写为 `src.obj` / `src.url` / `src.base64`。`refs` 中的字符串表示默认 `reply_to`，其他关系写成 `{ "id", "relation" }`。所有空字段省略，不得通过 `\n\n` 拼接多个独立 JSON 文档来表达消息边界。
 
 `MsgContentBlock`：
 
