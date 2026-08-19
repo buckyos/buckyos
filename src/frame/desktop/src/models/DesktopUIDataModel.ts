@@ -23,12 +23,16 @@
  *   - 正式环境                                              → initByReal
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
-import { fetchAppList, type AppSummary } from '../api/app_mgr'
+import { fetchAppList } from '../api/app_mgr'
 import {
-  desktopCatalogIdForLogicalApp,
   resolveDesktopApps,
   findDesktopAppById,
 } from '../app/registry'
+import {
+  buildAuthorizedAppDefinitions,
+  DESKTOP_BUILTIN_APP_IDS,
+  desktopCatalogIdForLogicalApp,
+} from '../app/backend-apps'
 import type { DesktopAppItem } from '../app/types'
 import {
   getDesktopWindowPositionBounds,
@@ -242,53 +246,6 @@ function buildSyncData(
   }
 }
 
-const CONTROL_PANEL_APP_IDS = new Set([
-  'settings',
-  'diagnostics',
-  'users-agents',
-  'my-network',
-  'app-service',
-])
-
-function buildAuthorizedAppDefinitions(
-  catalog: AppDefinition[],
-  authorizedApps: AppSummary[],
-): AppDefinition[] {
-  const catalogById = new Map(catalog.map((app) => [app.id, app]))
-  const controlPanelApps = catalog.filter((app) => CONTROL_PANEL_APP_IDS.has(app.id))
-  const installedApps = authorizedApps.map((summary): AppDefinition => {
-    const catalogEntry = catalogById.get(desktopCatalogIdForLogicalApp(summary.app_id))
-    const fallback: AppDefinition = {
-      id: summary.app_instance_id,
-      iconKey: summary.app_id,
-      labelKey: summary.show_name || summary.app_id,
-      summaryKey: summary.app_id,
-      accent: 'var(--cp-accent)',
-      tier: 'external',
-      manifest: {
-        defaultMode: 'windowed',
-        allowMinimize: true,
-        allowMaximize: true,
-        allowClose: true,
-        allowFullscreen: true,
-        mobileFullscreenBehavior: 'cover_dead_zone',
-        mobileStatusBarMode: 'standard',
-        titleBarMode: 'system',
-        placement: 'inplace',
-      },
-    }
-    return {
-      ...(catalogEntry ?? fallback),
-      id: summary.app_instance_id,
-      logicalAppId: summary.app_id,
-      appInstanceId: summary.app_instance_id,
-      ownerUserId: summary.owner_user_id,
-      appClass: summary.app_class,
-    }
-  })
-  return [...controlPanelApps, ...installedApps]
-}
-
 function buildAuthorizedDefaultLayout(
   layout: LayoutState,
   definitions: AppDefinition[],
@@ -307,7 +264,7 @@ function buildAuthorizedDefaultLayout(
     ...page,
     items: page.items.flatMap<LayoutItem>((item): LayoutItem[] => {
       if (item.type !== 'app') return [item]
-      if (CONTROL_PANEL_APP_IDS.has(item.appId)) return [item]
+      if (DESKTOP_BUILTIN_APP_IDS.has(item.appId)) return [item]
       const instances = instancesByLogicalId.get(item.appId) ?? []
       return instances
         .filter((definition) => !placed.has(definition.id))

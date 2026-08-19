@@ -54,6 +54,8 @@ export interface AppSummary {
   state: AppState | string
   expected_instance_count: number
   spec_path: string
+  /** Gateway host keys compiled from Web expose_config; first entry is the default launch host. */
+  web_hosts: string[]
 }
 
 export interface AppsListResponse {

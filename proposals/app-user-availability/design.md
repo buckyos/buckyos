@@ -110,7 +110,7 @@ Static Web 不再因部署类型自动公开。系统内置 App 的匿名声明�
 
 ## 5. Desktop
 
-生产 Desktop 启动时调用权威 `apps.list`，仅保留 Control Panel 自身管理面板和返回的有效 App。后端 App 定义以 `app_instance_id` 作为 UI id，`logicalAppId` 仅用于选择内置 renderer；同名不同 Owner 生成独立 launcher item。Users & Agents 为每个有权查询的用户分别调用 `apps.list(user_id)`，不再用 spec Owner 推导可用 App。
+生产 Desktop 启动时调用权威 `apps.list`，保留 Desktop 自身提供且没有 AppSpec 的内建 App（AI Center、Files、Task Center、Workflow 和 Control Panel 管理面板），并加入返回的有效 App。后端 App 定义以 `app_instance_id` 作为 UI id，`logicalAppId` 仅用于选择内置 renderer；同名不同 Owner 生成独立 launcher item。`apps.list.web_hosts` 从 AppSpec 的 Web expose 配置产生，具有 Web host 的第三方 App 使用与 Systest 相同的 Desktop iframe 窗口打开，实例 ID 不作为显示名称。Users & Agents 为每个有权查询的用户分别调用 `apps.list(user_id)`，不再用 spec Owner 推导可用 App。
 
 ## 6. 确定性与失败策略
 

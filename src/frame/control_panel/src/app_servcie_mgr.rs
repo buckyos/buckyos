@@ -9,7 +9,7 @@ use buckyos_api::{
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const SYSTEM_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,6 +36,36 @@ fn policy_guest_allowed(policy: &AppAvailabilityPolicy) -> bool {
         .group_rules
         .iter()
         .any(|rule| rule.group_id == "guest" && rule.effect == AvailabilityEffect::Allow)
+}
+
+fn app_web_hosts(installation: &ResolvedAppInstallation) -> Vec<String> {
+    let mut service_names = installation
+        .spec
+        .spec_config
+        .expose_config
+        .keys()
+        .collect::<Vec<_>>();
+    service_names.sort_by_key(|name| (name.as_str() != "www", name.as_str()));
+
+    let mut seen = HashSet::new();
+    let mut hosts = Vec::new();
+    for service_name in service_names {
+        let Some(expose) = installation
+            .spec
+            .spec_config
+            .expose_config
+            .get(service_name)
+        else {
+            continue;
+        };
+        for host in expose.sub_hostname() {
+            let host = host.trim();
+            if !host.is_empty() && seen.insert(host.to_string()) {
+                hosts.push(host.to_string());
+            }
+        }
+    }
+    hosts
 }
 
 impl ControlPanelServer {
@@ -67,6 +97,7 @@ impl ControlPanelServer {
             "state": state,
             "expected_instance_count": spec.expected_instance_count,
             "spec_path": installation.spec_path,
+            "web_hosts": app_web_hosts(installation),
         })
     }
 
@@ -369,5 +400,62 @@ impl ControlPanelServer {
             })?),
             req.seq,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::{
+        AppDoc, AppServiceSpec, AppType, ServiceExposeConfig, ServiceSpecConfig, ServiceState,
+    };
+    use name_lib::DID;
+    use std::collections::HashMap;
+
+    #[test]
+    fn app_web_hosts_prefers_www_and_deduplicates_routes() {
+        let owner = DID::new("bns", "alice");
+        let app_doc = AppDoc::builder(AppType::Service, "notes", "1.0.0", "alice", &owner)
+            .build()
+            .unwrap();
+        let mut expose_config = HashMap::new();
+        expose_config.insert(
+            "api".to_string(),
+            ServiceExposeConfig::web(
+                vec!["notes-api".to_string(), "notes".to_string()],
+                String::new(),
+                false,
+            ),
+        );
+        expose_config.insert(
+            "www".to_string(),
+            ServiceExposeConfig::web(
+                vec!["notes".to_string(), "notes-web".to_string()],
+                String::new(),
+                false,
+            ),
+        );
+        let installation = ResolvedAppInstallation {
+            spec: AppServiceSpec {
+                app_doc,
+                app_index: 1,
+                user_id: "alice".to_string(),
+                app_class: AppClass::UserInstalled,
+                permission: Vec::new(),
+                enable: true,
+                expected_instance_count: 1,
+                state: ServiceState::Running,
+                spec_config: ServiceSpecConfig {
+                    expose_config,
+                    ..ServiceSpecConfig::default()
+                },
+            },
+            spec_path: "users/alice/apps/notes/spec".to_string(),
+        };
+
+        assert_eq!(
+            app_web_hosts(&installation),
+            vec!["notes", "notes-web", "notes-api"]
+        );
     }
 }

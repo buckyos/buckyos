@@ -366,7 +366,7 @@ export function DesktopRoute() {
     if (app.manifest.placement === 'new-container' || app.tier === 'external') {
       logActivity(
         t('activity.external', 'Requested new-container launch for {{name}}', {
-          name: t(app.labelKey, app.id),
+          name: t(app.labelKey),
         }),
       )
       store.setSnackbar(t('external.body'))
@@ -380,7 +380,7 @@ export function DesktopRoute() {
       viewportBounds: desktopViewportBounds,
     })
     logActivity(
-      t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey, app.id) }),
+      t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey) }),
     )
   }
 
@@ -1162,7 +1162,7 @@ function DesktopTile({
           onPointerUp={handleAppPointerUp}
           onPointerCancel={clearAppPointer}
           data-testid={`desktop-app-${app.id}`}
-          title={t(app.labelKey, app.id)}
+          title={t(app.labelKey)}
           className={clsx(
             'flex h-full w-full flex-col items-center rounded-[28px] bg-transparent text-center transition-[background-color,box-shadow] duration-200 ease-[var(--cp-ease-emphasis)] focus-visible:bg-[color:color-mix(in_srgb,var(--cp-accent-soft)_10%,var(--cp-surface))]',
             isDesktop ? 'cursor-grab active:cursor-grabbing' : '',
@@ -1190,7 +1190,7 @@ function DesktopTile({
               WebkitBoxOrient: 'vertical',
             }}
           >
-            {t(app.labelKey, app.id)}
+            {t(app.labelKey)}
           </span>
         </button>
       ) : null}

@@ -1190,3 +1190,11 @@ WinBox.js：窗口系统。⚠️ **未采用。** `winbox` 仍残留在 `packag
 - §8.1 的 `fullscreen` 显示模式、§16.2 的 fullscreen：当前仅是 manifest 能力声明，**没有独立运行态**。
 - §10.1 “不含复杂状态栏 / 系统 UI”：当前已含薄 StatusBar + SystemSidebar（见 §11.4）。
 - §16.4 窗口 ID = `APP ID + Path`：当前运行态 `WindowRecord.id` 仍为 `appId + 时间戳`，按 `appId` 复用几何信息；“APP ID + 路径”的多窗口标识尚未完全落地。
+
+### 27.8 后端 App 的名称与打开方式
+
+Desktop 使用完整 `app_instance_id` 作为实例和窗口主键，但不得直接把它显示为 App 名称。已知 App 使用本地 catalog 的短名称和图标；未知 App 使用 AppDoc `show_name`，缺失时回退到首个 Gateway Web host 或逻辑 `app_id`。
+
+AI Center、Files、Task Center、Workflow 和 Control Panel 管理面板属于 Desktop 自身提供的内建 App，即使没有 AppSpec、没有出现在 `apps.list` 中，也必须保留在默认桌面。
+
+`apps.list` 为具有 Web expose 配置的 App 返回 `web_hosts`。这类第三方 Web App 默认沿用 Systest 的承载方式，在 Desktop 管理的窗口中通过对应 Zone 子域 iframe 打开；没有 Web host 的外部 App 才进入 new-container/unsupported 回退。

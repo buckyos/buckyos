@@ -21,6 +21,7 @@ import {
   type FormFactor,
 } from '../models/ui'
 import type { AppContentLoaderProps, DesktopAppItem } from './types'
+import { desktopCatalogIdForLogicalApp } from './backend-apps'
 
 const appLoaders = {
   'ai-center': AICenterAppPanel,
@@ -41,26 +42,18 @@ const appLoaders = {
   workflow: WorkflowAppPanel,
 } as const
 
-const logicalAppAliases: Readonly<Record<string, keyof typeof appLoaders>> = {
-  'content-store': 'market',
-}
-
-export function desktopCatalogIdForLogicalApp(appId: string): string {
-  return logicalAppAliases[appId] ?? appId
-}
-
 export function resolveDesktopApps(
   apps: AppDefinition[],
   formFactor: FormFactor,
 ): DesktopAppItem[] {
   return apps
     .filter((app) => supportsFormFactor(app, formFactor))
-    .map((app) => ({
-      ...app,
-      loader: appLoaders[
-        desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id) as keyof typeof appLoaders
-      ],
-    }))
+    .map((app) => {
+      const catalogId = desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id)
+      const loader = appLoaders[catalogId as keyof typeof appLoaders]
+        ?? (app.webHosts?.length ? SystestAppPanel : undefined)
+      return { ...app, loader }
+    })
 }
 
 export function findDesktopAppById(
