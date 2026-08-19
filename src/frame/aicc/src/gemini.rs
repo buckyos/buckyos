@@ -15,8 +15,10 @@ use base64::Engine as _;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
     AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiToolSpec, AiUsage,
-    Capability, Feature, ResourceRef,
+    Feature, ResourceRef,
 };
+#[cfg(test)]
+use buckyos_api::Capability;
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
@@ -303,14 +305,6 @@ impl GoogleGeminiProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![
-                Capability::Llm,
-                Capability::Embedding,
-                Capability::Image,
-                Capability::Vision,
-                Capability::Audio,
-                Capability::Video,
-            ],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };

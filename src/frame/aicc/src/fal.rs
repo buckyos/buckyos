@@ -12,7 +12,7 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, AiArtifact, AiCost, AiMethodRequest, AiResponse, AiUsage, Capability, ResourceRef,
+    ai_methods, AiArtifact, AiCost, AiMethodRequest, AiResponse, AiUsage, ResourceRef,
 };
 use log::{error, info, warn};
 use reqwest::header::CONTENT_TYPE;
@@ -84,7 +84,6 @@ impl FalProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Image, Capability::Audio, Capability::Video],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -906,6 +905,7 @@ pub fn register_fal_providers(center: &AIComputeCenter, settings: &Value) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buckyos_api::Capability;
     use serde_json::json;
 
     #[test]

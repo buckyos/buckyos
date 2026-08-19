@@ -12,8 +12,10 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
+    ai_methods, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage,
 };
+#[cfg(test)]
+use buckyos_api::Capability;
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
@@ -77,7 +79,6 @@ impl MiniMaxProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };

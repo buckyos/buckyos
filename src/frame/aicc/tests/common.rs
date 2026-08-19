@@ -134,10 +134,10 @@ pub fn mock_instance(
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities,
             endpoint: Some("http://127.0.0.1:8080".to_string()),
             plugin_key: None,
         },
+        api_capabilities: capabilities,
         model_features: features,
     }
 }
@@ -146,6 +146,7 @@ pub fn mock_instance(
 #[allow(dead_code)]
 pub struct MockInstanceConfig {
     instance: ProviderInstance,
+    api_capabilities: Vec<Capability>,
     model_features: Vec<String>,
 }
 
@@ -169,7 +170,12 @@ impl MockProvider {
         cost: CostEstimate,
         start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
     ) -> Self {
-        let inventory = mock_inventory(&config.instance, &config.model_features, &cost);
+        let inventory = mock_inventory(
+            &config.instance,
+            &config.api_capabilities,
+            &config.model_features,
+            &cost,
+        );
         Self::with_inventory(config, inventory, cost, start_results)
     }
 
@@ -276,11 +282,12 @@ impl Provider for MockProvider {
 
 fn mock_inventory(
     instance: &ProviderInstance,
+    api_capabilities: &[Capability],
     model_features: &[String],
     cost: &CostEstimate,
 ) -> ProviderInventory {
     let mut models = Vec::new();
-    for capability in instance.capabilities.iter() {
+    for capability in api_capabilities {
         let (api_type, mounts, provider_model_id) = match capability {
             Capability::Llm => (ApiType::Llm, vec!["llm.plan.default"], "m"),
             Capability::Image => (

@@ -373,15 +373,8 @@ pub struct ProviderInstance {
     pub provider_origin: ProviderOrigin,
     pub provider_type_trusted_source: ProviderTypeTrustedSource,
     pub provider_type_revision: Option<String>,
-    pub capabilities: Vec<Capability>,
     pub endpoint: Option<String>,
     pub plugin_key: Option<String>,
-}
-
-impl ProviderInstance {
-    pub fn supports_capability(&self, capability: &Capability) -> bool {
-        self.capabilities.iter().any(|item| item == capability)
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -6896,7 +6889,6 @@ mod tests {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm],
             endpoint: Some("http://127.0.0.1:8080".to_string()),
             plugin_key: None,
         }
