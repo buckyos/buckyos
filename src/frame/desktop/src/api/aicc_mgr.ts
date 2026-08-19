@@ -461,8 +461,8 @@ class MockAiccProvider implements AiccDataProvider {
     this.store.deleteProvider(id)
   }
 
-  async refreshProviderModels(id: string): Promise<void> {
-    this.store.refreshProviderModels(id)
+  async refreshProviderModels(): Promise<void> {
+    this.store.refreshProviderModels()
   }
 
   async updateProviderKey(provider: ProviderView): Promise<void> {
@@ -481,8 +481,8 @@ class MockAiccProvider implements AiccDataProvider {
     return this.store.getUsageSummary()
   }
 
-  getUsageTrend(granularity = 'day'): UsageTrendPoint[] {
-    return this.store.getUsageTrend(granularity)
+  getUsageTrend(): UsageTrendPoint[] {
+    return this.store.getUsageTrend()
   }
 
   async queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage> {
