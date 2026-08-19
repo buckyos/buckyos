@@ -85,7 +85,6 @@ impl FalProvider {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Image, Capability::Audio, Capability::Video],
-            features: vec![],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };

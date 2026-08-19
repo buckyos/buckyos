@@ -310,7 +310,6 @@ impl GoogleGeminiProvider {
                 Capability::Audio,
                 Capability::Video,
             ],
-            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };

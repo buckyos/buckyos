@@ -12,8 +12,7 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
-    Feature,
+    ai_methods, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
@@ -40,7 +39,6 @@ pub struct MiniMaxInstanceConfig {
     pub timeout_ms: u64,
     pub models: Vec<String>,
     pub default_model: Option<String>,
-    pub features: Vec<Feature>,
     #[allow(dead_code)]
     pub alias_map: HashMap<String, String>,
 }
@@ -80,7 +78,6 @@ impl MiniMaxProvider {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Llm],
-            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -560,8 +557,6 @@ struct SettingsMiniMaxInstanceConfig {
     #[serde(default)]
     default_model: Option<String>,
     #[serde(default)]
-    features: Vec<String>,
-    #[serde(default)]
     alias_map: HashMap<String, String>,
 }
 
@@ -587,14 +582,6 @@ fn default_base_url() -> String {
 
 fn default_timeout_ms() -> u64 {
     DEFAULT_MINIMAX_TIMEOUT_MS
-}
-
-fn default_features() -> Vec<String> {
-    vec![
-        features::PLAN.to_string(),
-        features::JSON_OUTPUT.to_string(),
-        features::TOOL_CALLING.to_string(),
-    ]
 }
 
 fn normalize_model_list(models: Vec<String>) -> Vec<String> {
@@ -660,7 +647,6 @@ fn build_minimax_instances(settings: &MiniMaxSettings) -> Result<Vec<MiniMaxInst
             timeout_ms: default_timeout_ms(),
             models: vec![],
             default_model: None,
-            features: vec![],
             alias_map: HashMap::new(),
         }]
     } else {
@@ -683,12 +669,6 @@ fn build_minimax_instances(settings: &MiniMaxSettings) -> Result<Vec<MiniMaxInst
         let default_model = raw_instance
             .default_model
             .or_else(|| models.first().cloned());
-        let features = if raw_instance.features.is_empty() {
-            default_features()
-        } else {
-            raw_instance.features
-        };
-
         instances.push(MiniMaxInstanceConfig {
             provider_instance_name: raw_instance.provider_instance_name,
             provider_type: raw_instance.provider_type,
@@ -702,7 +682,6 @@ fn build_minimax_instances(settings: &MiniMaxSettings) -> Result<Vec<MiniMaxInst
             timeout_ms: raw_instance.timeout_ms,
             models,
             default_model,
-            features,
             alias_map: raw_instance.alias_map,
         });
     }
@@ -875,7 +854,6 @@ mod tests {
                     timeout_ms: DEFAULT_MINIMAX_TIMEOUT_MS,
                     models: vec!["MiniMax-M2.5".to_string()],
                     default_model: Some("MiniMax-M2.5".to_string()),
-                    features: vec![],
                     alias_map: HashMap::new(),
                 },
                 "test-token".to_string(),

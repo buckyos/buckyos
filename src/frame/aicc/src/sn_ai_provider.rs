@@ -184,7 +184,6 @@ impl SnAIProvider {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Llm],
-            features: vec![],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -1273,7 +1272,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             driver_metadata_model_ids(SN_AI_PROVIDER_DRIVER, &ApiType::Llm)
         );
-        assert!(provider.instance.features.is_empty());
     }
 
     #[test]

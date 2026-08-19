@@ -160,7 +160,6 @@ impl OpenAIProvider {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Llm, Capability::Image],
-            features: default_features(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -3902,15 +3901,6 @@ fn default_provider_driver_for_instance(_provider_instance_name: &str, _base_url
     DEFAULT_OPENAI_PROVIDER_DRIVER.to_string()
 }
 
-fn default_features() -> Vec<String> {
-    vec![
-        features::PLAN.to_string(),
-        features::JSON_OUTPUT.to_string(),
-        features::TOOL_CALLING.to_string(),
-        features::WEB_SEARCH.to_string(),
-    ]
-}
-
 fn is_text2image_model_name(model: &str) -> bool {
     let normalized = model.trim().to_ascii_lowercase();
     normalized.starts_with("dall-e") || normalized.starts_with("gpt-image")
@@ -4780,17 +4770,6 @@ data: [DONE]
         assert_eq!(
             parsed.get("output_text").and_then(|value| value.as_str()),
             Some("foobar")
-        );
-    }
-
-    #[test]
-    fn default_features_include_web_search() {
-        let all_features = default_features();
-        assert!(
-            all_features
-                .iter()
-                .any(|feature| feature == features::WEB_SEARCH),
-            "openai default features should include web_search"
         );
     }
 

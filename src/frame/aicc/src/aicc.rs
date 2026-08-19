@@ -386,7 +386,6 @@ pub struct ProviderInstance {
     pub provider_type_trusted_source: ProviderTypeTrustedSource,
     pub provider_type_revision: Option<String>,
     pub capabilities: Vec<Capability>,
-    pub features: Vec<Feature>,
     pub endpoint: Option<String>,
     pub plugin_key: Option<String>,
 }
@@ -394,12 +393,6 @@ pub struct ProviderInstance {
 impl ProviderInstance {
     pub fn supports_capability(&self, capability: &Capability) -> bool {
         self.capabilities.iter().any(|item| item == capability)
-    }
-
-    pub fn supports_features(&self, required_features: &[Feature]) -> bool {
-        required_features
-            .iter()
-            .all(|feature| self.features.iter().any(|item| item == feature))
     }
 }
 
@@ -2088,8 +2081,6 @@ impl Router {
         let mut scored = vec![];
         let (input_tokens, output_tokens) = estimate_request_tokens(req);
         let request_policy = route_policy_from_request(req);
-        let required_features = req.requirements.effective_feature_names();
-
         for candidate in snapshot.candidates.iter() {
             let instance_id = candidate.inventory.provider_instance_name.as_str();
             let Some(provider) = registry.get_provider(instance_id) else {
@@ -2108,12 +2099,6 @@ impl Router {
             );
             if provider_model.is_some() {
                 alias_mapped = true;
-            }
-
-            if let Some(instance) = legacy_instance {
-                if !instance.supports_features(&required_features) {
-                    continue;
-                }
             }
 
             if let Some(allow) = allow_set.as_ref() {
@@ -6940,10 +6925,6 @@ mod tests {
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
             capabilities: vec![Capability::Llm],
-            features: vec![
-                "plan".to_string(),
-                buckyos_api::features::WEB_SEARCH.to_string(),
-            ],
             endpoint: Some("http://127.0.0.1:8080".to_string()),
             plugin_key: None,
         }
@@ -6967,7 +6948,10 @@ mod tests {
                 "gpt-4o-mini",
                 ApiType::Llm,
                 vec!["llm.plan.default".to_string()],
-                &instance.features,
+                &[
+                    "plan".to_string(),
+                    buckyos_api::features::WEB_SEARCH.to_string(),
+                ],
                 Some(0.001),
                 Some(100),
             )],
