@@ -20,9 +20,10 @@ use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
-    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, Capability,
-    ResourceRef,
+    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, ResourceRef,
 };
+#[cfg(test)]
+use buckyos_api::Capability;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use image::imageops::FilterType;
 use image::ImageFormat;
@@ -159,7 +160,6 @@ impl OpenAIProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm, Capability::Image],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };

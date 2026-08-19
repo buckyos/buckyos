@@ -19,7 +19,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, value_to_object_map, AiContent, AiMethodRequest,
-    AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, Capability, ResourceRef,
+    AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, ResourceRef,
 };
 use log::{error, info, warn};
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
@@ -183,7 +183,6 @@ impl SnAIProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm],
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -1223,7 +1222,7 @@ pub fn register_sn_ai_provider(center: &AIComputeCenter, settings: &Value) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AiMessage, AiPayload, ModelSpec, Requirements};
+    use buckyos_api::{AiMessage, AiPayload, Capability, ModelSpec, Requirements};
     use serde_json::json;
 
     fn test_instance_config() -> SnAIProviderInstanceConfig {
