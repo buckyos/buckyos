@@ -2,7 +2,8 @@
 
 `buckyos-tool` is the TypeScript/Deno implementation of the production-facing `buckyos` command. The
 current implementation covers PRD Phase 0 and Phase 1: command discovery, profiles, JSON protocols,
-authentication, `system status`, and the shared interactive session.
+authentication, `system status`, direct `system-config` operations, and the shared interactive
+session.
 
 ## Run from source
 
@@ -31,6 +32,10 @@ or use Deno's `-A` permission.
 ./buckyos --config-dir /tmp/buckyos-tool config use dev
 ./buckyos --profile dev --session-token-file /run/secrets/buckyos.jwt auth whoami
 ./buckyos --profile dev --session-token-file /run/secrets/buckyos.jwt system status
+./buckyos --profile dev --session-token-file /run/secrets/buckyos.jwt system-config get boot/config
+./buckyos --profile dev --session-token-file /run/secrets/buckyos.jwt system-config list services
+./buckyos --profile dev --session-token-file /run/secrets/buckyos.jwt system-config set-file \
+  services/example/config --file ./config.json
 ./buckyos --profile dev --identity alice --cli
 ```
 

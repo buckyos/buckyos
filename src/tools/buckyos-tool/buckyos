@@ -39,10 +39,10 @@ for ARGUMENT in "$@"; do
       CONFIG_DIR=${ARGUMENT#--config-dir=}
       READ_PATHS="$READ_PATHS,$CONFIG_DIR"
       ;;
-    --input|--session-token-file|--identity-root|--security-root)
+    --input|--session-token-file|--identity-root|--security-root|--file)
       EXPECT_PATH=read
       ;;
-    --input=*|--session-token-file=*|--identity-root=*|--security-root=*)
+    --input=*|--session-token-file=*|--identity-root=*|--security-root=*|--file=*)
       PATH_VALUE=${ARGUMENT#*=}
       if [ "$PATH_VALUE" != "-" ]; then
         READ_PATHS="$READ_PATHS,$PATH_VALUE"

@@ -27,6 +27,7 @@ import {
 import { createAuthModule } from '../modules/auth.ts'
 import { createCoreModules } from '../modules/core.ts'
 import { createSystemModule } from '../modules/system.ts'
+import { createSystemConfigModule } from '../modules/system_config.ts'
 
 export const VERSION = '0.1.0-phase1'
 
@@ -384,6 +385,7 @@ export function createRegistry(): CommandRegistry {
   for (const module of createCoreModules(registry)) registry.register(module)
   registry.register(createAuthModule())
   registry.register(createSystemModule())
+  registry.register(createSystemConfigModule())
   return registry
 }
 
