@@ -693,9 +693,15 @@ export function copyIdentityOutputs(
     path.join(etcDir, ZONE_DOCUMENT_JWT_FILE_NAME),
     localIdentity.zoneDocumentJwt,
   );
+  writeJson(
+    path.join(
+      etcDir,
+      `${didRawHostName(localIdentity.zoneDid)}.zone.json`,
+    ),
+    localIdentity.bootDocument,
+  );
   removeIfExists(path.join(etcDir, "node_private_key.pem"));
   removeIfExists(path.join(etcDir, "node_device_config.json"));
-  removeIfExists(path.join(etcDir, `${params.zone_id}.zone.json`));
 
   const buckycliDir = ensureDir(path.join(etcDir, ".buckycli"));
   writeJson(
