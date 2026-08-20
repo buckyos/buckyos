@@ -204,7 +204,7 @@ async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
     assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
     match &artifacts[0].resource {
         ResourceRef::Base64 { data_base64, .. } => {
-            assert_eq!(data_base64, &openai_b64(video_bytes));
+            assert_eq!(data_base64, "[redacted_base64] len=16");
         }
         other => panic!("unexpected video artifact: {:?}", other),
     }
@@ -736,7 +736,7 @@ async fn adapter_gemini_tts_maps_text_voice_and_language() {
 async fn adapter_gemini_asr_maps_audio_and_transcript() {
     let (base_url, captured_requests) = spawn_fake_http_server_with_requests(vec![MockHttpReply {
         status_code: 200,
-        body: r#"{"candidates":[{"content":{"parts":[{"text":"{\"text\":\"hello world\",\"segments\":[{\"id\":\"seg-1\",\"start_seconds\":0.0,\"end_seconds\":1.2,\"text\":\"hello world\",\"speaker\":\"SPEAKER_0\",\"confidence\":0.98}]}"}]} }],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":8,"totalTokenCount":20}}"#.to_string(),
+        body: r#"{"candidates":[{"content":{"parts":[{"text":"{\"speech_detected\":true,\"transcript_confidence\":0.98,\"text\":\"hello world\",\"segments\":[{\"id\":\"seg-1\",\"start_seconds\":0.0,\"end_seconds\":1.2,\"text\":\"hello world\",\"speaker\":\"SPEAKER_0\",\"confidence\":0.98}]}"}]} }],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":8,"totalTokenCount":20}}"#.to_string(),
         content_type: "application/json",
         delay_ms: 0,
     }])

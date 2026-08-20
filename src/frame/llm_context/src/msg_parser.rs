@@ -478,7 +478,7 @@ fn ref_item_to_ai_content(
     match &item.target {
         RefTarget::DataObj { obj_id, uri_hint } => {
             let source = ResourceRef::named_object(obj_id.clone());
-            if looks_like_image(msg_format, item.label.as_deref(), uri_hint.as_deref()) {
+            if attachment_kind(msg_format, item.label.as_deref(), uri_hint.as_deref()) == "image" {
                 Some(AiContent::Image { source })
             } else {
                 Some(AiContent::Document {
@@ -507,6 +507,7 @@ fn ref_item_to_structured_attachment(
         return None;
     };
     let kind = attachment_kind(msg_format, item.label.as_deref(), uri_hint.as_deref());
+    let mime = attachment_mime(msg_format, item.label.as_deref(), uri_hint.as_deref());
     let display_obj_id = attachment_display_obj_id(obj_id, uri_hint.as_deref());
     let label = item
         .label
@@ -524,7 +525,7 @@ fn ref_item_to_structured_attachment(
             "type": "named_object",
             "obj_id": display_obj_id,
         },
-        "mime": msg_format.and_then(msg_content_format_mime),
+        "mime": mime,
         "title": label,
         "label": label,
         "text_marker": text_marker,
@@ -536,54 +537,43 @@ fn attachment_kind(
     label: Option<&str>,
     uri_hint: Option<&str>,
 ) -> &'static str {
-    match msg_format {
-        Some(
-            MsgContentFormat::ImagePng
-            | MsgContentFormat::ImageJpeg
-            | MsgContentFormat::ImageGif
-            | MsgContentFormat::ImageWebp
-            | MsgContentFormat::ImageSvg
-            | MsgContentFormat::ImageBmp,
-        ) => return "image",
-        Some(
-            MsgContentFormat::VideoMp4
-            | MsgContentFormat::VideoWebm
-            | MsgContentFormat::VideoOgg
-            | MsgContentFormat::VideoQuicktime
-            | MsgContentFormat::VideoAvi,
-        ) => return "video",
-        Some(
-            MsgContentFormat::AudioMpeg
-            | MsgContentFormat::AudioWav
-            | MsgContentFormat::AudioOgg
-            | MsgContentFormat::AudioWebm
-            | MsgContentFormat::AudioAac
-            | MsgContentFormat::AudioFlac,
-        ) => return "audio",
-        Some(
-            MsgContentFormat::TextPlain
-            | MsgContentFormat::TextMarkdown
-            | MsgContentFormat::TextHtml
-            | MsgContentFormat::TextCss
-            | MsgContentFormat::TextXml
-            | MsgContentFormat::ApplicationJson
-            | MsgContentFormat::ApplicationXml
-            | MsgContentFormat::ApplicationPdf,
-        ) => return "document",
-        Some(MsgContentFormat::ApplicationZip | MsgContentFormat::ApplicationOctetStream) => {
-            return "file";
-        }
-        Some(MsgContentFormat::Unknown(value)) => {
-            if let Some(kind) = attachment_kind_from_hint(value) {
-                return kind;
-            }
-        }
-        None => {}
-    }
     label
         .and_then(attachment_kind_from_hint)
         .or_else(|| uri_hint.and_then(attachment_kind_from_hint))
+        .or_else(|| msg_format.and_then(attachment_kind_from_format))
         .unwrap_or("file")
+}
+
+fn attachment_kind_from_format(format: &MsgContentFormat) -> Option<&'static str> {
+    match format {
+        MsgContentFormat::ImagePng
+        | MsgContentFormat::ImageJpeg
+        | MsgContentFormat::ImageGif
+        | MsgContentFormat::ImageWebp
+        | MsgContentFormat::ImageSvg
+        | MsgContentFormat::ImageBmp => Some("image"),
+        MsgContentFormat::VideoMp4
+        | MsgContentFormat::VideoWebm
+        | MsgContentFormat::VideoOgg
+        | MsgContentFormat::VideoQuicktime
+        | MsgContentFormat::VideoAvi => Some("video"),
+        MsgContentFormat::AudioMpeg
+        | MsgContentFormat::AudioWav
+        | MsgContentFormat::AudioOgg
+        | MsgContentFormat::AudioWebm
+        | MsgContentFormat::AudioAac
+        | MsgContentFormat::AudioFlac => Some("audio"),
+        MsgContentFormat::TextPlain
+        | MsgContentFormat::TextMarkdown
+        | MsgContentFormat::TextHtml
+        | MsgContentFormat::TextCss
+        | MsgContentFormat::TextXml
+        | MsgContentFormat::ApplicationJson
+        | MsgContentFormat::ApplicationXml
+        | MsgContentFormat::ApplicationPdf => Some("document"),
+        MsgContentFormat::ApplicationZip | MsgContentFormat::ApplicationOctetStream => Some("file"),
+        MsgContentFormat::Unknown(value) => attachment_kind_from_hint(value),
+    }
 }
 
 fn attachment_kind_from_hint(value: &str) -> Option<&'static str> {
@@ -607,15 +597,79 @@ fn attachment_kind_from_hint(value: &str) -> Option<&'static str> {
     {
         Some("video")
     } else if value.starts_with("text/")
-        || value == "application/pdf"
+        || matches!(
+            value.as_str(),
+            "application/pdf" | "application/json" | "application/xml"
+        )
         || [".pdf", ".md", ".txt", ".json", ".xml", ".html"]
             .iter()
             .any(|suffix| value.ends_with(suffix))
     {
         Some("document")
+    } else if value.starts_with("application/")
+        || [".zip", ".tar", ".gz", ".bin"]
+            .iter()
+            .any(|suffix| value.ends_with(suffix))
+    {
+        Some("file")
     } else {
         None
     }
+}
+
+fn attachment_mime(
+    msg_format: Option<&MsgContentFormat>,
+    label: Option<&str>,
+    uri_hint: Option<&str>,
+) -> Option<String> {
+    label
+        .and_then(attachment_mime_from_hint)
+        .or_else(|| uri_hint.and_then(attachment_mime_from_hint))
+        .or_else(|| msg_format.and_then(msg_content_format_mime))
+}
+
+fn attachment_mime_from_hint(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    let media_type = value.split(';').next().unwrap_or_default().trim();
+    if let Some((major, subtype)) = media_type.split_once('/') {
+        if matches!(major, "image" | "audio" | "video" | "text" | "application")
+            && !subtype.is_empty()
+            && !subtype.contains(['/', '\\'])
+        {
+            return Some(media_type.to_string());
+        }
+    }
+
+    let path = value.split(['?', '#']).next().unwrap_or_default();
+    [
+        (".png", "image/png"),
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".gif", "image/gif"),
+        (".webp", "image/webp"),
+        (".svg", "image/svg+xml"),
+        (".bmp", "image/bmp"),
+        (".mp3", "audio/mpeg"),
+        (".wav", "audio/wav"),
+        (".ogg", "audio/ogg"),
+        (".aac", "audio/aac"),
+        (".flac", "audio/flac"),
+        (".m4a", "audio/mp4"),
+        (".mp4", "video/mp4"),
+        (".webm", "video/webm"),
+        (".mov", "video/quicktime"),
+        (".avi", "video/x-msvideo"),
+        (".mkv", "video/x-matroska"),
+        (".pdf", "application/pdf"),
+        (".md", "text/markdown"),
+        (".txt", "text/plain"),
+        (".json", "application/json"),
+        (".xml", "application/xml"),
+        (".html", "text/html"),
+        (".zip", "application/zip"),
+    ]
+    .into_iter()
+    .find_map(|(suffix, mime)| path.ends_with(suffix).then(|| mime.to_string()))
 }
 
 fn msg_content_format_mime(format: &MsgContentFormat) -> Option<String> {
@@ -1105,41 +1159,6 @@ fn is_plain_text_format(format: Option<&MsgContentFormat>) -> bool {
     )
 }
 
-fn looks_like_image(
-    msg_format: Option<&MsgContentFormat>,
-    label: Option<&str>,
-    uri_hint: Option<&str>,
-) -> bool {
-    if msg_format.is_some_and(is_image_format) {
-        return true;
-    }
-    label.is_some_and(looks_like_image_name) || uri_hint.is_some_and(looks_like_image_name)
-}
-
-fn is_image_format(format: &MsgContentFormat) -> bool {
-    matches!(
-        format,
-        MsgContentFormat::ImagePng
-            | MsgContentFormat::ImageJpeg
-            | MsgContentFormat::ImageGif
-            | MsgContentFormat::ImageWebp
-            | MsgContentFormat::ImageSvg
-            | MsgContentFormat::ImageBmp
-    )
-}
-
-fn looks_like_image_name(value: &str) -> bool {
-    let v = value.to_ascii_lowercase();
-    v.starts_with("image/")
-        || v.ends_with(".png")
-        || v.ends_with(".jpg")
-        || v.ends_with(".jpeg")
-        || v.ends_with(".gif")
-        || v.ends_with(".webp")
-        || v.ends_with(".svg")
-        || v.ends_with(".bmp")
-}
-
 fn ref_role_name(role: RefRole) -> &'static str {
     match role {
         RefRole::Context => "context",
@@ -1181,6 +1200,81 @@ mod tests {
         assert_eq!(out.role, AiRole::User);
         assert!(matches!(out.content[0], AiContent::Text { .. }));
         assert!(matches!(out.content[1], AiContent::Image { .. }));
+    }
+
+    #[test]
+    fn structured_attachment_prefers_ref_type_over_message_format() {
+        let msg = MsgObject {
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: "look".to_string(),
+                refs: vec![RefItem {
+                    role: RefRole::Input,
+                    target: RefTarget::DataObj {
+                        obj_id: obj_id(),
+                        uri_hint: None,
+                    },
+                    label: Some("image/png".to_string()),
+                }],
+                ..MsgContent::default()
+            },
+            ..MsgObject::default()
+        };
+
+        let out = msg_object_to_ai_message_structured(&msg);
+        assert!(out
+            .content
+            .iter()
+            .any(|block| matches!(block, AiContent::Image { .. })));
+        let metadata = structured_message_metadata(&out);
+        assert_eq!(metadata["attachments"][0]["kind"], "image");
+        assert_eq!(metadata["attachments"][0]["mime"], "image/png");
+    }
+
+    #[test]
+    fn structured_message_infers_each_ref_type_independently() {
+        let refs = ["image/png", "audio/mpeg", "clip.mp4", "archive.zip"]
+            .into_iter()
+            .map(|label| RefItem {
+                role: RefRole::Input,
+                target: RefTarget::DataObj {
+                    obj_id: obj_id(),
+                    uri_hint: None,
+                },
+                label: Some(label.to_string()),
+            })
+            .collect();
+        let msg = MsgObject {
+            content: MsgContent {
+                format: Some(MsgContentFormat::TextPlain),
+                content: "use these files".to_string(),
+                refs,
+                ..MsgContent::default()
+            },
+            ..MsgObject::default()
+        };
+
+        let out = msg_object_to_ai_message_structured(&msg);
+        let metadata = structured_message_metadata(&out);
+        let attachments = metadata["attachments"].as_array().unwrap();
+        let inferred = attachments
+            .iter()
+            .map(|attachment| {
+                (
+                    attachment["kind"].as_str().unwrap(),
+                    attachment["mime"].as_str().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            inferred,
+            vec![
+                ("image", "image/png"),
+                ("audio", "audio/mpeg"),
+                ("video", "video/mp4"),
+                ("file", "application/zip"),
+            ]
+        );
     }
 
     #[test]
