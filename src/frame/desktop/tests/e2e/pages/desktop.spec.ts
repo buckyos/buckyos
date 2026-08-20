@@ -33,6 +33,59 @@ async function getScrollMetrics(locator: Locator) {
   }))
 }
 
+test('narrow desktop keeps widgets and launcher items fully visible', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 960, height: 720 })
+  await page.goto('/?scenario=normal')
+
+  const clockTime = page
+    .getByTestId('desktop-item-widget-clock')
+    .locator('p')
+    .first()
+  await expect(clockTime).toBeVisible()
+  await expect.poll(async () =>
+    clockTime.evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true)
+
+  const launcherLabels = page.locator(
+    '.swiper-slide-active [data-testid^="desktop-app-"] > span:last-child',
+  )
+  await expect(launcherLabels.first()).toBeVisible()
+  expect(
+    await launcherLabels.evaluateAll((elements) =>
+      elements.every((element) => element.scrollWidth <= element.clientWidth),
+    ),
+  ).toBe(true)
+
+  await page.setViewportSize({ width: 780, height: 560 })
+
+  const activePageItems = page.locator(
+    '.swiper-slide-active [data-testid^="desktop-item-"]',
+  )
+  await expect(activePageItems.first()).toBeVisible()
+  await expect.poll(async () =>
+    activePageItems.evaluateAll((elements) =>
+      elements.every((element) => {
+        const rect = element.getBoundingClientRect()
+        return (
+          rect.left >= 0 &&
+          rect.top >= 0 &&
+          rect.right <= document.documentElement.clientWidth &&
+          rect.bottom <= document.documentElement.clientHeight
+        )
+      }),
+    ),
+  ).toBe(true)
+
+  const overflow = await page.evaluate(() => ({
+    horizontal: document.documentElement.scrollWidth > window.innerWidth,
+    vertical: document.documentElement.scrollHeight > window.innerHeight,
+  }))
+  expect(overflow.horizontal).toBeFalsy()
+  expect(overflow.vertical).toBeFalsy()
+})
+
 test('desktop flow opens settings window and supports locale switch', async ({
   page,
 }) => {
@@ -152,6 +205,7 @@ test('desktop flow opens settings window and supports locale switch', async ({
     .boundingBox()
   expect((constrainedWindow?.x ?? 0) + (constrainedWindow?.width ?? 0)).toBeLessThanOrEqual(780)
   expect(constrainedWindow?.y ?? 0).toBeGreaterThanOrEqual(0)
+  expect((constrainedWindow?.y ?? 0) + (constrainedWindow?.height ?? 0)).toBeLessThanOrEqual(560)
   expect((closeButtonBox?.x ?? 0) + (closeButtonBox?.width ?? 0)).toBeLessThanOrEqual(780)
   expect(closeButtonBox?.y ?? 0).toBeLessThanOrEqual(560)
   const hasPageOverflow = await page.evaluate(() => ({
