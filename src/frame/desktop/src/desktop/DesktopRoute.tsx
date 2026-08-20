@@ -70,7 +70,6 @@ import {
   GRID_GAP,
   rowsForHeight,
   effectiveRowHeight,
-  desktopMinCanvasSize,
   mapPageToGrid,
   normalizeViewportProgress,
   getPageIndex,
@@ -568,10 +567,7 @@ export function DesktopRoute() {
       safeArea.bottom,
     360,
   )
-  const shouldLockDesktopViewport =
-    formFactor === 'desktop' &&
-    viewportSize.width >= desktopMinCanvasSize.width &&
-    viewportSize.height >= desktopMinCanvasSize.height
+  const shouldLockDesktopViewport = formFactor === 'desktop'
   const systemSidebarModel = store.getSystemSidebarDataModel(activeMobileApp?.id)
 
   const trayState = useMemo(() => {
@@ -742,8 +738,6 @@ export function DesktopRoute() {
                 className="relative overflow-hidden"
                 data-density={density}
                 style={{
-                  minWidth: isMobile ? undefined : desktopMinCanvasSize.width,
-                  minHeight: isMobile ? undefined : desktopMinCanvasSize.height,
                   paddingTop: workspaceTopPadding,
                   paddingBottom: resolvedDeadZone.bottom + safeArea.bottom,
                   paddingLeft: resolvedDeadZone.left + safeArea.left,
@@ -1180,10 +1174,12 @@ function DesktopTile({
             <AppIcon iconKey={app.iconKey} className="text-white" />
           </span>
           <span
-            className="max-w-full overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
+            className="max-w-full break-words overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
             style={{
               paddingTop: 'var(--label-padding-top)',
-              fontSize: 'var(--font-size-label)',
+              fontSize: isDesktop
+                ? 'clamp(12px,1.1vw,var(--font-size-label))'
+                : 'var(--font-size-label)',
               lineHeight: 'var(--line-height-label)',
               display: '-webkit-box',
               WebkitLineClamp: 2,

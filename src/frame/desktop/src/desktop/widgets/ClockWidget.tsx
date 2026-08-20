@@ -1,8 +1,7 @@
 import { useI18n } from '../../i18n/provider'
 import { useMinuteClock } from '../shell'
-import type { DesktopWidgetProps } from './types'
 
-export function ClockWidget(_: DesktopWidgetProps) {
+export function ClockWidget() {
   const { locale } = useI18n()
   const now = useMinuteClock()
 
@@ -16,7 +15,7 @@ export function ClockWidget(_: DesktopWidgetProps) {
         </span>
       </div>
       <div className="-mt-1">
-        <p className="font-display whitespace-nowrap text-[1.72rem] font-semibold leading-[0.94] tracking-[-0.05em] text-[color:var(--cp-text)] sm:text-[2.8rem] lg:text-5xl">
+        <p className="font-display whitespace-nowrap text-[clamp(1.6rem,3.2vw,3rem)] font-semibold leading-[0.94] tracking-[-0.05em] text-[color:var(--cp-text)]">
           {new Intl.DateTimeFormat(locale, {
             hour: '2-digit',
             minute: '2-digit',
