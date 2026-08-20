@@ -163,7 +163,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 
 | 方法 | 返回 | 说明 |
 |---|---|---|
-| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；Admin 可指定 `user_id`。每项含 `app_instance_id/app_class/runtime_type/owner_user_id/availability_match/web_hosts`；`web_hosts` 按启动优先级给出 AppSpec 中的 Gateway Web host |
+| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；Admin 可指定 `user_id`。`Admin/User` 默认可见全部 App，`Limited` 对其他 Owner 的个人 App 需要明确授权。每项含 `app_instance_id/app_class/runtime_type/owner_user_id/availability_match/web_hosts`；`web_hosts` 按启动优先级给出 AppSpec 中的 Gateway Web host |
 | `apps.details` / `app.details` | `{app_instance_id, app_class, owner_user_id, spec, ...}` | Owner/Admin 或最终允许用户读取实例详情 |
 | `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略、审计和 Gateway 输入 |
 | `apps.install` | `{task_id}` | 入参 `{identifier, referrer?, app_class?, options?}`；`app_class` 默认 `user_installed`，`zone_installed` 仅 Admin |

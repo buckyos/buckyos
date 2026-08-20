@@ -159,7 +159,7 @@ allow = enforce(appid, resource, action)   // App 角色是否允许
 | RBAC 分组 | 用 service token 追加当前用户类型对应的角色分组（`Admin -> admin`，`User -> users`，`Limited -> limited`）；失败仅告警不致命，scheduler `update_rbac` 会在下一轮重建 | ⚠️ |
 | DID 密钥对 | **运行期不生成密钥对**（与引导期 `OwnerConfig` 不对称，doc 无公钥字段） | ⚠️ |
 | Home 目录 / 数据目录 | **不创建**（见下「App 标准」） | ❌（标准要求显式 provision） |
-| 默认 App / Agent | 不复制个人 App；新用户通过动态规则自动获得系统内置 App 与 Zone App | ✅（个人预装集仍需显式安装） |
+| 默认 App / Agent | 不复制个人 App；`Admin` / `User` 通过动态规则默认获得全部 App，`Limited` 仅获得系统内置、Zone App、自有 App 和明确授权 App | ✅ |
 
 ### 3.3 新用户的有效 App 集
 
@@ -169,7 +169,8 @@ allow = enforce(appid, resource, action)   // App 角色是否允许
 system_builtin
 + zone_installed
 + 用户自己的 user_installed
-+ 其他 Owner 通过系统组或精确用户规则分享的 user_installed
++ Admin/User 默认可见、且未被显式规则拒绝的其他 user_installed
++ Limited 通过系统组或精确用户规则明确允许的其他 user_installed
 ```
 
 结果以 `<app_id>@<owner_user_id>` 为稳定主键；同名不同 Owner 的实例不会合并。系统组只来自可信 `UserType`（`admins` / `users` / `limited`），禁止使用用户可编辑的 Profile/contact groups。用户类型变化会在下一次列表查询、登录或 refresh 时立即参与重新判定。
@@ -236,7 +237,7 @@ system_builtin
 
 ### 5.1 App–User 可用性不是 App 内部 ACL
 
-App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；无精确规则时 deny 组优先于 allow 组；默认拒绝。系统 App 与 Zone App 对所有有效登录用户隐式允许。
+App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；无精确规则时 deny 组优先于 allow 组；没有显式匹配时 `Admin` / `User` 默认允许，`Limited` / Guest 默认拒绝。系统 App 与 Zone App 对所有有效登录用户隐式允许。
 
 session token 同时绑定 `appid`、`app_instance_id` 和非系统 App 的 `app_owner_user_id`。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。匿名 `guest` 不经过 Verify Hub，其 allow 规则由 Control Panel 同步为 App expose 配置，scheduler 编译为 Gateway `Public`；删除规则后重新编译为 `Private`。
 

@@ -48,8 +48,8 @@ Beta 2.2 是 breaking change，本文不要求兼容旧的 `apps.list` 返回结
 
 ### 2.2 App–User 可用关系目标
 
-- 普通用户默认可用：系统内置 App、自己安装的 App、管理员为所有用户安装的 App；
-- 用户还可以使用其他 App Owner 明确共享给其用户组或个人的 App；
+- `Admin` 和普通 `User` 默认可用所有 App；
+- `Limited` 用户默认仅可用系统内置 App、管理员为所有用户安装的 App、自己安装的 App，以及其他 Owner 明确授权给 `limited` 组或该用户的 App；
 - App Owner 可以随时管理自己 App 的可用用户范围；
 - 授权优先按组配置，再用特定用户规则做例外；
 - 特定用户精确规则优先于用户组规则；
@@ -133,7 +133,7 @@ App Owner 是 `AppServiceSpec.user_id` 当前表达的安装所有者。Owner �
 | `app_class` | 含义 | 默认可用范围 | 管理者 |
 |---|---|---|---|
 | `system_builtin` | 跟随 BuckyOS 版本发布的系统内置 App | 所有有效用户 | 系统 |
-| `user_installed` | 普通用户或管理员安装在个人名下的 App | Owner 自己 | App Owner |
+| `user_installed` | 普通用户或管理员安装在个人名下的 App | Owner、`Admin`、普通 `User` | App Owner |
 | `zone_installed` | 管理员安装为 Zone 级所有用户 App | 所有当前及未来有效用户 | 管理员 |
 
 初始 `system_builtin` 清单包含：
@@ -210,7 +210,7 @@ App 可用性组必须由 Control Panel 根据可信的用户类型或专用组�
 
 - `system_builtin`：系统隐式允许所有有效登录用户；匿名 Guest 是否允许由系统 App 的公开访问声明决定；
 - `zone_installed`：隐式允许所有有效登录用户；只能由管理员安装、卸载或改变 Zone 安装作用域；
-- `user_installed`：Owner 永远允许，其他主体默认拒绝，由 Owner 的组规则和用户规则开放。
+- `user_installed`：Owner 永远允许；`Admin` 和普通 `User` 默认允许；`Limited` 和 Guest 默认拒绝，由 Owner 的组规则和用户规则开放。
 
 Owner 不能通过规则拒绝自己使用自己的 App。Owner 被删除、封禁或 App 被删除后，该隐式允许失效。
 
@@ -224,7 +224,8 @@ Owner 不能通过规则拒绝自己使用自己的 App。Owner 被删除、封�
 4. 计算用户所属系统组：
    - 任一匹配组存在 `deny`：拒绝；
    - 否则任一匹配组存在 `allow`：允许；
-5. 使用 `default_effect`，V1 固定默认为 `deny`。
+5. 没有显式匹配时，`admins` / `users` 系统组默认允许；
+6. 其余主体使用 `default_effect`，V1 固定默认为 `deny`。
 
 因此精确用户 `allow` 可以覆盖组 `deny`，精确用户 `deny` 也可以覆盖组 `allow`。用户同时命中多个组且没有精确规则时，`deny` 优先于 `allow`。
 
@@ -234,10 +235,11 @@ Owner 不能通过规则拒绝自己使用自己的 App。Owner 被删除、封�
 
 ```text
 系统内置 App
-+ 自己安装且未删除的 App
 + 管理员为所有用户安装且未删除的 App
-+ 其他 Owner 通过组规则或精确用户规则授权的 App
++ 所有 Owner 安装且未删除、且未通过显式规则拒绝该用户的 App
 ```
+
+`Limited` 用户的结果不使用上述普通用户默认 allow：除系统内置、Zone App 和自己的 App 外，只包含通过 `limited` 组或精确用户规则明确允许的个人 App。
 
 集合元素按 `app_instance_id` 唯一标识。同一个基础 `app_id` 由不同 Owner 安装时，不得静默合并为一条。
 
@@ -380,8 +382,9 @@ App Service 自身的 service token 不得调用 `apps.availability.set` 修改�
 
 1. 创建 `user_installed` App spec；
 2. Owner 默认允许；
-3. 其他用户默认拒绝；
-4. Owner 后续通过可用性接口增加组或用户规则。
+3. `Admin` 和普通 `User` 默认允许；
+4. `Limited` 和 Guest 默认拒绝；
+5. Owner 后续通过可用性接口增加 allow/deny 组规则或用户规则。
 
 ### 10.2 为所有用户安装 App
 
@@ -400,7 +403,8 @@ App Service 自身的 service token 不得调用 `apps.availability.set` 修改�
 - 系统内置 App；
 - Zone 级所有用户 App；
 - 该用户自己安装的 App，初始为空；
-- 通过系统组或精确用户规则获得的共享 App。
+- 对 `Admin` / `User` 默认可见的其他个人 App；
+- 对 `Limited` 通过系统组或精确用户规则明确授权的其他个人 App。
 
 邀请记录中的 `app_ids` 已移除；App 授权统一由 Owner 通过 `apps.availability.set` 创建明确的实例级规则。
 
@@ -538,8 +542,9 @@ Verify Hub 只能限制需要登录的用户。`guest` 没有 session token，�
 - [x] 普通用户能看到所有 `system_builtin`；
 - [x] 普通用户能看到自己安装的未删除 App；
 - [x] 普通用户能看到所有 `zone_installed`；
-- [x] 普通用户能看到通过组或精确用户规则允许的其他 Owner App；
-- [x] 普通用户看不到未授权 App；
+- [x] `Admin` 和普通 `User` 默认能看到其他 Owner 的 App；
+- [x] 显式组规则或精确用户规则可以拒绝 `Admin` / `User`；
+- [x] `Limited` 看不到未明确授权的其他 Owner App；
 - [x] 普通用户不能通过 `user_id` 查询其他用户；
 - [x] 管理员能查询指定用户并看到每个 App 的匹配原因；
 - [x] 返回同时包含 `app_class`、`runtime_type`、`app_instance_id`、`owner_user_id`；
@@ -559,6 +564,7 @@ Verify Hub 只能限制需要登录的用户。`guest` 没有 session token，�
 - [x] 组 `limited=deny`、精确 `charlie=allow` 时，Charlie 被允许；
 - [x] 同时命中 allow 组和 deny 组且无精确规则时，最终拒绝；
 - [x] Owner 不配置任何规则时仍能使用自己的 App；
+- [x] 未配置策略时 `Admin` / `User` 默认允许、`Limited` 默认拒绝；
 - [x] 非 Owner 不能修改目标 App 策略；
 - [x] App Service token 不能修改自身策略。
 

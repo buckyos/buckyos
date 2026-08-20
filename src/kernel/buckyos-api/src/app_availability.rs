@@ -370,30 +370,29 @@ pub fn evaluate_app_availability(
                     "owner",
                 );
             }
-            let Some(policy) = policy else {
-                return denied("default_deny");
-            };
-            if policy.schema_version != APP_AVAILABILITY_SCHEMA_VERSION
-                || policy.app_instance_id != app_instance_id
-                || policy.default_effect != AvailabilityEffect::Deny
-                || validate_availability_rules(&policy.group_rules, &policy.user_rules).is_err()
-            {
-                return denied("invalid_policy");
-            }
-            if !is_guest {
-                if let Some(rule) = policy
-                    .user_rules
-                    .iter()
-                    .find(|rule| rule.user_id == target_user_id)
+            if let Some(policy) = policy {
+                if policy.schema_version != APP_AVAILABILITY_SCHEMA_VERSION
+                    || policy.app_instance_id != app_instance_id
+                    || policy.default_effect != AvailabilityEffect::Deny
+                    || validate_availability_rules(&policy.group_rules, &policy.user_rules).is_err()
                 {
-                    return match rule.effect {
-                        AvailabilityEffect::Allow => allowed(
-                            AvailabilityMatchType::ExactUser,
-                            Some(target_user_id.to_string()),
-                            "exact_user_allow",
-                        ),
-                        AvailabilityEffect::Deny => denied("exact_user_deny"),
-                    };
+                    return denied("invalid_policy");
+                }
+                if !is_guest {
+                    if let Some(rule) = policy
+                        .user_rules
+                        .iter()
+                        .find(|rule| rule.user_id == target_user_id)
+                    {
+                        return match rule.effect {
+                            AvailabilityEffect::Allow => allowed(
+                                AvailabilityMatchType::ExactUser,
+                                Some(target_user_id.to_string()),
+                                "exact_user_allow",
+                            ),
+                            AvailabilityEffect::Deny => denied("exact_user_deny"),
+                        };
+                    }
                 }
             }
 
@@ -402,7 +401,7 @@ pub fn evaluate_app_availability(
             } else {
                 target_user.and_then(|settings| system_group_for_user_type(&settings.user_type))
             };
-            if let Some(group_id) = group_id {
+            if let (Some(policy), Some(group_id)) = (policy, group_id) {
                 let matching = policy
                     .group_rules
                     .iter()
@@ -426,9 +425,17 @@ pub fn evaluate_app_availability(
                 }
             }
 
-            match policy.default_effect {
-                AvailabilityEffect::Allow => denied("invalid_default_effect"),
-                AvailabilityEffect::Deny => denied("default_deny"),
+            if matches!(group_id, Some("admins" | "users")) {
+                return allowed(
+                    AvailabilityMatchType::Group,
+                    group_id.map(str::to_string),
+                    "default_group_allow",
+                );
+            }
+
+            match policy.map(|policy| policy.default_effect) {
+                Some(AvailabilityEffect::Allow) => denied("invalid_default_effect"),
+                Some(AvailabilityEffect::Deny) | None => denied("default_deny"),
             }
         }
     }
@@ -819,6 +826,81 @@ mod tests {
             evaluate_app_availability(Some(&bob), "bob", Some(&banned_owner), &app, Some(&policy));
         assert!(!shared_decision.allowed);
         assert_eq!(shared_decision.reason, "owner_not_active");
+    }
+
+    #[test]
+    fn admin_and_user_are_allowed_user_apps_by_default() {
+        let owner = settings("alice", UserType::User, UserState::Active);
+        let app = installation("alice");
+
+        for (user_id, user_type, group_id) in [
+            ("admin", UserType::Admin, "admins"),
+            ("bob", UserType::User, "users"),
+        ] {
+            let target = settings(user_id, user_type, UserState::Active);
+            let decision =
+                evaluate_app_availability(Some(&target), user_id, Some(&owner), &app, None);
+            assert!(decision.allowed);
+            assert_eq!(decision.reason, "default_group_allow");
+            assert_eq!(
+                decision.availability_match.unwrap(),
+                AvailabilityMatch::new(AvailabilityMatchType::Group, Some(group_id.to_string()))
+            );
+        }
+    }
+
+    #[test]
+    fn limited_user_requires_explicit_allow() {
+        let owner = settings("alice", UserType::User, UserState::Active);
+        let limited = settings("bob", UserType::Limited, UserState::Active);
+        let app = installation("alice");
+
+        let decision = evaluate_app_availability(Some(&limited), "bob", Some(&owner), &app, None);
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason, "default_deny");
+
+        let policy = AppAvailabilityPolicy {
+            schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
+            app_instance_id: "notes@alice".to_string(),
+            default_effect: AvailabilityEffect::Deny,
+            group_rules: vec![AppAvailabilityGroupRule {
+                group_id: "limited".to_string(),
+                effect: AvailabilityEffect::Allow,
+            }],
+            user_rules: Vec::new(),
+            revision: 1,
+            updated_by: "alice".to_string(),
+            updated_at: 1,
+        };
+        let decision =
+            evaluate_app_availability(Some(&limited), "bob", Some(&owner), &app, Some(&policy));
+        assert!(decision.allowed);
+        assert_eq!(decision.reason, "group_allow");
+    }
+
+    #[test]
+    fn explicit_deny_overrides_default_group_allow() {
+        let owner = settings("alice", UserType::User, UserState::Active);
+        let bob = settings("bob", UserType::User, UserState::Active);
+        let app = installation("alice");
+        let policy = AppAvailabilityPolicy {
+            schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
+            app_instance_id: "notes@alice".to_string(),
+            default_effect: AvailabilityEffect::Deny,
+            group_rules: vec![AppAvailabilityGroupRule {
+                group_id: "users".to_string(),
+                effect: AvailabilityEffect::Deny,
+            }],
+            user_rules: Vec::new(),
+            revision: 1,
+            updated_by: "alice".to_string(),
+            updated_at: 1,
+        };
+
+        let decision =
+            evaluate_app_availability(Some(&bob), "bob", Some(&owner), &app, Some(&policy));
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason, "group_deny");
     }
 
     #[test]
