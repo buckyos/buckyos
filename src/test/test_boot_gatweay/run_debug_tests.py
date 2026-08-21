@@ -236,6 +236,13 @@ def control_matches(action_set, expected_substring=None, exact_value=None):
 
 
 def assertions_for_case(case_name: str):
+    if case_name == "req_app_root_no_cookie_redirect_ok":
+        return [
+            control_matches(
+                {"return"},
+                exact_value='redirect "https://sys.test.buckyos.io/login?redirect_url=https%3A%2F%2Ffilebrowser.test.buckyos.io%2F"',
+            )
+        ]
     if case_name == "req_app_local_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10160")]
     if case_name == "req_app_remote_ok":

@@ -1,0 +1,15 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/",
+      "host": "filebrowser.test.buckyos.io",
+      "uri": "/",
+      "url": "https://filebrowser.test.buckyos.io/"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": [
+    "REQ",
+    "RESP"
+  ]
+}
