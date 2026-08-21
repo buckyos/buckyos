@@ -101,6 +101,10 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   }
 
   const handleTypeSelect = (type: ProviderType) => {
+    if (type === 'sn_router' && hasManagedSnProvider) {
+      onCreated()
+      return
+    }
     updateDraft({
       provider_type: type,
       name: '',

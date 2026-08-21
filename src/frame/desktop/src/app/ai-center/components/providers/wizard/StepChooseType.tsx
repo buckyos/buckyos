@@ -36,12 +36,12 @@ export function StepChooseType({ selected, onSelect, hasManagedSnProvider }: Ste
             key={item.type}
             type="button"
             onClick={() => onSelect(item.type)}
-            disabled={isSnRouter}
+            disabled={isSnRouter && !hasManagedSnProvider}
             className="flex flex-col gap-2 p-4 rounded-xl text-left transition-all disabled:cursor-not-allowed"
             style={{
               background: active ? 'color-mix(in oklch, var(--cp-accent), transparent 90%)' : 'var(--cp-surface)',
               border: active ? '2px solid var(--cp-accent)' : '1px solid var(--cp-border)',
-              opacity: isSnRouter ? 0.72 : 1,
+              opacity: isSnRouter && !hasManagedSnProvider ? 0.72 : 1,
             }}
           >
             <div className="flex items-center gap-2">

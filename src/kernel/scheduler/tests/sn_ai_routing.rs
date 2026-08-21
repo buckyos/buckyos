@@ -111,7 +111,58 @@ fn task009_valid_zone_reenables_a_disabled_managed_provider() {
 }
 
 #[test]
-fn task009_reconciliation_is_noop_without_a_managed_instance_or_change() {
+fn task009_reconciliation_adds_missing_managed_provider() {
+    let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
+    for current in [
+        json!({}),
+        json!({"sn-ai-provider": {"enabled": false}}),
+        json!({
+            "sn-ai-provider": {
+                "enabled": true,
+                "instances": [{
+                    "provider_driver": "openai",
+                    "base_url": "https://custom.example/v1/"
+                }]
+            }
+        }),
+    ] {
+        let next = reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("alice"))
+            .unwrap()
+            .expect("managed provider should be added");
+        let instances = next["sn-ai-provider"]["instances"].as_array().unwrap();
+        let managed = instances
+            .iter()
+            .find(|instance| instance["provider_driver"] == "sn-ai-provider")
+            .expect("managed instance");
+        assert_eq!(managed["provider_instance_name"], "sn-ai-provider-default");
+        assert_eq!(managed["base_url"], "https://sn.buckyos.io/api/v1/ai/");
+        assert_eq!(
+            managed["login_url"],
+            "https://sn.buckyos.io/api/user/login_by_device_token"
+        );
+        assert_eq!(managed["user_name"], "alice");
+        assert_eq!(next["sn-ai-provider"]["enabled"], true);
+    }
+}
+
+#[test]
+fn task009_reconciliation_does_not_add_without_relay_or_user() {
+    let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
+    let invalid = anyhow!("ZoneDocument.sn is missing");
+    assert!(
+        reconcile_managed_sn_ai_provider(&json!({}), Err(&invalid), Some("alice"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        reconcile_managed_sn_ai_provider(&json!({}), Ok(&endpoints), None)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn task009_reconciliation_is_noop_when_managed_instance_is_current() {
     let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.io")).unwrap();
     let current = managed_settings(true, "https://sn.buckyos.io/api/v1/ai/");
     assert!(
@@ -119,23 +170,4 @@ fn task009_reconciliation_is_noop_without_a_managed_instance_or_change() {
             .unwrap()
             .is_none()
     );
-
-    for value in [
-        json!({}),
-        json!({"sn-ai-provider": {"enabled": true}}),
-        json!({
-            "sn-ai-provider": {
-                "enabled": true,
-                "instances": [{
-                    "provider_driver": "openai"
-                }]
-            }
-        }),
-    ] {
-        assert!(
-            reconcile_managed_sn_ai_provider(&value, Ok(&endpoints), Some("alice"))
-                .unwrap()
-                .is_none()
-        );
-    }
 }

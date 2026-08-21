@@ -327,8 +327,10 @@ test('SN Router is shown as a system-managed provider', async ({ page }) => {
   await page.keyboard.press('Escape')
   await page.getByRole('button', { name: 'Add Provider' }).click()
   const snRouter = page.getByRole('button', { name: /SN Router/ })
-  await expect(snRouter).toBeDisabled()
+  await expect(snRouter).toBeEnabled()
   await expect(snRouter).toContainText('System managed')
+  await snRouter.click()
+  await expect(page.getByRole('button', { name: 'Providers', exact: true })).toBeVisible()
 })
 
 test('systest opens its zone subdomain inside a desktop window', async ({ page }) => {
