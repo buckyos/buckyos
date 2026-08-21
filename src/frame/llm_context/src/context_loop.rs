@@ -1240,6 +1240,7 @@ fn merge_usage(left: &AiUsage, right: &AiUsage) -> AiUsage {
         input_tokens: add(left.input_tokens, right.input_tokens),
         output_tokens: add(left.output_tokens, right.output_tokens),
         total_tokens: add(left.total_tokens, right.total_tokens),
+        request_units: add(left.request_units, right.request_units),
     }
 }
 

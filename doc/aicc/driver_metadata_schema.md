@@ -65,11 +65,12 @@ Fields:
   `driver` and `model` from the provider-native model id.
 - `models`: exact rules keyed by `id`.
 - `patterns`: wildcard rules keyed by `pattern`; `*` is the only wildcard.
-- `capability_overrides`: ordered capability-only patches selected by model
-  `pattern` and, optionally, `api_types`. All matching rules are applied after
-  the model's exact/pattern/default rule. Documents are applied from lower to
-  higher source priority, and rules within a document are applied in array
-  order, so later patches take precedence.
+- `capability_overrides`: ordered metadata patches selected by model `pattern`
+  and, optionally, `api_types`. A patch may append or remove API types and
+  logical mounts, and may patch `capabilities`. All matching rules are applied
+  after the model's exact/pattern/default rule. Documents are applied from lower
+  to higher source priority, and rules within a document are applied in array
+  order, so later patches can refine or undo earlier metadata.
 - `defaults`: default rule when no exact or pattern rule matches.
 - `variants`: optional provider option variants. The resolver expands each
   matching base model into additional AICC exact models whose provider model id
@@ -107,6 +108,20 @@ Rules support these fields:
   per-token prices; `estimated_cost` is the default scheduler cost estimate.
 - `estimated_latency_ms`: default scheduler latency estimate.
 - `quality_score`, `latency_class`, `cost_class`: routing attributes.
+
+`capability_overrides` supports these fields:
+
+- `pattern`: provider model id wildcard pattern.
+- `api_types`: optional selector; the patch applies when the resolved model has
+  at least one listed API type.
+- `add_api_types`: API types appended without replacing the model's existing
+  API types.
+- `add_logical_mounts`: logical mounts appended with the same template
+  expansion as ordinary rules.
+- `remove_api_types`: API types removed from the current model metadata.
+- `remove_logical_mounts`: logical mounts removed after applying the same
+  template expansion as ordinary rules.
+- `capabilities`: partial capability patch.
 
 All exact ids and wildcard patterns, including
 `version_rules[].model_pattern`, match the complete channel-local

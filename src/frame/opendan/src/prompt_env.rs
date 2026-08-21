@@ -19,7 +19,7 @@ use buckyos_api::{AiContent, AiMessage, ResourceRef};
 use chrono::{Local, TimeZone};
 use llm_context::{
     behavior_loop::StepRecord, EngineConfig, PromptRenderEngine, RenderError, RenderVars,
-    ValueLoader, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT,
+    ValueLoader, PROVIDER_MSG_METADATA, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT,
 };
 use serde_json::{json, Value as Json};
 
@@ -665,6 +665,15 @@ fn input_text(env: &AgentSessionEnv) -> String {
     if env.llm_context.msgs.is_empty() {
         return env.input_text.clone();
     }
+    if env.llm_context.msgs.len() > 1
+        || env
+            .llm_context
+            .msgs
+            .iter()
+            .any(|msg| msg.get("structured").and_then(Json::as_bool) == Some(true))
+    {
+        return render_msg_ref_batch(&env.llm_context.msgs);
+    }
     env.llm_context
         .msgs
         .iter()
@@ -730,7 +739,8 @@ pub fn msg_ref_from_pending(input: &PendingInput, received_at_ms: u64) -> Option
     else {
         return None;
     };
-    let (content, attachments, default_text) = render_msg_content(ai_message);
+    let (content, attachments, default_text, message_references, structured) =
+        render_msg_content(ai_message);
     Some(json!({
         "record_id": record_id,
         "from": from,
@@ -746,13 +756,32 @@ pub fn msg_ref_from_pending(input: &PendingInput, received_at_ms: u64) -> Option
         "text": default_text,
         "content": content,
         "attachments": attachments,
+        "message_references": message_references,
+        "structured": structured,
     }))
 }
 
-fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String) {
+fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String, Vec<Json>, bool) {
+    let metadata = message.content.iter().find_map(|block| match block {
+        AiContent::ProviderState { provider, value } if provider == PROVIDER_MSG_METADATA => {
+            Some(value)
+        }
+        _ => None,
+    });
+    let canonical_attachments = metadata
+        .and_then(|value| value.get("attachments"))
+        .and_then(Json::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let message_references = metadata
+        .and_then(|value| value.get("message_references"))
+        .and_then(Json::as_array)
+        .cloned()
+        .unwrap_or_default();
     let mut content = Vec::new();
     let mut attachments = Vec::new();
     let mut text_parts = Vec::new();
+    let mut attachment_index = 0;
     for block in &message.content {
         match block {
             AiContent::Text { text } => {
@@ -767,7 +796,15 @@ fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String) {
                 }
             }
             AiContent::Image { source } => {
-                let attachment = attachment_ref("image", source, None);
+                let attachment = canonical_attachments
+                    .get(attachment_index)
+                    .cloned()
+                    .unwrap_or_else(|| attachment_ref("image", source, None));
+                attachment_index += 1;
+                let kind = attachment
+                    .get("kind")
+                    .and_then(Json::as_str)
+                    .unwrap_or("image");
                 text_parts.push(
                     attachment
                         .get("text_marker")
@@ -776,7 +813,7 @@ fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String) {
                         .to_string(),
                 );
                 content.push(json!({
-                    "type": "image",
+                    "type": kind,
                     "text": Json::Null,
                     "attachment": attachment.clone(),
                     "machine": Json::Null,
@@ -784,7 +821,15 @@ fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String) {
                 attachments.push(attachment);
             }
             AiContent::Document { source, title } => {
-                let attachment = attachment_ref("document", source, title.as_deref());
+                let attachment = canonical_attachments
+                    .get(attachment_index)
+                    .cloned()
+                    .unwrap_or_else(|| attachment_ref("document", source, title.as_deref()));
+                attachment_index += 1;
+                let kind = attachment
+                    .get("kind")
+                    .and_then(Json::as_str)
+                    .unwrap_or("document");
                 text_parts.push(
                     attachment
                         .get("text_marker")
@@ -793,13 +838,14 @@ fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String) {
                         .to_string(),
                 );
                 content.push(json!({
-                    "type": "document",
+                    "type": kind,
                     "text": Json::Null,
                     "attachment": attachment.clone(),
                     "machine": Json::Null,
                 }));
                 attachments.push(attachment);
             }
+            AiContent::ProviderState { provider, .. } if provider == PROVIDER_MSG_METADATA => {}
             AiContent::ToolUse { .. }
             | AiContent::ToolResult { .. }
             | AiContent::Thinking { .. }
@@ -813,7 +859,210 @@ fn render_msg_content(message: &AiMessage) -> (Vec<Json>, Vec<Json>, String) {
             }
         }
     }
-    (content, attachments, text_parts.join("\n"))
+    (
+        content,
+        attachments,
+        text_parts.join("\n"),
+        message_references,
+        metadata.is_some(),
+    )
+}
+
+pub fn render_ai_message_batch(messages: &[AiMessage]) -> Option<String> {
+    if messages.is_empty() {
+        return None;
+    }
+    let mut structured = messages.len() > 1;
+    let messages = messages
+        .iter()
+        .map(|message| {
+            let (content, attachments, _, message_references, is_structured) =
+                render_msg_content(message);
+            structured |= is_structured;
+            message_envelope(&content, attachments, message_references)
+        })
+        .collect::<Vec<_>>();
+    structured.then(|| serialize_message_batch(messages))
+}
+
+fn render_msg_ref_batch(messages: &[Json]) -> String {
+    let messages = messages
+        .iter()
+        .map(|message| {
+            let content = message
+                .get("content")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let attachments = message
+                .get("attachments")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let message_references = message
+                .get("message_references")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default();
+            message_envelope(&content, attachments, message_references)
+        })
+        .collect();
+    serialize_message_batch(messages)
+}
+
+fn message_envelope(
+    content: &[Json],
+    attachments: Vec<Json>,
+    message_references: Vec<Json>,
+) -> Json {
+    let text = content
+        .iter()
+        .filter(|block| block.get("type").and_then(Json::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Json::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let attachments = compact_attachments(attachments);
+    let refs = compact_message_references(message_references);
+    let mut message = serde_json::Map::new();
+    if !text.is_empty() {
+        message.insert("text".to_string(), Json::String(text));
+    }
+    if !attachments.is_empty() {
+        message.insert("attachments".to_string(), Json::Array(attachments));
+    }
+    if !refs.is_empty() {
+        message.insert("refs".to_string(), Json::Array(refs));
+    }
+    Json::Object(message)
+}
+
+fn serialize_message_batch(messages: Vec<Json>) -> String {
+    serde_json::to_string(&json!({
+        "schema": "od.msg/1",
+        "messages": messages,
+    }))
+    .expect("serializing a JSON value cannot fail")
+}
+
+fn compact_attachments(attachments: Vec<Json>) -> Vec<Json> {
+    attachments
+        .into_iter()
+        .enumerate()
+        .map(|(position, attachment)| {
+            let mut compact = serde_json::Map::new();
+            compact.insert(
+                "index".to_string(),
+                attachment
+                    .get("index")
+                    .cloned()
+                    .unwrap_or_else(|| json!(position)),
+            );
+            copy_non_empty_string(&attachment, "kind", &mut compact, "kind");
+            if attachment
+                .get("role")
+                .and_then(Json::as_str)
+                .is_some_and(|role| !role.trim().is_empty())
+            {
+                copy_non_empty_string(&attachment, "role", &mut compact, "role");
+            } else {
+                compact.insert("role".to_string(), Json::String("input".to_string()));
+            }
+            if let Some(source) = attachment.get("source").and_then(compact_source) {
+                compact.insert("src".to_string(), source);
+            }
+            let label = attachment
+                .get("label")
+                .and_then(Json::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| {
+                    attachment
+                        .get("title")
+                        .and_then(Json::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                });
+            if let Some(label) = label {
+                compact.insert("label".to_string(), Json::String(label.to_string()));
+            }
+            copy_non_empty_string(&attachment, "mime", &mut compact, "mime");
+            Json::Object(compact)
+        })
+        .collect()
+}
+
+fn compact_source(source: &Json) -> Option<Json> {
+    let source_type = source.get("type").and_then(Json::as_str);
+    let (key, value) = match source_type {
+        Some("named_object") => ("obj", source.get("obj_id")?.clone()),
+        Some("url") => ("url", source.get("url")?.clone()),
+        Some("base64") => (
+            "base64",
+            source.get("data").cloned().unwrap_or(Json::Bool(true)),
+        ),
+        _ => {
+            if let Some(value) = source.get("obj").cloned() {
+                ("obj", value)
+            } else if let Some(value) = source.get("url").cloned() {
+                ("url", value)
+            } else if let Some(value) = source.get("base64").cloned() {
+                ("base64", value)
+            } else {
+                return None;
+            }
+        }
+    };
+    if value.is_null() || value.as_str().is_some_and(|value| value.trim().is_empty()) {
+        return None;
+    }
+    let mut compact = serde_json::Map::new();
+    compact.insert(key.to_string(), value);
+    Some(Json::Object(compact))
+}
+
+fn compact_message_references(message_references: Vec<Json>) -> Vec<Json> {
+    let mut refs = Vec::new();
+    for reference in message_references {
+        let compact = if let Some(id) = reference.as_str() {
+            Json::String(id.to_string())
+        } else {
+            let Some(id) = reference
+                .get("id")
+                .or_else(|| reference.get("obj_id"))
+                .and_then(Json::as_str)
+                .filter(|id| !id.trim().is_empty())
+            else {
+                continue;
+            };
+            match reference
+                .get("relation")
+                .and_then(Json::as_str)
+                .filter(|relation| !relation.trim().is_empty())
+            {
+                None | Some("reply_to") => Json::String(id.to_string()),
+                Some(relation) => json!({ "id": id, "relation": relation }),
+            }
+        };
+        if !refs.contains(&compact) {
+            refs.push(compact);
+        }
+    }
+    refs
+}
+
+fn copy_non_empty_string(
+    source: &Json,
+    source_key: &str,
+    target: &mut serde_json::Map<String, Json>,
+    target_key: &str,
+) {
+    if let Some(value) = source
+        .get(source_key)
+        .and_then(Json::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        target.insert(target_key.to_string(), Json::String(value.to_string()));
+    }
 }
 
 fn attachment_ref(kind: &str, source: &ResourceRef, title: Option<&str>) -> Json {
@@ -1518,6 +1767,120 @@ switch={{ switch.from }}|{{ switch.to }}|{{ from_behavior }}|{{ switch.from_cont
         );
     }
 
+    #[test]
+    fn structured_ingress_reaches_prompt_as_one_parseable_message_batch() {
+        use ndn_lib::{
+            MsgContent, MsgContentFormat, MsgObject, ObjId, RefItem, RefRole, RefTarget,
+            TopicThread,
+        };
+
+        let pending = |record_id: &str,
+                       text: &str,
+                       obj_id: &str,
+                       format: MsgContentFormat,
+                       label: &str,
+                       reply_to: Option<&str>| {
+            let msg = MsgObject {
+                thread: TopicThread {
+                    reply_to: reply_to.map(|value| ObjId::new(value).unwrap()),
+                    ..Default::default()
+                },
+                content: MsgContent {
+                    format: Some(format),
+                    content: text.to_string(),
+                    refs: vec![RefItem {
+                        role: RefRole::Input,
+                        target: RefTarget::DataObj {
+                            obj_id: ObjId::new(obj_id).unwrap(),
+                            uri_hint: None,
+                        },
+                        label: Some(label.to_string()),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            PendingInput::Msg {
+                record_id: record_id.to_string(),
+                from: "alice".into(),
+                from_did: None,
+                from_name: Some("Alice".into()),
+                tunnel_did: None,
+                text: text.to_string(),
+                ai_message: llm_context::msg_object_to_ai_message_structured(&msg),
+            }
+        };
+
+        let first = pending(
+            "msg-1",
+            "use first",
+            "cyfile:010203",
+            MsgContentFormat::ImagePng,
+            "first.png",
+            None,
+        );
+        let second = pending(
+            "msg-2",
+            "use second",
+            "cyfile:040506",
+            MsgContentFormat::VideoMp4,
+            "second.mp4",
+            Some("cymsg:070809"),
+        );
+        let refs = vec![
+            msg_ref_from_pending(&first, 41).unwrap(),
+            msg_ref_from_pending(&second, 42).unwrap(),
+        ];
+
+        assert_eq!(refs[0]["attachments"][0]["kind"], "image");
+        assert_eq!(
+            refs[0]["attachments"][0]["source"]["obj_id"],
+            "cyfile:010203"
+        );
+        assert_eq!(refs[1]["attachments"][0]["kind"], "video");
+        assert_eq!(refs[1]["message_references"][0]["obj_id"], "cymsg:070809");
+
+        let mut env = sample_env();
+        env.llm_context.msgs = refs;
+        let batch: Json = serde_json::from_str(&input_text(&env)).unwrap();
+        assert_eq!(batch["schema"], "od.msg/1");
+        assert_eq!(batch["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(batch["messages"][0]["text"], "use first");
+        assert_eq!(
+            batch["messages"][0]["attachments"][0]["src"]["obj"],
+            "cyfile:010203"
+        );
+        assert_eq!(batch["messages"][1]["text"], "use second");
+        assert_eq!(
+            batch["messages"][1]["attachments"][0]["src"]["obj"],
+            "cyfile:040506"
+        );
+        assert_eq!(batch["messages"][1]["refs"][0], "cymsg:070809");
+    }
+
+    #[test]
+    fn compact_message_view_omits_empty_fields_and_keeps_explicit_relations() {
+        let message = message_envelope(
+            &[],
+            vec![],
+            vec![
+                json!({"obj_id": "cymsg:01", "relation": "reply_to"}),
+                json!({"obj_id": "cymsg:01", "relation": "reply_to"}),
+                json!({"id": "cymsg:02", "relation": "quotes"}),
+            ],
+        );
+
+        assert!(message.get("text").is_none());
+        assert!(message.get("attachments").is_none());
+        assert_eq!(
+            message["refs"],
+            json!([
+                "cymsg:01",
+                {"id": "cymsg:02", "relation": "quotes"}
+            ])
+        );
+    }
+
     #[tokio::test]
     async fn engine_config_seeds_phase1_include_roots() {
         let env = sample_env();
@@ -1541,5 +1904,19 @@ switch={{ switch.from }}|{{ switch.to }}|{{ from_behavior }}|{{ switch.from_cont
         let env = minimal_env();
         let cfg = build_engine_config(&env);
         assert_eq!(cfg.include_roots.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn self_improve_signal_prompt_renders_literal_json_examples() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../rootfs/bin/buckyos_jarvis/behaviors/self_improve_signals.toml");
+        let cfg = crate::behavior_cfg::BehaviorCfg::load_from_file(&path)
+            .expect("self improve behavior should load");
+        let rendered = render_template(&cfg.prompt.on_init, &sample_env(), &[])
+            .await
+            .expect("self improve prompt should render");
+
+        assert!(rendered.contains("DiscoverSkillCoverageGap '{\"title\":\"...\""));
+        assert!(rendered.contains("\"recall_candidate_hint\":false} }'"));
     }
 }

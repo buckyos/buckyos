@@ -2371,11 +2371,16 @@ impl AgentToolManager {
             tool_name, call_id, ctx.trace_id, ctx.session_id
         );
         let result = tool.exec(ctx, line, shell_cwd).await;
-        if let Err(err) = &result {
-            warn!(
+        match &result {
+            Ok(result) if result.status == AgentToolStatus::Error => warn!(
+                "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} source=bash err={}",
+                tool_name, call_id, ctx.trace_id, ctx.session_id, result.summary
+            ),
+            Err(err) => warn!(
                 "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} source=bash err={}",
                 tool_name, call_id, ctx.trace_id, ctx.session_id, err
-            );
+            ),
+            _ => {}
         }
         let result = result.map_err(|err| {
             if let Some(usage) = usage.as_deref() {
@@ -2384,10 +2389,12 @@ impl AgentToolManager {
                 err
             }
         })?;
-        info!(
-            "opendan.tool_call: status=success tool={} call_id={} trace_id={} session_id={} source=bash",
-            tool_name, call_id, ctx.trace_id, ctx.session_id
-        );
+        if result.status != AgentToolStatus::Error {
+            info!(
+                "opendan.tool_call: status=success tool={} call_id={} trace_id={} session_id={} source=bash",
+                tool_name, call_id, ctx.trace_id, ctx.session_id
+            );
+        }
         Ok(Some(result))
     }
 
@@ -2416,6 +2423,10 @@ impl AgentToolManager {
 
         let result = tool.call(ctx, args).await;
         match &result {
+            Ok(result) if result.status == AgentToolStatus::Error => warn!(
+                "opendan.tool_call: status=failed tool={} call_id={} trace_id={} session_id={} err={}",
+                tool_name, call_id, ctx.trace_id, session_id, result.summary
+            ),
             Ok(_) => info!(
                 "opendan.tool_call: status=success tool={} call_id={} trace_id={} session_id={}",
                 tool_name, call_id, ctx.trace_id, session_id

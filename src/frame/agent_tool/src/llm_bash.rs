@@ -449,6 +449,26 @@ impl ExecBashTool {
         candidate.clamp(1, max)
     }
 
+    fn parse_timeout(&self, raw: Option<&Json>) -> Result<u64, AgentToolError> {
+        let value = match raw {
+            None | Some(Json::Null) => None,
+            Some(Json::Number(value)) => value.as_u64(),
+            Some(Json::String(value)) => value.trim().parse::<u64>().ok(),
+            Some(_) => None,
+        };
+        if raw.is_some_and(|raw| !raw.is_null()) && value.is_none() {
+            return Err(AgentToolError::InvalidArgs(
+                "`timeout_ms` must be a positive integer".to_string(),
+            ));
+        }
+        if value == Some(0) {
+            return Err(AgentToolError::InvalidArgs(
+                "`timeout_ms` must be a positive integer".to_string(),
+            ));
+        }
+        Ok(self.resolve_timeout(value))
+    }
+
     fn parse_env(&self, raw: Option<&Json>) -> Result<Vec<(String, String)>, AgentToolError> {
         let Some(value) = raw else {
             return Ok(Vec::new());
@@ -596,6 +616,12 @@ impl AgentTool for ExecBashTool {
                     "target": {
                         "type": "string",
                         "description": "MUST select known node. Blank = current environment."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": DEFAULT_MAX_TIMEOUT_MS,
+                        "description": "Execution timeout in milliseconds. Long-running media commands should set this explicitly."
                     }
                 },
                 "required": ["command"]
@@ -608,7 +634,7 @@ impl AgentTool for ExecBashTool {
                 }
             }),
             usage: Some(format!(
-                "{name} command='<shell>' [target=local]",
+                "{name} command='<shell>' [target=local] [timeout_ms={DEFAULT_TIMEOUT_MS}]",
                 name = self.tool_name()
             )),
         }
@@ -647,7 +673,7 @@ impl AgentTool for ExecBashTool {
         let raw_cwd = map.get("cwd").and_then(Json::as_str);
         let cwd = self.resolve_cwd(raw_cwd)?;
 
-        let timeout_ms = self.resolve_timeout(map.get("timeout_ms").and_then(Json::as_u64));
+        let timeout_ms = self.parse_timeout(map.get("timeout_ms"))?;
 
         let user_env = self.parse_env(map.get("env"))?;
 
@@ -1065,6 +1091,35 @@ mod tests {
             .await
             .expect_err("must time out");
         assert!(matches!(err, AgentToolError::Timeout), "got {err:?}");
+    }
+
+    #[test]
+    fn xml_string_timeout_is_honored() {
+        let (_dir, workspace) = ws();
+        let cfg = LlmBashConfig::local_workspace(workspace)
+            .with_default_timeout_ms(5_000)
+            .with_max_timeout_ms(200);
+        let tool = ExecBashTool::new(cfg);
+
+        assert_eq!(
+            tool.parse_timeout(Some(&Json::String("120".to_string())))
+                .expect("XML string timeout must be accepted"),
+            120
+        );
+    }
+
+    #[test]
+    fn spec_exposes_timeout_ms() {
+        let (_dir, workspace) = ws();
+        let spec = ExecBashTool::local_workspace(workspace).spec();
+        assert_eq!(
+            spec.args_schema["properties"]["timeout_ms"]["type"],
+            "integer"
+        );
+        assert_eq!(
+            spec.args_schema["properties"]["timeout_ms"]["maximum"],
+            DEFAULT_MAX_TIMEOUT_MS
+        );
     }
 
     #[tokio::test]

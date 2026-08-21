@@ -16,9 +16,9 @@ use std::sync::{Arc, Once};
 
 use buckyos_api::{
     aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccRouteTraceEvent,
-    AiccUsageEvent, QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest,
-    QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow, UsageGroupedRow,
-    UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
+    AiccUsageEvent, AiccVideoContinuationSource, QueryRouteTraceRequest, QueryRouteTraceResponse,
+    QueryUsageRequest, QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow,
+    UsageGroupedRow, UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
     AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID, AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
     AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
 };
@@ -268,6 +268,77 @@ ON CONFLICT DO NOTHING
             })?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn upsert_video_continuation_source(
+        &self,
+        record: &AiccVideoContinuationSource,
+    ) -> Result<(), RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+INSERT INTO aicc_video_continuation_source (
+    tenant_id, content_id, source_task_id, created_at_ms
+) VALUES (?, ?, ?, ?)
+ON CONFLICT (tenant_id, content_id)
+DO UPDATE SET
+    source_task_id = excluded.source_task_id,
+    created_at_ms = excluded.created_at_ms
+"#,
+        );
+        sqlx::query(&sql)
+            .bind(record.tenant_id.clone())
+            .bind(record.content_id.clone())
+            .bind(record.source_task_id.clone())
+            .bind(record.created_at_ms)
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to persist video continuation source task {}: {}",
+                    record.source_task_id, error
+                ))
+            })?;
+        Ok(())
+    }
+
+    pub async fn get_video_continuation_source(
+        &self,
+        tenant_id: &str,
+        content_id: &str,
+    ) -> Result<Option<AiccVideoContinuationSource>, RPCErrors> {
+        let sql = self.render_sql(
+            r#"
+SELECT tenant_id, content_id, source_task_id, created_at_ms
+FROM aicc_video_continuation_source
+WHERE tenant_id = ? AND content_id = ?
+"#,
+        );
+        let row = sqlx::query(&sql)
+            .bind(tenant_id.to_string())
+            .bind(content_id.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to load video continuation source for content {}: {}",
+                    content_id, error
+                ))
+            })?;
+        row.map(|row| {
+            Ok(AiccVideoContinuationSource {
+                tenant_id: row.try_get("tenant_id")?,
+                content_id: row.try_get("content_id")?,
+                source_task_id: row.try_get("source_task_id")?,
+                created_at_ms: row.try_get("created_at_ms")?,
+            })
+        })
+        .transpose()
+        .map_err(|error: sqlx::Error| {
+            RPCErrors::ReasonError(format!(
+                "failed to decode video continuation source for content {}: {}",
+                content_id, error
+            ))
+        })
     }
 
     /// Flexible query entry — pulls rows matching the filter window, then
@@ -1095,6 +1166,44 @@ mod tests {
         assert_eq!(resp.total.input_tokens, 15);
         assert_eq!(resp.total.output_tokens, 35);
         assert_eq!(resp.total.total_tokens, 50);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn video_continuation_source_is_content_and_tenant_scoped() {
+        let (db, _tmp) = setup().await;
+        let mut record = AiccVideoContinuationSource {
+            tenant_id: "alice".to_string(),
+            content_id: "mix256:video-content".to_string(),
+            source_task_id: "task-first".to_string(),
+            created_at_ms: 10,
+        };
+        db.upsert_video_continuation_source(&record)
+            .await
+            .unwrap();
+
+        let loaded = db
+            .get_video_continuation_source("alice", "mix256:video-content")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, record);
+        assert!(db
+            .get_video_continuation_source("bob", "mix256:video-content")
+            .await
+            .unwrap()
+            .is_none());
+
+        record.source_task_id = "task-second".to_string();
+        record.created_at_ms = 20;
+        db.upsert_video_continuation_source(&record)
+            .await
+            .unwrap();
+        let updated = db
+            .get_video_continuation_source("alice", "mix256:video-content")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated, record);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -26,7 +26,7 @@ use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
 pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
 /// Version of the usage-log schema. Bump whenever the DDL changes.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 3;
+pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 4;
 
 /// Sqlite DDL for the usage-log database. The only required table in v1 is
 /// `aicc_usage_event`; summary tables can be added later when SQL aggregation
@@ -82,6 +82,15 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
     ON aicc_route_trace(request_model, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
     ON aicc_route_trace(task_id, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_video_continuation_source (
+    tenant_id                 TEXT NOT NULL,
+    content_id                TEXT NOT NULL,
+    source_task_id            TEXT NOT NULL,
+    created_at_ms             INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, content_id)
+);
+CREATE INDEX IF NOT EXISTS idx_aicc_video_continuation_source_task
+    ON aicc_video_continuation_source(source_task_id);
 "#;
 
 /// Postgres DDL mirroring the sqlite schema above.
@@ -136,6 +145,15 @@ CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
     ON aicc_route_trace(request_model, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
     ON aicc_route_trace(task_id, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_video_continuation_source (
+    tenant_id                 TEXT NOT NULL,
+    content_id                TEXT NOT NULL,
+    source_task_id            TEXT NOT NULL,
+    created_at_ms             BIGINT NOT NULL,
+    PRIMARY KEY (tenant_id, content_id)
+);
+CREATE INDEX IF NOT EXISTS idx_aicc_video_continuation_source_task
+    ON aicc_video_continuation_source(source_task_id);
 "#;
 
 /// Default rdb-instance config for the aicc usage-log. The scheduler drops
@@ -158,6 +176,14 @@ pub fn aicc_usage_log_default_rdb_instance_config() -> RdbInstanceConfig {
         // resolve time.
         connection: String::new(),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiccVideoContinuationSource {
+    pub tenant_id: String,
+    pub content_id: String,
+    pub source_task_id: String,
+    pub created_at_ms: i64,
 }
 
 /// One durable row in `aicc_usage_event`.

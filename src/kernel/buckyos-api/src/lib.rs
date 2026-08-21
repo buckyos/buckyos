@@ -272,14 +272,27 @@ pub async fn init_buckyos_api_runtime(
         resolved_owner_id,
         runtime_type.clone(),
     );
-    runtime.fill_policy_by_load_config().await?;
+    let token_authenticated_appclient = runtime_type == BuckyOSRuntimeType::AppClient
+        && env::var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV)
+            .ok()
+            .is_some_and(|token| !token.trim().is_empty());
+    if token_authenticated_appclient {
+        if let Err(error) = runtime.fill_policy_by_load_config().await {
+            info!(
+                "token-authenticated AppClient has no local runtime policy config; using environment/default policy: {}",
+                error
+            );
+        }
+    } else {
+        runtime.fill_policy_by_load_config().await?;
 
-    if runtime_type == BuckyOSRuntimeType::Kernel
-        || runtime_type == BuckyOSRuntimeType::AppClient
-        || runtime_type == BuckyOSRuntimeType::KernelService
-        || runtime_type == BuckyOSRuntimeType::FrameService
-    {
-        runtime.fill_by_load_config().await?;
+        if runtime_type == BuckyOSRuntimeType::Kernel
+            || runtime_type == BuckyOSRuntimeType::AppClient
+            || runtime_type == BuckyOSRuntimeType::KernelService
+            || runtime_type == BuckyOSRuntimeType::FrameService
+        {
+            runtime.fill_by_load_config().await?;
+        }
     }
     runtime.fill_by_env_var().await?;
 
@@ -411,10 +424,7 @@ mod tests {
                 .expect("unix epoch")
                 .as_nanos()
         ));
-        let etc_dir = temp_root.join("etc");
-        fs::create_dir_all(&etc_dir).expect("create temp etc dir");
-        let dev_home = temp_root.join("dev_home");
-        fs::create_dir_all(&dev_home).expect("create temp dev home dir");
+        let dev_home = temp_root.join("missing_dev_home");
 
         let prev_root = set_env_var("BUCKYOS_ROOT", temp_root.to_string_lossy().as_ref());
         let prev_dev_home = set_env_var("BUCKYOS_DEV_HOME", dev_home.to_string_lossy().as_ref());
@@ -430,6 +440,8 @@ mod tests {
 
         let runtime = result.expect("init appclient runtime should load env session token");
         assert_eq!(runtime.get_app_id(), "buckycli");
+        assert!(runtime.device_private_key.is_none());
+        assert!(runtime.user_private_key.is_none());
         assert_eq!(
             runtime.session_token.read().await.as_str(),
             "dummy-appclient-token"

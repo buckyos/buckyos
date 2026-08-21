@@ -690,7 +690,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 }
 ```
 
-过渡实现中如果 `AiUsage` 结构尚未升级，扩展字段可以先进入 `AiResponseSummary.extra.usage_ext`；正式协议以本节分组结构为准。
+当前 `AiUsage` 已包含顶层 `request_units`，非 token provider 应至少上报该字段；其它媒体计量字段仍按本节分组结构逐步扩展。
 
 ### 3.5 Bounding Box
 
@@ -1496,6 +1496,8 @@ Response mapping：
 1. transcript 写 `AiResponseSummary.text`。
 2. segments 写 `AiResponseSummary.extra.asr.segments`。
 3. subtitles 和结构化转录 artifact 写 `AiResponseSummary.artifacts`。
+
+Provider 能够评估语音可靠性时，在 `AiResponseSummary.extra.asr` 中附加 `status`、`speech_detected`、`confidence` 和仅供诊断的 `candidate_text`。`status` 为 `uncertain` 或 `no_speech` 时，候选文字保留在诊断信息中，transcript 正文保持为空。
 
 当 request 指定多个 `output_formats` 时，response `artifacts` 的 key 必须与 format 名一致，例如 `vtt`、`srt`、`json`。
 

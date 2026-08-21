@@ -271,7 +271,7 @@ impl ControlPanelServer {
                 );
             }
         };
-        info!("sso_refresh refresh_token: {}", refresh_token);
+        info!("sso_refresh received refresh token cookie");
         match self.refresh_auth_tokens(refresh_token.as_str()).await {
             Ok(token_pair) => {
                 let user_info = self
@@ -351,7 +351,7 @@ impl ControlPanelServer {
         // clear HttpOnly Cookie
         // return ok
         if let Some(refresh_token) = Self::extract_http_cookie(&req, GATEWAY_SSO_REFRESH_COOKIE) {
-            info!("sso_logout refresh_token: {}", refresh_token);
+            info!("sso_logout received refresh token cookie");
             let runtime = get_buckyos_api_runtime().map_err(Self::rpc_to_server_error)?;
             let verify_hub_client = runtime
                 .get_verify_hub_client()

@@ -1036,7 +1036,7 @@ impl BuckyOSRuntime {
                 .await?
         };
 
-        info!("renew session-token success, token_pair: {:?}", token_pair);
+        info!("renew session-token success");
         {
             let mut session_token = self.session_token.write().await;
             *session_token = token_pair.session_token.clone();

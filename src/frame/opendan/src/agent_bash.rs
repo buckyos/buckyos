@@ -37,6 +37,7 @@ use agent_tool::{
     BinOverlayConfig, EditFileTool, ExecBashTool, FileToolConfig, LlmBashConfig,
     LlmUnderstandMediaTool, NoopFileWriteAudit, SessionRuntimeContext, WriteFileTool,
 };
+use buckyos_api::get_buckyos_api_runtime;
 use serde_json::json;
 use serde::Deserialize;
 
@@ -373,7 +374,26 @@ impl BashRunner for TmuxBashRunner {
         let exit_code_path = self.runtime_dir.join(format!("{run_id}.exit.code"));
         let script_path = self.runtime_dir.join(format!("{run_id}.exec.sh"));
 
-        let env = runtime_exec_env(&req.env, &self.base_env, ctx);
+        let mut env = runtime_exec_env(&req.env, &self.base_env, ctx);
+        if let Ok(runtime) = get_buckyos_api_runtime() {
+            runtime.renew_token_from_verify_hub().await.map_err(|err| {
+                AgentToolError::ExecFailed(format!(
+                    "refresh appclient session token before exec failed: {err}"
+                ))
+            })?;
+            let token = runtime.get_session_token().await;
+            if token.trim().is_empty() {
+                return Err(AgentToolError::ExecFailed(
+                    "buckyos runtime returned an empty appclient session token after refresh"
+                        .to_string(),
+                ));
+            }
+            set_env_value(
+                &mut env,
+                agent_tool::BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
+                token,
+            );
+        }
         let script = build_exec_script(
             &run_id,
             &stdout_path,

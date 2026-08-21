@@ -25,9 +25,9 @@ use buckyos_api::{
     ai_methods, get_buckyos_api_runtime, AiContent, AiMethodRequest, AiMethodResponse,
     AiMethodStatus, AiPayload, AiResponse, AiccComputeProgress, AiccComputeTaskData,
     AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent,
-    task_mgr_error_code, AckControlReq, CancelResponse, Capability, CommitResultReq,
-    CreateTaskExecutor, CreateTaskReq, FailTaskReq, Feature, LlmChatInvokeRequest,
-    LlmChatInvokeResponse, ModelSpec, ReportProgressReq, ReportStartedReq,
+    AiccVideoContinuationSource, task_mgr_error_code, AckControlReq, CancelResponse, Capability,
+    CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, Feature,
+    LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec, ReportProgressReq, ReportStartedReq,
     Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse,
     RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient, TaskPhase,
     TextToImageInvokeRequest, TextToImageInvokeResponse, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
@@ -55,6 +55,7 @@ const AICC_TASK_EVENT_RETENTION: usize = 64;
 const REDACTED_BASE64_PLACEHOLDER: &str = "[redacted_base64]";
 const REDACTED_DATA_URL_BASE64_PREFIX: &str = "[redacted_data_url_base64";
 const REDACTED_LONG_BASE64_LIKE_PLACEHOLDER: &str = "[redacted_base64_like_string]";
+const REDACTED_LOG_TEXT_PLACEHOLDER: &str = "[redacted_text]";
 const LOG_BASE64_LIKE_MIN_CHARS: usize = 512;
 const SN_AI_PROVIDER_FREE_CREDIT_USD: f64 = 15.0;
 const REFRESH_IDLE: u8 = 0;
@@ -288,6 +289,69 @@ fn redact_base64_fields(value: &mut Value) {
     }
 }
 
+fn redact_all_log_strings(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_all_log_strings(item);
+            }
+        }
+        Value::Object(map) => {
+            for nested in map.values_mut() {
+                redact_all_log_strings(nested);
+            }
+        }
+        Value::String(text) => {
+            *text = format!("{} len={}", REDACTED_LOG_TEXT_PLACEHOLDER, text.len());
+        }
+        _ => {}
+    }
+}
+
+fn redact_sensitive_log_fields(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_sensitive_log_fields(item);
+            }
+        }
+        Value::Object(map) => {
+            for (key, nested) in map.iter_mut() {
+                let normalized = key.to_ascii_lowercase().replace('_', "").replace('-', "");
+                if matches!(normalized.as_str(), "args" | "arguments" | "queries") {
+                    redact_all_log_strings(nested);
+                    continue;
+                }
+                if matches!(
+                    normalized.as_str(),
+                    "text"
+                        | "prompt"
+                        | "command"
+                        | "instructions"
+                        | "system"
+                        | "content"
+                        | "input"
+                        | "output"
+                        | "caption"
+                        | "transcript"
+                        | "query"
+                        | "searchsuggestions"
+                        | "url"
+                        | "fileuri"
+                        | "gcsuri"
+                ) {
+                    if nested.is_string() {
+                        redact_all_log_strings(nested);
+                        continue;
+                    }
+                }
+                redact_sensitive_log_fields(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn redacted_summary_value(summary: &AiResponse) -> Value {
     let mut value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
     redact_base64_fields(&mut value);
@@ -297,6 +361,7 @@ fn redacted_summary_value(summary: &AiResponse) -> Value {
 pub(crate) fn redacted_json_log(value: &Value) -> String {
     let mut value = value.clone();
     redact_base64_fields(&mut value);
+    redact_sensitive_log_fields(&mut value);
     value.to_string()
 }
 
@@ -576,6 +641,8 @@ struct TaskAuditSink {
     taskmgr_override: Option<Arc<TaskManagerClient>>,
     taskmgr_context: RPCContext,
     task_mgr_id: String,
+    tenant_id: String,
+    continuation_db: Option<Arc<AiccUsageLogDb>>,
     lock: AsyncMutex<()>,
 }
 
@@ -584,12 +651,75 @@ impl TaskAuditSink {
         taskmgr_override: Option<Arc<TaskManagerClient>>,
         taskmgr_context: RPCContext,
         task_mgr_id: String,
+        tenant_id: String,
+        continuation_db: Option<Arc<AiccUsageLogDb>>,
     ) -> Self {
         Self {
             taskmgr_override,
             taskmgr_context,
             task_mgr_id,
+            tenant_id,
+            continuation_db,
             lock: AsyncMutex::new(()),
+        }
+    }
+
+    async fn record_video_continuation_source(&self, event: &TaskEvent) {
+        let Some(db) = self.continuation_db.as_ref() else {
+            return;
+        };
+        let Some(extra) = event
+            .data
+            .as_ref()
+            .and_then(|data| data.get("summary"))
+            .and_then(|summary| summary.get("extra"))
+        else {
+            return;
+        };
+        let has_continuation = extra
+            .get("continuation_handle")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_continuation {
+            return;
+        }
+        let Some(artifacts) = extra
+            .get("materialized_artifacts")
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+        for artifact in artifacts {
+            let is_video = artifact
+                .get("mime")
+                .and_then(Value::as_str)
+                .is_some_and(|mime| mime.starts_with("video/"));
+            let Some(content_id) = artifact
+                .get("content_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
+            };
+            if !is_video {
+                continue;
+            }
+            let record = AiccVideoContinuationSource {
+                tenant_id: self.tenant_id.clone(),
+                content_id: content_id.to_string(),
+                source_task_id: self.task_mgr_id.clone(),
+                created_at_ms: now_ms_i64(),
+            };
+            match db.upsert_video_continuation_source(&record).await {
+                Ok(()) => info!(
+                    "aicc.video_continuation source persisted: tenant={} content_id={} source_task_id={}",
+                    record.tenant_id, record.content_id, record.source_task_id
+                ),
+                Err(error) => warn!(
+                    "aicc.video_continuation source persist_failed: tenant={} source_task_id={} err={}",
+                    record.tenant_id, record.source_task_id, error
+                ),
+            }
         }
     }
 }
@@ -667,7 +797,7 @@ struct UsageLogContext {
     caller_app_id: Option<String>,
     capability: String,
     request_model: String,
-    provider_model: String,
+    provider_model: Arc<std::sync::RwLock<String>>,
     idempotency_key: Option<String>,
 }
 
@@ -729,7 +859,12 @@ impl UsageLoggingSink {
             idempotency_key: self.context.idempotency_key.clone(),
             capability: self.context.capability.clone(),
             request_model: self.context.request_model.clone(),
-            provider_model: self.context.provider_model.clone(),
+            provider_model: self
+                .context
+                .provider_model
+                .read()
+                .map(|model| model.clone())
+                .unwrap_or_else(|_| "unknown".to_string()),
             input_tokens,
             output_tokens,
             total_tokens,
@@ -1082,6 +1217,7 @@ impl TaskEventSink for TaskAuditSink {
                         expected_revision: task.revision,
                     })
                     .await?;
+                self.record_video_continuation_source(&event).await;
             }
             TaskEventKind::Error => {
                 let message = event_message.unwrap_or_else(|| "aicc task failed".to_string());
@@ -1328,6 +1464,111 @@ fn file_object_mime(file: &FileObject) -> Option<String> {
         }
     }
     infer_mime_from_name(file.name.as_str())
+}
+
+fn video_content_id_from_resolved_request(
+    request: &AiMethodRequest,
+) -> std::result::Result<Option<String>, RPCErrors> {
+    for resource in &request.payload.resources {
+        let ResourceRef::Base64 { mime, data_base64 } = resource else {
+            continue;
+        };
+        if !mime.starts_with("video/") {
+            continue;
+        }
+        let encoded = data_base64
+            .split_once(',')
+            .filter(|(prefix, _)| prefix.trim_start().starts_with("data:"))
+            .map(|(_, data)| data)
+            .unwrap_or(data_base64);
+        let bytes = general_purpose::STANDARD.decode(encoded).map_err(|error| {
+            reason_error(
+                "resource_invalid",
+                format!("decode video resource failed: {}", error),
+            )
+        })?;
+        let content_id = ChunkHasher::new(None)
+            .map_err(|error| {
+                reason_error(
+                    "resource_invalid",
+                    format!("create video content hasher failed: {}", error),
+                )
+            })?
+            .calc_mix_chunk_id_from_bytes(&bytes)
+            .map_err(|error| {
+                reason_error(
+                    "resource_invalid",
+                    format!("calculate video content id failed: {}", error),
+                )
+            })?;
+        return Ok(Some(content_id.to_string()));
+    }
+    Ok(None)
+}
+
+fn request_has_continuation_handle(request: &AiMethodRequest) -> bool {
+    request
+        .payload
+        .input_json
+        .as_ref()
+        .and_then(|input| input.get("continuation_handle"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn insert_continuation_handle(request: &mut AiMethodRequest, handle: String) {
+    let input = request
+        .payload
+        .input_json
+        .get_or_insert_with(|| Value::Object(Map::new()));
+    if !input.is_object() {
+        *input = json!({ "value": input.clone() });
+    }
+    input
+        .as_object_mut()
+        .expect("video extension input should be an object")
+        .insert("continuation_handle".to_string(), Value::String(handle));
+}
+
+fn continuation_from_source_task(
+    task: &buckyos_api::Task,
+    tenant_id: &str,
+) -> Option<(String, String)> {
+    let task_data = parse_aicc_task_data(task.result.as_ref()?);
+    continuation_from_task_data(&task_data, tenant_id)
+}
+
+fn continuation_from_task_data(
+    task_data: &AiccComputeTaskData,
+    tenant_id: &str,
+) -> Option<(String, String)> {
+    if task_data.request.tenant_id.as_deref() != Some(tenant_id) {
+        return None;
+    }
+    let output = task_data.result.as_ref()?.output.as_ref()?;
+    let handle = output
+        .pointer("/extra/continuation_handle")?
+        .as_str()?
+        .trim();
+    if handle.is_empty() {
+        return None;
+    }
+    let exact_model = output
+        .pointer("/extra/provider_audit/aicc_exact_model")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            task_data
+                .request
+                .route
+                .as_ref()
+                .and_then(|route| route.get("selected_exact_model"))
+                .and_then(Value::as_str)
+        })?
+        .trim();
+    if exact_model.is_empty() {
+        return None;
+    }
+    Some((handle.to_string(), exact_model.to_string()))
 }
 
 fn infer_mime_from_name(name: &str) -> Option<String> {
@@ -4238,6 +4479,72 @@ impl AIComputeCenter {
         };
         resolved.method = method.to_string();
 
+        if method == ai_methods::VIDEO_EXTEND && !request_has_continuation_handle(&request) {
+            if let (Some(db), Some(content_id)) = (
+                self.usage_log_db.as_ref(),
+                video_content_id_from_resolved_request(&resolved.request)?,
+            ) {
+                match db
+                    .get_video_continuation_source(
+                        invoke_ctx.tenant_id.as_str(),
+                        content_id.as_str(),
+                    )
+                    .await
+                {
+                    Ok(Some(source)) => match self.acquire_task_manager_client(&invoke_ctx).await {
+                        Ok(taskmgr) => match taskmgr.get_task(source.source_task_id.as_str()).await {
+                            Ok(task) => {
+                                if let Some((handle, exact_model)) =
+                                    continuation_from_source_task(&task, invoke_ctx.tenant_id.as_str())
+                                {
+                                    request.model.alias = exact_model.clone();
+                                    resolved.request.model.alias = exact_model.clone();
+                                    insert_continuation_handle(&mut request, handle.clone());
+                                    insert_continuation_handle(&mut resolved.request, handle);
+                                    info!(
+                                        "aicc.video_continuation restored: task_id={} tenant={} content_id={} source_task_id={} exact_model={}",
+                                        external_task_id,
+                                        invoke_ctx.tenant_id,
+                                        content_id,
+                                        source.source_task_id,
+                                        exact_model
+                                    );
+                                } else {
+                                    info!(
+                                        "aicc.video_continuation source unusable: task_id={} tenant={} content_id={} source_task_id={}",
+                                        external_task_id,
+                                        invoke_ctx.tenant_id,
+                                        content_id,
+                                        source.source_task_id
+                                    );
+                                }
+                            }
+                            Err(error) => warn!(
+                                "aicc.video_continuation source_task_failed: task_id={} tenant={} content_id={} source_task_id={} err={}",
+                                external_task_id,
+                                invoke_ctx.tenant_id,
+                                content_id,
+                                source.source_task_id,
+                                error
+                            ),
+                        },
+                        Err(error) => warn!(
+                            "aicc.video_continuation task_manager_failed: task_id={} tenant={} content_id={} err={}",
+                            external_task_id, invoke_ctx.tenant_id, content_id, error
+                        ),
+                    },
+                    Ok(None) => info!(
+                        "aicc.video_continuation source unavailable: task_id={} tenant={} content_id={}",
+                        external_task_id, invoke_ctx.tenant_id, content_id
+                    ),
+                    Err(error) => warn!(
+                        "aicc.video_continuation source_lookup_failed: task_id={} tenant={} content_id={} err={}",
+                        external_task_id, invoke_ctx.tenant_id, content_id, error
+                    ),
+                }
+            }
+        }
+
         let route_cfg = self
             .route_cfg
             .read()
@@ -4310,6 +4617,13 @@ impl AIComputeCenter {
         // Once we know the final provider model we can wrap the sink with a
         // usage-log layer: any Final event flowing through it (immediate call
         // or long-task completion) writes one durable row.
+        let selected_provider_model = Arc::new(std::sync::RwLock::new(
+            decision
+                .attempts()
+                .first()
+                .map(|attempt| attempt.exact_model.clone())
+                .unwrap_or_else(|| decision.provider_model.clone()),
+        ));
         let event_sink: Arc<dyn TaskEventSink> = if let Some(db) = self.usage_log_db.clone() {
             let context = UsageLogContext {
                 external_task_id: external_task_id.clone(),
@@ -4317,11 +4631,7 @@ impl AIComputeCenter {
                 caller_app_id: invoke_ctx.caller_app_id.clone(),
                 capability: capability_name(&request.capability).to_string(),
                 request_model: request.model.alias.clone(),
-                provider_model: decision
-                    .attempts()
-                    .first()
-                    .map(|attempt| attempt.exact_model.clone())
-                    .unwrap_or_else(|| decision.provider_model.clone()),
+                provider_model: selected_provider_model.clone(),
                 idempotency_key: request.idempotency_key.clone(),
             };
             Arc::new(UsageLoggingSink::new(event_sink, db, context))
@@ -4336,6 +4646,7 @@ impl AIComputeCenter {
                 resolved,
                 &decision,
                 event_sink.clone(),
+                selected_provider_model,
             )
             .await;
         self.record_route_trace(
@@ -4359,6 +4670,8 @@ impl AIComputeCenter {
                     prepared_task.taskmgr_override.clone(),
                     prepared_task.taskmgr_context.clone(),
                     prepared_task.id(),
+                    invoke_ctx.tenant_id.clone(),
+                    self.usage_log_db.clone(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
                 self.emit_task_started(
@@ -4431,6 +4744,8 @@ impl AIComputeCenter {
                     prepared_task.taskmgr_override.clone(),
                     prepared_task.taskmgr_context.clone(),
                     task_mgr_id.clone(),
+                    invoke_ctx.tenant_id.clone(),
+                    self.usage_log_db.clone(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
                 self.bind_task(
@@ -4464,6 +4779,8 @@ impl AIComputeCenter {
                     prepared_task.taskmgr_override.clone(),
                     prepared_task.taskmgr_context.clone(),
                     task_mgr_id.clone(),
+                    invoke_ctx.tenant_id.clone(),
+                    self.usage_log_db.clone(),
                 ));
                 deferred_sink.promote(task_audit_sink).await?;
                 self.bind_task(
@@ -4586,6 +4903,7 @@ impl AIComputeCenter {
         req: ResolvedRequest,
         decision: &RouteDecision,
         sink: Arc<dyn TaskEventSink>,
+        selected_provider_model: Arc<std::sync::RwLock<String>>,
     ) -> std::result::Result<(ProviderStartResult, String), RPCErrors> {
         let mut last_err: Option<ProviderError> = None;
         let _request_log = serde_json::to_string(&req.request)
@@ -4624,6 +4942,10 @@ impl AIComputeCenter {
                 "aicc.provider.start task_id={} tenant={} trace_id={:?} instance_id={} provider_model={}",
                 task_id, ctx.tenant_id, ctx.trace_id, attempt.instance_id, attempt.provider_model
             );
+
+            if let Ok(mut selected) = selected_provider_model.write() {
+                *selected = attempt.exact_model.clone();
+            }
 
             self.registry.mark_start_begin(attempt.instance_id.as_str());
             let started_at = Instant::now();
@@ -5371,6 +5693,7 @@ fn response_has_base64_artifacts(summary: &AiResponse) -> bool {
 #[derive(Clone, Debug)]
 struct StoredNamedArtifact {
     obj_id: ObjId,
+    content_id: String,
     width: Option<u32>,
     height: Option<u32>,
 }
@@ -5582,6 +5905,7 @@ async fn store_base64_artifact(
         })?;
     Ok(StoredNamedArtifact {
         obj_id: file_obj_id,
+        content_id: chunk_id.to_string(),
         width: dimensions.map(|item| item.0),
         height: dimensions.map(|item| item.1),
     })
@@ -5592,6 +5916,7 @@ fn materialized_artifact_value(idx: usize, mime: &str, stored: &StoredNamedArtif
         "content_index": idx,
         "resource_kind": "named_object",
         "obj_id": stored.obj_id.to_string(),
+        "content_id": stored.content_id,
         "mime": mime,
     });
     if let Some(object) = value.as_object_mut() {
@@ -6361,6 +6686,41 @@ mod tests {
     }
 
     #[test]
+    fn continuation_uses_existing_task_result_as_truth_source() {
+        let task_data = AiccComputeTaskData {
+            request: AiccComputeTaskRequest {
+                tenant_id: Some("alice".to_string()),
+                route: Some(json!({
+                    "selected_exact_model": "veo-route@google-main"
+                })),
+                ..Default::default()
+            },
+            progress: None,
+            result: Some(buckyos_api::AiccComputeTaskResult {
+                output: Some(json!({
+                    "extra": {
+                        "continuation_handle": "provider://continue",
+                        "provider_audit": {
+                            "aicc_exact_model": "veo-final@google-main"
+                        }
+                    }
+                })),
+                provider_output: None,
+            }),
+            error: None,
+        };
+
+        assert_eq!(
+            continuation_from_task_data(&task_data, "alice"),
+            Some((
+                "provider://continue".to_string(),
+                "veo-final@google-main".to_string()
+            ))
+        );
+        assert_eq!(continuation_from_task_data(&task_data, "bob"), None);
+    }
+
+    #[test]
     fn artifact_output_storage_uses_named_object_for_object_id_request() {
         let mut request = base_request();
         request.payload.input_json = Some(json!({
@@ -6466,7 +6826,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_json_log_keeps_plain_multiline_tool_output() {
+    fn redacted_json_log_hides_plain_multiline_tool_output() {
         let output = [
             "PROJECTS_DIR=/Users/liuzhicong/project",
             "COUNT=39",
@@ -6520,9 +6880,27 @@ mod tests {
             "output": output
         }));
 
-        assert!(!logged.contains(REDACTED_LONG_BASE64_LIKE_PLACEHOLDER));
-        assert!(logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
-        assert!(logged.contains("buckyos-websdk"));
+        assert!(logged.contains(REDACTED_LOG_TEXT_PLACEHOLDER));
+        assert!(!logged.contains("PROJECTS_DIR=/Users/liuzhicong/project"));
+        assert!(!logged.contains("buckyos-websdk"));
+    }
+
+    #[test]
+    fn redacted_json_log_hides_prompts_and_tool_arguments() {
+        let logged = redacted_json_log(&json!({
+            "contents": [{ "parts": [{ "text": "private conversation" }] }],
+            "functionCall": {
+                "name": "exec_bash",
+                "args": { "command": "print secret", "goal": "private goal" }
+            },
+            "usageMetadata": { "totalTokenCount": 42 }
+        }));
+
+        assert!(!logged.contains("private conversation"));
+        assert!(!logged.contains("print secret"));
+        assert!(!logged.contains("private goal"));
+        assert!(logged.contains("exec_bash"));
+        assert!(logged.contains("totalTokenCount"));
     }
 
     fn mock_instance(instance_id: &str, provider_type: &str) -> ProviderInstance {

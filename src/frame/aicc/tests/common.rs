@@ -777,6 +777,76 @@ pub async fn spawn_fake_http_server(replies: Vec<MockHttpReply>) -> String {
     format!("http://{}", addr)
 }
 
+pub async fn spawn_fake_http_server_with_requests(
+    replies: Vec<MockHttpReply>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let addr = listener.local_addr().expect("local addr");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    tokio::spawn(async move {
+        for reply in replies {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => break,
+            };
+            let mut buf = vec![0u8; 8192];
+            let mut total = 0usize;
+            let mut body_range = None;
+            loop {
+                if total == buf.len() {
+                    buf.resize(buf.len() * 2, 0);
+                }
+                let read = match socket.read(&mut buf[total..]).await {
+                    Ok(read) => read,
+                    Err(_) => break,
+                };
+                if read == 0 {
+                    break;
+                }
+                total += read;
+                if let Some(header_end) = find_header_end(&buf[..total]) {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    let body_start = header_end + 4;
+                    let body_end = body_start + content_length;
+                    if total >= body_end {
+                        body_range = Some(body_start..body_end);
+                        break;
+                    }
+                }
+            }
+            if let Some(range) = body_range {
+                if let Ok(request) = serde_json::from_slice::<Value>(&buf[range]) {
+                    captured.lock().expect("captured requests lock").push(request);
+                }
+            }
+            if reply.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(reply.delay_ms)).await;
+            }
+            let response = format!(
+                "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.status_code,
+                reply.content_type,
+                reply.body.len(),
+                reply.body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    (format!("http://{}", addr), requests)
+}
+
 pub fn openai_b64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }

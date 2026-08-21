@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, match_event_patterns, parse_typed_task_data, AiContent, AiMessage,
     AiRole, ListTasksReq, MsgCenterClient, Task, TaskManagerClient, TaskNote, TaskOutcome,
-    TaskPhase,
-    TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
+    TaskPhase, TypedTaskData, UI_SESSION_STATE_STATUS_LINE_KEY, UI_SESSION_STATE_TYPING_KEY,
 };
 use log::{info, warn};
 use ndn_lib::{MsgContent, MsgObjKind, MsgObject};
@@ -4666,9 +4665,7 @@ impl AgentSession {
         }
         let mut merged = crate::task_util::task_payload(&task);
         crate::task_util::merge_json(&mut merged, &patch);
-        if let Err(err) =
-            crate::task_util::commit_task_result(&client, task, merged).await
-        {
+        if let Err(err) = crate::task_util::commit_task_result(&client, task, merged).await {
             warn!(
                 "opendan.session[{}]: feedback task completed failed: {err:#}",
                 self.session_id
@@ -5740,8 +5737,13 @@ impl AgentSession {
             SessionStatus::Running | SessionStatus::WaitingTool => {
                 match crate::task_util::ensure_running(&client, task).await {
                     Ok(task) => {
-                        crate::task_util::report_progress_value(&client, task, Some(merged), message)
-                            .await
+                        crate::task_util::report_progress_value(
+                            &client,
+                            task,
+                            Some(merged),
+                            message,
+                        )
+                        .await
                     }
                     Err(err) => Err(err),
                 }
@@ -5750,8 +5752,9 @@ impl AgentSession {
                 match crate::task_util::report_progress_value(&client, task, Some(merged), message)
                     .await
                 {
-                    Ok(task) if task.phase == TaskPhase::Running
-                        || task.phase == TaskPhase::Accepted =>
+                    Ok(task)
+                        if task.phase == TaskPhase::Running
+                            || task.phase == TaskPhase::Accepted =>
                     {
                         crate::task_util::report_waiting_reason(
                             &client,
@@ -8323,6 +8326,9 @@ fn agent_mention_token(agent_name: &str) -> String {
 fn compose_turn_message(messages: &[AiMessage]) -> Option<AiMessage> {
     if messages.is_empty() {
         return None;
+    }
+    if let Some(batch) = prompt_env::render_ai_message_batch(messages) {
+        return Some(AiMessage::text(AiRole::User, batch));
     }
     let mut blocks = Vec::new();
     for message in messages {

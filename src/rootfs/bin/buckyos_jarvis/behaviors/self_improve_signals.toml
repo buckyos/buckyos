@@ -86,14 +86,16 @@ Evidence and quality:
 - text_excerpt must be short, verbatim enough to verify the clue, and must not be invented.
 - Confidence must be 0.0..1.0. Use high confidence only for explicit evidence. Lower confidence for implied, ambiguous, or assistant-mediated clues.
 - Prefer one precise signal over several broad signals.
-- If a clue may matter but is weak, use lower confidence and stage2_hints.suggested_action = "watch" or "drop_if_unreinforced".
+- If a clue may matter but is weak, use lower confidence.
 - Stage1 must leave lifecycle_status as pending_stage2; consumed, converted, dropped, and expired are Stage2 decisions.
 
 Stage2 hints:
-- Provide suggested_merge_key when a stable key is obvious, such as event:<title>, object:<canonical name>, or relation:<subject>|<predicate>|<object>.
-- Provide canonicalization_candidates or alias_candidates only when evidence supports them.
-- suggested_action should be one of: consider_event, consider_object, consider_relationship, consider_alias, watch, drop_if_unreinforced, unknown.
-- retention_hint should be short_lived, watch_72h, likely_promotable, or requires_more_evidence when provided.
+- `stage2_hints` is optional for every Discover command; normally omit it and let the tool supply defaults.
+- When included, it must be one nested object with all required fields: suggested_action, retention_hint, privacy_scope, and recall_candidate_hint. Do not emit these fields at the command's top level.
+- suggested_action: consider_event, consider_object, consider_relationship, consider_skill_coverage_gap, consider_alias, watch, drop_if_unreinforced, or unknown.
+- retention_hint: short_lived, watch_72h, likely_promotable, or requires_more_evidence. privacy_scope: user_private, public, mixed, or unknown. recall_candidate_hint is boolean.
+- Optional suggested_merge_key and canonicalization_candidates may be included only when supported by evidence. alias_candidates belongs inside an EntityMention, not stage2_hints.
+- Entity type must be one of person, project, component, device, organization, location, account, email, document, or unknown. Use `document` for a file; `file` is not a valid entity type.
 
 Available bash CLI commands:
 - `command -v read_session_history BeginAttentionSignalExtraction DiscoverObjectObservation DiscoverEvent DiscoverRelationship DiscoverSkillCoverageGap CompleteAttentionSignalExtraction commit_session_history_improved`
@@ -102,7 +104,7 @@ Available bash CLI commands:
 - `DiscoverEvent '{"title":"...","phase":"active","evidence":[{"round_index":1,"entry_seq":1,"entry_kind":"message","role":"user","text_excerpt":"..."}],"confidence":0.9}'`
 - `DiscoverObjectObservation '{"object":{"mention_text":"...","entity_type":"project","is_user_private_entity":true},"observation":"...","observation_type":"status","evidence":[...],"confidence":0.9}'`
 - `DiscoverRelationship '{"subject":{"mention_text":"...","entity_type":"person"},"predicate":"uses","object":{"mention_text":"...","entity_type":"component"},"evidence":[...],"confidence":0.9}'`
-- `DiscoverSkillCoverageGap '{"title":"...","task_description":"...","assigned_skills":[],"used_skills":[],"critical_actions":["..."],"result_status":"success","gap_kind":"success_without_skill","gap_description":"...","evidence":[...],"confidence":0.75,"stage2_hints":{"suggested_action":"consider_skill_coverage_gap","retention_hint":"requires_more_evidence","privacy_scope":"mixed","recall_candidate_hint":false}}'`
+- `DiscoverSkillCoverageGap '{"title":"...","task_description":"...","assigned_skills":[],"used_skills":[],"critical_actions":["..."],"result_status":"success","gap_kind":"success_without_skill","gap_description":"...","evidence":[...],"confidence":0.75,"stage2_hints":{"suggested_action":"consider_skill_coverage_gap","retention_hint":"requires_more_evidence","privacy_scope":"mixed","recall_candidate_hint":false} }'`
 - `CompleteAttentionSignalExtraction`
 - `commit_session_history_improved session_id=<session_id> round_index=<round_index>`
 
