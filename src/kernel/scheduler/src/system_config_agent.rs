@@ -1683,9 +1683,6 @@ fn update_managed_sn_ai_provider(
         return Ok(HashMap::new());
     };
     let current_settings: Value = serde_json::from_str(current_settings)?;
-    if current_settings.get("sn-ai-provider").is_none() {
-        return Ok(HashMap::new());
-    }
 
     let endpoints = (|| -> Result<_> {
         let boot_config = input_system_config

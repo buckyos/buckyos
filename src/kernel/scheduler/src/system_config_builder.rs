@@ -37,6 +37,7 @@ use url::Url;
 const DEFAULT_OOD_ID: &str = "ood1";
 const DEFAULT_JARVIS_APP_DID: &str = "did:bns:jarvis.buckyos";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
+const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
@@ -95,15 +96,48 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
     user_name: Option<&str>,
 ) -> Result<Option<Value>> {
     let mut next = current.clone();
-    let Some(provider) = next
+    let valid_config = match (endpoints.as_ref(), user_name.map(str::trim)) {
+        (Ok(endpoints), Some(user_name)) if !user_name.is_empty() => Some((*endpoints, user_name)),
+        _ => None,
+    };
+    let Some(root) = next.as_object_mut() else {
+        return Ok(None);
+    };
+    if !root.contains_key("sn-ai-provider") {
+        let Some((endpoints, user_name)) = valid_config else {
+            return Ok(None);
+        };
+        root.insert(
+            "sn-ai-provider".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": "",
+                "alias_map": {},
+                "instances": [managed_sn_ai_provider_instance(endpoints, user_name)]
+            }),
+        );
+        return Ok(Some(next));
+    }
+    let Some(provider) = root
         .get_mut("sn-ai-provider")
         .and_then(Value::as_object_mut)
     else {
         return Ok(None);
     };
-    let Some(instances) = provider.get_mut("instances").and_then(Value::as_array_mut) else {
-        return Ok(None);
-    };
+    if provider
+        .get("instances")
+        .and_then(Value::as_array)
+        .is_none()
+    {
+        if valid_config.is_none() {
+            return Ok(None);
+        }
+        provider.insert("instances".to_string(), json!([]));
+    }
+    let instances = provider
+        .get_mut("instances")
+        .and_then(Value::as_array_mut)
+        .expect("instances was normalized to an array");
 
     let mut managed_found = false;
     let mut changed = false;
@@ -146,8 +180,13 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
     }
 
     if !managed_found {
-        return Ok(None);
+        let Some((endpoints, user_name)) = valid_config else {
+            return Ok(None);
+        };
+        instances.push(managed_sn_ai_provider_instance(endpoints, user_name));
+        changed = true;
     }
+
     let enabled = endpoints.is_ok();
     if provider.get("enabled").and_then(Value::as_bool) != Some(enabled) {
         provider.insert("enabled".to_string(), Value::Bool(enabled));
@@ -155,6 +194,18 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
     }
 
     Ok(changed.then_some(next))
+}
+
+fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name: &str) -> Value {
+    json!({
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_type": "cloud_api",
+        "provider_driver": "sn-ai-provider",
+        "base_url": endpoints.responses_url,
+        "login_url": endpoints.login_url,
+        "user_name": user_name,
+        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -783,7 +834,6 @@ fn build_aicc_settings_with_endpoints(
     config: &StartConfigSummary,
     sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
 ) -> Value {
-    const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
     let mut settings = serde_json::Map::new();
     let mut openai_alias_map = serde_json::Map::new();
     let mut openai_instances = Vec::<Value>::new();
@@ -811,15 +861,7 @@ fn build_aicc_settings_with_endpoints(
     if config.llm_router_enabled() {
         let endpoints = sn_ai_provider_endpoints
             .expect("SN AI endpoints are validated before building enabled provider settings");
-        let instance = json!({
-            "provider_instance_name": "sn-ai-provider-default",
-            "provider_type": "cloud_api",
-            "provider_driver": "sn-ai-provider",
-            "base_url": endpoints.responses_url,
-            "login_url": endpoints.login_url,
-            "user_name": config.user_name,
-            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-        });
+        let instance = managed_sn_ai_provider_instance(endpoints, config.user_name.as_str());
         sn_ai_provider_instances.push(instance);
     }
 
