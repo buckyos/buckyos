@@ -1421,6 +1421,15 @@ mod tests {
     #[test]
     fn cost_estimate_uses_model_price_then_metadata_maximum_for_unknown_model() {
         let provider = SnAIProvider::new(test_instance_config()).expect("provider");
+        let refreshed_inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "items": [
+                    { "model": "gpt-5.4" },
+                    { "model": "vendor-new-model" }
+                ]
+            }))
+            .expect("remote inventory");
+        *provider.inventory.write().expect("inventory") = refreshed_inventory;
         {
             let mut inventory = provider.inventory.write().expect("inventory");
             let metadata = inventory

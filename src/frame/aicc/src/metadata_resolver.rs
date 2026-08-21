@@ -1093,7 +1093,7 @@ fn load_builtin_driver_metadata(provider_driver: &str) -> Option<DriverMetadataD
     let normalized = normalize_driver(provider_driver);
     let raw = match normalized.as_str() {
         "openai" => include_str!("../driver_metadata/openai.json"),
-        "sn-ai-provider" => include_str!("../driver_metadata/sn-ai-provider.json"),
+        "sn-ai-provider" => include_str!("../driver_metadata/openai.json"),
         "openrouter" => include_str!("../driver_metadata/openrouter.json"),
         "claude" | "anthropic" => include_str!("../driver_metadata/claude.json"),
         "google-gemini" | "gemini" => include_str!("../driver_metadata/gemini.json"),
@@ -1889,12 +1889,12 @@ mod tests {
     }
 
     #[test]
-    fn sn_metadata_uses_independent_driver_and_maximum_unknown_cost() {
+    fn sn_metadata_reuses_openai_and_maximum_unknown_cost() {
         let document = load_builtin_driver_metadata("sn-ai-provider").expect("sn metadata");
-        assert_eq!(document.provider_driver, "sn-ai-provider");
+        assert_eq!(document.provider_driver, "openai");
         assert_eq!(
             driver_metadata_model_ids("sn-ai-provider", &ApiType::Llm),
-            vec!["gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano"]
+            driver_metadata_model_ids("openai", &ApiType::Llm)
         );
         assert!(driver_model_has_specific_metadata(
             "sn-ai-provider",
@@ -1906,7 +1906,7 @@ mod tests {
         ));
         assert_eq!(
             max_driver_metadata_cost("sn-ai-provider", 1_000, 1_000),
-            Some((1.2, "USD".to_string()))
+            max_driver_metadata_cost("openai", 1_000, 1_000)
         );
     }
 
