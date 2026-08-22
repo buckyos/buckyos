@@ -2,19 +2,19 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
-import { access, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
+import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 import { buckyos, TaskManagerClient } from 'buckyos/node'
+import {
+  buildPikgProject,
+  configurePikgSample,
+  copyPikgSample,
+  dockerTarget,
+} from './pikg_sample_builder.mjs'
 
 const execFileAsync = promisify(execFile)
-
-const TEST_ROOT = path.dirname(fileURLToPath(import.meta.url))
-const FIXTURES_ROOT = path.join(TEST_ROOT, 'fixtures')
-const TEMPLATES_ROOT = path.join(FIXTURES_ROOT, 'templates')
 
 const SYSTEM_CONFIG_URL =
   getEnv('BUCKYOS_SYSTEM_CONFIG_URL') ??
@@ -38,17 +38,21 @@ const OWNER_DID =
 const DOCKER_BASE_IMAGE =
   getEnv('BUCKYOS_TEST_DOCKER_BASE_IMAGE') ??
   'busybox:1.36.1'
-const POST_INSTALL_SETTLE_MS = Number(
-  getEnv('BUCKYOS_TEST_POST_INSTALL_SETTLE_MS') ?? '15000',
-)
 const INSTALL_EVIDENCE_TIMEOUT_MS = Number(
   getEnv('BUCKYOS_TEST_INSTALL_EVIDENCE_TIMEOUT_MS') ?? '120000',
 )
 const UNINSTALL_AFTER_INSTALL =
   getEnv('BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL') === '1'
+const PIKG_STAGING_ROOT = path.join(
+  getEnv('BUCKYOS_ROOT') ?? '/opt/buckyos',
+  'cache',
+  'control_panel',
+  'pikg_staging',
+)
 
 const tempPaths = new Set()
 const dockerImages = new Set()
+const stagedPikgPaths = new Set()
 
 let sdkContextPromise = null
 let versionCounter = Math.floor(Date.now() / 1000) % 60000
@@ -76,27 +80,6 @@ function isKeyNotFoundError(error) {
   return /key.?not.?found|not.?found|KeyNotFound/i.test(message)
 }
 
-function mapDockerArch() {
-  switch (process.arch) {
-    case 'x64':
-      return 'amd64_docker_image'
-    case 'arm64':
-      return 'aarch64_docker_image'
-    default:
-      throw new Error(`Unsupported docker publish arch: ${process.arch}`)
-  }
-}
-
-function buildMetaFields() {
-  const now = Math.floor(Date.now() / 1000)
-  return {
-    create_time: now,
-    last_update_time: now,
-    exp: now + 30 * 24 * 60 * 60,
-  }
-}
-
-
 // v0.5: AppDoc requires `did` (App DID); derive via the frozen rule did:bns:{app_name}.{owner_id}.
 function deriveAppDid(appId) {
   const ownerIdPart = OWNER_DID.split(':').pop()
@@ -106,57 +89,6 @@ function deriveAppDid(appId) {
 function appPackageNamespace(appId) {
   const ownerIdPart = OWNER_DID.split(':').pop()
   return `${ownerIdPart}_${appId}`
-}
-
-function packageEnvQualifier() {
-  const osName =
-    process.platform === 'darwin'
-      ? 'apple'
-      : process.platform === 'win32'
-        ? 'windows'
-        : process.platform
-  const archName = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'aarch64' : process.arch
-  return `nightly-${osName}-${archName}`
-}
-
-function appPackageName(appId, role, qualifier = packageEnvQualifier()) {
-  return `${qualifier}.${appPackageNamespace(appId)}-${role}`
-}
-
-function replacePlaceholders(value, tokens) {
-  if (typeof value === 'string') {
-    return Object.entries(tokens).reduce(
-      (result, [key, tokenValue]) => result.replaceAll(`__${key}__`, String(tokenValue)),
-      value,
-    )
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => replacePlaceholders(item, tokens))
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        replacePlaceholders(key, tokens),
-        replacePlaceholders(item, tokens),
-      ]),
-    )
-  }
-
-  return value
-}
-
-async function loadTemplate(name, tokens) {
-  const templatePath = path.join(TEMPLATES_ROOT, name)
-  const raw = await readFile(templatePath, 'utf8')
-  return replacePlaceholders(JSON.parse(raw), tokens)
-}
-
-async function ensureTempDir(prefix) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), `${prefix}-`))
-  tempPaths.add(dir)
-  return dir
 }
 
 async function cleanupTempDir(dir) {
@@ -197,7 +129,7 @@ async function probeRpc(url, method, params = {}) {
   }
 }
 
-async function getSdkContext() {
+function getSdkContext() {
   if (!sdkContextPromise) {
     sdkContextPromise = initSdkContext()
   }
@@ -218,7 +150,6 @@ async function initSdkContext() {
   const systemConfigRpc = new buckyos.kRPCClient(SYSTEM_CONFIG_URL, sessionToken)
   const taskManagerRpc = new buckyos.kRPCClient(TASK_MANAGER_URL, sessionToken)
   const taskManager = new TaskManagerClient(taskManagerRpc)
-  await ensurePublishDependencies(systemConfigRpc)
 
   return {
     accountInfo,
@@ -323,19 +254,20 @@ async function loginWithAppClient() {
 }
 
 async function waitForTaskResult(taskId) {
-  const ctx = await getSdkContext()
-  const numericTaskId = Number(taskId)
-  const status = await ctx.taskManager.waitForTaskEnd(numericTaskId)
-  const task = await ctx.taskManager.getTask(numericTaskId)
-  return { status, task, numericTaskId }
+  const task = await waitForTaskStatus(taskId, [
+    'Completed',
+    'Failed',
+    'Canceled',
+  ])
+  return { status: task.status, task, taskId: task.id }
 }
 
 async function waitForTask(taskId) {
-  const { status, task, numericTaskId } = await waitForTaskResult(taskId)
+  const { status, task, taskId: completedTaskId } = await waitForTaskResult(taskId)
   assert.equal(
     status,
     'Completed',
-    `Task ${numericTaskId} failed with status=${status}, message=${task.message ?? '<none>'}`,
+    `Task ${completedTaskId} failed with status=${status}, message=${task.message ?? '<none>'}`,
   )
   return task
 }
@@ -358,33 +290,6 @@ async function waitForCondition(check, { timeoutMs = 30000, intervalMs = 1000 } 
   }
 
   return await check()
-}
-
-async function ensurePublishDependencies(systemConfigRpc) {
-  try {
-    const result = await systemConfigRpc.call('sys_config_get', {
-      key: 'services/repo-service/info',
-    })
-
-    if (typeof result === 'string' && result.trim()) {
-      return
-    }
-
-    if (result && typeof result.value === 'string' && result.value.trim()) {
-      return
-    }
-  } catch (error) {
-    if (!isKeyNotFoundError(error)) {
-      throw error
-    }
-  }
-
-  throw new Error(
-    [
-      'app.publish requires repo-service, but `services/repo-service/info` is missing in system_config.',
-      'Provision and start repo-service before running this test suite.',
-    ].join(' '),
-  )
 }
 
 function normalizeConfigValue(response) {
@@ -466,37 +371,30 @@ async function listServiceInstances(specId) {
   return instances
 }
 
-function hasActiveInstance(instances) {
-  return instances.some((instance) =>
-    instance?.state === 'started' || instance?.state === 'deploying',
-  )
-}
-
 async function callControlPanel(method, params) {
   const ctx = await getSdkContext()
   return ctx.controlPanelRpc.call(method, params)
 }
 
-async function publishApp({ appType, localDir, appDoc }) {
-  const result = await callControlPanel('app.publish', {
-    app_type: appType,
-    local_dir: localDir,
-    app_doc: appDoc,
-  })
+async function buildAndStagePikg(projectDir) {
+  const result = await buildPikgProject(projectDir)
+  const digest = result.pack.pikg_digest.replace(/^sha256:/, '')
+  assert.match(digest, /^[0-9a-f]{64}$/)
+  assert.equal(result.info.app.app_doc_object_id, result.pack.app_doc_object_id)
+  assert.equal(result.info.app.did, result.appDoc.did)
 
-  assert.equal(result.ok, true)
-  assert.ok(result.obj_id, 'publish should return obj_id')
-  // v0.5: publish returns full identity + pikg handle + explicit status.
-  assert.ok(result.app_did, 'publish should return app_did')
-  assert.ok(result.app_doc_id, 'publish should return app_doc_id')
-  assert.ok(
-    `${result.pikg_handle}`.startsWith('pikg:sha256:'),
-    `publish should return a pikg staging handle, got ${result.pikg_handle}`,
-  )
-  assert.ok(result.pikg_digest, 'publish should return pikg_digest')
-  assert.equal(result.publish_status, 'repo_stored_candidate')
-  assert.ok(result.app_doc, 'publish should return the final app_doc body')
-  return result
+  await mkdir(PIKG_STAGING_ROOT, { recursive: true })
+  const stagingPath = path.join(PIKG_STAGING_ROOT, `${digest}.pikg`)
+  await copyFile(result.pack.pikg_path, stagingPath)
+  stagedPikgPaths.add(stagingPath)
+
+  return {
+    app_did: result.appDoc.did,
+    app_doc_id: result.pack.app_doc_object_id,
+    app_doc: result.appDoc,
+    pikg_handle: `pikg:sha256:${digest}`,
+    pikg_digest: digest,
+  }
 }
 
 function escapeResolverSegment(raw) {
@@ -554,13 +452,46 @@ async function seedResolverCache(appDid, appDocJson, documentVersion = 1) {
   )
 }
 
+function taskStatus(task) {
+  if (task.phase === 'Terminal') {
+    if (task.outcome === 'Succeeded') {
+      return 'Completed'
+    }
+    if (task.outcome === 'Canceled') {
+      return 'Canceled'
+    }
+    return 'Failed'
+  }
+  if (task.phase === 'Waiting') {
+    return task.wait_reason?.kind === 'Authorization'
+      ? 'WaitingForApproval'
+      : 'Paused'
+  }
+  if (task.phase === 'Paused') {
+    return 'Paused'
+  }
+  if (task.phase === 'Running') {
+    return 'Running'
+  }
+  return 'Pending'
+}
+
+function installTaskView(task) {
+  return {
+    ...task,
+    id: task.task_id,
+    status: taskStatus(task),
+    data: task.result ?? task.progress ?? task.input,
+  }
+}
+
 async function waitForTaskStatus(taskId, statuses, { timeoutMs = 120000, intervalMs = 1000 } = {}) {
   const ctx = await getSdkContext()
-  const numericTaskId = Number(taskId)
+  const stableTaskId = String(taskId)
   const deadline = Date.now() + timeoutMs
   let task = null
   while (Date.now() <= deadline) {
-    task = await ctx.taskManager.getTask(numericTaskId)
+    task = installTaskView(await ctx.taskManager.getTask(stableTaskId))
     if (statuses.includes(task.status)) {
       return task
     }
@@ -570,7 +501,7 @@ async function waitForTaskStatus(taskId, statuses, { timeoutMs = 120000, interva
     await sleep(intervalMs)
   }
   throw new Error(
-    `task ${numericTaskId} did not reach ${statuses.join('/')} in time, last=${task?.status}, message=${task?.message ?? '<none>'}`,
+    `task ${stableTaskId} did not reach ${statuses.join('/')} in time, last=${task?.status}, message=${task?.message ?? '<none>'}`,
   )
 }
 
@@ -632,26 +563,19 @@ async function uninstallApp({ appId, removeData = false }) {
 async function stageStaticWebFixture() {
   const appId = createRunId('cp-web')
   const version = buildVersion()
-  const localDir = await ensureTempDir('cp-web')
-  await cp(path.join(FIXTURES_ROOT, 'static-web'), localDir, { recursive: true })
-
-  const webPackageName = appPackageName(appId, 'web')
-  const appDoc = await loadTemplate('static-web.app_doc.json', {
-    APP_ID: appId,
-    APP_DID: deriveAppDid(appId),
-    VERSION: version,
-    OWNER_DID,
-    WEB_PKG_ID: `${webPackageName}#${version}`,
-    WEB_PKG_NAME: webPackageName,
+  const { tempRoot, projectDir } = await copyPikgSample('static-web', 'cp-web')
+  tempPaths.add(tempRoot)
+  await configurePikgSample(projectDir, {
+    appId,
+    version,
+    ownerDid: OWNER_DID,
   })
-
-  Object.assign(appDoc, buildMetaFields())
 
   return {
     appId,
     version,
-    localDir,
-    appDoc,
+    projectDir,
+    tempRoot,
     specPath: (userId) => `users/${userId}/apps/${appId}/spec`,
     specId: (userId) => `${appId}@${userId}`,
     binPath: () => path.join('/opt/buckyos/bin', `${appPackageNamespace(appId)}-web`),
@@ -661,37 +585,19 @@ async function stageStaticWebFixture() {
 async function stageAgentFixture() {
   const appId = createRunId('cp-agent')
   const version = buildVersion()
-  const localDir = await ensureTempDir('cp-agent')
-  await cp(path.join(FIXTURES_ROOT, 'agent'), localDir, { recursive: true })
-
-  const agentDoc = replacePlaceholders(
-    JSON.parse(await readFile(path.join(TEMPLATES_ROOT, 'agent_doc.json'), 'utf8')),
-    {
-      APP_ID: appId,
-    },
-  )
-  await writeFile(
-    path.join(localDir, 'agent_doc.json'),
-    `${JSON.stringify(agentDoc, null, 2)}\n`,
-  )
-
-  const agentPackageName = appPackageName(appId, 'agent')
-  const appDoc = await loadTemplate('agent.app_doc.json', {
-    APP_ID: appId,
-    APP_DID: deriveAppDid(appId),
-    VERSION: version,
-    OWNER_DID,
-    AGENT_PKG_ID: `${agentPackageName}#${version}`,
-    AGENT_PKG_NAME: agentPackageName,
+  const { tempRoot, projectDir } = await copyPikgSample('agent', 'cp-agent')
+  tempPaths.add(tempRoot)
+  await configurePikgSample(projectDir, {
+    appId,
+    version,
+    ownerDid: OWNER_DID,
   })
-
-  Object.assign(appDoc, buildMetaFields())
 
   return {
     appId,
     version,
-    localDir,
-    appDoc,
+    projectDir,
+    tempRoot,
     specPath: (userId) => `users/${userId}/agents/${appId}/spec`,
     specId: (userId) => `${appId}@${userId}`,
     pidFile: (userId) =>
@@ -702,12 +608,9 @@ async function stageAgentFixture() {
 async function stageDockerFixture() {
   const appId = createRunId('cp-docker')
   const version = buildVersion()
-  const localDir = await ensureTempDir('cp-docker')
-  await cp(path.join(FIXTURES_ROOT, 'docker'), localDir, { recursive: true })
-
-  const dockerArchKey = mapDockerArch()
-  const imageName = `local/${appId}:e2e`
-  const imageTarPath = path.join(localDir, `${dockerArchKey}.tar`)
+  const { tempRoot, projectDir } = await copyPikgSample('docker', 'cp-docker')
+  tempPaths.add(tempRoot)
+  const imageName = `local/${appId}:${version}-${dockerTarget().tagArch}`
 
   await execQuiet(
     'docker',
@@ -717,37 +620,22 @@ async function stageDockerFixture() {
       `BASE_IMAGE=${DOCKER_BASE_IMAGE}`,
       '-t',
       imageName,
-      localDir,
+      path.join(projectDir, 'image'),
     ],
   )
   dockerImages.add(imageName)
-  await execQuiet('docker', ['save', '-o', imageTarPath, imageName])
-
-  const appDoc = await loadTemplate('docker.app_doc.json', {
-    APP_ID: appId,
-    APP_DID: deriveAppDid(appId),
-    VERSION: version,
-    OWNER_DID,
+  await configurePikgSample(projectDir, {
+    appId,
+    version,
+    ownerDid: OWNER_DID,
+    dockerImage: imageName,
   })
-
-  Object.assign(appDoc, buildMetaFields())
-  const dockerArchName = process.arch === 'x64' ? 'amd64' : 'aarch64'
-  const dockerPackageName = appPackageName(appId, 'img', `nightly-linux-${dockerArchName}`)
-  appDoc.pkg_list = {
-    [dockerArchKey]: {
-      pkg_id: `${dockerPackageName}#${version}`,
-      docker_image_name: imageName,
-    },
-  }
-  appDoc.deps = {
-    [dockerPackageName]: version,
-  }
 
   return {
     appId,
     version,
-    localDir,
-    appDoc,
+    projectDir,
+    tempRoot,
     imageName,
     specPath: (userId) => `users/${userId}/apps/${appId}/spec`,
     specId: (userId) => `${appId}@${userId}`,
@@ -808,21 +696,21 @@ after(async () => {
   for (const dir of [...tempPaths]) {
     await cleanupTempDir(dir)
   }
+
+  for (const pikgPath of [...stagedPikgPaths]) {
+    await rm(pikgPath, { force: true })
+  }
 })
 
-test('app_installer local publish lifecycle', async (t) => {
+test('app_installer local PIKG lifecycle', async (t) => {
   const ctx = await getSdkContext()
   const userId = ctx.accountInfo.user_id
 
-  await t.test('static web app publish + install', async () => {
+  await t.test('static web app PIKG build + install', async () => {
     const fixture = await stageStaticWebFixture()
 
     try {
-      const published = await publishApp({
-        appType: 'web',
-        localDir: fixture.localDir,
-        appDoc: fixture.appDoc,
-      })
+      const published = await buildAndStagePikg(fixture.projectDir)
       assert.equal(published.app_did, deriveAppDid(fixture.appId))
 
       // v0.5: 显式种 resolver 证据 -> 本地 pikg 安装 -> 确认 -> 严格等完成。
@@ -851,7 +739,7 @@ test('app_installer local publish lifecycle', async (t) => {
         `users/${userId}/apps/${fixture.appId}/install_record`,
       )
       assert.equal(installRecord.state, 'installed')
-      assert.equal(installRecord.task_id, Number(installTask.id))
+      assert.equal(installRecord.task_id, installTask.id)
       assert.equal(installRecord.app_did, published.app_did)
       assert.equal(
         installTask.data?.result?.install_record_key,
@@ -882,19 +770,15 @@ test('app_installer local publish lifecycle', async (t) => {
         )
       }
     } finally {
-      await cleanupTempDir(fixture.localDir)
+      await cleanupTempDir(fixture.tempRoot)
     }
   })
 
-  await t.test('agent app publish + install', async () => {
+  await t.test('agent app PIKG build + install', async () => {
     const fixture = await stageAgentFixture()
 
     try {
-      const published = await publishApp({
-        appType: 'agent',
-        localDir: fixture.localDir,
-        appDoc: fixture.appDoc,
-      })
+      const published = await buildAndStagePikg(fixture.projectDir)
 
       await seedResolverCache(published.app_did, published.app_doc)
       await installPikgToCompletion({
@@ -933,12 +817,12 @@ test('app_installer local publish lifecycle', async (t) => {
         )
       }
     } finally {
-      await cleanupTempDir(fixture.localDir)
+      await cleanupTempDir(fixture.tempRoot)
     }
   })
 
   await t.test(
-    'docker app publish + install',
+    'docker app PIKG build + install',
     {
       skip:
         getEnv('BUCKYOS_TEST_SKIP_DOCKER') === '1' || !(await isDockerAvailable()),
@@ -947,11 +831,7 @@ test('app_installer local publish lifecycle', async (t) => {
       const fixture = await stageDockerFixture()
 
       try {
-        const published = await publishApp({
-          appType: 'dapp',
-          localDir: fixture.localDir,
-          appDoc: fixture.appDoc,
-        })
+        const published = await buildAndStagePikg(fixture.projectDir)
 
         await seedResolverCache(published.app_did, published.app_doc)
         await installPikgToCompletion({
@@ -979,7 +859,7 @@ test('app_installer local publish lifecycle', async (t) => {
         if (UNINSTALL_AFTER_INSTALL) {
           await removeDockerImage(fixture.imageName)
         }
-        await cleanupTempDir(fixture.localDir)
+        await cleanupTempDir(fixture.tempRoot)
       }
     },
   )

@@ -1,5 +1,5 @@
 > **本机 DV 运行结论（2026-07-16, macOS ood1）**：
-> - static web 用例全链路通过（publish→pikg→种证据→install_package→confirm→
+> - static web 用例全链路通过（pikg build/pack→stage→种证据→install_package→confirm→
 >   Acquire/Verify/Prepare/Deploy/Activate→install_record(state=installed)）。
 > - agent 用例在 Linux DV 才能过：macOS 上 Docker Desktop 默认文件共享不含
 >   `/opt/buckyos`，容器 bind mount 报
@@ -10,13 +10,13 @@
 > - 登录凭证：优先 zone owner key；否则从
 >   `/opt/buckyos/etc/node_identity.json` 解析当前设备，读取
 >   `/opt/buckyos/security/<device-host>/authentication.private.pem`。
-> - fixture 的 pkg 名使用目标 PackageEnv 的标准 qualifier，并在 qualifier 后使用
->   App DID 派生的 `$owner_$app` namespace，例如
->   `nightly-linux-amd64.root_demo-web-agent`。自定义 `e2e.` qualifier 和未绑定 App DID
->   的名字会在 Inspect 阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
+> - fixture 的 pkg 名由 `buckyos-tool pikg` 按 App DID 派生的
+>   `$owner_$app-$subpackage` namespace 生成。未绑定 App DID 的名字会在 Inspect
+>   阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
 
-> **v0.5 更新（2026-07-16）**：安装链路已切换到 App 安装协议 v0.5：
-> `app.publish` 产出 `.pikg`（返回 `pikg_handle`/`app_did`/`app_doc`），测试
+> **PIKG 样例更新（2026-08-21）**：测试现场复制 `pikg_samples/` 中的标准工程，
+> 使用 `buckyos-tool pikg build/pack/info` 构造并校验 `.pikg`，再放入本机受控
+> staging 目录。测试
 > 先向 zone resolver 数据面（`resolver/cache/{did}/app/{state|doc}`，root 权限）
 > 种入解析证据，再走 `apps.install_package(staging_handle)` →
 > 等待 `WaitingForApproval` → 读取 Task.data 中的持久 plan（断言
@@ -54,13 +54,16 @@ pnpm install
 pnpm test
 ```
 
-生成用于文件导入、Inspect 和安装测试的三类 `.pikg` 样例：
+现场构造并离线校验四类 `.pikg` 样例：
 
 ```bash
 pnpm run generate:pikg-samples
 ```
 
-产物保存在 `pikg_samples/`，包含 static web、script host 和当前主机架构的 Docker 镜像包。生成器通过当前 Control Panel 的 `app.publish` 入口打包，并核对 ZIP 结构、App Document、`PACKAGE_META.json` 和整包 SHA-256。
+`pikg_samples/` 只保存 static web、script host、agent 和 Docker 的标准构建工程，
+不保存 `dapp_dist/` 或 `.pikg`。生成器调用仓库中的 `buckyos-tool pikg`
+完成 build、pack、info，产物默认写入系统临时目录
+`buckyos-pikg-samples/`；可通过 `BUCKYOS_PIKG_OUTPUT_DIR` 改到其它目录。
 
 可选环境变量：
 
@@ -71,7 +74,9 @@ BUCKYOS_VERIFY_HUB_URL=http://127.0.0.1:3300/kapi/verify-hub
 BUCKYOS_TASK_MANAGER_URL=http://127.0.0.1:3380/kapi/task-manager
 BUCKYOS_TEST_OWNER_DID=did:bns:root
 BUCKYOS_TEST_DOCKER_BASE_IMAGE=busybox:1.36.1
-BUCKYOS_TEST_POST_INSTALL_SETTLE_MS=15000
+BUCKYOS_TEST_TOOL_PATH=/path/to/buckyos-tool/buckyos
+BUCKYOS_PIKG_OUTPUT_DIR=/tmp/buckyos-pikg-samples
+BUCKYOS_ROOT=/opt/buckyos
 BUCKYOS_TEST_INSTALL_EVIDENCE_TIMEOUT_MS=120000
 BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=0
 ```
@@ -89,10 +94,10 @@ import { buckyos, RuntimeType, parseSessionTokenClaims } from 'buckyos/node'
 
 `pnpm test` 默认会按以下顺序执行：
 
-1. 用本地 fixture 目录调用 `app.publish`
-2. 再调用 `apps.install`
-3. 等待约 15 秒让安装结果完全生效
-4. 验证 system_config / task-manager / runtime 中的安装结果
+1. 把 `pikg_samples/` 中的构建工程复制到临时目录，并写入本次测试的 App ID/version
+2. 调用 `buckyos-tool pikg build/pack/info` 现场构造并校验 `.pikg`
+3. 把 `.pikg` 放入本机 Control Panel staging 目录，再调用 `apps.install_package`
+4. 等待安装完成并验证 system_config / task-manager / runtime 中的结果
 
 如果你要恢复“安装后自动卸载”的完整生命周期测试，显式加上：
 
@@ -100,13 +105,12 @@ import { buckyos, RuntimeType, parseSessionTokenClaims } from 'buckyos/node'
 BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 ```
 
-测试目录下已包含四类本地构造 app 所需配置：
+测试目录下已包含四类本地构造 App 的完整 PIKG 工程：
 
-- `fixtures/static-web/`: 静态网页内容
-- `fixtures/script-host/`: Host Script 的 Python HTTP 服务与入口描述
-- `fixtures/agent/`: agent 行为与 prompts
-- `fixtures/docker/`: 本地构建镜像的 Dockerfile 与入口脚本
-- `fixtures/templates/*.json`: 四类 app 的 `app_doc` 模板
+- `pikg_samples/static-web/`：静态网页
+- `pikg_samples/script-host/`：Host Script Python 服务
+- `pikg_samples/agent/`：Agent 行为与 prompts
+- `pikg_samples/docker/`：Dockerfile、入口脚本及 PIKG 元数据
 
 说明：
 
@@ -114,11 +118,11 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - 自签 JWT 之后，测试会显式调用 `verify-hub.login_by_jwt`，换取 `control-panel` 可接受的 verify-hub session token。
 - `app_installer_flow.test.mjs` 不再允许通过环境变量覆盖测试 `appid`。
 - 当前自签 token 的 `sub` 固定为测试用户，签名 key 来自 zone owner 或当前 device 的 `authentication.private.pem`。
-- `app.publish` 依赖 `repo-service`；测试启动时会检查 `services/repo-service/info`，缺失时直接报错。
-- 测试里生成的 app / sub-pkg version 会保持在 `0.1.x` 且 `x <= 65535`，因为当前 package env 的版本索引不接受超过 `65535` 的 patch 号。
+- PIKG 构造是完全离线的，不再依赖 `app.publish` 或 `repo-service`；安装测试仍需运行中的 BuckyOS DV 环境。
+- 测试里生成的 App/subpackage version 保持在 `0.1.x` 且 `x <= 65535`。
 - static web case 按 `/opt/buckyos/bin/<owner>_<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
-- agent case 当前默认跳过，因为安装完成判定仍依赖 runtime 设计调整。
-- docker case 按容器是否已运行来判断安装成功；如果 install task 只是因为等待 ready 超时而失败，测试仍视为可接受。
-- docker case 会先在本地 `docker build`，再 `docker save` 成 `amd64_docker_image.tar` 或 `aarch64_docker_image.tar`，然后再 publish。
+- agent case 会严格等待安装完成并验证 OpenDAN pid 文件。
+- docker case 按容器是否已运行来判断安装成功。
+- docker case 会先在本地 `docker build`，再由 `buckyos-tool pikg build` 固定镜像 ID 并导出 payload。
 - 如果当前机器没有可用的 Docker daemon，docker case 会被跳过；web 和 agent case 仍会执行。
 - 当前默认不会自动卸载已安装 app，也不会清理对应 docker image，方便安装后观察实际落地状态。

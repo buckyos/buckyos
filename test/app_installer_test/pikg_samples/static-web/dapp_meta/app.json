@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:pikg-static-web.root",
+  "name": "pikg-static-web",
+  "version": "0.1.0",
+  "owner": "did:bns:root",
+  "author": "did:bns:root",
+  "show_name": "PIKG Static Web Fixture",
+  "categories": [
+    "web"
+  ],
+  "permissions": [],
+  "selector_type": "static",
+  "service_config_tips": {}
+}

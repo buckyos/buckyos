@@ -1075,6 +1075,7 @@ impl TaskMgrInstallStore {
             task.outcome,
             task.wait_reason.as_ref(),
         );
+        let task_type = install_task_type(&task.schema_id).to_string();
         let data = task
             .result
             .clone()
@@ -1083,7 +1084,7 @@ impl TaskMgrInstallStore {
         InstallTaskView {
             id: task.task_id,
             root_id: task.root_id,
-            task_type: task.schema_id,
+            task_type,
             status,
             user_id: task.creator.user_id,
             app_id: task.creator.app_id,
@@ -1265,6 +1266,16 @@ fn install_schema_id(task_type: &str) -> String {
     format!("{}/v1", task_type.replace('/', "."))
 }
 
+fn install_task_type(schema_id: &str) -> &str {
+    if schema_id == install_schema_id(TASK_DATA_TYPE_APP_INSTALL) {
+        TASK_DATA_TYPE_APP_INSTALL
+    } else if schema_id == install_schema_id(TASK_DATA_TYPE_APP_UPDATE) {
+        TASK_DATA_TYPE_APP_UPDATE
+    } else {
+        schema_id
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 单元测试：fake store + fake driver 跑全 Stage
 // ---------------------------------------------------------------------------
@@ -1285,6 +1296,19 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn task_manager_schema_ids_map_back_to_install_task_types() {
+        assert_eq!(
+            install_task_type("app.install/v1"),
+            TASK_DATA_TYPE_APP_INSTALL
+        );
+        assert_eq!(
+            install_task_type("app.update/v1"),
+            TASK_DATA_TYPE_APP_UPDATE
+        );
+        assert_eq!(install_task_type("other/v1"), "other/v1");
+    }
 
     // ---------------- fake store ----------------
 

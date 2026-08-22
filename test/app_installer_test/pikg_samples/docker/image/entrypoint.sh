@@ -11,7 +11,7 @@ cat > /www/index.html <<'EOF'
   </head>
   <body>
     <h1>Docker Fixture</h1>
-    <p>Served from a locally published image tar.</p>
+    <p>Built and packaged locally with buckyos-tool.</p>
   </body>
 </html>
 EOF

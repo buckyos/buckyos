@@ -1,0 +1,5 @@
+{
+  "id": "did:opendan:pikg-agent",
+  "name": "pikg-agent",
+  "kind": "fixture-agent"
+}
