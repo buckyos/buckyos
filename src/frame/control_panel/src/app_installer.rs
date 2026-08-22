@@ -1944,7 +1944,7 @@ impl ControlPanelServer {
             .create_install_task(request, app_hint)
             .await
             .map_err(Self::install_error_to_rpc)?;
-        self.install_runner.dispatch(task_id.clone()).await;
+        self.install_runner.spawn_run(task_id.clone());
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({
                 "task_id": task_id.to_string(),
@@ -2170,7 +2170,7 @@ impl ControlPanelServer {
             .create_update_task(request, app_id.as_str())
             .await
             .map_err(Self::install_error_to_rpc)?;
-        self.install_runner.dispatch(task_id.clone()).await;
+        self.install_runner.spawn_run(task_id.clone());
 
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({

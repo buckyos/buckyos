@@ -1064,8 +1064,8 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
     let mut control_panel_server = ControlPanelServer::new();
-    // 启动安装任务 runner（MsgQueue 持久 dispatch + task-ready KEvent 加速 +
-    // 启动扫描/低频 sweep 兜底），恢复重启前的非终态安装事务。
+    // 启动安装任务恢复循环；正常路径由业务 RPC 直接执行，TaskManager
+    // 启动扫描/低频 sweep 恢复重启前或异常遗漏的非终态安装事务。
     control_panel_server.install_runner.start();
 
     // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）

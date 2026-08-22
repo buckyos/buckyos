@@ -64,7 +64,7 @@ WebUI PRD 开工前必须先冻结：
 在上述协议定稿前：
 
 - 不新增依赖临时字段或 mock 状态的 WebUI PRD；
-- 不让 WebUI 解析 TaskManager 的自由文本 `message` 或直接依赖内部 `Task.data` 布局；
+- 不让 WebUI 解析 TaskManager 的自由文本 `message` 或直接依赖内部 `Task.progress` 布局；
 - 不把 Repo 中发现的候选版本直接展示成“可信新版本”；
 - 可以使用后端测试页面/CLI 查看原始状态，但它不构成产品交互承诺。
 
@@ -93,7 +93,7 @@ WebUI PRD 开工前必须先冻结：
 可直接复用的设施：
 
 - `name-client::resolve_did_ex` 和 `DidDocType::Custom("app")`；`zone_did_resolver.rs` 已能输出 `documentStatus / documentVersion / effectiveOwner / authoritySeq / docHash`。
-- TaskManager 持久化 `Task.data`、JSON deep merge、父子任务、`WaitingForApproval`、runner task-ready KEvent 和 `wait_for_task_end_kevent()`；runtime 也已有 MsgQueue client，可用作持久 runner inbox。
+- TaskManager 2.0 持久化不可变 `Task.input`、可变 `Task.progress`、Result、组合状态和事件；Control Panel 直接执行并按自身 schema 恢复安装任务，不使用 runner inbox。
 - NamedStore 的 Object ID 读取/写入和 TaskManager 对指定 ObjId 的下载能力。
 - RepoService 的 collect/pin/proof 原语；它应作为内容来源和传播记录复用，但不能再成为所有安装的强制入口。
 - Control Panel 已依赖 `zip`、`sha2`、`tar`、`flate2`，实现首版 `pikg` 不应新增 crate。
@@ -138,7 +138,7 @@ WebUI PRD 开工前必须先冻结：
 
 ### D3. 安装记录真相源
 
-- **建议**：in-flight transaction 存 TaskManager `Task.data`；长期记录单独存：
+- **建议**：in-flight transaction 的不可变请求存 TaskManager `Task.input`，可恢复快照存 `Task.progress`；长期记录单独存：
 
 ```text
 users/{uid}/apps/{app_name}/install_record
@@ -228,7 +228,7 @@ users/{uid}/agents/{app_name}/install_record
 - [ ] `VerificationReport`：逐项结果，不能只有 bool。
 - [ ] `InstallError { stage, code, retryable, message, action, details }`。
 - [ ] `InstallRecord`：DID snapshot、实际 app doc id、package meta ids、pikg digest、target、状态、时间、task id、proof id。
-- [ ] `AppInstallStatusSnapshot`：面向 SDK/WebUI 的只读 typed snapshot，聚合 stage、readiness、verification summary、progress、approval、warnings、error、available actions 和 updated_at；不能要求消费方解析 Task.data。
+- [ ] `AppInstallStatusSnapshot`：面向 SDK/WebUI 的只读 typed snapshot，聚合 stage、readiness、verification summary、progress、approval、warnings、error、available actions 和 updated_at；不能要求消费方解析 Task.progress。
 - [ ] `AppUpdateAvailability`：记录 installed/resolved App Document Object ID、发布版本、语义版本、trust、permission diff、target compatibility 和 update state。
 
 `AppUpdateAvailability.state` 至少区分：
@@ -267,7 +267,7 @@ CANCELED
 
 - [ ] `AppInstallTaskRequest` 保存原始 source/options/referrer/user，而不是只保存 app_id/version/content_id。
 - [ ] `AppInstallTaskData` 保存 current stage、completed stages、candidate handle、resolver snapshot、plan、verification report、prepared deployment、last error/result。
-- [ ] 每个 Stage 成功后先完整写 Task.data，再开始下一 Stage；重启恢复只相信持久数据。
+- [ ] 每个 Stage 成功后先完整写 Task.progress，再开始下一 Stage；重启恢复只相信持久快照。
 - [ ] plan fingerprint 至少绑定 app_doc_object_id、resolver document_version/status、target、影响 selector 的参数和 selected meta ids；任一变化必须重新 Inspect。
 - [ ] 不做旧 `AppInstallTaskRequest` schema 的 legacy parser。
 
@@ -338,7 +338,7 @@ CANCELED
 - [ ] 对每个 Package Meta/内容计算 location：installed、named_store、pikg、missing。
 - [ ] 独立计算：Document Syntax Validity、DID Trust Readiness、Package Integrity、Content Readiness、Config Readiness、Install Readiness。
 - [ ] 输出 permissions summary、缺失对象、预计下载量和 Source，不在 Inspect 时写系统目录。
-- [ ] plan 进入 Task.data 后把任务置为 `WaitingForApproval`；用户修改 target/params 后重新计算 plan，禁止在旧 plan 上 patch selected package。
+- [ ] plan 进入 Task.progress 后把任务置为 `WaitingForApproval`；用户修改 target/params 后重新计算 plan，禁止在旧 plan 上 patch selected package。
 
 ---
 
@@ -434,11 +434,10 @@ apps.install.cancel
 
 ### P5.2 runner/recovery
 
-- [ ] 创建安装任务时设置 `CreateTaskOptions.runner = "app.control_panel"`，复用 `/task_mgr/runner/app.control_panel/task_ready`。
-- [ ] 使用固定 MsgQueue 保存待执行 `task_id`，只传调度引用，不复制 transaction body；TaskManager 仍是状态真相源，consumer 按 `task_id + stage revision` 幂等去重并在完成安全边界后 ack。
-- [ ] Control Panel 启动时先列出该 runner 下 Pending/Running/WaitingForApproval 的 app.install/app.update task，按 Task.data 恢复或等待确认。
-- [ ] MsgQueue 负责不丢 dispatch，task-ready KEvent 只负责低延迟唤醒，启动 task scan 负责修复 queue/event 的遗漏；三条路径每次都重新读取 TaskManager 真相，不信消息/event payload 的完整性。
-- [ ] `apps.install.confirm/retry` 在更新状态后显式唤醒本地 runner；不要假设 TaskManager `resume_task()` 会重新发布 ready event。
+- [ ] 安装任务使用 `SelfApp` executor，由 Control Panel 已鉴权业务接口创建并直接执行。
+- [ ] Control Panel 启动时列出自身 runner 下 Pending/Running 的 app.install/app.update Task，按 TaskManager 持久快照恢复；WaitingForApproval/Paused 等待显式业务操作。
+- [ ] 不为同进程执行另建 MsgQueue 或 runner inbox；TaskManager 是唯一持久真相源，低频 sweep 只修复异常遗漏。
+- [ ] `apps.install.confirm/retry` 更新状态后显式启动本地执行体。
 - [ ] Stage handler 必须可重复调用：已完成输出存在且 fingerprint 一致则跳过；不一致则从最早失效 Stage 重算。
 - [ ] 服务关闭时不把正常未完成任务标 Failed；重启后继续。
 
@@ -570,7 +569,7 @@ uv run test/run.py -p <app-installer-dv-case>
 - control_panel 新模块：`pikg.rs`（含自有中央目录扫描——zip crate 会静默去重同名 entry）、`app_install_resolver/planner/engine/driver/deployer/runner`。
 - RPC：`apps.install{identifier}`（旧 app_id/version 语义已删）、`apps.install_package{staging_handle}`、`apps.install.confirm/retry/cancel`、`apps.update` 走同一流水线；`app.publish` 产 `.pikg` 并同 Reader 自校验，返回 app_did/app_doc_id/pikg_handle/digest/app_doc/publish_status。
 - app_index：`system/app_installer/app_index_seq` + `exec_tx` CAS（修扫描竞态）。
-- runner：MsgQueue 持久 dispatch（处理后 ack）+ task-ready KEvent 仅加速 + 启动扫描 + 60s sweep。
+- runner：业务 RPC 直接启动执行体；TaskManager 启动扫描 + 60s sweep 恢复异常遗漏，不另建 MsgQueue/runner inbox。
 - 升级：Prepare 完成才写新 spec；Activate 失败自动回滚旧 spec 并作废 Deploy 供 retry 重写。
 
 ### 验证结果

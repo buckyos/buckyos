@@ -1611,7 +1611,7 @@ pub struct DidResolutionSnapshot {
 
 #### AppInstallTaskData / InstallRecord
 
-- in-flight 事务：`Task.data` → `AppInstallTaskData { schema_version, request, state: InstallTransactionState }`（含 `plan` / `approval` / `verification` / `prepared` 等）。`request.app_class` 固定本次安装为 `user_installed` 或 `zone_installed`；`AppUpdateTaskData` 使用相同的 `schema_version` 和状态结构。
+- in-flight 事务：不可变请求保存在 `Task.input`，可恢复的完整 `AppInstallTaskData { schema_version, request, state: InstallTransactionState }` 快照保存在 `Task.progress`（含 `plan` / `approval` / `verification` / `prepared` 等）。`request.app_class` 固定本次安装为 `user_installed` 或 `zone_installed`；`AppUpdateTaskData` 使用相同的 `schema_version` 和状态结构。
 - 长期记录：个人 App/Agent 写 `users/{uid}/apps|agents/{app_name}/install_record`；Zone App 写 `zone/apps/{app_name}/install_record`。
 
 ```rust
@@ -1788,7 +1788,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 #### D3. 安装记录真相源
 
-- in-flight 安装事务的唯一真相源是 TaskManager 的 `Task.data`（`AppInstallTaskData`，可恢复 transaction）。
+- in-flight 安装事务的唯一真相源是 TaskManager：不可变请求在 `Task.input`，可恢复的 `AppInstallTaskData` 完整快照在 `Task.progress`。
 - 长期安装记录独立保存在 system-config：个人安装写 `users/{uid}/apps/{app_name}/install_record` 或 `users/{uid}/agents/{app_name}/install_record`，Zone 安装写 `zone/apps/{app_name}/install_record`（`InstallRecord` JSON）。
 - 写入顺序：Prepare 完成先写 `install_record(state=prepared)` → 写 spec（Deploy 的开始点）→ Activate 与健康检查成功后更新 `install_record(state=installed)` → 写 installed proof → Task Completed。失败与回滚更新同一记录。
 - `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec、`app_class` 与最终批准的 `permission`，不复制解析证据与任务历史。

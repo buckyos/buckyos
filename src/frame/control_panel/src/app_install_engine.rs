@@ -4,11 +4,10 @@
 //! - 引擎只负责状态机推进、持久化纪律与恢复语义；每个 Stage 的实际工作
 //!   由 `InstallStageDriver` 完成（生产实现分布在 resolver/planner/pikg 与
 //!   Acquire/Deploy 适配层，单元测试用 fake 跑全 Stage）；
-//! - 每个 Stage 成功后先把完整事务状态写回 Task.data（全量镜像 patch，
-//!   缺席字段写 null 以配合 deep-merge 删除语义），再进入下一 Stage；
-//! - 重启恢复只相信 Task.data 持久状态；Stage handler 可重复调用；
-//! - TaskManager 是任务状态唯一真相源；MsgQueue/KEvent/启动扫描只是
-//!   dispatch 通道（kevent 只是加速，见 runner 模块）。
+//! - 每个 Stage 成功后先把完整事务状态写回 Task.progress，再进入下一 Stage；
+//! - 重启恢复只相信 TaskManager 持久快照；Stage handler 可重复调用；
+//! - TaskManager 是任务状态唯一真相源；业务 RPC 直接启动执行体，启动扫描
+//!   和低频 sweep 只负责恢复遗漏。
 
 use async_trait::async_trait;
 use buckyos_api::{
@@ -97,7 +96,7 @@ pub trait InstallTaskStore: Send + Sync {
         app_id: &str,
     ) -> Result<String, InstallError>;
     async fn load(&self, task_id: &str) -> Result<InstallTaskView, InstallError>;
-    /// 写入全量镜像 patch（deep merge 后 Task.data 与事务结构严格一致）。
+    /// 写入完整事务快照，使 Task.progress 与事务结构严格一致。
     async fn write_data(&self, task_id: &str, full_patch: Value) -> Result<(), InstallError>;
     async fn set_status(
         &self,
@@ -1243,6 +1242,7 @@ impl InstallTaskStore for TaskMgrInstallStore {
             let page = client
                 .list_tasks(buckyos_api::ListTasksReq {
                     schema_id: Some(install_schema_id(task_type)),
+                    runner_app_id: Some(buckyos_api::CONTROL_PANEL_SERVICE_NAME.to_string()),
                     ..Default::default()
                 })
                 .await
