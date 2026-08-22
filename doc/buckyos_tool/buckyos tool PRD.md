@@ -1,6 +1,6 @@
 # BuckyOS Tool PRD
 
-> 状态：Draft v0.3
+> 状态：Draft v0.5
 > 目标版本：Beta 2.2 以后
 > 命令名称：`buckyos`
 > 实现语言与运行时：TypeScript + Deno
@@ -18,7 +18,8 @@ Agent 稳定调用的生产接口。
 - 使用新配置根目录 `~/.buckyos_tool`；
 - 不自动读取、合并或迁移 `~/.buckycli`、`~/buckycli` 中的任何配置；
 - 通过正式 BuckyOS SDK、kRPC 服务和受控的本机控制桥执行操作；
-- 业务模块是薄客户端，不在 CLI 内复制 scheduler、installer、MessageHub 等服务逻辑；
+- 线上业务模块是薄客户端，不在 CLI 内复制 scheduler、installer、MessageHub 等服务逻辑；
+- `pikg` 是明确的本地开发工具例外，在不连接 BuckyOS Zone 时构造、封装和分析 PIKG；
 - 单次命令默认输出稳定的机器可读 JSON，适合 Jarvis 和其它 Agent 调用；显式进入交互命令行
   时提供面向人工运维的持续 session 和显示方式。
 
@@ -39,10 +40,12 @@ Beta 2.2 是 breaking change，本工具不承担旧命令、旧参数、旧输�
 4. 让 Agent 无需解析自然语言或易变表格即可发现和执行命令。
 5. 让线上操作经过正式服务边界，避免 CLI 直接修改系统真相源或重做业务编排。
 6. 最终取代旧 Rust `buckycli` 工程中的线上运维能力。
+7. 提供 PIKG-first 的本地开发入口，让开发者在无 Zone、无正式密钥时也能构造和验证发行候选。
 
 ### 2.2 非目标
 
-- 不承载构建、打包、DV 环境安装等开发阶段工具。
+- 除 [PIKG 模块](modules/pikg.md) 定义的本地发行物构造外，不扩展为通用源码构建系统，
+  不负责执行 App 自己的 build script，也不承载 DV 环境部署。
 - 不管理 cyfs-gateway 的专属配置和生命周期。
 - 不包含 AI/AICC/OpenDAN 的业务工具；Jarvis 只是本工具的一个调用方。
 - 不提供任意 `system-config get/set` 作为正式用户功能。
@@ -77,6 +80,11 @@ TS 工具不得假设自己可以直接执行 `systemd`、`launchd`、Windows �
 必须通过 `node-control`、native helper 或受控的 host bridge 完成。Windows 下不设计第二套
 命令协议和认证协议：本机源码、Jarvis 容器和 paios 临时容器都使用相同的 BuckyOS
 session/identity 认证及 HostControlClient 抽象，不在业务模块中散落平台特例。
+
+`pikg init/build` 在开发者本机检查或导出已存在的 Docker image，是上述限制的唯一
+Docker CLI 例外。它们必须使用命令元数据声明本地进程权限，`init` 只能执行参数化的
+image inspect，`build` 只能执行 image inspect/save；不允许通过 shell 字符串执行任意命令，也不得隐式
+pull、login 或 push。
 
 ## 4. 命令模型
 
@@ -131,6 +139,10 @@ buckyos --profile production --identity ops --cli
 
 涉及软删除、归档、封禁、忘记联系人的领域必须在模块资源模型中明确真实语义；当 `delete`
 会产生误解时，应使用 `archive`、`close`、`forget` 等领域动词。
+
+PIKG 模块按开发者对发行物的领域习惯使用 `init`、`build`、`pack`、`info`、`clean`。`init`
+是生成开发元数据的最小问答向导，不是通用工程脚手架。`info`
+必须同时执行严格离线验证，不得只列出 ZIP entry；`clean` 属于 destructive 操作。
 
 ### 4.3 通用参数
 
@@ -418,6 +430,8 @@ src/tools/buckyos-tool/
 
 实际落地可以调整文件粒度，但必须保持 core 与业务模块单向依赖：core 不依赖具体业务模块，
 业务模块不得绕开 core 自行解析全局配置、登录或输出。
+本地模块同样不得绕开 core 的 argv、输出、错误、确认和权限管理；它与线上模块的区别是
+不解析 Zone、identity 或 service client。
 
 ### 6.2 命令注册模型
 
@@ -442,6 +456,7 @@ type AccessPolicy =
 interface CommandDefinition<TInput, TOutput> {
   verb: string;
   summary: string;
+  execution: "local" | "online";
   inputSchema: JsonSchema;
   outputSchema: JsonSchema;
   access: AccessPolicy;
@@ -466,11 +481,8 @@ interface CommandDefinition<TInput, TOutput> {
 handler 只能从 `CommandContext` 获取运行能力：
 
 ```ts
-interface CommandContext {
+interface BaseCommandContext {
   command: { module: string; verb: string };
-  connection: ResolvedConnection;
-  principal: ResolvedPrincipal;
-  clients: ServiceClientRegistry;
   output: OutputPolicy;
   traceId: string;
   idempotencyKey?: string;
@@ -478,7 +490,25 @@ interface CommandContext {
   interactive: boolean;
   confirmed: boolean;
 }
+
+interface OnlineCommandContext extends BaseCommandContext {
+  execution: "online";
+  connection: ResolvedConnection;
+  principal: ResolvedPrincipal;
+  clients: ServiceClientRegistry;
+}
+
+interface LocalCommandContext extends BaseCommandContext {
+  execution: "local";
+  cwd: string;
+}
+
+type CommandContext = OnlineCommandContext | LocalCommandContext;
 ```
+
+core 必须先解析 module/verb 元数据，再决定是否建立线上上下文。`execution=local` 的命令
+在没有 BuckyOS 进程、profile、identity 和网络时必须可用；若同时传入 `--profile`、`--zone`、
+`--endpoint`、`--identity` 或 session token 等仅线上参数，必须返回参数冲突，不得默默忽略。
 
 业务模块不得：
 
@@ -503,6 +533,8 @@ interface CommandContext {
 - 只授予配置目录、显式输入输出路径、必要环境变量和目标网络地址所需权限。
 - 业务模块新增文件、进程或网络权限时，必须在模块 PRD 和命令元数据中声明。
 - 普通在线模块不得申请 `--allow-run`。
+- `pikg init/build` 可以申请限定到 Docker CLI 的 `--allow-run`；`pikg pack/info/clean` 不得申请
+  进程或网络权限。所有 PIKG 命令的文件权限只能覆盖解析后的显式输入和输出路径。
 
 ### 6.6 InteractiveSession
 
@@ -635,15 +667,17 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 
 ### 8.3 异步任务
 
-- 长操作必须返回 TaskManager `task_id`，不能由 CLI 进程持有唯一状态。
+- 线上长操作必须返回 TaskManager `task_id`，不能由 CLI 进程持有唯一状态。
 - 默认返回 task summary；调用者使用 `--wait` 或 `task wait` 等待。
 - `--wait` 的超时只停止本地等待，除非用户明确 `task cancel`，不得隐式取消远程任务。
 - task 进度通过 `jsonl` 输出，最终仍输出一次终态 envelope。
 - 重试、取消、恢复能力以 TaskManager 真实能力为准，CLI 不伪造。
+- `execution=local` 的命令不伪造 TaskManager 任务。大文件处理在前台运行，进度写 stderr，
+  中断时删除未完成的临时文件，不得留下被认为成功产物的半成品。
 
 ### 8.4 审计
 
-每次写操作至少携带：
+每次线上写操作至少携带：
 
 - principal / selected identity；
 - source=`buckyos-tool`，Jarvis 调用时追加 agent/session 信息；
@@ -653,6 +687,9 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 - target resource；
 - operation/revision；
 - 最终 task id 或操作结果。
+
+本地写操作无需伪造 principal 或远程审计记录，但必须在机器可读结果和自有产物 manifest
+中记录 module/verb、trace id、tool version、输入指纹和最终 digest，且不得记录 secret。
 
 ## 9. Agent First 要求
 
@@ -676,6 +713,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 | --- | --- | --- |
 | User | [user.md](modules/user.md) | 用户、状态、类型、Profile、密码与 Message Tunnel 绑定 |
 | App | [app.md](modules/app.md) | Catalog、安装事务、AppSpec、运行实例与可用性 |
+| PIKG | [pikg.md](modules/pikg.md) | 本地 `dapp_meta`、`dapp_dist`、PIKG 构造、封装、验证和清理 |
 | Contact | [contact.md](modules/contact.md) | 外部联系人、binding、关系和消息准入 |
 | Message | [message.md](modules/message.md) | Zone/外部消息、会话、投递与回执 |
 | Group | [group.md](modules/group.md) | Self-Host-Group、成员、角色、proof 和 subgroup |
@@ -701,6 +739,14 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 - JSON envelope、stderr、退出码；
 - `--cli` 入口、REPL parser、内置命令、history 和补全骨架；
 - mock `CommandContext` 和单元测试。
+
+### Phase 0.5：本地 PIKG 闭环
+
+- local/online command metadata 与延迟登录；
+- `dapp_meta` schema 与受管理的 `dapp_dist`；
+- `pikg init|build|pack|info|clean`；
+- 复用 Installer 同源的 PIKG parser、canonicalization、Object ID 和 verifier；
+- 无 Zone、无 identity、无网络的 Docker、Script 和 Static Web fixture 测试。
 
 ### Phase 1：认证和最小在线闭环
 
@@ -763,6 +809,8 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 18. REPL 的 module/verb/option 补全与 `command describe` 来自同一 Command Registry。
 19. 无额外身份和连接配置的在线命令会在确认后使用当前设备身份和本地 NodeGateway；
     `--non-interactive` 必须同时提供 `--yes`，显式远端目标不得触发设备身份回退。
+20. `pikg init|build|pack|info|clean` 在未配置 profile/identity、BuckyOS 未启动且禁止网络时可完成各自
+    的本地闭环，不触发设备身份回退或登录。
 
 ## 13. 已确认设计决策
 
@@ -784,3 +832,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
    session token；外部 token 只能由其原始来源更新。
 9. 保留原 `buckyos <module> <verb>` 的本机运维习惯：没有任何身份和连接配置时使用当前设备
    身份，但必须经过交互确认或显式 `--yes`，避免无提示使用高权限设备凭证。
+10. `pikg` 是本地开发模块，首版命令为 `init|build|pack|info|clean`；它不解析线上身份，也不
+    承担签名、上传或发布。
+11. 不新增 `app publish`。后续发布设计分离 PIKG 托管、Owner AppDoc 签名和 BNS 权威更新的
+    命令及授权边界。
