@@ -126,8 +126,8 @@ impl ControlPanelServer {
         principal: &RpcAuthPrincipal,
     ) -> Result<ResolvedAppInstallation, RPCErrors> {
         let selector = Self::app_selector_from_req(req)?;
-        let owner_user_id =
-            Self::param_str(req, "owner_user_id").unwrap_or_else(|| principal.username.clone());
+        let owner_user_id = Self::param_str(req, "owner_user_id")
+            .unwrap_or_else(|| principal.owner_user_id.clone());
         require_self_or_admin(principal, owner_user_id.as_str())?;
 
         let resolver = Self::app_availability_resolver().await?;
@@ -442,7 +442,7 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let user_id =
-            Self::param_str(&req, "user_id").unwrap_or_else(|| principal.username.clone());
+            Self::param_str(&req, "user_id").unwrap_or_else(|| principal.owner_user_id.clone());
         require_self_or_admin(principal, &user_id)?;
 
         let resolver = Self::app_availability_resolver().await?;
@@ -704,7 +704,7 @@ impl ControlPanelServer {
         let principal = Self::require_rpc_principal(principal)?;
         let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
         let user_id =
-            Self::param_str(&req, "user_id").unwrap_or_else(|| principal.username.clone());
+            Self::param_str(&req, "user_id").unwrap_or_else(|| principal.owner_user_id.clone());
         let resolver = Self::app_availability_resolver().await?;
         let installation = resolver.resolve_installation(&app_instance_id).await?;
         let can_diagnose = principal_is_admin(principal)

@@ -125,8 +125,26 @@ pub struct PikgInspection {
 }
 
 impl PikgInspection {
-    pub fn content_entry(&self, digest: &str) -> Option<&PikgContentIndexEntry> {
-        self.package_meta.content_index.get(digest)
+    pub fn content_entry(&self, content_id: &str) -> Option<&PikgContentIndexEntry> {
+        self.package_meta
+            .content_index
+            .get(content_id)
+            .or_else(|| {
+                self.package_meta.content_index.values().find(|entry| {
+                    let Some(desc) = self.app_doc.pkg_list.get(&entry.sub_pkg_name) else {
+                        return false;
+                    };
+                    let Some(pkg_objid) = desc.pkg_objid.as_ref() else {
+                        return false;
+                    };
+                    self.package_meta
+                        .package_objects
+                        .get(&pkg_objid.to_string())
+                        .and_then(|value| value.get("content"))
+                        .and_then(Value::as_str)
+                        == Some(content_id)
+                })
+            })
     }
 
     /// 当前 pikg 内实际携带的内容 digest 集合。
@@ -300,10 +318,7 @@ impl PikgReader {
     }
 
     pub fn has_content(&self, digest: &str) -> bool {
-        self.inspection
-            .package_meta
-            .content_index
-            .contains_key(digest)
+        self.inspection.content_entry(digest).is_some()
     }
 
     /// Verify 级校验：流式解压 entry，重算 sha256 与字节数，
@@ -1427,6 +1442,7 @@ mod tests {
         let body = reader.read_object(&meta_id).await.unwrap().unwrap();
         let parsed: PackageMeta = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.version, "0.1.0");
+        reader.verify_content(&parsed.content).await.unwrap();
 
         // 未知对象返回 None（不报错）。
         let missing = ObjId::new_by_raw("pkg".to_string(), vec![9u8; 32]);

@@ -659,15 +659,7 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
         );
         tx_actions.insert(real_key_path.clone(), kv_action);
     }
-    let mut real_main_key = None;
-    let main_key = params.get("main_key");
-    if main_key.is_some() {
-        let main_key = main_key.unwrap();
-        let main_key = main_key.as_str().unwrap();
-        let main_key = main_key.split(":").collect::<Vec<&str>>();
-        let main_key = (main_key[0].to_string(), main_key[1].parse::<u64>().unwrap());
-        real_main_key = Some(main_key);
-    }
+    let real_main_key = parse_tx_main_key(&params)?;
 
     let store = SYS_STORE.lock().await;
     store
@@ -682,6 +674,28 @@ async fn handle_exec_tx(params: Value, session_token: &RPCSessionToken) -> Resul
     }
 
     Ok(Value::Null)
+}
+
+fn parse_tx_main_key(params: &Value) -> Result<Option<(String, u64)>> {
+    let Some(main_key) = params.get("main_key") else {
+        return Ok(None);
+    };
+    let main_key = main_key.as_object().ok_or_else(|| {
+        RPCErrors::ParseRequestError("main_key must be an object".to_string())
+    })?;
+    let key = main_key
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| RPCErrors::ParseRequestError("main_key.key is required".to_string()))?;
+    let revision = main_key
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            RPCErrors::ParseRequestError("main_key.revision must be a u64".to_string())
+        })?;
+    let (_, real_key_path) = get_full_res_path(key)?;
+    Ok(Some((real_key_path, revision)))
 }
 
 async fn handle_list(params: Value, session_token: &RPCSessionToken) -> Result<Value> {
@@ -1360,6 +1374,24 @@ mod test {
                 "boot/config".to_string()
             )
         );
+    }
+
+    #[test]
+    fn transaction_main_key_preserves_colons_in_key() {
+        let params = json!({
+            "main_key": {
+                "key": "users/devtest/apps/did:bns:demo.root/mutation",
+                "revision": 7,
+            }
+        });
+        assert_eq!(
+            parse_tx_main_key(&params).unwrap(),
+            Some((
+                "users/devtest/apps/did:bns:demo.root/mutation".to_string(),
+                7,
+            ))
+        );
+        assert!(parse_tx_main_key(&json!({ "main_key": "legacy:7" })).is_err());
     }
 
     #[test]

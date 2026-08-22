@@ -966,6 +966,7 @@ impl ControlPanelServer {
                 })?;
             return Ok(Some(RpcAuthPrincipal {
                 username,
+                owner_user_id: device.owner.id.clone(),
                 authenticated_app_id,
                 user_type: UserType::Root,
                 owner_did: device.owner.to_string(),
@@ -1005,6 +1006,7 @@ impl ControlPanelServer {
         };
 
         Ok(Some(RpcAuthPrincipal {
+            owner_user_id: username.clone(),
             username,
             authenticated_app_id,
             user_type: user_settings.user_type,

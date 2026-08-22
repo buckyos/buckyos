@@ -597,15 +597,27 @@ async fn report_service_instance_info() -> Result<()> {
     let mut service_ports = HashMap::new();
     service_ports.insert("www".to_string(), VERIFY_HUB_SERVICE_MAIN_PORT);
 
+    let now = buckyos_get_unix_timestamp();
+    let instance_epoch = env::var("BUCKYOS_INSTANCE_EPOCH")
+        .unwrap_or_else(|_| format!("process:{}", std::process::id()));
+    let node_session_id = env::var("BUCKYOS_NODE_SESSION_ID")
+        .unwrap_or_else(|_| format!("device:{}", service_config.device_id));
     let instance_info = ServiceInstanceReportInfo {
         instance_id: format!("{}-{}", VERIFY_HUB_UNIQUE_ID, service_config.device_id),
         node_id: service_config.device_id.clone(),
         node_did: service_config.node_did.clone(),
         state: ServiceInstanceState::Started,
         service_ports,
-        last_update_time: buckyos_get_unix_timestamp(),
+        last_update_time: now,
         start_time: service_config.start_time,
         pid: std::process::id(),
+        deployment: None,
+        instance_epoch,
+        node_session_id,
+        observed_at: now,
+        expires_at: now.saturating_add(SERVICE_INSTANCE_INFO_UPDATE_INTERVAL * 3),
+        health: DeploymentHealth::Healthy,
+        deployment_error: None,
     };
 
     let system_config_client = get_system_config_client().await?;

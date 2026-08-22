@@ -389,5 +389,5 @@ function installedDetails(): Record<string, unknown> {
 async function sha256Id(bytes: Uint8Array): Promise<string> {
   const copy = Uint8Array.from(bytes)
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', copy.buffer))
-  return `sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`
+  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }

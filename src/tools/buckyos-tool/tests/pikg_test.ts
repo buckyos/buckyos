@@ -119,6 +119,11 @@ Deno.test('pikg path workflow is offline, self-verifying, and safely cleanable',
     assertEquals(envelope.data.ready_for_pack, true)
     assertEquals(envelope.data.subpackage_count, 1)
     assertEquals(authenticationCreated, false)
+    const appDoc = JSON.parse(
+      await Deno.readTextFile(join(envelope.data.dist_dir, 'APPDOC.json')),
+    )
+    assertEquals(appDoc.exp, 1_957_680_000)
+    assertEquals(appDoc.pkg_list.web.pkg_id, 'all.root_demo-web#0.1.0')
 
     const packExit = await app.run(['pikg', 'pack'])
     assertEquals(packExit, 0, io.stdoutText)
@@ -209,6 +214,10 @@ Deno.test('pikg Docker workflow pins the image ID and never uses a session', asy
     const inspected = io.takeEnvelope()
     assertEquals(inspected.data.subpackages[0].docker_image_digest, docker.info.id)
     assertEquals(inspected.data.subpackages[0].selector.arch, 'x86_64')
+    assertEquals(
+      inspected.data.subpackages[0].pkg_id,
+      'nightly-linux-amd64.root_docker-demo-amd64_docker_image#0.1.0',
+    )
   } finally {
     await Deno.remove(root, { recursive: true })
   }

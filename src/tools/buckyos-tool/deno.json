@@ -9,7 +9,7 @@
     "fmt": "deno fmt --check"
   },
   "compilerOptions": {
-    "lib": ["deno.ns", "dom", "esnext"],
+    "lib": ["deno.ns", "dom", "dom.asynciterable", "esnext"],
     "strict": true
   },
   "fmt": {

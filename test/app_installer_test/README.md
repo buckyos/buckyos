@@ -1,12 +1,9 @@
-> **本机 DV 运行结论（2026-07-16, macOS ood1）**：
-> - static web 用例全链路通过（pikg build/pack→stage→种证据→install_package→confirm→
->   Acquire/Verify/Prepare/Deploy/Activate→install_record(state=installed)）。
-> - agent 用例在 Linux DV 才能过：macOS 上 Docker Desktop 默认文件共享不含
->   `/opt/buckyos`，容器 bind mount 报
->   `error while creating mount source path '/host_mnt/opt/buckyos/...'`。
->   需在 Docker Desktop Settings → Resources → File sharing 手工加入
->   `/opt/buckyos` 后重跑（属本机 Docker 配置，测试不代改）。
-> - `BUCKYOS_TEST_SKIP_DOCKER=1` 可跳过 docker 用例（本机镜像拉取被网络阻断时用）。
+> **本机 DV 运行结论（2026-08-22, macOS ood1）**：
+> - static web 用例通过真实 NodeGateway 链路（PIKG build/pack/info → NDM put/finalize →
+>   `apps.inspect` → fingerprint-bound `apps.submit` → TaskManager → scheduler →
+>   node-daemon 落盘 → `install_record(state=installed)`）。
+> - Agent runtime 与 Docker app 都依赖可用的 Docker daemon；设置
+>   `BUCKYOS_TEST_SKIP_DOCKER=1` 时两者会明确跳过。
 > - 登录凭证：优先 zone owner key；否则从
 >   `/opt/buckyos/etc/node_identity.json` 解析当前设备，读取
 >   `/opt/buckyos/security/<device-host>/authentication.private.pem`。
@@ -14,16 +11,14 @@
 >   `$owner_$app-$subpackage` namespace 生成。未绑定 App DID 的名字会在 Inspect
 >   阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
 
-> **PIKG 样例更新（2026-08-21）**：测试现场复制 `pikg_samples/` 中的标准工程，
+> **PIKG 样例更新（2026-08-22）**：测试现场复制 `pikg_samples/` 中的标准工程，
 > 使用 `buckyos-tool pikg build/pack/info` 构造并校验 `.pikg`，再放入本机受控
-> staging 目录。测试
+> NDM staging。测试
 > 先向 zone resolver 数据面（`resolver/cache/{did}/app/{state|doc}`，root 权限）
-> 种入解析证据，再走 `apps.install_package(staging_handle)` →
-> 等待 `WaitingForApproval` → 读取 Task.data 中的持久 plan（断言
-> `OFFLINE_READY`）→ `apps.install.confirm` → 严格等待 `Completed`（不再接受
+> 种入解析证据，再走 `apps.inspect(staging_handle)` → `apps.submit` →
+> 严格等待 `Completed`（不再接受
 > "等待 ready 超时也算通过"）。完成后断言 `users/{uid}/apps/{app}/install_record`
-> （state=installed、task_id、proof 回填）与运行证据。Agent 用例已恢复启用；
-> Docker 用例仍在无 docker 环境下跳过。
+> （state=installed、task_id、proof 回填）与运行证据。
 >
 > 已知缺口：Control Panel 中途重启恢复用例需要能重启服务进程的 DV 编排，
 > 暂未在本 node 测试内实现（恢复语义已由 control_panel 引擎单测覆盖）。
@@ -72,6 +67,7 @@ BUCKYOS_SYSTEM_CONFIG_URL=http://127.0.0.1:3200/kapi/system_config
 BUCKYOS_CONTROL_PANEL_URL=http://127.0.0.1:4020/kapi/control-panel
 BUCKYOS_VERIFY_HUB_URL=http://127.0.0.1:3300/kapi/verify-hub
 BUCKYOS_TASK_MANAGER_URL=http://127.0.0.1:3380/kapi/task-manager
+BUCKYOS_NODE_GATEWAY_URL=http://127.0.0.1:3180
 BUCKYOS_TEST_OWNER_DID=did:bns:root
 BUCKYOS_TEST_DOCKER_BASE_IMAGE=busybox:1.36.1
 BUCKYOS_TEST_TOOL_PATH=/path/to/buckyos-tool/buckyos
@@ -96,7 +92,8 @@ import { buckyos, RuntimeType, parseSessionTokenClaims } from 'buckyos/node'
 
 1. 把 `pikg_samples/` 中的构建工程复制到临时目录，并写入本次测试的 App ID/version
 2. 调用 `buckyos-tool pikg build/pack/info` 现场构造并校验 `.pikg`
-3. 把 `.pikg` 放入本机 Control Panel staging 目录，再调用 `apps.install_package`
+3. 通过 NodeGateway 的 `/ndm/proxy/v1` 上传并 finalize，再调用
+   `apps.inspect` 和 `apps.submit`
 4. 等待安装完成并验证 system_config / task-manager / runtime 中的结果
 
 如果你要恢复“安装后自动卸载”的完整生命周期测试，显式加上：
@@ -121,8 +118,8 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - PIKG 构造是完全离线的，不再依赖 `app.publish` 或 `repo-service`；安装测试仍需运行中的 BuckyOS DV 环境。
 - 测试里生成的 App/subpackage version 保持在 `0.1.x` 且 `x <= 65535`。
 - static web case 按 `/opt/buckyos/bin/<owner>_<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
-- agent case 会严格等待安装完成并验证 OpenDAN pid 文件。
+- agent case 会严格等待安装完成并验证 OpenDAN pid 文件；没有 Docker daemon 时跳过。
 - docker case 按容器是否已运行来判断安装成功。
 - docker case 会先在本地 `docker build`，再由 `buckyos-tool pikg build` 固定镜像 ID 并导出 payload。
-- 如果当前机器没有可用的 Docker daemon，docker case 会被跳过；web 和 agent case 仍会执行。
+- 如果当前机器没有可用的 Docker daemon，agent 和 docker case 都会被跳过；static web case 仍会执行。
 - 当前默认不会自动卸载已安装 app，也不会清理对应 docker image，方便安装后观察实际落地状态。

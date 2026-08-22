@@ -225,7 +225,7 @@ impl TaskDispatcherService {
                 "session token has an empty subject or app id".to_string(),
             ));
         }
-        let zone_trusted = verified.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID);
+        let zone_trusted = crate::server::token_is_zone_trusted(&verified);
         Ok(RequestContext {
             user_id,
             app_id,

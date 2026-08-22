@@ -294,13 +294,6 @@ impl SystemConfigClient {
                 "key or value is empty".to_string(),
             ));
         }
-        //TODO:define a rule for KEY
-        if key.contains(":") {
-            return Err(SystemConfigError::ReasonError(
-                "key can not contain ':'".to_string(),
-            ));
-        }
-
         let client = self.get_krpc_client()?;
         let _result = client
             .call("sys_config_set", json!({"key": key, "value": value}))
@@ -448,7 +441,10 @@ impl SystemConfigClient {
         if let Some((key, revision)) = main_key {
             req_params.insert(
                 "main_key".to_string(),
-                Value::String(format!("{}:{}", key, revision)),
+                json!({
+                    "key": key,
+                    "revision": revision,
+                }),
             );
         }
 

@@ -853,7 +853,7 @@ async function stagePikg(
     endpoint: gatewayOrigin(ctx.connection.endpoint),
     sessionToken: token,
     fetcher: (request: RequestInfo | URL, init?: RequestInit) =>
-      fetch(request, { ...init, signal: ctx.signal }),
+      fetch(normalizeNdmRequestUrl(request), { ...init, signal: ctx.signal }),
   })
   try {
     await proxy.putChunk(chunkId, snapshot.bytes)
@@ -880,6 +880,16 @@ async function stagePikg(
     purpose: expectString(value, 'purpose') as PikgPurpose,
     expires_at: optionalNumber(value.expires_at),
   }
+}
+
+function normalizeNdmRequestUrl(request: RequestInfo | URL): RequestInfo | URL {
+  if (typeof request === 'string') {
+    return request.replaceAll('%3A', ':').replaceAll('%3a', ':')
+  }
+  if (request instanceof URL) {
+    return new URL(request.toString().replaceAll('%3A', ':').replaceAll('%3a', ':'))
+  }
+  return request
 }
 
 async function inspectSource(
@@ -1415,7 +1425,7 @@ function validatePikgSnapshot(bytes: Uint8Array): void {
 async function sha256Id(bytes: Uint8Array): Promise<string> {
   const digestInput = Uint8Array.from(bytes)
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', digestInput.buffer))
-  return `sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`
+  return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function gatewayOrigin(endpoint: string): string {

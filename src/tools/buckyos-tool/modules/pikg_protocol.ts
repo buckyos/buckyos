@@ -791,6 +791,7 @@ function validateAppDocShape(appDoc: Record<string, unknown>): void {
   if (appDoc.doc_type !== 'app') throw invalid('appdoc', 'APPDOC.doc_type must be app')
   expectSafeInteger(appDoc.create_time, 'APPDOC.create_time')
   expectSafeInteger(appDoc.last_update_time, 'APPDOC.last_update_time')
+  expectSafeInteger(appDoc.exp, 'APPDOC.exp')
   const categories = appDoc.categories
   if (
     !Array.isArray(categories) || categories.length === 0 ||

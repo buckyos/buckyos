@@ -109,6 +109,7 @@ pub(crate) fn sn_self_cert_state_path() -> PathBuf {
 #[derive(Clone, Debug)]
 struct RpcAuthPrincipal {
     username: String,
+    owner_user_id: String,
     authenticated_app_id: String,
     user_type: UserType,
     owner_did: String,
@@ -226,7 +227,7 @@ struct ControlPanelServer {
     running_update_batch_tasks: Arc<tokio::sync::Mutex<HashSet<String>>>,
     staging_store: Arc<app_staging::PikgStagingStore>,
     ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
-    ndm_read_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
+    ndm_node_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
 }
 
 impl ControlPanelServer {
@@ -259,7 +260,7 @@ impl ControlPanelServer {
             running_update_batch_tasks: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             staging_store,
             ndm_gateway: None,
-            ndm_read_gateway: None,
+            ndm_node_gateway: None,
         }
     }
 
@@ -1128,12 +1129,12 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
                 ..Default::default()
             };
             let ndm_gw = Arc::new(NamedDataMgrZoneGateway::new(store_mgr.clone(), ndm_config));
-            let ndm_read_gw = Arc::new(NamedDataMgrNodeGateway::new(
+            let ndm_node_gw = Arc::new(NamedDataMgrNodeGateway::new(
                 store_mgr,
                 NdmNodeGatewayConfig::default(),
             ));
             control_panel_server.ndm_gateway = Some(ndm_gw);
-            control_panel_server.ndm_read_gateway = Some(ndm_read_gw);
+            control_panel_server.ndm_node_gateway = Some(ndm_node_gw);
             info!("NDM zone gateway initialized");
         }
         Err(e) => {
@@ -1164,9 +1165,9 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         let _ = runner.add_http_server("/ndm".to_string(), ndm_gw.clone());
         info!("NDM zone gateway registered at /ndm");
     }
-    if let Some(ref ndm_read_gw) = control_panel_server.ndm_read_gateway {
-        let _ = runner.add_http_server("/ndm/proxy/v1/read".to_string(), ndm_read_gw.clone());
-        info!("NDM read proxy gateway registered at /ndm/proxy/v1/read");
+    if let Some(ref ndm_node_gw) = control_panel_server.ndm_node_gateway {
+        let _ = runner.add_http_server("/ndm/proxy/v1".to_string(), ndm_node_gw.clone());
+        info!("NDM node gateway registered at /ndm/proxy/v1");
     }
 
     // 添加 web (best-effort, skip if path cannot be resolved)

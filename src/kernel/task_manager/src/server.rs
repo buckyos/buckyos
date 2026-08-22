@@ -35,10 +35,8 @@ const MAX_RECURSIVE_CONTROL_NODES: usize = 512;
 
 /// The caller identity resolved from the *verified* session token.
 ///
-/// `zone_trusted` marks callers whose token was signed by the zone owner key
-/// or a device key (kernel/frame services and the owner themselves) — the
-/// zone's trusted computing base. Tokens issued by verify-hub (interactive
-/// sessions) are never zone-trusted.
+/// `zone_trusted` marks callers whose token was signed by the zone owner/device
+/// key, or whose verify-hub session preserves a device/service principal.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub user_id: String,
@@ -80,6 +78,19 @@ pub trait SessionTokenVerifier: Send + Sync {
 }
 
 pub struct RuntimeSessionTokenVerifier;
+
+pub(crate) fn token_is_zone_trusted(token: &RPCSessionToken) -> bool {
+    if token.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID) {
+        return true;
+    }
+    matches!(
+        token
+            .extra
+            .get(TOKEN_PRINCIPAL_KIND_CLAIM)
+            .and_then(Value::as_str),
+        Some(TOKEN_PRINCIPAL_KIND_DEVICE | TOKEN_PRINCIPAL_KIND_SERVICE)
+    )
+}
 
 #[async_trait]
 impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
@@ -156,7 +167,7 @@ impl TaskManagerService {
                 "session token has an empty app id".to_string(),
             ));
         }
-        let zone_trusted = verified.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID);
+        let zone_trusted = token_is_zone_trusted(&verified);
         Ok(RequestContext {
             user_id,
             app_id,
@@ -2092,8 +2103,17 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     fn signed_token(issuer: &str, user_id: &str, app_id: &str) -> String {
+        signed_token_with_principal(issuer, user_id, app_id, None)
+    }
+
+    fn signed_token_with_principal(
+        issuer: &str,
+        user_id: &str,
+        app_id: &str,
+        principal_kind: Option<&str>,
+    ) -> String {
         let now = buckyos_kit::buckyos_get_unix_timestamp();
-        let session_token = RPCSessionToken {
+        let mut session_token = RPCSessionToken {
             token_type: RPCSessionTokenType::JWT,
             token: None,
             aud: None,
@@ -2105,6 +2125,12 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             sudo: false,
             extra: HashMap::new(),
         };
+        if let Some(principal_kind) = principal_kind {
+            session_token.extra.insert(
+                TOKEN_PRINCIPAL_KIND_CLAIM.to_string(),
+                Value::String(principal_kind.to_string()),
+            );
+        }
         session_token
             .generate_jwt(None, &test_encoding_key())
             .unwrap()
@@ -2114,6 +2140,18 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     fn service_ctx(user_id: &str, app_id: &str) -> RPCContext {
         RPCContext {
             token: Some(signed_token("ood1", user_id, app_id)),
+            ..Default::default()
+        }
+    }
+
+    fn refreshed_service_ctx(user_id: &str, app_id: &str) -> RPCContext {
+        RPCContext {
+            token: Some(signed_token_with_principal(
+                VERIFY_HUB_UNIQUE_ID,
+                user_id,
+                app_id,
+                Some(TOKEN_PRINCIPAL_KIND_SERVICE),
+            )),
             ..Default::default()
         }
     }
@@ -2247,7 +2285,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     #[tokio::test(flavor = "current_thread")]
     async fn delegated_task_freezes_business_owner_and_runner_identity() {
         let (service, _tmp) = setup_service().await;
-        let runner_ctx = service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
+        let runner_ctx = refreshed_service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
         let request = CreateDelegatedTaskReq {
             name: "install demo".to_string(),
             schema_id: APP_INSTALL_TASK_SCHEMA_ID.to_string(),

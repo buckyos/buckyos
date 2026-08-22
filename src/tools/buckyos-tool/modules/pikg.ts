@@ -10,6 +10,7 @@ import {
   canonicalSelector,
   createPackageMeta,
   deriveAppNamespace,
+  derivedSelector,
   DIST_MANIFEST_NAME,
   expectNonEmptyString,
   expectObject,
@@ -29,6 +30,7 @@ import {
 } from './pikg_protocol.ts'
 
 const TOOL_VERSION = '0.1.0-phase3'
+const APP_DOCUMENT_LIFETIME_SECONDS = 5 * 365 * 24 * 60 * 60
 const SAFE_PIKG_FILE = /^[A-Za-z0-9._-]+\.pikg$/
 const APP_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
@@ -115,6 +117,29 @@ interface PreparedSubpackage {
   payloadPath: string
   digest: GeneratedFileRecord
   docker?: DockerImageInfo
+}
+
+function packageEnvironmentQualifier(
+  key: string,
+  selector: Record<string, string> | undefined,
+): string {
+  const effective = selector ?? derivedSelector(key)
+  const os = effective?.os
+  const arch = effective?.arch
+  if (!os || !arch) return 'all'
+  const environmentOs = os === 'macos' ? 'apple' : os
+  const environmentArch = arch === 'x86_64' ? 'amd64' : arch
+  const qualifier = `nightly-${environmentOs}-${environmentArch}`
+  return new Set([
+      'nightly-linux-amd64',
+      'nightly-linux-aarch64',
+      'nightly-windows-amd64',
+      'nightly-windows-aarch64',
+      'nightly-apple-amd64',
+      'nightly-apple-aarch64',
+    ]).has(qualifier)
+    ? qualifier
+    : 'all'
 }
 
 export function createPikgModule(dependencies: PikgModuleDependencies = {}): CommandModule {
@@ -485,7 +510,9 @@ async function buildCommand(
     const generatedSubpackages: DistManifest['subpackages'] = {}
     const packageNames = new Set<string>()
     for (const item of prepared) {
-      const packageName = `${namespace}-${packageSuffix(item.key)}`
+      const packageName = `${
+        packageEnvironmentQualifier(item.key, item.input.selector)
+      }.${namespace}-${packageSuffix(item.key)}`
       if (packageNames.has(packageName)) {
         throw new UsageError('PACKAGE_NAME_COLLISION', `subpackage names collide at ${packageName}`)
       }
@@ -541,6 +568,7 @@ async function buildCommand(
       owner: appMeta.owner,
       create_time: timestamp,
       last_update_time: timestamp,
+      exp: timestamp + APP_DOCUMENT_LIFETIME_SECONDS,
       categories: appMeta.categories,
       version: appMeta.version,
       deps: dependencies,
