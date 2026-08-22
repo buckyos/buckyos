@@ -268,11 +268,7 @@ pub fn create_scheduler_by_system_config(
                 //let service_port = node_install_config.service_ports.get("www").unwrap_or(&80);
                 //info!("app_id: {}, service_port: {}", app_config.app_spec.app_id(), service_port);
                 let instance = ReplicaInstance {
-                    spec_id: format!(
-                        "{}@{}",
-                        app_config.app_spec.app_id(),
-                        app_config.app_spec.user_id.clone()
-                    ),
+                    spec_id: app_config.app_spec.app_instance_id(),
                     node_id: node_id.to_string(),
                     res_limits: HashMap::new(),
                     instance_id: app_instance_id.to_string(),
@@ -554,6 +550,86 @@ pub fn get_app_spec_by_spec_id(
         user_id, app_id, user_id, app_id
     );
     Err(anyhow::anyhow!("app_spec not found"))
+}
+
+fn reconcile_app_instance_specs(
+    input_system_config: &HashMap<String, String>,
+) -> Result<(HashMap<String, KVAction>, HashSet<String>)> {
+    let mut actions = HashMap::new();
+    let mut updated_nodes = HashSet::new();
+
+    for (key, value) in input_system_config {
+        if !key.starts_with("nodes/") || !key.ends_with("/config") {
+            continue;
+        }
+
+        let Some(node_id) = key.split('/').nth(1) else {
+            continue;
+        };
+        let node_config: NodeConfig = serde_json::from_str(value)?;
+        let mut set_paths = HashMap::new();
+
+        for (instance_id, instance_config) in &node_config.apps {
+            let spec_id = instance_config.app_spec.app_instance_id();
+            let desired_spec = match get_app_spec_by_spec_id(&spec_id, input_system_config) {
+                Ok(spec) => spec,
+                Err(err) => {
+                    warn!(
+                        "skip app instance spec reconciliation for {} on {}: {}",
+                        instance_id, node_id, err
+                    );
+                    continue;
+                }
+            };
+
+            let mut current_spec = serde_json::to_value(&instance_config.app_spec)?;
+            let mut desired_spec_value = serde_json::to_value(&desired_spec)?;
+            let current_fields = current_spec
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("current app spec is not an object"))?;
+            let desired_fields = desired_spec_value
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("desired app spec is not an object"))?;
+
+            current_fields.remove("state");
+            desired_fields.remove("state");
+            if current_fields == desired_fields {
+                continue;
+            }
+
+            let field_names = current_fields
+                .keys()
+                .chain(desired_fields.keys())
+                .cloned()
+                .collect::<HashSet<_>>();
+            for field_name in field_names {
+                let current_value = current_fields.get(&field_name);
+                let desired_value = desired_fields.get(&field_name);
+                if current_value == desired_value {
+                    continue;
+                }
+                set_paths.insert(
+                    format!("/apps/{instance_id}/app_spec/{field_name}"),
+                    desired_value.cloned(),
+                );
+            }
+
+            info!(
+                "will refresh app instance spec in place: instance={} node={} generation={}->{}",
+                instance_id,
+                node_id,
+                instance_config.app_spec.deployment.spec_generation,
+                desired_spec.deployment.spec_generation
+            );
+        }
+
+        if !set_paths.is_empty() {
+            actions.insert(key.clone(), KVAction::SetByJsonPath(set_paths));
+            updated_nodes.insert(node_id.to_string());
+        }
+    }
+
+    Ok((actions, updated_nodes))
 }
 
 fn should_skip_app_service_info_deletion(
@@ -1596,6 +1672,11 @@ pub(crate) async fn build_schedule_plan(
         extend_kv_action_map(&mut tx_actions, &new_tx_actions);
     }
 
+    let (app_instance_spec_actions, refreshed_app_nodes) =
+        reconcile_app_instance_specs(input_system_config)?;
+    extend_kv_action_map(&mut tx_actions, &app_instance_spec_actions);
+    need_update_gateway_node_list.extend(refreshed_app_nodes);
+
     if is_boot || last_schedule_snapshot.is_none() {
         need_update_rbac = true;
     }
@@ -1757,9 +1838,9 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppDocBuilder, AppInstallationId, AppInstallationScope, AppServiceSpec, AppType,
-        DeploymentIdentity, ServiceExposeConfig, ServiceInstanceState, ServiceSpecConfig,
-        ServiceState, SubPkgDesc, OBJ_TYPE_APP_DOC,
+        AppDocBuilder, AppInstallationId, AppInstallationScope, AppServiceInstanceConfig,
+        AppServiceSpec, AppType, DeploymentIdentity, ServiceExposeConfig, ServiceInstanceState,
+        ServiceSpecConfig, ServiceState, SubPkgDesc, OBJ_TYPE_APP_DOC,
     };
     use jsonwebtoken::jwk::Jwk;
     use name_lib::generate_ed25519_key_pair;
@@ -1994,6 +2075,22 @@ mod tests {
         format!("{}@{}", spec.app_instance_id(), node_id)
     }
 
+    fn with_test_app_script_pkg(
+        mut spec: AppServiceSpec,
+        pkg_id: &str,
+        task_id: &str,
+        spec_generation: u64,
+    ) -> AppServiceSpec {
+        spec.app_doc.pkg_list.script = Some(SubPkgDesc::new(pkg_id));
+        let app_doc_value = serde_json::to_value(&spec.app_doc).unwrap();
+        let (app_doc_object_id, _) =
+            ndn_lib::build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
+        spec.deployment.task_id = task_id.to_string();
+        spec.deployment.app_doc_object_id = app_doc_object_id;
+        spec.deployment.spec_generation = spec_generation;
+        spec
+    }
+
     #[test]
     fn service_info_id_preserves_opaque_installation_identity() {
         assert_eq!(
@@ -2008,6 +2105,114 @@ mod tests {
             get_spec_id_from_service_info_id("control-panel:www"),
             ("control-panel".to_string(), "www".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn app_upgrade_refreshes_existing_instance_spec_without_changing_placement() {
+        let current_spec = with_test_app_script_pkg(
+            create_test_app_spec(),
+            "files-script#0.1.0",
+            "test:install",
+            1,
+        );
+        let desired_spec = with_test_app_script_pkg(
+            current_spec.clone(),
+            "files-script#0.2.0",
+            "test:upgrade",
+            2,
+        );
+        let instance_id = test_instance_id(&current_spec, "ood1");
+        let service_ports_config = HashMap::from([("www".to_string(), 11080)]);
+        let node_config = NodeConfig {
+            node_id: "ood1".to_string(),
+            node_did: "did:bns:ood1".to_string(),
+            kernel: HashMap::new(),
+            apps: HashMap::from([(
+                instance_id.clone(),
+                AppServiceInstanceConfig {
+                    target_state: ServiceInstanceState::Started,
+                    node_id: "ood1".to_string(),
+                    app_spec: current_spec,
+                    service_ports_config: service_ports_config.clone(),
+                },
+            )]),
+            frame_services: HashMap::new(),
+            state: buckyos_api::NodeState::Running,
+        };
+        let mut input_system_config = HashMap::from([
+            (
+                test_user_app_spec_key(&desired_spec),
+                serde_json::to_string(&desired_spec).unwrap(),
+            ),
+            (
+                "devices/ood1/info".to_string(),
+                serde_json::to_string(&create_test_device_info("ood1", None)).unwrap(),
+            ),
+            (
+                "nodes/ood1/config".to_string(),
+                serde_json::to_string(&node_config).unwrap(),
+            ),
+        ]);
+
+        let (actions, updated_nodes) = reconcile_app_instance_specs(&input_system_config).unwrap();
+        assert_eq!(updated_nodes, HashSet::from(["ood1".to_string()]));
+        let node_action = actions
+            .get("nodes/ood1/config")
+            .expect("existing node config should be refreshed");
+        let paths = match node_action {
+            KVAction::SetByJsonPath(paths) => paths,
+            other => panic!("unexpected action: {other:?}"),
+        };
+        assert_eq!(
+            paths
+                .get(&format!("/apps/{instance_id}/app_spec/deployment"))
+                .and_then(Option::as_ref),
+            Some(&serde_json::to_value(&desired_spec.deployment).unwrap())
+        );
+        assert_eq!(
+            paths
+                .get(&format!("/apps/{instance_id}/app_spec/app_doc"))
+                .and_then(Option::as_ref),
+            Some(&serde_json::to_value(&desired_spec.app_doc).unwrap())
+        );
+        assert!(!paths.contains_key(&format!("/apps/{instance_id}/app_spec/state")));
+        assert!(!paths.contains_key(&format!("/apps/{instance_id}/target_state")));
+
+        let (mut scheduler_ctx, _) =
+            create_scheduler_by_system_config(&input_system_config).unwrap();
+        let replica = scheduler_ctx
+            .get_replica_instance(&instance_id)
+            .expect("existing replica should remain associated with the installation");
+        assert_eq!(replica.spec_id, desired_spec.app_instance_id());
+        assert_eq!(replica.node_id, "ood1");
+        assert_eq!(replica.service_ports, service_ports_config);
+
+        let last_snapshot = scheduler_ctx.clone();
+        let schedule_actions = scheduler_ctx.schedule(Some(&last_snapshot)).unwrap();
+        assert!(!schedule_actions
+            .iter()
+            .any(|action| matches!(action, SchedulerAction::InstanceReplica(_))));
+
+        input_system_config.insert(
+            "boot/config".to_string(),
+            serialize_test_boot_config(&create_test_zone_config()),
+        );
+        input_system_config.insert(
+            "system/scheduler/snapshot".to_string(),
+            serde_json::to_string(&last_snapshot).unwrap(),
+        );
+        let schedule_plan = build_schedule_plan(&input_system_config, false)
+            .await
+            .unwrap();
+        let node_action = schedule_plan
+            .tx_actions
+            .get("nodes/ood1/config")
+            .expect("schedule plan should contain the in-place refresh");
+        let paths = match node_action {
+            KVAction::SetByJsonPath(paths) => paths,
+            other => panic!("unexpected action: {other:?}"),
+        };
+        assert!(paths.contains_key(&format!("/apps/{instance_id}/app_spec/deployment")));
     }
 
     #[test]

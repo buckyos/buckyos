@@ -1,10 +1,12 @@
 use crate::app_loader::{
     command_matches_agent_process, command_matches_exact_agent_process,
     container_list_contains_name, docker_desc_requires_exact_match,
-    docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_target,
-    normalize_digest, parse_docker_container_inspect, resolve_aios_image_repo_from_paths,
-    AppLoader, CommandSpec, ControlOperation, DockerRuntimeIdentity, PlatformArch, PlatformOs,
-    PlatformTarget, RuntimeType, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_OBJID,
+    docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
+    docker_runtime_matches_target, normalize_digest, parse_docker_container_inspect,
+    resolve_aios_image_repo_from_paths, AppLoader, CommandSpec, ControlOperation,
+    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
+    DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
+    DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
@@ -325,6 +327,10 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
             repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
             labels: HashMap::from([
                 (
+                    DOCKER_LABEL_PKG_ID.to_string(),
+                    "demo-img#0.1.0".to_string(),
+                ),
+                (
                     DOCKER_LABEL_PKG_OBJID.to_string(),
                     "pkg:1234567890".to_string(),
                 ),
@@ -340,21 +346,85 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
         &DockerRuntimeIdentity {
             image_id: Some("sha256:deadbeef".to_string()),
             repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
-            labels: HashMap::from([(
-                DOCKER_LABEL_PKG_OBJID.to_string(),
-                "pkg:oldversion".to_string(),
-            )]),
+            labels: HashMap::from([
+                (
+                    DOCKER_LABEL_PKG_ID.to_string(),
+                    "demo-img#0.1.0".to_string(),
+                ),
+                (
+                    DOCKER_LABEL_PKG_OBJID.to_string(),
+                    "pkg:oldversion".to_string(),
+                ),
+            ]),
         },
         &desc,
     ));
     assert!(docker_runtime_matches_target(
         &DockerRuntimeIdentity {
             image_id: Some("sha256:deadbeef".to_string()),
+            labels: HashMap::from([(
+                DOCKER_LABEL_PKG_ID.to_string(),
+                "demo-img#0.1.0".to_string(),
+            )]),
             ..Default::default()
         },
         &SubPkgDesc::new("demo-img#0.1.0")
             .docker_image_name("demo/service:0.1.0-amd64")
             .docker_image_digest("sha256:deadbeef"),
+    ));
+}
+
+#[test]
+fn docker_runtime_exact_match_rejects_another_pkg_version_without_objid() {
+    let desc = SubPkgDesc::new("demo-img#0.2.0");
+    assert!(docker_desc_requires_exact_match(&desc));
+    assert!(!docker_runtime_matches_target(
+        &DockerRuntimeIdentity {
+            labels: HashMap::from([(
+                DOCKER_LABEL_PKG_ID.to_string(),
+                "demo-img#0.1.0".to_string(),
+            )]),
+            ..Default::default()
+        },
+        &desc,
+    ));
+}
+
+#[test]
+fn docker_runtime_exact_match_rejects_another_deployment_generation() {
+    let app_doc = build_script_service_doc();
+    let app_spec = build_test_app_spec(app_doc.clone(), build_spec_config(&app_doc));
+    let deployment = &app_spec.deployment;
+    let matching_labels = HashMap::from([
+        (
+            DOCKER_LABEL_APP_DOC_OBJECT_ID.to_string(),
+            deployment.app_doc_object_id.to_string(),
+        ),
+        (
+            DOCKER_LABEL_SPEC_GENERATION.to_string(),
+            deployment.spec_generation.to_string(),
+        ),
+    ]);
+
+    assert!(docker_runtime_matches_deployment(
+        &DockerRuntimeIdentity {
+            labels: matching_labels.clone(),
+            ..Default::default()
+        },
+        Some(deployment),
+    ));
+
+    let mut stale_labels = matching_labels;
+    stale_labels.insert(
+        DOCKER_LABEL_SPEC_GENERATION.to_string(),
+        (deployment.spec_generation + 1).to_string(),
+    );
+    assert!(!docker_runtime_matches_deployment(
+        &DockerRuntimeIdentity {
+            labels: stale_labels,
+            ..Default::default()
+        },
+        Some(deployment),
     ));
 }
 
@@ -436,6 +506,16 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_KEVENT_DAEMON_ADDR=<value>".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"buckyos.pkg_id=demo-img#0.1.0".to_string()));
+    assert!(start.commands[1]
+        .args
+        .contains(&"buckyos.spec_generation=1".to_string()));
+    assert!(start.commands[1]
+        .args
+        .iter()
+        .any(|arg| arg.starts_with("buckyos.app_doc_object_id=")));
 
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Docker);

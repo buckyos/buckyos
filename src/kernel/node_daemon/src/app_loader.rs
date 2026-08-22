@@ -2,9 +2,9 @@ use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
     get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
-    AppServiceInstanceConfig, AppType, LocalAppInstanceConfig, ServiceInstanceState,
-    ServiceSpecConfig, SubPkgDesc, BUCKYOS_KEVENT_DAEMON_ADDR_ENV, KEVENT_SERVICE_NATIVE_PORT,
-    VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    AppServiceInstanceConfig, AppType, DeploymentIdentity, LocalAppInstanceConfig,
+    ServiceInstanceState, ServiceSpecConfig, SubPkgDesc, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
+    KEVENT_SERVICE_NATIVE_PORT, VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -62,8 +62,11 @@ const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
 pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
+pub(crate) const DOCKER_LABEL_PKG_ID: &str = "buckyos.pkg_id";
 pub(crate) const DOCKER_LABEL_PKG_OBJID: &str = "buckyos.pkg_objid";
 pub(crate) const DOCKER_LABEL_IMAGE_DIGEST: &str = "buckyos.image_digest";
+pub(crate) const DOCKER_LABEL_APP_DOC_OBJECT_ID: &str = "buckyos.app_doc_object_id";
+pub(crate) const DOCKER_LABEL_SPEC_GENERATION: &str = "buckyos.spec_generation";
 
 #[derive(Clone)]
 enum LoaderConfig {
@@ -424,6 +427,18 @@ impl AppLoader {
             LoaderConfig::Service(config) => &config.app_spec.app_doc,
             LoaderConfig::Local(config) => &config.app_doc,
         }
+    }
+
+    fn deployment(&self) -> Option<&DeploymentIdentity> {
+        match &self.config {
+            LoaderConfig::Service(config) => Some(&config.app_spec.deployment),
+            LoaderConfig::Local(_) => None,
+        }
+    }
+
+    fn runtime_matches_target(&self, identity: &DockerRuntimeIdentity, desc: &SubPkgDesc) -> bool {
+        docker_runtime_matches_target(identity, desc)
+            && docker_runtime_matches_deployment(identity, self.deployment())
     }
 
     fn install_config(&self) -> &ServiceSpecConfig {
@@ -796,9 +811,8 @@ impl AppLoader {
         let desc = self
             .docker_image_desc()
             .ok_or_else(|| self.pkg_not_found("docker image"))?;
-        let exact_match_required = docker_desc_requires_exact_match(desc);
         if let Some(runtime) = self.inspect_current_docker_container().await? {
-            if exact_match_required && !docker_runtime_matches_target(&runtime.identity, desc) {
+            if !self.runtime_matches_target(&runtime.identity, desc) {
                 // A stale container with the current name exists but does not match the target package.
                 // Treat it as stopped and let the subsequent start path replace it.
             } else if runtime.running {
@@ -868,6 +882,10 @@ impl AppLoader {
     }
 
     async fn status_host_script(&self) -> Result<ServiceInstanceState> {
+        let desc = match self.host_script_desc() {
+            Some(desc) => desc,
+            None => return Ok(ServiceInstanceState::NotExist),
+        };
         let pkg_id = match self.host_script_pkg_id() {
             Some(pkg_id) => pkg_id,
             None => return Ok(ServiceInstanceState::NotExist),
@@ -877,10 +895,12 @@ impl AppLoader {
         }
 
         if let Some(runtime) = self.inspect_current_docker_container().await? {
-            if runtime.running {
-                return Ok(ServiceInstanceState::Started);
+            if self.runtime_matches_target(&runtime.identity, desc) {
+                if runtime.running {
+                    return Ok(ServiceInstanceState::Started);
+                }
+                return Ok(ServiceInstanceState::Exited);
             }
-            return Ok(ServiceInstanceState::Exited);
         }
 
         let image_name = self.worker_image_name();
@@ -942,9 +962,8 @@ impl AppLoader {
             return Ok(ServiceInstanceState::NotExist);
         }
 
-        let exact_match_required = desc.pkg_objid.is_some();
         if let Some(runtime) = self.inspect_current_docker_container().await? {
-            if exact_match_required && !docker_runtime_matches_target(&runtime.identity, desc) {
+            if !self.runtime_matches_target(&runtime.identity, desc) {
                 // An old generation container is still occupying the canonical name.
                 // Leave it to the start path to replace it.
             } else if runtime.running {
@@ -1925,12 +1944,23 @@ impl AppLoader {
                 self.owner_user_id.clone(),
             ),
             (DOCKER_LABEL_FULL_APPID.to_string(), self.full_appid()),
+            (DOCKER_LABEL_PKG_ID.to_string(), desc.pkg_id.clone()),
         ];
         if let Some(pkg_objid) = desc.pkg_objid.as_ref() {
             labels.push((DOCKER_LABEL_PKG_OBJID.to_string(), pkg_objid.to_string()));
         }
         if let Some(digest) = normalize_digest(desc.docker_image_digest.as_deref()) {
             labels.push((DOCKER_LABEL_IMAGE_DIGEST.to_string(), digest.to_string()));
+        }
+        if let Some(deployment) = self.deployment() {
+            labels.push((
+                DOCKER_LABEL_APP_DOC_OBJECT_ID.to_string(),
+                deployment.app_doc_object_id.to_string(),
+            ));
+            labels.push((
+                DOCKER_LABEL_SPEC_GENERATION.to_string(),
+                deployment.spec_generation.to_string(),
+            ));
         }
         labels
     }
@@ -2526,13 +2556,22 @@ pub(crate) fn expected_env_pkg_name(env: &PackageEnv, package_id: &PackageId) ->
 }
 
 pub(crate) fn docker_desc_requires_exact_match(desc: &SubPkgDesc) -> bool {
-    desc.pkg_objid.is_some() || normalize_digest(desc.docker_image_digest.as_deref()).is_some()
+    !desc.pkg_id.trim().is_empty()
+        || desc.pkg_objid.is_some()
+        || normalize_digest(desc.docker_image_digest.as_deref()).is_some()
 }
 
 pub(crate) fn docker_runtime_matches_target(
     identity: &DockerRuntimeIdentity,
     desc: &SubPkgDesc,
 ) -> bool {
+    if !desc.pkg_id.trim().is_empty()
+        && identity.labels.get(DOCKER_LABEL_PKG_ID).map(String::as_str)
+            != Some(desc.pkg_id.as_str())
+    {
+        return false;
+    }
+
     if let Some(expected_pkg_objid) = desc.pkg_objid.as_ref() {
         let Some(actual_pkg_objid) = identity.labels.get(DOCKER_LABEL_PKG_OBJID) else {
             return false;
@@ -2569,6 +2608,28 @@ pub(crate) fn docker_runtime_matches_target(
         .as_deref()
         .map(|image_id| docker_image_id_matches_digest(image_id, expected_digest))
         .unwrap_or(false)
+}
+
+pub(crate) fn docker_runtime_matches_deployment(
+    identity: &DockerRuntimeIdentity,
+    deployment: Option<&DeploymentIdentity>,
+) -> bool {
+    let Some(deployment) = deployment else {
+        return true;
+    };
+    let expected_app_doc_object_id = deployment.app_doc_object_id.to_string();
+    let expected_spec_generation = deployment.spec_generation.to_string();
+
+    identity
+        .labels
+        .get(DOCKER_LABEL_APP_DOC_OBJECT_ID)
+        .map(String::as_str)
+        == Some(expected_app_doc_object_id.as_str())
+        && identity
+            .labels
+            .get(DOCKER_LABEL_SPEC_GENERATION)
+            .map(String::as_str)
+            == Some(expected_spec_generation.as_str())
 }
 
 pub(crate) fn command_matches_agent_process(cmd: &[String], app_id: &str) -> bool {
