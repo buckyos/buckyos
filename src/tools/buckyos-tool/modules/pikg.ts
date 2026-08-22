@@ -28,7 +28,7 @@ import {
   validateSubpackageName,
 } from './pikg_protocol.ts'
 
-const TOOL_VERSION = '0.1.0-phase2'
+const TOOL_VERSION = '0.1.0-phase3'
 const SAFE_PIKG_FILE = /^[A-Za-z0-9._-]+\.pikg$/
 const APP_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/

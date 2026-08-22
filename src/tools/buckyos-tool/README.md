@@ -1,9 +1,10 @@
 # BuckyOS Tool
 
 `buckyos-tool` is the TypeScript/Deno implementation of the production-facing `buckyos` command. The
-current implementation covers PRD Phase 0 through Phase 2: command discovery, profiles, JSON
-protocols, authentication, online system operations, the shared interactive session, and the fully
-local `pikg` development workflow.
+current implementation covers the PRD core through Phase 2 plus the Phase 3 App module: command
+discovery, profiles, JSON protocols, authentication, online system operations, the shared
+interactive session, the fully local `pikg` development workflow, and App installation/runtime
+lifecycle management.
 
 ## Run from source
 
@@ -54,6 +55,24 @@ Zone, identity, or session.
   services/example/config --file ./config.json
 ./buckyos --profile dev --identity alice --cli
 ```
+
+## App workflow
+
+Fresh installs use a portable v4 `InstallPlan`; installed Apps use source-driven or Catalog-driven
+upgrade plans that preserve their current settings.
+
+```bash
+./buckyos app fetch did:bns:app1.alice --plan ./app1.install-plan.json
+./buckyos --yes app install did:bns:app1.alice --plan ./app1.install-plan.json
+./buckyos app status did:bns:app1.alice
+./buckyos --yes app upgrade did:bns:app1.alice
+./buckyos --yes app uninstall did:bns:app1.alice --data retain
+```
+
+Local paths and HTTP(S) PIKG URLs are read by the CLI, hashed from the same byte snapshot, uploaded
+through the NDM staging boundary, and rebound to the Installer digest. Plan files are created with
+mode `0600` on Unix and are never overwritten without explicit confirmation. Mutations wait for
+their task by default; `--no-wait` returns the `task_id` immediately.
 
 With no token, identity, Zone, or endpoint configured, an online command reads the current device
 from `$BUCKYOS_ROOT/etc/node_identity.json` and uses the local NodeGateway. Interactive terminals

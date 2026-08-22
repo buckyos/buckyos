@@ -29,8 +29,9 @@ import { createCoreModules } from '../modules/core.ts'
 import { createSystemModule } from '../modules/system.ts'
 import { createSystemConfigModule } from '../modules/system_config.ts'
 import { createPikgModule, type PikgModuleDependencies } from '../modules/pikg.ts'
+import { type AppModuleDependencies, createAppModule } from '../modules/app.ts'
 
-export const VERSION = '0.1.0-phase2'
+export const VERSION = '0.1.0-phase3'
 
 export interface ToolStdio {
   stdout(value: string): Promise<void>
@@ -54,6 +55,7 @@ export interface ApplicationDependencies {
   confirmDeviceIdentity?: (identity: ImplicitDeviceIdentity) => Promise<boolean>
   repl?: typeof runRepl
   pikg?: PikgModuleDependencies
+  app?: AppModuleDependencies
 }
 
 export class BuckyOSToolApplication {
@@ -72,7 +74,7 @@ export class BuckyOSToolApplication {
   readonly #repl: typeof runRepl
 
   constructor(dependencies: ApplicationDependencies = {}) {
-    this.registry = createRegistry(dependencies.pikg)
+    this.registry = createRegistry(dependencies.pikg, dependencies.app)
     this.#environment = dependencies.environment ?? readEnvironment()
     this.#cwd = dependencies.cwd ?? Deno.cwd()
     this.#homeDir = dependencies.homeDir
@@ -390,13 +392,17 @@ export class BuckyOSToolApplication {
   }
 }
 
-export function createRegistry(pikgDependencies?: PikgModuleDependencies): CommandRegistry {
+export function createRegistry(
+  pikgDependencies?: PikgModuleDependencies,
+  appDependencies?: AppModuleDependencies,
+): CommandRegistry {
   const registry = new CommandRegistry()
   for (const module of createCoreModules(registry)) registry.register(module)
   registry.register(createAuthModule())
   registry.register(createPikgModule(pikgDependencies))
   registry.register(createSystemModule())
   registry.register(createSystemConfigModule())
+  registry.register(createAppModule(appDependencies))
   return registry
 }
 
