@@ -246,7 +246,7 @@ Installer 必须区分以下结果：
   - 但用户输入 app1.example.com的时候，系统会自动尝试did:web:app1.example.com
 - App Document Object ID；
 - App Document URL；
-- `.pikg` 内置的 `APPDOC.wt` 或 `APPDOC.json`；
+- `.pikg` 内置的 `APPDOC.jwt` 或 `APPDOC.json`；
 - 应用商店或订阅 Source；
 - Inclusion Proof 中引用的内容对象；
 - 好友分享、二维码、短码或 Inbox ActionObject；
@@ -430,7 +430,7 @@ pikg
 
 ```text
 example.pikg
-├── APPDOC.wt                 # 已签名 App Document，可选
+├── APPDOC.jwt                # 已签名 App Document，可选
 ├── APPDOC.json               # 未签名 App Document，可选
 ├── PACKAGE_META.json         # 包内 Package Meta 与内容索引
 ├── amd64_docker_image.tar.gz # 推荐：$sub_pkg_name.tar.gz
@@ -443,7 +443,7 @@ example.pikg
     └── ...
 ```
 
-一个合法 `.pikg` 必须至少包含 `APPDOC.wt` 或 `APPDOC.json` 之一。
+一个合法 `.pikg` 必须至少包含 `APPDOC.jwt` 或 `APPDOC.json` 之一。
 
 内置 subpackage 的文件命名与 hash 绑定规则如下：
 
@@ -455,13 +455,13 @@ example.pikg
 - Installer 必须重新计算归档文件 hash，并同时核对 Package Meta 和 `PACKAGE_META.json.content_index`。任一处的 hash、size 或路径不一致都必须判定为 `INVALID_PACKAGE`；
 - 若某类 subpackage 不能使用 `tar.gz`，Package Meta 必须显式声明实际 `format` 和 `path`。这属于例外，不改变 `$sub_pkg_name.tar.gz` 的首选规则。
 
-### 4.3 APPDOC.wt 与 APPDOC.json
+### 4.3 APPDOC.jwt 与 APPDOC.json
 
-- `APPDOC.wt`：签名封装版本，签名与编码规则遵循 BuckyOS DID Document Resolve 约定；
+- `APPDOC.jwt`：签名封装版本，签名与编码规则遵循 BuckyOS DID Document Resolve 约定；
 - `APPDOC.json`：未签名或开发态 JSON 版本；
 - 若两者同时存在，Installer 必须验证二者表达的规范化 App Document 一致；默认优先采用验证通过的签名版本；
 - `.pikg` 中的 App Document 只是一份候选 body，不因位于包内、带有签名或由可信 Source 下载就自动成为已发布结果；
-- `APPDOC.wt` 的签名只证明 owner 授权构造了该 body。公开安装还必须通过 `(App DID, "app")` 的发布状态、`expected_owner`、`doc_hash` 和 owner policy 校验；
+- `APPDOC.jwt` 的签名只证明 owner 授权构造了该 body。公开安装还必须通过 `(App DID, "app")` 的发布状态、`expected_owner`、`doc_hash` 和 owner policy 校验；
 - 权威源返回 `Active + doc_hash` 时，匹配该 hash 的包内 body 可以补齐权威结果；权威源返回 `Revoked` / `Tombstoned` 时必须拒绝包内 body；
 - 未签名 App Document 不等于格式非法，但只能在 `LOCAL_DEVELOPER` / `SYSTEM_INTERNAL` 等明确策略和本地认证上下文中安装，并必须标记为未发布或本地覆盖。
 
@@ -841,7 +841,7 @@ subpackage content
         ↓ generate
 Package Meta objects
         ↓ generate
-APPDOC.json or APPDOC.wt
+APPDOC.json or APPDOC.jwt
         ↓ pack
 local app.pikg
         ↓ install_package
@@ -1771,7 +1771,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - 首版容器固定为 ZIP（按需 ZIP64），MIME 为 `application/vnd.buckyos.pikg+zip`。`.pikg` 扩展名仅用于 UX；格式判断以容器 magic（`PK\x03\x04` local file header）与包内结构为准。
 - 格式版本由 `PACKAGE_META.json` 的 `@schema = buckyos.pikg.package-meta.v1` 表达；缺失或不识别的 `@schema` 判定 `INVALID_PACKAGE`。
 - entry 名必须是合法 UTF-8 的包内相对路径；拒绝绝对路径、`..` 路径段、反斜杠分隔符、NUL、重复 entry（含目录/文件类型冲突）与 symlink entry。
-- 首版限额：entry 总数 ≤ 4096；`APPDOC.wt` / `APPDOC.json` 单个 ≤ 1 MiB；`PACKAGE_META.json` 与 `objects/*.json` 单个 ≤ 8 MiB；结构化 metadata（上述文件）解压总量 ≤ 64 MiB。payload entry 流式读取校验，不整体载入内存；ZIP 声明 size 与实际解压字节数不一致判定 `INVALID_PACKAGE`。
+- 首版限额：entry 总数 ≤ 4096；`APPDOC.jwt` / `APPDOC.json` 单个 ≤ 1 MiB；`PACKAGE_META.json` 与 `objects/*.json` 单个 ≤ 8 MiB；结构化 metadata（上述文件）解压总量 ≤ 64 MiB。payload entry 流式读取校验，不整体载入内存；ZIP 声明 size 与实际解压字节数不一致判定 `INVALID_PACKAGE`。
 - payload entry 允许 stored 或 deflate 压缩方式；digest 的计算对象始终是 entry 解压后的字节（即 `$sub_pkg_name.tar.gz` 文件本身的最终压缩字节）。推荐 Packager 对已压缩的 `.tar.gz` payload 使用 stored。
 - `pikg_digest = sha256(整个 .pikg 文件字节)`，用于 staging 固定（防 TOCTOU）、安装记录与安装证明。
 
@@ -1780,7 +1780,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - 复用现有 `AppDoc`（PackageMeta flatten）；App DID 使用父链 `BaseContentObject` 已有的必填 `did` 字段，删除重复的 `AppDoc.id`，并保留必填 `doc_type`（固定 `"app"`）。反序列化时缺失 `did` / `doc_type`，或 `doc_type` 不为 `app`，一律拒绝。不另造第二套 App Document 类型。
 - canonical JSON 固定为 JCS（RFC 8785），实现即 `ndn-lib::build_named_object_by_json` 的 `serde_jcs` 路径；禁止对 `serde_json::to_string()` 结果直接做 hash。
 - App Document Object ID 的 obj type 固定为 `appdoc`：`ObjId = appdoc:hex(sha256(JCS(body)))`。Package Meta 沿用 `pkg` obj type 与同一 JCS 规则。
-- `APPDOC.wt`（JWT 封装）的 Object ID 对 JWT claims（payload JSON）按同一规则计算；`APPDOC.wt` 与 `APPDOC.json` 的一致性判断 = 两者 canonical JSON 相等（等价于 App Document Object ID 相等）。
+- `APPDOC.jwt`（JWT 封装）的 Object ID 对 JWT claims（payload JSON）按同一规则计算；`APPDOC.jwt` 与 `APPDOC.json` 的一致性判断 = 两者 canonical JSON 相等（等价于 App Document Object ID 相等）。
 - `version` 仅表示应用语义版本；`document_version / versionId` 仅存在于 resolver metadata 与 `DidResolutionSnapshot`，值等于发布文档的 revision `iat`，两者不得复用同一字段。
 - `pkg_list` 各 entry（SubPkgDesc）新增 `selector { os?, arch?, min_kernel_version? }` 与 `required`（省略视为 `true`）；已知 key（`amd64_docker_image`、`web`、`agent` 等）未显式声明 selector 时按固定命名表派生，未知 key 无显式 selector 时不参与自动选择。`pkg_objid`（Package Meta Object ID）与 `source_url`（内容获取位置）保持独立字段。
 - `permissions` 是 `PermissionItem[]`，每项只包含 `scope_path`、`required`、`actions` 与可选有效期 `exp`；旧 `PermissionRequest.grant/items/constraints` 结构已删除。InstallPlan 用 `permission_options` 暴露 AppDoc 候选，安装确认通过 `install_params.permissions` 提交完整批准条目；旧 `accepted_permissions` 字符串通道已删除。
@@ -1834,7 +1834,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 - JSON 规范化算法；
 - 数字、Unicode、字段顺序和空值处理；
-- `APPDOC.wt` 与 `APPDOC.json` 的一致性判断；
+- `APPDOC.jwt` 与 `APPDOC.json` 的一致性判断；
 - Package Meta Object ID 计算规则；
 - Hash 字段标准，例如 `digest: "sha256:..."`。
 

@@ -286,7 +286,7 @@ CANCELED
 
 ### P1.2 APPDOC 与 PACKAGE_META
 
-- [ ] 至少存在 `APPDOC.wt` 或 `APPDOC.json`。
+- [ ] 至少存在 `APPDOC.jwt` 或 `APPDOC.json`。
 - [ ] 两者同时存在时，用冻结后的 canonical 表达比较一致性；不允许“字段看起来差不多”即通过。
 - [ ] 包内 AppDoc 永远标为 candidate，不在 Reader 中赋予 `Active`。
 - [ ] `PACKAGE_META.json.@schema == buckyos.pikg.package-meta.v1`。

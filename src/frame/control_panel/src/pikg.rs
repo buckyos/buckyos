@@ -29,7 +29,7 @@ pub const PIKG_PACKAGE_META_SCHEMA: &str = "buckyos.pikg.package-meta.v1";
 pub const PIKG_MIME_TYPE: &str = "application/vnd.buckyos.pikg+zip";
 pub const PIKG_FILE_EXT: &str = "pikg";
 
-pub const APPDOC_WT_ENTRY: &str = "APPDOC.wt";
+pub const APPDOC_JWT_ENTRY: &str = "APPDOC.jwt";
 pub const APPDOC_JSON_ENTRY: &str = "APPDOC.json";
 pub const PACKAGE_META_ENTRY: &str = "PACKAGE_META.json";
 pub const OBJECTS_PREFIX: &str = "objects/";
@@ -43,6 +43,7 @@ pub const PIKG_MAX_METADATA_TOTAL_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
 
 const ZIP_LOCAL_MAGIC: [u8; 4] = [0x50, 0x4B, 0x03, 0x04];
 const HASH_BUF_SIZE: usize = 256 * 1024;
+const LEGACY_APPDOC_WT_ENTRY: &str = "APPDOC.wt";
 
 // ---------------------------------------------------------------------------
 // 错误
@@ -116,7 +117,7 @@ pub struct PikgInspection {
     pub pikg_digest: String,
     pub app_doc: AppDoc,
     pub app_doc_object_id: ObjId,
-    /// 包内是否带 `APPDOC.wt`（签名封装）。签名验证属于 Resolve/Verify。
+    /// 包内是否带 `APPDOC.jwt`（签名封装）。签名验证属于 Resolve/Verify。
     pub has_signed_app_doc: bool,
     pub signed_app_doc_jwt: Option<String>,
     pub package_meta: PikgPackageMetaFile,
@@ -238,14 +239,14 @@ fn chunk_id_matches_content(
 }
 
 fn is_metadata_entry(name: &str) -> bool {
-    name == APPDOC_WT_ENTRY
+    name == APPDOC_JWT_ENTRY
         || name == APPDOC_JSON_ENTRY
         || name == PACKAGE_META_ENTRY
         || (name.starts_with(OBJECTS_PREFIX) && name.ends_with(".json"))
 }
 
 fn metadata_entry_limit(name: &str) -> u64 {
-    if name == APPDOC_WT_ENTRY || name == APPDOC_JSON_ENTRY {
+    if name == APPDOC_JWT_ENTRY || name == APPDOC_JSON_ENTRY {
         PIKG_MAX_APPDOC_BYTES
     } else {
         PIKG_MAX_METADATA_ENTRY_BYTES
@@ -520,6 +521,11 @@ impl PikgReader {
             }
         }
 
+        if entry_index.contains_key(LEGACY_APPDOC_WT_ENTRY) {
+            return Err(invalid(
+                "legacy APPDOC.wt entry is not supported; use APPDOC.jwt",
+            ));
+        }
         if metadata_total > PIKG_MAX_METADATA_TOTAL_BYTES {
             return Err(invalid(format!(
                 "metadata total size {metadata_total} exceeds limit {PIKG_MAX_METADATA_TOTAL_BYTES}"
@@ -545,18 +551,19 @@ impl PikgReader {
             }
             None => None,
         };
-        let jwt_doc = match entry_index.get(APPDOC_WT_ENTRY).copied() {
+        let jwt_doc = match entry_index.get(APPDOC_JWT_ENTRY).copied() {
             Some(index) => {
                 let mut entry = archive
                     .by_index(index)
-                    .map_err(|err| io_err("open APPDOC.wt", err))?;
-                let bytes = read_entry_limited(&mut entry, PIKG_MAX_APPDOC_BYTES, APPDOC_WT_ENTRY)?;
+                    .map_err(|err| io_err("open APPDOC.jwt", err))?;
+                let bytes =
+                    read_entry_limited(&mut entry, PIKG_MAX_APPDOC_BYTES, APPDOC_JWT_ENTRY)?;
                 let jwt = String::from_utf8(bytes)
-                    .map_err(|_| invalid("APPDOC.wt is not utf-8"))?
+                    .map_err(|_| invalid("APPDOC.jwt is not utf-8"))?
                     .trim()
                     .to_string();
                 let claims = name_lib::decode_jwt_claim_without_verify(jwt.as_str())
-                    .map_err(|err| invalid(format!("APPDOC.wt is not a decodable jwt: {err}")))?;
+                    .map_err(|err| invalid(format!("APPDOC.jwt is not a decodable jwt: {err}")))?;
                 Some((jwt, claims))
             }
             None => None,
@@ -565,7 +572,7 @@ impl PikgReader {
         let (app_doc_value, has_signed, signed_jwt) = match (&json_doc, &jwt_doc) {
             (None, None) => {
                 return Err(invalid(
-                    "pikg must contain APPDOC.wt or APPDOC.json (none found)",
+                    "pikg must contain APPDOC.jwt or APPDOC.json (none found)",
                 ))
             }
             (Some(json_value), Some((jwt, claims))) => {
@@ -573,7 +580,7 @@ impl PikgReader {
                 let (jwt_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, claims);
                 if json_id != jwt_id {
                     return Err(invalid(
-                        "APPDOC.wt and APPDOC.json express different canonical documents",
+                        "APPDOC.jwt and APPDOC.json express different canonical documents",
                     ));
                 }
                 // 默认优先采用签名版本的 claims（内容与 json 等价）。
@@ -1192,11 +1199,11 @@ impl PikgBuilder {
 
         if let Some(jwt) = self.app_doc_jwt.as_ref() {
             writer
-                .start_file(APPDOC_WT_ENTRY, meta_options)
-                .map_err(|err| io_err("start APPDOC.wt", err))?;
+                .start_file(APPDOC_JWT_ENTRY, meta_options)
+                .map_err(|err| io_err("start APPDOC.jwt", err))?;
             writer
                 .write_all(jwt.as_bytes())
-                .map_err(|err| io_err("write APPDOC.wt", err))?;
+                .map_err(|err| io_err("write APPDOC.jwt", err))?;
         }
         if self.app_doc_value.is_some() {
             let body = serde_json::to_string_pretty(&app_doc_value)
@@ -1309,13 +1316,7 @@ mod tests {
         let digest_hex = sha256_file_hex(&payload_path).unwrap();
 
         let owner = DID::from_str("did:bns:tester").unwrap();
-        let mut meta = PackageMeta::new(
-            "tester_demo-web-web",
-            "0.1.0",
-            "tester",
-            &owner,
-            None,
-        );
+        let mut meta = PackageMeta::new("tester_demo-web-web", "0.1.0", "tester", &owner, None);
         meta.size = size;
         // content = sha256 chunk id，与 payload 一致，供 Verify 交叉校验。
         meta.content = format!("sha256:{digest_hex}");
@@ -1430,6 +1431,67 @@ mod tests {
         // 未知对象返回 None（不报错）。
         let missing = ObjId::new_by_raw("pkg".to_string(), vec![9u8; 32]);
         assert!(reader.read_object(&missing).await.unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&fixture.dir);
+    }
+
+    #[tokio::test]
+    async fn signed_appdoc_uses_jwt_entry_name() {
+        let fixture = build_fixture();
+        let app_doc_value = serde_json::to_value(&fixture.app_doc).unwrap();
+        let header = base64_url_encode(br#"{"alg":"EdDSA"}"#);
+        let payload = base64_url_encode(serde_json::to_string(&app_doc_value).unwrap().as_bytes());
+        let fake_jwt = format!("{header}.{payload}.c2ln");
+        let pikg_path = fixture.dir.join("signed.pikg");
+
+        let builder = PikgBuilder::new()
+            .app_doc(&fixture.app_doc)
+            .unwrap()
+            .app_doc_jwt(fake_jwt.clone());
+        let (builder, _meta_id) = builder
+            .add_package_meta_value(fixture.meta_value.clone())
+            .unwrap();
+        builder
+            .add_payload_file("web", fixture.payload_path.clone())
+            .unwrap()
+            .write_to(&pikg_path)
+            .await
+            .unwrap();
+
+        let mut archive = open_archive(&pikg_path).unwrap();
+        let entry_names = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect::<Vec<_>>();
+        assert!(entry_names.iter().any(|name| name == APPDOC_JWT_ENTRY));
+        assert!(!entry_names
+            .iter()
+            .any(|name| name == LEGACY_APPDOC_WT_ENTRY));
+
+        let reader = PikgReader::open(&pikg_path, None).await.unwrap();
+        assert!(reader.inspection().has_signed_app_doc);
+        assert_eq!(
+            reader.inspection().signed_app_doc_jwt.as_deref(),
+            Some(fake_jwt.as_str())
+        );
+
+        // 旧 entry 名不再兼容，也不能在 APPDOC.json 存在时静默降级。
+        let legacy_path = fixture.dir.join("legacy-wt.pikg");
+        rewrite_zip(
+            &pikg_path,
+            &legacy_path,
+            |name, bytes| {
+                if name == APPDOC_JWT_ENTRY {
+                    None
+                } else {
+                    Some(bytes)
+                }
+            },
+            vec![(LEGACY_APPDOC_WT_ENTRY.to_string(), fake_jwt.into_bytes())],
+        );
+        expect_invalid(
+            PikgReader::open(&legacy_path, None).await,
+            "legacy APPDOC.wt entry is not supported",
+        );
 
         let _ = std::fs::remove_dir_all(&fixture.dir);
     }
@@ -1591,7 +1653,7 @@ mod tests {
         let fixture = build_fixture();
         let pikg_path = build_valid_pikg(&fixture).await;
 
-        // 双 APPDOC 不一致：.wt claims 是另一个文档。
+        // 双 APPDOC 不一致：.jwt claims 是另一个文档。
         let other_owner = DID::from_str("did:bns:other").unwrap();
         let other_doc = AppDoc::builder(AppType::Web, "other-app", "9.9.9", "other", &other_owner)
             .web_pkg(SubPkgDesc::new("other_other-app-web#9.9.9"))
@@ -1607,7 +1669,7 @@ mod tests {
             &pikg_path,
             &bad,
             |_, bytes| Some(bytes),
-            vec![(APPDOC_WT_ENTRY.to_string(), fake_jwt.into_bytes())],
+            vec![(APPDOC_JWT_ENTRY.to_string(), fake_jwt.into_bytes())],
         );
         expect_invalid(
             PikgReader::open(&bad, None).await,
