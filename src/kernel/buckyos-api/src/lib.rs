@@ -311,9 +311,10 @@ mod tests {
 
     use super::{
         get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
-        parse_app_identity_from_instance_config, AppClass, AppDoc, AppServiceInstanceConfig,
-        AppServiceSpec, AppType, BuckyOSRuntimeType, ServiceInstanceState, ServiceSpecConfig,
-        ServiceState, SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
+        parse_app_identity_from_instance_config, AppClass, AppDoc, AppInstallationId,
+        AppInstallationScope, AppServiceInstanceConfig, AppServiceSpec, AppType,
+        BuckyOSRuntimeType, DeploymentIdentity, ServiceInstanceState, ServiceSpecConfig,
+        ServiceState, SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, OBJ_TYPE_APP_DOC,
     };
 
     fn test_env_lock() -> &'static Mutex<()> {
@@ -349,15 +350,36 @@ mod tests {
         .agent_pkg(SubPkgDesc::new("jarvis-agent#0.1.0"))
         .build()
         .expect("build app doc");
+        let installation_id = AppInstallationId::derive(
+            app_doc.app_did(),
+            &AppInstallationScope {
+                zone_did: DID::from_str("did:bns:test-zone").unwrap(),
+                owner_user_id: "devtest".to_string(),
+                app_class: AppClass::UserInstalled,
+            },
+        );
+        let app_doc_value = serde_json::to_value(&app_doc).unwrap();
+        let (app_doc_object_id, _) =
+            ndn_lib::build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
         let config = AppServiceInstanceConfig {
             target_state: ServiceInstanceState::Started,
             node_id: "ood1".to_string(),
             app_spec: AppServiceSpec {
+                installation_id: installation_id.clone(),
+                app_did: app_doc.app_did().clone(),
+                deployment: DeploymentIdentity {
+                    installation_id,
+                    task_id: "test:install".to_string(),
+                    app_doc_object_id,
+                    spec_generation: 1,
+                    pikg_digest: None,
+                },
                 permission: app_doc.permissions.clone(),
                 app_doc,
                 app_index: 1,
                 user_id: "devtest".to_string(),
                 app_class: AppClass::UserInstalled,
+                selected_components: Vec::new(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::Running,

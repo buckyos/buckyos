@@ -31,6 +31,8 @@ pub enum NormalizedIdentifier {
     ObjectId(ObjId),
     /// App Document / pikg URL：同上。
     Url(String),
+    /// 权威域名别名。必须经 name-client 查询 TXT 后才能得到 App DID。
+    DomainAlias(String),
 }
 
 fn is_key_class_did(did: &DID) -> bool {
@@ -72,13 +74,67 @@ pub fn normalize_identifier(raw: &str) -> Result<NormalizedIdentifier, InstallEr
         return Ok(NormalizedIdentifier::ObjectId(obj_id));
     }
 
-    // 裸名视为 BNS 名称。
+    // 含点裸名是权威域名别名，不能直接拼成 did:bns:*。
     if raw.contains('/') || raw.contains('\\') || raw.contains(char::is_whitespace) {
         return Err(invalid_request(format!(
             "identifier `{raw}` is not a did/name/objid/url"
         )));
     }
+    if raw.contains('.') {
+        return Ok(NormalizedIdentifier::DomainAlias(raw.to_ascii_lowercase()));
+    }
+    // 无点短名才按 BNS short name 处理。
     Ok(NormalizedIdentifier::AppDid(DID::new("bns", raw)))
+}
+
+fn app_did_from_alias_txt(value: &str) -> Option<DID> {
+    let value = value.trim().trim_matches('"');
+    let raw = value
+        .strip_prefix("buckyos-app-did=")
+        .or_else(|| value.strip_prefix("app-did="))
+        .unwrap_or(value)
+        .trim();
+    if !raw.starts_with("did:") {
+        return None;
+    }
+    DID::from_str(raw).ok().filter(|did| !is_key_class_did(did))
+}
+
+pub async fn resolve_domain_alias(alias: &str) -> Result<DID, InstallError> {
+    let invalid = |message: String| {
+        InstallError::new(
+            InstallStage::Resolve,
+            InstallErrorCode::InvalidRequest,
+            false,
+            message,
+        )
+    };
+    let answer = name_client::resolve(alias, Some(name_client::RecordType::TXT))
+        .await
+        .map_err(|error| {
+            invalid(format!(
+                "authoritative domain alias `{alias}` could not be resolved: {error}"
+            ))
+        })?;
+    let mut dids = answer
+        .txt
+        .iter()
+        .filter_map(|value| app_did_from_alias_txt(value))
+        .collect::<Vec<_>>();
+    dids.sort_by_key(DID::to_string);
+    dids.dedup();
+    match dids.len() {
+        1 => Ok(dids.remove(0)),
+        0 => Err(invalid(format!(
+            "authoritative domain alias `{alias}` has no buckyos-app-did TXT record"
+        ))),
+        _ => Err(InstallError::new(
+            InstallStage::Resolve,
+            InstallErrorCode::AmbiguousAppTarget,
+            false,
+            format!("authoritative domain alias `{alias}` names multiple App DIDs"),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +537,7 @@ impl AppDidResolver for NameClientAppResolver {
 // 测试 fake
 // ---------------------------------------------------------------------------
 
-#[cfg(any(test, feature = "testing"))]
+#[cfg(test)]
 pub mod fake {
     use super::*;
     use std::collections::HashMap;
@@ -629,6 +685,10 @@ mod tests {
         ));
         assert!(matches!(
             normalize_identifier("filebrowser.buckyos").unwrap(),
+            NormalizedIdentifier::DomainAlias(alias) if alias == "filebrowser.buckyos"
+        ));
+        assert!(matches!(
+            normalize_identifier("filebrowser").unwrap(),
             NormalizedIdentifier::AppDid(did) if did.method == "bns"
         ));
         assert!(matches!(
@@ -646,6 +706,25 @@ mod tests {
         assert!(normalize_identifier("did:key:z6Mk").is_err());
         assert!(normalize_identifier("").is_err());
         assert!(normalize_identifier("a/b").is_err());
+    }
+
+    #[test]
+    fn authoritative_alias_txt_only_accepts_app_dids() {
+        assert_eq!(
+            app_did_from_alias_txt("buckyos-app-did=did:bns:demo")
+                .unwrap()
+                .to_string(),
+            "did:bns:demo"
+        );
+        assert_eq!(
+            app_did_from_alias_txt("\"app-did=did:web:demo.example.com\"")
+                .unwrap()
+                .to_string(),
+            "did:web:demo.example.com"
+        );
+        assert!(app_did_from_alias_txt("https://example.com").is_none());
+        assert!(app_did_from_alias_txt("did:key:z6Mk").is_none());
+        assert!(app_did_from_alias_txt("did:dev:device").is_none());
     }
 
     #[test]

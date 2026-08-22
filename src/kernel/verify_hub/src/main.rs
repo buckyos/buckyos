@@ -476,6 +476,7 @@ async fn resolve_user_app_scope(
     let resolver = AppAvailabilityResolver::new(
         Arc::new(get_system_config_client().await?),
         env!("CARGO_PKG_VERSION"),
+        get_buckyos_api_runtime()?.zone_id.clone(),
     );
     if owner_user_id == SYSTEM_APP_OWNER_ID && is_system_login_target(appid) {
         if find_system_builtin_app(appid).is_none() {

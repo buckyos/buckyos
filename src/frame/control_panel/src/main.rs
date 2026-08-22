@@ -8,6 +8,7 @@ mod app_install_runner;
 mod app_installer;
 mod app_package_namespace;
 mod app_servcie_mgr;
+mod app_staging;
 mod dashboard;
 mod ndn_download;
 mod pikg;
@@ -37,7 +38,7 @@ use named_store::{
     NamedDataMgrNodeGateway, NamedDataMgrZoneGateway, NdmNodeGatewayConfig, NdmZoneGatewayConfig,
 };
 use serde_json::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -108,6 +109,7 @@ pub(crate) fn sn_self_cert_state_path() -> PathBuf {
 #[derive(Clone, Debug)]
 struct RpcAuthPrincipal {
     username: String,
+    authenticated_app_id: String,
     user_type: UserType,
     owner_did: String,
     is_user_session: bool,
@@ -221,6 +223,8 @@ struct ControlPanelServer {
     app_installer: app_installer::AppInstaller,
     install_engine: Arc<app_install_engine::InstallEngine>,
     install_runner: Arc<app_install_runner::InstallRunner>,
+    running_update_batch_tasks: Arc<tokio::sync::Mutex<HashSet<String>>>,
+    staging_store: Arc<app_staging::PikgStagingStore>,
     ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
     ndm_read_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
 }
@@ -229,9 +233,18 @@ impl ControlPanelServer {
     pub fn new() -> Self {
         let metrics_snapshot = Arc::new(RwLock::new(SystemMetricsSnapshot::default()));
         Self::start_metrics_sampler(metrics_snapshot.clone());
+        let staging_store = Arc::new(app_staging::PikgStagingStore::new());
+        let staging_gc = staging_store.clone();
+        tokio::spawn(async move {
+            if let Err(error) = staging_gc.gc().await {
+                log::warn!("pikg staging startup GC failed: {error}");
+            }
+        });
         let install_engine = Arc::new(app_install_engine::InstallEngine::new(
             Arc::new(app_install_engine::TaskMgrInstallStore),
-            Arc::new(app_install_driver::ProductionInstallDriver::new()),
+            Arc::new(app_install_driver::ProductionInstallDriver::new(
+                staging_store.clone(),
+            )),
         ));
         let install_runner = app_install_runner::InstallRunner::new(install_engine.clone());
         ControlPanelServer {
@@ -243,6 +256,8 @@ impl ControlPanelServer {
             app_installer: app_installer::AppInstaller::new(),
             install_engine,
             install_runner,
+            running_update_batch_tasks: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            staging_store,
             ndm_gateway: None,
             ndm_read_gateway: None,
         }
@@ -931,6 +946,7 @@ impl RPCHandler for ControlPanelServer {
             "apps.details" | "app.details" => {
                 self.handle_app_detials(req, principal.as_ref()).await
             }
+            "apps.status" | "app.status" => self.handle_apps_status(req, principal.as_ref()).await,
             "apps.availability.get" => {
                 self.handle_app_availability_get(req, principal.as_ref())
                     .await
@@ -945,10 +961,25 @@ impl RPCHandler for ControlPanelServer {
             }
             //"apps.version.list" => self.handle_apps_version_list(req).await,
             //AppInstaller
-            "apps.install" => self.handle_apps_install(req, principal.as_ref()).await,
-            "apps.install_package" => {
-                self.handle_apps_install_package(req, principal.as_ref())
+            "apps.staging.finalize" => {
+                self.handle_apps_staging_finalize(req, principal.as_ref())
                     .await
+            }
+            "apps.staging.status" => {
+                self.handle_apps_staging_status(req, principal.as_ref())
+                    .await
+            }
+            "apps.staging.release" => {
+                self.handle_apps_staging_release(req, principal.as_ref())
+                    .await
+            }
+            "apps.inspect" => self.handle_apps_inspect(req, principal.as_ref()).await,
+            "apps.plan.recompute" => {
+                self.handle_apps_plan_recompute(req, principal.as_ref())
+                    .await
+            }
+            "apps.submit" | "apps.install" => {
+                self.handle_apps_submit(req, principal.as_ref()).await
             }
             "apps.install.confirm" => {
                 self.handle_apps_install_confirm(req, principal.as_ref())
@@ -962,10 +993,22 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_apps_install_cancel(req, principal.as_ref())
                     .await
             }
-            "apps.update" => self.handle_apps_update(req, principal.as_ref()).await,
+            "apps.install.status" => {
+                self.handle_apps_install_status(req, principal.as_ref())
+                    .await
+            }
+            "apps.update.check" | "apps.upgrade.check" => {
+                self.handle_apps_update_availability(req, principal.as_ref())
+                    .await
+            }
+            "apps.upgrade" => {
+                self.handle_apps_upgrade_batch(req, principal.as_ref())
+                    .await
+            }
             "apps.uninstall" => self.handle_apps_uninstall(req, principal.as_ref()).await,
             "apps.start" => self.handle_apps_start(req, principal.as_ref()).await,
             "apps.stop" => self.handle_apps_stop(req, principal.as_ref()).await,
+            "apps.restart" => self.handle_apps_restart(req, principal.as_ref()).await,
             "app.publish" => self.handle_app_publish(req, principal.as_ref()).await,
 
             //ZoneMgr
@@ -1067,6 +1110,8 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     // 启动安装任务恢复循环；正常路径由业务 RPC 直接执行，TaskManager
     // 启动扫描/低频 sweep 恢复重启前或异常遗漏的非终态安装事务。
     control_panel_server.install_runner.start();
+    control_panel_server.app_installer.start_lifecycle_runner();
+    control_panel_server.start_update_batch_runner();
 
     // 初始化 NDM Zone Gateway（best-effort，named store 不可用时跳过）
     let runtime = get_buckyos_api_runtime()

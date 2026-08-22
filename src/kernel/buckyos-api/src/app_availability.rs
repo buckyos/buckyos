@@ -1,9 +1,11 @@
 use crate::{
-    AppDoc, AppServiceSpec, AppType, ServiceSpecConfig, ServiceState, SystemConfigClient,
-    SystemConfigError, UserSettings, UserState, UserType,
+    AppDoc, AppInstallationId, AppInstallationScope, AppServiceSpec, AppType, DeploymentIdentity,
+    ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError, UserSettings,
+    UserState, UserType, OBJ_TYPE_APP_DOC,
 };
 use ::kRPC::{RPCErrors, RPCSessionToken};
 use name_lib::DID;
+use ndn_lib::build_named_object_by_json;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -24,7 +26,7 @@ const SYSTEM_LOGIN_TARGETS: &[&str] = &["control-panel", "kernel", "system-confi
 
 const SYSTEM_APP_AUTHOR: &str = "did:bns:buckyos";
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum AppClass {
     SystemBuiltin,
@@ -211,6 +213,7 @@ pub fn token_app_instance_id(token: &RPCSessionToken) -> Result<&str, RPCErrors>
 pub fn build_system_builtin_app_spec(
     app_id: &str,
     version: &str,
+    zone_did: &DID,
 ) -> Result<AppServiceSpec, RPCErrors> {
     let descriptor = find_system_builtin_app(app_id)
         .ok_or_else(|| RPCErrors::ReasonError(format!("unknown system built-in app `{app_id}`")))?;
@@ -234,12 +237,38 @@ pub fn build_system_builtin_app_spec(
         ))
     })?;
 
+    let installation_id = AppInstallationId::derive(
+        app_doc.app_did(),
+        &AppInstallationScope {
+            zone_did: zone_did.clone(),
+            owner_user_id: SYSTEM_APP_OWNER_ID.to_string(),
+            app_class: AppClass::SystemBuiltin,
+        },
+    );
+    let app_doc_json = serde_json::to_value(&app_doc).map_err(|error| {
+        RPCErrors::ReasonError(format!(
+            "failed to encode system app doc `{app_id}`: {error}"
+        ))
+    })?;
+    let (app_doc_object_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_json);
+    let deployment = DeploymentIdentity {
+        installation_id: installation_id.clone(),
+        task_id: format!("bootstrap:{app_id}:{version}"),
+        app_doc_object_id,
+        spec_generation: 1,
+        pikg_digest: None,
+    };
+
     Ok(AppServiceSpec {
+        installation_id,
+        app_did: app_doc.app_did().clone(),
+        deployment,
         permission: app_doc.permissions.clone(),
         app_doc,
         app_index: descriptor.app_index,
         user_id: SYSTEM_APP_OWNER_ID.to_string(),
         app_class: AppClass::SystemBuiltin,
+        selected_components: Vec::new(),
         enable: true,
         expected_instance_count: 1,
         state: ServiceState::Running,
@@ -247,8 +276,8 @@ pub fn build_system_builtin_app_spec(
     })
 }
 
-pub fn app_instance_id(app_id: &str, owner_user_id: &str) -> String {
-    format!("{app_id}@{owner_user_id}")
+pub fn app_instance_id(installation_id: &str, owner_user_id: &str) -> String {
+    format!("{installation_id}@{owner_user_id}")
 }
 
 pub fn parse_app_instance_id(value: &str) -> Result<(String, String), RPCErrors> {
@@ -267,9 +296,16 @@ pub fn parse_app_instance_id(value: &str) -> Result<(String, String), RPCErrors>
                 .chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
     };
-    if !valid_component(app_id, 128) || !valid_component(owner_user_id, 64) {
+    if !valid_component(owner_user_id, 64) {
         return Err(RPCErrors::ParseRequestError(
-            "app_instance_id contains invalid app or owner characters".into(),
+            "app_instance_id contains invalid owner characters".into(),
+        ));
+    }
+    if AppInstallationId::new(app_id.to_string()).is_err()
+        && !(owner_user_id == SYSTEM_APP_OWNER_ID && valid_component(app_id, 128))
+    {
+        return Err(RPCErrors::ParseRequestError(
+            "app_instance_id must contain a canonical AppInstallationId".into(),
         ));
     }
     Ok((app_id.to_string(), owner_user_id.to_string()))
@@ -483,13 +519,19 @@ pub fn validate_availability_rules(
 pub struct AppAvailabilityResolver {
     client: Arc<SystemConfigClient>,
     system_version: String,
+    zone_did: DID,
 }
 
 impl AppAvailabilityResolver {
-    pub fn new(client: Arc<SystemConfigClient>, system_version: impl Into<String>) -> Self {
+    pub fn new(
+        client: Arc<SystemConfigClient>,
+        system_version: impl Into<String>,
+        zone_did: DID,
+    ) -> Self {
         Self {
             client,
             system_version: system_version.into(),
+            zone_did,
         }
     }
 
@@ -515,11 +557,18 @@ impl AppAvailabilityResolver {
     ) -> Result<ResolvedAppInstallation, RPCErrors> {
         let (app_id, owner_user_id) = parse_app_instance_id(app_instance_id)?;
         if owner_user_id == SYSTEM_APP_OWNER_ID {
-            if find_system_builtin_app(&app_id).is_some() {
-                return Ok(ResolvedAppInstallation {
-                    spec: build_system_builtin_app_spec(&app_id, &self.system_version)?,
-                    spec_path: format!("system/apps/{app_id}/spec"),
-                });
+            for descriptor in SYSTEM_BUILTIN_APPS {
+                let spec = build_system_builtin_app_spec(
+                    descriptor.app_id,
+                    &self.system_version,
+                    &self.zone_did,
+                )?;
+                if spec.installation_id.as_str() == app_id {
+                    return Ok(ResolvedAppInstallation {
+                        spec,
+                        spec_path: format!("system/apps/{}/spec", descriptor.app_id),
+                    });
+                }
             }
             let spec_path = zone_app_spec_key(&app_id);
             let value = self.client.get(&spec_path).await.map_err(|error| {
@@ -646,7 +695,11 @@ impl AppAvailabilityResolver {
         let mut candidates = BTreeMap::<String, ResolvedAppInstallation>::new();
 
         for descriptor in SYSTEM_BUILTIN_APPS {
-            let spec = build_system_builtin_app_spec(descriptor.app_id, &self.system_version)?;
+            let spec = build_system_builtin_app_spec(
+                descriptor.app_id,
+                &self.system_version,
+                &self.zone_did,
+            )?;
             candidates.insert(
                 spec.app_instance_id(),
                 ResolvedAppInstallation {
@@ -736,19 +789,39 @@ mod tests {
         let app_doc = AppDoc::builder(AppType::Service, "notes", "1.0.0", owner, &owner_did)
             .build()
             .unwrap();
+        let installation_id = AppInstallationId::derive(
+            app_doc.app_did(),
+            &AppInstallationScope {
+                zone_did: DID::new("bns", "test-zone"),
+                owner_user_id: owner.to_string(),
+                app_class: AppClass::UserInstalled,
+            },
+        );
+        let app_doc_value = serde_json::to_value(&app_doc).unwrap();
+        let (app_doc_object_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
         ResolvedAppInstallation {
             spec: AppServiceSpec {
+                installation_id: installation_id.clone(),
+                app_did: app_doc.app_did().clone(),
+                deployment: DeploymentIdentity {
+                    installation_id: installation_id.clone(),
+                    task_id: "test:install".to_string(),
+                    app_doc_object_id,
+                    spec_generation: 1,
+                    pikg_digest: None,
+                },
                 permission: Vec::new(),
                 app_doc,
                 app_index: 1,
                 user_id: owner.to_string(),
                 app_class: AppClass::UserInstalled,
+                selected_components: Vec::new(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::Running,
                 spec_config: ServiceSpecConfig::default(),
             },
-            spec_path: user_app_spec_key(owner, "notes"),
+            spec_path: user_app_spec_key(owner, installation_id.as_str()),
         }
     }
 
@@ -759,7 +832,7 @@ mod tests {
         let app = installation("alice");
         let policy = AppAvailabilityPolicy {
             schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
-            app_instance_id: "notes@alice".to_string(),
+            app_instance_id: app.spec.app_instance_id(),
             default_effect: AvailabilityEffect::Deny,
             group_rules: vec![AppAvailabilityGroupRule {
                 group_id: "users".to_string(),
@@ -811,7 +884,7 @@ mod tests {
         );
         let policy = AppAvailabilityPolicy {
             schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
-            app_instance_id: "notes@alice".to_string(),
+            app_instance_id: app.spec.app_instance_id(),
             default_effect: AvailabilityEffect::Deny,
             group_rules: vec![AppAvailabilityGroupRule {
                 group_id: "users".to_string(),
@@ -861,7 +934,7 @@ mod tests {
 
         let policy = AppAvailabilityPolicy {
             schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
-            app_instance_id: "notes@alice".to_string(),
+            app_instance_id: app.spec.app_instance_id(),
             default_effect: AvailabilityEffect::Deny,
             group_rules: vec![AppAvailabilityGroupRule {
                 group_id: "limited".to_string(),
@@ -885,7 +958,7 @@ mod tests {
         let app = installation("alice");
         let policy = AppAvailabilityPolicy {
             schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
-            app_instance_id: "notes@alice".to_string(),
+            app_instance_id: app.spec.app_instance_id(),
             default_effect: AvailabilityEffect::Deny,
             group_rules: vec![AppAvailabilityGroupRule {
                 group_id: "users".to_string(),
@@ -931,19 +1004,31 @@ mod tests {
 
     #[test]
     fn app_instance_id_rejects_path_components() {
+        let installation_id = AppInstallationId::new(format!("appinst:{}", "ab".repeat(32)))
+            .unwrap();
         assert_eq!(
-            parse_app_instance_id("demo-app@alice").unwrap(),
-            ("demo-app".to_string(), "alice".to_string())
+            parse_app_instance_id(&format!("{installation_id}@alice")).unwrap(),
+            (installation_id.to_string(), "alice".to_string())
         );
+        assert_eq!(
+            parse_app_instance_id("control-panel@system").unwrap(),
+            ("control-panel".to_string(), "system".to_string())
+        );
+        assert!(parse_app_instance_id("demo-app@alice").is_err());
         assert!(parse_app_instance_id("../../spec@alice").is_err());
-        assert!(parse_app_instance_id("demo@app/owner").is_err());
+        assert!(parse_app_instance_id(&format!("{installation_id}@app/owner")).is_err());
     }
 
     #[test]
     fn system_and_zone_apps_allow_active_users_but_not_guest() {
         let bob = settings("bob", UserType::User, UserState::Active);
         let system = ResolvedAppInstallation {
-            spec: build_system_builtin_app_spec("messagehub", "1.0.0").unwrap(),
+            spec: build_system_builtin_app_spec(
+                "messagehub",
+                "1.0.0",
+                &DID::from_str("did:bns:test-zone").unwrap(),
+            )
+            .unwrap(),
             spec_path: "system/apps/messagehub/spec".to_string(),
         };
         let system_decision = evaluate_app_availability(Some(&bob), "bob", None, &system, None);
@@ -970,7 +1055,7 @@ mod tests {
         let app = installation("alice");
         let policy = AppAvailabilityPolicy {
             schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
-            app_instance_id: "notes@alice".to_string(),
+            app_instance_id: app.spec.app_instance_id(),
             default_effect: AvailabilityEffect::Deny,
             group_rules: vec![AppAvailabilityGroupRule {
                 group_id: "guest".to_string(),

@@ -11,11 +11,12 @@
 
 use async_trait::async_trait;
 use buckyos_api::{
-    AppInstallTaskData, InstallApproval, InstallError, InstallErrorCode, InstallParams,
-    InstallPlan, InstallReadiness, InstallStage, InstallTarget, InstallTaskResult,
-    InstallTransactionState, InstallUserAction, PreparedDeployment, TaskOutcome,
-    TaskPhase, TaskWaitReason, TaskWaitReasonKind,
-    APP_INSTALL_SCHEMA_VERSION, TASK_DATA_TYPE_APP_INSTALL, TASK_DATA_TYPE_APP_UPDATE,
+    AppInstallDisplayProgress, AppInstallProgressEnvelope, AppInstallStatusSnapshot,
+    AppInstallTaskData, AppInstallTerminalOutput, InstallApproval, InstallError, InstallErrorCode,
+    InstallInspection, InstallPlanStatus, InstallReadiness, InstallStage, InstallTaskResult,
+    InstallTransactionState, InstallUserAction, PreparedDeployment, TaskDataProgress, TaskExecutor,
+    TaskOutcome, TaskPhase, TaskWaitReason, TaskWaitReasonKind, APP_INSTALL_SCHEMA_VERSION,
+    TASK_DATA_TYPE_APP_INSTALL, TASK_DATA_TYPE_APP_UPDATE,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
@@ -45,14 +46,16 @@ impl InstallTaskStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            InstallTaskStatus::Completed
-                | InstallTaskStatus::Failed
-                | InstallTaskStatus::Canceled
+            InstallTaskStatus::Completed | InstallTaskStatus::Failed | InstallTaskStatus::Canceled
         )
     }
 
     /// Project the 2.0 composite state into the engine vocabulary.
-    pub fn from_task(phase: TaskPhase, outcome: Option<TaskOutcome>, wait: Option<&TaskWaitReason>) -> Self {
+    pub fn from_task(
+        phase: TaskPhase,
+        outcome: Option<TaskOutcome>,
+        wait: Option<&TaskWaitReason>,
+    ) -> Self {
         match (phase, outcome) {
             (TaskPhase::Terminal, Some(TaskOutcome::Succeeded)) => InstallTaskStatus::Completed,
             (TaskPhase::Terminal, Some(TaskOutcome::Canceled)) => InstallTaskStatus::Canceled,
@@ -77,12 +80,20 @@ impl InstallTaskStatus {
 #[derive(Debug, Clone)]
 pub struct InstallTaskView {
     pub id: String,
+    pub parent_id: Option<String>,
     pub root_id: String,
     pub task_type: String,
     pub status: InstallTaskStatus,
     pub user_id: String,
     pub app_id: String,
     pub data: Value,
+    pub phase: TaskPhase,
+    pub outcome: Option<TaskOutcome>,
+    pub wait_reason: Option<TaskWaitReason>,
+    pub revision: u64,
+    pub runner_epoch: u64,
+    pub display: Option<AppInstallDisplayProgress>,
+    pub updated_at: u64,
 }
 
 #[async_trait]
@@ -94,6 +105,9 @@ pub trait InstallTaskStore: Send + Sync {
         data: Value,
         user_id: &str,
         app_id: &str,
+        idempotency_key: &str,
+        parent_id: Option<&str>,
+        retry_of: Option<&str>,
     ) -> Result<String, InstallError>;
     async fn load(&self, task_id: &str) -> Result<InstallTaskView, InstallError>;
     /// 写入完整事务快照，使 Task.progress 与事务结构严格一致。
@@ -105,6 +119,14 @@ pub trait InstallTaskStore: Send + Sync {
         progress: Option<f32>,
         message: Option<String>,
     ) -> Result<(), InstallError>;
+    async fn request_cancel(
+        &self,
+        _task_id: &str,
+        _controller_user_id: &str,
+        _controller_app_id: &str,
+    ) -> Result<(), InstallError> {
+        Ok(())
+    }
     /// 本 runner 名下全部非终态 install/update 任务。
     async fn list_active(&self) -> Result<Vec<InstallTaskView>, InstallError>;
 }
@@ -138,14 +160,14 @@ pub trait InstallStageDriver: Send + Sync {
         &self,
         view: &InstallTaskView,
         data: &AppInstallTaskData,
-    ) -> Result<Option<InstallPlan>, InstallError>;
+    ) -> Result<Option<InstallInspection>, InstallError>;
 
-    /// 补齐 plan.missing；返回内容位置已刷新、readiness 已重组的 plan。
+    /// 补齐动态 status 中的 missing 内容；不可修改已批准的 immutable plan。
     async fn acquire(
         &self,
         view: &InstallTaskView,
         data: &AppInstallTaskData,
-    ) -> Result<InstallPlan, InstallError>;
+    ) -> Result<InstallPlanStatus, InstallError>;
 
     async fn verify(
         &self,
@@ -178,6 +200,14 @@ pub trait InstallStageDriver: Send + Sync {
         view: &InstallTaskView,
         data: &AppInstallTaskData,
     ) -> Result<(), InstallError>;
+
+    async fn release_staging(
+        &self,
+        _view: &InstallTaskView,
+        _data: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +272,84 @@ impl InstallEngine {
         &self.store
     }
 
+    /// Side-effect-free Resolve + Inspect path used by Tool fetch/dry-run.
+    /// It does not create a Task and never reaches Acquire/Prepare/Deploy.
+    pub async fn inspect_request(
+        &self,
+        request: buckyos_api::AppInstallTaskRequest,
+        task_type: &str,
+    ) -> Result<InstallInspection, InstallError> {
+        let mut state = Self::initial_state_from_options(request.options.as_ref())?;
+        if let Some(plan) = request.submitted_plan.as_ref() {
+            state.requested_target = Some(plan.target.clone());
+            state.requested_params = Some(plan.install_params.clone());
+        }
+        let mut data = AppInstallTaskData {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
+            request,
+            state,
+        };
+        let view = InstallTaskView {
+            id: "inspect-only".to_string(),
+            parent_id: None,
+            root_id: "inspect-only".to_string(),
+            task_type: task_type.to_string(),
+            status: InstallTaskStatus::Pending,
+            user_id: data.request.creator_user_id.clone(),
+            app_id: data.request.creator_app_id.clone(),
+            data: serde_json::to_value(&data)
+                .map_err(|err| internal_error(InstallStage::Resolve, err.to_string()))?,
+            phase: TaskPhase::Accepted,
+            outcome: None,
+            wait_reason: None,
+            revision: 0,
+            runner_epoch: 0,
+            display: None,
+            updated_at: buckyos_get_unix_timestamp(),
+        };
+        let resolved = self.driver.resolve(&view, &data).await?;
+        data.state.candidate = resolved.candidate;
+        data.state.resolution = Some(resolved.resolution);
+        data.state.resolved_app_doc = resolved.resolved_app_doc;
+        self.driver.inspect(&view, &data).await?.ok_or_else(|| {
+            InstallError::new(
+                InstallStage::Resolve,
+                InstallErrorCode::TrustResolutionRequired,
+                true,
+                "DID resolution did not return an inspectable App Document",
+            )
+        })
+    }
+
+    pub async fn status(
+        &self,
+        task_id: &str,
+        requested_by: &str,
+        requester_is_admin: bool,
+    ) -> Result<AppInstallStatusSnapshot, InstallError> {
+        let view = self.store.load(task_id).await?;
+        self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
+        let data = self.parse_data(&view)?;
+        let display = view.display.as_ref();
+        let progress = display.map(|display| TaskDataProgress {
+            message: display.message.clone(),
+            updated_at: Some(display.updated_at as i64),
+            ..Default::default()
+        });
+        Ok(buckyos_api::build_install_status_snapshot(
+            view.id,
+            view.phase,
+            view.outcome,
+            view.wait_reason.as_ref(),
+            data.request.user_id.as_str(),
+            &data.request.source,
+            data.request.policy,
+            &data.state,
+            progress,
+            view.updated_at,
+        ))
+    }
+
     fn initial_state_from_options(
         options: Option<&Value>,
     ) -> Result<InstallTransactionState, InstallError> {
@@ -293,8 +401,30 @@ impl InstallEngine {
         request: buckyos_api::AppInstallTaskRequest,
         app_hint: &str,
     ) -> Result<String, InstallError> {
-        let user_id = request.user_id.clone();
-        let state = Self::initial_state_from_options(request.options.as_ref())?;
+        let user_id = request.creator_user_id.clone();
+        let creator_app_id = request.creator_app_id.clone();
+        let idempotency_key = request.idempotency_key.clone();
+        let mut state = Self::initial_state_from_options(request.options.as_ref())?;
+        if let Some(plan) = request.submitted_plan.as_ref() {
+            if plan.schema_version != APP_INSTALL_SCHEMA_VERSION || !plan.fingerprint_is_valid() {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::PlanStale,
+                    false,
+                    "submitted plan schema or fingerprint is invalid",
+                ));
+            }
+            if plan.plan_use != buckyos_api::InstallPlanUse::FreshInstall {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::PlanNotApplicable,
+                    false,
+                    "only a FreshInstall plan can be submitted for first installation",
+                ));
+            }
+            state.requested_target = Some(plan.target.clone());
+            state.requested_params = Some(plan.install_params.clone());
+        }
         let data = AppInstallTaskData {
             schema_version: APP_INSTALL_SCHEMA_VERSION,
             request,
@@ -309,7 +439,10 @@ impl InstallEngine {
                 serde_json::to_value(&data)
                     .map_err(|err| internal_error(InstallStage::Resolve, err.to_string()))?,
                 user_id.as_str(),
-                app_hint,
+                creator_app_id.as_str(),
+                idempotency_key.as_str(),
+                None,
+                None,
             )
             .await?;
         Ok(task_id)
@@ -321,7 +454,19 @@ impl InstallEngine {
         request: buckyos_api::AppUpdateTaskRequest,
         app_hint: &str,
     ) -> Result<String, InstallError> {
-        let user_id = request.user_id.clone();
+        self.create_update_task_with_parent(request, app_hint, None)
+            .await
+    }
+
+    pub async fn create_update_task_with_parent(
+        &self,
+        request: buckyos_api::AppUpdateTaskRequest,
+        app_hint: &str,
+        parent_id: Option<&str>,
+    ) -> Result<String, InstallError> {
+        let user_id = request.creator_user_id.clone();
+        let creator_app_id = request.creator_app_id.clone();
+        let idempotency_key = request.idempotency_key.clone();
         let state = Self::initial_state_from_options(request.options.as_ref())?;
         let data = buckyos_api::AppUpdateTaskData {
             schema_version: APP_INSTALL_SCHEMA_VERSION,
@@ -337,7 +482,10 @@ impl InstallEngine {
                 serde_json::to_value(&data)
                     .map_err(|err| internal_error(InstallStage::Resolve, err.to_string()))?,
                 user_id.as_str(),
-                app_hint,
+                creator_app_id.as_str(),
+                idempotency_key.as_str(),
+                parent_id,
+                None,
             )
             .await?;
         Ok(task_id)
@@ -424,7 +572,7 @@ impl InstallEngine {
                     data.state.resolved_app_doc = outcome.resolved_app_doc;
                     data.state.last_error = None;
                     data.state.mark_stage_completed(InstallStage::Resolve);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
 
                     // app_did 已知：同一 user + App DID 只允许一个事务。
                     self.ensure_single_transaction(&view, &data).await?;
@@ -440,7 +588,7 @@ impl InstallEngine {
                     }
                 }
                 InstallStage::Inspect => {
-                    let Some(plan) = self.driver.inspect(&view, &data).await? else {
+                    let Some(inspection) = self.driver.inspect(&view, &data).await? else {
                         let error = InstallError::new(
                             InstallStage::Resolve,
                             InstallErrorCode::TrustResolutionRequired,
@@ -449,7 +597,7 @@ impl InstallEngine {
                         )
                         .with_action(InstallUserAction::ConnectNetwork);
                         data.state.last_error = Some(error);
-                        self.persist(&task_id, &data).await?;
+                        self.persist(&task_id, &mut data).await?;
                         let _ = self
                             .store
                             .set_status(
@@ -461,12 +609,46 @@ impl InstallEngine {
                             .await;
                         return Ok(RunOutcome::Waiting);
                     };
-                    data.state.plan = Some(plan);
+                    if let Some(submitted) = data.request.submitted_plan.as_ref() {
+                        if submitted != &inspection.plan {
+                            return Err(InstallError::new(
+                                InstallStage::Inspect,
+                                InstallErrorCode::PlanStale,
+                                false,
+                                "submitted plan no longer matches authoritative inspection",
+                            ));
+                        }
+                    }
+                    if let Some(approved_fingerprint) =
+                        data.request.approved_plan_fingerprint.as_deref()
+                    {
+                        if approved_fingerprint != inspection.plan.plan_fingerprint {
+                            return Err(InstallError::new(
+                                InstallStage::Inspect,
+                                InstallErrorCode::PlanStale,
+                                false,
+                                "approved fingerprint does not match authoritative inspection",
+                            ));
+                        }
+                        data.state.approval = Some(InstallApproval {
+                            plan_fingerprint: inspection.plan.plan_fingerprint.clone(),
+                            target: inspection.plan.target.clone(),
+                            install_params: inspection.plan.install_params.clone(),
+                            approved_by: data.request.user_id.clone(),
+                            approved_at: buckyos_get_unix_timestamp(),
+                            auto_confirmed: false,
+                        });
+                    }
+                    data.state.plan = Some(inspection.plan);
+                    data.state.plan_status = Some(inspection.status);
                     data.state.mark_stage_completed(InstallStage::Inspect);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
 
                     let plan = data.state.plan.as_ref().unwrap();
-                    match plan.readiness.install {
+                    let plan_status = data.state.plan_status.as_ref().ok_or_else(|| {
+                        internal_error(InstallStage::Inspect, "inspection status missing")
+                    })?;
+                    match plan_status.readiness.install {
                         InstallReadiness::IdentityRevoked => {
                             return Err(InstallError::from_document_status(
                                 InstallStage::Inspect,
@@ -504,7 +686,7 @@ impl InstallEngine {
                             )
                             .with_action(InstallUserAction::ConnectNetwork);
                             data.state.last_error = Some(error);
-                            self.persist(&task_id, &data).await?;
+                            self.persist(&task_id, &mut data).await?;
                             let _ = self
                                 .store
                                 .set_status(
@@ -528,17 +710,25 @@ impl InstallEngine {
                         ApprovalGate::Waiting => return Ok(RunOutcome::WaitingForApproval),
                     }
 
-                    let updated_plan = self.driver.acquire(&view, &data).await?;
-                    data.state.plan = Some(updated_plan);
+                    let updated_status = self.driver.acquire(&view, &data).await?;
+                    if updated_status.plan_fingerprint
+                        != data.state.plan.as_ref().unwrap().plan_fingerprint
+                    {
+                        return Err(internal_error(
+                            InstallStage::Acquire,
+                            "acquire changed immutable plan fingerprint",
+                        ));
+                    }
+                    data.state.plan_status = Some(updated_status);
                     data.state.mark_stage_completed(InstallStage::Acquire);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
                 }
                 InstallStage::Verify => {
                     let report = self.driver.verify(&view, &data).await?;
                     let passed = report.passed;
                     data.state.verification = Some(report);
                     if !passed {
-                        self.persist(&task_id, &data).await?;
+                        self.persist(&task_id, &mut data).await?;
                         return Err(InstallError::new(
                             InstallStage::Verify,
                             InstallErrorCode::VerificationFailed,
@@ -547,36 +737,35 @@ impl InstallEngine {
                         ));
                     }
                     // Trust + Content + Config 全 ready 才进入 Prepare。
-                    let plan = data
-                        .state
-                        .plan
-                        .as_ref()
-                        .ok_or_else(|| internal_error(InstallStage::Verify, "plan missing"))?;
-                    if !plan.readiness.install.is_ready() {
-                        self.persist(&task_id, &data).await?;
+                    let status = data.state.plan_status.as_ref().ok_or_else(|| {
+                        internal_error(InstallStage::Verify, "plan status missing")
+                    })?;
+                    let install_readiness = status.readiness.install;
+                    if !install_readiness.is_ready() {
+                        self.persist(&task_id, &mut data).await?;
                         return Err(InstallError::new(
                             InstallStage::Verify,
                             InstallErrorCode::VerificationFailed,
                             true,
                             format!(
                                 "plan readiness is {:?} after acquisition; refusing to prepare",
-                                plan.readiness.install
+                                install_readiness
                             ),
                         ));
                     }
                     data.state.mark_stage_completed(InstallStage::Verify);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
                 }
                 InstallStage::Prepare => {
                     let prepared = self.driver.prepare(&view, &data).await?;
                     data.state.prepared = Some(prepared);
                     data.state.mark_stage_completed(InstallStage::Prepare);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
                 }
                 InstallStage::Deploy => {
                     self.driver.deploy(&view, &data).await?;
                     data.state.mark_stage_completed(InstallStage::Deploy);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
                 }
                 InstallStage::Activate => {
                     let activate_result = self.driver.activate(&view, &data).await;
@@ -593,7 +782,7 @@ impl InstallEngine {
                                 .unwrap_or(false);
                             if view.task_type == TASK_DATA_TYPE_APP_UPDATE && has_previous {
                                 data.state.last_error = Some(error.clone());
-                                self.persist(&task_id, &data).await?;
+                                self.persist(&task_id, &mut data).await?;
                                 if let Err(rollback_err) =
                                     self.driver.rollback_deploy(&view, &data).await
                                 {
@@ -604,7 +793,7 @@ impl InstallEngine {
                                     // 旧 spec 已恢复：Deploy 输出失效，retry 时
                                     // 必须重写新 spec 再 Activate。
                                     data.state.invalidate_from(InstallStage::Deploy);
-                                    self.persist(&task_id, &data).await?;
+                                    self.persist(&task_id, &mut data).await?;
                                 }
                             }
                             return Err(error);
@@ -612,7 +801,8 @@ impl InstallEngine {
                     };
                     data.state.result = Some(result);
                     data.state.mark_stage_completed(InstallStage::Activate);
-                    self.persist(&task_id, &data).await?;
+                    self.persist(&task_id, &mut data).await?;
+                    self.driver.release_staging(&view, &data).await?;
                     let _ = self
                         .store
                         .set_status(
@@ -634,15 +824,14 @@ impl InstallEngine {
 
     // -------------------- 确认 / 重试 / 取消 --------------------
 
-    /// 用户确认：绑定当前 plan fingerprint；target/params 变化时重算 plan
-    /// 后绑定新 fingerprint（禁止在旧 plan 上 patch）。
+    /// 用户确认只绑定已展示的 plan fingerprint。参数变化必须先走独立
+    /// recompute 接口，confirm 不得一边修改计划一边批准。
     pub async fn confirm(
         &self,
         task_id: &str,
         approved_by: &str,
         approver_is_admin: bool,
-        target: Option<InstallTarget>,
-        install_params: Option<InstallParams>,
+        plan_fingerprint: &str,
     ) -> Result<(), InstallError> {
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, approved_by, approver_is_admin)?;
@@ -658,64 +847,42 @@ impl InstallEngine {
             ));
         }
         let mut data = self.parse_data(&view)?;
-        let current_plan = data.state.plan.clone().ok_or_else(|| {
+        let plan = data.state.plan.clone().ok_or_else(|| {
             internal_error(InstallStage::Inspect, "waiting task has no persisted plan")
         })?;
-
-        let target_changed = target
-            .as_ref()
-            .map(|value| *value != current_plan.target)
-            .unwrap_or(false);
-        let params_changed = install_params
-            .as_ref()
-            .map(|value| *value != current_plan.install_params)
-            .unwrap_or(false);
-
-        let plan = if target_changed || params_changed {
-            // 参数变化：从 Inspect 失效并用新参数重算 plan。
-            if let Some(target) = target.clone() {
-                data.state.requested_target = Some(target);
-            }
-            if let Some(params) = install_params.clone() {
-                data.state.requested_params = Some(params);
-            }
-            data.state.invalidate_from(InstallStage::Inspect);
-            let plan = self.driver.inspect(&view, &data).await?.ok_or_else(|| {
-                InstallError::new(
-                    InstallStage::Inspect,
-                    InstallErrorCode::TrustResolutionRequired,
-                    true,
-                    "DID resolution did not return an installable App Document",
-                )
-            })?;
-            data.state.plan = Some(plan.clone());
-            data.state.mark_stage_completed(InstallStage::Inspect);
-            plan
-        } else {
-            current_plan
-        };
-
-        if !plan.readiness.target.is_ready() {
-            data.state.plan = Some(plan.clone());
+        if plan.plan_fingerprint != plan_fingerprint {
+            return Err(InstallError::new(
+                InstallStage::Inspect,
+                InstallErrorCode::PlanStale,
+                false,
+                "approved fingerprint does not match the persisted plan",
+            ));
+        }
+        let status = data.state.plan_status.clone().ok_or_else(|| {
+            internal_error(
+                InstallStage::Inspect,
+                "waiting task has no persisted inspection",
+            )
+        })?;
+        if !status.readiness.target.is_ready() {
             data.state.approval = None;
-            self.persist(&task_id, &data).await?;
+            self.persist(&task_id, &mut data).await?;
             return Err(InstallError::new(
                 InstallStage::Inspect,
                 InstallErrorCode::UnsupportedTarget,
                 false,
-                plan.target_issues.join("; "),
+                status.target_issues.join("; "),
             )
             .with_action(InstallUserAction::ChangeTarget));
         }
-        if !plan.readiness.config.is_ready() {
-            data.state.plan = Some(plan.clone());
+        if !status.readiness.config.is_ready() {
             data.state.approval = None;
-            self.persist(&task_id, &data).await?;
+            self.persist(&task_id, &mut data).await?;
             return Err(InstallError::new(
                 InstallStage::Inspect,
                 InstallErrorCode::ConfigBlocked,
                 false,
-                plan.config_issues.join("; "),
+                status.config_issues.join("; "),
             )
             .with_action(InstallUserAction::Confirm));
         }
@@ -729,7 +896,7 @@ impl InstallEngine {
             auto_confirmed: false,
         });
         data.state.last_error = None;
-        self.persist(&task_id, &data).await?;
+        self.persist(&task_id, &mut data).await?;
         self.store
             .set_status(
                 &task_id,
@@ -747,10 +914,15 @@ impl InstallEngine {
         task_id: &str,
         requested_by: &str,
         requester_is_admin: bool,
-    ) -> Result<(), InstallError> {
+        requester_app_id: &str,
+        idempotency_key: &str,
+    ) -> Result<String, InstallError> {
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
-        if !matches!(view.status, InstallTaskStatus::Failed | InstallTaskStatus::Paused) {
+        if !matches!(
+            view.status,
+            InstallTaskStatus::Failed | InstallTaskStatus::Paused
+        ) {
             return Err(InstallError::new(
                 InstallStage::Resolve,
                 InstallErrorCode::Conflict,
@@ -787,16 +959,37 @@ impl InstallEngine {
         };
         data.state.invalidate_from(retry_stage);
         data.state.last_error = None;
-        self.persist(&task_id, &data).await?;
-        self.store
-            .set_status(
-                &task_id,
-                InstallTaskStatus::Running,
-                None,
-                Some(format!("retrying from stage {retry_stage}")),
+        if view.status == InstallTaskStatus::Paused {
+            self.persist(&task_id, &mut data).await?;
+            self.store
+                .set_status(
+                    &task_id,
+                    InstallTaskStatus::Running,
+                    None,
+                    Some(format!("resuming from stage {retry_stage}")),
+                )
+                .await?;
+            return Ok(task_id.to_string());
+        }
+
+        data.request.creator_user_id = requested_by.to_string();
+        data.request.creator_app_id = requester_app_id.to_string();
+        data.request.idempotency_key = idempotency_key.to_string();
+        let new_task_id = self
+            .store
+            .create_install_task(
+                format!("Retry {}", view.task_type).as_str(),
+                view.task_type.as_str(),
+                serde_json::to_value(&data)
+                    .map_err(|err| internal_error(InstallStage::Resolve, err.to_string()))?,
+                requested_by,
+                requester_app_id,
+                idempotency_key,
+                view.parent_id.as_deref(),
+                Some(task_id),
             )
             .await?;
-        Ok(())
+        Ok(new_task_id)
     }
 
     /// 取消：Prepare 前直接取消；spec 已写（Deploy 开始）后先回滚再取消。
@@ -804,6 +997,7 @@ impl InstallEngine {
         &self,
         task_id: &str,
         requested_by: &str,
+        requester_app_id: &str,
         requester_is_admin: bool,
     ) -> Result<(), InstallError> {
         let view = self.store.load(task_id).await?;
@@ -816,6 +1010,9 @@ impl InstallEngine {
                 format!("task {task_id} already terminal"),
             ));
         }
+        self.store
+            .request_cancel(task_id, requested_by, requester_app_id)
+            .await?;
         let mut data = self.parse_data(&view)?;
         let spec_written = data.state.is_stage_completed(InstallStage::Deploy)
             || matches!(data.state.stage, Some(InstallStage::Deploy))
@@ -832,7 +1029,8 @@ impl InstallEngine {
             format!("canceled by {requested_by}"),
         );
         data.state.last_error = Some(error);
-        self.persist(&task_id, &data).await?;
+        self.persist(&task_id, &mut data).await?;
+        self.driver.release_staging(&view, &data).await?;
         self.store
             .set_status(
                 &task_id,
@@ -891,7 +1089,12 @@ impl InstallEngine {
         Ok(data)
     }
 
-    async fn persist(&self, task_id: &str, data: &AppInstallTaskData) -> Result<(), InstallError> {
+    async fn persist(
+        &self,
+        task_id: &str,
+        data: &mut AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        data.state.stage_revision = data.state.stage_revision.saturating_add(1);
         self.store.write_data(task_id, data.to_full_patch()).await
     }
 
@@ -900,7 +1103,8 @@ impl InstallEngine {
         if let Ok(view) = self.store.load(task_id).await {
             if let Ok(mut data) = self.parse_data(&view) {
                 data.state.last_error = Some(error.clone());
-                let _ = self.persist(&task_id, &data).await;
+                let _ = self.persist(&task_id, &mut data).await;
+                let _ = self.driver.release_staging(&view, &data).await;
             }
         }
         let target_status = if error.code == InstallErrorCode::Canceled {
@@ -1011,12 +1215,18 @@ impl InstallEngine {
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         if auto_requested && data.request.policy.allow_auto_confirm() {
-            if !plan.readiness.config.is_ready() {
+            let status = data.state.plan_status.as_ref().ok_or_else(|| {
+                internal_error(
+                    InstallStage::Inspect,
+                    "plan status missing at approval gate",
+                )
+            })?;
+            if !status.readiness.config.is_ready() {
                 return Err(InstallError::new(
                     InstallStage::Inspect,
                     InstallErrorCode::ConfigBlocked,
                     false,
-                    plan.config_issues.join("; "),
+                    status.config_issues.join("; "),
                 ));
             }
             data.state.approval = Some(InstallApproval {
@@ -1068,27 +1278,92 @@ impl TaskMgrInstallStore {
             .map_err(|err| Self::map_err("get task mgr client", err))
     }
 
-    fn view_from_task(task: buckyos_api::Task) -> InstallTaskView {
-        let status = InstallTaskStatus::from_task(
-            task.phase,
-            task.outcome,
-            task.wait_reason.as_ref(),
-        );
+    fn transaction_from_task(task: &buckyos_api::Task) -> Result<AppInstallTaskData, InstallError> {
+        if let Some(progress) = task.progress.as_ref() {
+            let envelope: AppInstallProgressEnvelope = serde_json::from_value(progress.clone())
+                .map_err(|err| Self::map_err("decode install progress envelope", err))?;
+            if envelope.schema_version != APP_INSTALL_SCHEMA_VERSION
+                || envelope.transaction_revision != envelope.transaction.state.stage_revision
+            {
+                return Err(internal_error(
+                    InstallStage::Resolve,
+                    format!(
+                        "task {} has an invalid install progress envelope",
+                        task.task_id
+                    ),
+                ));
+            }
+            return Ok(envelope.transaction);
+        }
+        serde_json::from_value(task.input.clone())
+            .map_err(|err| Self::map_err("decode immutable install task input", err))
+    }
+
+    fn progress_envelope(
+        task: &buckyos_api::Task,
+    ) -> Result<Option<AppInstallProgressEnvelope>, InstallError> {
+        task.progress
+            .as_ref()
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|err| Self::map_err("decode install progress envelope", err))
+            })
+            .transpose()
+    }
+
+    fn runner_envelope(task: &buckyos_api::Task) -> buckyos_api::RunnerWriteEnvelope {
+        let app_instance_id = match &task.executor {
+            TaskExecutor::App {
+                app_instance_id, ..
+            } => app_instance_id.clone(),
+            _ => None,
+        };
+        buckyos_api::RunnerWriteEnvelope {
+            task_id: task.task_id.clone(),
+            app_instance_id,
+            runner_epoch: task.runner_epoch,
+            expected_revision: task.revision,
+        }
+    }
+
+    fn view_from_task(task: buckyos_api::Task) -> Result<InstallTaskView, InstallError> {
+        let status =
+            InstallTaskStatus::from_task(task.phase, task.outcome, task.wait_reason.as_ref());
         let task_type = install_task_type(&task.schema_id).to_string();
-        let data = task
-            .result
-            .clone()
-            .or_else(|| task.progress.clone())
-            .unwrap_or_else(|| task.input.clone());
-        InstallTaskView {
+        let progress_envelope = Self::progress_envelope(&task)?;
+        let display = progress_envelope
+            .as_ref()
+            .map(|envelope| envelope.display.clone());
+        let transaction = Self::transaction_from_task(&task)?;
+        if task.phase == TaskPhase::Terminal && task.outcome == Some(TaskOutcome::Succeeded) {
+            let result = task.result.as_ref().ok_or_else(|| {
+                internal_error(
+                    InstallStage::Activate,
+                    format!("succeeded task {} has no terminal result", task.task_id),
+                )
+            })?;
+            serde_json::from_value::<AppInstallTerminalOutput>(result.clone())
+                .map_err(|err| Self::map_err("decode install terminal output", err))?;
+        }
+        let data = serde_json::to_value(transaction)
+            .map_err(|err| Self::map_err("encode install transaction view", err))?;
+        Ok(InstallTaskView {
             id: task.task_id,
+            parent_id: task.parent_id,
             root_id: task.root_id,
             task_type,
             status,
             user_id: task.creator.user_id,
             app_id: task.creator.app_id,
             data,
-        }
+            phase: task.phase,
+            outcome: task.outcome,
+            wait_reason: task.wait_reason,
+            revision: task.revision,
+            runner_epoch: task.runner_epoch,
+            display,
+            updated_at: task.updated_at,
+        })
     }
 }
 
@@ -1099,27 +1374,27 @@ impl InstallTaskStore for TaskMgrInstallStore {
         name: &str,
         task_type: &str,
         data: Value,
-        _user_id: &str,
-        _app_id: &str,
+        user_id: &str,
+        app_id: &str,
+        idempotency_key: &str,
+        parent_id: Option<&str>,
+        retry_of: Option<&str>,
     ) -> Result<String, InstallError> {
         let client = Self::client().await?;
-        // 2.0: the creator identity comes from the session token; the
-        // business user stays inside the immutable install request payload.
         let task = client
-            .create_task(buckyos_api::CreateTaskReq {
+            .create_delegated_task(buckyos_api::CreateDelegatedTaskReq {
                 name: name.to_string(),
                 schema_id: install_schema_id(task_type),
                 schema_version: None,
                 input: data,
-                executor: buckyos_api::CreateTaskExecutor::SelfApp {
-                    app_instance_id: None,
-                },
-                parent_id: None,
+                creator: buckyos_api::ActorRef::new(user_id, app_id),
+                runner_app_instance_id: None,
+                parent_id: parent_id.map(ToOwned::to_owned),
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
-                idempotency_key: format!("{}-{}", task_type, uuid::Uuid::new_v4().simple()),
-                retry_of: None,
+                idempotency_key: idempotency_key.to_string(),
+                retry_of: retry_of.map(ToOwned::to_owned),
                 supersedes: None,
                 message: None,
             })
@@ -1134,13 +1409,56 @@ impl InstallTaskStore for TaskMgrInstallStore {
             .get_task(task_id)
             .await
             .map_err(|err| Self::map_err("get task", err))?;
-        Ok(Self::view_from_task(task))
+        Self::view_from_task(task)
     }
 
     async fn write_data(&self, task_id: &str, full_patch: Value) -> Result<(), InstallError> {
         let client = Self::client().await?;
+        let transaction: AppInstallTaskData = serde_json::from_value(full_patch)
+            .map_err(|err| Self::map_err("encode transaction progress", err))?;
+        let task = client
+            .get_task(task_id)
+            .await
+            .map_err(|err| Self::map_err("get task for transaction write", err))?;
+        let current = Self::transaction_from_task(&task)?;
+        if transaction.state.stage_revision < current.state.stage_revision {
+            return Err(InstallError::new(
+                InstallStage::Resolve,
+                InstallErrorCode::Conflict,
+                true,
+                format!(
+                    "stale transaction revision {} (current {})",
+                    transaction.state.stage_revision, current.state.stage_revision
+                ),
+            ));
+        }
+        if transaction.state.stage_revision == current.state.stage_revision {
+            if transaction == current {
+                return Ok(());
+            }
+            return Err(InstallError::new(
+                InstallStage::Resolve,
+                InstallErrorCode::Conflict,
+                true,
+                "conflicting install transaction write at the same revision",
+            ));
+        }
+        let display = Self::progress_envelope(&task)?
+            .map(|envelope| envelope.display)
+            .unwrap_or_default();
+        let progress = serde_json::to_value(AppInstallProgressEnvelope {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
+            transaction_revision: transaction.state.stage_revision,
+            transaction,
+            display,
+        })
+        .map_err(|err| Self::map_err("serialize install progress envelope", err))?;
         client
-            .runner_progress(task_id, Some(full_patch), None)
+            .report_progress(buckyos_api::ReportProgressReq {
+                envelope: Self::runner_envelope(&task),
+                progress: Some(progress),
+                message: task.message.clone(),
+            })
             .await
             .map_err(|err| Self::map_err("update task data", err))?;
         Ok(())
@@ -1154,12 +1472,38 @@ impl InstallTaskStore for TaskMgrInstallStore {
         message: Option<String>,
     ) -> Result<(), InstallError> {
         let client = Self::client().await?;
-        let progress_value = progress.map(|value| serde_json::json!({ "percent": value }));
-        if progress_value.is_some() || message.is_some() {
+        let task = client
+            .get_task(task_id)
+            .await
+            .map_err(|err| Self::map_err("get task for status update", err))?;
+        let transaction = Self::transaction_from_task(&task)?;
+        let mut display = Self::progress_envelope(&task)?
+            .map(|envelope| envelope.display)
+            .unwrap_or_default();
+        if progress.is_some() {
+            display.percent = progress;
+        }
+        if message.is_some() {
+            display.message = message.clone();
+        }
+        display.stage = transaction.state.stage;
+        display.updated_at = buckyos_get_unix_timestamp();
+        let progress_value = serde_json::to_value(AppInstallProgressEnvelope {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
+            transaction_revision: transaction.state.stage_revision,
+            transaction: transaction.clone(),
+            display: display.clone(),
+        })
+        .map_err(|err| Self::map_err("serialize install display progress", err))?;
+        if !task.phase.is_terminal() {
             client
-                .runner_progress(task_id, progress_value, message.clone())
+                .report_progress(buckyos_api::ReportProgressReq {
+                    envelope: Self::runner_envelope(&task),
+                    progress: Some(progress_value),
+                    message: message.clone(),
+                })
                 .await
-                .map_err(|err| Self::map_err("update task", err))?;
+                .map_err(|err| Self::map_err("update task display", err))?;
         }
         let result = match status {
             InstallTaskStatus::Running | InstallTaskStatus::Pending => {
@@ -1185,15 +1529,37 @@ impl InstallTaskStore for TaskMgrInstallStore {
                 .await
                 .map(|_| ()),
             InstallTaskStatus::Completed => {
-                let snapshot = client
-                    .get_task(task_id)
-                    .await
-                    .map_err(|err| Self::map_err("get task", err))?;
-                let result = snapshot
-                    .progress
-                    .clone()
-                    .unwrap_or_else(|| snapshot.input.clone());
-                client.runner_complete(task_id, result).await.map(|_| ())
+                let install_result = transaction.state.result.clone().ok_or_else(|| {
+                    internal_error(
+                        InstallStage::Activate,
+                        "completed transaction has no result",
+                    )
+                })?;
+                let progress = TaskDataProgress {
+                    message: display.message.clone(),
+                    updated_at: Some(display.updated_at as i64),
+                    ..Default::default()
+                };
+                let snapshot = buckyos_api::build_install_status_snapshot(
+                    task_id.to_string(),
+                    TaskPhase::Terminal,
+                    Some(TaskOutcome::Succeeded),
+                    None,
+                    transaction.request.user_id.as_str(),
+                    &transaction.request.source,
+                    transaction.request.policy,
+                    &transaction.state,
+                    Some(progress),
+                    display.updated_at,
+                );
+                let terminal = serde_json::to_value(AppInstallTerminalOutput {
+                    schema_version: APP_INSTALL_SCHEMA_VERSION,
+                    transaction_revision: transaction.state.stage_revision,
+                    result: install_result,
+                    status: snapshot,
+                })
+                .map_err(|err| Self::map_err("serialize install terminal output", err))?;
+                client.runner_complete(task_id, terminal).await.map(|_| ())
             }
             InstallTaskStatus::Failed => client
                 .runner_fail(
@@ -1204,33 +1570,68 @@ impl InstallTaskStore for TaskMgrInstallStore {
                 )
                 .await
                 .map(|_| ()),
-            InstallTaskStatus::Canceled => match client.cancel_task(task_id, false).await {
-                Ok(buckyos_api::RequestControlResult::Task { task })
-                    if !task.phase.is_terminal() =>
-                {
-                    // Self-run task: acknowledge our own cancel request.
-                    if let Some(pending) = task.pending_control.as_ref() {
-                        let _ = client
-                            .ack_control(buckyos_api::AckControlReq {
-                                envelope: buckyos_api::RunnerWriteEnvelope {
-                                    task_id: task.task_id.clone(),
-                                    app_instance_id: None,
-                                    runner_epoch: task.runner_epoch,
-                                    expected_revision: task.revision,
-                                },
-                                request_id: pending.request_id.clone(),
-                                applied: true,
-                                reject_reason: None,
-                            })
-                            .await;
-                    }
-                    Ok(())
+            InstallTaskStatus::Canceled => match client.get_task(task_id).await {
+                Ok(task) if task.phase.is_terminal() => Ok(()),
+                Ok(task) if task.pending_control.is_some() => {
+                    let request_id = task
+                        .pending_control
+                        .as_ref()
+                        .map(|pending| pending.request_id.clone())
+                        .unwrap();
+                    client
+                        .ack_control(buckyos_api::AckControlReq {
+                            envelope: buckyos_api::RunnerWriteEnvelope {
+                                task_id: task.task_id.clone(),
+                                app_instance_id: None,
+                                runner_epoch: task.runner_epoch,
+                                expected_revision: task.revision,
+                            },
+                            request_id,
+                            applied: true,
+                            reject_reason: None,
+                        })
+                        .await
+                        .map(|_| ())
                 }
-                Ok(_) => Ok(()),
-                Err(err) => Err(err),
+                Ok(_) => Err(kRPC::RPCErrors::ReasonError(
+                    "cancel intent is missing before terminal acknowledgement".to_string(),
+                )),
+                Err(error) => Err(error),
             },
         };
         result.map_err(|err| Self::map_err("update task", err))?;
+        Ok(())
+    }
+
+    async fn request_cancel(
+        &self,
+        task_id: &str,
+        controller_user_id: &str,
+        controller_app_id: &str,
+    ) -> Result<(), InstallError> {
+        let client = Self::client().await?;
+        let task = client
+            .get_task(task_id)
+            .await
+            .map_err(|err| Self::map_err("get task for cancel request", err))?;
+        if task.phase.is_terminal()
+            || task
+                .pending_control
+                .as_ref()
+                .is_some_and(|pending| pending.action == buckyos_api::TaskControlAction::Cancel)
+        {
+            return Ok(());
+        }
+        client
+            .request_delegated_control(buckyos_api::RequestDelegatedControlReq {
+                controller: buckyos_api::ActorRef::new(controller_user_id, controller_app_id),
+                task_id: task_id.to_string(),
+                action: buckyos_api::TaskControlAction::Cancel,
+                request_id: format!("app-install-cancel:{task_id}:{}", task.revision),
+                expected_revision: Some(task.revision),
+            })
+            .await
+            .map_err(|err| Self::map_err("persist cancel request", err))?;
         Ok(())
     }
 
@@ -1239,22 +1640,31 @@ impl InstallTaskStore for TaskMgrInstallStore {
         let mut views = Vec::new();
         // 只扫本 Service 职责域内的 schema（app.install / app.update）。
         for task_type in [TASK_DATA_TYPE_APP_INSTALL, TASK_DATA_TYPE_APP_UPDATE] {
-            let page = client
-                .list_tasks(buckyos_api::ListTasksReq {
-                    schema_id: Some(install_schema_id(task_type)),
-                    runner_app_id: Some(buckyos_api::CONTROL_PANEL_SERVICE_NAME.to_string()),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|err| Self::map_err("list tasks", err))?;
-            for summary in page.tasks {
-                if summary.phase.is_terminal() {
-                    continue;
+            let mut cursor = None;
+            loop {
+                let page = client
+                    .list_tasks(buckyos_api::ListTasksReq {
+                        schema_id: Some(install_schema_id(task_type)),
+                        runner_app_id: Some(buckyos_api::CONTROL_PANEL_SERVICE_NAME.to_string()),
+                        cursor: cursor.clone(),
+                        limit: Some(100),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|err| Self::map_err("list tasks", err))?;
+                for summary in page.tasks {
+                    if summary.phase.is_terminal() {
+                        continue;
+                    }
+                    let Ok(task) = client.get_task(&summary.task_id).await else {
+                        continue;
+                    };
+                    views.push(Self::view_from_task(task)?);
                 }
-                let Ok(task) = client.get_task(&summary.task_id).await else {
-                    continue;
+                let Some(next) = page.next_cursor else {
+                    break;
                 };
-                views.push(Self::view_from_task(task));
+                cursor = Some(next);
             }
         }
         Ok(views)
@@ -1286,8 +1696,10 @@ mod tests {
     use crate::app_install_resolver::fake as resolver_fake;
     use crate::app_install_resolver::AppDidResolver;
     use buckyos_api::{
-        AppClass, AppDoc, AppDocumentRef, AppInstallTaskRequest, AppServiceSpec, AppType,
-        DocumentStatus, InstallPolicy, InstallSource, PlanReadiness, ReadinessState,
+        AppClass, AppDoc, AppDocumentRef, AppInstallTaskRequest, AppInstallationId,
+        AppInstallationScope, AppServiceSpec, AppType, DeploymentIdentity, DocumentStatus,
+        InstallInspection, InstallPlan, InstallPlanStatus, InstallPlanUse, InstallPolicy,
+        InstallSource, InstallSourceIdentity, InstallTarget, PlanReadiness, ReadinessState,
         ServiceSpecConfig, ServiceState, SubPkgDesc, VerificationCheck, VerificationReport,
         APP_INSTALL_SCHEMA_VERSION,
     };
@@ -1316,6 +1728,7 @@ mod tests {
     struct MemStoreInner {
         next_id: i64,
         tasks: HashMap<String, InstallTaskView>,
+        cancel_requested: HashSet<String>,
     }
 
     struct MemStore {
@@ -1328,6 +1741,7 @@ mod tests {
                 inner: StdMutex::new(MemStoreInner {
                     next_id: 1,
                     tasks: HashMap::new(),
+                    cancel_requested: HashSet::new(),
                 }),
             })
         }
@@ -1338,6 +1752,14 @@ mod tests {
 
         fn data_of(&self, task_id: &str) -> Value {
             self.inner.lock().unwrap().tasks[task_id].data.clone()
+        }
+
+        fn cancel_was_requested(&self, task_id: &str) -> bool {
+            self.inner
+                .lock()
+                .unwrap()
+                .cancel_requested
+                .contains(task_id)
         }
     }
 
@@ -1370,6 +1792,9 @@ mod tests {
             data: Value,
             user_id: &str,
             app_id: &str,
+            _idempotency_key: &str,
+            parent_id: Option<&str>,
+            _retry_of: Option<&str>,
         ) -> Result<String, InstallError> {
             let mut inner = self.inner.lock().unwrap();
             let id = format!("t-mem-{}", inner.next_id);
@@ -1378,12 +1803,20 @@ mod tests {
                 id.clone(),
                 InstallTaskView {
                     id: id.clone(),
-                    root_id: id.clone(),
+                    parent_id: parent_id.map(ToOwned::to_owned),
+                    root_id: parent_id.unwrap_or(id.as_str()).to_string(),
                     task_type: task_type.to_string(),
                     status: InstallTaskStatus::Pending,
                     user_id: user_id.to_string(),
                     app_id: app_id.to_string(),
                     data,
+                    phase: TaskPhase::Accepted,
+                    outcome: None,
+                    wait_reason: None,
+                    revision: 1,
+                    runner_epoch: 1,
+                    display: None,
+                    updated_at: buckyos_get_unix_timestamp(),
                 },
             );
             Ok(id)
@@ -1422,6 +1855,36 @@ mod tests {
                 .get_mut(task_id)
                 .ok_or_else(|| internal_error(InstallStage::Resolve, "task not found"))?;
             task.status = status;
+            task.phase = match status {
+                InstallTaskStatus::Pending => TaskPhase::Accepted,
+                InstallTaskStatus::Running => TaskPhase::Running,
+                InstallTaskStatus::Paused | InstallTaskStatus::WaitingForApproval => {
+                    TaskPhase::Waiting
+                }
+                InstallTaskStatus::Completed
+                | InstallTaskStatus::Failed
+                | InstallTaskStatus::Canceled => TaskPhase::Terminal,
+            };
+            task.outcome = match status {
+                InstallTaskStatus::Completed => Some(TaskOutcome::Succeeded),
+                InstallTaskStatus::Failed => Some(TaskOutcome::Failed),
+                InstallTaskStatus::Canceled => Some(TaskOutcome::Canceled),
+                _ => None,
+            };
+            Ok(())
+        }
+
+        async fn request_cancel(
+            &self,
+            task_id: &str,
+            _controller_user_id: &str,
+            _controller_app_id: &str,
+        ) -> Result<(), InstallError> {
+            self.inner
+                .lock()
+                .unwrap()
+                .cancel_requested
+                .insert(task_id.to_string());
             Ok(())
         }
 
@@ -1475,7 +1938,11 @@ mod tests {
         }
     }
 
-    fn ready_plan_from(data: &AppInstallTaskData, content_ready: bool) -> InstallPlan {
+    fn ready_inspection_from(
+        data: &AppInstallTaskData,
+        content_ready: bool,
+        plan_use: InstallPlanUse,
+    ) -> InstallInspection {
         let snapshot = data.state.resolution.clone().unwrap();
         let doc_value = data.state.resolved_app_doc.clone().unwrap();
         let app_doc: AppDoc = serde_json::from_value(doc_value).unwrap();
@@ -1509,30 +1976,85 @@ mod tests {
             version: app_doc.version.clone(),
         };
         let service_spec_config = ServiceSpecConfig::default();
+        let installation_scope = AppInstallationScope {
+            zone_did: DID::new("bns", "test-zone"),
+            owner_user_id: data.request.user_id.clone(),
+            app_class: data.request.app_class.clone(),
+        };
+        let installation_id = AppInstallationId::derive(&app.did, &installation_scope);
+        let source_identity = InstallSourceIdentity::Catalog {
+            app_doc_object_id: app.object_id.clone(),
+        };
         let fingerprint = InstallPlan::compute_fingerprint(
+            plan_use,
+            &installation_id,
+            &installation_scope,
+            &source_identity,
             &app,
             &snapshot,
             &target,
             &params,
             &service_spec_config,
             &[],
+            &[],
         );
-        InstallPlan {
+        let plan = InstallPlan {
             schema_version: APP_INSTALL_SCHEMA_VERSION,
+            plan_use,
+            installation_id,
+            installation_scope,
+            source_identity,
             app,
             resolution: snapshot,
-            target,
+            target: target.clone(),
             selected_packages: vec![],
             required_contents: vec![],
-            readiness,
-            target_issues: vec![],
-            config_issues: vec![],
-            permission_options: app_doc.permissions.clone(),
             install_params: params,
             service_spec_config,
-            estimated_download_bytes: 0,
-            plan_fingerprint: fingerprint,
+            plan_fingerprint: fingerprint.clone(),
             created_at: 0,
+        };
+        InstallInspection {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
+            plan,
+            resolution_status: data.state.resolution.clone().unwrap(),
+            status: InstallPlanStatus {
+                plan_fingerprint: fingerprint,
+                target_snapshot: target,
+                readiness,
+                contents: Vec::new(),
+                target_issues: Vec::new(),
+                config_issues: Vec::new(),
+                permission_options: app_doc.permissions.clone(),
+                estimated_download_bytes: 0,
+                warnings: Vec::new(),
+                inspected_at: 0,
+            },
+        }
+    }
+
+    fn ready_status_from(data: &AppInstallTaskData, content_ready: bool) -> InstallPlanStatus {
+        let plan = data.state.plan.as_ref().unwrap();
+        let readiness = PlanReadiness::compose(
+            ReadinessState::Ready,
+            ReadinessState::from_bool(plan.resolution.is_trust_ready(data.request.policy)),
+            ReadinessState::Ready,
+            ReadinessState::from_bool(content_ready),
+            ReadinessState::Ready,
+            ReadinessState::Ready,
+            plan.resolution.document_status,
+        );
+        InstallPlanStatus {
+            plan_fingerprint: plan.plan_fingerprint.clone(),
+            target_snapshot: plan.target.clone(),
+            readiness,
+            contents: Vec::new(),
+            target_issues: Vec::new(),
+            config_issues: Vec::new(),
+            permission_options: Vec::new(),
+            estimated_download_bytes: 0,
+            warnings: Vec::new(),
+            inspected_at: 0,
         }
     }
 
@@ -1558,21 +2080,26 @@ mod tests {
 
         async fn inspect(
             &self,
-            _view: &InstallTaskView,
+            view: &InstallTaskView,
             data: &AppInstallTaskData,
-        ) -> Result<Option<InstallPlan>, InstallError> {
+        ) -> Result<Option<InstallInspection>, InstallError> {
             self.bump("inspect");
             if data.state.resolved_app_doc.is_none() {
                 return Ok(None);
             }
-            Ok(Some(ready_plan_from(data, false)))
+            let plan_use = if view.task_type == TASK_DATA_TYPE_APP_UPDATE {
+                InstallPlanUse::Upgrade
+            } else {
+                InstallPlanUse::FreshInstall
+            };
+            Ok(Some(ready_inspection_from(data, false, plan_use)))
         }
 
         async fn acquire(
             &self,
             _view: &InstallTaskView,
             data: &AppInstallTaskData,
-        ) -> Result<InstallPlan, InstallError> {
+        ) -> Result<InstallPlanStatus, InstallError> {
             self.bump("acquire");
             if self.fail_acquire_once.swap(false, Ordering::SeqCst) {
                 return Err(InstallError::new(
@@ -1582,7 +2109,7 @@ mod tests {
                     "simulated source failure",
                 ));
             }
-            Ok(ready_plan_from(data, true))
+            Ok(ready_status_from(data, true))
         }
 
         async fn verify(
@@ -1599,24 +2126,35 @@ mod tests {
 
         async fn prepare(
             &self,
-            _view: &InstallTaskView,
+            view: &InstallTaskView,
             data: &AppInstallTaskData,
         ) -> Result<PreparedDeployment, InstallError> {
             self.bump("prepare");
             let doc_value = data.state.resolved_app_doc.clone().unwrap();
             let app_doc: AppDoc = serde_json::from_value(doc_value).unwrap();
+            let plan = data.state.plan.as_ref().unwrap();
             let spec = AppServiceSpec {
+                installation_id: plan.installation_id.clone(),
+                app_did: plan.app.did.clone(),
+                deployment: DeploymentIdentity {
+                    installation_id: plan.installation_id.clone(),
+                    task_id: view.id.clone(),
+                    app_doc_object_id: plan.app.object_id.clone(),
+                    spec_generation: 1,
+                    pikg_digest: None,
+                },
                 permission: app_doc.permissions.clone(),
                 app_doc,
                 app_index: 7,
                 user_id: data.request.user_id.clone(),
                 app_class: AppClass::UserInstalled,
+                selected_components: Vec::new(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::New,
                 spec_config: Default::default(),
             };
-            let previous_spec = if _view.task_type == TASK_DATA_TYPE_APP_UPDATE {
+            let previous_spec = if view.task_type == TASK_DATA_TYPE_APP_UPDATE {
                 let mut old = spec.clone();
                 old.app_index = 6;
                 Some(old)
@@ -1626,9 +2164,9 @@ mod tests {
             Ok(PreparedDeployment {
                 spec_path: format!(
                     "users/{}/apps/{}/spec",
-                    data.request.user_id, spec.app_doc.name
+                    data.request.user_id, spec.installation_id
                 ),
-                service_spec_id: format!("{}@{}", spec.app_doc.name, data.request.user_id),
+                service_spec_id: spec.app_instance_id(),
                 app_index: 7,
                 previous_spec,
                 new_spec: spec,
@@ -1693,8 +2231,13 @@ mod tests {
     fn install_request(app_did: &DID, policy: InstallPolicy, auto: bool) -> AppInstallTaskRequest {
         AppInstallTaskRequest {
             source: InstallSource::identifier(app_did.to_string(), None),
+            creator_user_id: "alice".to_string(),
             user_id: "alice".to_string(),
+            creator_app_id: "buckyos-tool".to_string(),
+            idempotency_key: format!("test-install-{auto}"),
             app_class: AppClass::UserInstalled,
+            submitted_plan: None,
+            approved_plan_fingerprint: None,
             policy,
             options: if auto {
                 Some(json!({"auto_confirm": true}))
@@ -1758,6 +2301,11 @@ mod tests {
 
     // ---------------- tests ----------------
 
+    fn persisted_plan_fingerprint(store: &MemStore, task_id: &str) -> String {
+        let data: AppInstallTaskData = serde_json::from_value(store.data_of(task_id)).unwrap();
+        data.state.plan.unwrap().plan_fingerprint
+    }
+
     #[tokio::test]
     async fn full_pipeline_with_approval_gate() {
         let (store, driver, engine, app_did) = setup(InstallPolicy::Normal, false);
@@ -1766,7 +2314,10 @@ mod tests {
         // 第一轮：跑到 Inspect 后等待确认。
         let outcome = engine.run_task(&task_id).await.unwrap();
         assert_eq!(outcome, RunOutcome::WaitingForApproval);
-        assert_eq!(store.status_of(&task_id), InstallTaskStatus::WaitingForApproval);
+        assert_eq!(
+            store.status_of(&task_id),
+            InstallTaskStatus::WaitingForApproval
+        );
         assert_eq!(driver.count("resolve"), 1);
         assert_eq!(driver.count("inspect"), 1);
         assert_eq!(driver.count("acquire"), 0);
@@ -1775,8 +2326,9 @@ mod tests {
         assert!(data.state.result.is_none());
 
         // 确认后继续到完成。
+        let fingerprint = persisted_plan_fingerprint(&store, &task_id);
         engine
-            .confirm(&task_id, "alice", false, None, None)
+            .confirm(&task_id, "alice", false, &fingerprint)
             .await
             .unwrap();
         let outcome = engine.run_task(&task_id).await.unwrap();
@@ -1802,13 +2354,17 @@ mod tests {
         let (store, driver, engine, app_did) = setup(InstallPolicy::Normal, false);
         let task_id = create_task(&engine, &app_did, InstallPolicy::Normal, false).await;
         let _ = engine.run_task(&task_id).await.unwrap();
-        assert_eq!(store.status_of(&task_id), InstallTaskStatus::WaitingForApproval);
+        assert_eq!(
+            store.status_of(&task_id),
+            InstallTaskStatus::WaitingForApproval
+        );
         drop(engine);
 
         // "重启"：同一持久 store，新引擎实例。
         let engine2 = InstallEngine::new(store.clone(), driver.clone());
+        let fingerprint = persisted_plan_fingerprint(&store, &task_id);
         engine2
-            .confirm(&task_id, "alice", false, None, None)
+            .confirm(&task_id, "alice", false, &fingerprint)
             .await
             .unwrap();
         let outcome = engine2.run_task(&task_id).await.unwrap();
@@ -1833,12 +2389,17 @@ mod tests {
             InstallErrorCode::AcquisitionFailed
         );
 
-        engine.retry(&task_id, "alice", false).await.unwrap();
-        // retry 清空 last_error（deep merge null 删除）。
-        let data: AppInstallTaskData = serde_json::from_value(store.data_of(&task_id)).unwrap();
+        let retry_task_id = engine
+            .retry(&task_id, "alice", false, "buckyos-tool", "retry-1")
+            .await
+            .unwrap();
+        assert_ne!(retry_task_id, task_id);
+        assert_eq!(store.status_of(&task_id), InstallTaskStatus::Failed);
+        let data: AppInstallTaskData =
+            serde_json::from_value(store.data_of(&retry_task_id)).unwrap();
         assert!(data.state.last_error.is_none());
 
-        let outcome = engine.run_task(&task_id).await.unwrap();
+        let outcome = engine.run_task(&retry_task_id).await.unwrap();
         assert_eq!(outcome, RunOutcome::Completed);
         // Resolve/Inspect 各一次；Acquire 失败一次 + 成功一次。
         assert_eq!(driver.count("resolve"), 1);
@@ -1861,7 +2422,10 @@ mod tests {
         let task_id = create_task(&engine, &app_did, InstallPolicy::Normal, true).await;
         let outcome = engine.run_task(&task_id).await.unwrap();
         assert_eq!(outcome, RunOutcome::WaitingForApproval);
-        assert_eq!(store.status_of(&task_id), InstallTaskStatus::WaitingForApproval);
+        assert_eq!(
+            store.status_of(&task_id),
+            InstallTaskStatus::WaitingForApproval
+        );
     }
 
     #[tokio::test]
@@ -1880,7 +2444,10 @@ mod tests {
         assert_eq!(store.status_of(&task_id), InstallTaskStatus::Failed);
 
         // 不可重试错误拒绝 retry。
-        let err = engine.retry(&task_id, "alice", false).await.unwrap_err();
+        let err = engine
+            .retry(&task_id, "alice", false, "buckyos-tool", "retry-2")
+            .await
+            .unwrap_err();
         assert_eq!(err.code, InstallErrorCode::IdentityRevoked);
     }
 
@@ -1905,7 +2472,10 @@ mod tests {
             &unknown_did,
             resolver_fake::active_answer(&unknown_did, demo_doc_value(&unknown_did), 3),
         );
-        engine.retry(&task_id, "alice", false).await.unwrap();
+        engine
+            .retry(&task_id, "alice", false, "buckyos-tool", "retry-3")
+            .await
+            .unwrap();
         let outcome = engine.run_task(&task_id).await.unwrap();
         assert_eq!(outcome, RunOutcome::WaitingForApproval);
     }
@@ -1916,16 +2486,23 @@ mod tests {
         let (store, driver, engine, app_did) = setup(InstallPolicy::Normal, false);
         let task_id = create_task(&engine, &app_did, InstallPolicy::Normal, false).await;
         let _ = engine.run_task(&task_id).await.unwrap(); // waiting approval
-        engine.cancel(&task_id, "alice", false).await.unwrap();
+        engine
+            .cancel(&task_id, "alice", "buckyos-tool", false)
+            .await
+            .unwrap();
         assert_eq!(store.status_of(&task_id), InstallTaskStatus::Canceled);
+        assert!(store.cancel_was_requested(&task_id));
         assert_eq!(driver.rollback_called.load(Ordering::SeqCst), 0);
 
         // Deploy 后取消：必须回滚。
         let (store, driver, engine, app_did) = setup(InstallPolicy::SystemInternal, true);
         let task_id = create_task(&engine, &app_did, InstallPolicy::SystemInternal, true).await;
         let _ = engine.run_task(&task_id).await.unwrap(); // completed
-                                                         // 完成后取消被拒绝（终态）。
-        assert!(engine.cancel(&task_id, "alice", false).await.is_err());
+                                                          // 完成后取消被拒绝（终态）。
+        assert!(engine
+            .cancel(&task_id, "alice", "buckyos-tool", false)
+            .await
+            .is_err());
 
         // 构造 Deploy 完成但 Activate 未跑的中间态：手工推系统状态。
         let task_id2 = create_task(&engine, &app_did, InstallPolicy::SystemInternal, true).await;
@@ -1947,8 +2524,12 @@ mod tests {
                 .await
                 .unwrap();
         }
-        engine.cancel(&task_id2, "alice", false).await.unwrap();
+        engine
+            .cancel(&task_id2, "alice", "buckyos-tool", false)
+            .await
+            .unwrap();
         assert_eq!(store.status_of(&task_id2), InstallTaskStatus::Canceled);
+        assert!(store.cancel_was_requested(&task_id2));
         assert_eq!(driver.rollback_called.load(Ordering::SeqCst), 1);
     }
 
@@ -1963,29 +2544,33 @@ mod tests {
         assert_eq!(err.code, InstallErrorCode::Conflict);
         assert_eq!(store.status_of(&second), InstallTaskStatus::Failed);
         // 第一个事务不受影响。
-        assert_eq!(store.status_of(&first), InstallTaskStatus::WaitingForApproval);
+        assert_eq!(
+            store.status_of(&first),
+            InstallTaskStatus::WaitingForApproval
+        );
     }
 
     #[tokio::test]
     async fn confirm_scope_and_double_confirm() {
-        let (_store, _driver, engine, app_did) = setup(InstallPolicy::Normal, false);
+        let (store, _driver, engine, app_did) = setup(InstallPolicy::Normal, false);
         let task_id = create_task(&engine, &app_did, InstallPolicy::Normal, false).await;
         let _ = engine.run_task(&task_id).await.unwrap();
+        let fingerprint = persisted_plan_fingerprint(&store, &task_id);
 
         // 他人不能确认。
         let err = engine
-            .confirm(&task_id, "mallory", false, None, None)
+            .confirm(&task_id, "mallory", false, &fingerprint)
             .await
             .unwrap_err();
         assert_eq!(err.code, InstallErrorCode::InvalidRequest);
 
         engine
-            .confirm(&task_id, "alice", false, None, None)
+            .confirm(&task_id, "alice", false, &fingerprint)
             .await
             .unwrap();
         // 二次确认：任务已不在 WaitingForApproval。
         let err = engine
-            .confirm(&task_id, "alice", false, None, None)
+            .confirm(&task_id, "alice", false, &fingerprint)
             .await
             .unwrap_err();
         assert_eq!(err.code, InstallErrorCode::Conflict);
@@ -1996,9 +2581,12 @@ mod tests {
         let (store, driver, engine, app_did) = setup(InstallPolicy::SystemInternal, true);
         let request = buckyos_api::AppUpdateTaskRequest {
             source: InstallSource::identifier(app_did.to_string(), None),
+            creator_user_id: "alice".to_string(),
             user_id: "alice".to_string(),
+            creator_app_id: "buckyos-tool".to_string(),
+            idempotency_key: "test-update-rollback".to_string(),
             app_class: AppClass::UserInstalled,
-            app_id: "demo_web".to_string(),
+            approved_plan_fingerprint: None,
             policy: InstallPolicy::SystemInternal,
             options: Some(json!({"auto_confirm": true})),
         };
@@ -2020,8 +2608,13 @@ mod tests {
         assert!(data.state.result.is_none());
 
         // retry：重写 spec（deploy 第二次）后 Activate 成功。
-        engine.retry(&task_id, "alice", false).await.unwrap();
-        let outcome = engine.run_task(&task_id).await.unwrap();
+        let retry_task_id = engine
+            .retry(&task_id, "alice", false, "buckyos-tool", "retry-4")
+            .await
+            .unwrap();
+        assert_ne!(retry_task_id, task_id);
+        assert_eq!(store.status_of(&task_id), InstallTaskStatus::Failed);
+        let outcome = engine.run_task(&retry_task_id).await.unwrap();
         assert_eq!(outcome, RunOutcome::Completed);
         assert_eq!(driver.count("deploy"), 2);
         assert_eq!(driver.count("activate"), 2);
@@ -2030,8 +2623,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirm_with_new_target_recomputes_plan() {
-        let (store, driver, engine, app_did) = setup(InstallPolicy::Normal, false);
+    async fn confirm_only_accepts_the_persisted_fingerprint() {
+        let (store, _driver, engine, app_did) = setup(InstallPolicy::Normal, false);
         let task_id = create_task(&engine, &app_did, InstallPolicy::Normal, false).await;
         let _ = engine.run_task(&task_id).await.unwrap();
 
@@ -2044,32 +2637,21 @@ mod tests {
             .plan_fingerprint
             .clone();
 
-        let new_target = InstallTarget {
-            node_did: None,
-            node_id: Some("ood2".to_string()),
-            os: "linux".to_string(),
-            arch: "aarch64".to_string(),
-            kernel_version: None,
-            runtime_version: None,
-            capabilities: BTreeMap::new(),
-        };
-        engine
-            .confirm(&task_id, "alice", false, Some(new_target.clone()), None)
+        let error = engine
+            .confirm(&task_id, "alice", false, "stale-plan-fingerprint")
             .await
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(error.code, InstallErrorCode::PlanStale);
 
         let data: AppInstallTaskData = serde_json::from_value(store.data_of(&task_id)).unwrap();
         let plan = data.state.plan.as_ref().unwrap();
-        assert_eq!(plan.target, new_target);
-        assert_ne!(plan.plan_fingerprint, old_fp);
-        // approval 绑定新 fingerprint。
-        assert_eq!(
-            data.state.approval.as_ref().unwrap().plan_fingerprint,
-            plan.plan_fingerprint
-        );
-        // Inspect 重算了一次（初始 1 + confirm 1）。
-        assert_eq!(driver.count("inspect"), 2);
+        assert_eq!(plan.plan_fingerprint, old_fp);
+        assert!(data.state.approval.is_none());
 
+        engine
+            .confirm(&task_id, "alice", false, &old_fp)
+            .await
+            .unwrap();
         let outcome = engine.run_task(&task_id).await.unwrap();
         assert_eq!(outcome, RunOutcome::Completed);
     }

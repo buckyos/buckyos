@@ -944,6 +944,12 @@ impl ControlPanelServer {
                 .get(buckyos_api::APP_INSTANCE_ID_CLAIM)
                 .and_then(Value::as_str)
                 == Some("control-panel@system");
+        let authenticated_app_id = parsed
+            .appid
+            .clone()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| RPCErrors::InvalidToken("session token missing appid".to_string()))?;
         let username = parsed
             .sub
             .map(|value| value.trim().to_string())
@@ -960,6 +966,7 @@ impl ControlPanelServer {
                 })?;
             return Ok(Some(RpcAuthPrincipal {
                 username,
+                authenticated_app_id,
                 user_type: UserType::Root,
                 owner_did: device.owner.to_string(),
                 is_user_session: false,
@@ -999,6 +1006,7 @@ impl ControlPanelServer {
 
         Ok(Some(RpcAuthPrincipal {
             username,
+            authenticated_app_id,
             user_type: user_settings.user_type,
             owner_did,
             is_user_session,

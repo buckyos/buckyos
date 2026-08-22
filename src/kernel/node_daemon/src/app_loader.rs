@@ -17,6 +17,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 
 const DEFAULT_OPENDAN_SERVICE_PORT: u16 = 4060;
@@ -67,6 +69,27 @@ pub(crate) const DOCKER_LABEL_IMAGE_DIGEST: &str = "buckyos.image_digest";
 enum LoaderConfig {
     Service(AppServiceInstanceConfig),
     Local(LocalAppInstanceConfig),
+}
+
+fn process_node_session_id() -> &'static str {
+    static SESSION_ID: OnceLock<String> = OnceLock::new();
+    SESSION_ID
+        .get_or_init(|| {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            format!("node-session-{}-{nanos}", std::process::id())
+        })
+        .as_str()
+}
+
+fn new_instance_epoch() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("instance-{}-{nanos}", std::process::id())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1130,6 +1153,11 @@ impl AppLoader {
                     ))
                 })?;
                 env_vars.insert("app_instance_config".to_string(), app_config_str);
+                env_vars.insert(
+                    "BUCKYOS_NODE_SESSION_ID".to_string(),
+                    process_node_session_id().to_string(),
+                );
+                env_vars.insert("BUCKYOS_INSTANCE_EPOCH".to_string(), new_instance_epoch());
 
                 let timestamp = buckyos_get_unix_timestamp();
                 let runtime = get_buckyos_api_runtime().map_err(|error| {

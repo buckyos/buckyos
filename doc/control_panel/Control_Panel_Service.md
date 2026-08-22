@@ -159,25 +159,30 @@ Agent 在系统中有**两副面孔**，需要区分：
 
 ### 4.4 应用管理 (App — 服务维度)
 
-由 `app_servcie_mgr` + `app_installer` 管理。`apps.list` 从系统内置 registry、`zone/apps/*` 和所有用户 `apps/*` 计算目标用户的最终授权集合；Agent 读取走 `agent.list` / `agent.get`，不会出现在 `apps.list`。App 的稳定操作和授权主键是 `app_instance_id=<app_id>@<owner_user_id>`。
+由 `app_servcie_mgr` + `app_installer` 管理。`apps.list` 从系统内置 registry、`zone/apps/*` 和所有用户 `apps/*` 计算目标用户的最终授权集合；Agent 读取走 `agent.list` / `agent.get`，不会出现在 `apps.list`。稳定身份是由 canonical App DID 与 `AppInstallationScope {zone_did, owner_user_id, app_class}` 确定性派生的 opaque `AppInstallationId`。`app_instance_id` 仅是由该 ID 派生的内部 scheduler/runtime ID，不是客户端拼接规则。
 
 | 方法 | 返回 | 说明 |
 |---|---|---|
-| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；Admin 可指定 `user_id`。`Admin/User` 默认可见全部 App，`Limited` 对其他 Owner 的个人 App 需要明确授权。每项含 `app_instance_id/app_class/runtime_type/owner_user_id/availability_match/web_hosts`；`web_hosts` 按启动优先级给出 AppSpec 中的 Gateway Web host |
-| `apps.details` / `app.details` | `{app_instance_id, app_class, owner_user_id, spec, ...}` | Owner/Admin 或最终允许用户读取实例详情 |
+| `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；每项包含 `installation_id/app_did/app_instance_id/app_class/management_origin/runtime_type/owner_user_id/availability_match/web_hosts` |
+| `apps.details` / `app.details` | typed details | 接受统一 selector（`selector/installation_id/app_did/identifier`），按可见安装作用域唯一选择；0 个返回 NotFound，多个返回 `AMBIGUOUS_APP_TARGET` 与脱敏候选 |
+| `apps.status` / `app.status` | `AppInstallationStatusSnapshot` | 聚合 install record、desired spec、active task、scheduled/runtime instance、目标/上次成功/回滚 deployment、typed deployment error 与 Static Web gateway generation evidence |
 | `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略、审计和 Gateway 输入 |
-| `apps.install` | `{task_id}` | 入参 `{identifier, referrer?, app_class?, options?}`；`app_class` 默认 `user_installed`，`zone_installed` 仅 Admin |
-| `apps.install_package` | `{task_id}` | 本地 `.pikg` 安装，入参 `{staging_handle, app_class?, options?}`；只接受 staging handle（`pikg:sha256:<hex>` 或 NDN chunk id），不接受服务端路径（D5） |
-| `apps.install.confirm` | `{task_id}` | 确认 `WaitingForApproval` 的安装：`{task_id, target?, install_params?}`；权限批准使用 `install_params.permissions: PermissionItem[]`，target/params 变化会重算 plan 并重新绑定 fingerprint |
-| `apps.install.retry` | `{task_id}` | 从失败/暂停 Stage 重试（不可重试错误会拒绝） |
-| `apps.install.cancel` | `{task_id}` | 取消：Prepare 前直接取消；spec 已写后先回滚再取消 |
-| `apps.update` | `{task_id}` | `{app_instance_id, options?}`，走与安装同一条 Stage 流水线（见 §5.3） |
-| `apps.uninstall` | `{task_id}` | `{app_instance_id, remove_data?}`；卸载个人 App 时清空授权并记录审计 tombstone |
-| `apps.start` / `apps.stop` | `{task_id}` / `{ok}` | 均以 `app_instance_id` 操作；Zone App 仅 Admin 管理 |
+| `apps.staging.finalize/status/release` | `PikgStagingMetadata` | `finalize` 接受上传所得 `source_obj_id` 和 `purpose=inspect|install`，返回不可猜测 handle、digest、size、TTL；handle 绑定 principal、App、Zone 与租约，不包含路径或 digest |
+| `apps.inspect` | `InstallInspection` | 对 Catalog 或 staged PIKG 做无安装副作用的首次安装/升级预检；`action=upgrade` 时生成升级 inspection |
+| `apps.plan.recompute` | `InstallInspection` | 接受旧 plan、同一 source 以及新的 target/InstallParams，权威重算 plan 与 fingerprint；source/scope 变化返回 `PLAN_STALE` |
+| `apps.submit` / `apps.install` | `{action, task_id?, installation_id, plan_fingerprint?}` | 权威六格动作矩阵。首次安装必须提交 `FreshInstall` plan；升级禁止 plan；相同发布返回同步 `satisfied`。所有 mutation 必须提交 principal 稳定生成的 `idempotency_key` 与已展示 fingerprint |
+| `apps.install.status` | `AppInstallStatusSnapshot` | 按 `task_id` 返回 typed stage、inspection、approval、verification、error、actions 与 terminal result，不暴露 Task 内部 JSON |
+| `apps.install.confirm` | `{task_id}` | 只接受 `{task_id, plan_fingerprint}`；不得在 confirm 同时改 target/params |
+| `apps.install.retry` | `{task_id, retry_of}` | 接受旧 `task_id` 与新的 `idempotency_key`；Failed task 保持 Terminal，新建带 `retry_of`/parent 关系的 task |
+| `apps.install.cancel` | `{task_id}` | 先持久化 TaskMgr cancel intent；runner 在安全边界 ack，Deploy 后先完成回滚/收敛 |
+| `apps.update.check` / `apps.upgrade.check` | typed batch availability | 有 selector 时检查单项，无 selector 时检查当前调用方可管理的全部 Catalog 安装 |
+| `apps.upgrade` | batch root task | 无 selector，要求 `idempotency_key`；创建 `app.update_batch/v1` root，仅为 `UpdateAvailable` 项创建 child，结果保留 satisfied/blocked/failed/succeeded |
+| `apps.start/stop/restart` | lifecycle task | 接受统一 selector 与 `idempotency_key`；持久 runner 可恢复。restart 当前只支持默认 `recreate`，`rolling` 稳定拒绝 |
+| `apps.uninstall` | uninstall task | 接受统一 selector、`idempotency_key` 和显式 `data_disposition=retain|delete`；delete 只消费 Installer 生成的 data/cache manifest，不删除 external mount、Secret 或共享资源 |
 | `app.publish` | `{ok, obj_id, app_did, app_doc_id, pikg_handle, pikg_digest, pikg_path, app_doc, publish_status}` | 开发者发布：产出带 `did/doc_type` 的 App Document、`.pikg`（同一 PikgReader 自校验）并推到仓库；`publish_status=repo_stored_candidate` 表示尚未权威发布 App DID |
 
 * **权限**：所有 handler 要求已认证主体；目标用户默认取 `principal.username`（为自己安装），给他人安装需 admin；`SYSTEM_INTERNAL` 策略（可 auto-confirm）仅限 admin。confirm/retry/cancel 只能操作本人任务（admin 例外）。
-* **安全约束**：卸载删数据仅允许命中 `/opt/buckyos/data/*/{app_id}/*` 的路径；已 `Deleted` 的 app 不可 start；同一 user + App DID 只允许一个进行中的安装/升级事务。
+* **安全约束**：同一个 `AppInstallationId` 的 install/upgrade/start/stop/restart/uninstall 共用 system-config CAS mutation ownership；卸载删除范围只来自 typed manifest；已 `Deleted` 的 App 不可 start。
 
 ### 4.5 UI Session 管理 (登入/登出/当前用户)
 
@@ -214,7 +219,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 真相源：[doc/App 安装协议.md](../App%20安装协议.md)（Draft v0.5，§14.0 为已冻结实现基线）。实现分布：
 [app_install_engine.rs](../../src/frame/control_panel/src/app_install_engine.rs)（可恢复状态机）、
 [app_install_resolver.rs](../../src/frame/control_panel/src/app_install_resolver.rs)（`(App DID, "app")` 解析适配）、
-[app_install_planner.rs](../../src/frame/control_panel/src/app_install_planner.rs)（InstallPlan/readiness）、
+[app_install_planner.rs](../../src/frame/control_panel/src/app_install_planner.rs)（不可变 InstallPlan 与动态 Inspection）、
 [pikg.rs](../../src/frame/control_panel/src/pikg.rs)（`.pikg` 读写与校验）、
 [app_install_driver.rs](../../src/frame/control_panel/src/app_install_driver.rs) +
 [app_install_deployer.rs](../../src/frame/control_panel/src/app_install_deployer.rs)（各 Stage 生产实现）、
@@ -226,7 +231,7 @@ Agent 在系统中有**两副面孔**，需要区分：
 identifier / staging handle
    └─> Resolve   resolve_did(App DID, "app")，candidate 绑定（id/expected_owner 硬约束）
    └─> Inspect   按目标 Node（devices/{node}/info，非编译期 cfg）选 package，
-                 产出 InstallPlan + 六维 readiness + plan fingerprint
+                 产出 immutable InstallPlan + dynamic InstallPlanStatus + fingerprint
    └─> [WaitingForApproval]  确认权限/参数；SYSTEM_INTERNAL 可显式 auto-confirm
    └─> Acquire   只下载 plan.missing（TaskManager 子任务，kevent 加速等待）；
                  offline 模式不建下载任务
@@ -234,27 +239,29 @@ identifier / staging handle
                  输出逐项 VerificationReport；Trust+Content+Config 全 ready 才继续
    └─> Prepare   构造 spec、materialize pikg 内容进 NamedStore、端口冲突检查、
                  app_index CAS 分配，先写 install_record(state=prepared)
-   └─> Deploy    写 users/{uid}/apps|agents/{app}/spec —— 部署事务开始点
-   └─> Activate  等 Started 实例证据 / static web 可观察证据 + 健康检查；
+   └─> Deploy    写 users/{uid}/apps|agents/{installation_id}/spec —— 部署事务开始点
+   └─> Activate  等 exact DeploymentIdentity + 新鲜 epoch/session/health 实例证据，
+                 或 static web 物化 + gateway config generation ack；
                  成功后才 install_record(state=installed) -> installed proof -> Task 完成
 ```
 
-* 每个 Stage 完成先把完整事务状态写回 TaskManager `Task.data`（全量镜像 patch），再进入下一 Stage；Control Panel 重启后从持久数据恢复。
+* 不可变业务请求保存在 `Task.input`；每个 Stage 完成先把 `AppInstallProgressEnvelope {transaction, display}` 完整写回 `Task.progress`，展示百分比更新不得覆盖 transaction；成功终态在 `Task.result` 保存 typed output。
 * 解析状态硬规则：`Revoked/Tombstoned` 不可重试且禁止任何 fallback；`Missing`（权威回答"从未发布"）与 `unknown`（没有回答）错误码不同；unknown 且无可接受 cache 进入 `WAITING_FOR_TRUST_RESOLUTION`（任务 Paused，可 retry）。
-* 错误全部结构化（`InstallError{stage, code, retryable, action}`），进 Task.data 与 install_record。
+* 错误全部结构化（`InstallError{stage, code, retryable, action}`），进入事务快照、terminal result 与 install_record。
 
 ### 5.2 Runner 与恢复
 
-安装任务只能由 Control Panel 已鉴权的 `apps.*` 业务接口创建（beta2.2 起 TaskMgr 无 runner 派发语义）。dispatch 路径收敛到同一幂等入口：RPC 侧创建后立即本地执行（低延迟正常路径）、MsgQueue 持久投递（fetch 后处理完成才 ack）、启动扫描 + 60s sweep 兜底；每条路径都以 TaskManager 为真相源重新读取任务（按 `task_type = app.install / app.update` 过滤自己的任务）。
+安装任务只能由 Control Panel 已鉴权的 `apps.*` 业务接口创建。TaskManager 成功持久 delegated task 后，RPC 路径立即启动本地 runner；Control Panel 启动扫描与 30s sweep 分页恢复本 runner 的 Accepted/Running task。WaitingForApproval/Paused/Terminal 不会被 sweep 自动执行，进程内 task-id guard 合并重复扫描。正确性不依赖 KMSG、runner inbox、`task_ready` 或 KEvent；revision + runner epoch fencing 拒绝过期执行体写回。
 
 ### 5.3 升级 / 卸载
 
-* **升级**（`apps.update`）：同一 Stage 流水线；以权威 Resolve 的 App Document Object ID / `document_version` 判定新版本（不再取 Repo 中 semver 最新）。Prepare 完成前旧版本持续运行；写新 spec 触发调度器切换；新版本 Activate 失败自动恢复旧 spec（本机部署回滚，不改变 resolver 状态），并作废 Deploy 输出供 retry 重写。权限/target/参数变化必须重新确认。
-* **卸载**（`run_uninstall_task`）：内部 stop → 置 `spec.state=Deleted` 并写回 → 等实例移除 →（可选）删数据目录（受路径安全约束）→ 标记完成。
+* **升级**：同一 Stage 流水线；以权威 Resolve 的 App Document Object ID / `document_version` 判定新版本，继承当前组件、权限、mount/settings/env/resource pool、实例数和停止期望。当前切换策略是 in-place/recreate，写新 spec 后存在停机窗口，不宣称 blue-green/rolling。Activate 失败先恢复冻结 previous spec，再等待 previous `DeploymentIdentity` 重新满足 readiness；结果区分 target failed + previous restored、rollback failed 与 partial target。
+* **卸载/生命周期**：`app.start/v1` 与 `app.uninstall/v1` 都是 delegated durable task，共用启动扫描/sweep 与 mutation ownership。卸载先 stop 并等待 exact target evidence 消失，再删除 spec/record；`delete` 只删除 typed manifest 中的私有 data/cache，`retain` 不删除。进入 metadata deletion 边界后 cancel 被禁止。
+* **批量升级**：`apps.upgrade` 创建 `app.update_batch/v1` root，child 通过 parent/root 和稳定派生 idempotency key 关联；单项失败不影响其它 child，root 结果保存每项 terminal outcome，可在 Control Panel 重启后恢复。
 
 ### 5.4 记录与凭证
 
-* in-flight 真相源：TaskManager `Task.data`；长期记录：`users/{uid}/apps|agents/{app}/install_record`（含 DID 解析快照、package meta ids、pikg digest、target、状态、task id、proof id）。
+* in-flight 真相源：TaskManager `input/progress/result`；长期记录：`users/{uid}/apps|agents/{installation_id}/install_record` 或 `zone/apps/{installation_id}/install_record`（含 App DID、scope、source、target/previous deployment、参数、解析快照、package meta ids、pikg digest、状态、task/proof id）。
 * installed proof 只在 Activate + 健康检查成功后写入 Repo（`ACTION_TYPE_INSTALLED`，details 固化 `did_resolution` 快照；本地 override 不得伪装 Anchored）；RepoService 不可用时安装仍成功、proof 跳过并留日志。
 
 ---

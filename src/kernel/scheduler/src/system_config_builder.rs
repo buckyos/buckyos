@@ -7,13 +7,14 @@ use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
-    generate_workflow_service_doc, AppClass, AppDoc, AppServiceSpec, AppType, GatewaySettings,
-    GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceEndpointConfig,
+    generate_workflow_service_doc, AppClass, AppDoc, AppInstallationId, AppInstallationScope,
+    AppServiceSpec, AppType, DeploymentIdentity, GatewaySettings, GatewayShortcut,
+    KernelServiceSpec, NodeConfig, NodeState, SelectorType, ServiceEndpointConfig,
     ServiceExposeConfig, ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo,
     ServiceInstanceState, ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState,
     SubPkgDesc, UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
-    UserTunnelBinding, UserType, ZoneConfig, OPENDAN_SERVICE_PORT, OPENDAN_SERVICE_UNIQUE_ID,
-    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    UserTunnelBinding, UserType, ZoneConfig, OBJ_TYPE_APP_DOC, OPENDAN_SERVICE_PORT,
+    OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -25,6 +26,7 @@ use buckyos_kit::get_buckyos_system_etc_dir;
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, DID};
+use ndn_lib::build_named_object_by_json;
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -291,16 +293,11 @@ impl SystemConfigBuilder {
             jarvis_private_key_pem,
         );
 
-        let legacy_app_spec_key = format!("users/{}/apps/buckyos_jarvis/spec", config.user_name);
-        if self.entries.remove(&legacy_app_spec_key).is_some() {
-            warn!(
-                "removed conflicting legacy jarvis app spec at {} while installing default agent spec",
-                legacy_app_spec_key
-            );
-        }
-
-        let jarvis_spec_key = format!("users/{}/agents/buckyos_jarvis/spec", config.user_name);
         let jarvis_spec = build_default_jarvis_agent_spec(config)?;
+        let jarvis_spec_key = format!(
+            "users/{}/agents/{}/spec",
+            config.user_name, jarvis_spec.installation_id
+        );
         self.insert_json(&jarvis_spec_key, &jarvis_spec)?;
 
         // agents/buckyos_jarvis/settings -> agent settings,
@@ -329,15 +326,36 @@ impl SystemConfigBuilder {
                     app_doc.name
                 ));
             }
-            let app_key = format!("users/{}/apps/{}/spec", config.user_name, app_id);
+            let zone_did = DID::from_str(&config.zone_name)?;
+            let installation_id = AppInstallationId::derive(
+                app_doc.app_did(),
+                &AppInstallationScope {
+                    zone_did,
+                    owner_user_id: config.user_name.clone(),
+                    app_class: AppClass::UserInstalled,
+                },
+            );
+            let app_doc_json = serde_json::to_value(&app_doc)?;
+            let (app_doc_object_id, _) =
+                build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_json);
+            let app_key = format!("users/{}/apps/{}/spec", config.user_name, installation_id);
             debug!("app_key: {}", app_key);
-
             let app_spec = AppServiceSpec {
+                installation_id: installation_id.clone(),
+                app_did: app_doc.app_did().clone(),
+                deployment: DeploymentIdentity {
+                    installation_id,
+                    task_id: format!("bootstrap:preinstall:{app_id}"),
+                    app_doc_object_id,
+                    spec_generation: 1,
+                    pikg_digest: None,
+                },
                 permission: app_doc.permissions.clone(),
                 app_doc,
                 app_index: app_index,
                 user_id: config.user_name.clone(),
                 app_class: AppClass::UserInstalled,
+                selected_components: Vec::new(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::default(),
@@ -729,12 +747,34 @@ fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppSer
         ServiceExposeConfig::web(vec![JARVIS_APP_ID.to_string()], String::new(), false),
     );
 
+    let zone_did = DID::from_str(&config.zone_name)?;
+    let installation_id = AppInstallationId::derive(
+        app_doc.app_did(),
+        &AppInstallationScope {
+            zone_did,
+            owner_user_id: config.user_name.clone(),
+            app_class: AppClass::UserInstalled,
+        },
+    );
+    let app_doc_json = serde_json::to_value(&app_doc)?;
+    let (app_doc_object_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_json);
+
     Ok(AppServiceSpec {
+        installation_id: installation_id.clone(),
+        app_did: app_doc.app_did().clone(),
+        deployment: DeploymentIdentity {
+            installation_id,
+            task_id: "bootstrap:jarvis".to_string(),
+            app_doc_object_id,
+            spec_generation: 1,
+            pikg_digest: None,
+        },
         permission: app_doc.permissions.clone(),
         app_doc,
         app_index: 1,
         user_id: config.user_name.clone(),
         app_class: AppClass::UserInstalled,
+        selected_components: Vec::new(),
         enable: true,
         expected_instance_count: 1,
         state: ServiceState::default(),
@@ -1633,8 +1673,11 @@ mod tests {
 
         let entries = builder.build();
         let spec = entries
-            .get("users/alice/agents/buckyos_jarvis/spec")
-            .expect("jarvis spec should exist");
+            .iter()
+            .find_map(|(key, value)| {
+                (key.starts_with("users/alice/agents/") && key.ends_with("/spec")).then_some(value)
+            })
+            .expect("jarvis spec should exist under its installation identity");
         let spec: buckyos_api::AppServiceSpec =
             serde_json::from_str(spec).expect("parse jarvis spec");
 
@@ -1667,7 +1710,7 @@ mod tests {
     }
 
     #[test]
-    fn add_default_agents_removes_conflicting_legacy_app_spec() {
+    fn add_default_agents_uses_installation_identity_for_agent_spec() {
         let value = json!({
             "user_name": "alice",
             "admin_password_hash": "hashed",
@@ -1676,55 +1719,17 @@ mod tests {
         });
         let summary = StartConfigSummary::from_value(&value).expect("parse start config");
 
-        let mut entries = HashMap::new();
-        entries.insert(
-            "users/alice/apps/buckyos_jarvis/spec".to_string(),
-            json!({
-                "app_doc": {
-                    "name": "buckyos_jarvis",
-                    "show_name": "Jarvis",
-                    "categories": ["dapp"],
-                    "pkg_list": {
-                        "amd64_docker_image": {
-                            "pkg_id": "buckyos_jarvis#0.1.0"
-                        }
-                    },
-                    "service_dock": {},
-                    "permission": {},
-                    "install_config_tips": {
-                        "service_ports": {}
-                    }
-                },
-                "app_index": 42,
-                "user_id": "alice",
-                "enable": true,
-                "expected_instance_count": 1,
-                "state": {},
-                "install_config": {
-                    "data_mount_point": {},
-                    "cache_mount_point": [],
-                    "local_cache_mount_point": [],
-                    "service_ports": {},
-                    "expose_config": {},
-                    "bind_address": "0.0.0.0",
-                    "res_pool_id": "default"
-                }
-            })
-            .to_string(),
-        );
-
-        let mut builder = SystemConfigBuilder::new(entries);
+        let mut builder = SystemConfigBuilder::new(HashMap::new());
         let rt = tokio::runtime::Runtime::new().expect("create runtime");
         rt.block_on(builder.add_default_agents(&summary))
             .expect("add default agents");
 
         let entries = builder.build();
         assert!(
-            !entries.contains_key("users/alice/apps/buckyos_jarvis/spec"),
-            "legacy app spec should be removed"
-        );
-        assert!(
-            entries.contains_key("users/alice/agents/buckyos_jarvis/spec"),
+            entries
+                .keys()
+                .any(|key| key.starts_with("users/alice/agents/appinst:")
+                    && key.ends_with("/spec")),
             "agent spec should exist"
         );
     }
@@ -1784,8 +1789,11 @@ mod tests {
 
         let entries = builder.build();
         let spec = entries
-            .get("users/alice/apps/demo_app/spec")
-            .expect("demo app spec should exist");
+            .iter()
+            .find_map(|(key, value)| {
+                (key.starts_with("users/alice/apps/") && key.ends_with("/spec")).then_some(value)
+            })
+            .expect("demo app spec should exist under its installation identity");
         let spec: AppServiceSpec = serde_json::from_str(spec).expect("parse app spec");
 
         assert_eq!(spec.user_id, "alice");

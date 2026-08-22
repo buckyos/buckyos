@@ -472,6 +472,62 @@ async fn ensure_node_gateway_dir_pkgs_installed_in_env(
     }
 }
 
+async fn publish_static_web_deployment_evidence(
+    node_gateway_info: &Value,
+    client: &SystemConfigClient,
+    node_id: &str,
+    gateway_config_generation: Option<&str>,
+    failure: Option<&str>,
+) {
+    let Some(app_info) = node_gateway_info.get("app_info").and_then(Value::as_object) else {
+        return;
+    };
+    let now = buckyos_get_unix_timestamp();
+    for entry in app_info.values().filter_map(Value::as_object) {
+        let Some(dir_pkg_id) = entry.get("dir_pkg_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(app_instance_id) = entry.get("app_instance_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(deployment_value) = entry.get("deployment") else {
+            continue;
+        };
+        let Ok(deployment) = serde_json::from_value::<DeploymentIdentity>(deployment_value.clone())
+        else {
+            continue;
+        };
+        let content_id = entry
+            .get("dir_pkg_objid")
+            .and_then(Value::as_str)
+            .unwrap_or(dir_pkg_id)
+            .to_string();
+        let evidence = StaticWebDeploymentEvidence {
+            deployment,
+            node_id: node_id.to_string(),
+            content_id,
+            gateway_config_generation: gateway_config_generation.unwrap_or_default().to_string(),
+            materialized_at: failure.is_none().then_some(now).unwrap_or(0),
+            gateway_ready_at: (failure.is_none() && gateway_config_generation.is_some())
+                .then_some(now)
+                .unwrap_or(0),
+            observed_at: now,
+            expires_at: now.saturating_add(90),
+            deployment_error: failure.map(|message| DeploymentError {
+                code: "static_web_materialization_failed".to_string(),
+                message: message.to_string(),
+                detail: None,
+            }),
+        };
+        if let Ok(raw) = serde_json::to_string(&evidence) {
+            let key = format!("services/{app_instance_id}/static_evidence/{node_id}");
+            if let Err(error) = client.set(&key, &raw).await {
+                warn!("publish static web deployment evidence `{key}` failed: {error}");
+            }
+        }
+    }
+}
+
 async fn ensure_node_gateway_dir_pkgs_installed(node_gateway_info: &Value) -> Result<()> {
     ensure_node_gateway_dir_pkgs_installed_in_env(
         get_buckyos_system_bin_dir().as_path(),
@@ -1413,6 +1469,7 @@ async fn node_daemon_main_loop(
                 break;
             }
             let mut gateway_info_keep_tunnels: Vec<String> = Vec::new();
+            let mut pending_static_gateway_info: Option<(Value, String)> = None;
             let gateway_info_path =
                 buckyos_kit::get_buckyos_system_etc_dir().join("node_gateway_info.json");
             let new_node_gateway_info =
@@ -1430,11 +1487,26 @@ async fn node_daemon_main_loop(
                     ensure_node_gateway_dir_pkgs_installed(&new_node_gateway_info).await;
                 if let Err(err) = ensure_result {
                     error!("ensure static web dir pkg installed failed! {}", err);
-                } else if need_write {
-                    node_gateway_info_id = Some(new_node_gateway_info_id_value);
-                    info!("node gateway_info changed, will write to node_gateway_info.json");
-                    std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
-                        .unwrap();
+                    let err_message = err.to_string();
+                    publish_static_web_deployment_evidence(
+                        &new_node_gateway_info,
+                        &system_config_client,
+                        node_id,
+                        None,
+                        Some(err_message.as_str()),
+                    )
+                    .await;
+                } else {
+                    if need_write {
+                        node_gateway_info_id = Some(new_node_gateway_info_id_value.clone());
+                        info!("node gateway_info changed, will write to node_gateway_info.json");
+                        std::fs::write(gateway_info_path, new_node_gateway_info_str.as_bytes())
+                            .unwrap();
+                    }
+                    pending_static_gateway_info = Some((
+                        new_node_gateway_info,
+                        new_node_gateway_info_id_value.to_string(),
+                    ));
                 }
             } else {
                 error!("load node gateway_info from system_config failed!");
@@ -1524,10 +1596,36 @@ async fn node_daemon_main_loop(
                     need_reload,
                     need_restart,
                 )
-                .await
-                .map_err(|err| {
+                .await;
+
+                if let Some((gateway_info, generation)) = pending_static_gateway_info.as_ref() {
+                    match keep_result.as_ref() {
+                        Ok(_) => {
+                            publish_static_web_deployment_evidence(
+                                gateway_info,
+                                &system_config_client,
+                                node_id,
+                                Some(generation.as_str()),
+                                None,
+                            )
+                            .await;
+                        }
+                        Err(err) => {
+                            let message = format!("cyfs-gateway reload failed: {err}");
+                            publish_static_web_deployment_evidence(
+                                gateway_info,
+                                &system_config_client,
+                                node_id,
+                                None,
+                                Some(message.as_str()),
+                            )
+                            .await;
+                        }
+                    }
+                }
+                if let Err(err) = keep_result.as_ref() {
                     error!("keep cyfs_gateway service failed! {}", err);
-                });
+                }
 
                 if need_restart {
                     name_provider_registered = false;
@@ -1539,6 +1637,16 @@ async fn node_daemon_main_loop(
                 }
             } else {
                 error!("load node gateway_cconfig from system_config failed!");
+                if let Some((gateway_info, _)) = pending_static_gateway_info.as_ref() {
+                    publish_static_web_deployment_evidence(
+                        gateway_info,
+                        &system_config_client,
+                        node_id,
+                        None,
+                        Some("load node gateway config failed"),
+                    )
+                    .await;
+                }
             }
         }
     }
@@ -2152,6 +2260,14 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         );
     }
 
+    fn same_zone_device_ip_options(target_did: &DID) -> ResolveIpOptions {
+        ResolveIpOptions::verified_same_zone_device(VerifiedSameZoneDevice::from_verified_relation(
+            target_did.clone(),
+            DID::new("bns", "alice"),
+            SameZoneEvidenceSource::VerifiedOwnerZoneDeviceRelation,
+        ))
+    }
+
     fn unique_test_id(prefix: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2356,10 +2472,16 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         add_discovered_device_cache(&discovered);
 
+        assert!(name_client::resolve_ips(peer_did.to_string().as_str())
+            .await
+            .is_err());
         assert_eq!(
-            name_client::resolve_ips(peer_did.to_string().as_str())
-                .await
-                .unwrap(),
+            name_client::resolve_ips_with_options(
+                peer_did.to_string().as_str(),
+                same_zone_device_ip_options(&peer_did),
+            )
+            .await
+            .unwrap(),
             vec![endpoint_ip]
         );
         let resolved_doc = name_client::resolve_did(&peer_did, Some(DidDocType::Device))

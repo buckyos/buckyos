@@ -8,16 +8,18 @@
 //!   Source 只作为 missing 的获取途径）；
 //! - Inspect 不写系统目录，不触发下载。
 
-use crate::app_install_deployer::build_install_config;
+use crate::app_install_deployer::{build_install_config, installation_route_label};
 use crate::app_package_namespace::{
     validate_app_package_namespace, validate_package_meta_namespace,
 };
 use crate::pikg::PikgInspection;
 use async_trait::async_trait;
 use buckyos_api::{
-    AppDoc, AppDocumentRef, ContentLocation, DidResolutionSnapshot, InstallError, InstallErrorCode,
-    InstallParams, InstallPlan, InstallPolicy, InstallStage, InstallTarget, PlanReadiness,
-    PlannedContent, ReadinessState, SelectedPackage, SubPkgList, APP_INSTALL_SCHEMA_VERSION,
+    AppDoc, AppDocumentRef, AppInstallationId, AppInstallationScope, ContentLocation,
+    DidResolutionSnapshot, InspectedContent, InstallError, InstallErrorCode, InstallInspection,
+    InstallParams, InstallPlan, InstallPlanStatus, InstallPlanUse, InstallPolicy,
+    InstallSourceIdentity, InstallStage, InstallTarget, PlanReadiness, PlannedContent,
+    ReadinessState, SelectedPackage, SubPkgList, APP_INSTALL_SCHEMA_VERSION,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use ndn_lib::ObjId;
@@ -60,6 +62,8 @@ pub struct PlannerInput<'a> {
     pub app_doc_object_id: ObjId,
     pub snapshot: &'a DidResolutionSnapshot,
     pub policy: InstallPolicy,
+    pub plan_use: InstallPlanUse,
+    pub installation_scope: AppInstallationScope,
     pub target: InstallTarget,
     /// 影响部署/selector 的安装参数（进 fingerprint）。
     pub install_params: InstallParams,
@@ -149,13 +153,15 @@ fn validate_permission_selection(app_doc: &AppDoc, install_params: &InstallParam
 pub async fn build_install_plan(
     input: PlannerInput<'_>,
     locator: &dyn ContentLocator,
-) -> Result<InstallPlan, InstallError> {
+) -> Result<InstallInspection, InstallError> {
     let app_doc = input.app_doc;
     let snapshot = input.snapshot;
+    let installation_id = AppInstallationId::derive(&snapshot.app_did, &input.installation_scope);
+    let route_label = installation_route_label(app_doc.name.as_str(), &installation_id);
 
     let namespace = validate_app_package_namespace(app_doc, snapshot, InstallStage::Inspect)?;
     let (service_spec_config, mut config_issues) =
-        build_install_config(app_doc.name.as_str(), app_doc, &input.install_params);
+        build_install_config(route_label.as_str(), app_doc, &input.install_params);
     config_issues.extend(validate_permission_selection(
         app_doc,
         &input.install_params,
@@ -296,6 +302,7 @@ pub async fn build_install_plan(
 
     // 逐 package 计算内容位置。
     let mut required_contents: Vec<PlannedContent> = Vec::new();
+    let mut inspected_contents: Vec<InspectedContent> = Vec::new();
     let mut required_content_missing = false;
     let mut estimated_download_bytes: u64 = 0;
 
@@ -346,6 +353,9 @@ pub async fn build_install_plan(
             expected_docker_image_digest: package.docker_image_digest.clone(),
             format: Some("named_object".to_string()),
             size: None,
+        });
+        inspected_contents.push(InspectedContent {
+            content_id: meta_id_str.clone(),
             location: meta_location,
             sources: meta_sources.clone(),
         });
@@ -388,22 +398,22 @@ pub async fn build_install_plan(
                         estimated_download_bytes.saturating_add(size.unwrap_or(0));
                 }
                 required_contents.push(PlannedContent {
-                    content_id,
+                    content_id: content_id.clone(),
                     sub_pkg_name: Some(package.sub_pkg_name.clone()),
                     package_meta_id: Some(meta_id.clone()),
                     expected_docker_image_digest: None,
                     format: Some("archive".to_string()),
                     size,
+                });
+                inspected_contents.push(InspectedContent {
+                    content_id,
                     location,
                     sources: meta_sources,
                 });
             }
             None => {
                 // meta 不可读：payload 未知。meta 自身已计入 missing。
-                if matches!(
-                    required_contents.last().map(|c| c.location),
-                    Some(ContentLocation::Missing)
-                ) {
+                if matches!(meta_location, ContentLocation::Missing) {
                     // 已计。payload 待 meta 取得后由重新 Inspect 展开。
                 }
             }
@@ -432,31 +442,67 @@ pub async fn build_install_plan(
         name: app_doc.name.clone(),
         version: app_doc.version.clone(),
     };
+    let source_identity = match input.pikg {
+        Some(pikg) => InstallSourceIdentity::Pikg {
+            app_doc_object_id: input.app_doc_object_id.clone(),
+            pikg_digest: pikg.pikg_digest.clone(),
+        },
+        None => InstallSourceIdentity::Catalog {
+            app_doc_object_id: input.app_doc_object_id.clone(),
+        },
+    };
+    let mut frozen_resolution = snapshot.clone();
+    frozen_resolution.cache_status = None;
+    frozen_resolution.warnings.clear();
+    frozen_resolution.resolved_at = None;
     let plan_fingerprint = InstallPlan::compute_fingerprint(
+        input.plan_use,
+        &installation_id,
+        &input.installation_scope,
+        &source_identity,
         &app,
-        snapshot,
+        &frozen_resolution,
         &input.target,
         &input.install_params,
         &service_spec_config,
         &selected_packages,
+        &required_contents,
     );
-
-    Ok(InstallPlan {
+    let now = buckyos_get_unix_timestamp();
+    let plan = InstallPlan {
         schema_version: APP_INSTALL_SCHEMA_VERSION,
+        plan_use: input.plan_use,
+        installation_id,
+        installation_scope: input.installation_scope,
+        source_identity,
         app,
-        resolution: snapshot.clone(),
-        target: input.target,
+        resolution: frozen_resolution,
+        target: input.target.clone(),
         selected_packages,
         required_contents,
-        readiness,
-        target_issues,
-        config_issues,
-        permission_options: app_doc.permissions.clone(),
         install_params: input.install_params,
         service_spec_config,
-        estimated_download_bytes,
-        plan_fingerprint,
-        created_at: buckyos_get_unix_timestamp(),
+        plan_fingerprint: plan_fingerprint.clone(),
+        created_at: now,
+    };
+    let mut warnings = warnings;
+    warnings.extend(snapshot.warnings.iter().cloned());
+    Ok(InstallInspection {
+        schema_version: APP_INSTALL_SCHEMA_VERSION,
+        plan,
+        resolution_status: snapshot.clone(),
+        status: InstallPlanStatus {
+            plan_fingerprint,
+            target_snapshot: input.target,
+            readiness,
+            contents: inspected_contents,
+            target_issues,
+            config_issues,
+            permission_options: app_doc.permissions.clone(),
+            estimated_download_bytes,
+            warnings,
+            inspected_at: now,
+        },
     })
 }
 
@@ -587,6 +633,17 @@ mod tests {
             .any(|issue| issue.contains("does not exactly match")));
     }
 
+    #[test]
+    fn same_display_name_gets_distinct_installation_route_labels() {
+        let first = AppInstallationId::new(format!("appinst:{}", "11".repeat(32))).unwrap();
+        let second = AppInstallationId::new(format!("appinst:{}", "22".repeat(32))).unwrap();
+        let first_label = installation_route_label("notes", &first);
+        let second_label = installation_route_label("notes", &second);
+        assert_ne!(first_label, second_label);
+        assert_eq!(first_label, "notes-111111111111");
+        assert_eq!(second_label, "notes-222222222222");
+    }
+
     struct MapLocator {
         map: HashMap<String, ContentLocation>,
         objects: HashMap<String, Value>,
@@ -688,6 +745,14 @@ mod tests {
         }
     }
 
+    fn test_installation_scope() -> AppInstallationScope {
+        AppInstallationScope {
+            zone_did: DID::new("bns", "test-zone"),
+            owner_user_id: "tester".to_string(),
+            app_class: buckyos_api::AppClass::UserInstalled,
+        }
+    }
+
     #[tokio::test]
     async fn planner_selects_by_target_not_by_compile_time_cfg() {
         let app = build_dual_platform_app();
@@ -700,6 +765,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("aarch64"),
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -709,9 +776,9 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(plan.selected_packages.len(), 1);
+        assert_eq!(plan.plan.selected_packages.len(), 1);
         assert_eq!(
-            plan.selected_packages[0].sub_pkg_name,
+            plan.plan.selected_packages[0].sub_pkg_name,
             "aarch64_docker_image"
         );
 
@@ -722,6 +789,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -730,7 +799,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(plan.selected_packages[0].sub_pkg_name, "amd64_docker_image");
+        assert_eq!(
+            plan.plan.selected_packages[0].sub_pkg_name,
+            "amd64_docker_image"
+        );
 
         // windows 目标不支持。
         let mut win_target = linux_target("amd64");
@@ -741,6 +813,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: win_target,
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -749,7 +823,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(plan.readiness.install, InstallReadiness::UnsupportedTarget);
+        assert_eq!(
+            plan.status.readiness.install,
+            InstallReadiness::UnsupportedTarget
+        );
     }
 
     #[tokio::test]
@@ -762,6 +839,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -770,13 +849,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let selected = &plan.selected_packages[0];
+        let selected = &plan.plan.selected_packages[0];
         let expected_digest = format!("sha256:{}", "11".repeat(32));
         assert_eq!(
             selected.docker_image_digest.as_deref(),
             Some(expected_digest.as_str())
         );
-        assert!(plan.required_contents.iter().any(|content| {
+        assert!(plan.plan.required_contents.iter().any(|content| {
             content.expected_docker_image_digest == selected.docker_image_digest
         }));
 
@@ -795,6 +874,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -825,6 +906,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target,
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -833,9 +916,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(plan.readiness.install, InstallReadiness::UnsupportedTarget);
-        assert_eq!(plan.readiness.target, ReadinessState::NotReady);
-        assert_eq!(plan.target_issues.len(), 2);
+        assert_eq!(
+            plan.status.readiness.install,
+            InstallReadiness::UnsupportedTarget
+        );
+        assert_eq!(plan.status.readiness.target, ReadinessState::NotReady);
+        assert_eq!(plan.status.target_issues.len(), 2);
     }
 
     #[tokio::test]
@@ -884,6 +970,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params,
                 pikg: None,
@@ -893,25 +981,27 @@ mod tests {
         .await
         .unwrap();
         assert!(plan
+            .plan
             .service_spec_config
             .data_mount_point
             .contains_key(std::path::Path::new("/data")));
         assert!(plan
+            .plan
             .service_spec_config
             .external_mount_point
             .contains_key(std::path::Path::new("/shared")));
-        assert_eq!(plan.service_spec_config.bash_envs["MODE"], "prod");
-        assert_eq!(plan.service_spec_config.res_pool_id, "large");
-        assert_eq!(plan.service_spec_config.runtime_caps["net"], "enabled");
+        assert_eq!(plan.plan.service_spec_config.bash_envs["MODE"], "prod");
+        assert_eq!(plan.plan.service_spec_config.res_pool_id, "large");
+        assert_eq!(plan.plan.service_spec_config.runtime_caps["net"], "enabled");
         assert_eq!(
-            plan.service_spec_config.container_param.as_deref(),
+            plan.plan.service_spec_config.container_param.as_deref(),
             Some("--init")
         );
         assert_eq!(
-            plan.service_spec_config.start_param.as_deref(),
+            plan.plan.service_spec_config.start_param.as_deref(),
             Some("serve")
         );
-        assert_eq!(plan.readiness.config, ReadinessState::Ready);
+        assert_eq!(plan.status.readiness.config, ReadinessState::Ready);
     }
 
     #[tokio::test]
@@ -934,6 +1024,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
@@ -961,6 +1053,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
@@ -970,13 +1064,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            plan.readiness.install,
+            plan.status.readiness.install,
             InstallReadiness::ContentDownloadRequired
         );
         // meta 对象缺失时 payload 尺寸未知，预计下载量可以为 0，
         // 但 missing 清单必须精确列出缺失对象（协议 §8.3）。
         assert!(plan
-            .required_contents
+            .status
+            .contents
             .iter()
             .any(|content| matches!(content.location, ContentLocation::Missing)));
 
@@ -994,6 +1089,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &unknown.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
@@ -1003,7 +1100,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            plan.readiness.install,
+            plan.status.readiness.install,
             InstallReadiness::TrustResolutionRequired
         );
 
@@ -1018,6 +1115,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
@@ -1027,10 +1126,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            plan.readiness.install,
+            plan.status.readiness.install,
             InstallReadiness::ContentDownloadRequired
         );
-        assert!(plan.required_contents.iter().any(|content| {
+        assert!(plan.status.contents.iter().any(|content| {
             content.content_id == app.payload_digest
                 && matches!(content.location, ContentLocation::Missing)
         }));
@@ -1047,6 +1146,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: None,
@@ -1055,7 +1156,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(plan.readiness.install, InstallReadiness::OfflineReady);
+        assert_eq!(
+            plan.status.readiness.install,
+            InstallReadiness::OfflineReady
+        );
 
         // Revoked 压倒一切。
         let mut revoked = fake::status_answer(&app.app_did, DocumentStatus::Revoked);
@@ -1066,6 +1170,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &revoked.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -1074,7 +1180,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(plan.readiness.install, InstallReadiness::IdentityRevoked);
+        assert_eq!(
+            plan.status.readiness.install,
+            InstallReadiness::IdentityRevoked
+        );
     }
 
     #[tokio::test]
@@ -1093,6 +1202,8 @@ mod tests {
                         app_doc_object_id: obj_id,
                         snapshot: &snapshot,
                         policy: InstallPolicy::Normal,
+                        plan_use: InstallPlanUse::FreshInstall,
+                        installation_scope: test_installation_scope(),
                         target,
                         install_params: default_install_params(&app_doc, InstallPolicy::Normal),
                         pikg: None,
@@ -1106,15 +1217,21 @@ mod tests {
 
         let base = make_plan(linux_target("amd64"), resolved.snapshot.clone()).await;
         let same = make_plan(linux_target("amd64"), resolved.snapshot.clone()).await;
-        assert_eq!(base.plan_fingerprint, same.plan_fingerprint);
+        assert_eq!(base.plan.plan_fingerprint, same.plan.plan_fingerprint);
 
         let other_target = make_plan(linux_target("aarch64"), resolved.snapshot.clone()).await;
-        assert_ne!(base.plan_fingerprint, other_target.plan_fingerprint);
+        assert_ne!(
+            base.plan.plan_fingerprint,
+            other_target.plan.plan_fingerprint
+        );
 
         let mut bumped = resolved.snapshot.clone();
         bumped.document_version = Some(2);
         let bumped_plan = make_plan(linux_target("amd64"), bumped).await;
-        assert_ne!(base.plan_fingerprint, bumped_plan.plan_fingerprint);
+        assert_ne!(
+            base.plan.plan_fingerprint,
+            bumped_plan.plan.plan_fingerprint
+        );
     }
 
     #[tokio::test]
@@ -1163,6 +1280,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: default_install_params(&app.app_doc, InstallPolicy::Normal),
                 pikg: Some(&inspection),
@@ -1173,10 +1292,14 @@ mod tests {
         .unwrap();
 
         // 内容全部由 pikg 提供：OFFLINE_READY，且没有任何下载量。
-        assert_eq!(plan.readiness.install, InstallReadiness::OfflineReady);
-        assert_eq!(plan.estimated_download_bytes, 0);
+        assert_eq!(
+            plan.status.readiness.install,
+            InstallReadiness::OfflineReady
+        );
+        assert_eq!(plan.status.estimated_download_bytes, 0);
         assert!(plan
-            .required_contents
+            .status
+            .contents
             .iter()
             .all(|content| matches!(content.location, ContentLocation::Pikg)));
 
@@ -1205,6 +1328,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params: InstallParams::default(),
                 pikg: None,
@@ -1214,6 +1339,7 @@ mod tests {
         .await
         .unwrap();
         let names: Vec<_> = plan
+            .plan
             .selected_packages
             .iter()
             .map(|p| p.sub_pkg_name.as_str())
@@ -1241,6 +1367,8 @@ mod tests {
                 app_doc_object_id: resolved.snapshot.app_doc_object_id.clone().unwrap(),
                 snapshot: &resolved.snapshot,
                 policy: InstallPolicy::Normal,
+                plan_use: InstallPlanUse::FreshInstall,
+                installation_scope: test_installation_scope(),
                 target: linux_target("amd64"),
                 install_params,
                 pikg: None,
@@ -1250,6 +1378,7 @@ mod tests {
         .await
         .unwrap();
         let names: Vec<_> = plan
+            .plan
             .selected_packages
             .iter()
             .map(|p| p.sub_pkg_name.as_str())

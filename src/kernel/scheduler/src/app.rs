@@ -10,23 +10,23 @@ use crate::*;
 use anyhow::Result;
 use buckyos_api::{BASE_APP_PORT, MAX_APP_INDEX};
 
-fn app_service_spec_key_candidates(user_id: &str, app_id: &str) -> Vec<String> {
+fn app_service_spec_key_candidates(user_id: &str, installation_id: &str) -> Vec<String> {
     let mut keys = vec![
-        format!("users/{}/apps/{}/spec", user_id, app_id),
-        format!("users/{}/agents/{}/spec", user_id, app_id),
+        format!("users/{}/apps/{}/spec", user_id, installation_id),
+        format!("users/{}/agents/{}/spec", user_id, installation_id),
     ];
     if user_id == SYSTEM_APP_OWNER_ID {
-        keys.insert(0, zone_app_spec_key(app_id));
+        keys.insert(0, zone_app_spec_key(installation_id));
     }
     keys
 }
 
 fn load_app_service_spec(
     user_id: &str,
-    app_id: &str,
+    installation_id: &str,
     input_config: &HashMap<String, String>,
 ) -> Result<(String, AppServiceSpec)> {
-    for key in app_service_spec_key_candidates(user_id, app_id) {
+    for key in app_service_spec_key_candidates(user_id, installation_id) {
         if let Some(raw) = input_config.get(&key) {
             let spec: AppServiceSpec = serde_json::from_str(raw.as_str()).map_err(|err| {
                 anyhow::anyhow!("app_config {} is not a valid json: {}", key, err)
@@ -36,7 +36,10 @@ fn load_app_service_spec(
             } else {
                 AppClass::UserInstalled
             };
-            if spec.app_class != expected_class || spec.user_id != user_id {
+            if spec.app_class != expected_class
+                || spec.user_id != user_id
+                || spec.installation_id.as_str() != installation_id
+            {
                 return Err(anyhow::anyhow!(
                     "app_config {} has mismatched class or owner",
                     key
@@ -48,7 +51,7 @@ fn load_app_service_spec(
 
     Err(anyhow::anyhow!(
         "app_config not found for app_id={} user_id={}",
-        app_id,
+        installation_id,
         user_id
     ))
 }
@@ -115,8 +118,9 @@ pub fn instance_app_service(
 ) -> Result<HashMap<String, KVAction>> {
     let mut result = HashMap::new();
 
-    let (app_id, user_id, node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
-    let (app_config_path, app_config) = load_app_service_spec(&user_id, &app_id, input_config)?;
+    let (installation_id, user_id, node_id) = parse_instance_id(new_instance.instance_id.as_str())?;
+    let (app_config_path, app_config) =
+        load_app_service_spec(&user_id, &installation_id, input_config)?;
     info!("instance_app_service app_config_path: {}", app_config_path);
     if app_config.app_index > MAX_APP_INDEX {
         warn!("app_index: {} is too large,skip", app_config.app_index);
@@ -138,7 +142,7 @@ pub fn instance_app_service(
     //write to node_config
     info!(
         "will instance_app_service app_config: {},service_ports: {:?}",
-        app_id, new_instance.service_ports
+        installation_id, new_instance.service_ports
     );
     let app_service_config = build_app_service_config(
         new_instance.node_id.as_str(),

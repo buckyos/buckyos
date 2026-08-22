@@ -1,10 +1,12 @@
 //system control panel client
 
 use crate::{
-    AppClass, AppDoc, InstanceVolumeConfig, PermissionItem, RdbInstanceConfig, ServiceProtocol,
+    AppClass, AppDoc, AppInstallationId, InstanceVolumeConfig, PermissionItem, RdbInstanceConfig,
+    ServiceProtocol, TaskId,
 };
 use ::kRPC::*;
 use name_lib::DID;
+use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf};
 
@@ -13,6 +15,51 @@ pub const SERVICE_INSTANCE_INFO_UPDATE_INTERVAL: u64 = 30;
 pub const KNOWN_SERVICE_WWW: (&str, u16) = ("www", 80);
 pub const KNOWN_SERVICE_HTTP: (&str, u16) = ("http", 80);
 pub const KNOWN_SERVICE_HTTPS: (&str, u16) = ("https", 443);
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentIdentity {
+    pub installation_id: AppInstallationId,
+    pub task_id: TaskId,
+    pub app_doc_object_id: ObjId,
+    pub spec_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pikg_digest: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentHealth {
+    Unknown,
+    Healthy,
+    Unhealthy,
+    Materialized,
+    GatewayReady,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentError {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StaticWebDeploymentEvidence {
+    pub deployment: DeploymentIdentity,
+    pub node_id: String,
+    pub content_id: String,
+    pub gateway_config_generation: String,
+    pub materialized_at: u64,
+    pub gateway_ready_at: u64,
+    pub observed_at: u64,
+    pub expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_error: Option<DeploymentError>,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -51,7 +98,7 @@ pub enum ServiceInstanceState {
 }
 
 //用于上报给调度器的实例信息
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ServiceInstanceReportInfo {
     pub instance_id: String,
     pub node_id: String,
@@ -61,6 +108,15 @@ pub struct ServiceInstanceReportInfo {
     pub last_update_time: u64,
     pub start_time: u64,
     pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<DeploymentIdentity>,
+    pub instance_epoch: String,
+    pub node_session_id: String,
+    pub observed_at: u64,
+    pub expires_at: u64,
+    pub health: DeploymentHealth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_error: Option<DeploymentError>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -283,11 +339,16 @@ impl ServiceSpecConfig {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AppServiceSpec {
+    pub installation_id: AppInstallationId,
+    pub app_did: DID,
+    pub deployment: DeploymentIdentity,
     pub app_doc: AppDoc,
     pub app_index: u16,  //app index in user's app list
     pub user_id: String, //app's owner userid,注意不应该假设所有的请求都来自该用户
     pub app_class: AppClass,
     pub permission: Vec<PermissionItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_components: Vec<String>,
 
     //与调度器相关的关键参数
     pub enable: bool,
@@ -306,7 +367,7 @@ impl AppServiceSpec {
     }
 
     pub fn app_instance_id(&self) -> String {
-        format!("{}@{}", self.app_id(), self.user_id)
+        format!("{}@{}", self.installation_id, self.user_id)
     }
 }
 

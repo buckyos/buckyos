@@ -3,9 +3,13 @@ use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
     app_availability_audit_key, app_availability_policy_key, get_buckyos_api_runtime,
     validate_availability_rules, AppAvailabilityGroupRule, AppAvailabilityPolicy,
-    AppAvailabilityResolver, AppAvailabilityUserRule, AppClass, AvailabilityEffect,
-    AvailabilityMatch, ResolvedAppInstallation, SystemConfigClient, UserType,
-    APP_AVAILABILITY_SCHEMA_VERSION,
+    AppAvailabilityResolver, AppAvailabilityUserRule, AppClass, AppInstallationScope,
+    AppInstallationStatusSnapshot, AppManagementOrigin, AppScheduledInstanceStatus,
+    AvailabilityEffect, AvailabilityMatch, DeploymentHealth, InstallRecord, InstallRecordState,
+    ReadinessState, ResolvedAppInstallation, ServiceInstanceReportInfo, ServiceInstanceState,
+    StaticWebDeploymentEvidence, SystemConfigClient, SystemConfigError, UserType,
+    APP_AVAILABILITY_SCHEMA_VERSION, APP_INSTALL_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID,
+    APP_UPDATE_TASK_SCHEMA_ID,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use serde_json::{json, Value};
@@ -81,6 +85,8 @@ impl ControlPanelServer {
         json!({
             "app_id": spec.app_doc.name,
             "app_instance_id": spec.app_instance_id(),
+            "installation_id": spec.installation_id,
+            "app_did": spec.app_did,
             "app_class": spec.app_class,
             "runtime_type": spec.app_doc.get_app_type().to_string(),
             "owner_user_id": spec.user_id,
@@ -101,14 +107,331 @@ impl ControlPanelServer {
         })
     }
 
-    async fn app_service_system_config_client() -> Result<Arc<SystemConfigClient>, RPCErrors> {
+    pub(crate) async fn app_service_system_config_client(
+    ) -> Result<Arc<SystemConfigClient>, RPCErrors> {
         get_buckyos_api_runtime()?.get_system_config_client().await
     }
 
-    async fn app_availability_resolver() -> Result<AppAvailabilityResolver, RPCErrors> {
+    pub(crate) async fn app_availability_resolver() -> Result<AppAvailabilityResolver, RPCErrors> {
         Ok(AppAvailabilityResolver::new(
             Self::app_service_system_config_client().await?,
             SYSTEM_APP_VERSION,
+            get_buckyos_api_runtime()?.zone_id.clone(),
+        ))
+    }
+
+    pub(crate) async fn resolve_app_selector(
+        &self,
+        req: &RPCRequest,
+        principal: &RpcAuthPrincipal,
+    ) -> Result<ResolvedAppInstallation, RPCErrors> {
+        let selector = Self::app_selector_from_req(req)?;
+        let owner_user_id =
+            Self::param_str(req, "owner_user_id").unwrap_or_else(|| principal.username.clone());
+        require_self_or_admin(principal, owner_user_id.as_str())?;
+
+        let resolver = Self::app_availability_resolver().await?;
+        let mut candidates = resolver
+            .list_user_installations(owner_user_id.as_str())
+            .await?
+            .into_iter()
+            .map(|(installation, _)| installation)
+            .collect::<Vec<_>>();
+        let client = Self::app_service_system_config_client().await?;
+        let agents_root = format!("users/{owner_user_id}/agents");
+        for installation_id in match client.list(&agents_root).await {
+            Ok(values) => values,
+            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+        } {
+            let spec_path = format!("{agents_root}/{installation_id}/spec");
+            if let Ok(value) = client.get(&spec_path).await {
+                let spec: buckyos_api::AppServiceSpec = serde_json::from_str(&value.value)
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!("invalid app spec `{spec_path}`: {error}"))
+                    })?;
+                candidates.push(ResolvedAppInstallation { spec, spec_path });
+            }
+        }
+
+        let selector = selector.trim();
+        let did_selector = if selector.starts_with("did:") || selector.contains('.') {
+            match crate::app_install_resolver::normalize_identifier(selector) {
+                Ok(crate::app_install_resolver::NormalizedIdentifier::AppDid(did)) => Some(did),
+                Ok(crate::app_install_resolver::NormalizedIdentifier::DomainAlias(alias)) => Some(
+                    crate::app_install_resolver::resolve_domain_alias(alias.as_str())
+                        .await
+                        .map_err(|error| RPCErrors::ReasonError(error.to_string()))?,
+                ),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        candidates.retain(|candidate| {
+            let spec = &candidate.spec;
+            selector == spec.installation_id.as_str()
+                || selector == spec.app_instance_id()
+                || did_selector.as_ref() == Some(&spec.app_did)
+                || (did_selector.is_none() && selector == spec.app_doc.name)
+        });
+        candidates
+            .sort_by(|left, right| left.spec.installation_id.cmp(&right.spec.installation_id));
+        candidates.dedup_by(|left, right| left.spec.installation_id == right.spec.installation_id);
+        match candidates.len() {
+            0 => Err(RPCErrors::ReasonError(format!(
+                "APP_NOT_INSTALLED: no visible installation matches `{selector}`"
+            ))),
+            1 => Ok(candidates.remove(0)),
+            _ => {
+                let choices = candidates
+                    .iter()
+                    .map(|candidate| {
+                        json!({
+                            "installation_id": candidate.spec.installation_id,
+                            "app_class": candidate.spec.app_class,
+                            "owner_user_id": candidate.spec.user_id,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Err(RPCErrors::ReasonError(
+                    json!({
+                        "code": "AMBIGUOUS_APP_TARGET",
+                        "selector": selector,
+                        "candidates": choices,
+                    })
+                    .to_string(),
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn app_selector_from_req(req: &RPCRequest) -> Result<String, RPCErrors> {
+        Self::param_str(req, "selector")
+            .or_else(|| Self::param_str(req, "installation_id"))
+            .or_else(|| Self::param_str(req, "app_did"))
+            .or_else(|| Self::param_str(req, "identifier"))
+            .ok_or_else(|| RPCErrors::ParseRequestError("selector is required".to_string()))
+    }
+
+    pub(crate) async fn handle_apps_status(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        let installation = self.resolve_app_selector(&req, principal).await?;
+        let spec = &installation.spec;
+        let can_manage = principal_is_admin(principal)
+            || (spec.app_class == AppClass::UserInstalled && spec.user_id == principal.username);
+        if !can_manage {
+            let decision = Self::app_availability_resolver()
+                .await?
+                .check_user(&principal.username, &spec.app_instance_id())
+                .await?;
+            if !decision.allowed {
+                return Err(RPCErrors::NoPermission("AppAccessDenied".to_string()));
+            }
+        }
+
+        let client = Self::app_service_system_config_client().await?;
+        let is_agent = spec.app_doc.get_app_type() == buckyos_api::AppType::Agent;
+        let record_key = buckyos_api::install_record_key(
+            spec.app_class,
+            spec.user_id.as_str(),
+            spec.installation_id.as_str(),
+            is_agent,
+        );
+        let install_record = match client.get(&record_key).await {
+            Ok(value) => Some(serde_json::from_str::<InstallRecord>(&value.value).map_err(
+                |error| RPCErrors::ReasonError(format!("invalid install record: {error}")),
+            )?),
+            Err(SystemConfigError::KeyNotFound(_)) => None,
+            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+        };
+        let management_origin = if spec.app_class == AppClass::SystemBuiltin {
+            AppManagementOrigin::SystemBuiltin
+        } else if install_record.is_some() {
+            AppManagementOrigin::InstallerManaged
+        } else {
+            AppManagementOrigin::BootstrapManaged
+        };
+
+        let now = buckyos_get_unix_timestamp();
+        let instances_root = format!("services/{}/instances", spec.app_instance_id());
+        let mut runtime_instances = Vec::new();
+        for node_id in match client.list(&instances_root).await {
+            Ok(values) => values,
+            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+        } {
+            if let Ok(value) = client.get(&format!("{instances_root}/{node_id}")).await {
+                if let Ok(report) = serde_json::from_str::<ServiceInstanceReportInfo>(&value.value)
+                {
+                    runtime_instances.push(report);
+                }
+            }
+        }
+        let mut static_web_evidence = Vec::new();
+        let static_root = format!("services/{}/static_evidence", spec.app_instance_id());
+        for node_id in match client.list(&static_root).await {
+            Ok(values) => values,
+            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+        } {
+            if let Ok(value) = client.get(&format!("{static_root}/{node_id}")).await {
+                if let Ok(evidence) =
+                    serde_json::from_str::<StaticWebDeploymentEvidence>(&value.value)
+                {
+                    static_web_evidence.push(evidence);
+                }
+            }
+        }
+        let runtime_ready_count = runtime_instances
+            .iter()
+            .filter(|report| {
+                report.deployment.as_ref() == Some(&spec.deployment)
+                    && report.state == ServiceInstanceState::Started
+                    && report.health == DeploymentHealth::Healthy
+                    && report.observed_at <= now
+                    && report.expires_at > now
+            })
+            .count() as u32;
+        let static_ready_count = static_web_evidence
+            .iter()
+            .filter(|evidence| {
+                evidence.deployment == spec.deployment
+                    && evidence.deployment_error.is_none()
+                    && evidence.materialized_at > 0
+                    && !evidence.gateway_config_generation.is_empty()
+                    && evidence.gateway_ready_at >= evidence.materialized_at
+                    && evidence.observed_at <= now
+                    && evidence.expires_at > now
+            })
+            .count() as u32;
+        let ready_instance_count = if spec.app_doc.get_app_type() == buckyos_api::AppType::Web {
+            static_ready_count
+        } else {
+            runtime_ready_count
+        };
+
+        let mut scheduled_instances = Vec::new();
+        for node_id in match client.list("nodes").await {
+            Ok(values) => values,
+            Err(SystemConfigError::KeyNotFound(_)) => Vec::new(),
+            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+        } {
+            if let Ok(value) = client.get(&format!("nodes/{node_id}/config")).await {
+                if let Ok(config) = serde_json::from_str::<buckyos_api::NodeConfig>(&value.value) {
+                    for instance in config.apps.values() {
+                        if instance.app_spec.installation_id == spec.installation_id {
+                            scheduled_instances.push(AppScheduledInstanceStatus {
+                                node_id: node_id.clone(),
+                                target_state: instance.target_state.clone(),
+                                deployment: instance.app_spec.deployment.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut active_tasks = Vec::new();
+        let task_client = get_buckyos_api_runtime()?.get_task_mgr_client().await?;
+        for schema_id in [APP_INSTALL_TASK_SCHEMA_ID, APP_UPDATE_TASK_SCHEMA_ID] {
+            let page = task_client
+                .list_tasks(buckyos_api::ListTasksReq {
+                    schema_id: Some(schema_id.to_string()),
+                    runner_app_id: Some(buckyos_api::CONTROL_PANEL_SERVICE_NAME.to_string()),
+                    limit: Some(100),
+                    ..Default::default()
+                })
+                .await?;
+            for task in page
+                .tasks
+                .into_iter()
+                .filter(|task| !task.phase.is_terminal())
+            {
+                if let Ok(status) = self
+                    .install_engine
+                    .status(
+                        task.task_id.as_str(),
+                        principal.username.as_str(),
+                        principal_is_admin(principal),
+                    )
+                    .await
+                {
+                    if status.installation_id.as_ref() == Some(&spec.installation_id) {
+                        active_tasks.push(status);
+                    }
+                }
+            }
+        }
+
+        let stopped = matches!(spec.state, buckyos_api::ServiceState::Stopped);
+        let readiness = if stopped {
+            ReadinessState::from_bool(ready_instance_count == 0)
+        } else {
+            ReadinessState::from_bool(ready_instance_count >= spec.expected_instance_count.max(1))
+        };
+        let available_actions = match management_origin {
+            AppManagementOrigin::SystemBuiltin => Vec::new(),
+            _ if can_manage => {
+                let mut actions = vec!["status".to_string(), "uninstall".to_string()];
+                if stopped {
+                    actions.push("start".to_string());
+                } else {
+                    actions.push("stop".to_string());
+                    actions.push("restart".to_string());
+                }
+                actions
+            }
+            _ => vec!["status".to_string()],
+        };
+        let last_successful_deployment = match install_record.as_ref() {
+            Some(record) if record.state == InstallRecordState::Installed => {
+                record.target_deployment.clone()
+            }
+            Some(record) => record.previous_deployment.clone(),
+            None => Some(spec.deployment.clone()),
+        };
+        let rollback_from_deployment = install_record
+            .as_ref()
+            .filter(|record| record.state == InstallRecordState::RolledBack)
+            .and_then(|record| record.target_deployment.clone());
+        let snapshot = AppInstallationStatusSnapshot {
+            schema_version: APP_INSTALL_SCHEMA_VERSION,
+            installation_id: spec.installation_id.clone(),
+            installation_scope: AppInstallationScope {
+                zone_did: get_buckyos_api_runtime()?.zone_id.clone(),
+                owner_user_id: spec.user_id.clone(),
+                app_class: spec.app_class,
+            },
+            app_did: spec.app_did.clone(),
+            app_name: spec.app_doc.name.clone(),
+            app_version: spec.app_doc.version.clone(),
+            management_origin,
+            desired_spec: spec.clone(),
+            desired_deployment: spec.deployment.clone(),
+            last_successful_deployment,
+            rollback_from_deployment,
+            install_record,
+            active_tasks,
+            scheduled_instance_count: scheduled_instances.len() as u32,
+            scheduled_instances,
+            runtime_instances,
+            static_web_evidence,
+            desired_instance_count: spec.expected_instance_count,
+            ready_instance_count,
+            readiness,
+            available_actions,
+            observed_at: now,
+        };
+        Ok(RPCResponse::new(
+            RPCResult::Success(serde_json::to_value(snapshot).map_err(|error| {
+                RPCErrors::ReasonError(format!("serialize app status failed: {error}"))
+            })?),
+            req.seq,
         ))
     }
 
@@ -166,9 +489,9 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
-        let app_instance_id = Self::require_param_str(&req, "app_instance_id")?;
+        let installation = self.resolve_app_selector(&req, principal).await?;
+        let app_instance_id = installation.spec.app_instance_id();
         let resolver = Self::app_availability_resolver().await?;
-        let installation = resolver.resolve_installation(&app_instance_id).await?;
         let can_manage = principal_is_admin(principal)
             || (installation.spec.app_class == AppClass::UserInstalled
                 && installation.spec.user_id == principal.username);
@@ -270,7 +593,11 @@ impl ControlPanelServer {
         validate_availability_rules(&group_rules, &user_rules)?;
 
         let client = Self::app_service_system_config_client().await?;
-        let resolver = AppAvailabilityResolver::new(client.clone(), SYSTEM_APP_VERSION);
+        let resolver = AppAvailabilityResolver::new(
+            client.clone(),
+            SYSTEM_APP_VERSION,
+            get_buckyos_api_runtime()?.zone_id.clone(),
+        );
         let installation = resolver.resolve_installation(&app_instance_id).await?;
         if installation.spec.app_class != AppClass::UserInstalled {
             return Err(RPCErrors::NoPermission(
@@ -407,7 +734,8 @@ impl ControlPanelServer {
 mod tests {
     use super::*;
     use buckyos_api::{
-        AppDoc, AppServiceSpec, AppType, ServiceExposeConfig, ServiceSpecConfig, ServiceState,
+        AppDoc, AppInstallationId, AppInstallationScope, AppServiceSpec, AppType,
+        DeploymentIdentity, ServiceExposeConfig, ServiceSpecConfig, ServiceState, OBJ_TYPE_APP_DOC,
     };
     use name_lib::DID;
     use std::collections::HashMap;
@@ -418,6 +746,17 @@ mod tests {
         let app_doc = AppDoc::builder(AppType::Service, "notes", "1.0.0", "alice", &owner)
             .build()
             .unwrap();
+        let installation_id = AppInstallationId::derive(
+            app_doc.app_did(),
+            &AppInstallationScope {
+                zone_did: DID::new("bns", "test-zone"),
+                owner_user_id: "alice".to_string(),
+                app_class: AppClass::UserInstalled,
+            },
+        );
+        let app_doc_value = serde_json::to_value(&app_doc).unwrap();
+        let (app_doc_object_id, _) =
+            ndn_lib::build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
         let mut expose_config = HashMap::new();
         expose_config.insert(
             "api".to_string(),
@@ -437,11 +776,21 @@ mod tests {
         );
         let installation = ResolvedAppInstallation {
             spec: AppServiceSpec {
+                installation_id: installation_id.clone(),
+                app_did: app_doc.app_did().clone(),
+                deployment: DeploymentIdentity {
+                    installation_id,
+                    task_id: "test:install".to_string(),
+                    app_doc_object_id,
+                    spec_generation: 1,
+                    pikg_digest: None,
+                },
                 app_doc,
                 app_index: 1,
                 user_id: "alice".to_string(),
                 app_class: AppClass::UserInstalled,
                 permission: Vec::new(),
+                selected_components: Vec::new(),
                 enable: true,
                 expected_instance_count: 1,
                 state: ServiceState::Running,

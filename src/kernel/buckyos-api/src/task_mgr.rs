@@ -939,6 +939,7 @@ pub const APP_INSTALL_TASK_SCHEMA_ID: &str = "app.install/v1";
 pub const APP_UNINSTALL_TASK_SCHEMA_ID: &str = "app.uninstall/v1";
 pub const APP_START_TASK_SCHEMA_ID: &str = "app.start/v1";
 pub const APP_UPDATE_TASK_SCHEMA_ID: &str = "app.update/v1";
+pub const APP_UPDATE_BATCH_TASK_SCHEMA_ID: &str = "app.update_batch/v1";
 
 /// Versioned schema id of a 1.x task-data type.
 pub fn task_schema_id_for(kind: crate::TaskDataType) -> &'static str {
@@ -960,6 +961,7 @@ pub fn task_schema_id_for(kind: crate::TaskDataType) -> &'static str {
         AppUninstall => APP_UNINSTALL_TASK_SCHEMA_ID,
         AppStart => APP_START_TASK_SCHEMA_ID,
         AppUpdate => APP_UPDATE_TASK_SCHEMA_ID,
+        AppUpdateBatch => APP_UPDATE_BATCH_TASK_SCHEMA_ID,
         ServiceRpc => WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
         WorkflowRunTarget => WORKFLOW_RUN_TARGET_TASK_SCHEMA_ID,
         ToolExecBash => TOOL_EXEC_BASH_TASK_SCHEMA_ID,
@@ -1069,6 +1071,11 @@ const BUILTIN_TASK_SCHEMAS: &[(&str, &str, &[TaskExecutorKind])] = &[
     ),
     (
         APP_UPDATE_TASK_SCHEMA_ID,
+        crate::CONTROL_PANEL_SERVICE_NAME,
+        &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        APP_UPDATE_BATCH_TASK_SCHEMA_ID,
         crate::CONTROL_PANEL_SERVICE_NAME,
         &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
     ),
@@ -1415,6 +1422,37 @@ pub struct CreateTaskReq {
 }
 impl_from_json!(CreateTaskReq);
 
+/// Zone-trusted service creates a self-run task while freezing the original
+/// authenticated business principal as creator/controller. Creation and
+/// runner binding are one durable transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDelegatedTaskReq {
+    pub name: String,
+    pub schema_id: String,
+    #[serde(default)]
+    pub schema_version: Option<u32>,
+    pub input: Value,
+    pub creator: ActorRef,
+    #[serde(default)]
+    pub runner_app_instance_id: Option<String>,
+    #[serde(default)]
+    pub parent_id: Option<TaskId>,
+    #[serde(default)]
+    pub child_control_policy: Option<ChildControlPolicy>,
+    #[serde(default)]
+    pub policy_preset: Option<String>,
+    #[serde(default)]
+    pub permission_boundary: bool,
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub retry_of: Option<TaskId>,
+    #[serde(default)]
+    pub supersedes: Option<TaskId>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+impl_from_json!(CreateDelegatedTaskReq);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetTaskReq {
     pub task_id: TaskId,
@@ -1505,6 +1543,20 @@ pub struct RequestControlReq {
     pub expected_revision: Option<u64>,
 }
 impl_from_json!(RequestControlReq);
+
+/// A zone-trusted control surface persists a control intent on behalf of the
+/// already-authenticated business controller. TaskMgr still evaluates the
+/// delegated controller against the frozen Task ACL and records it as actor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestDelegatedControlReq {
+    pub controller: ActorRef,
+    pub task_id: TaskId,
+    pub action: TaskControlAction,
+    pub request_id: String,
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+}
+impl_from_json!(RequestDelegatedControlReq);
 
 /// Either a single updated task or the batch disposition for recursive calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1822,17 +1874,38 @@ pub struct ListTaskNotesResult {
 pub trait TaskManagerHandler: Send + Sync {
     async fn handle_create_task(&self, req: CreateTaskReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("create_task not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "create_task not implemented".to_string(),
+        ))
+    }
+
+    async fn handle_create_delegated_task(
+        &self,
+        req: CreateDelegatedTaskReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
+        let _ = (req, ctx);
+        Err(RPCErrors::ReasonError(
+            "create_delegated_task not implemented".to_string(),
+        ))
     }
 
     async fn handle_get_task(&self, req: GetTaskReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("get_task not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "get_task not implemented".to_string(),
+        ))
     }
 
-    async fn handle_list_tasks(&self, req: ListTasksReq, ctx: RPCContext) -> Result<TaskSummaryPage> {
+    async fn handle_list_tasks(
+        &self,
+        req: ListTasksReq,
+        ctx: RPCContext,
+    ) -> Result<TaskSummaryPage> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("list_tasks not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "list_tasks not implemented".to_string(),
+        ))
     }
 
     async fn handle_get_task_tree(
@@ -1841,7 +1914,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<TaskSummaryPage> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("get_task_tree not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "get_task_tree not implemented".to_string(),
+        ))
     }
 
     async fn handle_get_subtasks(
@@ -1850,12 +1925,16 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<TaskSummaryPage> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("get_subtasks not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "get_subtasks not implemented".to_string(),
+        ))
     }
 
     async fn handle_archive_task(&self, req: ArchiveTaskReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("archive_task not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "archive_task not implemented".to_string(),
+        ))
     }
 
     async fn handle_request_control(
@@ -1864,7 +1943,20 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<RequestControlResult> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("request_control not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "request_control not implemented".to_string(),
+        ))
+    }
+
+    async fn handle_request_delegated_control(
+        &self,
+        req: RequestDelegatedControlReq,
+        ctx: RPCContext,
+    ) -> Result<RequestControlResult> {
+        let _ = (req, ctx);
+        Err(RPCErrors::ReasonError(
+            "request_delegated_control not implemented".to_string(),
+        ))
     }
 
     async fn handle_update_assignees(
@@ -1873,7 +1965,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("update_assignees not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "update_assignees not implemented".to_string(),
+        ))
     }
 
     async fn handle_grant_task_access(
@@ -1882,7 +1976,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("grant_task_access not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "grant_task_access not implemented".to_string(),
+        ))
     }
 
     async fn handle_revoke_task_access(
@@ -1891,7 +1987,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("revoke_task_access not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "revoke_task_access not implemented".to_string(),
+        ))
     }
 
     async fn handle_list_task_access(
@@ -1900,27 +1998,41 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<ListTaskAccessResult> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("list_task_access not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "list_task_access not implemented".to_string(),
+        ))
     }
 
     async fn handle_report_started(&self, req: ReportStartedReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("report_started not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "report_started not implemented".to_string(),
+        ))
     }
 
-    async fn handle_report_progress(&self, req: ReportProgressReq, ctx: RPCContext) -> Result<Task> {
+    async fn handle_report_progress(
+        &self,
+        req: ReportProgressReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("report_progress not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "report_progress not implemented".to_string(),
+        ))
     }
 
     async fn handle_report_waiting(&self, req: ReportWaitingReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("report_waiting not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "report_waiting not implemented".to_string(),
+        ))
     }
 
     async fn handle_report_running(&self, req: ReportRunningReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("report_running not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "report_running not implemented".to_string(),
+        ))
     }
 
     async fn handle_update_control_profile(
@@ -1929,22 +2041,30 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("update_control_profile not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "update_control_profile not implemented".to_string(),
+        ))
     }
 
     async fn handle_ack_control(&self, req: AckControlReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("ack_control not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "ack_control not implemented".to_string(),
+        ))
     }
 
     async fn handle_commit_result(&self, req: CommitResultReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("commit_result not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "commit_result not implemented".to_string(),
+        ))
     }
 
     async fn handle_fail_task(&self, req: FailTaskReq, ctx: RPCContext) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("fail_task not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "fail_task not implemented".to_string(),
+        ))
     }
 
     async fn handle_create_promised_task(
@@ -1953,12 +2073,20 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("create_promised_task not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "create_promised_task not implemented".to_string(),
+        ))
     }
 
-    async fn handle_set_promise_wait(&self, req: SetPromiseWaitReq, ctx: RPCContext) -> Result<Task> {
+    async fn handle_set_promise_wait(
+        &self,
+        req: SetPromiseWaitReq,
+        ctx: RPCContext,
+    ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("set_promise_wait not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "set_promise_wait not implemented".to_string(),
+        ))
     }
 
     async fn handle_bind_app_executor(
@@ -1967,7 +2095,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("bind_app_executor not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "bind_app_executor not implemented".to_string(),
+        ))
     }
 
     async fn handle_release_app_executor(
@@ -1976,7 +2106,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("release_app_executor not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "release_app_executor not implemented".to_string(),
+        ))
     }
 
     async fn handle_finish_promise_failure(
@@ -1985,7 +2117,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("finish_promise_failure not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "finish_promise_failure not implemented".to_string(),
+        ))
     }
 
     async fn handle_cancel_promised_task(
@@ -1994,7 +2128,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Task> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("cancel_promised_task not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "cancel_promised_task not implemented".to_string(),
+        ))
     }
 
     async fn handle_register_task_schema(
@@ -2003,7 +2139,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<TaskSchemaDefinition> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("register_task_schema not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "register_task_schema not implemented".to_string(),
+        ))
     }
 
     async fn handle_get_task_schema(
@@ -2012,7 +2150,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<TaskSchemaDefinition> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("get_task_schema not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "get_task_schema not implemented".to_string(),
+        ))
     }
 
     async fn handle_list_task_schemas(
@@ -2021,7 +2161,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<ListTaskSchemasResult> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("list_task_schemas not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "list_task_schemas not implemented".to_string(),
+        ))
     }
 
     async fn handle_set_task_schema_enabled(
@@ -2030,7 +2172,9 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<TaskSchemaDefinition> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("set_task_schema_enabled not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "set_task_schema_enabled not implemented".to_string(),
+        ))
     }
 
     async fn handle_list_task_events(
@@ -2039,12 +2183,16 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<ListTaskEventsResult> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("list_task_events not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "list_task_events not implemented".to_string(),
+        ))
     }
 
     async fn handle_add_task_note(&self, req: AddTaskNoteReq, ctx: RPCContext) -> Result<TaskNote> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("add_task_note not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "add_task_note not implemented".to_string(),
+        ))
     }
 
     async fn handle_list_task_notes(
@@ -2053,10 +2201,11 @@ pub trait TaskManagerHandler: Send + Sync {
         ctx: RPCContext,
     ) -> Result<Vec<TaskNote>> {
         let _ = (req, ctx);
-        Err(RPCErrors::ReasonError("list_task_notes not implemented".to_string()))
+        Err(RPCErrors::ReasonError(
+            "list_task_notes not implemented".to_string(),
+        ))
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Client
@@ -2115,8 +2264,24 @@ impl TaskManagerClient {
         }
     }
 
-    client_task_method!(create_task, handle_create_task, "create_task", CreateTaskReq);
-    client_task_method!(archive_task, handle_archive_task, "archive_task", ArchiveTaskReq);
+    client_task_method!(
+        create_task,
+        handle_create_task,
+        "create_task",
+        CreateTaskReq
+    );
+    client_task_method!(
+        create_delegated_task,
+        handle_create_delegated_task,
+        "create_delegated_task",
+        CreateDelegatedTaskReq
+    );
+    client_task_method!(
+        archive_task,
+        handle_archive_task,
+        "archive_task",
+        ArchiveTaskReq
+    );
     client_task_method!(
         update_assignees,
         handle_update_assignees,
@@ -2165,7 +2330,12 @@ impl TaskManagerClient {
         "update_control_profile",
         UpdateControlProfileReq
     );
-    client_task_method!(ack_control, handle_ack_control, "ack_control", AckControlReq);
+    client_task_method!(
+        ack_control,
+        handle_ack_control,
+        "ack_control",
+        AckControlReq
+    );
     client_task_method!(
         commit_result,
         handle_commit_result,
@@ -2244,7 +2414,9 @@ impl TaskManagerClient {
     pub async fn get_task_tree(&self, req: GetTaskTreeReq) -> Result<TaskSummaryPage> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_get_task_tree(req, RPCContext::default()).await
+                handler
+                    .handle_get_task_tree(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -2261,7 +2433,9 @@ impl TaskManagerClient {
     pub async fn get_subtasks(&self, req: GetSubtasksReq) -> Result<TaskSummaryPage> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_get_subtasks(req, RPCContext::default()).await
+                handler
+                    .handle_get_subtasks(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -2278,13 +2452,37 @@ impl TaskManagerClient {
     pub async fn request_control(&self, req: RequestControlReq) -> Result<RequestControlResult> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_request_control(req, RPCContext::default()).await
+                handler
+                    .handle_request_control(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("request_control", params).await?;
+                serde_json::from_value(result).map_err(|e| {
+                    RPCErrors::ParserResponseError(format!("Expected RequestControlResult: {}", e))
+                })
+            }
+        }
+    }
+
+    pub async fn request_delegated_control(
+        &self,
+        req: RequestDelegatedControlReq,
+    ) -> Result<RequestControlResult> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_request_delegated_control(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let params = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("request_delegated_control", params).await?;
                 serde_json::from_value(result).map_err(|e| {
                     RPCErrors::ParserResponseError(format!("Expected RequestControlResult: {}", e))
                 })
@@ -2348,7 +2546,9 @@ impl TaskManagerClient {
         };
         match self {
             Self::InProcess(handler) => {
-                handler.handle_get_task_schema(req, RPCContext::default()).await
+                handler
+                    .handle_get_task_schema(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -2362,7 +2562,10 @@ impl TaskManagerClient {
         }
     }
 
-    pub async fn list_task_schemas(&self, req: ListTaskSchemasReq) -> Result<Vec<TaskSchemaDefinition>> {
+    pub async fn list_task_schemas(
+        &self,
+        req: ListTaskSchemasReq,
+    ) -> Result<Vec<TaskSchemaDefinition>> {
         match self {
             Self::InProcess(handler) => Ok(handler
                 .handle_list_task_schemas(req, RPCContext::default())
@@ -2373,9 +2576,13 @@ impl TaskManagerClient {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
                 })?;
                 let result = client.call("list_task_schemas", params).await?;
-                let parsed: ListTaskSchemasResult = serde_json::from_value(result).map_err(|e| {
-                    RPCErrors::ParserResponseError(format!("Expected ListTaskSchemasResult: {}", e))
-                })?;
+                let parsed: ListTaskSchemasResult =
+                    serde_json::from_value(result).map_err(|e| {
+                        RPCErrors::ParserResponseError(format!(
+                            "Expected ListTaskSchemasResult: {}",
+                            e
+                        ))
+                    })?;
                 Ok(parsed.schemas)
             }
         }
@@ -2413,7 +2620,9 @@ impl TaskManagerClient {
     pub async fn list_task_events(&self, req: ListTaskEventsReq) -> Result<ListTaskEventsResult> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_list_task_events(req, RPCContext::default()).await
+                handler
+                    .handle_list_task_events(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -2442,7 +2651,9 @@ impl TaskManagerClient {
         };
         match self {
             Self::InProcess(handler) => {
-                handler.handle_add_task_note(req, RPCContext::default()).await
+                handler
+                    .handle_add_task_note(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -2463,7 +2674,9 @@ impl TaskManagerClient {
         };
         match self {
             Self::InProcess(handler) => {
-                handler.handle_list_task_notes(req, RPCContext::default()).await
+                handler
+                    .handle_list_task_notes(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -2481,7 +2694,11 @@ impl TaskManagerClient {
     // --- Convenience wrappers ---
 
     /// Request a cancel on a task with a fresh request id.
-    pub async fn cancel_task(&self, task_id: &str, recursive: bool) -> Result<RequestControlResult> {
+    pub async fn cancel_task(
+        &self,
+        task_id: &str,
+        recursive: bool,
+    ) -> Result<RequestControlResult> {
         self.request_control(RequestControlReq {
             task_id: task_id.to_string(),
             action: TaskControlAction::Cancel,
@@ -2685,6 +2902,13 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             "create_task" => {
                 dispatch_task_method!(self, ctx, req.params, CreateTaskReq, handle_create_task)
             }
+            "create_delegated_task" => dispatch_task_method!(
+                self,
+                ctx,
+                req.params,
+                CreateDelegatedTaskReq,
+                handle_create_delegated_task
+            ),
             "get_task" => dispatch_task_method!(self, ctx, req.params, GetTaskReq, handle_get_task),
             "list_tasks" => {
                 let list_req = ListTasksReq::from_json(req.params)?;
@@ -2707,6 +2931,14 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             "request_control" => {
                 let control_req = RequestControlReq::from_json(req.params)?;
                 let result = self.0.handle_request_control(control_req, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            "request_delegated_control" => {
+                let control_req = RequestDelegatedControlReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_request_delegated_control(control_req, ctx)
+                    .await?;
                 RPCResult::Success(json!(result))
             }
             "update_assignees" => dispatch_task_method!(
@@ -2773,13 +3005,9 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             "ack_control" => {
                 dispatch_task_method!(self, ctx, req.params, AckControlReq, handle_ack_control)
             }
-            "commit_result" => dispatch_task_method!(
-                self,
-                ctx,
-                req.params,
-                CommitResultReq,
-                handle_commit_result
-            ),
+            "commit_result" => {
+                dispatch_task_method!(self, ctx, req.params, CommitResultReq, handle_commit_result)
+            }
             "fail_task" => {
                 dispatch_task_method!(self, ctx, req.params, FailTaskReq, handle_fail_task)
             }
@@ -2904,7 +3132,10 @@ mod tests {
 
         let denied = task_mgr_error(TASK_ERR_PERMISSION_DENIED, "no Control action");
         assert!(matches!(denied, RPCErrors::NoPermission(_)));
-        assert_eq!(task_mgr_error_code(&denied), Some(TASK_ERR_PERMISSION_DENIED));
+        assert_eq!(
+            task_mgr_error_code(&denied),
+            Some(TASK_ERR_PERMISSION_DENIED)
+        );
 
         let unrelated = RPCErrors::ReasonError("task_not_found_elsewhere: x".into());
         assert_eq!(task_mgr_error_code(&unrelated), None);

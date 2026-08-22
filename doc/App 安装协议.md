@@ -255,25 +255,25 @@ Installer 必须区分以下结果：
 
 除 App DID / BNS 名称外，其余入口取得的 App Document 都先视为候选 body。若权威解析只返回 `Active + doc_hash`，任意 Source 提供的匹配 body 均可补齐内容；若权威结果已是 `Revoked` / `Tombstoned`，任何 Source 都不能恢复该 body 的安装资格。
 
-### 2.5 Installer 的两类标准输入
+### 2.5 Installer 的两类标准来源
 
 Installer 至少应支持两类逻辑入口。
 
 #### 2.5.1 标识符入口
 
 ```text
-install_app(identifier, referrer?, options?)
+apps.inspect({ source: { kind: "identifier", identifier, referrer? }, ... })
 ```
 
-`identifier` 可以是 App DID、名称、Object ID、URL 或分享对象。系统必须归一化出 App DID 和候选 body / 包位置，再对 `(App DID, "app")` 执行标准解析。若 URL、Object ID 或分享对象本身不携带 App DID，可以先执行不产生安装副作用的最小 Acquisition，读取 Manifest / App Document 以提取 App DID；在可信 Resolve 完成前不得进入 Inspect 或 Deploy。
+`identifier` 可以是 App DID、名称、Object ID 或分享对象。系统必须归一化出 App DID 和候选 body / 包位置，再对 `(App DID, "app")` 执行标准解析。Control Panel 不接受客户端 URL 并代为下载；URL 来源由 Tool 获取字节并按本地包流程 staging。若 Object ID 或分享对象本身不携带 App DID，可以先执行不产生安装副作用的最小 Acquisition，读取 Manifest / App Document 以提取 App DID；在可信 Resolve 完成前不得进入 Inspect 或 Deploy。
 
 #### 2.5.2 本地包入口
 
 ```text
-install_package(local_pikg_path, options?)
+upload -> apps.staging.finalize -> apps.inspect({ source: { kind: "local_pikg", staging_handle }, ... })
 ```
 
-Installer 直接检查本地 `.pikg`。该入口的内容校验始终可以离线执行；只有当 Zone Resolver / 本机 DID cache 已持有可接受的解析结果，或用户显式启用带警告的本地开发覆盖时，才可以在不访问网络的情况下同时完成 DID 信任校验并进入 Deploy。
+Tool 上传本地 `.pikg`，Installer 只通过受控 staging handle 检查不可变内容，不接受客户端路径或任意服务端路径。该入口的内容校验始终可以离线执行；只有当 Zone Resolver / 本机 DID cache 已持有可接受的解析结果，或用户显式启用带警告的本地开发覆盖时，才可以在不访问网络的情况下同时完成 DID 信任校验并进入 Deploy。
 
 ### 2.6 服务运行与暴露配置
 
@@ -844,7 +844,7 @@ Package Meta objects
 APPDOC.json or APPDOC.jwt
         ↓ pack
 local app.pikg
-        ↓ install_package
+        ↓ upload / staging / inspect / submit
 run / test / iterate
 ```
 
@@ -1389,23 +1389,22 @@ Package Meta 对象“已存在”本身不等于该 package 内容就绪。Insp
 
 ### 11.4 InstallPlan
 
-`InstallPlan` 是 Inspect Stage 的输出，定义在 `buckyos_api::app_install`。当前持久化格式由 `APP_INSTALL_SCHEMA_VERSION = 3` 标识；这是 beta 2.2 breaking schema，缺少或不等于当前版本的 Task/Plan 必须拒绝，不做旧字段兼容。v3 把安装分类和稳定 App 实例身份写入任务与长期记录。
+`InstallPlan` 是 Inspect Stage 的不可变输出，定义在 `buckyos_api::app_install`。当前持久化格式由 `APP_INSTALL_SCHEMA_VERSION = 4` 标识；这是 beta 2.2 breaking schema，缺少或不等于当前版本的 Task/Plan/record 必须拒绝，不做旧字段兼容。v4 将稳定安装身份、作用域、来源和动作写入计划，并把 readiness/location/warning 等动态结果移入 `InstallInspection`。
 
 ```rust
 pub struct InstallPlan {
     pub schema_version: u32,
+    pub plan_use: InstallPlanUse,             // FreshInstall | Upgrade | Satisfied
+    pub installation_id: AppInstallationId,
+    pub installation_scope: AppInstallationScope,
+    pub source_identity: InstallSourceIdentity, // Catalog{app_doc_object_id} | Pikg{...,digest}
     pub app: AppDocumentRef,
-    pub resolution: DidResolutionSnapshot,
+    pub resolution: DidResolutionSnapshot,    // 已去除 resolved_at/cache_status/warnings 的冻结语义
     pub target: InstallTarget,
     pub selected_packages: Vec<SelectedPackage>,
     pub required_contents: Vec<PlannedContent>,
-    pub readiness: PlanReadiness,
-    pub target_issues: Vec<String>,
-    pub config_issues: Vec<String>,
-    pub permission_options: Vec<PermissionItem>,
     pub install_params: InstallParams,
     pub service_spec_config: ServiceSpecConfig,
-    pub estimated_download_bytes: u64,
     pub plan_fingerprint: String,
     pub created_at: u64,
 }
@@ -1447,8 +1446,6 @@ pub struct PlannedContent {
     pub expected_docker_image_digest: Option<String>,
     pub format: Option<String>,
     pub size: Option<u64>,
-    pub location: ContentLocation,           // installed | named_store | pikg | missing
-    pub sources: Vec<String>,
 }
 
 pub struct InstallParams {
@@ -1461,6 +1458,7 @@ pub struct InstallParams {
     pub bash_envs: HashMap<String, String>,
     pub res_pool_id: Option<String>,
     pub auto_start: bool,                    // 缺省 true
+    pub expected_instance_count: u32,        // 缺省 1；Activate 要求全部 ready
 }
 
 /// 七维 readiness；install 为综合结论（§4.5 / §4.6）
@@ -1473,7 +1471,29 @@ pub struct PlanReadiness {
     pub config: ReadinessState,
     pub install: InstallReadiness,           // OFFLINE_READY | CONTENT_DOWNLOAD_REQUIRED | ...
 }
+
+pub struct InstallInspection {
+    pub schema_version: u32,
+    pub plan: InstallPlan,
+    pub resolution_status: DidResolutionSnapshot,
+    pub status: InstallPlanStatus,
+}
+
+pub struct InstallPlanStatus {
+    pub plan_fingerprint: String,
+    pub target_snapshot: InstallTarget,
+    pub readiness: PlanReadiness,
+    pub contents: Vec<InspectedContent>,      // content_id + current location/sources
+    pub target_issues: Vec<String>,
+    pub config_issues: Vec<String>,
+    pub permission_options: Vec<PermissionItem>,
+    pub estimated_download_bytes: u64,
+    pub warnings: Vec<String>,
+    pub inspected_at: u64,
+}
 ```
+
+Plan 文件使用 `deny_unknown_fields`，只携带长期可移植的不可变语义；staging handle、服务端路径、token、Secret 明文、readiness、content location/source、estimated bytes、issues 和 warning 均不得进入 Plan。`resolution_status/status` 是带时间的当前检查结果，Acquire 只更新它们，不得改变已经批准的 Plan。
 
 `service_spec_config` 是 Inspect 阶段由 `AppDoc.service_config_tips + InstallParams` 唯一推导的最终运行配置，也是用户实际批准的配置。Prepare 必须原样使用它，禁止确认后再按另一套规则二次构造。无法满足的必需 endpoint/env、未知 service 或不安全 mount 写入 `config_issues`；SDK/runtime 或数值能力不满足写入 `target_issues`。
 
@@ -1489,7 +1509,19 @@ pub struct PlanReadiness {
 
 ```jsonc
 {
-  "schema_version": 3,
+  "schema_version": 4,
+  "plan_use": "FRESH_INSTALL",
+  "installation_id": "appinst:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "installation_scope": {
+    "zone_did": "did:bns:test-zone",
+    "owner_user_id": "root",
+    "app_class": "user_installed"
+  },
+  "source_identity": {
+    "kind": "pikg",
+    "app_doc_object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
+    "pikg_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
   "app": {
     "did": "did:bns:pikg-docker.root",
     "object_id": "appdoc:0bb3711c71b8dd4606f430f4884586f58aaab064e69238549010e8f4c19abe85",
@@ -1504,9 +1536,7 @@ pub struct PlanReadiness {
     "document_version": 1785800758,
     "expected_owner": "did:bns:root",
     "evidence": "Anchored",
-    "verification_status": "Passed",
-    "cache_status": "ZoneHit",
-    "warnings": []
+    "verification_status": "Passed"
   },
   "target": {
     "node_id": "node1",
@@ -1527,26 +1557,7 @@ pub struct PlanReadiness {
     "content_id": "pkg:67e624552871d410c63a2611b5500d32a72ff866caddc039249700ca6642ba8c",
     "sub_pkg_name": "aarch64_docker_image",
     "expected_docker_image_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "format": "named_object",
-    "location": "pikg",
-    "sources": []
-  }],
-  "readiness": {
-    "document_syntax": "READY",
-    "trust": "READY",
-    "package_integrity": "READY",
-    "content": "READY",
-    "target": "READY",
-    "config": "READY",
-    "install": "OFFLINE_READY"
-  },
-  "target_issues": [],
-  "config_issues": [],
-  "permission_options": [{
-    "scope_path": "wan",
-    "required": false,
-    "actions": [],
-    "exp": null
+    "format": "named_object"
   }],
   "install_params": {
     "permissions": [{
@@ -1556,16 +1567,16 @@ pub struct PlanReadiness {
       "exp": null
     }],
     "service_settings": { "services": {} },
-    "auto_start": true
+    "auto_start": true,
+    "expected_instance_count": 1
   },
   "service_spec_config": { "res_pool_id": "default" },
-  "estimated_download_bytes": 0,
   "plan_fingerprint": "planfp:...",
   "created_at": 1785800800
 }
 ```
 
-`plan_fingerprint` 使用 JCS + SHA-256，绑定 schema version、`AppDocumentRef`、除 `resolved_at` 外的完整 resolver 信任结论、完整 target（含 runtime/capabilities）、强类型安装参数、最终 `ServiceSpecConfig` 与 selected packages（含 Docker digest）。任一变化必须重新 Inspect 和确认；Verify 必须现场重算 fingerprint，并同时核对 approval 中的 fingerprint、target 和参数。若 resolver 后续返回 `Revoked` / `Tombstoned`，任何尚未 Deploy 的计划必须立即作废。`os`/`arch` 必须来自目标 Node 信息，禁止用 Control Panel 编译期 `cfg!(target_*)` 代替。
+`plan_fingerprint` 使用与 named-object 相同的 JCS canonical JSON + SHA-256 路径，绑定 schema version、`plan_use`、`AppInstallationId`、完整 installation scope、source identity、`AppDocumentRef`、冻结 resolver 语义、完整 target（含 runtime/capabilities）、强类型安装参数、最终 `ServiceSpecConfig`、selected packages 和 required content identity。动态 `cache_status/warnings/resolved_at` 与展示用 `created_at` 不参与 fingerprint。字段顺序不影响结果；缺省值必须先按 Rust/TypeScript 共享 schema 展开，unknown field 直接拒绝。fingerprint 只是等值/完整性标识，不是授权凭据；submit 必须重算、重新鉴权并重新检查 source/target。任一绑定项变化都返回 `PLAN_STALE` 并要求重新 Inspect/确认；resolver 后续返回 `Revoked` / `Tombstoned` 时尚未 Deploy 的计划立即作废。`os`/`arch` 必须来自目标 Node 信息，禁止用 Control Panel 编译期 `cfg!(target_*)` 代替。
 
 Resolver 没有返回可安装 App Document body 时，不得用零值 Object ID、空版本或固定 fingerprint 伪造占位 `InstallPlan`。事务保留 `DidResolutionSnapshot` 并以 `TRUST_RESOLUTION_REQUIRED` 暂停，待重新 Resolve 后再首次生成真实 Plan。
 
@@ -1611,20 +1622,25 @@ pub struct DidResolutionSnapshot {
 
 #### AppInstallTaskData / InstallRecord
 
-- in-flight 事务：不可变请求保存在 `Task.input`，可恢复的完整 `AppInstallTaskData { schema_version, request, state: InstallTransactionState }` 快照保存在 `Task.progress`（含 `plan` / `approval` / `verification` / `prepared` 等）。`request.app_class` 固定本次安装为 `user_installed` 或 `zone_installed`；`AppUpdateTaskData` 使用相同的 `schema_version` 和状态结构。
-- 长期记录：个人 App/Agent 写 `users/{uid}/apps|agents/{app_name}/install_record`；Zone App 写 `zone/apps/{app_name}/install_record`。
+- in-flight 事务：不可变请求保存在 `Task.input`；`Task.progress` 始终保存完整 `AppInstallProgressEnvelope {schema_version, transaction_revision, transaction, display}`，百分比更新只改 `display`，不会覆盖 plan/approval/verification/prepared。成功终态的 typed output 写 `Task.result`。`request.app_class` 固定本次安装为 `user_installed` 或 `zone_installed`；`AppUpdateTaskData` 使用相同 schema/state。
+- 长期记录：个人 App/Agent 写 `users/{uid}/apps|agents/{installation_id}/install_record`；Zone App 写 `zone/apps/{installation_id}/install_record`。
 
 ```rust
 pub struct InstallRecord {
     pub schema_version: u32,
     pub app: AppDocumentRef,
     pub user_id: String,
-    pub app_instance_id: String,
+    pub installation_id: AppInstallationId,
+    pub installation_scope: AppInstallationScope,
     pub app_class: AppClass,
     pub resolution: DidResolutionSnapshot,
     pub package_meta_ids: Vec<ObjId>,
     pub pikg_digest: Option<String>,
     pub target: InstallTarget,
+    pub install_params: InstallParams,
+    pub service_spec_config: ServiceSpecConfig,
+    pub target_deployment: Option<DeploymentIdentity>,
+    pub previous_deployment: Option<DeploymentIdentity>,
     pub state: InstallRecordState, // prepared|deploying|installed|deployed_but_activation_failed|rolled_back|failed
     pub task_id: i64,
     pub proof_id: Option<String>,
@@ -1635,7 +1651,7 @@ pub struct InstallRecord {
 }
 ```
 
-`AppServiceSpec` 只承载调度/部署所需的 `app_doc`、`app_class`、`permission`、`spec_config` 等，不复制解析证据与任务历史。其稳定实例身份为 `<app_doc.name>@<user_id>`；Zone App 的 `user_id` 固定为 `system`。
+`AppServiceSpec` 承载调度/部署所需的 `installation_id/app_did/deployment/app_doc/app_class/permission/spec_config` 等，不复制解析证据与任务历史。内部 `app_instance_id` 从 `AppInstallationId + owner_user_id` 派生，不再使用 `<app_doc.name>@<user_id>`。Zone App 的 `user_id` 固定为 `system`。
 
 ### 11.6 App 类型变体
 
@@ -1660,7 +1676,7 @@ pub struct InstallRecord {
 | `user_installed` | 用户为自己安装；管理员可代装 | `users/{owner}/apps/{app}/...` | Owner 为安装用户；默认仅 Owner |
 | `zone_installed` | 仅 Admin/Root 可安装 | `zone/apps/{app}/...` | Owner=`system`；所有当前及未来有效用户 |
 
-`apps.install` 与 `apps.install_package` 必须显式或默认提交 `app_class`；默认是 `user_installed`。Agent 只能是 `user_installed`。升级、启动、停止和卸载以 `app_instance_id` 为外部操作主键，不能用基础 `app_id` 猜测实例。Zone App 只保存一份 spec，不复制到各用户目录。
+`apps.inspect/submit` 必须显式或默认提交 `app_class`；默认是 `user_installed`。Agent 只能是 `user_installed`。升级、启动、停止、重启、卸载和 status 接受同一 selector（完整 App DID、无点 BNS 短名、权威域名别名、`installation_id` 或展示名），由 Control Panel 在调用方可见作用域内唯一选择；客户端不得拼 `app_instance_id`。Zone App 只保存一份 spec，不复制到各用户目录。
 
 App–User 自定义可用关系独立保存在 Control Panel 命名空间，不写入安装记录，也不改变 `app_class`。个人 App 分享给 `users` 组后仍是 `user_installed`，生命周期仍属于原 Owner。
 
@@ -1762,7 +1778,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 ## 14. 待确定事项与 Roadmap
 
-### 14.0 已冻结事项（D1-D5：2026-07-16；D6：2026-08-04，v0.5 实现基线）
+### 14.0 已冻结事项（D1-D6：v0.5；D7-D11：2026-08-22 beta 2.2）
 
 以下 D1-D6 决策已冻结为实现基线。本节与 §14 其余小节及正文冲突时，以本节为准；§14.1-§14.4 中未被本节覆盖的条目仍是 Roadmap。
 
@@ -1788,10 +1804,10 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 #### D3. 安装记录真相源
 
-- in-flight 安装事务的唯一真相源是 TaskManager：不可变请求在 `Task.input`，可恢复的 `AppInstallTaskData` 完整快照在 `Task.progress`。
-- 长期安装记录独立保存在 system-config：个人安装写 `users/{uid}/apps/{app_name}/install_record` 或 `users/{uid}/agents/{app_name}/install_record`，Zone 安装写 `zone/apps/{app_name}/install_record`（`InstallRecord` JSON）。
+- in-flight 安装事务的唯一真相源是 TaskManager：不可变请求在 `Task.input`，可恢复的 `AppInstallProgressEnvelope` 完整快照在 `Task.progress`，typed terminal output 在 `Task.result`。
+- 长期安装记录独立保存在 system-config：个人安装写 `users/{uid}/apps/{installation_id}/install_record` 或 `users/{uid}/agents/{installation_id}/install_record`，Zone 安装写 `zone/apps/{installation_id}/install_record`（`InstallRecord` JSON）。
 - 写入顺序：Prepare 完成先写 `install_record(state=prepared)` → 写 spec（Deploy 的开始点）→ Activate 与健康检查成功后更新 `install_record(state=installed)` → 写 installed proof → Task Completed。失败与回滚更新同一记录。
-- `AppServiceSpec` 继续只承载 scheduler/node-daemon 所需的部署 spec、`app_class` 与最终批准的 `permission`，不复制解析证据与任务历史。
+- `AppServiceSpec` 承载 `installation_id/app_did/deployment` 以及 scheduler/node-daemon 所需的部署 spec、`app_class` 与最终批准的 `permission`，不复制解析证据与任务历史。
 
 #### D4. LOCAL_DEVELOPER authority override
 
@@ -1801,7 +1817,7 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 #### D5. 本地包交付边界
 
-- `apps.install_package` 只接受经 Control Panel 上传通道换取的不可猜测 staging handle；服务端将 handle 解析到受控 staging root 下的 immutable 文件，canonical path 必须位于 staging root 内，否则拒绝。
+- `apps.staging.finalize` 把上传所得 Named Object 固定为不可猜测 `pikg-stage-<128 bit hex>` handle；服务端将 handle 解析到受控 staging root 下的 immutable 文件，canonical path 必须位于 staging root 内，否则拒绝。
 - 外部 RPC 一律不接受服务端文件路径；只有进程内调用（测试、系统内部）允许直接提供本地 Path。
 
 #### D6. App DID 与 Package Namespace 绑定
@@ -1811,6 +1827,35 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 - 该规则必须检查全部平台和可选 entry，而不是只检查当前 InstallPlan 选中的 package。Namespace 不匹配统一返回 `APP_PACKAGE_NAMESPACE_MISMATCH` / `INVALID_PACKAGE`，不得创建 PackageEnv 目录、友好链接或 gateway 配置。
 - App DID/owner 签名、App Document Object ID、Package Meta Object ID 和内容 Digest 均不能替代 namespace 授权；它们证明身份或内容，不证明该身份有权占用任意包名。
 - `LOCAL_DEVELOPER`、好友分享和自有 App 不能跳过安全名字语法及 namespace 归属检查；`SYSTEM_INTERNAL` 只能通过系统 allowlist 使用例外 namespace。
+
+#### D7. 安装身份、名称与 action matrix
+
+- `AppInstallationId = hash(canonical App DID + AppInstallationScope)`，scope 固定 Zone DID、owner user 与 AppClass。spec/record/service/scheduled/runtime/RBAC/gateway 全链路使用该身份；`AppDoc.name` 只作展示。
+- Installer 自动生成的 Web route label 使用 `<display-name>-<installation-hash-prefix>`，避免同 scope 下同展示名、不同 App DID 争用同一 gateway host；用户显式批准的 route 仍进入 Plan fingerprint 与冲突检查。
+- 完整 DID 直接解析；无点裸名是 BNS short name；含点裸名是权威域名别名，必须由唯一 `buckyos-app-did` TXT 解析，禁止直接拼三段 BNS DID。
+- submit 的权威矩阵固定为：未安装+plan=FreshInstall；未安装无 plan=`PLAN_REQUIRED`；已安装+plan=`PLAN_NOT_APPLICABLE`；已安装无 plan根据权威发布 identity 得到 Upgrade/Satisfied/`DOWNGRADE_NOT_ALLOWED`。
+
+#### D8. Plan、Inspection 与正式 RPC
+
+- Plan schema 固定严格 v4；不可变 Plan 与动态 `InstallPlanStatus` 分离。正式接口是 `apps.inspect`、`apps.plan.recompute`、`apps.submit/apps.install`、`apps.install.status/confirm/retry/cancel`、`apps.status`、`apps.update.check` 和 `apps.upgrade`。
+- confirm 只批准已展示 fingerprint，不能同时改 target/params。retry 创建新 Task 并写 `retry_of`；相同 principal+idempotency key+immutable request 重放返回相同 Task，不同输入返回 `IDEMPOTENCY_CONFLICT`。
+- Tool 可依赖的稳定错误至少包括 `PLAN_REQUIRED`、`PLAN_NOT_APPLICABLE`、`PLAN_STALE`、`DOWNGRADE_NOT_ALLOWED`、`AMBIGUOUS_APP_TARGET`、`IDEMPOTENCY_CONFLICT`、`APP_MUTATION_IN_PROGRESS` 和 `UNSUPPORTED_SCHEMA_VERSION`。
+
+#### D9. TaskMgr 2.0 与 mutation serialization
+
+- App Task 使用 delegated creator 冻结业务 owner，Control Panel 只作为 runner。revision/runner epoch fence 保护写入；RPC 持久任务后直接执行，startup scan + 30s sweep 恢复 Accepted/Running，正确性不依赖消息队列或 KEvent。
+- 同一 `AppInstallationId` 的所有 mutation 使用 system-config CAS ownership 串行化；`app_index` 同样由 CAS 分配。
+
+#### D10. Deployment Identity 与完成条件
+
+- `DeploymentIdentity` 至少绑定 installation、install task、AppDoc Object ID、spec generation 与可选 PIKG digest，并从 desired 传到 scheduled/runtime/static evidence。
+- runtime evidence 必须匹配 deployment、非空 instance epoch/node session、health、observed/expiry，并满足全部 `expected_instance_count`。Static Web 必须同时证明目标 content 物化和 gateway config generation ack。
+- 当前 upgrade 是 in-place/recreate；失败回滚必须恢复 previous spec 并等待 previous deployment ready。fresh install rollback 必须等待目标 deployment 从 scheduled/runtime/static evidence 消失。
+
+#### D11. 生命周期与批量升级
+
+- start/stop/restart/uninstall 都是可恢复 Task；restart 默认 recreate 且 rolling 未实现时稳定拒绝。uninstall 必须显式 retain/delete，delete 只消费 typed 私有 data/cache manifest。
+- Catalog batch upgrade 使用 `app.update_batch/v1` root 和 parent-linked child；重放不重复 child，单项失败不影响其它项，root 保存每项 typed result。
 
 ### 14.1 pikg 文件编码
 
@@ -1850,12 +1895,10 @@ Installer 必须按当前目标计算缺失内容，不能假定所有 `.pikg` �
 
 ### 14.4 安装事务与回滚
 
-需要明确：
-
-- Prepare、Deploy、Activate 的原子性边界；
-- 容器、文件、数据库迁移和服务注册的回滚机制；
-- 部分失败后的恢复规则；
-- 多 Node 安装的一致性模型。
+beta 2.2 已由 D9-D11 冻结可恢复事务、Deploy 边界、exact deployment completion 与 spec 回滚。
+当前不提供业务数据迁移的自动逆操作；只恢复二进制/spec/runtime 不等于恢复业务数据，因此
+存在不可逆数据迁移时不能把结果报告为完全回滚。未来仍可在不改变这些失败语义的前提下扩展
+blue-green、rolling 和数据库 migration protocol。
 
 
 ### 14.5 支付与 HTTP 402

@@ -8,8 +8,9 @@ use crate::app_loader::{
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
-    AppClass, AppDoc, AppServiceInstanceConfig, AppServiceSpec, AppType, LocalAppInstanceConfig,
-    ServiceEndpointConfig, ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc,
+    AppClass, AppDoc, AppInstallationId, AppInstallationScope, AppServiceInstanceConfig,
+    AppServiceSpec, AppType, DeploymentIdentity, LocalAppInstanceConfig, ServiceEndpointConfig,
+    ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc, OBJ_TYPE_APP_DOC,
 };
 use name_lib::DID;
 use ndn_lib::ObjId;
@@ -108,25 +109,51 @@ fn build_service_loader(
     support_container: bool,
 ) -> AppLoader {
     let install_config = build_spec_config(&app_doc);
+    let app_spec = build_test_app_spec(app_doc, install_config);
     let config = AppServiceInstanceConfig {
         target_state: ServiceInstanceState::Started,
         node_id: "ood1".to_string(),
-        app_spec: AppServiceSpec {
-            permission: app_doc.permissions.clone(),
-            app_doc,
-            app_index: 1,
-            user_id: "alice".to_string(),
-            app_class: AppClass::UserInstalled,
-            enable: true,
-            expected_instance_count: 1,
-            state: ServiceState::Running,
-            spec_config: install_config,
-        },
+        app_spec,
         service_ports_config,
     };
     AppLoader::new_for_service("demo@alice@ood1", config)
         .with_platform(platform)
         .with_container_support_override(support_container)
+}
+
+fn build_test_app_spec(app_doc: AppDoc, spec_config: ServiceSpecConfig) -> AppServiceSpec {
+    let installation_id = AppInstallationId::derive(
+        app_doc.app_did(),
+        &AppInstallationScope {
+            zone_did: DID::new("bns", "test-zone"),
+            owner_user_id: "alice".to_string(),
+            app_class: AppClass::UserInstalled,
+        },
+    );
+    let app_doc_value = serde_json::to_value(&app_doc).unwrap();
+    let (app_doc_object_id, _) =
+        ndn_lib::build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
+    AppServiceSpec {
+        installation_id: installation_id.clone(),
+        app_did: app_doc.app_did().clone(),
+        deployment: DeploymentIdentity {
+            installation_id,
+            task_id: "test:install".to_string(),
+            app_doc_object_id,
+            spec_generation: 1,
+            pikg_digest: None,
+        },
+        permission: app_doc.permissions.clone(),
+        app_doc,
+        app_index: 1,
+        user_id: "alice".to_string(),
+        app_class: AppClass::UserInstalled,
+        selected_components: Vec::new(),
+        enable: true,
+        expected_instance_count: 1,
+        state: ServiceState::Running,
+        spec_config,
+    }
 }
 
 fn build_spec_config(app_doc: &AppDoc) -> ServiceSpecConfig {
@@ -146,20 +173,11 @@ fn build_spec_config(app_doc: &AppDoc) -> ServiceSpecConfig {
 fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
     let app_doc = build_agent_doc_without_category();
     let install_config = build_spec_config(&app_doc);
+    let app_spec = build_test_app_spec(app_doc, install_config);
     let config = AppServiceInstanceConfig {
         target_state: ServiceInstanceState::Started,
         node_id: "ood1".to_string(),
-        app_spec: AppServiceSpec {
-            permission: app_doc.permissions.clone(),
-            app_doc,
-            app_index: 1,
-            user_id: "alice".to_string(),
-            app_class: AppClass::UserInstalled,
-            enable: true,
-            expected_instance_count: 1,
-            state: ServiceState::Running,
-            spec_config: install_config,
-        },
+        app_spec,
         service_ports_config: HashMap::from([
             ("www".to_string(), 10080),
             ("main".to_string(), 14060),

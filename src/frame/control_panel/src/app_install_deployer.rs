@@ -14,19 +14,19 @@
 use crate::app_install_driver::ProductionInstallDriver;
 use crate::app_install_engine::InstallTaskView;
 use buckyos_api::{
-    app_instance_id, get_buckyos_api_runtime, install_record_key, zone_app_spec_key, AppClass,
-    AppDoc, AppInstallTaskData, AppServiceSpec, AppType, ContentLocation, InstallError,
-    InstallErrorCode, InstallParams, InstallRecord, InstallRecordState, InstallStage,
-    InstallTaskResult, MountPointConfig, PreparedDeployment, ServiceEndpointConfig,
+    get_buckyos_api_runtime, install_record_key, zone_app_spec_key, AppClass, AppDoc,
+    AppInstallTaskData, AppServiceSpec, AppType, ContentLocation, DeploymentIdentity, InstallError,
+    InstallErrorCode, InstallParams, InstallRecord, InstallRecordState, InstallSourceIdentity,
+    InstallStage, InstallTaskResult, MountPointConfig, PreparedDeployment, ServiceEndpointConfig,
     ServiceExposeConfig, ServiceExposeRouteTips, ServiceInstanceReportInfo, ServiceInstanceState,
-    ServiceSpecConfig, ServiceState, SystemConfigClient, SystemConfigError,
-    APP_INSTALL_SCHEMA_VERSION, SYSTEM_APP_OWNER_ID,
+    ServiceSpecConfig, ServiceState, StaticWebDeploymentEvidence, SystemConfigClient,
+    SystemConfigError, APP_INSTALL_SCHEMA_VERSION, SYSTEM_APP_OWNER_ID,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
 use ndn_lib::{build_obj_id, ActionObject, NamedObject, ObjId, ACTION_TYPE_INSTALLED};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,6 +128,7 @@ impl ProductionInstallDriver {
             }
         };
         let app_id = app_doc.name.clone();
+        let installation_id = plan.installation_id.clone();
         let is_agent = app_doc.get_app_type() == AppType::Agent;
         if is_agent && data.request.app_class != AppClass::UserInstalled {
             return Err(stage_err(
@@ -139,11 +140,11 @@ impl ProductionInstallDriver {
         }
         let is_update = view.task_type == buckyos_api::TASK_DATA_TYPE_APP_UPDATE;
         let spec_path = if is_agent {
-            format!("users/{user_id}/agents/{app_id}/spec")
+            format!("users/{user_id}/agents/{installation_id}/spec")
         } else if data.request.app_class == AppClass::ZoneInstalled {
-            zone_app_spec_key(&app_id)
+            zone_app_spec_key(installation_id.as_str())
         } else {
-            format!("users/{user_id}/apps/{app_id}/spec")
+            format!("users/{user_id}/apps/{installation_id}/spec")
         };
 
         let client = system_config_client().await?;
@@ -223,21 +224,54 @@ impl ProductionInstallDriver {
             Some(previous) => previous.app_index,
             None => allocate_app_index(&client).await?,
         };
+        let spec_generation = previous_spec
+            .as_ref()
+            .map(|previous| previous.deployment.spec_generation.saturating_add(1))
+            .unwrap_or(1);
+        let pikg_digest = match &plan.source_identity {
+            InstallSourceIdentity::Pikg { pikg_digest, .. } => Some(pikg_digest.clone()),
+            InstallSourceIdentity::Catalog { .. } => None,
+        };
+        let deployment = DeploymentIdentity {
+            installation_id: installation_id.clone(),
+            task_id: view.id.clone(),
+            app_doc_object_id: plan.app.object_id.clone(),
+            spec_generation,
+            pikg_digest,
+        };
+        let desired_state = previous_spec
+            .as_ref()
+            .map(|previous| previous.state.clone())
+            .unwrap_or_else(|| {
+                if plan.install_params.auto_start {
+                    ServiceState::Running
+                } else {
+                    ServiceState::Stopped
+                }
+            });
+        let enable = previous_spec
+            .as_ref()
+            .map(|previous| previous.enable)
+            .unwrap_or(plan.install_params.auto_start);
         let new_spec = AppServiceSpec {
+            installation_id: installation_id.clone(),
+            app_did: plan.app.did.clone(),
+            deployment,
             app_doc,
             app_index,
             user_id: user_id.clone(),
             app_class: data.request.app_class,
             permission: plan.install_params.permissions.clone(),
-            enable: plan.install_params.auto_start,
-            expected_instance_count: 1,
-            state: ServiceState::New,
+            selected_components: plan.install_params.selected_components.clone(),
+            enable,
+            expected_instance_count: plan.install_params.expected_instance_count,
+            state: desired_state,
             spec_config: install_config,
         };
 
         let prepared = PreparedDeployment {
             spec_path: spec_path.clone(),
-            service_spec_id: format!("{app_id}@{user_id}"),
+            service_spec_id: new_spec.app_instance_id(),
             app_index,
             previous_spec,
             new_spec,
@@ -346,7 +380,7 @@ impl ProductionInstallDriver {
             install_record_key: Some(install_record_key(
                 prepared.new_spec.app_class,
                 prepared.new_spec.user_id.as_str(),
-                prepared.new_spec.app_doc.name.as_str(),
+                prepared.new_spec.installation_id.as_str(),
                 is_agent,
             )),
             proof_id,
@@ -393,6 +427,7 @@ impl ProductionInstallDriver {
                     "install task {}: previous spec restored at `{}`",
                     view.id, prepared.spec_path
                 );
+                wait_for_restored_spec(client.as_ref(), &prepared.spec_path, previous).await?;
             }
             None => {
                 if let Err(err) = client.delete(prepared.spec_path.as_str()).await {
@@ -412,6 +447,7 @@ impl ProductionInstallDriver {
                     "install task {}: deployed spec removed at `{}`",
                     view.id, prepared.spec_path
                 );
+                wait_for_deployment_absent(client.as_ref(), &prepared).await?;
             }
         }
 
@@ -441,10 +477,23 @@ impl ProductionInstallDriver {
                 "materialize without plan",
             )
         })?;
+        let pikg_content_ids: HashSet<_> = data
+            .state
+            .plan_status
+            .as_ref()
+            .map(|status| {
+                status
+                    .contents
+                    .iter()
+                    .filter(|content| matches!(content.location, ContentLocation::Pikg))
+                    .map(|content| content.content_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let pikg_contents: Vec<_> = plan
             .required_contents
             .iter()
-            .filter(|content| matches!(content.location, ContentLocation::Pikg))
+            .filter(|content| pikg_content_ids.contains(&content.content_id))
             .cloned()
             .collect();
         if pikg_contents.is_empty() {
@@ -579,7 +628,7 @@ impl ProductionInstallDriver {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn build_install_config(
-    app_id: &str,
+    route_label: &str,
     app_doc: &AppDoc,
     install_params: &InstallParams,
 ) -> (ServiceSpecConfig, Vec<String>) {
@@ -639,7 +688,7 @@ pub(crate) fn build_install_config(
             };
             let expose_config = match &expose.route {
                 ServiceExposeRouteTips::Web => ServiceExposeConfig::web(
-                    vec![app_id.to_string()],
+                    vec![route_label.to_string()],
                     expose.scope.clone(),
                     expose.allow_guest,
                 ),
@@ -668,7 +717,7 @@ pub(crate) fn build_install_config(
     {
         install_config.expose_config.insert(
             "www".to_string(),
-            ServiceExposeConfig::web(vec![app_id.to_string()], String::new(), true),
+            ServiceExposeConfig::web(vec![route_label.to_string()], String::new(), true),
         );
     }
 
@@ -735,6 +784,18 @@ pub(crate) fn build_install_config(
     }
 
     (install_config, issues)
+}
+
+pub(crate) fn installation_route_label(
+    display_name: &str,
+    installation_id: &buckyos_api::AppInstallationId,
+) -> String {
+    let digest = installation_id
+        .as_str()
+        .strip_prefix("appinst:")
+        .unwrap_or(installation_id.as_str());
+    let suffix = digest.get(..12).unwrap_or(digest);
+    format!("{display_name}-{suffix}")
 }
 
 fn apply_selected_mounts(
@@ -975,15 +1036,17 @@ fn build_install_record(
             AppClass::ZoneInstalled => SYSTEM_APP_OWNER_ID.to_string(),
             _ => data.request.user_id.clone(),
         },
-        app_instance_id: app_instance_id(
-            plan.app.name.as_str(),
-            match data.request.app_class {
-                AppClass::ZoneInstalled => SYSTEM_APP_OWNER_ID,
-                _ => data.request.user_id.as_str(),
-            },
-        ),
+        installation_id: plan.installation_id.clone(),
+        installation_scope: plan.installation_scope.clone(),
         app_class: data.request.app_class,
-        resolution: plan.resolution.clone(),
+        resolution: data.state.resolution.clone().ok_or_else(|| {
+            stage_err(
+                InstallStage::Prepare,
+                InstallErrorCode::Internal,
+                false,
+                "install record without resolver snapshot",
+            )
+        })?,
         package_meta_ids: plan
             .selected_packages
             .iter()
@@ -995,6 +1058,19 @@ fn build_install_record(
             .as_ref()
             .and_then(|candidate| candidate.pikg_digest.clone()),
         target: plan.target.clone(),
+        install_params: plan.install_params.clone(),
+        service_spec_config: plan.service_spec_config.clone(),
+        target_deployment: data
+            .state
+            .prepared
+            .as_ref()
+            .map(|prepared| prepared.new_spec.deployment.clone()),
+        previous_deployment: data
+            .state
+            .prepared
+            .as_ref()
+            .and_then(|prepared| prepared.previous_spec.as_ref())
+            .map(|previous| previous.deployment.clone()),
         state,
         task_id: view.id.clone(),
         proof_id: None,
@@ -1013,7 +1089,7 @@ async fn write_install_record(
     let key = install_record_key(
         record.app_class,
         record.user_id.as_str(),
-        record.app.name.as_str(),
+        record.installation_id.as_str(),
         is_agent,
     );
     let raw = serde_json::to_string(record).map_err(|err| {
@@ -1038,14 +1114,132 @@ async fn write_install_record(
     Ok(())
 }
 
+async fn wait_for_restored_spec(
+    client: &SystemConfigClient,
+    spec_path: &str,
+    previous: &AppServiceSpec,
+) -> Result<(), InstallError> {
+    let restored = PreparedDeployment {
+        spec_path: spec_path.to_string(),
+        service_spec_id: previous.app_instance_id(),
+        app_index: previous.app_index,
+        previous_spec: None,
+        new_spec: previous.clone(),
+        materialized_objects: Vec::new(),
+        prepared_at: buckyos_get_unix_timestamp(),
+    };
+    match previous.app_doc.get_app_type() {
+        AppType::Web => wait_for_static_web_evidence(client, &restored).await,
+        _ => wait_for_instance_started(client, &restored)
+            .await
+            .map(|_| ()),
+    }
+}
+
+async fn wait_for_deployment_absent(
+    client: &SystemConfigClient,
+    prepared: &PreparedDeployment,
+) -> Result<(), InstallError> {
+    let instances_root = format!("services/{}/instances", prepared.service_spec_id);
+    let static_root = format!("services/{}/static_evidence", prepared.service_spec_id);
+    let mut waited = 0u64;
+    loop {
+        let now = buckyos_get_unix_timestamp();
+        let mut found = false;
+        if let Ok(node_ids) = client.list("nodes").await {
+            for node_id in node_ids {
+                let Ok(value) = client.get(format!("nodes/{node_id}/config").as_str()).await else {
+                    continue;
+                };
+                let Ok(config) = serde_json::from_str::<buckyos_api::NodeConfig>(&value.value)
+                else {
+                    continue;
+                };
+                if config
+                    .apps
+                    .values()
+                    .any(|instance| instance.app_spec.deployment == prepared.new_spec.deployment)
+                {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found {
+            for root in [&instances_root, &static_root] {
+                let Ok(node_ids) = client.list(root).await else {
+                    continue;
+                };
+                for node_id in node_ids {
+                    let Ok(value) = client.get(format!("{root}/{node_id}").as_str()).await else {
+                        continue;
+                    };
+                    if root == &instances_root {
+                        if let Ok(report) =
+                            serde_json::from_str::<ServiceInstanceReportInfo>(&value.value)
+                        {
+                            if report.deployment.as_ref() == Some(&prepared.new_spec.deployment)
+                                && report.observed_at <= now
+                                && report.expires_at > now
+                                && matches!(
+                                    report.state,
+                                    ServiceInstanceState::Started | ServiceInstanceState::Deploying
+                                )
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                    } else if let Ok(evidence) =
+                        serde_json::from_str::<StaticWebDeploymentEvidence>(&value.value)
+                    {
+                        if evidence.deployment == prepared.new_spec.deployment
+                            && evidence.observed_at <= now
+                            && evidence.expires_at > now
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if found {
+                    break;
+                }
+            }
+        }
+        if !found {
+            return Ok(());
+        }
+        if waited >= ACTIVATE_TIMEOUT_SECS {
+            return Err(stage_err(
+                InstallStage::Deploy,
+                InstallErrorCode::DeployFailed,
+                true,
+                format!(
+                    "deployment {:?} did not converge out during rollback",
+                    prepared.new_spec.deployment
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(ACTIVATE_POLL_INTERVAL_SECS)).await;
+        waited += ACTIVATE_POLL_INTERVAL_SECS;
+    }
+}
+
 /// AppService/Agent：等待明确 Started 实例证据。
 async fn wait_for_instance_started(
     client: &SystemConfigClient,
     prepared: &PreparedDeployment,
 ) -> Result<String, InstallError> {
+    if prepared.new_spec.state == ServiceState::Stopped || !prepared.new_spec.enable {
+        return wait_for_scheduled_deployment(client, prepared).await;
+    }
     let instances_key = format!("services/{}/instances", prepared.service_spec_id);
+    let expected = prepared.new_spec.expected_instance_count.max(1) as usize;
     let mut waited = 0u64;
     loop {
+        let now = buckyos_get_unix_timestamp();
+        let mut ready_nodes = Vec::new();
         if let Ok(node_ids) = client.list(&instances_key).await {
             for node_id in node_ids {
                 let key = format!("{instances_key}/{node_id}");
@@ -1056,10 +1250,35 @@ async fn wait_for_instance_started(
                 else {
                     continue;
                 };
-                if matches!(report.state, ServiceInstanceState::Started) {
-                    return Ok(node_id);
+                if report.deployment.as_ref() != Some(&prepared.new_spec.deployment) {
+                    continue;
+                }
+                if let Some(error) = report.deployment_error.as_ref() {
+                    return Err(stage_err(
+                        InstallStage::Activate,
+                        InstallErrorCode::ActivationFailed,
+                        true,
+                        format!(
+                            "deployment failed on node {node_id}: {}: {}",
+                            error.code, error.message
+                        ),
+                    ));
+                }
+                if matches!(report.state, ServiceInstanceState::Started)
+                    && report.health == buckyos_api::DeploymentHealth::Healthy
+                    && report.observed_at <= now
+                    && report.expires_at > now
+                    && !report.instance_epoch.trim().is_empty()
+                    && !report.node_session_id.trim().is_empty()
+                {
+                    ready_nodes.push(node_id);
                 }
             }
+        }
+        ready_nodes.sort();
+        ready_nodes.dedup();
+        if ready_nodes.len() >= expected {
+            return Ok(ready_nodes.join(","));
         }
         if waited >= ACTIVATE_TIMEOUT_SECS {
             return Err(stage_err(
@@ -1067,7 +1286,8 @@ async fn wait_for_instance_started(
                 InstallErrorCode::ActivationFailed,
                 true,
                 format!(
-                    "no Started instance evidence under `{instances_key}` within {ACTIVATE_TIMEOUT_SECS}s"
+                    "only {}/{} fresh healthy instances match deployment {:?} under `{instances_key}` after {ACTIVATE_TIMEOUT_SECS}s",
+                    ready_nodes.len(), expected, prepared.new_spec.deployment
                 ),
             ));
         }
@@ -1076,25 +1296,100 @@ async fn wait_for_instance_started(
     }
 }
 
-/// Static Web：部署完成/可读取证据。当前 scheduler/node-daemon 缺统一
-/// instance 语义，这里接受两类可观察证据之一：
-/// - `services/{spec_id}/info`（zone gateway 路由面）；
-/// - 本机 web 内容目录（单 OOD zone：node-daemon 物化 `{root}/bin/{app}-web`）。
-/// 两者都不可得时报 ACTIVATION_FAILED，绝不静默跳过。
+async fn wait_for_scheduled_deployment(
+    client: &SystemConfigClient,
+    prepared: &PreparedDeployment,
+) -> Result<String, InstallError> {
+    let mut waited = 0u64;
+    loop {
+        let mut scheduled_nodes = Vec::new();
+        if let Ok(node_ids) = client.list("nodes").await {
+            for node_id in node_ids {
+                let Ok(value) = client.get(format!("nodes/{node_id}/config").as_str()).await else {
+                    continue;
+                };
+                let Ok(config) = serde_json::from_str::<buckyos_api::NodeConfig>(&value.value)
+                else {
+                    continue;
+                };
+                if config.apps.values().any(|instance| {
+                    instance.app_spec.deployment == prepared.new_spec.deployment
+                        && instance.target_state == ServiceInstanceState::Stopped
+                }) {
+                    scheduled_nodes.push(node_id);
+                }
+            }
+        }
+        scheduled_nodes.sort();
+        scheduled_nodes.dedup();
+        if scheduled_nodes.len() >= prepared.new_spec.expected_instance_count.max(1) as usize {
+            return Ok(scheduled_nodes.join(","));
+        }
+        if waited >= ACTIVATE_TIMEOUT_SECS {
+            return Err(stage_err(
+                InstallStage::Activate,
+                InstallErrorCode::ActivationFailed,
+                true,
+                format!(
+                    "stopped deployment {:?} was not materialized into scheduled config",
+                    prepared.new_spec.deployment
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(ACTIVATE_POLL_INTERVAL_SECS)).await;
+        waited += ACTIVATE_POLL_INTERVAL_SECS;
+    }
+}
+
+/// Static Web requires a version-bound materialization and gateway-ready ack.
 async fn wait_for_static_web_evidence(
     client: &SystemConfigClient,
     prepared: &PreparedDeployment,
 ) -> Result<(), InstallError> {
-    let info_key = format!("services/{}/info", prepared.service_spec_id);
-    let web_dir = buckyos_kit::get_buckyos_root_dir()
-        .join("bin")
-        .join(format!("{}-web", prepared.new_spec.app_doc.name));
+    let evidence_root = format!("services/{}/static_evidence", prepared.service_spec_id);
+    let expected = prepared.new_spec.expected_instance_count.max(1) as usize;
     let mut waited = 0u64;
     loop {
-        if client.get(&info_key).await.is_ok() {
-            return Ok(());
+        let now = buckyos_get_unix_timestamp();
+        let mut ready = 0usize;
+        if let Ok(node_ids) = client.list(&evidence_root).await {
+            for node_id in node_ids {
+                let Ok(value) = client
+                    .get(format!("{evidence_root}/{node_id}").as_str())
+                    .await
+                else {
+                    continue;
+                };
+                let Ok(evidence) =
+                    serde_json::from_str::<StaticWebDeploymentEvidence>(&value.value)
+                else {
+                    continue;
+                };
+                if evidence.deployment != prepared.new_spec.deployment {
+                    continue;
+                }
+                if let Some(error) = evidence.deployment_error {
+                    return Err(stage_err(
+                        InstallStage::Activate,
+                        InstallErrorCode::ActivationFailed,
+                        true,
+                        format!(
+                            "static deployment failed: {}: {}",
+                            error.code, error.message
+                        ),
+                    ));
+                }
+                if evidence.materialized_at > 0
+                    && !evidence.gateway_config_generation.is_empty()
+                    && evidence.gateway_ready_at >= evidence.materialized_at
+                    && evidence.observed_at <= now
+                    && evidence.expires_at > now
+                {
+                    ready += 1;
+                }
+            }
         }
-        if web_dir.exists() {
+        if ready >= expected {
             return Ok(());
         }
         if waited >= ACTIVATE_TIMEOUT_SECS {
@@ -1103,8 +1398,8 @@ async fn wait_for_static_web_evidence(
                 InstallErrorCode::ActivationFailed,
                 true,
                 format!(
-                    "no static web evidence (`{info_key}` or `{}`) within {ACTIVATE_TIMEOUT_SECS}s",
-                    web_dir.display()
+                    "only {ready}/{expected} fresh static web evidence records match deployment {:?} under `{evidence_root}`",
+                    prepared.new_spec.deployment
                 ),
             ));
         }

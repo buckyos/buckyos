@@ -1059,6 +1059,16 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         );
     }
 
+    fn same_zone_device_ip_options(target_did: &DID) -> name_client::ResolveIpOptions {
+        name_client::ResolveIpOptions::verified_same_zone_device(
+            name_client::VerifiedSameZoneDevice::from_verified_relation(
+                target_did.clone(),
+                DID::new("bns", "alice"),
+                name_client::SameZoneEvidenceSource::VerifiedOwnerZoneDeviceRelation,
+            ),
+        )
+    }
+
     fn unique_test_id(prefix: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1230,6 +1240,9 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
         let cached = client.load_cached_oods().unwrap();
 
         assert!(cached.get("ood2").unwrap().from_cache);
+        assert!(name_client::resolve_ips(peer_did.to_string().as_str())
+            .await
+            .is_err());
         let resolved_doc = name_client::resolve_did(&peer_did, Some(DidDocType::Device))
             .await
             .unwrap();
@@ -1237,9 +1250,12 @@ MC4CAQAwBQYDK2VwBCIEICwMZt1W7P/9v3Iw/rS2RdziVkF7L+o5mIt/WL6ef/0w
             DeviceDocument::decode(&resolved_doc, Some(&decoding_key(OWNER_PUBLIC_X))).unwrap();
         assert_eq!(resolved_device_doc.name, "ood2");
         assert_eq!(
-            name_client::resolve_ips(peer_did.to_string().as_str())
-                .await
-                .unwrap(),
+            name_client::resolve_ips_with_options(
+                peer_did.to_string().as_str(),
+                same_zone_device_ip_options(&peer_did),
+            )
+            .await
+            .unwrap(),
             vec![endpoint_ip]
         );
         let _ = std::fs::remove_dir_all(temp_dir);

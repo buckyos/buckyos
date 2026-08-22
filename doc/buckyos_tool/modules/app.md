@@ -1,6 +1,6 @@
 # App 模块需求
 
-> 状态：Draft  
+> 状态：Frozen（beta 2.2 服务契约已落地）
 > 对应 module：`app`
 
 ## 1. 目标与边界
@@ -32,14 +32,18 @@ binding、Secret 解析和其它资源/权限管理不在本模块。Secret 只�
 - Install Task：`install` / `upgrade` / `uninstall` 在同一次命令里完成预检、确认和提交。
 - PIKG Source：本地文件或网络 URL 经 CLI 读取后形成的不可变输入快照，由 `pikg_digest`
   固定；Catalog 来源由 AppDoc Object ID 固定。
-- Installed App：稳定 ID 为安装作用域内的 App DID。
+- Installed App：稳定 ID 为 `AppInstallationId`，由 canonical App DID 与 Zone/owner/AppClass
+  安装作用域确定性派生；App DID 是逻辑应用身份，不单独充当存储或运行 ID。
+- 默认 Web route label 为 `<display-name>-<installation-hash-prefix>`，同名不同 App DID 不会
+  争用同一 host；`status` 展示实际 `web_hosts`，CLI 不解析该后缀。
 - Runtime Instance：scheduler/node-daemon 实际运行的实例。
 - Status：分别展示 desired、task、scheduled、runtime 和 readiness，并区分目标版本与实际
   运行版本。
 
 `InstallPlan` 是首次安装的必要输入，不是可反复执行的 operation-id，也不是升级参数。计划
-文件可以交给用户审阅、版本控制或传递给另一个调用方，但每次安装仍必须重新验证其身份、
-来源摘要、目标环境和有效性。
+文件可以交给用户审阅、版本控制或传递给另一个调用方，但只在完全相同的 Zone DID、owner、
+AppClass 和 target snapshot 下可携带；每次安装仍必须重新验证身份、来源摘要、目标环境、权限
+和有效性，换 Zone/用户/scope 必然使计划失效。
 
 ## 3. 初始命令
 
@@ -53,7 +57,7 @@ binding、Secret 解析和其它资源/权限管理不在本模块。Secret 只�
 | `app uninstall <app-name>` | destructive | task | 必须指定 `--data <retain-or-delete>` |
 | `app start <app-name>` | write | task | 进入期望运行态 |
 | `app stop <app-name>` | write | task/either | 进入期望停止态 |
-| `app restart <app-name>` | write | task | 明确 rolling 或 recreate 语义 |
+| `app restart <app-name>` | write | task | 默认 recreate；当前 `--strategy rolling` 返回稳定 unsupported 错误 |
 | `app status [app-name]` | read | sync | 聚合 desired、task、scheduled、runtime、目标版本、实际版本和 readiness |
 
 `<source>` 接受 Catalog/App 名称、本地 PIKG 路径或 HTTP(S) PIKG URL。`<app-name>` 接受
@@ -73,13 +77,15 @@ binding、Secret 解析和其它资源/权限管理不在本模块。Secret 只�
 CLI 不要求用户输入 `app_instance_id`。用户输入按下列顺序解析，命中即停：
 
 1. 完整 DID，例如 `did:bns:app1.alice`；
-2. BNS 短名，例如 `app1.alice`；
-3. 站点/域名形式，例如 `app1.mysite.com`。
+2. 无点 BNS 短名，例如 `app1`；
+3. 含点的权威域名别名，例如 `app1.mysite.com`。
 
-下列形式在权威名称服务给出对应关系时必须解析到同一个 App DID：
+含点裸名绝不直接拼成 `did:bns:*`。域名别名必须由 name-client 的 TXT 权威结果给出唯一
+`buckyos-app-did=did:...`（也接受 `app-did=`）后才进入 App DID 解析；0 个结果失败，多个结果
+返回 `AMBIGUOUS_APP_TARGET`。需要表达含点 BNS ID 时必须提交完整 `did:bns:...`：
 
 - `did:bns:app1.alice`
-- `app1.alice`
+- `app1.mysite.com`（仅当 TXT 唯一映射到上面的 DID）
 
 名称解析与已安装目标选择是两个步骤：名称先解析成 App DID，再在当前调用方有权访问的安装
 作用域中查找已安装 App。没有匹配、匹配超过一个或调用方无权确认目标时直接失败。
@@ -130,14 +136,18 @@ App DID 以及是否提供 `--plan` 共同决定，见 § 5.3。
 使用 Installer 默认值。默认值仍不能形成完整、可安装计划时返回稳定的
 `PLAN_INPUT_REQUIRED`，不得猜测权限、mount、SecretRef 或其它必要配置。
 
-计划文件至少必须保留：
+计划文件只保留不可变安装语义，至少包括：
 
 - schema version 和 plan fingerprint；
 - App DID、AppDoc Object ID、版本和权威解析摘要；
 - 来源类型；PIKG 来源还必须包含 `pikg_digest`；
 - 目标 OS、架构以及计划绑定的其它目标约束；
 - 选择的组件、内容 identity、权限和安装参数；
-- 最终运行配置摘要、readiness、warning 和创建时间。
+- 最终运行配置、计划用途（`FreshInstall/Upgrade/Satisfied`）、安装作用域和创建时间。
+
+`readiness`、content location/source、estimated bytes、target/config issue、权限候选、resolver
+warning 与本次检查时间属于 `InstallInspection.status/resolution_status`，不写入长期 Plan。Acquire
+只更新动态 status，不能修改已经批准的 immutable Plan 或 fingerprint。
 
 计划文件不得包含 session token、私钥、明文 Secret、服务端临时路径或 staging handle。计划中
 只能出现 SecretRef。`fetch --plan` 没有安装、调度或修改 Zone 期望状态的副作用。
@@ -167,15 +177,15 @@ App DID 以及是否提供 `--plan` 共同决定，见 § 5.3。
 
 ```bash
 # Catalog 首次安装：先生成计划，再用同一来源执行
-buckyos app fetch app1.alice --plan ./app1.install-plan.json
-buckyos app install app1.alice --plan ./app1.install-plan.json
+buckyos app fetch did:bns:app1.alice --plan ./app1.install-plan.json
+buckyos app install did:bns:app1.alice --plan ./app1.install-plan.json
 
 # 本地 PIKG 首次安装
 buckyos app fetch ./demo-0.1.0.pikg --plan ./demo.install-plan.json
 buckyos app install ./demo-0.1.0.pikg --plan ./demo.install-plan.json
 
 # 已安装 App：不带 --plan，按默认升级计划处理
-buckyos app install app1.alice
+buckyos app install did:bns:app1.alice
 buckyos app install https://example.com/apps/app1-1.2.0.pikg
 ```
 
@@ -189,7 +199,8 @@ buckyos app install https://example.com/apps/app1-1.2.0.pikg
    把客户端 path 或未校验 URL 交给服务端打开；
 2. 对 PIKG 计算本次字节快照的 digest；首次安装时必须与计划中的 `pikg_digest` 一致；
 3. 安装命令将字节流上传到 Installer 的 staging 边界，并比对 staging 返回的 digest；
-4. 用 staging handle、digest、AppDoc Object ID 和已确认计划创建同一个安装或升级事务；
+4. 用 staging handle 重新绑定同一 digest/AppDoc Object ID，并与已确认计划创建同一个安装或
+   升级事务；Plan 自身从不保存 handle；
 5. Installer 使用共享 PIKG verifier 重新完整验证。
 
 本地 digest 和读取必须基于同一次打开的文件快照/句柄或同一次下载缓冲，防止 path/URL 内容
@@ -255,9 +266,9 @@ buckyos app install https://example.com/apps/app1-1.2.0.pikg
 `apply` 的 operation-id。首次安装的 `--dry-run` 仍要求提供 `--plan`。
 
 ```bash
-buckyos app install app1.alice --plan ./app1.install-plan.json
-buckyos app install app1.alice --yes
-buckyos app install app1.alice --dry-run
+buckyos app install did:bns:app1.alice --plan ./app1.install-plan.json
+buckyos app install did:bns:app1.alice --yes
+buckyos app install did:bns:app1.alice --dry-run
 ```
 
 ## 6. 任务跟踪与完成条件
@@ -276,10 +287,12 @@ buckyos task wait <task-id>
 跟踪的 `task_id`。发起操作的用户必须能够读取并继续其任务；确认、重试、取消和等待使用
 同一任务身份与权限边界。
 
-安装或升级任务只有在目标 AppDoc Object ID、目标 PIKG digest 或等价不可变版本身份已经
-进入 scheduled 状态，并且 runtime/readiness 证明运行的是同一目标版本时才能成功。旧版本
-遗留的 Started、目录或路由信息不能作为新版本成功证据。回滚成功也必须明确报告当前实际
-版本，不能把“恢复旧版本”标记成“目标版本升级成功”。
+安装或升级任务只有在目标 `DeploymentIdentity {installation_id, task_id,
+app_doc_object_id, spec_generation, pikg_digest}` 已进入 scheduled，且约定实例数全部提供新鲜、
+健康、epoch/session 匹配的 runtime evidence 时才能成功。Static Web 还要求目标内容已物化且
+cyfs-gateway ack 对应 config generation。旧版本 Started、目录或路由不能满足条件。当前升级
+切换是 in-place/recreate，可能有停机窗口；Activate 失败恢复 previous spec 后还必须等待
+previous deployment 重新就绪，且结果不能把 rolled back 写成目标升级成功。
 
 ## 7. 配置与安全
 
@@ -302,7 +315,8 @@ buckyos task wait <task-id>
 - 返回用户可读、机器可解析的计划、任务、验证、调度和运行状态；
 - 让发起者能够确认、跟踪、重试和取消自己的任务；
 - 以目标版本运行证据作为安装/升级成功条件，并在失败时提供明确回滚结果；
-- 为 install/update/uninstall/start/stop/restart 提供可恢复、可继续跟踪的长任务语义。
+- 为 install/update/uninstall/start/stop/restart 和 Catalog batch upgrade 提供可恢复、可继续
+  跟踪的 TaskMgr 2.0 语义；retry 新建带 `retry_of` 的 task，不复活 Terminal task。
 
 CLI 可以组合这些能力完成同一条用户命令，但不能自行比较并决定权威版本、构造运行 spec、
 绕过验证、直接修改系统真相源或把内部 Task 数据格式当作稳定接口。
@@ -349,10 +363,15 @@ CLI 可以组合这些能力完成同一条用户命令，但不能自行比较�
 - 本模块没有独立 `dry-run`/`apply`、availability、db-list/db-resolve、构建、重打包、单独
   subpackage 发布或 BNS 写入逻辑。
 
-## 11. 待决策项
+## 11. 已冻结与待决策项
 
-- restart 的默认策略及多实例可用性门槛。
-- upgrade rollback 是重新部署旧 AppDoc，还是 Installer 的一等事务。
-- Installer PIKG staging/upload 的 RPC 流式传输、断点续传、限额和回收协议。
-- 远程 PIKG 的权威 URL 结构和“AppDoc Object ID → PIKG URL”映射协议。
-- InstallPlan schema 的长期版本策略，以及哪些目标环境变化会使计划过期。
+- restart 默认 `recreate`；当前稳定拒绝 `rolling`，所有约定实例必须按目标 deployment
+  readiness 收敛。
+- upgrade rollback 是 Installer 一等事务：恢复冻结 previous spec/record 并等待 previous
+  deployment；它不承诺逆转业务数据迁移。
+- App staging 已冻结不可猜测 handle、principal/Zone/purpose/digest 绑定、TTL、分层限额、
+  lease 引用保护、release 与启动 GC；上传字节仍复用 NDN 通道。
+- 当前 Plan schema 是严格 v4，unknown field、旧 schema、source/scope/target/config/fingerprint
+  变化都使计划失效；fingerprint 是 JCS 等值/完整性标识，不是授权凭据。
+- 尚待 Catalog/Repo 另行冻结远程 PIKG 的权威 URL 结构和“AppDoc Object ID → PIKG URL”映射；
+  这不改变 URL 必须由 CLI 下载字节、Control Panel 不打开客户端 URL 的边界。
