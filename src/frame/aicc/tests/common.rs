@@ -117,7 +117,7 @@ pub fn mock_instance(
     provider_type: &str,
     capabilities: Vec<Capability>,
     mut features: Vec<String>,
-) -> ProviderInstance {
+) -> MockInstanceConfig {
     if capabilities.iter().any(|item| item == &Capability::Llm)
         && !features
             .iter()
@@ -126,18 +126,28 @@ pub fn mock_instance(
         features.push(buckyos_api::features::WEB_SEARCH.to_string());
     }
 
-    ProviderInstance {
-        provider_instance_name: instance_id.to_string(),
-        provider_type: ProviderType::CloudApi,
-        provider_driver: provider_type.to_string(),
-        provider_origin: ProviderOrigin::SystemConfig,
-        provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
-        provider_type_revision: None,
-        capabilities,
-        features,
-        endpoint: Some("http://127.0.0.1:8080".to_string()),
-        plugin_key: None,
+    MockInstanceConfig {
+        instance: ProviderInstance {
+            provider_instance_name: instance_id.to_string(),
+            provider_type: ProviderType::CloudApi,
+            provider_driver: provider_type.to_string(),
+            provider_origin: ProviderOrigin::SystemConfig,
+            provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
+            provider_type_revision: None,
+            endpoint: Some("http://127.0.0.1:8080".to_string()),
+            plugin_key: None,
+        },
+        api_capabilities: capabilities,
+        model_features: features,
     }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct MockInstanceConfig {
+    instance: ProviderInstance,
+    api_capabilities: Vec<Capability>,
+    model_features: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -156,23 +166,28 @@ pub struct MockProvider {
 impl MockProvider {
     #[allow(dead_code)]
     pub fn new(
-        instance: ProviderInstance,
+        config: MockInstanceConfig,
         cost: CostEstimate,
         start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
     ) -> Self {
-        let inventory = mock_inventory(&instance, &cost);
-        Self::with_inventory(instance, inventory, cost, start_results)
+        let inventory = mock_inventory(
+            &config.instance,
+            &config.api_capabilities,
+            &config.model_features,
+            &cost,
+        );
+        Self::with_inventory(config, inventory, cost, start_results)
     }
 
     #[allow(dead_code)]
     pub fn with_inventory(
-        instance: ProviderInstance,
+        config: MockInstanceConfig,
         inventory: ProviderInventory,
         cost: CostEstimate,
         start_results: Vec<std::result::Result<ProviderStartResult, ProviderError>>,
     ) -> Self {
         Self {
-            instance,
+            instance: config.instance,
             inventory,
             cost,
             start_results: Mutex::new(start_results.into_iter().collect()),
@@ -265,9 +280,14 @@ impl Provider for MockProvider {
     }
 }
 
-fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderInventory {
+fn mock_inventory(
+    instance: &ProviderInstance,
+    api_capabilities: &[Capability],
+    model_features: &[String],
+    cost: &CostEstimate,
+) -> ProviderInventory {
     let mut models = Vec::new();
-    for capability in instance.capabilities.iter() {
+    for capability in api_capabilities {
         let (api_type, mounts, provider_model_id) = match capability {
             Capability::Llm => (ApiType::Llm, vec!["llm.plan.default"], "m"),
             Capability::Image => (
@@ -305,7 +325,7 @@ fn mock_inventory(instance: &ProviderInstance, cost: &CostEstimate) -> ProviderI
             provider_model_id,
             api_type,
             mounts.into_iter().map(str::to_string).collect(),
-            &instance.features,
+            model_features,
             cost.estimated_cost_usd,
             cost.estimated_latency_ms,
         ));

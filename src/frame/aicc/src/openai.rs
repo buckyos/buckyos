@@ -19,10 +19,11 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiArtifact, AiContent,
-    AiCost, AiMessage, AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent,
-    AiUsage, Capability, ResourceRef,
+    ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
+    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, ResourceRef,
 };
+#[cfg(test)]
+use buckyos_api::Capability;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use image::imageops::FilterType;
 use image::ImageFormat;
@@ -48,14 +49,8 @@ const DEFAULT_OPENAI_EMBEDDING_MODELS: &str = "text-embedding-3-large,text-embed
 const DEFAULT_OPENAI_ASR_MODELS: &str = "gpt-4o-mini-transcribe,whisper-1";
 const DEFAULT_OPENAI_TTS_MODELS: &str = "gpt-4o-mini-tts,tts-1";
 const DEFAULT_OPENAI_VIDEO_MODELS: &str = "sora-2,sora-2-pro";
-const DEFAULT_SN_AI_PROVIDER_MODELS: &str = "gpt-5.4,gpt-5.4-mini,gpt-5.4-nano,gpt-5.4-pro";
-const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
 const DEFAULT_OPENAI_PROVIDER_DRIVER: &str = "openai";
-const SN_AI_PROVIDER_DRIVER: &str = "sn-ai-provider";
 const DEFAULT_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
-const DEFAULT_AUTH_MODE: &str = "bearer";
-const RUNTIME_SESSION_AUTH_MODE: &str = "runtime_session";
-const DEVICE_JWT_AUTH_MODE: &str = "device_jwt";
 const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search_preview";
 const OPENAI_IMAGE_OPTION_ALLOWLIST: &[&str] = &[
     "background",
@@ -99,7 +94,6 @@ pub struct OpenAIInstanceConfig {
     pub provider_driver: String,
     pub api_token: String,
     pub base_url: String,
-    pub auth_mode: String,
     pub timeout_ms: u64,
 }
 
@@ -108,17 +102,11 @@ pub struct OpenAIProvider {
     instance: ProviderInstance,
     inventory: Arc<RwLock<ProviderInventory>>,
     client: Client,
-    auth_mode: OpenAIAuthMode,
+    api_token: String,
     base_url: String,
     provider_type: crate::model_types::ProviderType,
     provider_driver: String,
     refresh_task: Arc<Mutex<Option<Arc<ProviderRefreshTask>>>>,
-}
-
-#[derive(Debug, Clone)]
-enum OpenAIAuthMode {
-    Bearer(String),
-    RuntimeSession,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,8 +160,6 @@ impl OpenAIProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm, Capability::Image],
-            features: default_features(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };
@@ -183,13 +169,16 @@ impl OpenAIProvider {
             provider_driver.as_str(),
         );
 
-        let auth_mode = Self::parse_auth_mode(cfg.auth_mode.as_str(), openai_api_token)?;
+        let api_token = openai_api_token.trim().to_string();
+        if api_token.is_empty() {
+            return Err(anyhow!("openai requires non-empty api_token"));
+        }
 
         Ok(Self {
             instance,
             inventory: Arc::new(RwLock::new(inventory)),
             client,
-            auth_mode,
+            api_token,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             provider_type,
             provider_driver,
@@ -386,14 +375,6 @@ impl OpenAIProvider {
         let (mut models, image_models, embedding_models, asr_models, tts_models) =
             if provider_driver == "openrouter" {
                 (vec![], vec![], vec![], vec![], vec![])
-            } else if provider_driver == SN_AI_PROVIDER_DRIVER {
-                (
-                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
-                    normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
-                )
             } else {
                 (
                     normalize_model_list(parse_csv_list(DEFAULT_OPENAI_MODELS)),
@@ -572,86 +553,15 @@ impl OpenAIProvider {
         )
     }
 
-    fn parse_auth_mode(auth_mode: &str, openai_api_token: &str) -> Result<OpenAIAuthMode> {
-        let mode = auth_mode.trim().to_ascii_lowercase();
-        if mode.is_empty() || mode == DEFAULT_AUTH_MODE {
-            let token = Some(openai_api_token)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| anyhow!("openai bearer auth requires non-empty api_token"))?;
-            return Ok(OpenAIAuthMode::Bearer(token));
-        }
-
-        if mode == RUNTIME_SESSION_AUTH_MODE || mode == DEVICE_JWT_AUTH_MODE {
-            if mode == DEVICE_JWT_AUTH_MODE {
-                warn!(
-                    "openai auth_mode '{}' is deprecated for aicc; using '{}' without loading device private key",
-                    DEVICE_JWT_AUTH_MODE, RUNTIME_SESSION_AUTH_MODE
-                );
-            }
-            return Ok(OpenAIAuthMode::RuntimeSession);
-        }
-
-        Err(anyhow!(
-            "unsupported openai auth_mode '{}', expected '{}' or '{}'",
-            auth_mode,
-            DEFAULT_AUTH_MODE,
-            RUNTIME_SESSION_AUTH_MODE
-        ))
-    }
-
     async fn build_inventory_auth_token(&self) -> Result<String> {
-        match &self.auth_mode {
-            OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
-            OpenAIAuthMode::RuntimeSession => {
-                let runtime = get_buckyos_api_runtime().map_err(|err| {
-                    anyhow!(
-                        "openai runtime_session inventory auth requires runtime: {}",
-                        err
-                    )
-                })?;
-                let token = runtime.get_session_token().await;
-                if token.trim().is_empty() {
-                    return Err(anyhow!(
-                        "openai runtime_session inventory auth requires non-empty runtime session token"
-                    ));
-                }
-                Ok(token)
-            }
-        }
+        Ok(self.api_token.clone())
     }
 
     async fn build_auth_token(
         &self,
-        ctx: &crate::aicc::InvokeCtx,
+        _ctx: &crate::aicc::InvokeCtx,
     ) -> Result<String, ProviderError> {
-        match &self.auth_mode {
-            OpenAIAuthMode::Bearer(token) => Ok(token.clone()),
-            OpenAIAuthMode::RuntimeSession => {
-                if let Some(token) = ctx
-                    .session_token
-                    .as_ref()
-                    .map(|value| value.trim())
-                    .filter(|value| !value.is_empty())
-                {
-                    return Ok(token.to_string());
-                }
-
-                let runtime = get_buckyos_api_runtime().map_err(|err| {
-                    ProviderError::fatal(format!(
-                        "openai runtime_session auth requires runtime: {}",
-                        err
-                    ))
-                })?;
-                let token = runtime.get_session_token().await;
-                if token.trim().is_empty() {
-                    return Err(ProviderError::fatal(
-                        "openai runtime_session auth requires non-empty session token".to_string(),
-                    ));
-                }
-                Ok(token)
-            }
-        }
+        Ok(self.api_token.clone())
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
@@ -3963,8 +3873,6 @@ struct SettingsOpenAIInstanceConfig {
     api_token: String,
     #[serde(default = "default_base_url")]
     base_url: String,
-    #[serde(default = "default_auth_mode")]
-    auth_mode: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
 }
@@ -3989,27 +3897,8 @@ fn default_timeout_ms() -> u64 {
     DEFAULT_OPENAI_TIMEOUT_MS
 }
 
-fn default_auth_mode() -> String {
-    DEFAULT_AUTH_MODE.to_string()
-}
-
-fn default_provider_driver_for_instance(provider_instance_name: &str, base_url: &str) -> String {
-    let instance = provider_instance_name.to_ascii_lowercase();
-    let endpoint = base_url.to_ascii_lowercase();
-    if instance.contains(SN_AI_PROVIDER_DRIVER) || endpoint.contains("sn.buckyos.ai") {
-        SN_AI_PROVIDER_DRIVER.to_string()
-    } else {
-        DEFAULT_OPENAI_PROVIDER_DRIVER.to_string()
-    }
-}
-
-fn default_features() -> Vec<String> {
-    vec![
-        features::PLAN.to_string(),
-        features::JSON_OUTPUT.to_string(),
-        features::TOOL_CALLING.to_string(),
-        features::WEB_SEARCH.to_string(),
-    ]
+fn default_provider_driver_for_instance(_provider_instance_name: &str, _base_url: &str) -> String {
+    DEFAULT_OPENAI_PROVIDER_DRIVER.to_string()
 }
 
 fn is_text2image_model_name(model: &str) -> bool {
@@ -4151,7 +4040,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
             provider_driver: String::new(),
             api_token: settings.api_token.clone(),
             base_url: default_base_url(),
-            auth_mode: default_auth_mode(),
             timeout_ms: default_timeout_ms(),
         }]
     } else {
@@ -4170,7 +4058,6 @@ fn build_openai_instances(settings: &OpenAISettings) -> Result<Vec<OpenAIInstanc
                 raw_instance.api_token
             },
             base_url: raw_instance.base_url,
-            auth_mode: raw_instance.auth_mode,
             timeout_ms: raw_instance.timeout_ms,
         });
     }
@@ -4887,17 +4774,6 @@ data: [DONE]
     }
 
     #[test]
-    fn default_features_include_web_search() {
-        let all_features = default_features();
-        assert!(
-            all_features
-                .iter()
-                .any(|feature| feature == features::WEB_SEARCH),
-            "openai default features should include web_search"
-        );
-    }
-
-    #[test]
     fn build_openai_instances_uses_simplified_runtime_inventory_config() {
         let settings = OpenAISettings {
             enabled: true,
@@ -4908,7 +4784,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: String::new(),
                 base_url: default_base_url(),
-                auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
             }],
         };
@@ -4917,27 +4792,6 @@ data: [DONE]
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].provider_instance_name, "openai-1");
         assert_eq!(instances[0].base_url, DEFAULT_OPENAI_BASE_URL);
-    }
-
-    #[test]
-    fn build_openai_instances_allows_runtime_session_without_static_auth_fields() {
-        let settings = OpenAISettings {
-            enabled: true,
-            api_token: String::new(),
-            instances: vec![SettingsOpenAIInstanceConfig {
-                provider_instance_name: "sn-ai-provider-1".to_string(),
-                provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-ai-provider".to_string(),
-                api_token: String::new(),
-                base_url: "https://sn.buckyos.ai/v1".to_string(),
-                auth_mode: RUNTIME_SESSION_AUTH_MODE.to_string(),
-                timeout_ms: default_timeout_ms(),
-            }],
-        };
-
-        let instances = build_openai_instances(&settings).expect("instances should be built");
-        assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].auth_mode, RUNTIME_SESSION_AUTH_MODE);
     }
 
     #[test]
@@ -4951,7 +4805,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: String::new(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: default_auth_mode(),
                 timeout_ms: default_timeout_ms(),
             }],
         };
@@ -4964,6 +4817,31 @@ data: [DONE]
     }
 
     #[tokio::test]
+    async fn auth_always_uses_configured_api_token() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-auth".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "configured-token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "configured-token",
+        )
+        .expect("provider");
+        let ctx = crate::aicc::InvokeCtx {
+            session_token: Some("runtime-session-token".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            provider.build_auth_token(&ctx).await.expect("token"),
+            "configured-token"
+        );
+    }
+
+    #[tokio::test]
     async fn stopped_refresh_does_not_send_initial_request() {
         let provider = Arc::new(
             OpenAIProvider::new(
@@ -4973,7 +4851,6 @@ data: [DONE]
                     provider_driver: "openai".to_string(),
                     api_token: "token".to_string(),
                     base_url: "http://127.0.0.1:1".to_string(),
-                    auth_mode: "bearer".to_string(),
                     timeout_ms: 100,
                 },
                 "token",
@@ -5004,7 +4881,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: "http://127.0.0.1:1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: 100,
             },
             "token",
@@ -5029,12 +4905,10 @@ data: [DONE]
                         "provider_instance_name": "openai-valid",
                         "api_token": "token",
                         "base_url": "http://127.0.0.1:1",
-                        "auth_mode": "bearer",
                         "timeout_ms": 100
                     },
                     {
-                        "provider_instance_name": "openai-invalid",
-                        "auth_mode": "bearer"
+                        "provider_instance_name": "openai-invalid"
                     }
                 ]
             }
@@ -5047,15 +4921,14 @@ data: [DONE]
     }
 
     #[test]
-    fn use_chat_completions_endpoint_detects_custom_sn_path() {
+    fn use_chat_completions_endpoint_detects_custom_compatible_path() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
-                provider_instance_name: "sn-ai-provider-1".to_string(),
+                provider_instance_name: "custom-compatible-1".to_string(),
                 provider_type: "cloud_api".to_string(),
-                provider_driver: "sn-ai-provider".to_string(),
+                provider_driver: "custom-compatible".to_string(),
                 api_token: "token".to_string(),
-                base_url: "https://sn.buckyos.ai/api/v1/ai/chat/completions".to_string(),
-                auth_mode: "bearer".to_string(),
+                base_url: "https://example.com/api/v1/chat/completions".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5073,7 +4946,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5137,7 +5009,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5163,7 +5034,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5277,7 +5147,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5494,7 +5363,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5558,7 +5426,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5629,7 +5496,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5666,7 +5532,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5761,7 +5626,6 @@ data: [DONE]
                 provider_driver: "openrouter".to_string(),
                 api_token: "token".to_string(),
                 base_url: "https://openrouter.ai/api/v1".to_string(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",
@@ -5798,7 +5662,6 @@ data: [DONE]
                 provider_driver: "openai".to_string(),
                 api_token: "token".to_string(),
                 base_url: default_base_url(),
-                auth_mode: "bearer".to_string(),
                 timeout_ms: default_timeout_ms(),
             },
             "token",

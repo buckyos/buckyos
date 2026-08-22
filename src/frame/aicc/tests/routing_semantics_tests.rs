@@ -162,12 +162,7 @@ fn route_02_alias_unmapped_returns_model_alias_not_mapped() {
 }
 
 #[test]
-// 用例说明：
-// - 验证场景：`route_03_must_features_filtered_out` 用例，覆盖函数名对应的业务路径。
-// - 输入参数：按用例构造请求参数、路由配置和初始状态。
-// - 处理流程：调用 Router.route，依次执行映射解析、候选过滤、打分排序与回退列表生成。
-// - 预期输出：断言中的状态、错误码、路由选择或事件字段全部满足预期。
-fn route_03_must_features_filtered_out() {
+fn route_03_provider_features_are_not_applied() {
     let registry = Registry::default();
     let catalog = ModelCatalog::default();
     catalog.set_mapping(Capability::Llm, "llm.plan.default", "provider-a", "m-a");
@@ -188,7 +183,7 @@ fn route_03_must_features_filtered_out() {
 
     let req = base_request();
     let snapshot = registry.snapshot(Capability::Llm);
-    let err = Router
+    let decision = Router
         .route(
             "tenant-a",
             &req,
@@ -197,8 +192,8 @@ fn route_03_must_features_filtered_out() {
             &default_route_cfg(),
             &catalog,
         )
-        .expect_err("route should fail");
-    assert!(err.to_string().contains("no_provider_available"), "assert failed in route_03_must_features_filtered_out: condition is false; check preconditions and expected branch outcome.");
+        .expect("provider-level features should not filter the route");
+    assert_eq!(decision.primary_instance_id, "p-a");
 }
 
 #[test]
