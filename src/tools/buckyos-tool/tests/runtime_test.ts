@@ -24,10 +24,17 @@ Deno.test('local cancellation does not mutate a remote operation', async () => {
   assertEquals(remoteCompleted, true)
 })
 
-Deno.test('launcher does not grant all permissions or process execution', async () => {
+Deno.test('launcher grants Docker execution only to the offline pikg branch', async () => {
   const launcher = await Deno.readTextFile(new URL('../buckyos', import.meta.url))
   assertEquals(/(?:^|\s)-A(?:\s|$)/m.test(launcher), false)
-  assertEquals(launcher.includes('--allow-run'), false)
+  assertEquals((launcher.match(/--allow-run=docker/g) ?? []).length, 1)
+  const execLines = launcher.split('\n').filter((line) => line.startsWith('  exec deno run'))
+  assertEquals(execLines.length, 1)
+  assertEquals(execLines[0].includes('--allow-net'), false)
+  assertEquals(execLines[0].includes('--allow-run=docker'), true)
+  const onlineExec = launcher.split('\n').find((line) => line.startsWith('exec deno run'))!
+  assertEquals(onlineExec.includes('--allow-net'), true)
+  assertEquals(onlineExec.includes('--allow-run'), false)
 })
 
 Deno.test('invalid token errors are not misclassified as missing resources', () => {

@@ -28,13 +28,16 @@ import { createAuthModule } from '../modules/auth.ts'
 import { createCoreModules } from '../modules/core.ts'
 import { createSystemModule } from '../modules/system.ts'
 import { createSystemConfigModule } from '../modules/system_config.ts'
+import { createPikgModule, type PikgModuleDependencies } from '../modules/pikg.ts'
 
-export const VERSION = '0.1.0-phase1'
+export const VERSION = '0.1.0-phase2'
 
 export interface ToolStdio {
   stdout(value: string): Promise<void>
   stderr(value: string): Promise<void>
   readStdin(): Promise<string>
+  prompt?(message: string): Promise<string | null>
+  inputIsTerminal?(): boolean
 }
 
 export interface ApplicationDependencies {
@@ -50,6 +53,7 @@ export interface ApplicationDependencies {
   ) => ServiceClientRegistry
   confirmDeviceIdentity?: (identity: ImplicitDeviceIdentity) => Promise<boolean>
   repl?: typeof runRepl
+  pikg?: PikgModuleDependencies
 }
 
 export class BuckyOSToolApplication {
@@ -68,7 +72,7 @@ export class BuckyOSToolApplication {
   readonly #repl: typeof runRepl
 
   constructor(dependencies: ApplicationDependencies = {}) {
-    this.registry = createRegistry()
+    this.registry = createRegistry(dependencies.pikg)
     this.#environment = dependencies.environment ?? readEnvironment()
     this.#cwd = dependencies.cwd ?? Deno.cwd()
     this.#homeDir = dependencies.homeDir
@@ -265,6 +269,12 @@ export class BuckyOSToolApplication {
         idempotencyKey: config.idempotencyKey,
         deadline: Date.now() + config.timeoutMs,
         signal,
+        cwd: this.#cwd,
+        io: {
+          stderr: (value) => this.#stdio.stderr(value),
+          prompt: (message) => this.#stdio.prompt?.(message) ?? Promise.resolve(null),
+          inputIsTerminal: this.#stdio.inputIsTerminal?.() ?? false,
+        },
         interactive,
         confirmed: config.yes,
         config,
@@ -380,10 +390,11 @@ export class BuckyOSToolApplication {
   }
 }
 
-export function createRegistry(): CommandRegistry {
+export function createRegistry(pikgDependencies?: PikgModuleDependencies): CommandRegistry {
   const registry = new CommandRegistry()
   for (const module of createCoreModules(registry)) registry.register(module)
   registry.register(createAuthModule())
+  registry.register(createPikgModule(pikgDependencies))
   registry.register(createSystemModule())
   registry.register(createSystemConfigModule())
   return registry
@@ -466,6 +477,13 @@ function defaultStdio(): ToolStdio {
       await Deno.stderr.write(encoder.encode(value))
     },
     readStdin: async () => await new Response(Deno.stdin.readable).text(),
+    prompt: async (message) => {
+      await Deno.stderr.write(encoder.encode(message))
+      const buffer = new Uint8Array(4096)
+      const count = await Deno.stdin.read(buffer)
+      return count === null ? null : new TextDecoder().decode(buffer.subarray(0, count)).trim()
+    },
+    inputIsTerminal: () => Deno.stdin.isTerminal(),
   }
 }
 

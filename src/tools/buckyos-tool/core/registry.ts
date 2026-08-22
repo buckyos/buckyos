@@ -136,6 +136,8 @@ export class CommandRegistry {
       access: command.access,
       async_mode: command.asyncMode,
       requires_session: command.requiresSession,
+      execution: command.execution ?? (command.requiresSession ? 'service' : 'local'),
+      network_access: command.networkAccess ?? command.requiresSession,
       examples: command.examples ?? [],
     }
   }

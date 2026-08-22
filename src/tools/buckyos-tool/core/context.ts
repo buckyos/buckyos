@@ -10,6 +10,12 @@ export interface ResolvedConnection {
   defaultProtocol: 'http://' | 'https://'
 }
 
+export interface CommandIO {
+  stderr(value: string): Promise<void>
+  prompt(message: string): Promise<string | null>
+  inputIsTerminal: boolean
+}
+
 export interface CommandContext {
   command: { module: string; verb: string }
   definition: RegisteredCommand
@@ -21,6 +27,8 @@ export interface CommandContext {
   idempotencyKey?: string
   deadline?: number
   signal: AbortSignal
+  cwd: string
+  io: CommandIO
   interactive: boolean
   confirmed: boolean
   config: ResolvedConfig
@@ -55,6 +63,12 @@ export function createMockCommandContext(options: MockContextOptions): CommandCo
     output: { format: options.config.output },
     traceId: options.traceId ?? crypto.randomUUID(),
     signal: new AbortController().signal,
+    cwd: Deno.cwd(),
+    io: {
+      stderr: () => Promise.resolve(),
+      prompt: () => Promise.resolve(null),
+      inputIsTerminal: false,
+    },
     interactive: false,
     confirmed: false,
     config: options.config,

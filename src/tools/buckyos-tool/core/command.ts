@@ -49,6 +49,8 @@ export interface CommandDefinition {
   access: AccessPolicy
   asyncMode: 'sync' | 'task' | 'either' | 'stream'
   requiresSession: boolean
+  execution?: 'local' | 'service'
+  networkAccess?: boolean
   examples?: string[]
   supportsRawOutput?: boolean
   handler(ctx: CommandContext, input: Record<string, unknown>): Promise<unknown>

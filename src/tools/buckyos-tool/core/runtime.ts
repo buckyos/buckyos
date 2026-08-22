@@ -170,7 +170,7 @@ export async function withDeadline<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   if (signal?.aborted) throw new ToolError('CANCELED', 'operation canceled', 8)
-  let timer: number | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
   let abortHandler: (() => void) | undefined
   const guards: Promise<never>[] = [
     new Promise((_, reject) => {

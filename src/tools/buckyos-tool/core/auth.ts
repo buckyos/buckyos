@@ -371,7 +371,7 @@ function numberClaim(value: unknown): number | undefined {
 }
 
 async function withLocalTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: number | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
       () => reject(new ToolError('TIMEOUT', 'authentication timed out', 8, true)),

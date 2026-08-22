@@ -1,6 +1,6 @@
 # PIKG 模块需求
 
-> 状态：Draft  
+> 状态：已实现（Beta 2.2）
 > 对应 module：`pikg`  
 > 适用范围：普通 App 的本地开发和发行候选构造
 
@@ -404,20 +404,21 @@ entry/object 标识，不能返回 `ok=true, valid=false` 让 Agent 忽略失败
 
 ## 9. 服务与实现映射
 
-本模块不调用 BuckyOS service。PIKG parser、canonicalization、Object ID、PackageMeta 构造和 verifier
-必须与 Publisher/Installer 复用同一个协议核心，不允许在 TypeScript CLI 中实现一套仅对自己产物
-宽松通过的规则。
+本模块不调用 BuckyOS service。实现由以下本地组件组成：
 
-当前可复用实现基础：
+- `src/tools/buckyos-tool/modules/pikg.ts`：五个命令、开发态 schema、Docker 本地导出、事务性快照和
+  ownership/clean 边界；
+- `src/tools/buckyos-tool/modules/pikg_protocol.ts`：五个命令共用的 App namespace、PackageMeta、对象图、
+  content index 和离线 verifier；Object ID/Chunk ID 直接使用 WebSDK `ndn` 的规范实现；
+- `src/tools/buckyos-tool/modules/pikg_archive.ts`：确定性 tar.gz、PIKG ZIP/ZIP64 流式写入和严格读取；
+- `src/frame/control_panel/src/pikg.rs`：Installer 侧的 PIKG reader/verifier 与安全限制。
 
-- `src/frame/control_panel/src/pikg.rs` 中的 `PikgBuilder` / `PikgReader`、entry 限额和安全校验；
-- `src/frame/control_panel/src/app_installer.rs` 中现有的 subpackage 归档、PackageMeta 构造和 AppDoc 填充逻辑；
-- `src/kernel/buckyos-api/src/app_doc.rs` 中的 AppDoc/SubPkgDesc 类型；
-- [App 安装协议](../../App%20安装协议.md) 中的 PIKG 结构、App namespace、Object ID 和安全规则。
+TypeScript 侧没有“构造时宽松、读取时跳过”的第二套路径：`build`、`pack` 和 `info` 都经过同一个
+`pikg_protocol.ts` 对象图校验，`pack` 写入临时文件后必须由同一严格 reader 回读。协议兼容性同时由
+本地工具端到端/篡改测试、Installer 的 `pikg::tests` 和仓库内三类 Installer PIKG fixture 回归约束。
+这些检查只处理包内数据和本地文件，不解析 profile、Zone、设备身份、Owner key 或 session。
 
 现有 `app.publish` 从源目录打包到 repo 的复合流程只是迁移时的实现参考，不是新 CLI 的边界。
-实现前需先把上述协议核心抽取为可被本地工具和 Installer 共享的组件；TS 访问该组件的具体
-边界由实现设计确定，但不得分叉协议规则。
 
 ## 10. 与 App 和发布阶段的关系
 
@@ -449,8 +450,12 @@ entry/object 标识，不能返回 `ok=true, valid=false` 让 Agent 忽略失败
   无 ownership manifest 目录的删除测试全部失败。
 - 文档和 `command describe pikg <verb>` 产生的 schema/帮助示例一致。
 
-## 12. 待决策项
+## 12. 已固定的首版决策
 
-- Rust PIKG 协议核心向 TS/Deno 工具暴露的具体形式（子进程边界、FFI 或其它共享组件）。
-- 目录归档的可重现 metadata 精确值（mtime、uid/gid、mode 和 gzip header）在实现 Spec 中固定。
-- Docker image ID、RepoDigest 和加载后 runtime digest 的精确对应规则需与 App Loader 完成协议联调。
+- CLI 使用 WebSDK `ndn` 规范对象算法，并在独立的本地协议模块中集中对象图验证；Rust Installer 与
+  TypeScript CLI 通过协议 fixture 和双方的严格 verifier 回归保持兼容，不引入运行时子进程或 FFI。
+- 目录归档按路径字典序稳定排序；uid/gid/mtime 固定为 `0`，目录和可执行文件 mode 为 `0755`，
+  其它文件为 `0644`；gzip 使用运行时的标准 `CompressionStream`，测试要求相同输入字节完全一致。
+- Docker source 先由 `docker image inspect` 固定为本地 `sha256:<64-hex>` image ID，再仅用该 ID 执行
+  `docker image save`；AppDoc 中的 `docker_image_digest` 表达该 runtime identity，payload digest 独立
+  表达导出归档字节。RepoDigest 不参与本地 PIKG 构造。

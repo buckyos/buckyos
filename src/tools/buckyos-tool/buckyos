@@ -7,6 +7,9 @@ CONFIG_DIR=${BUCKYOS_TOOL_CONFIG_DIR:-${HOME:-${USERPROFILE:-.}}/.buckyos_tool}
 BUCKYOS_RUNTIME_ROOT=${BUCKYOS_ROOT:-/opt/buckyos}
 READ_PATHS="$TOOL_DIR,$SDK_DIR,$CONFIG_DIR,$BUCKYOS_RUNTIME_ROOT"
 EXPECT_PATH=""
+PIKG_COMMAND=0
+EXPECT_GLOBAL_VALUE=0
+MODULE_FOUND=0
 
 if [ -n "${BUCKYOS_IDENTITY_ROOT:-}" ]; then
   READ_PATHS="$READ_PATHS,$BUCKYOS_IDENTITY_ROOT"
@@ -14,6 +17,29 @@ fi
 if [ -n "${BUCKYOS_SECURITY_ROOT:-}" ]; then
   READ_PATHS="$READ_PATHS,$BUCKYOS_SECURITY_ROOT"
 fi
+
+for ARGUMENT in "$@"; do
+  if [ "$MODULE_FOUND" -eq 1 ]; then
+    continue
+  fi
+  if [ "$EXPECT_GLOBAL_VALUE" -eq 1 ]; then
+    EXPECT_GLOBAL_VALUE=0
+    continue
+  fi
+  case "$ARGUMENT" in
+    --config-dir|--profile|--zone|--endpoint|--identity|--identity-root|--security-root|--session-token|--session-token-file|--output|--input|--timeout|--trace-id|--idempotency-key)
+      EXPECT_GLOBAL_VALUE=1
+      ;;
+    --*)
+      ;;
+    *)
+      MODULE_FOUND=1
+      if [ "$ARGUMENT" = "pikg" ]; then
+        PIKG_COMMAND=1
+      fi
+      ;;
+  esac
+done
 
 for ARGUMENT in "$@"; do
   if [ -n "$EXPECT_PATH" ]; then
@@ -52,5 +78,9 @@ for ARGUMENT in "$@"; do
 done
 
 ENV_NAMES="HOME,USERPROFILE,APPDATA,BUCKYOS_TOOL_CONFIG_DIR,BUCKYOS_TOOL_PROFILE,BUCKYOS_TOOL_ZONE,BUCKYOS_TOOL_ENDPOINT,BUCKYOS_TOOL_IDENTITY,BUCKYOS_TOOL_OUTPUT,BUCKYOS_IDENTITY_ROOT,BUCKYOS_SECURITY_ROOT,BUCKYOS_APPCLIENT_SESSION_TOKEN,BUCKYOS_ROOT"
+
+if [ "$PIKG_COMMAND" -eq 1 ]; then
+  exec deno run --quiet --allow-read --allow-write --allow-run=docker --allow-env="$ENV_NAMES" "$TOOL_DIR/main.ts" "$@"
+fi
 
 exec deno run --quiet --allow-net --allow-read="$READ_PATHS" --allow-write="$CONFIG_DIR" --allow-env="$ENV_NAMES" "$TOOL_DIR/main.ts" "$@"
