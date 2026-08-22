@@ -100,9 +100,9 @@ buckyos [session-options] --cli
 ```bash
 buckyos --profile production user list
 buckyos --profile production user get alice
-buckyos --zone corp.example.com --identity ops app restart --app-instance notes@alice
+buckyos --zone corp.example.com --identity ops app restart notes.alice
 buckyos --output json system status
-buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade --app-instance notes@alice
+buckyos --non-interactive --yes --idempotency-key upgrade-2026-08 app upgrade notes.alice
 buckyos --profile production --identity ops --cli
 ```
 
@@ -125,6 +125,7 @@ buckyos --profile production --identity ops --cli
 | --- | --- |
 | 枚举 | `list` |
 | 获取单项 | `get` |
+| 获取远程目录/发行物描述 | `fetch` |
 | 创建 | `create` |
 | 修改 | `update` |
 | 删除或卸载 | `delete` / 领域明确时使用 `uninstall` |
@@ -163,7 +164,7 @@ PIKG 模块按开发者对发行物的领域习惯使用 `init`、`build`、`pac
 | `--timeout <duration>` | 本地请求或等待超时，例如 `30s`、`5m` |
 | `--trace-id <id>` | 覆盖自动生成的 trace id |
 | `--idempotency-key <key>` | 写操作幂等键 |
-| `--wait` | 对返回 Task 的操作等待结束 |
+| `--no-wait` | 对返回 Task 的操作立即返回 `task_id`，不跟踪到完成 |
 | `--non-interactive` | 禁止提示、密码输入和确认交互 |
 | `--yes` | 接受本地确认，不绕过服务端权限和 sudo |
 | `--no-color` | 禁止 stderr 和人类输出着色 |
@@ -183,7 +184,7 @@ PIKG 模块按开发者对发行物的领域习惯使用 `init`、`build`、`pac
 ```text
 $ buckyos --profile production --identity ops --cli
 buckyos[production|corp.example.com|ops]> user list
-buckyos[production|corp.example.com|ops]> app status notes@alice
+buckyos[production|corp.example.com|ops]> app status notes.alice
 buckyos[production|corp.example.com|ops]> task wait 01J...
 ```
 
@@ -202,7 +203,7 @@ input schema 和 handler 处理，不允许维护第二套命令实现。REPL pa
 - session 参数：`--config-dir`、`--profile`、`--zone`、`--endpoint`、`--identity`、
   `--identity-root`、`--security-root`、`--session-token`、`--session-token-file` 等在进入时解析
   并冻结，禁止在某一条命令里隐式切换 Zone 或身份；需要切换时退出并重建 session；
-- command 参数：`--input`、`--timeout`、`--trace-id`、`--idempotency-key`、`--wait`、`--yes`、
+- command 参数：`--input`、`--timeout`、`--trace-id`、`--idempotency-key`、`--no-wait`、`--yes`、
   `--output` 可以作为当前命令的 action options 出现在 verb 之后，只影响当前命令。trace id
   默认逐条生成，idempotency key、确认结果和 deadline 不得继承到下一条命令。
 
@@ -668,8 +669,9 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 ### 8.3 异步任务
 
 - 线上长操作必须返回 TaskManager `task_id`，不能由 CLI 进程持有唯一状态。
-- 默认返回 task summary；调用者使用 `--wait` 或 `task wait` 等待。
-- `--wait` 的超时只停止本地等待，除非用户明确 `task cancel`，不得隐式取消远程任务。
+- 默认跟踪 Task 直到完成，进度写 stderr / `jsonl`，stdout 输出终态 envelope。
+- `--no-wait` 立即返回 task summary / `task_id`，调用者再用 `task wait` / `task get` 跟踪。
+- 本地等待超时只停止等待，除非用户明确 `task cancel`，不得隐式取消远程任务。
 - task 进度通过 `jsonl` 输出，最终仍输出一次终态 envelope。
 - 重试、取消、恢复能力以 TaskManager 真实能力为准，CLI 不伪造。
 - `execution=local` 的命令不伪造 TaskManager 任务。大文件处理在前台运行，进度写 stderr，
@@ -712,7 +714,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 | 模块 | 文档 | 主要范围 |
 | --- | --- | --- |
 | User | [user.md](modules/user.md) | 用户、状态、类型、Profile、密码与 Message Tunnel 绑定 |
-| App | [app.md](modules/app.md) | Catalog、安装事务、AppSpec、运行实例与可用性 |
+| App | [app.md](modules/app.md) | Catalog、安装事务、已安装 App 与运行期望状态 |
 | PIKG | [pikg.md](modules/pikg.md) | 本地 `dapp_meta`、`dapp_dist`、PIKG 构造、封装、验证和清理 |
 | Contact | [contact.md](modules/contact.md) | 外部联系人、binding、关系和消息准入 |
 | Message | [message.md](modules/message.md) | Zone/外部消息、会话、投递与回执 |
@@ -794,7 +796,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 6. 每个失败路径产生稳定 error code 和退出码。
 7. `--non-interactive` 下不会读取 stdin 密码或等待确认。
 8. secret 不出现在默认输出、verbose 输出、错误和测试 snapshot 中。
-9. `--wait` 超时不会隐式取消远程 task。
+9. 返回 Task 的命令默认跟踪到完成；等待超时和 `--no-wait` 都不会隐式取消远程 task。
 10. Deno 正式 launcher 不使用 `-A`。
 11. Windows Desktop 可从本机 Deno 开发入口、Jarvis 容器和 paios 临时容器执行同一只读命令。
 12. Linux 与 macOS 可使用同一命令 schema 和 JSON 输出执行同一在线操作。
