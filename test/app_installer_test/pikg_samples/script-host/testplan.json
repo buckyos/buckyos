@@ -1,0 +1,95 @@
+{
+  "app": {
+    "did": "did:bns:pikg-script-host.root",
+    "name": "pikg-script-host",
+    "object_id": "appdoc:3a47644cb21fbfe462f550acb00cd96b285fa3d269caa514c2f348eacf929dd6",
+    "version": "0.1.0"
+  },
+  "created_at": 1787439874,
+  "install_params": {
+    "auto_start": true,
+    "expected_instance_count": 1,
+    "service_settings": {
+      "services": {}
+    }
+  },
+  "installation_id": "appinst:6cf7ce530524e58bcd5446a159882f7914c41d4f7ee6974b513d4f9e648fdf46",
+  "installation_scope": {
+    "app_class": "user_installed",
+    "owner_user_id": "ood1",
+    "zone_did": "did:web:test.buckyos.io"
+  },
+  "plan_fingerprint": "planfp:9f85104ce88e9232195d4597a6e51c6966ea6b8863d00f0bb2a9d376015a58ce",
+  "plan_use": "FRESH_INSTALL",
+  "required_contents": [
+    {
+      "content_id": "pkg:b97cf7f495cac8d2d2563a9da7d226096fb4651fa070bf381d8aec071aa8114e",
+      "format": "named_object",
+      "package_meta_id": "pkg:b97cf7f495cac8d2d2563a9da7d226096fb4651fa070bf381d8aec071aa8114e",
+      "sub_pkg_name": "script"
+    },
+    {
+      "content_id": "mix256:8001c82d0d2500aadf40897a39323f9b4bf2427c008943b9352a5b002cef5fb926fe",
+      "format": "archive",
+      "package_meta_id": "pkg:b97cf7f495cac8d2d2563a9da7d226096fb4651fa070bf381d8aec071aa8114e",
+      "size": 128,
+      "sub_pkg_name": "script"
+    }
+  ],
+  "resolution": {
+    "app_did": "did:bns:pikg-script-host.root",
+    "doc_type": "app",
+    "document_status": "Unknown",
+    "expected_owner": "did:bns:root"
+  },
+  "schema_version": 4,
+  "selected_packages": [
+    {
+      "package_meta_id": "pkg:b97cf7f495cac8d2d2563a9da7d226096fb4651fa070bf381d8aec071aa8114e",
+      "pkg_id": "all.root_pikg-script-host-script#0.1.0",
+      "required": true,
+      "sub_pkg_name": "script"
+    }
+  ],
+  "service_spec_config": {
+    "data_mount_point": {},
+    "expose_config": {
+      "www": {
+        "allow_guest": false,
+        "route": {
+          "sub_hostname": [
+            "pikg-script-host-6cf7ce530524"
+          ],
+          "type": "web"
+        },
+        "scope": ""
+      }
+    },
+    "external_mount_point": {},
+    "instance_volume": {
+      "mode": "required"
+    },
+    "local_cache_mount_point": {},
+    "res_pool_id": "default",
+    "service_config": {
+      "www": {
+        "inner_port": 3000,
+        "protocol": "http"
+      }
+    }
+  },
+  "source_identity": {
+    "app_doc_object_id": "appdoc:3a47644cb21fbfe462f550acb00cd96b285fa3d269caa514c2f348eacf929dd6",
+    "kind": "pikg",
+    "pikg_digest": "864d926500b945124ba99a592b1bc1ce844584ed909690bf3444ad623b7c1993"
+  },
+  "target": {
+    "arch": "aarch64",
+    "capabilities": {
+      "memory": 34359738368
+    },
+    "node_did": "did:web:ood1.test.buckyos.io",
+    "node_id": "ood1",
+    "os": "macos"
+  }
+}

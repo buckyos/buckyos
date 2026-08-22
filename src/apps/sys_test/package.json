@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
+    "buckyos": "github:buckyos/buckyos-websdk#main"
   },
   "scripts": {
     "build:web": "pnpm install --frozen-lockfile && pnpm --filter ./web run build",
