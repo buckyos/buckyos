@@ -102,6 +102,12 @@ pub const OPENDAN_SERVICE_PORT: u16 = 4060;
 
 pub const BASE_APP_PORT: u16 = 10000;
 pub const MAX_APP_INDEX: u16 = MAX_ALLOCATABLE_APP_INDEX;
+pub const BUCKYOS_APP_DID_ENV: &str = "BUCKYOS_APP_DID";
+pub const BUCKYOS_APP_ID_ENV: &str = "BUCKYOS_APP_ID";
+pub const BUCKYOS_APP_INSTANCE_ID_ENV: &str = "BUCKYOS_APP_INSTANCE_ID";
+pub const BUCKYOS_OWNER_USER_ID_ENV: &str = "BUCKYOS_OWNER_USER_ID";
+pub const BUCKYOS_DATA_DIR_ENV: &str = "BUCKYOS_DATA_DIR";
+pub const BUCKYOS_APP_TOKEN_ENV: &str = "BUCKYOS_APP_TOKEN";
 
 static CURRENT_BUCKYOS_RUNTIME: OnceCell<BuckyOSRuntime> = OnceCell::new();
 pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {
@@ -124,20 +130,17 @@ pub fn is_buckyos_api_runtime_set() -> bool {
     CURRENT_BUCKYOS_RUNTIME.get().is_some()
 }
 
-pub fn get_full_appid(app_id: &str, owner_user_id: &str) -> String {
+pub fn get_local_app_runtime_key(app_id: &str, owner_user_id: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(format!("{app_id}@{owner_user_id}").as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-pub fn get_session_token_env_key(app_full_id: &str, is_app_service: bool) -> String {
-    let app_id = app_full_id.to_uppercase();
-    let app_id = app_id.replace("-", "_");
-    if !is_app_service {
-        format!("{}_SESSION_TOKEN", app_id)
-    } else {
-        format!("{}_TOKEN", app_id)
-    }
+pub fn get_service_session_token_env_key(service_id: &str) -> String {
+    format!(
+        "{}_SESSION_TOKEN",
+        service_id.to_uppercase().replace('-', "_")
+    )
 }
 
 pub fn parse_app_identity_from_instance_config(
@@ -185,24 +188,67 @@ pub fn parse_app_identity_from_instance_config(
 }
 
 pub fn load_app_identity_from_env() -> Result<Option<(String, String)>> {
-    let app_instance_config = match env::var("app_instance_config") {
-        Ok(value) => {
-            info!("found app_instance_config in env, bytes={}", value.len());
-            value
-        }
-        Err(env::VarError::NotPresent) => {
-            info!("app_instance_config not found in env");
-            return Ok(None);
-        }
-        Err(err) => {
-            warn!("read app_instance_config from env failed: {}", err);
-            return Err(RPCErrors::ReasonError(format!(
-                "read app_instance_config from env failed: {}",
-                err
-            )));
+    let read = |key: &str| -> Result<Option<String>> {
+        match env::var(key) {
+            Ok(value) if value.trim().is_empty() => {
+                Err(RPCErrors::ReasonError(format!("{key} is set but empty")))
+            }
+            Ok(value) => Ok(Some(value)),
+            Err(env::VarError::NotPresent) => Ok(None),
+            Err(error) => Err(RPCErrors::ReasonError(format!(
+                "read {key} from env failed: {error}"
+            ))),
         }
     };
-    parse_app_identity_from_instance_config(&app_instance_config).map(Some)
+    let app_did = read(BUCKYOS_APP_DID_ENV)?;
+    let app_id = read(BUCKYOS_APP_ID_ENV)?;
+    let app_instance_id = read(BUCKYOS_APP_INSTANCE_ID_ENV)?;
+    let owner_user_id = read(BUCKYOS_OWNER_USER_ID_ENV)?;
+    let data_dir = read(BUCKYOS_DATA_DIR_ENV)?;
+    if app_did.is_none()
+        && app_id.is_none()
+        && app_instance_id.is_none()
+        && owner_user_id.is_none()
+        && data_dir.is_none()
+    {
+        return Ok(None);
+    }
+    let app_did = app_did
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{BUCKYOS_APP_DID_ENV} is required")))?;
+    let app_id = app_id
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{BUCKYOS_APP_ID_ENV} is required")))?;
+    let app_instance_id = app_instance_id.ok_or_else(|| {
+        RPCErrors::ReasonError(format!("{BUCKYOS_APP_INSTANCE_ID_ENV} is required"))
+    })?;
+    let owner_user_id = owner_user_id.ok_or_else(|| {
+        RPCErrors::ReasonError(format!("{BUCKYOS_OWNER_USER_ID_ENV} is required"))
+    })?;
+    let data_dir = data_dir
+        .ok_or_else(|| RPCErrors::ReasonError(format!("{BUCKYOS_DATA_DIR_ENV} is required")))?;
+    if !std::path::Path::new(&data_dir).is_absolute() {
+        return Err(RPCErrors::ReasonError(format!(
+            "{BUCKYOS_DATA_DIR_ENV} must be an absolute path"
+        )));
+    }
+
+    let parsed_app_id = AppId::parse(&app_id).map_err(|error| {
+        RPCErrors::ReasonError(format!("invalid {BUCKYOS_APP_ID_ENV}: {error}"))
+    })?;
+    let parsed_instance = app_instance_id.parse::<AppInstanceId>().map_err(|error| {
+        RPCErrors::ReasonError(format!("invalid {BUCKYOS_APP_INSTANCE_ID_ENV}: {error}"))
+    })?;
+    let parsed_did = DID::from_str(&app_did).map_err(|error| {
+        RPCErrors::ReasonError(format!("invalid {BUCKYOS_APP_DID_ENV}: {error}"))
+    })?;
+    if parsed_instance.app_id() != &parsed_app_id
+        || parsed_instance.owner_user_id() != owner_user_id
+        || parsed_app_id.app_did() != parsed_did
+    {
+        return Err(RPCErrors::ReasonError(
+            "app identity environment variables are inconsistent".to_string(),
+        ));
+    }
+    Ok(Some((app_id, owner_user_id)))
 }
 
 pub async fn init_buckyos_api_runtime(
@@ -231,28 +277,28 @@ pub async fn init_buckyos_api_runtime(
         resolved_owner_id.as_deref().unwrap_or("<none>")
     );
 
-    if (resolved_app_id.is_empty() || resolved_owner_id.is_none())
-        && matches!(
-            runtime_type,
-            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService
-        )
-    {
-        if let Some((env_app_id, env_owner_id)) = load_app_identity_from_env()? {
-            if resolved_app_id.is_empty() {
-                info!(
-                    "init_buckyos_api_runtime: app_id missing, using app_instance_config value={}",
-                    env_app_id
-                );
-                resolved_app_id = env_app_id;
-            }
-            if resolved_owner_id.is_none() {
-                info!(
-                    "init_buckyos_api_runtime: owner_user_id missing, using app_instance_config value={}",
-                    env_owner_id
-                );
-                resolved_owner_id = Some(env_owner_id);
-            }
+    if runtime_type == BuckyOSRuntimeType::AppService {
+        let (env_app_id, env_owner_id) = load_app_identity_from_env()?.ok_or_else(|| {
+            RPCErrors::ReasonError(
+                "fixed BuckyOS AppService identity environment is required".into(),
+            )
+        })?;
+        if !resolved_app_id.is_empty() && resolved_app_id != env_app_id {
+            return Err(RPCErrors::ReasonError(format!(
+                "runtime app_id {resolved_app_id} does not match {BUCKYOS_APP_ID_ENV} {env_app_id}"
+            )));
         }
+        if resolved_owner_id
+            .as_deref()
+            .is_some_and(|owner| owner != env_owner_id)
+        {
+            return Err(RPCErrors::ReasonError(format!(
+                "runtime owner_user_id {} does not match {BUCKYOS_OWNER_USER_ID_ENV} {env_owner_id}",
+                resolved_owner_id.as_deref().unwrap_or_default()
+            )));
+        }
+        resolved_app_id = env_app_id;
+        resolved_owner_id = Some(env_owner_id);
     }
 
     if resolved_app_id.is_empty() {
@@ -271,7 +317,7 @@ pub async fn init_buckyos_api_runtime(
             runtime_type, resolved_app_id
         );
         return Err(RPCErrors::ReasonError(
-            "owner_user_id is required for AppClient or AppService".to_string(),
+            "owner_user_id is required for AppService".to_string(),
         ));
     }
     info!(
@@ -324,11 +370,12 @@ mod tests {
     use name_lib::DID;
 
     use super::{
-        get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
-        parse_app_identity_from_instance_config, AppDoc, AppInstanceId, AppServiceInstanceConfig,
-        AppType, BuckyOSRuntimeType, DeploymentIdentity, NodeExecutionSpec, ServiceInstanceState,
-        ServiceSpecConfig, SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
-        NODE_EXECUTION_SPEC_SCHEMA_VERSION, OBJ_TYPE_APP_DOC,
+        init_buckyos_api_runtime, parse_app_identity_from_instance_config, AppDoc, AppId,
+        AppInstanceId, AppServiceInstanceConfig, AppType, BuckyOSRuntimeType, DeploymentIdentity,
+        NodeExecutionSpec, ServiceInstanceState, ServiceSpecConfig, SubPkgDesc,
+        BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV,
+        BUCKYOS_APP_INSTANCE_ID_ENV, BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV,
+        BUCKYOS_OWNER_USER_ID_ENV, NODE_EXECUTION_SPEC_SCHEMA_VERSION, OBJ_TYPE_APP_DOC,
     };
 
     fn test_env_lock() -> &'static Mutex<()> {
@@ -407,8 +454,10 @@ mod tests {
 
     #[test]
     fn runtime_key_uses_full_canonical_app_instance_sha256() {
+        let app_instance_id =
+            AppInstanceId::new(AppId::parse("filebrowser.buckyos.ai").unwrap(), "alice").unwrap();
         assert_eq!(
-            get_full_appid("filebrowser.buckyos.ai", "alice"),
+            app_instance_id.runtime_key(),
             "0f77133700c08ac0aff571f1b710c5ade021d76b9a4a86477887f7d319c90768"
         );
     }
@@ -416,8 +465,8 @@ mod tests {
     #[tokio::test]
     async fn init_app_service_runtime_skips_system_etc_and_uses_env_bootstrap() {
         let _lock = test_env_lock().lock().expect("lock env");
-        let token_key =
-            get_session_token_env_key(&get_full_appid("buckyos_jarvis", "devtest"), true);
+        let app_id = "buckyos-jarvis.devtest.bns.did";
+        let app_instance_id = format!("{app_id}@devtest");
         let missing_root = env::temp_dir().join(format!(
             "buckyos-appservice-runtime-missing-root-{}-{}",
             std::process::id(),
@@ -430,20 +479,28 @@ mod tests {
         assert!(!missing_root.exists(), "test root should not exist");
 
         let prev_root = set_env_var("BUCKYOS_ROOT", missing_root.to_string_lossy().as_ref());
-        let prev_token = set_env_var(&token_key, "dummy-session-token");
+        let prev_app_did = set_env_var(BUCKYOS_APP_DID_ENV, "did:bns:buckyos-jarvis.devtest");
+        let prev_app_id = set_env_var(BUCKYOS_APP_ID_ENV, app_id);
+        let prev_instance_id = set_env_var(BUCKYOS_APP_INSTANCE_ID_ENV, &app_instance_id);
+        let prev_owner = set_env_var(BUCKYOS_OWNER_USER_ID_ENV, "devtest");
+        let prev_data_dir = set_env_var(
+            BUCKYOS_DATA_DIR_ENV,
+            missing_root.join("data").to_string_lossy().as_ref(),
+        );
+        let prev_token = set_env_var(BUCKYOS_APP_TOKEN_ENV, "dummy-session-token");
 
-        let result = init_buckyos_api_runtime(
-            "buckyos_jarvis",
-            Some("devtest".to_string()),
-            BuckyOSRuntimeType::AppService,
-        )
-        .await;
+        let result = init_buckyos_api_runtime("", None, BuckyOSRuntimeType::AppService).await;
 
-        restore_env_var(&token_key, prev_token);
+        restore_env_var(BUCKYOS_APP_TOKEN_ENV, prev_token);
+        restore_env_var(BUCKYOS_DATA_DIR_ENV, prev_data_dir);
+        restore_env_var(BUCKYOS_OWNER_USER_ID_ENV, prev_owner);
+        restore_env_var(BUCKYOS_APP_INSTANCE_ID_ENV, prev_instance_id);
+        restore_env_var(BUCKYOS_APP_ID_ENV, prev_app_id);
+        restore_env_var(BUCKYOS_APP_DID_ENV, prev_app_did);
         restore_env_var("BUCKYOS_ROOT", prev_root);
 
         let runtime = result.expect("init app service runtime should succeed without system etc");
-        assert_eq!(runtime.get_app_id(), "buckyos_jarvis");
+        assert_eq!(runtime.get_app_id(), app_id);
         assert_eq!(runtime.get_owner_user_id().as_deref(), Some("devtest"));
         assert_eq!(runtime.user_id.as_deref(), Some("devtest"));
         assert_eq!(runtime.get_authenticated_user_id().as_deref(), None);

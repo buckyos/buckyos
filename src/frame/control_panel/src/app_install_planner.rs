@@ -18,8 +18,8 @@ use buckyos_api::{
     AppDoc, AppDocumentRef, AppInstanceId, ContentLocation, DidResolutionSnapshot,
     InspectedContent, InstallError, InstallErrorCode, InstallInspection, InstallParams,
     InstallPlan, InstallPlanStatus, InstallPlanUse, InstallPolicy, InstallSourceIdentity,
-    InstallStage, InstallTarget, PlanReadiness, PlannedContent, ReadinessState, SelectedPackage,
-    SubPkgList, APP_INSTALL_SCHEMA_VERSION,
+    InstallStage, InstallTarget, PackageSelector, PlanReadiness, PlannedContent, ReadinessState,
+    SelectedPackage, SubPkgDesc, SubPkgList, APP_INSTALL_SCHEMA_VERSION,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use ndn_lib::{NamedObject, ObjId};
@@ -201,7 +201,7 @@ pub async fn build_install_plan(
             ));
             continue;
         };
-        if !selector.matches_platform(&input.target.os, &input.target.arch) {
+        if !package_matches_target(&selector, desc, &input.target) {
             continue;
         }
         let explicitly_selected = input
@@ -403,13 +403,6 @@ pub async fn build_install_plan(
                         format!("package meta `{meta_id_str}` body hashes to `{actual_meta_id}`"),
                     ));
                 }
-                validate_package_meta_namespace(
-                    &namespace,
-                    &package.sub_pkg_name,
-                    &package.pkg_id,
-                    meta.name.as_str(),
-                    InstallStage::Inspect,
-                )?;
                 let declared = app_doc.pkg_list.get(&package.sub_pkg_name).ok_or_else(|| {
                     InstallError::new(
                         InstallStage::Inspect,
@@ -421,6 +414,14 @@ pub async fn build_install_plan(
                         ),
                     )
                 })?;
+                validate_package_meta_namespace(
+                    &namespace,
+                    &package.sub_pkg_name,
+                    &declared.pkg_id,
+                    meta.name.as_str(),
+                    meta.version.as_str(),
+                    InstallStage::Inspect,
+                )?;
                 let declared_id = PackageId::parse(&declared.pkg_id).map_err(|error| {
                     InstallError::new(
                         InstallStage::Inspect,
@@ -641,4 +642,75 @@ fn valid_sha256_digest(raw: &str) -> bool {
     raw.strip_prefix("sha256:")
         .map(|hex| hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
         .unwrap_or(false)
+}
+
+pub(crate) fn package_matches_target(
+    selector: &PackageSelector,
+    desc: &SubPkgDesc,
+    target: &InstallTarget,
+) -> bool {
+    let target_os = if desc.docker_image_name.is_some() {
+        "linux"
+    } else {
+        target.os.as_str()
+    };
+    selector.matches_platform(target_os, &target.arch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(docker_image_name: Option<&str>) -> SubPkgDesc {
+        SubPkgDesc {
+            pkg_id: "test.buckyos.bns.did/root#1.0.0".to_string(),
+            pkg_objid: None,
+            docker_image_name: docker_image_name.map(ToString::to_string),
+            docker_image_digest: None,
+            source_url: None,
+            selector: None,
+            required: None,
+        }
+    }
+
+    fn macos_target(arch: &str) -> InstallTarget {
+        InstallTarget {
+            node_did: None,
+            node_id: Some("ood1".to_string()),
+            os: "macos".to_string(),
+            arch: arch.to_string(),
+            kernel_version: None,
+            runtime_version: None,
+            capabilities: Default::default(),
+        }
+    }
+
+    #[test]
+    fn docker_package_uses_linux_os_and_target_arch() {
+        let selector = PackageSelector::for_platform("linux", "aarch64");
+        let docker = package(Some("example/test:latest"));
+
+        assert!(package_matches_target(
+            &selector,
+            &docker,
+            &macos_target("aarch64")
+        ));
+        assert!(!package_matches_target(
+            &selector,
+            &docker,
+            &macos_target("x86_64")
+        ));
+    }
+
+    #[test]
+    fn native_package_uses_target_os() {
+        let selector = PackageSelector::for_platform("linux", "aarch64");
+        let native = package(None);
+
+        assert!(!package_matches_target(
+            &selector,
+            &native,
+            &macos_target("aarch64")
+        ));
+    }
 }

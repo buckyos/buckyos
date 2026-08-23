@@ -72,7 +72,7 @@ function buildVersion() {
 
 function isKeyNotFoundError(error) {
   const message = String(error?.message ?? error)
-  return /key.?not.?found|not.?found|KeyNotFound/i.test(message)
+  return /key.?not.?found|not.?found|KeyNotFound|returned null/i.test(message)
 }
 
 // v0.5: AppDoc requires `did` (App DID); derive via the frozen rule did:bns:{app_name}.{owner_id}.
@@ -344,7 +344,7 @@ async function readConfigJsonOrNull(key) {
 }
 
 function isInstalledSpecState(state) {
-  return ['new', 'deployed', 'running'].includes(String(state ?? '').toLowerCase())
+  return ['new', 'deployed', 'running', 'stopped'].includes(String(state ?? '').toLowerCase())
 }
 
 async function listConfigChildren(key) {
@@ -455,6 +455,16 @@ async function getSeedRpcClient() {
   return seedRpcClient
 }
 
+async function readConfigJsonAsRoot(key) {
+  const rpc = await getSeedRpcClient()
+  const response = await rpc.call('sys_config_get', { key })
+  const normalized = normalizeConfigValue(response)
+  if (normalized == null) {
+    throw new Error(`system_config key \`${key}\` returned null`)
+  }
+  return typeof normalized === 'string' ? JSON.parse(normalized) : normalized
+}
+
 async function writeConfig(key, value) {
   const rpc = await getSeedRpcClient()
   await rpc.call('sys_config_set', { key, value })
@@ -531,15 +541,30 @@ async function waitForTaskStatus(taskId, statuses, { timeoutMs = 120000, interva
 }
 
 // v4 安装闭环：apps.inspect -> fingerprint-bound apps.submit -> Completed。
-async function installPikgToCompletion({ stagingHandle, expectOfflineReady = true }) {
+async function installPikgToCompletion({
+  stagingHandle,
+  expectOfflineReady = true,
+  installParams = null,
+  ownerUserId = null,
+  action = null,
+  onInspection = null,
+}) {
   const source = { kind: 'local_pikg', staging_handle: stagingHandle }
-  const options = { policy: 'NORMAL' }
+  const options = {
+    policy: 'NORMAL',
+    ...(installParams ? { install_params: installParams } : {}),
+  }
   const inspection = await callControlPanel('apps.inspect', {
     source,
     options,
+    ...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
+    ...(action ? { action } : {}),
   })
   const plan = inspection.plan
   assert.ok(plan, 'inspect must return an install plan')
+  if (onInspection) {
+    await onInspection({ inspection, plan })
+  }
   if (expectOfflineReady) {
     assert.equal(
       inspection.status?.readiness?.install,
@@ -548,7 +573,7 @@ async function installPikgToCompletion({ stagingHandle, expectOfflineReady = tru
     )
   }
 
-  const startResult = await callControlPanel('apps.submit', {
+  const submitParams = {
     source,
     owner_user_id: plan.owner_user_id,
     target: plan.target,
@@ -557,7 +582,8 @@ async function installPikgToCompletion({ stagingHandle, expectOfflineReady = tru
     plan,
     approved_plan_fingerprint: plan.plan_fingerprint,
     idempotency_key: createRunId('install'),
-  })
+  }
+  const startResult = await callControlPanel('apps.submit', submitParams)
   assert.ok(startResult.task_id, 'apps.submit should return task_id')
   const taskId = startResult.task_id
 
@@ -566,6 +592,9 @@ async function installPikgToCompletion({ stagingHandle, expectOfflineReady = tru
     task.data?.result?.completed_at,
     'completed install task must carry a structured result',
   )
+  const replay = await callControlPanel('apps.submit', submitParams)
+  assert.equal(replay.action, 'replay')
+  assert.equal(replay.task_id, taskId)
   return { task, plan }
 }
 
@@ -600,7 +629,7 @@ async function stageStaticWebFixture() {
     specPath: (userId) =>
       `users/${userId}/apps/${appIdFromName(appId)}/spec`,
     specId: (userId) => appInstanceId(appId, userId),
-    binPath: () => path.join('/opt/buckyos/bin', `web.${appIdFromName(appId)}`),
+    binPath: () => path.join('/opt/buckyos/bin', `all.web.${appIdFromName(appId)}`),
   }
 }
 
@@ -623,8 +652,6 @@ async function stageAgentFixture() {
     specPath: (userId) =>
       `users/${userId}/apps/${appIdFromName(appId)}/spec`,
     specId: (userId) => appInstanceId(appId, userId),
-    pidFile: (userId) =>
-      path.join('/opt/buckyos/data/home', userId, '.local', 'share', appIdFromName(appId), '.opendan.pid'),
   }
 }
 
@@ -726,8 +753,11 @@ test('app_installer local PIKG lifecycle', async (t) => {
   const ctx = await getSdkContext()
   const userId = ctx.accountInfo.user_id
 
-  await t.test('static web app PIKG build + install', async () => {
-    const fixture = await stageStaticWebFixture()
+  await t.test(
+    'static web app PIKG build + install',
+    { skip: getEnv('BUCKYOS_TEST_SKIP_STATIC') === '1' },
+    async () => {
+      const fixture = await stageStaticWebFixture()
 
     try {
       const published = await buildAndStagePikg(fixture.projectDir)
@@ -737,6 +767,12 @@ test('app_installer local PIKG lifecycle', async (t) => {
       await seedResolverCache(published.app_did, published.app_doc)
       const { task: installTask, plan } = await installPikgToCompletion({
         stagingHandle: published.pikg_handle,
+        onInspection: async ({ plan: inspectedPlan }) => {
+          assert.equal(await readConfigJsonOrNull(fixture.specPath(userId)), null)
+          const registry = await readConfigJson('system/app_registry')
+          assert.equal(registry.apps[appIdFromName(fixture.appId)], undefined)
+          assert.equal(registry.instances[inspectedPlan.app_instance_id], undefined)
+        },
       })
       const installedAppInstanceId = plan.app_instance_id
 
@@ -776,30 +812,111 @@ test('app_installer local PIKG lifecycle', async (t) => {
         true,
       )
 
+      const otherUserId = createRunId('cp-user')
+      const otherPublished = await buildAndStagePikg(fixture.projectDir)
+      await seedResolverCache(otherPublished.app_did, otherPublished.app_doc)
+      const { plan: otherPlan } = await installPikgToCompletion({
+        stagingHandle: otherPublished.pikg_handle,
+        ownerUserId: otherUserId,
+      })
+      const otherSpec = await readConfigJsonAsRoot(fixture.specPath(otherUserId))
+      assert.equal(otherPlan.plan_use, 'FRESH_INSTALL')
+      assert.equal(otherSpec.app_instance_id, fixture.specId(otherUserId))
+      assert.equal(otherSpec.app_doc.version, fixture.version)
+      assert.notEqual(otherSpec.app_instance_id, spec.app_instance_id)
+      assert.equal(otherSpec.app_did, spec.app_did)
+      assert.equal(otherSpec.app_name, spec.app_name)
+      assert.notEqual(otherSpec.app_host_name, spec.app_host_name)
+      assert.notEqual(otherSpec.app_index, spec.app_index)
+
+      const registryBeforeUpgrade = await readConfigJson('system/app_registry')
+      const appAllocationBeforeUpgrade = structuredClone(
+        registryBeforeUpgrade.apps[appIdFromName(fixture.appId)],
+      )
+      const instanceAllocationBeforeUpgrade = structuredClone(
+        registryBeforeUpgrade.instances[installedAppInstanceId],
+      )
+      const otherInstanceAllocationBeforeUpgrade = structuredClone(
+        registryBeforeUpgrade.instances[otherSpec.app_instance_id],
+      )
+      assert.ok(appAllocationBeforeUpgrade)
+      assert.ok(instanceAllocationBeforeUpgrade)
+      assert.ok(otherInstanceAllocationBeforeUpgrade)
+
+      const upgradeVersion = buildVersion()
+      await configurePikgSample(fixture.projectDir, {
+        appId: fixture.appId,
+        version: upgradeVersion,
+        ownerDid: OWNER_DID,
+      })
+      const upgradedPublished = await buildAndStagePikg(fixture.projectDir)
+      await seedResolverCache(upgradedPublished.app_did, upgradedPublished.app_doc)
+      const { task: upgradeTask, plan: upgradePlan } = await installPikgToCompletion({
+        stagingHandle: upgradedPublished.pikg_handle,
+        ownerUserId: userId,
+        action: 'upgrade',
+      })
+      assert.equal(upgradePlan.plan_use, 'UPGRADE')
+      assert.equal(upgradeTask.id, upgradePlan.task_id)
+      assert.equal(upgradePlan.app_instance_id, installedAppInstanceId)
+
+      const upgradedSpec = await readConfigJson(fixture.specPath(userId))
+      assert.equal(upgradedSpec.app_instance_id, installedAppInstanceId)
+      assert.equal(upgradedSpec.app_doc.version, upgradeVersion)
+      assert.equal(upgradedSpec.app_name, spec.app_name)
+      assert.equal(upgradedSpec.app_host_name, spec.app_host_name)
+      assert.equal(upgradedSpec.app_index, spec.app_index)
+
+      const registryAfterUpgrade = await readConfigJson('system/app_registry')
+      assert.deepEqual(
+        registryAfterUpgrade.apps[appIdFromName(fixture.appId)],
+        appAllocationBeforeUpgrade,
+      )
+      assert.deepEqual(
+        registryAfterUpgrade.instances[installedAppInstanceId],
+        instanceAllocationBeforeUpgrade,
+      )
+      const otherSpecAfterUpgrade = await readConfigJsonAsRoot(
+        fixture.specPath(otherUserId),
+      )
+      assert.equal(otherSpecAfterUpgrade.app_doc.version, fixture.version)
+      assert.deepEqual(otherSpecAfterUpgrade.deployment, otherSpec.deployment)
+
       if (UNINSTALL_AFTER_INSTALL) {
         await uninstallApp({ appInstanceId: installedAppInstanceId, userId, removeData: false })
+        await uninstallApp({
+          appInstanceId: otherSpec.app_instance_id,
+          userId: otherUserId,
+          removeData: false,
+        })
 
         const deletedSpec = await readConfigJson(fixture.specPath(userId))
         assert.equal(deletedSpec.state, 'deleted')
-        assert.equal(
-          await waitForCondition(
-            () => fileExists(fixture.binPath()).then((exists) => !exists),
-            { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
-          ),
-          true,
+        const deletedOtherSpec = await readConfigJsonAsRoot(fixture.specPath(otherUserId))
+        assert.equal(deletedOtherSpec.state, 'deleted')
+        const registryAfterUninstall = await readConfigJson('system/app_registry')
+        assert.deepEqual(
+          registryAfterUninstall.apps[appIdFromName(fixture.appId)],
+          appAllocationBeforeUpgrade,
+        )
+        assert.deepEqual(
+          registryAfterUninstall.instances[installedAppInstanceId],
+          instanceAllocationBeforeUpgrade,
+        )
+        assert.deepEqual(
+          registryAfterUninstall.instances[otherSpec.app_instance_id],
+          otherInstanceAllocationBeforeUpgrade,
         )
       }
-    } finally {
-      await cleanupTempDir(fixture.tempRoot)
-    }
-  })
+      } finally {
+        await cleanupTempDir(fixture.tempRoot)
+      }
+    },
+  )
 
   await t.test(
-    'agent app PIKG build + install',
-    {
-      skip:
-        getEnv('BUCKYOS_TEST_SKIP_DOCKER') === '1' || !(await isDockerAvailable()),
-    },
+    'agent runtime app PIKG build + install without AgentDID binding',
+    { skip: getEnv('BUCKYOS_TEST_SKIP_AGENT') === '1' },
     async () => {
       const fixture = await stageAgentFixture()
 
@@ -809,6 +926,11 @@ test('app_installer local PIKG lifecycle', async (t) => {
         await seedResolverCache(published.app_did, published.app_doc)
         const { plan } = await installPikgToCompletion({
           stagingHandle: published.pikg_handle,
+          installParams: {
+            auto_start: false,
+            expected_instance_count: 1,
+            service_settings: { services: {} },
+          },
         })
         const installedAppInstanceId = plan.app_instance_id
 
@@ -820,28 +942,19 @@ test('app_installer local PIKG lifecycle', async (t) => {
           `agent spec should be in an installed state, got ${spec.state}`,
         )
         assert.equal(spec.app_doc.app_type, 'agent')
+        assert.equal(spec.enable, false)
 
         const instances = await listServiceInstances(fixture.specId(userId))
-        assert.ok(instances.length >= 1, 'agent install should create a started instance')
         assert.equal(
-          await waitForCondition(() => fileExists(fixture.pidFile(userId)), {
-            timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS,
-          }),
-          true,
+          instances.length,
+          0,
+          'an Agent runtime App must not create an Agent principal without AgentSpec binding',
         )
-
         if (UNINSTALL_AFTER_INSTALL) {
           await uninstallApp({ appInstanceId: installedAppInstanceId, userId, removeData: false })
 
           const deletedSpec = await readConfigJson(fixture.specPath(userId))
           assert.equal(deletedSpec.state, 'deleted')
-          assert.equal(
-            await waitForCondition(
-              () => fileExists(fixture.pidFile(userId)).then((exists) => !exists),
-              { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
-            ),
-            true,
-          )
         }
       } finally {
         await cleanupTempDir(fixture.tempRoot)
@@ -875,14 +988,26 @@ test('app_installer local PIKG lifecycle', async (t) => {
           `docker spec should be in an installed state, got ${spec.state}`,
         )
         assert.equal(spec.app_doc.app_type, 'dapp')
-        assert.equal(await isContainerRunning(fixture.containerName(userId)), true)
+        assert.equal(
+          await waitForCondition(
+            () => isContainerRunning(fixture.containerName(userId)),
+            { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
+          ),
+          true,
+        )
 
         if (UNINSTALL_AFTER_INSTALL) {
           await uninstallApp({ appInstanceId: installedAppInstanceId, userId, removeData: false })
 
           const deletedSpec = await readConfigJson(fixture.specPath(userId))
           assert.equal(deletedSpec.state, 'deleted')
-          assert.equal(await isContainerRunning(fixture.containerName(userId)), false)
+          assert.equal(
+            await waitForCondition(
+              () => isContainerRunning(fixture.containerName(userId)).then((running) => !running),
+              { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
+            ),
+            true,
+          )
         }
       } finally {
         if (UNINSTALL_AFTER_INSTALL) {

@@ -122,14 +122,29 @@ impl ControlPanelServer {
         require_self_or_admin(principal, owner_user_id.as_str())?;
 
         let resolver = Self::app_availability_resolver().await?;
+        let selector = selector.trim();
+        if let Ok(app_instance_id) = selector.parse::<AppInstanceId>() {
+            if app_instance_id.owner_user_id() != owner_user_id {
+                return Err(RPCErrors::ParseRequestError(format!(
+                    "selector owner `{}` does not match requested owner `{owner_user_id}`",
+                    app_instance_id.owner_user_id()
+                )));
+            }
+            return resolver.resolve_installation(&app_instance_id).await;
+        }
         let mut candidates = resolver
             .list_user_installations(owner_user_id.as_str())
             .await?
             .into_iter()
             .map(|(installation, _)| installation)
             .collect::<Vec<_>>();
-        let selector = selector.trim();
-        let did_selector = if selector.starts_with("did:") || selector.contains('.') {
+        let has_direct_match = candidates.iter().any(|candidate| {
+            selector == candidate.spec.app_instance_id.to_string()
+                || selector == candidate.spec.app_id().as_str()
+        });
+        let did_selector = if !has_direct_match
+            && (selector.starts_with("did:") || selector.contains('.'))
+        {
             match crate::app_install_resolver::normalize_identifier(selector) {
                 Ok(crate::app_install_resolver::NormalizedIdentifier::AppDid(did)) => Some(did),
                 Ok(crate::app_install_resolver::NormalizedIdentifier::DomainAlias(alias)) => Some(
@@ -144,10 +159,12 @@ impl ControlPanelServer {
         };
         candidates.retain(|candidate| {
             let spec = &candidate.spec;
-            selector == spec.app_instance_id.to_string()
-                || selector == spec.app_id().as_str()
-                || did_selector.as_ref() == Some(&spec.app_did)
-                || (did_selector.is_none() && selector == spec.app_doc.show_name)
+            if has_direct_match {
+                selector == spec.app_instance_id.to_string() || selector == spec.app_id().as_str()
+            } else {
+                did_selector.as_ref() == Some(&spec.app_did)
+                    || (did_selector.is_none() && selector == spec.app_doc.show_name)
+            }
         });
         candidates
             .sort_by(|left, right| left.spec.app_instance_id.cmp(&right.spec.app_instance_id));
@@ -611,20 +628,6 @@ impl ControlPanelServer {
             },
         );
         actions.insert(audit_key, KVAction::Create(audit_value));
-        if !installation.spec.spec_config.expose_config.is_empty() {
-            let guest_allowed = policy_guest_allowed(&policy);
-            let mut paths = HashMap::new();
-            for service_name in installation.spec.spec_config.expose_config.keys() {
-                paths.insert(
-                    format!("/spec_config/expose_config/{service_name}/allow_guest"),
-                    Some(Value::Bool(guest_allowed)),
-                );
-            }
-            actions.insert(
-                installation.spec_path.clone(),
-                KVAction::SetByJsonPath(paths),
-            );
-        }
 
         client
             .exec_tx(

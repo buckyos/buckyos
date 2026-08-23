@@ -2,8 +2,8 @@ use ::kRPC::*;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_session_token_env_key, AffinityType, FunctionObject, FunctionParamType, FunctionType,
-    SchedulerDispatchReceipt, SchedulerRunThunkResponse, SchedulerRunThunkStatus,
+    get_service_session_token_env_key, AffinityType, FunctionObject, FunctionParamType,
+    FunctionType, SchedulerDispatchReceipt, SchedulerRunThunkResponse, SchedulerRunThunkStatus,
     SystemConfigClient, ThunkObject, RESOURCE_TYPE_CPU, RESOURCE_TYPE_DISK_CACHE,
     RESOURCE_TYPE_DOWNLOAD, RESOURCE_TYPE_GPU, RESOURCE_TYPE_GPU_CORES, RESOURCE_TYPE_GPU_MEMORY,
     RESOURCE_TYPE_MEMORY, RESOURCE_TYPE_UPLOAD, SCHEDULER_SERVICE_SERVICE_NAME,
@@ -586,7 +586,7 @@ fn parse_scheduler_config_dump(value: Value) -> Result<HashMap<String, String>> 
 }
 
 fn load_scheduler_session_token() -> Option<String> {
-    let key = get_session_token_env_key(SCHEDULER_SERVICE_SERVICE_NAME, false);
+    let key = get_service_session_token_env_key(SCHEDULER_SERVICE_SERVICE_NAME);
     env::var(&key)
         .ok()
         .or_else(|| env::var("SCHEDULER_SESSION_TOKEN").ok())

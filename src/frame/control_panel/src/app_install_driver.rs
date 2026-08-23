@@ -33,7 +33,7 @@ use buckyos_api::{
 };
 use log::warn;
 use name_lib::{DeviceInfo, DID};
-use ndn_lib::{build_named_object_by_json, ObjId};
+use ndn_lib::{build_named_object_by_json, ChunkId, ChunkReader, ObjId};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -89,6 +89,186 @@ impl ProductionInstallDriver {
             staging_root: pikg_staging_root(),
             staging_store,
         }
+    }
+
+    pub(crate) async fn materialize_candidate_pikg(
+        &self,
+        data: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        let Some(reader) = self.open_candidate_pikg(data).await? else {
+            return Ok(());
+        };
+        let plan = data.state.plan.as_ref().ok_or_else(|| {
+            InstallError::new(
+                InstallStage::Prepare,
+                InstallErrorCode::Internal,
+                false,
+                "materialize without install plan",
+            )
+        })?;
+        let runtime = get_buckyos_api_runtime().map_err(|error| {
+            InstallError::new(
+                InstallStage::Prepare,
+                InstallErrorCode::Internal,
+                true,
+                format!("get runtime for pikg materialization failed: {error}"),
+            )
+        })?;
+        let named_store = runtime.get_named_store().await.map_err(|error| {
+            InstallError::new(
+                InstallStage::Prepare,
+                InstallErrorCode::Internal,
+                true,
+                format!("open named store for pikg materialization failed: {error}"),
+            )
+        })?;
+
+        let app_doc_value = data.state.resolved_app_doc.clone().ok_or_else(|| {
+            InstallError::new(
+                InstallStage::Prepare,
+                InstallErrorCode::InvalidPackage,
+                false,
+                "resolved AppDoc is missing during materialization",
+            )
+        })?;
+        let (app_doc_id, app_doc_body) =
+            build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
+        if app_doc_id != plan.app.object_id {
+            return Err(InstallError::new(
+                InstallStage::Prepare,
+                InstallErrorCode::VerificationFailed,
+                false,
+                "AppDoc changed after verification",
+            ));
+        }
+        named_store
+            .put_object(&app_doc_id, app_doc_body.as_str())
+            .await
+            .map_err(|error| {
+                InstallError::new(
+                    InstallStage::Prepare,
+                    InstallErrorCode::AcquisitionFailed,
+                    true,
+                    format!("materialize AppDoc `{app_doc_id}` failed: {error}"),
+                )
+            })?;
+
+        for package in &plan.selected_packages {
+            let Some(meta_id) = package.package_meta_id.as_ref() else {
+                continue;
+            };
+            let body = reader
+                .read_object(meta_id)
+                .await
+                .map_err(|error| {
+                    InstallError::new(
+                        InstallStage::Prepare,
+                        InstallErrorCode::InvalidPackage,
+                        false,
+                        format!("read PackageMeta `{meta_id}` from pikg failed: {error}"),
+                    )
+                })?
+                .ok_or_else(|| {
+                    InstallError::new(
+                        InstallStage::Prepare,
+                        InstallErrorCode::InvalidPackage,
+                        false,
+                        format!("PackageMeta `{meta_id}` is absent from pikg"),
+                    )
+                })?;
+            named_store
+                .put_object(meta_id, body.as_str())
+                .await
+                .map_err(|error| {
+                    InstallError::new(
+                        InstallStage::Prepare,
+                        InstallErrorCode::AcquisitionFailed,
+                        true,
+                        format!("materialize PackageMeta `{meta_id}` failed: {error}"),
+                    )
+                })?;
+        }
+
+        for content in &plan.required_contents {
+            if !reader.has_content(content.content_id.as_str()) {
+                continue;
+            }
+            let chunk_id = ChunkId::new(content.content_id.as_str()).map_err(|error| {
+                InstallError::new(
+                    InstallStage::Prepare,
+                    InstallErrorCode::InvalidPackage,
+                    false,
+                    format!(
+                        "pikg content `{}` is not a ChunkId: {error}",
+                        content.content_id
+                    ),
+                )
+            })?;
+            if named_store.have_chunk(&chunk_id).await {
+                continue;
+            }
+            let temp_path = self.staging_root.join(format!(
+                ".materialize-{}-{}.tmp",
+                plan.task_id,
+                uuid::Uuid::new_v4().simple()
+            ));
+            let result = async {
+                reader
+                    .copy_content_to_file(content.content_id.as_str(), &temp_path)
+                    .await
+                    .map_err(|error| {
+                        InstallError::new(
+                            InstallStage::Prepare,
+                            InstallErrorCode::InvalidPackage,
+                            false,
+                            format!(
+                                "extract pikg content `{}` failed: {error}",
+                                content.content_id
+                            ),
+                        )
+                    })?;
+                let file = tokio::fs::File::open(&temp_path).await.map_err(|error| {
+                    InstallError::new(
+                        InstallStage::Prepare,
+                        InstallErrorCode::AcquisitionFailed,
+                        true,
+                        format!("open materialized content failed: {error}"),
+                    )
+                })?;
+                let size = file
+                    .metadata()
+                    .await
+                    .map_err(|error| {
+                        InstallError::new(
+                            InstallStage::Prepare,
+                            InstallErrorCode::AcquisitionFailed,
+                            true,
+                            format!("stat materialized content failed: {error}"),
+                        )
+                    })?
+                    .len();
+                let chunk_reader: ChunkReader = Box::pin(file);
+                named_store
+                    .put_chunk_by_reader(&chunk_id, size, chunk_reader)
+                    .await
+                    .map_err(|error| {
+                        InstallError::new(
+                            InstallStage::Prepare,
+                            InstallErrorCode::AcquisitionFailed,
+                            true,
+                            format!(
+                                "write pikg content `{}` into named store failed: {error}",
+                                content.content_id
+                            ),
+                        )
+                    })?;
+                Ok(())
+            }
+            .await;
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            result?;
+        }
+        Ok(())
     }
 
     fn invalid_request(message: impl Into<String>) -> InstallError {
@@ -617,7 +797,7 @@ impl InstallStageDriver for ProductionInstallDriver {
                 } else {
                     InstallPlanUse::FreshInstall
                 },
-                task_id: view.id.clone(),
+                task_id: view.planning_task_id.clone(),
                 owner_user_id,
                 target,
                 install_params,
@@ -862,11 +1042,24 @@ impl InstallStageDriver for ProductionInstallDriver {
                                 format!("package meta `{subject}` schema invalid: {err}"),
                             )
                         })?;
+                    let declared =
+                        app_doc.pkg_list.get(&package.sub_pkg_name).ok_or_else(|| {
+                            InstallError::new(
+                                InstallStage::Verify,
+                                InstallErrorCode::InvalidPackage,
+                                false,
+                                format!(
+                                    "selected package `{}` is absent from AppDoc",
+                                    package.sub_pkg_name
+                                ),
+                            )
+                        })?;
                     validate_package_meta_namespace(
                         &namespace,
                         &package.sub_pkg_name,
-                        &package.pkg_id,
+                        &declared.pkg_id,
                         meta.name.as_str(),
+                        meta.version.as_str(),
                         InstallStage::Verify,
                     )?;
                     checks.push(VerificationCheck::pass(&subject, "package_meta_obj_id"));
@@ -904,6 +1097,19 @@ impl InstallStageDriver for ProductionInstallDriver {
             match location {
                 ContentLocation::Pikg => match pikg_reader.as_ref() {
                     Some(reader) => match reader.verify_content(&subject).await {
+                        Ok(()) if content.format.as_deref() == Some("archive") => {
+                            match reader.verify_package_archive(&subject).await {
+                                Ok(()) => checks.push(VerificationCheck::pass(
+                                    &subject,
+                                    "digest_and_archive_safety",
+                                )),
+                                Err(err) => checks.push(VerificationCheck::fail(
+                                    &subject,
+                                    "archive_safety",
+                                    err.to_string(),
+                                )),
+                            }
+                        }
                         Ok(()) => checks.push(VerificationCheck::pass(&subject, "digest")),
                         Err(err) => checks.push(VerificationCheck::fail(
                             &subject,
@@ -941,8 +1147,15 @@ impl InstallStageDriver for ProductionInstallDriver {
             let ok = desc
                 .and_then(|desc| {
                     buckyos_api::SubPkgList::effective_selector(&package.sub_pkg_name, desc)
+                        .map(|selector| (desc, selector))
                 })
-                .map(|selector| selector.matches_platform(&plan.target.os, &plan.target.arch))
+                .map(|(desc, selector)| {
+                    crate::app_install_planner::package_matches_target(
+                        &selector,
+                        desc,
+                        &plan.target,
+                    )
+                })
                 .unwrap_or(false);
             checks.push(if ok {
                 VerificationCheck::pass(&package.sub_pkg_name, "selector")

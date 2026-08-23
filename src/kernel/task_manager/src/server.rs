@@ -541,6 +541,7 @@ impl TaskManagerService {
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
+                task_id: None,
                 name: req.name.clone(),
                 schema_id: schema.schema_id.clone(),
                 schema_version: schema.schema_version,
@@ -959,6 +960,7 @@ impl TaskManagerHandler for TaskManagerService {
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
+                task_id: None,
                 name: req.name.clone(),
                 schema_id: schema.schema_id.clone(),
                 schema_version: schema.schema_version,
@@ -1010,6 +1012,18 @@ impl TaskManagerHandler for TaskManagerService {
                 "delegated creator envelope is incomplete".into(),
             ));
         }
+        if let Some(task_id) = req.task_id.as_deref() {
+            let suffix = task_id.strip_prefix("t-").unwrap_or_default();
+            if suffix.len() != 32
+                || !suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(RPCErrors::ParseRequestError(
+                    "delegated task_id must use the canonical t-<32 lowercase hex> form".into(),
+                ));
+            }
+        }
         let schema = self
             .resolve_schema(
                 &req.schema_id,
@@ -1022,6 +1036,7 @@ impl TaskManagerHandler for TaskManagerService {
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
+                task_id: req.task_id,
                 name: req.name,
                 schema_id: schema.schema_id,
                 schema_version: schema.schema_version,
@@ -2287,6 +2302,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let (service, _tmp) = setup_service().await;
         let runner_ctx = refreshed_service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
         let request = CreateDelegatedTaskReq {
+            task_id: Some("t-0123456789abcdef0123456789abcdef".to_string()),
             name: "install demo".to_string(),
             schema_id: APP_INSTALL_TASK_SCHEMA_ID.to_string(),
             schema_version: None,
@@ -2306,6 +2322,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .handle_create_delegated_task(request.clone(), runner_ctx.clone())
             .await
             .unwrap();
+        assert_eq!(task.task_id, request.task_id.clone().unwrap());
         assert_eq!(task.creator, ActorRef::new("alice", "buckyos-tool"));
         assert!(matches!(
             task.executor,
@@ -3452,5 +3469,36 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
         assert!(page.tasks.iter().any(|t| t.task_id == task.task_id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tasks_filters_by_creator_scoped_idempotency_key() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let first = service
+            .handle_create_task(raw_create_req("first", "key-first"), ctx.clone())
+            .await
+            .unwrap();
+        let second = service
+            .handle_create_task(raw_create_req("second", "key-second"), ctx.clone())
+            .await
+            .unwrap();
+
+        let page = service
+            .handle_list_tasks(
+                ListTasksReq {
+                    creator_user_id: Some("alice".to_string()),
+                    creator_app_id: Some("app-a".to_string()),
+                    idempotency_key: Some("key-second".to_string()),
+                    include_archived: true,
+                    ..Default::default()
+                },
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.tasks.len(), 1);
+        assert_eq!(page.tasks[0].task_id, second.task_id);
+        assert_ne!(page.tasks[0].task_id, first.task_id);
     }
 }

@@ -47,20 +47,10 @@ def get_app_data_dir(app_id: str, owner_user_id: str) -> str:
     return os.path.join(get_buckyos_root(), "data", "home", owner_user_id, ".local", "share", app_id)
 
 def get_app_cache_dir(app_id: str, owner_user_id: str) -> str:
-    return os.path.join(get_buckyos_root(), "data", "cache", get_full_appid(app_id, owner_user_id))
+    return os.path.join(get_buckyos_root(), "data", "cache", owner_user_id, app_id)
 
 def get_app_local_cache_dir(app_id: str, owner_user_id: str) -> str:
-    return os.path.join("/tmp", "buckyos", get_full_appid(app_id, owner_user_id))
-
-def get_session_token_env_key(app_full_id: str, is_app_service: bool) -> str:
-    app_id = app_full_id.upper().replace("-", "_")
-    if not is_app_service:
-        return f"{app_id}_SESSION_TOKEN"
-    else:
-        return f"{app_id}_TOKEN"
-    
-def get_full_appid(app_id: str, owner_user_id: str) -> str:
-    return f"{owner_user_id}-{app_id}"
+    return os.path.join("/tmp", "buckyos", owner_user_id, app_id)
 
 # TODO:process_full_path是目标进程的完整路径
 def check_process_exists(process_full_path):

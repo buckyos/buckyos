@@ -10,7 +10,7 @@ use crate::app_loader::{
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
-    get_full_appid, AppDoc, AppInstanceId, AppServiceInstanceConfig, AppServiceSpec, AppType,
+    AppDoc, AppId, AppInstanceId, AppServiceInstanceConfig, AppServiceSpec, AppType,
     DeploymentIdentity, DeploymentPackage, LocalAppInstanceConfig, ServiceEndpointConfig,
     ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc, OBJ_TYPE_APP_DOC,
 };
@@ -142,7 +142,13 @@ fn test_exact_package_id(name: &str, seed: u8) -> String {
 }
 
 fn test_runtime_key(app_id: &str) -> String {
-    get_full_appid(app_id, "alice")
+    AppInstanceId::new(AppId::parse(app_id).unwrap(), "alice")
+        .unwrap()
+        .runtime_key()
+}
+
+fn test_container_name(app_id: &str) -> String {
+    format!("buckyos-app-{}", test_runtime_key(app_id))
 }
 
 fn build_service_loader(
@@ -355,7 +361,7 @@ fn parse_docker_container_inspect_extracts_state_labels_and_image() {
             "State": {"Running": true},
             "Config": {
                 "Labels": {
-                    "buckyos.full_appid": "alice-demo",
+                    "buckyos.runtime_key": "alice-demo",
                     "buckyos.pkg_objid": "pkg:1234567890"
                 }
             },
@@ -371,7 +377,7 @@ fn parse_docker_container_inspect_extracts_state_labels_and_image() {
             .config
             .labels
             .as_ref()
-            .and_then(|labels| labels.get("buckyos.full_appid"))
+            .and_then(|labels| labels.get("buckyos.runtime_key"))
             .map(String::as_str),
         Some("alice-demo")
     );
@@ -567,9 +573,10 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_eq!(start.runtime, RuntimeType::Docker);
     assert_programs(&start.commands, &["docker", "docker"]);
     let runtime_key = test_runtime_key("demo.example");
+    let container_name = test_container_name("demo.example");
     assert_eq!(
         start.commands[0].args,
-        vec!["rm", "-f", runtime_key.as_str()]
+        vec!["rm", "-f", container_name.as_str()]
     );
     assert!(start.commands[1].args.contains(&"run".to_string()));
     assert!(start.commands[1].args.contains(&"--add-host".to_string()));
@@ -603,7 +610,7 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_programs(&stop.commands, &["docker"]);
     assert_eq!(
         stop.commands[0].args,
-        vec!["rm", "-f", runtime_key.as_str()]
+        vec!["rm", "-f", container_name.as_str()]
     );
 
     let status = loader.preview_operation(ControlOperation::Status).unwrap();
@@ -611,7 +618,12 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_programs(&status.commands, &["docker", "docker", "docker"]);
     assert_eq!(
         status.commands[0].args,
-        vec!["ps", "-q", "-f", format!("name=^{runtime_key}$").as_str()]
+        vec![
+            "ps",
+            "-q",
+            "-f",
+            format!("name=^{container_name}$").as_str()
+        ]
     );
 }
 
@@ -689,9 +701,10 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_eq!(start.runtime, RuntimeType::Agent);
     assert_programs(&start.commands, &["docker", "docker"]);
     let runtime_key = test_runtime_key("jarvis-runtime.example");
+    let container_name = test_container_name("jarvis-runtime.example");
     assert_eq!(
         start.commands[0].args,
-        vec!["rm", "-f", runtime_key.as_str()]
+        vec!["rm", "-f", container_name.as_str()]
     );
     assert!(start.commands[1].args.contains(&"run".to_string()));
     // Unified worker image has the dispatcher baked in, so we no longer
@@ -773,7 +786,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_programs(&stop.commands, &["docker"]);
     assert_eq!(
         stop.commands[0].args,
-        vec!["rm", "-f", runtime_key.as_str()]
+        vec!["rm", "-f", container_name.as_str()]
     );
 
     let status = loader.preview_operation(ControlOperation::Status).unwrap();
@@ -781,7 +794,12 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_programs(&status.commands, &["docker", "docker", "docker"]);
     assert_eq!(
         status.commands[0].args,
-        vec!["ps", "-q", "-f", format!("name=^{runtime_key}$").as_str()]
+        vec![
+            "ps",
+            "-q",
+            "-f",
+            format!("name=^{container_name}$").as_str()
+        ]
     );
     assert_eq!(
         status.commands[2].args,
@@ -826,7 +844,7 @@ fn agent_stop_command_uses_docker_on_windows() {
         vec![
             "rm",
             "-f",
-            test_runtime_key("jarvis-runtime.example").as_str()
+            test_container_name("jarvis-runtime.example").as_str()
         ]
     );
 }
@@ -855,12 +873,13 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
 
     let preview = loader.preview_operation(ControlOperation::Start).unwrap();
     let runtime_key = test_runtime_key("desktop-tool");
+    let container_name = test_container_name("desktop-tool");
     assert_eq!(preview.runtime, RuntimeType::HostScript);
     assert_eq!(preview.commands.len(), 2);
     assert_eq!(preview.commands[0].program, "docker");
     assert_eq!(
         preview.commands[0].args,
-        vec!["rm", "-f", runtime_key.as_str()]
+        vec!["rm", "-f", container_name.as_str()]
     );
     assert_eq!(preview.commands[1].program, "docker");
     assert!(preview.commands[1].args.contains(&"run".to_string()));
@@ -868,7 +887,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .contains(&"host.docker.internal:host-gateway".to_string()));
-    assert!(preview.commands[1].args.contains(&runtime_key));
+    assert!(preview.commands[1].args.contains(&container_name));
     assert!(preview.commands[1]
         .args
         .iter()
@@ -916,7 +935,7 @@ fn host_script_stop_preview_uses_docker_rm() {
     assert_eq!(preview.commands[0].program, "docker");
     assert_eq!(
         preview.commands[0].args,
-        vec!["rm", "-f", test_runtime_key("desktop-tool").as_str()]
+        vec!["rm", "-f", test_container_name("desktop-tool").as_str()]
     );
 }
 

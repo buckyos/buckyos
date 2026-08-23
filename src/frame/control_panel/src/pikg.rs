@@ -19,7 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // 常量（v0.5 D1 冻结）
@@ -407,6 +407,25 @@ impl PikgReader {
         tokio::task::spawn_blocking(move || copy_content_blocking(&path, index, &entry, &dest))
             .await
             .map_err(|err| io_err("join copy_content_to_file", err))?
+    }
+
+    pub async fn verify_package_archive(&self, digest: &str) -> PikgResult<()> {
+        let entry = self
+            .inspection
+            .content_entry(digest)
+            .cloned()
+            .ok_or_else(|| PikgError::ContentMissing(digest.to_string()))?;
+        let index = self.entry_index_of(&entry.path)?;
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut archive = open_archive(&path)?;
+            let zentry = archive
+                .by_index(index)
+                .map_err(|err| io_err("open package archive content", err))?;
+            validate_package_archive(zentry)
+        })
+        .await
+        .map_err(|err| io_err("join verify_package_archive", err))?
     }
 
     fn entry_index_of(&self, entry_path: &str) -> PikgResult<usize> {
@@ -1070,6 +1089,49 @@ fn copy_content_blocking(
     result
 }
 
+fn validate_package_archive(reader: impl Read) -> PikgResult<()> {
+    let decoder = flate2::read::GzDecoder::new(reader);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive
+        .entries()
+        .map_err(|error| invalid(format!("invalid package archive: {error}")))?
+    {
+        let entry = entry.map_err(|error| invalid(format!("invalid package archive: {error}")))?;
+        let path = entry
+            .path()
+            .map_err(|error| invalid(format!("invalid package archive path: {error}")))?;
+        let path_text = path.to_string_lossy();
+        let windows_absolute = path_text.as_bytes().get(1) == Some(&b':');
+        if path.is_absolute()
+            || path_text.starts_with(['/', '\\'])
+            || path_text.contains('\\')
+            || windows_absolute
+            || path.components().any(|part| {
+                matches!(
+                    part,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(invalid(format!(
+                "package archive entry `{path_text}` escapes its install root"
+            )));
+        }
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(invalid(format!(
+                "package archive entry `{path_text}` uses a link"
+            )));
+        }
+        if !entry_type.is_file() && !entry_type.is_dir() {
+            return Err(invalid(format!(
+                "package archive entry `{path_text}` has an unsupported type"
+            )));
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // PikgBuilder（发布与测试共用的 packer）
 // ---------------------------------------------------------------------------
@@ -1449,6 +1511,10 @@ mod tests {
         let parsed: PackageMeta = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed.version, "0.1.0");
         reader.verify_content(&parsed.content).await.unwrap();
+        reader
+            .verify_package_archive(&parsed.content)
+            .await
+            .unwrap();
 
         // 未知对象返回 None（不报错）。
         let missing = ObjId::new_by_raw("pkg".to_string(), vec![9u8; 32]);
@@ -1880,6 +1946,41 @@ mod tests {
         assert_eq!(format!("sha256:{copied_digest}"), digest);
 
         let _ = std::fs::remove_dir_all(&fixture.dir);
+    }
+
+    #[test]
+    fn package_archive_rejects_absolute_parent_and_link_entries() {
+        fn archive_with_raw_entry(name: &str) -> Vec<u8> {
+            let encoder = GzEncoder::new(Vec::new(), Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.set_cksum();
+            builder.append(&header, Cursor::new([1u8])).unwrap();
+            let encoder = builder.into_inner().unwrap();
+            encoder.finish().unwrap()
+        }
+
+        for name in ["/escape", "../escape", "C:/escape", "dir\\escape"] {
+            let archive = archive_with_raw_entry(name);
+            assert!(validate_package_archive(Cursor::new(archive)).is_err());
+        }
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        builder
+            .append_link(&mut header, "escape", "../../outside")
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        let archive = encoder.finish().unwrap();
+        assert!(validate_package_archive(Cursor::new(archive)).is_err());
     }
 
     #[test]

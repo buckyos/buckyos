@@ -381,7 +381,7 @@ export function toAgentEntity(
       appType: 'agent',
     },
     settings: {
-      owner: firstString(settings.owner, settings.owner_user_id, raw.owner_user_id, spec.user_id, fallback.settings.owner) ?? '',
+      owner: firstString(settings.owner, settings.owner_user_id, raw.owner_user_id, fallback.settings.owner) ?? '',
       permissions: firstString(settings.permissions, fallback.settings.permissions) ?? 'Not configured',
       workspaceRoot: firstString(settings.workspace_root, settings.workspaceRoot, fallback.settings.workspaceRoot) ?? '',
       serviceState: String(settings.state ?? raw.state ?? spec.state ?? 'unknown'),

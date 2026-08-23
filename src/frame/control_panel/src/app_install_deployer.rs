@@ -41,6 +41,7 @@ impl ProductionInstallDriver {
         _view: &InstallTaskView,
         data: &AppInstallTaskData,
     ) -> Result<PreparedDeployment, InstallError> {
+        self.materialize_candidate_pikg(data).await?;
         let plan = data.state.plan.clone().ok_or_else(|| {
             stage_error(
                 InstallStage::Prepare,

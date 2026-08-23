@@ -75,17 +75,11 @@ impl AppRunItem {
 #[async_trait]
 impl RunItemControl for AppRunItem {
     fn get_item_name(&self) -> Result<String> {
-        Ok(get_full_appid(
-            self.app_instance_config
-                .node_execution_spec
-                .app_instance_id
-                .app_id()
-                .as_str(),
-            self.app_instance_config
-                .node_execution_spec
-                .app_instance_id
-                .owner_user_id(),
-        ))
+        Ok(self
+            .app_instance_config
+            .node_execution_spec
+            .app_instance_id
+            .runtime_key())
     }
 
     fn get_item_kind(&self) -> &'static str {

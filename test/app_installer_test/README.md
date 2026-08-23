@@ -1,14 +1,16 @@
-> **本机 DV 运行结论（2026-08-22, macOS ood1）**：
+> **本机 DV 运行结论（2026-08-24, macOS ood1）**：
 > - static web 用例通过真实 NodeGateway 链路（PIKG build/pack/info → NDM put/finalize →
 >   `apps.inspect` → fingerprint-bound `apps.submit` → TaskManager → scheduler →
->   node-daemon 落盘 → `install_record(state=installed)`）。
-> - Agent runtime 与 Docker app 都依赖可用的 Docker daemon；设置
->   `BUCKYOS_TEST_SKIP_DOCKER=1` 时两者会明确跳过。
+>   node-daemon 落盘 → `install_record(state=installed)`）；同一用例还验证同 AppDID
+>   的两个 owner 得到不同 AppInstanceId/hostname/AppIndex，以及 v1→v2 原位升级后
+>   AppInstanceId、AppName、hostname、AppIndex 和 registry allocation 保持不变。
+> - Agent runtime PIKG 以 `auto_start=false` 安装，验证它不会在缺少独立 AgentSpec binding 时
+>   把 AppDID 伪装成 AgentDID；Docker app case 依赖可用的 Docker daemon。
 > - 登录凭证：优先 zone owner key；否则从
 >   `/opt/buckyos/etc/node_identity.json` 解析当前设备，读取
 >   `/opt/buckyos/security/<device-host>/authentication.private.pem`。
-> - fixture 的 pkg 名由 `buckyos-tool pikg` 按 App DID 派生的
->   `$owner_$app-$subpackage` namespace 生成。未绑定 App DID 的名字会在 Inspect
+> - fixture 的 pkg 名由 `buckyos-tool pikg` 按 App DID 派生的 raw-hostname
+>   AppId namespace 生成（如 `all.web.<app_id>`）。不属于该 AppId namespace 的名字会在 Inspect
 >   阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
 
 > **PIKG 样例更新（2026-08-22）**：测试现场复制 `pikg_samples/` 中的标准工程，
@@ -70,6 +72,9 @@ BUCKYOS_TASK_MANAGER_URL=http://127.0.0.1:3380/kapi/task-manager
 BUCKYOS_NODE_GATEWAY_URL=http://127.0.0.1:3180
 BUCKYOS_TEST_OWNER_DID=did:bns:root
 BUCKYOS_TEST_DOCKER_BASE_IMAGE=busybox:1.36.1
+BUCKYOS_TEST_SKIP_STATIC=0
+BUCKYOS_TEST_SKIP_AGENT=0
+BUCKYOS_TEST_SKIP_DOCKER=0
 BUCKYOS_TEST_TOOL_PATH=/path/to/buckyos-tool/buckyos
 BUCKYOS_PIKG_OUTPUT_DIR=/tmp/buckyos-pikg-samples
 BUCKYOS_ROOT=/opt/buckyos
@@ -94,7 +99,8 @@ import { buckyos, RuntimeType, parseSessionTokenClaims } from 'buckyos/node'
 2. 调用 `buckyos-tool pikg build/pack/info` 现场构造并校验 `.pikg`
 3. 通过 NodeGateway 的 `/ndm/proxy/v1` 上传并 finalize，再调用
    `apps.inspect` 和 `apps.submit`
-4. 等待安装完成并验证 system_config / task-manager / runtime 中的结果
+4. 等待安装完成并验证 system_config / task-manager / runtime 中的结果；static web
+   还会继续执行第二 owner 安装和同 owner 升级
 
 如果你要恢复“安装后自动卸载”的完整生命周期测试，显式加上：
 
@@ -117,9 +123,10 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - 当前自签 token 的 `sub` 固定为测试用户，签名 key 来自 zone owner 或当前 device 的 `authentication.private.pem`。
 - PIKG 构造是完全离线的，不再依赖 `app.publish` 或 `repo-service`；安装测试仍需运行中的 BuckyOS DV 环境。
 - 测试里生成的 App/subpackage version 保持在 `0.1.x` 且 `x <= 65535`。
-- static web case 按 `/opt/buckyos/bin/<owner>_<app>-web` 是否落地来判断安装成功，不依赖 ready 状态。
-- agent case 会严格等待安装完成并验证 OpenDAN pid 文件；没有 Docker daemon 时跳过。
+- static web case 按 `/opt/buckyos/bin/all.web.<app_id>` friendly alias 是否落地来判断安装成功；实际运行内容仍由已 pin 的 Package Meta ObjectId 严格目录决定，不依赖 ready 状态。
+- 卸载断言以 `Spec.state=deleted`、运行证据消失和 registry allocation 保留为准；PackageEnv 的严格目录/friendly alias 可作为缓存继续存在。
+- agent runtime case 会验证安装记录与 inactive AppSpec 落地，且没有 Agent service instance；设置 `BUCKYOS_TEST_SKIP_AGENT=1` 时跳过。
 - docker case 按容器是否已运行来判断安装成功。
 - docker case 会先在本地 `docker build`，再由 `buckyos-tool pikg build` 固定镜像 ID 并导出 payload。
-- 如果当前机器没有可用的 Docker daemon，agent 和 docker case 都会被跳过；static web case 仍会执行。
+- 如果当前机器没有可用的 Docker daemon，只有 docker case 会被跳过；三个 case 也可分别用独立的 skip 开关跳过。
 - 当前默认不会自动卸载已安装 app，也不会清理对应 docker image，方便安装后观察实际落地状态。

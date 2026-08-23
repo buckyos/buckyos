@@ -213,7 +213,7 @@ async fn do_boot_scheduler() -> Result<()> {
     let bootstrap_executor = SchedulerServer::new(system_config_client.clone());
     bootstrap_executor.recover_install_plan_executions().await?;
     info!("start boot schedule...");
-    let boot_result = schedule_loop(true).await;
+    let boot_result = schedule_loop(true, true).await;
     if boot_result.is_err() {
         error!(
             "boot schedule_loop failed: {:?}",
@@ -280,6 +280,9 @@ async fn service_main(is_boot: bool) -> Result<i32> {
             error!("buckyos-api-runtime::login failed: {:?}", e);
             e
         })?;
+        runtime
+            .set_main_service_port(SCHEDULER_SERVICE_MAIN_PORT)
+            .await;
         set_buckyos_api_runtime(runtime).map_err(|err| {
             error!("register global runtime failed: {}", err);
             anyhow::anyhow!("register global runtime failed: {}", err)
@@ -297,7 +300,7 @@ async fn service_main(is_boot: bool) -> Result<i32> {
         runner.add_http_server("/kapi/scheduler".to_string(), Arc::new(scheduler_server));
         info!("Start scheduler loop task...");
         tokio::spawn(async move {
-            if let Err(err) = schedule_loop(false).await {
+            if let Err(err) = schedule_loop(false, false).await {
                 error!("schedule_loop failed: {:?}", err);
             }
         });

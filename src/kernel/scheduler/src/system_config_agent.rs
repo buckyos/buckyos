@@ -15,9 +15,10 @@ use crate::system_config_builder::{
 };
 use crate::zone_route_builder::{build_forward_plan, DidIpHint, NodeGatewayRouteCandidate};
 use buckyos_api::{
-    get_buckyos_api_runtime, AppId, AppInstanceId, AppRegistry, AppServiceSpec, KernelServiceSpec,
-    NodeConfig, SchedulerRefreshRbacResponse, ServiceInstanceReportInfo, ServiceState,
-    SystemConfigClient, UserSettings, UserState, UserType as ApiUserType, ZoneConfig,
+    app_availability_policy_key, get_buckyos_api_runtime, AppAvailabilityGroupRule,
+    AppAvailabilityPolicy, AppId, AppInstanceId, AppRegistry, AppServiceSpec, AvailabilityEffect,
+    KernelServiceSpec, NodeConfig, SchedulerRefreshRbacResponse, ServiceInstanceReportInfo,
+    ServiceState, SystemConfigClient, UserSettings, UserState, UserType as ApiUserType, ZoneConfig,
     ZoneGatewaySettings, APP_REGISTRY_KEY, CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_kit::*;
@@ -174,10 +175,10 @@ pub fn create_scheduler_by_system_config(
                     {
                         return Err(anyhow::anyhow!("invalid user app spec at {key}"));
                     }
-                    let full_appid = app_config.app_instance_id();
+                    let app_instance_id = app_config.app_instance_id();
                     if app_config.app_doc.selector_type != SelectorType::Static {
                         let service_spec = create_service_spec_by_app_config(
-                            &full_appid.to_string(),
+                            &app_instance_id.to_string(),
                             user_id,
                             &app_config,
                         );
@@ -672,7 +673,7 @@ pub fn get_web_app_list(
                 if app_config.owner_user_id != user_id || app_config.app_id().as_str() != app_id {
                     return Err(anyhow::anyhow!("invalid user app spec at {key}"));
                 }
-                let full_appid = app_config.app_instance_id();
+                let app_instance_id = app_config.app_instance_id();
                 let is_web_app = app_config.app_doc.selector_type == SelectorType::Static;
                 let is_gateway_visible = app_config.enable
                     && !matches!(
@@ -680,7 +681,7 @@ pub fn get_web_app_list(
                         ServiceState::Deleted | ServiceState::Stopped | ServiceState::Stopping
                     );
                 if is_web_app && is_gateway_visible {
-                    info!("found web app: {}", full_appid);
+                    info!("found web app: {}", app_instance_id);
                     web_app_list.push(app_config);
                 }
             }
@@ -894,6 +895,7 @@ fn build_app_host_entry(
     app_spec: &AppServiceSpec,
     service_info: &ServiceInfo,
     service_name: &str,
+    guest_allowed: bool,
 ) -> Option<NodeGatewayAppInfoEntry> {
     let pick_instance = match service_info {
         ServiceInfo::SingleInstance(instance) => Some(instance),
@@ -905,13 +907,7 @@ fn build_app_host_entry(
     }?;
 
     let port = select_gateway_port(&pick_instance.service_ports, service_name)?;
-    let access_mode = if app_spec
-        .spec_config
-        .expose_config
-        .get(service_name)
-        .map(|config| config.allow_guest)
-        .unwrap_or(false)
-    {
+    let access_mode = if guest_allowed {
         NodeGatewayAccessMode::Public
     } else {
         NodeGatewayAccessMode::Private
@@ -945,6 +941,7 @@ fn build_app_host_entry_from_persisted_service_info(
     app_spec: &AppServiceSpec,
     service_info: &buckyos_api::ServiceInfo,
     service_name: &str,
+    guest_allowed: bool,
 ) -> Option<NodeGatewayAppInfoEntry> {
     let (node_id, node_info) = service_info
         .node_list
@@ -954,13 +951,7 @@ fn build_app_host_entry_from_persisted_service_info(
         .min_by(|left, right| left.0.cmp(right.0))?;
 
     let port = select_gateway_port(&node_info.service_port, service_name)?;
-    let access_mode = if app_spec
-        .spec_config
-        .expose_config
-        .get(service_name)
-        .map(|config| config.allow_guest)
-        .unwrap_or(false)
-    {
+    let access_mode = if guest_allowed {
         NodeGatewayAccessMode::Public
     } else {
         NodeGatewayAccessMode::Private
@@ -980,7 +971,10 @@ fn build_app_host_entry_from_persisted_service_info(
     })
 }
 
-fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGatewayAppInfoEntry> {
+fn build_static_web_app_host_entry(
+    app_spec: &AppServiceSpec,
+    guest_allowed: bool,
+) -> Option<NodeGatewayAppInfoEntry> {
     let web_pkg = app_spec.app_doc.pkg_list.web.as_ref()?;
     let dir_pkg_id = PackageId::get_pkg_id_unique_name(web_pkg.pkg_id.as_str());
     let dir_pkg_objid = web_pkg.pkg_objid.as_ref().map(|objid| objid.to_string());
@@ -991,12 +985,7 @@ fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGate
         app_owner_user_id: app_spec.owner_user_id.clone(),
         sdk_version: parse_sdk_version(app_spec),
         deployment: Some(app_spec.deployment.clone()),
-        access_mode: if app_spec
-            .spec_config
-            .expose_config
-            .values()
-            .any(|config| config.allow_guest)
-        {
+        access_mode: if guest_allowed {
             NodeGatewayAccessMode::Public
         } else {
             NodeGatewayAccessMode::Private
@@ -1007,6 +996,22 @@ fn build_static_web_app_host_entry(app_spec: &AppServiceSpec) -> Option<NodeGate
         dir_pkg_objid,
         block_services: vec![],
     })
+}
+
+fn app_guest_allowed(
+    app_instance_id: &AppInstanceId,
+    input_system_config: &HashMap<String, String>,
+) -> bool {
+    input_system_config
+        .get(&app_availability_policy_key(app_instance_id))
+        .and_then(|raw| serde_json::from_str::<AppAvailabilityPolicy>(raw).ok())
+        .filter(|policy| policy.app_instance_id == *app_instance_id)
+        .is_some_and(|policy| {
+            policy
+                .group_rules
+                .iter()
+                .any(|rule| rule.group_id == "guest" && rule.effect == AvailabilityEffect::Allow)
+        })
 }
 
 fn build_node_route_map(
@@ -1140,22 +1145,27 @@ pub(crate) async fn update_node_gateway_info(
                 if let Ok(app_spec) = get_app_spec_by_spec_id(spec_id.as_str(), input_system_config)
                 {
                     if let Some(expose_config) = app_spec.spec_config.expose_config.get("www") {
-                        let app_entry =
-                            build_app_host_entry(&app_spec, service_info, service_name.as_str())
-                                .or_else(|| {
-                                    if !is_non_sdk_container_app_service(&app_spec) {
-                                        return None;
-                                    }
-                                    let persisted_service_info = load_persisted_service_info(
-                                        spec_id.as_str(),
-                                        input_system_config,
-                                    )?;
-                                    build_app_host_entry_from_persisted_service_info(
-                                        &app_spec,
-                                        &persisted_service_info,
-                                        service_name.as_str(),
-                                    )
-                                });
+                        let guest_allowed =
+                            app_guest_allowed(app_spec.app_instance_id(), input_system_config);
+                        let app_entry = build_app_host_entry(
+                            &app_spec,
+                            service_info,
+                            service_name.as_str(),
+                            guest_allowed,
+                        )
+                        .or_else(|| {
+                            if !is_non_sdk_container_app_service(&app_spec) {
+                                return None;
+                            }
+                            let persisted_service_info =
+                                load_persisted_service_info(spec_id.as_str(), input_system_config)?;
+                            build_app_host_entry_from_persisted_service_info(
+                                &app_spec,
+                                &persisted_service_info,
+                                service_name.as_str(),
+                                guest_allowed,
+                            )
+                        });
 
                         if let Some(app_entry) = app_entry {
                             for host in
@@ -1197,7 +1207,8 @@ pub(crate) async fn update_node_gateway_info(
         let Some(expose_config) = web_app.spec_config.expose_config.get("www") else {
             continue;
         };
-        let Some(app_entry) = build_static_web_app_host_entry(&web_app) else {
+        let guest_allowed = app_guest_allowed(full_app_id, input_system_config);
+        let Some(app_entry) = build_static_web_app_host_entry(&web_app, guest_allowed) else {
             continue;
         };
 
@@ -1232,7 +1243,10 @@ pub(crate) async fn update_node_gateway_info(
             continue;
         };
         let target_spec = get_app_spec_by_spec_id(&target_id, input_system_config)?;
-        if let Some(entry) = build_app_host_entry(&target_spec, service_info, service_name) {
+        let guest_allowed = app_guest_allowed(target_spec.app_instance_id(), input_system_config);
+        if let Some(entry) =
+            build_app_host_entry(&target_spec, service_info, service_name, guest_allowed)
+        {
             node_gateway_info.app_info.insert(
                 agent_spec.agent_id.to_string(),
                 NodeGatewayAppEntry::App(entry),
@@ -1628,6 +1642,27 @@ mod beta22_state_tests {
         )]);
         assert!(validate_beta22_app_state(&input).is_err());
     }
+
+    #[test]
+    fn guest_gateway_access_comes_only_from_matching_availability_policy() {
+        let app_instance_id =
+            AppInstanceId::new(AppId::parse("notes.example").unwrap(), "alice").unwrap();
+        let mut policy = AppAvailabilityPolicy::owner_default(app_instance_id.clone());
+        policy.group_rules.push(AppAvailabilityGroupRule {
+            group_id: "guest".to_string(),
+            effect: AvailabilityEffect::Allow,
+        });
+        let policy_key = app_availability_policy_key(&app_instance_id);
+        let input = HashMap::from([(policy_key.clone(), serde_json::to_string(&policy).unwrap())]);
+        assert!(app_guest_allowed(&app_instance_id, &input));
+
+        let other_instance =
+            AppInstanceId::new(AppId::parse("notes.example").unwrap(), "bob").unwrap();
+        assert!(!app_guest_allowed(&other_instance, &input));
+
+        let invalid = HashMap::from([(policy_key, "not-json".to_string())]);
+        assert!(!app_guest_allowed(&app_instance_id, &invalid));
+    }
 }
 
 fn update_managed_sn_ai_provider(
@@ -1808,7 +1843,7 @@ pub(crate) async fn build_schedule_plan(
     })
 }
 
-pub async fn schedule_loop(is_boot: bool) -> Result<()> {
+pub async fn schedule_loop(is_boot: bool, run_once: bool) -> Result<()> {
     let mut loop_step = 0;
     let is_running = true;
 
@@ -1903,7 +1938,7 @@ pub async fn schedule_loop(is_boot: bool) -> Result<()> {
                 loop_step
             );
         }
-        if is_boot {
+        if run_once {
             break;
         }
     }

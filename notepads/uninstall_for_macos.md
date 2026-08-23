@@ -13,7 +13,7 @@
 ```bash
 sudo launchctl bootout system /Library/LaunchDaemons/buckyos.service.plist 2>/dev/null || true
 sudo pkill -f '/opt/buckyos/bin/node-daemon/node_daemon' 2>/dev/null || true
-containers=$(docker ps -aq --filter "label=buckyos.full_appid" 2>/dev/null || true)
+containers=$(docker ps -aq --filter "label=buckyos.app_instance_id" 2>/dev/null || true)
 if [ -n "$containers" ]; then
   docker stop $containers
 fi

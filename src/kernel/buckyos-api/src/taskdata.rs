@@ -1380,6 +1380,8 @@ pub struct AppUpdateTaskRequest {
     pub owner_user_id: String,
     pub idempotency_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_plan: Option<crate::app_install::InstallPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_plan_fingerprint: Option<String>,
     #[serde(default)]
     pub policy: crate::app_install::InstallPolicy,
@@ -1418,6 +1420,8 @@ pub struct AppUpdateBatchRequestItem {
     pub app_id: crate::AppId,
     pub source: crate::app_install::InstallSource,
     pub availability: crate::app_install::AppUpdateAvailability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_plan: Option<crate::app_install::InstallPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_plan_fingerprint: Option<String>,
 }

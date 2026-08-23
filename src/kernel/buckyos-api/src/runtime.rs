@@ -41,9 +41,9 @@ use crate::task_mgr::*;
 use crate::verify_hub_client::*;
 use crate::workflow_service::{WorkflowServiceClient, WORKFLOW_SERVICE_NAME};
 use crate::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, load_local_device_config,
-    load_local_device_private_key, load_local_node_identity_config, RbacConfig,
-    OPENDAN_SERVICE_NAME,
+    get_buckyos_api_runtime, get_service_session_token_env_key, load_local_device_config,
+    load_local_device_private_key, load_local_node_identity_config, token_app_instance_id, AppId,
+    AppInstanceId, RbacConfig, BUCKYOS_APP_TOKEN_ENV, OPENDAN_SERVICE_NAME,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -332,25 +332,13 @@ impl BuckyOSRuntime {
         let mut session_token_keys = Vec::new();
         match self.runtime_type {
             BuckyOSRuntimeType::KernelService => {
-                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
+                session_token_keys.push(get_service_session_token_env_key(self.app_id.as_str()));
             }
             BuckyOSRuntimeType::FrameService => {
-                if let Some(owner_id) = self.app_owner_id.as_deref() {
-                    session_token_keys.push(get_session_token_env_key(
-                        &get_full_appid(self.app_id.as_str(), owner_id),
-                        true,
-                    ));
-                }
-                session_token_keys.push(get_session_token_env_key(&self.get_full_appid(), false));
+                session_token_keys.push(get_service_session_token_env_key(self.app_id.as_str()));
             }
             BuckyOSRuntimeType::AppService => {
-                if let Some(owner_id) = self.app_owner_id.as_deref() {
-                    session_token_keys.push(get_session_token_env_key(
-                        &get_full_appid(self.app_id.as_str(), owner_id),
-                        true,
-                    ));
-                }
-                session_token_keys.push(get_session_token_env_key(self.app_id.as_str(), true));
+                session_token_keys.push(BUCKYOS_APP_TOKEN_ENV.to_string());
             }
             BuckyOSRuntimeType::AppClient => match env::var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV) {
                 Ok(session_token) => {
@@ -1331,6 +1319,15 @@ impl BuckyOSRuntime {
                         "Session token is not valid".to_string(),
                     ));
                 }
+                if self.runtime_type == BuckyOSRuntimeType::AppService {
+                    let expected = self.get_app_instance_id()?;
+                    let actual = token_app_instance_id(&authenticated_session_token)?;
+                    if actual != expected {
+                        return Err(RPCErrors::InvalidToken(format!(
+                            "session token AppInstanceId {actual} does not match {expected}"
+                        )));
+                    }
+                }
                 authenticated_session_token
             }
         };
@@ -1706,15 +1703,12 @@ impl BuckyOSRuntime {
         self.zone_config.as_ref()
     }
 
-    //use https://full_appid.zonehost/ to access the app
-    pub fn get_full_appid(&self) -> String {
-        if self.runtime_type == BuckyOSRuntimeType::AppClient {
-            let root_id = "root".to_string();
-            let owner_id = self.app_owner_id.as_ref().unwrap_or(&root_id);
-            return get_full_appid(self.app_id.as_str(), owner_id);
-        } else {
-            return self.app_id.clone();
-        }
+    pub fn get_app_instance_id(&self) -> Result<AppInstanceId> {
+        let app_id = AppId::parse(self.app_id.as_str()).map_err(RPCErrors::ReasonError)?;
+        let owner_user_id = self.app_owner_id.clone().ok_or_else(|| {
+            RPCErrors::ReasonError("owner_user_id is required for AppInstanceId".to_string())
+        })?;
+        AppInstanceId::new(app_id, owner_user_id).map_err(RPCErrors::ReasonError)
     }
 
     pub async fn get_session_token(&self) -> String {

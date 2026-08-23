@@ -9,7 +9,7 @@
  *      execute the cases on the server side ("Run tests on backend service").
  *
  * Phase 1 (initBuckyOS as AppService) is done up front. If the required
- * environment (`app_instance_config` + the `<OWNER>_<APP>_TOKEN`) is missing
+ * environment (`app_instance_config` + fixed `BUCKYOS_APP_*` variables) is missing
  * — for example when this binary is run standalone for development — the
  * static server still works and the selftest endpoints respond with a clear
  * "AppService not initialized" error so the frontend can render it.
@@ -112,31 +112,29 @@ async function resolveStaticRoot(): Promise<string> {
 function parseAppInstanceIdentity(
   appInstanceConfig: string,
 ): AppInstanceIdentity {
+  const appId = getEnv("BUCKYOS_APP_ID") ?? "";
+  const ownerUserId = getEnv("BUCKYOS_OWNER_USER_ID") ?? "";
+  const appInstanceId = getEnv("BUCKYOS_APP_INSTANCE_ID") ?? "";
+  if (!appId || !ownerUserId || appInstanceId !== `${appId}@${ownerUserId}`) {
+    throw new Error(
+      "fixed BuckyOS app identity environment is missing or inconsistent",
+    );
+  }
   const parsed = JSON.parse(appInstanceConfig) as {
     node_execution_spec?: {
       app_instance_id?: unknown;
     };
   };
-  const appInstanceId = typeof parsed.node_execution_spec?.app_instance_id === "string"
-    ? parsed.node_execution_spec.app_instance_id.trim()
-    : "";
-  const separator = appInstanceId.lastIndexOf("@");
-  const appId = separator > 0 ? appInstanceId.slice(0, separator) : "";
-  const ownerUserId = separator > 0 ? appInstanceId.slice(separator + 1) : "";
-  if (!appId || !ownerUserId || appId.includes("@") || ownerUserId.includes("@")) {
+  const configuredInstanceId =
+    typeof parsed.node_execution_spec?.app_instance_id === "string"
+      ? parsed.node_execution_spec.app_instance_id.trim()
+      : "";
+  if (configuredInstanceId !== appInstanceId) {
     throw new Error(
-      "app_instance_config is missing canonical node_execution_spec.app_instance_id",
+      "app_instance_config AppInstanceId does not match the fixed environment",
     );
   }
   return { appId, ownerUserId };
-}
-
-function getRustStyleAppServiceTokenEnvKey(
-  identity: AppInstanceIdentity,
-): string {
-  return `${identity.ownerUserId}-${identity.appId}`
-    .toUpperCase()
-    .replaceAll("-", "_") + "_TOKEN";
 }
 
 async function resolveWebSdkRoot(): Promise<string> {
@@ -185,11 +183,10 @@ async function bootstrapSdk(): Promise<BootstrapState> {
     };
   }
 
-  const expectedTokenKey = getRustStyleAppServiceTokenEnvKey(identity);
-  if (!getEnv(expectedTokenKey)) {
+  if (!getEnv("BUCKYOS_APP_TOKEN")) {
     return {
       kind: "missing-env",
-      reason: `missing ${expectedTokenKey}; service_debug.tsx should inject it`,
+      reason: "missing BUCKYOS_APP_TOKEN; service_debug.tsx should inject it",
     };
   }
 
@@ -452,30 +449,40 @@ function buildGroupRunners(
           const name = `test-websdk-${Date.now()}`;
           const created = await client.createTask({
             name,
-            taskType: "test",
-            data: { createdBy: "sys-test-backend" },
-            userId: identity.ownerUserId,
-            appId: identity.appId,
+            schema_id: "raw/v1",
+            input: { createdBy: "sys-test-backend" },
+            executor: { kind: "SelfApp" },
+            idempotency_key: `sys-test-${crypto.randomUUID()}`,
           });
+          const taskId = created.task_id;
           try {
-            await client.updateTaskProgress(created.id, 1, 2);
-            await client.completeTask(created.id);
-            const fetched = await client.getTask(created.id);
-            if (fetched.status !== "Completed") {
+            await client.runnerStart(taskId);
+            await client.runnerProgress(taskId, { completed: 1, total: 2 });
+            await client.runnerComplete(taskId, { ok: true });
+            const fetched = await client.getTask(taskId);
+            if (
+              fetched.phase !== "Terminal" || fetched.outcome !== "Succeeded"
+            ) {
               throw new Error(
-                `expected task ${created.id} to be Completed, got ${fetched.status}`,
+                `expected task ${taskId} to succeed, got ${fetched.phase}/${fetched.outcome}`,
               );
             }
-            const filtered = await client.listTasks({
-              filter: { root_id: String(created.id) },
-            });
-            if (!filtered.some((task) => task.id === created.id)) {
-              throw new Error(`task ${created.id} missing from filtered list`);
+            const page = await client.listTasks({ root_id: created.root_id });
+            if (!page.tasks.some((task) => task.task_id === taskId)) {
+              throw new Error(`task ${taskId} missing from filtered list`);
             }
-            return { taskId: created.id };
+            return { taskId };
           } finally {
             try {
-              await client.deleteTask(created.id);
+              const latest = await client.getTask(taskId);
+              if (
+                latest.phase === "Terminal" && latest.archived_at === undefined
+              ) {
+                await client.archiveTask({
+                  task_id: taskId,
+                  expected_revision: latest.revision,
+                });
+              }
             } catch {
               // best-effort cleanup, ignore
             }
@@ -763,7 +770,7 @@ function appServiceUnavailableResponse(): Response {
       ok: false,
       error: `AppService not initialized: ${reason}`,
       hint:
-        "start sys_test through buckyos node-daemon, or via tests/scripts/debug_systest.sh-style harness, so that app_instance_config and the <OWNER>_<APP>_TOKEN env are present",
+        "start sys_test through buckyos node-daemon, or via tests/scripts/debug_systest.sh-style harness, so that app_instance_config and fixed BUCKYOS_APP_* variables are present",
     },
     503,
   );
@@ -918,7 +925,7 @@ Deno.serve({
           ownerUserId: identity.ownerUserId,
           zoneHost: sdk.buckyos.getZoneHostName(),
           hostGateway: getEnv("BUCKYOS_HOST_GATEWAY"),
-          expectedTokenEnvKey: getRustStyleAppServiceTokenEnvKey(identity),
+          expectedTokenEnvKey: "BUCKYOS_APP_TOKEN",
           serviceUrls: {
             verifyHub: sdk.buckyos.getZoneServiceURL("verify-hub"),
             taskManager: sdk.buckyos.getZoneServiceURL("task-manager"),

@@ -14,8 +14,8 @@
 
 ```rust
 let mut runtime = init_buckyos_api_runtime(
-    "my-app",
-    Some("alice".to_string()),
+    "",
+    None,
     BuckyOSRuntimeType::AppService,
 ).await?;
 
@@ -83,12 +83,12 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 | RuntimeType | 典型进程 | 登录材料来源 | 使用者要注意 |
 | --- | --- | --- | --- |
 | `AppClient` | buckycli、桌面外部客户端、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | 客户端通常没有本机 node-gateway，必须能找到 zone host/boot config |
-| `AppService` | 用户安装的 app service | `app_instance_config` 解析 app/owner；node-daemon 注入 `<FULL_APPID>_TOKEN` 或 `<APPID>_TOKEN` | 必须有 owner_user_id；不要用 app-service 自己的 token 冒充页面用户 |
-| `FrameService` | frame 系统服务 | 设备配置、service env token；可从 `app_instance_config` 补 app/owner | `login()` 后会加载 RBAC 和 trust keys |
+| `AppService` | 用户安装的 app service | `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR/APP_TOKEN` | 固定身份变量必须完整且互相一致；不要用 app-service 自己的 token 冒充页面用户 |
+| `FrameService` | frame 系统服务 | 设备配置和 `<SERVICE>_SESSION_TOKEN` | `login()` 后会加载 RBAC 和 trust keys |
 | `KernelService` | scheduler、task-manager 等 kernel service | `<APP>_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE` 等启动环境 | 使用所在 DeviceId 作为主体；通常由 node-daemon/boot 流程准备；不会自动读设备私钥 |
 | `Kernel` | node-daemon、cyfs-gateway 等基础进程 | 本地设备配置和特殊启动逻辑 | 属于基础系统自举路径；只有明确需要设备签名时才显式加载设备私钥 |
 
-环境变量名由 `get_session_token_env_key()` 生成：非 app service 使用 `*_SESSION_TOKEN`，app service 使用 `*_TOKEN`。`-` 会转为 `_` 并转成大写。
+只有 Kernel/Frame 系统服务使用由 `get_service_session_token_env_key()` 生成的 `<SERVICE>_SESSION_TOKEN`。普通 AppService 固定读取 `BUCKYOS_APP_TOKEN`，不再从 AppId、Owner 或 RuntimeKey 动态拼接变量名。
 
 ## AppService 的典型启动流程
 
@@ -101,7 +101,7 @@ sequenceDiagram
   participant Svc as system service
 
   ND->>ND: 用 device private key 为 OwnerUserId或DeviceId + AppId 生成登录 JWT
-  ND->>App: 注入 app_instance_config 和 *_TOKEN
+  ND->>App: 注入固定 BUCKYOS_APP_* 身份变量和 app_instance_config
   App->>App: init_buckyos_api_runtime()
   App->>CP: runtime.login() 拉取 zone_config
   App->>App: set_buckyos_api_runtime() 启动 keep-alive
@@ -111,7 +111,7 @@ sequenceDiagram
   App->>VH: session 接近过期时 refresh_token()
 ```
 
-这里最容易误解的是 `*_TOKEN`：node-daemon 注入的初始 token 只是登录 JWT，不应被长期保存，也不代表最终 verify-hub 会话。SDK 会在后台尽快兑换并轮换。
+这里最容易误解的是 `BUCKYOS_APP_TOKEN`：node-daemon 注入的初始 token 只是登录 JWT，不应被长期保存，也不代表最终 verify-hub 会话。它同时携带 `app_instance_id` 和 `app_owner_user_id`；SDK 会先精确校验当前 AppInstanceId，再在后台尽快兑换并轮换。
 
 ## AppClient 的典型登录流程
 
@@ -198,8 +198,8 @@ system-config 的 trust keys 来自 `boot/config` 里的 owner/root key、verify
 
 runtime 没有从环境变量读到 token，也没有足够的本地私钥材料生成登录 JWT。常见原因：
 
-- AppService 缺少 `app_instance_config` 或 owner_user_id。
-- node-daemon 没有注入正确的 `*_TOKEN` 环境变量。
+- AppService 的固定 `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID` 不完整或不一致。
+- node-daemon 没有注入 `BUCKYOS_APP_TOKEN`，或 token 绑定了另一个 AppInstanceId。
 - AppClient 没有 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，也找不到 user private key。
 - Kernel/Frame service 缺少 `BUCKYOS_THIS_DEVICE` 或启动环境注入的 `*_SESSION_TOKEN`。
 - 组件确实需要用设备私钥重新生成登录 JWT，但没有在初始化阶段显式调用 `load_device_private_key()`。

@@ -186,7 +186,7 @@ devices/<short_name>/info  -> DeviceInfo JSON
 ```text
 agents/buckyos_jarvis/doc -> AgentDocument
 agents/buckyos_jarvis/key -> Agent private key
-users/<admin>/agents/buckyos_jarvis/spec -> AppServiceSpec
+users/<admin>/agents/<jarvis-agent-id>/spec -> AgentSpec(AgentServiceBinding -> runtime AppInstanceId)
 ```
 
 `system_config_builder` 会按 Zone DID method 生成 Jarvis DID：
@@ -804,6 +804,5 @@ did:bns:bob在 OwnerConfig中配置 face url (cyfs:///$objid) 和 binded zone: d
 
 通过 https://bob.zhicong.me/.well-known/doc.json 也能得到一个非上链的profile(UserInfo),可以定义更多的实时信息
 如果通过 http://bob.zhicong.me/.well-known/doc.json 访问，这个就必须是一个JWT（有必要的签名），密钥用的是 key@zone
-
 
 

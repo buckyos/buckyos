@@ -90,9 +90,9 @@ global_runtime = get_buckyos_api_runtime()?
 
 `init()` 到 `login()` 之间允许存在 `app_id/user_id` 等“声明身份”，但它们还不是已经认证的身份。
 
-token 环境变量名规则：`get_session_token_env_key()`（`src/kernel/buckyos-api/src/lib.rs`）：
-- 先把 full_app_id upper-case 并把 `-` 替换为 `_`。
-- service 默认读 `<APP>_SESSION_TOKEN`，AppService 读 `<APP>_TOKEN`。
+token 环境变量规则（`src/kernel/buckyos-api/src/lib.rs`）：
+- Kernel/Frame 系统服务通过 `get_service_session_token_env_key()` 读取 `<SERVICE>_SESSION_TOKEN`。
+- 普通 AppService 固定读取 `BUCKYOS_APP_TOKEN`，并用 `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID` 校验当前语义身份。
 
 ## login：检查 token + 拉取 zone_config + 启动 keep-alive
 
@@ -102,7 +102,7 @@ token 环境变量名规则：`get_session_token_env_key()`（`src/kernel/buckyo
 - 如果 token 为空：
   - AppClient 优先尝试用 `user_private_key` 生成 token；否则尝试用 `device_private_key` 生成 token。
   - 仍为空则失败：`session_token is empty!`。
-- 如果 token 不为空：解析 token 并检查 token 中 appid 与 `self.app_id` 一致，否则失败。
+- 如果 token 不为空：解析 token；普通 AppService 同时精确比较 `appid`、`app_instance_id` 和 `app_owner_user_id`，任一不一致即失败。
 
 2) 连接 control-panel 并读取 `zone_config`
 - 代码路径：`get_control_panel_client()` → `load_zone_config()`（`src/kernel/buckyos-api/src/runtime.rs`）。
@@ -214,7 +214,7 @@ process_main():
 ### 3) 环境变量 token 缺失会导致服务启动直接失败
 
 - 对 KernelService / FrameService / AppService，`fill_by_env_var()` 会按规则寻找 token env；缺失会直接返回 error（`load session_token from env var failed`）。
-- 这通常发生在：node-daemon 拉起服务但没有把 token 注入到环境里，或者 env key 名称没按 `get_session_token_env_key()` 规则生成。
+- 这通常发生在：node-daemon 拉起普通 AppService 时没有注入 `BUCKYOS_APP_TOKEN`，或拉起系统服务时没有按 `get_service_session_token_env_key()` 注入 `<SERVICE>_SESSION_TOKEN`。
 
 ### 4) trust_keys 不刷新会导致 enforce 误判
 

@@ -112,7 +112,7 @@ pub struct ServiceEndpointInfo {
     pub inner_port: u16,
     #[serde(default)]
     pub required: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub description: HashMap<String, String>, //key: language_id, value: description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<ServiceExposeTips>,
@@ -1334,6 +1334,7 @@ mod tests {
         };
 
         let value = serde_json::to_value(&endpoint).unwrap();
+        assert!(value.get("description").is_none());
         let decoded: ServiceEndpointInfo = serde_json::from_value(value).unwrap();
         assert!(decoded.required);
         assert!(decoded.expose.is_none());

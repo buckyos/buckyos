@@ -130,7 +130,12 @@ buckyos是一个典型的多进程系统，因此为了简化配置，减少配�
 
 ### 所有的环境配置 (变量名，环境变量名，所在配置文件)
 
-- full_app_id (owner_user_id + app_id)
+- app_did, `BUCKYOS_APP_DID`, node-daemon 固定注入
+- app_id, `BUCKYOS_APP_ID`, AppDID raw hostname
+- app_instance_id, `BUCKYOS_APP_INSTANCE_ID`, `{app_id}@{owner_user_id}`
+- owner_user_id, `BUCKYOS_OWNER_USER_ID`, AppInstance Owner
+- app data dir, `BUCKYOS_DATA_DIR`, 已解析的私有数据目录
+- app token, `BUCKYOS_APP_TOKEN`, 精确绑定 AppInstanceId
 
 - zone_did,NULL,node_identiy.json
 - NULL,BUCKYOS_ZONE_DOC,node-daemon boot env
@@ -144,11 +149,7 @@ buckyos是一个典型的多进程系统，因此为了简化配置，减少配�
 
 
 
-下面两个是login后有的
-full_appid = f"{appid}-{username}"
-app_token = os.getenv(f"{full_appid}_token")
-- NULL,$fullid_token,NULL
-- NULL,BUCKYOS_ZONE_CONFIG, 登陆成功后获得 (./did_hostname.zone.josn ) 不需要？
+登录后 runtime 还会获得 `BUCKYOS_ZONE_CONFIG` 对应的 ZoneConfig，并把启动 token 兑换成 verify-hub session/refresh token。SDK 不从 `app_instance_config` 或动态变量名推断自身身份。
 
 
 下面的是一些全局环境

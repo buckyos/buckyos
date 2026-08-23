@@ -60,21 +60,20 @@ Control Panel Service 是 Zone 内的**核心资源管理服务**，其本质是
 
 ### 2.3 App（应用）
 
-* 核心结构 `AppServiceSpec`（`app_doc` + `user_id` + `app_index` + `permission` + `enable` + `expected_instance_count` + `state` + `spec_config`）。`permission` 保存安装时最终批准的权限项。
-* `AppDoc` 描述应用本体：`name`(app_id) / `version` / `author` / `owner` / `show_name` / `presentation` / `pkg_list`（子包：web / agent / agent_skills / agent_tools / docker image）/ `service_config_tips` / `tags` / `categories` 等。
+* 核心结构 `AppServiceSpec` 以 `app_instance_id/app_did/owner_user_id` 绑定身份，保存独立 `AppDoc` snapshot、DeploymentIdentity、批准权限、运行状态与 service config；`app_name/app_host_name/app_index` 是 scheduler 从 AppRegistry 投影的只读字段。
+* `AppDoc` 是独立 schema：`did` 是身份，`version` 是 App 语义版本，`presentation/show_name` 只用于展示；`pkg_list`、selector/runtime/SDK requirements、permissions 和 service config tips 不继承 PackageMeta。
 * 生命周期 `ServiceState`：`New → Running / Stopped / Stopping / Restarting / Updating / Deleted`。
 * `system_config` 路径：
 
   | 路径 | 内容 |
   |---|---|
   | `users/{user_id}/apps/{app_id}/spec` | 用户安装的普通 App spec |
-  | `users/{user_id}/agents/{app_id}/spec` | 用户安装的 Agent 型 App spec |
-  | `system/apps/{app_id}/spec` | 系统内置 App（`messagehub` / `homestation` / `content-store` 等，作者 `did:bns:buckyos`） |
-  | `services/{app_id}@{user_id}/instances/{node_id}` | 实例运行状态上报（节点守护进程写） |
+  | `users/{user_id}/agents/{agent_id}/spec` | `AgentSpec` identity + `AgentServiceBinding` |
+  | `services/{app_instance_id}/instances/{node_id}` | 实例运行状态上报（节点守护进程写） |
 
 ### 2.4 Agent（智能体）
 
-Agent 在系统中有**两副面孔**，需要区分：
+Agent identity 与承载它的 runtime App 是两个独立对象：
 
 1. **作为身份/账号**（由 `user_mgr` 管理）：与用户对称，有自己的 DID、profile、消息通道绑定。路径：
 
@@ -84,7 +83,7 @@ Agent 在系统中有**两副面孔**，需要区分：
    | `agents/{agent_id}/settings` | Agent 配置（`owner_user_id` / display_name / state / profile / bindings） |
    | `agents/{agent_id}/key` | ED25519 私钥（PEM，创建时写一次） |
 
-2. **作为可部署服务**（由 App Installer 管理）：`AppDoc.get_app_type() == AppType::Agent`，安装/启停/升级与普通 App **走同一套流程**，spec 存于 `users/{user_id}/agents/{app_id}/spec`。`agent.list` 以 `agents/*` 身份目录为准，同时补充匹配 spec 的 `app_doc`、`state`、`user_id` 等服务维度字段用于展示。
+2. **作为 runtime binding**：`users/{owner}/agents/{agent_id}/spec` 保存 `AgentSpec`，其中 `AgentServiceBinding` 精确指向普通 `AppInstanceId + service_name`。多个 Agent 可以共享同一 runtime App；删除 binding 不等于停止 runtime。
 
 ---
 
@@ -166,11 +165,11 @@ Agent 在系统中有**两副面孔**，需要区分：
 | `apps.list` | `{user_id, total, apps[]}` | 当前用户的有效 App；每项包含 `app_id/app_did/app_instance_id/runtime_type/owner_user_id/availability_match/web_hosts` |
 | `apps.details` / `app.details` | typed details | 接受统一 selector（`selector/app_instance_id/app_did/identifier`），按可见 Owner 范围唯一选择；0 个返回 NotFound，多个返回 `AMBIGUOUS_APP_TARGET` 与脱敏候选 |
 | `apps.status` / `app.status` | `AppInstallationStatusSnapshot` | 聚合 install record、desired spec、active task、scheduled/runtime instance、目标/上次成功/回滚 deployment、typed deployment error 与 Static Web gateway generation evidence |
-| `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略、审计和 Gateway 输入 |
+| `apps.availability.get/set/check` | policy / decision | 个人 App 的用户组、精确用户、Guest 规则；`set` 仅允许 App Owner 的 Control Panel 用户 session，并以 revision/CAS 原子更新策略与审计；scheduler 单独把 policy 投影为 Gateway access mode，不回写 AppSpec |
 | `apps.staging.finalize/status/release` | `PikgStagingMetadata` | `finalize` 接受上传所得 `source_obj_id` 和 `purpose=inspect|install`，返回不可猜测 handle、digest、size、TTL；handle 绑定 principal、App、Zone 与租约，不包含路径或 digest |
 | `apps.inspect` | `InstallInspection` | 对 Catalog 或 staged PIKG 做无安装副作用的首次安装/升级预检；`action=upgrade` 时生成升级 inspection |
 | `apps.plan.recompute` | `InstallInspection` | 接受旧 plan、同一 source 以及新的 target/InstallParams，权威重算 plan 与 fingerprint；source/scope 变化返回 `PLAN_STALE` |
-| `apps.submit` / `apps.install` | `{action, task_id?, app_instance_id, plan_fingerprint?}` | 权威六格动作矩阵。首次安装必须提交 `FreshInstall` plan；升级禁止 plan；相同发布返回同步 `satisfied`。所有 mutation 必须提交 principal 稳定生成的 `idempotency_key` 与已展示 fingerprint |
+| `apps.submit` / `apps.install` | `{action, task_id?, app_instance_id, plan_fingerprint?}` | 权威动作矩阵。首次安装必须提交 `FreshInstall` plan，升级必须提交 `Upgrade` plan；相同发布返回同步 `satisfied`。提交时按 plan 内 canonical task ID 重新检查 source/scope/fingerprint，并以同一 ID 创建 TaskManager task。所有 mutation 必须提交 principal 稳定生成的 `idempotency_key` 与已展示 fingerprint |
 | `apps.install.status` | `AppInstallStatusSnapshot` | 按 `task_id` 返回 typed stage、inspection、approval、verification、error、actions 与 terminal result，不暴露 Task 内部 JSON |
 | `apps.install.confirm` | `{task_id}` | 只接受 `{task_id, plan_fingerprint}`；不得在 confirm 同时改 target/params |
 | `apps.install.retry` | `{task_id, retry_of}` | 接受旧 `task_id` 与新的 `idempotency_key`；Failed task 保持 Terminal，新建带 `retry_of`/parent 关系的 task |
@@ -255,9 +254,9 @@ identifier / staging handle
 
 ### 5.3 升级 / 卸载
 
-* **升级**：同一 Stage 流水线；以权威 Resolve 的 App Document Object ID / `document_version` 判定新版本，继承当前组件、权限、mount/settings/env/resource pool、实例数和停止期望。当前切换策略是 in-place/recreate，写新 spec 后存在停机窗口，不宣称 blue-green/rolling。Activate 失败先恢复冻结 previous spec，再等待 previous `DeploymentIdentity` 重新满足 readiness；结果区分 target failed + previous restored、rollback failed 与 partial target。
+* **升级**：同一 Stage 流水线；`AppUpdateTaskRequest` 冻结已批准的 `Upgrade` plan 与 fingerprint，并用 plan 的 canonical task ID 创建 TaskManager task。以权威 Resolve 的 App Document Object ID / `document_version` 判定新版本，继承当前组件、权限、mount/settings/env/resource pool、实例数和停止期望。当前切换策略是 in-place/recreate，写新 spec 后存在停机窗口，不宣称 blue-green/rolling。Activate 失败先恢复冻结 previous spec，再等待 previous `DeploymentIdentity` 重新满足 readiness；结果区分 target failed + previous restored、rollback failed 与 partial target。
 * **卸载/生命周期**：`app.start/v1` 与 `app.uninstall/v1` 都是 delegated durable task，共用启动扫描/sweep 与 mutation ownership。卸载先 stop 并等待 exact target evidence 消失，再删除 spec/record；`delete` 只删除 typed manifest 中的私有 data/cache，`retain` 不删除。进入 metadata deletion 边界后 cancel 被禁止。
-* **批量升级**：`apps.upgrade` 创建 `app.update_batch/v1` root，child 通过 parent/root 和稳定派生 idempotency key 关联；单项失败不影响其它 child，root 结果保存每项 terminal outcome，可在 Control Panel 重启后恢复。
+* **批量升级**：`apps.upgrade` 创建 `app.update_batch/v1` root；每个 `UpdateAvailable` item 同时冻结 Upgrade plan 与 fingerprint，child 使用该 plan 的 canonical task ID，并通过 parent/root 和稳定派生 idempotency key 关联。单项失败不影响其它 child，root 结果保存每项 terminal outcome，可在 Control Panel 重启后恢复。
 
 ### 5.4 记录与凭证
 

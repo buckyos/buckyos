@@ -16,4 +16,13 @@ cat > /www/index.html <<'EOF'
 </html>
 EOF
 
-exec busybox httpd -f -p 80 -h /www
+if busybox --list | grep -qx httpd; then
+  exec busybox httpd -f -p 80 -h /www
+fi
+
+while true; do
+  {
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n'
+    cat /www/index.html
+  } | busybox nc -l -p 80
+done

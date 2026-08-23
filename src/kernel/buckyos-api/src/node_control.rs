@@ -2477,7 +2477,7 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
         // 也支持 buckyos label
         if let Some(out) = run_capture(
             "docker",
-            &["ps", "-aq", "--filter", "label=buckyos.full_appid"],
+            &["ps", "-aq", "--filter", "label=buckyos.app_instance_id"],
         ) {
             for line in out.lines() {
                 let id = line.trim();

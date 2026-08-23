@@ -555,7 +555,7 @@ macOS/Linux 下由平台 hook 提供等价停止动作。停止脚本负责停�
 BuckyOS Docker 容器识别规则：
 
 ```text
-docker ps -aq --filter "label=buckyos.full_appid"
+docker ps -aq --filter "label=buckyos.app_instance_id"
 ```
 
 卸载前也 SHOULD 走同一停止逻辑。Windows 由固定卸载器执行；Linux 由 deb/rpm 卸载脚本按平台语义执行；macOS 因 pkg 不提供卸载入口，由 `uninstall_for_macos` 文档指导用户先停止 LaunchDaemon、进程和相关容器，再清理文件。该逻辑不通过自定义 `uninstall` hook 文件扩展。

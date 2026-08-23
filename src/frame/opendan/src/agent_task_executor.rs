@@ -34,10 +34,13 @@ impl AIAgent {
                     "task executor runner_id is unset and BuckyOS runtime is unavailable: {err}"
                 )
             })?;
-            let runner = runtime.get_full_appid().trim().to_string();
+            let runner = runtime
+                .get_app_instance_id()
+                .map_err(|err| anyhow!("cannot resolve AppInstanceId: {err}"))?
+                .to_string();
             if runner.is_empty() {
                 Err(anyhow!(
-                    "task executor runner_id resolved to empty full_appid"
+                    "task executor runner_id resolved to empty AppInstanceId"
                 ))
             } else {
                 Ok(runner)

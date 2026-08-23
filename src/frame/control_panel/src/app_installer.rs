@@ -85,23 +85,42 @@ enum AppSubmitAction {
 }
 
 fn decide_app_submit_action(
-    has_plan: bool,
+    submitted_plan_use: Option<buckyos_api::InstallPlanUse>,
     installed_object_id: Option<&ObjId>,
     target_object_id: &ObjId,
     installed_document_version: Option<u64>,
     target_document_version: Option<u64>,
 ) -> Result<AppSubmitAction, buckyos_api::InstallError> {
-    if has_plan {
-        return if installed_object_id.is_some() {
-            Err(buckyos_api::InstallError::new(
+    match submitted_plan_use {
+        Some(buckyos_api::InstallPlanUse::FreshInstall) => {
+            return if installed_object_id.is_some() {
+                Err(buckyos_api::InstallError::new(
+                    buckyos_api::InstallStage::Inspect,
+                    buckyos_api::InstallErrorCode::PlanNotApplicable,
+                    false,
+                    "FreshInstall plan cannot be consumed by an installed target",
+                ))
+            } else {
+                Ok(AppSubmitAction::FreshInstall)
+            };
+        }
+        Some(buckyos_api::InstallPlanUse::Upgrade) if installed_object_id.is_none() => {
+            return Err(buckyos_api::InstallError::new(
                 buckyos_api::InstallStage::Inspect,
                 buckyos_api::InstallErrorCode::PlanNotApplicable,
                 false,
-                "FreshInstall plan cannot be consumed by an installed target",
-            ))
-        } else {
-            Ok(AppSubmitAction::FreshInstall)
-        };
+                "Upgrade plan requires an installed target",
+            ));
+        }
+        Some(buckyos_api::InstallPlanUse::Satisfied) => {
+            return Err(buckyos_api::InstallError::new(
+                buckyos_api::InstallStage::Inspect,
+                buckyos_api::InstallErrorCode::PlanNotApplicable,
+                false,
+                "Satisfied inspection result cannot be submitted as a mutation plan",
+            ));
+        }
+        _ => {}
     }
     let Some(installed_object_id) = installed_object_id else {
         return Err(buckyos_api::InstallError::new(
@@ -554,6 +573,7 @@ impl AppInstaller {
         let task_mgr = self.task_mgr_client().await?;
         let task = task_mgr
             .create_delegated_task(buckyos_api::CreateDelegatedTaskReq {
+                task_id: None,
                 name,
                 schema_id: format!("{}/v1", task_type.replace('/', ".")),
                 schema_version: None,
@@ -2185,6 +2205,7 @@ impl ControlPanelServer {
         req: &RPCRequest,
         principal: &RpcAuthPrincipal,
         task_type: &str,
+        planning_task_id: Option<String>,
     ) -> Result<buckyos_api::InstallInspection, RPCErrors> {
         let source = Self::parse_install_source(req)?;
         let owner_user_id = Self::resolve_target_user_id(req, principal);
@@ -2205,6 +2226,7 @@ impl ControlPanelServer {
                     options: Some(options),
                 },
                 task_type,
+                planning_task_id,
             )
             .await
             .map_err(Self::install_error_to_rpc)
@@ -2222,7 +2244,9 @@ impl ControlPanelServer {
         } else {
             buckyos_api::TASK_DATA_TYPE_APP_INSTALL
         };
-        let inspection = self.inspect_from_rpc(&req, principal, task_type).await?;
+        let inspection = self
+            .inspect_from_rpc(&req, principal, task_type, None)
+            .await?;
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::to_value(inspection).map_err(|error| {
                 RPCErrors::ReasonError(format!("serialize inspection failed: {error}"))
@@ -2260,7 +2284,9 @@ impl ControlPanelServer {
         } else {
             buckyos_api::TASK_DATA_TYPE_APP_INSTALL
         };
-        let inspection = self.inspect_from_rpc(&req, principal, task_type).await?;
+        let inspection = self
+            .inspect_from_rpc(&req, principal, task_type, Some(previous.task_id.clone()))
+            .await?;
         if inspection.plan.app.did != previous.app.did
             || inspection.plan.app_instance_id != previous.app_instance_id
             || inspection.plan.source_identity != previous.source_identity
@@ -2325,6 +2351,7 @@ impl ControlPanelServer {
                     options: None,
                 },
                 buckyos_api::TASK_DATA_TYPE_APP_UPDATE,
+                None,
             )
             .await
             .map_err(Self::install_error_to_rpc)?;
@@ -2463,28 +2490,20 @@ impl ControlPanelServer {
         idempotency_key: &str,
     ) -> Result<Option<buckyos_api::Task>, RPCErrors> {
         let client = self.app_installer.task_mgr_client().await?;
-        let mut cursor = None;
-        loop {
-            let page = client
-                .list_tasks(buckyos_api::ListTasksReq {
-                    creator_user_id: Some(principal.username.clone()),
-                    creator_app_id: Some(principal.authenticated_app_id.clone()),
-                    schema_id: Some(APP_UPDATE_BATCH_TASK_SCHEMA_ID.to_string()),
-                    cursor: cursor.clone(),
-                    limit: Some(100),
-                    ..Default::default()
-                })
-                .await?;
-            for summary in page.tasks {
-                let task = client.get_task(&summary.task_id).await?;
-                if task.idempotency_key == idempotency_key {
-                    return Ok(Some(task));
-                }
-            }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                return Ok(None);
-            }
+        let page = client
+            .list_tasks(buckyos_api::ListTasksReq {
+                creator_user_id: Some(principal.username.clone()),
+                creator_app_id: Some(principal.authenticated_app_id.clone()),
+                idempotency_key: Some(idempotency_key.to_string()),
+                schema_id: Some(APP_UPDATE_BATCH_TASK_SCHEMA_ID.to_string()),
+                include_archived: true,
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await?;
+        match page.tasks.first() {
+            Some(summary) => Ok(Some(client.get_task(&summary.task_id).await?)),
+            None => Ok(None),
         }
     }
 
@@ -2539,14 +2558,17 @@ impl ControlPanelServer {
                 continue;
             }
             let source = buckyos_api::InstallSource::identifier(spec.app_did.to_string(), None);
-            let (availability, approved_plan_fingerprint) = match self
+            let (availability, submitted_plan, approved_plan_fingerprint) = match self
                 .update_availability_and_inspection_for_spec(&spec, principal)
                 .await
             {
                 Ok((availability, inspection)) => {
-                    let fingerprint = (availability.state == AppUpdateState::UpdateAvailable)
-                        .then_some(inspection.plan.plan_fingerprint);
-                    (availability, fingerprint)
+                    let submitted_plan = (availability.state == AppUpdateState::UpdateAvailable)
+                        .then_some(inspection.plan);
+                    let fingerprint = submitted_plan
+                        .as_ref()
+                        .map(|plan| plan.plan_fingerprint.clone());
+                    (availability, submitted_plan, fingerprint)
                 }
                 Err(_error) => (
                     AppUpdateAvailability {
@@ -2565,6 +2587,7 @@ impl ControlPanelServer {
                         checked_at: buckyos_get_unix_timestamp(),
                     },
                     None,
+                    None,
                 ),
             };
             items.push(AppUpdateBatchRequestItem {
@@ -2572,6 +2595,7 @@ impl ControlPanelServer {
                 app_instance_id: spec.app_instance_id,
                 source,
                 availability,
+                submitted_plan,
                 approved_plan_fingerprint,
             });
         }
@@ -2602,6 +2626,7 @@ impl ControlPanelServer {
             .task_mgr_client()
             .await?
             .create_delegated_task(buckyos_api::CreateDelegatedTaskReq {
+                task_id: None,
                 name: format!("Upgrade {} Catalog apps", update_count),
                 schema_id: APP_UPDATE_BATCH_TASK_SCHEMA_ID.to_string(),
                 schema_version: None,
@@ -2715,6 +2740,15 @@ impl ControlPanelServer {
                         ));
                         continue;
                     };
+                    let Some(submitted_plan) = item.submitted_plan.clone() else {
+                        results.push(Self::batch_item_result(
+                            item,
+                            AppUpdateBatchItemOutcome::Failed,
+                            None,
+                            Some("update item has no frozen Upgrade plan".to_string()),
+                        ));
+                        continue;
+                    };
                     let child_idempotency_key =
                         format!("{}:{}", data.request.idempotency_key, item.app_instance_id);
                     let mutation_key = match Self::acquire_app_mutation(
@@ -2745,6 +2779,7 @@ impl ControlPanelServer {
                                 creator_app_id: data.request.creator_app_id.clone(),
                                 owner_user_id: item.app_instance_id.owner_user_id().to_string(),
                                 idempotency_key: child_idempotency_key,
+                                submitted_plan: Some(submitted_plan),
                                 approved_plan_fingerprint: Some(fingerprint),
                                 policy: InstallPolicy::Normal,
                                 options: None,
@@ -3063,28 +3098,36 @@ impl ControlPanelServer {
         idempotency_key: &str,
     ) -> Result<Option<buckyos_api::Task>, RPCErrors> {
         let client = self.app_installer.task_mgr_client().await?;
-        let mut cursor = None;
-        loop {
-            let page = client
-                .list_tasks(buckyos_api::ListTasksReq {
-                    creator_user_id: Some(principal.username.clone()),
-                    creator_app_id: Some(principal.authenticated_app_id.clone()),
-                    include_archived: true,
-                    cursor: cursor.clone(),
-                    limit: Some(100),
-                    ..Default::default()
-                })
-                .await?;
-            for summary in page.tasks {
-                let task = client.get_task(&summary.task_id).await?;
-                if task.idempotency_key == idempotency_key {
-                    return Ok(Some(task));
-                }
+        let page = client
+            .list_tasks(buckyos_api::ListTasksReq {
+                creator_user_id: Some(principal.username.clone()),
+                creator_app_id: Some(principal.authenticated_app_id.clone()),
+                idempotency_key: Some(idempotency_key.to_string()),
+                include_archived: true,
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await?;
+        match page.tasks.first() {
+            Some(summary) => Ok(Some(client.get_task(&summary.task_id).await?)),
+            None => Ok(None),
+        }
+    }
+
+    fn submitted_plan_replay_matches(
+        persisted: Option<&buckyos_api::InstallPlan>,
+        submitted: Option<&buckyos_api::InstallPlan>,
+    ) -> bool {
+        match (persisted, submitted) {
+            (None, None) => true,
+            (Some(persisted), Some(submitted)) => {
+                persisted.schema_version == APP_INSTALL_SCHEMA_VERSION
+                    && submitted.schema_version == APP_INSTALL_SCHEMA_VERSION
+                    && persisted.fingerprint_is_valid()
+                    && submitted.fingerprint_is_valid()
+                    && persisted.plan_fingerprint == submitted.plan_fingerprint
             }
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                return Ok(None);
-            }
+            _ => false,
         }
     }
 
@@ -3113,12 +3156,15 @@ impl ControlPanelServer {
                     && data.request.creator_app_id == principal.authenticated_app_id
                     && data.request.owner_user_id == owner_user_id
                     && data.request.idempotency_key == idempotency_key
-                    && data.request.submitted_plan.as_ref() == submitted_plan.as_ref()
+                    && Self::submitted_plan_replay_matches(
+                        data.request.submitted_plan.as_ref(),
+                        submitted_plan.as_ref(),
+                    )
                     && data.request.approved_plan_fingerprint == approved_plan_fingerprint
                     && data.request.policy == policy
                     && data.request.options == options)
             }
-            APP_UPDATE_TASK_SCHEMA_ID if submitted_plan.is_none() => {
+            APP_UPDATE_TASK_SCHEMA_ID => {
                 let data: buckyos_api::AppUpdateTaskData =
                     serde_json::from_value(task.input.clone()).map_err(|error| {
                         RPCErrors::ReasonError(format!("invalid update task input: {error}"))
@@ -3128,6 +3174,10 @@ impl ControlPanelServer {
                     && data.request.creator_app_id == principal.authenticated_app_id
                     && data.request.owner_user_id == owner_user_id
                     && data.request.idempotency_key == idempotency_key
+                    && Self::submitted_plan_replay_matches(
+                        data.request.submitted_plan.as_ref(),
+                        submitted_plan.as_ref(),
+                    )
                     && data.request.approved_plan_fingerprint == approved_plan_fingerprint
                     && data.request.policy == policy
                     && data.request.options == options)
@@ -3195,8 +3245,17 @@ impl ControlPanelServer {
             }
         }
 
+        let submitted_task_type = match submitted_plan.as_ref().map(|plan| plan.plan_use) {
+            Some(buckyos_api::InstallPlanUse::Upgrade) => buckyos_api::TASK_DATA_TYPE_APP_UPDATE,
+            _ => buckyos_api::TASK_DATA_TYPE_APP_INSTALL,
+        };
         let mut inspection = self
-            .inspect_from_rpc(&req, principal, buckyos_api::TASK_DATA_TYPE_APP_INSTALL)
+            .inspect_from_rpc(
+                &req,
+                principal,
+                submitted_task_type,
+                submitted_plan.as_ref().map(|plan| plan.task_id.clone()),
+            )
             .await?;
         if let Some(plan) = submitted_plan.as_ref() {
             if plan.plan_fingerprint != inspection.plan.plan_fingerprint {
@@ -3211,7 +3270,12 @@ impl ControlPanelServer {
         let installed = Self::find_spec_for_inspection(&inspection).await?;
         if submitted_plan.is_none() && installed.is_some() {
             inspection = self
-                .inspect_from_rpc(&req, principal, buckyos_api::TASK_DATA_TYPE_APP_UPDATE)
+                .inspect_from_rpc(
+                    &req,
+                    principal,
+                    buckyos_api::TASK_DATA_TYPE_APP_UPDATE,
+                    None,
+                )
                 .await?;
         }
         let mut installed_document_version = None;
@@ -3230,7 +3294,7 @@ impl ControlPanelServer {
             }
         }
         let action = decide_app_submit_action(
-            submitted_plan.is_some(),
+            submitted_plan.as_ref().map(|plan| plan.plan_use),
             installed
                 .as_ref()
                 .map(|spec| &spec.deployment.app_doc_object_id),
@@ -3291,6 +3355,7 @@ impl ControlPanelServer {
                 creator_app_id: principal.authenticated_app_id.clone(),
                 owner_user_id: inspection.plan.owner_user_id.clone(),
                 idempotency_key: idempotency_key.clone(),
+                submitted_plan: Some(inspection.plan.clone()),
                 approved_plan_fingerprint,
                 policy: submit_policy,
                 options: Some(task_options),
@@ -3639,6 +3704,88 @@ impl ControlPanelServer {
             })),
             req.seq,
         ))
+    }
+}
+
+#[cfg(test)]
+mod submit_action_tests {
+    use super::*;
+
+    #[test]
+    fn submitted_plan_use_selects_fresh_install_or_upgrade() {
+        let installed = ObjId::new_by_raw("appdoc".to_string(), vec![1; 32]);
+        let target = ObjId::new_by_raw("appdoc".to_string(), vec![2; 32]);
+
+        assert_eq!(
+            decide_app_submit_action(
+                Some(buckyos_api::InstallPlanUse::FreshInstall),
+                None,
+                &target,
+                None,
+                Some(2),
+            )
+            .unwrap(),
+            AppSubmitAction::FreshInstall
+        );
+        assert_eq!(
+            decide_app_submit_action(
+                Some(buckyos_api::InstallPlanUse::Upgrade),
+                Some(&installed),
+                &target,
+                Some(1),
+                Some(2),
+            )
+            .unwrap(),
+            AppSubmitAction::Upgrade
+        );
+        assert_eq!(
+            decide_app_submit_action(
+                Some(buckyos_api::InstallPlanUse::FreshInstall),
+                Some(&installed),
+                &target,
+                Some(1),
+                Some(2),
+            )
+            .unwrap_err()
+            .code,
+            buckyos_api::InstallErrorCode::PlanNotApplicable
+        );
+        assert_eq!(
+            decide_app_submit_action(
+                Some(buckyos_api::InstallPlanUse::Upgrade),
+                None,
+                &target,
+                None,
+                Some(2),
+            )
+            .unwrap_err()
+            .code,
+            buckyos_api::InstallErrorCode::PlanNotApplicable
+        );
+    }
+
+    #[test]
+    fn implicit_submit_preserves_satisfied_and_downgrade_guards() {
+        let installed = ObjId::new_by_raw("appdoc".to_string(), vec![1; 32]);
+        let target = ObjId::new_by_raw("appdoc".to_string(), vec![2; 32]);
+
+        assert_eq!(
+            decide_app_submit_action(None, None, &target, None, Some(2))
+                .unwrap_err()
+                .code,
+            buckyos_api::InstallErrorCode::PlanRequired
+        );
+        assert_eq!(
+            decide_app_submit_action(None, Some(&installed), &installed, Some(1), Some(1),)
+                .unwrap(),
+            AppSubmitAction::Satisfied
+        );
+        assert_eq!(
+            decide_app_submit_action(None, Some(&installed), &target, Some(2), Some(1))
+                .unwrap_err()
+                .code,
+            buckyos_api::InstallErrorCode::DowngradeNotAllowed
+        );
     }
 }
 

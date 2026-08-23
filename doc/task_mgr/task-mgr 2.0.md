@@ -1147,11 +1147,17 @@ TaskMgr 仍通过 `/kapi/task-manager` 暴露 kRPC。2.0 删除通用 status/dat
 
 ### 13.1 创建与查询
 
+普通 `create_task` 的 Task ID 始终由 TaskMgr 生成。zone-trusted 服务通过
+`create_delegated_task` 创建自执行 Task 时，可以携带预先冻结到业务计划中的
+`task_id`；该值必须是 canonical `t-<32 lowercase hex>`，TaskMgr 在创建事务中保留该
+ID。此能力只用于让不可变业务计划与 Task 身份在创建前精确绑定，非受信调用者不得自行生成
+Task ID。
+
 | Method | 关键参数 | 返回 | 说明 |
 | --- | --- | --- | --- |
 | `create_task` | schema、input、executor、parent、policy、idempotency_key | Task | 创建直接绑定或 HumanSet Task |
 | `get_task` | task_id | Task | 按 ACL 返回允许读取的字段 |
-| `list_tasks` | creator/schema/phase/root/executor/time/cursor | TaskSummary[] | 分页查询 |
+| `list_tasks` | creator/idempotency_key/schema/phase/root/executor/time/cursor | TaskSummary[] | 分页查询；creator + idempotency_key 可直接命中唯一幂等任务，调用方不得为重放逐项 `get_task` 扫描历史列表 |
 | `get_task_tree` | root_id、depth、cursor | TaskSummary[] | 查询树结构和状态摘要 |
 | `get_subtasks` | task_id、cursor | TaskSummary[] | 查询直接子任务 |
 | `archive_task` | task_id、expected_revision | Task | 从默认列表隐藏，不物理删除 |

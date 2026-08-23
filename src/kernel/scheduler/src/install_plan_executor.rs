@@ -218,7 +218,7 @@ impl SchedulerServer {
         key: &InstallPlanExecutionKey,
     ) -> Result<InstallPlanExecutionRecord> {
         let path = key.storage_key();
-        match schedule_loop(false).await {
+        match schedule_loop(false, true).await {
             Ok(_) => {
                 let (mut record, record_revision) = self.load_execution(key).await?;
                 let install_record_path = install_record_key(
@@ -302,6 +302,14 @@ impl SchedulerServer {
         };
 
         for _ in 0..MAX_CAS_RETRIES {
+            let loaded = self.load_execution(key).await?;
+            record = loaded.0;
+            record_revision = loaded.1;
+            if record.state != InstallPlanExecutionState::Claimed
+                || record.commit_point != InstallPlanCommitPoint::Claimed
+            {
+                return Ok(record);
+            }
             let registry_value = self
                 .system_config_client
                 .get(APP_REGISTRY_KEY)
@@ -714,27 +722,61 @@ impl SchedulerHandler for SchedulerServer {
         _ctx: RPCContext,
     ) -> Result<InstallPlanExecutionRecord> {
         let path = key.storage_key();
-        let (mut record, revision) = self.load_execution(&key).await?;
-        if matches!(
-            record.commit_point,
-            InstallPlanCommitPoint::DesiredStateCommitted
-                | InstallPlanCommitPoint::NodeConfigPublished
-        ) {
-            return Err(rpc_error(
-                "InstallPlan cannot be canceled after desired-state commit",
-            ));
-        }
-        if !matches!(
-            record.state,
-            InstallPlanExecutionState::Completed
-                | InstallPlanExecutionState::Failed
-                | InstallPlanExecutionState::Canceled
-        ) {
+        for _ in 0..MAX_CAS_RETRIES {
+            let (mut record, revision) = self.load_execution(&key).await?;
+            if matches!(
+                record.commit_point,
+                InstallPlanCommitPoint::DesiredStateCommitted
+                    | InstallPlanCommitPoint::NodeConfigPublished
+            ) {
+                return Err(rpc_error(
+                    "InstallPlan cannot be canceled after desired-state commit",
+                ));
+            }
+            if matches!(
+                record.state,
+                InstallPlanExecutionState::Completed
+                    | InstallPlanExecutionState::Failed
+                    | InstallPlanExecutionState::Canceled
+            ) {
+                return Ok(record);
+            }
             record.state = InstallPlanExecutionState::Canceled;
             record.updated_at = buckyos_get_unix_timestamp();
-            self.update_execution(&path, &record, revision).await?;
+            if record.commit_point == InstallPlanCommitPoint::Claimed {
+                let registry_value = self
+                    .system_config_client
+                    .get(APP_REGISTRY_KEY)
+                    .await
+                    .map_err(rpc_error)?;
+                let mut actions = HashMap::new();
+                actions.insert(
+                    APP_REGISTRY_KEY.to_string(),
+                    KVAction::Update(registry_value.value),
+                );
+                actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
+                if self
+                    .system_config_client
+                    .exec_tx(
+                        actions,
+                        Some((APP_REGISTRY_KEY.to_string(), registry_value.version)),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    return Ok(record);
+                }
+            } else if self
+                .update_execution(&path, &record, revision)
+                .await
+                .is_ok()
+            {
+                return Ok(record);
+            }
         }
-        Ok(record)
+        Err(rpc_error(
+            "InstallPlan cancellation CAS retry budget exhausted",
+        ))
     }
 
     async fn handle_retry_install_plan(
@@ -785,12 +827,12 @@ impl SchedulerHandler for SchedulerServer {
             claimed_at: now,
             updated_at: now,
         };
-        if self
+        let created = self
             .system_config_client
             .create(&path, &serialize(&record)?)
             .await
-            .is_err()
-        {
+            .is_ok();
+        if !created {
             let value = self
                 .system_config_client
                 .get(&path)
@@ -801,81 +843,125 @@ impl SchedulerHandler for SchedulerServer {
             if existing.plan != plan {
                 return Err(rpc_error("shortcut mutation idempotency key collision"));
             }
-            return Ok(existing);
+            if existing.state != SchedulerShortcutMutationState::Claimed {
+                return Ok(existing);
+            }
+            record = existing;
         }
 
-        let (mut settings, settings_revision) = self.load_gateway_settings().await?;
-        let registry_value = self
-            .system_config_client
-            .get(APP_REGISTRY_KEY)
-            .await
-            .map_err(rpc_error)?;
-        let registry: AppRegistry =
-            serde_json::from_str(&registry_value.value).map_err(rpc_error)?;
-        let reserved = BTreeSet::from(["_".to_string(), "www".to_string(), "sys".to_string()]);
-        let collides = reserved.contains(&plan.shortcut_hostname)
-            || registry
-                .apps
-                .values()
-                .any(|allocation| allocation.app_name == plan.shortcut_hostname)
-            || registry
-                .instances
-                .values()
-                .any(|allocation| allocation.app_host_name == plan.shortcut_hostname);
-        if collides {
-            record.state = SchedulerShortcutMutationState::Failed;
-            record.error = Some(install_error(
-                InstallErrorCode::ConfigBlocked,
-                false,
-                "shortcut hostname collides with the scheduler-owned default namespace",
-            ));
-            record.updated_at = buckyos_get_unix_timestamp();
-            let value = self
+        for _ in 0..MAX_CAS_RETRIES {
+            let record_value = self
                 .system_config_client
                 .get(&path)
                 .await
                 .map_err(rpc_error)?;
+            record = serde_json::from_str(&record_value.value).map_err(rpc_error)?;
+            if record.state != SchedulerShortcutMutationState::Claimed {
+                return Ok(record);
+            }
+            let (mut settings, settings_revision) = self.load_gateway_settings().await?;
+            let registry_value = self
+                .system_config_client
+                .get(APP_REGISTRY_KEY)
+                .await
+                .map_err(rpc_error)?;
+            let registry: AppRegistry =
+                serde_json::from_str(&registry_value.value).map_err(rpc_error)?;
+            let reserved = BTreeSet::from(["_".to_string(), "www".to_string(), "sys".to_string()]);
+            let collides = plan.target_app_instance_id.is_some()
+                && (reserved.contains(&plan.shortcut_hostname)
+                    || registry
+                        .apps
+                        .values()
+                        .any(|allocation| allocation.app_name == plan.shortcut_hostname)
+                    || registry
+                        .instances
+                        .values()
+                        .any(|allocation| allocation.app_host_name == plan.shortcut_hostname));
+            if collides {
+                record.state = SchedulerShortcutMutationState::Failed;
+                record.error = Some(install_error(
+                    InstallErrorCode::ConfigBlocked,
+                    false,
+                    "shortcut hostname collides with the scheduler-owned default namespace",
+                ));
+                record.updated_at = buckyos_get_unix_timestamp();
+                let mut actions = HashMap::new();
+                actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
+                self.system_config_client
+                    .exec_tx(actions, Some((path, record_value.version)))
+                    .await
+                    .map_err(rpc_error)?;
+                return Ok(record);
+            }
+            if let Some(target) = &plan.target_app_instance_id {
+                let spec_key = user_app_spec_key(target.owner_user_id(), target.app_id());
+                let spec_value = self
+                    .system_config_client
+                    .get(&spec_key)
+                    .await
+                    .map_err(rpc_error)?;
+                let spec: AppServiceSpec =
+                    serde_json::from_str(&spec_value.value).map_err(rpc_error)?;
+                if spec.app_instance_id != *target {
+                    return Err(rpc_error("shortcut target AppSpec identity mismatch"));
+                }
+                settings.shortcuts.insert(
+                    plan.shortcut_hostname.clone(),
+                    ShortcutTarget::App {
+                        app_instance_id: target.clone(),
+                    },
+                );
+            } else {
+                settings.shortcuts.remove(&plan.shortcut_hostname);
+            }
+            record.state = SchedulerShortcutMutationState::Committed;
+            record.settings_revision = Some(settings_revision.unwrap_or(0) + 1);
+            record.updated_at = buckyos_get_unix_timestamp();
             let mut actions = HashMap::new();
-            actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
-            self.system_config_client
-                .exec_tx(actions, Some((path, value.version)))
-                .await
-                .map_err(rpc_error)?;
-            return Ok(record);
-        }
-        if let Some(target) = &plan.target_app_instance_id {
-            let spec_key = user_app_spec_key(target.owner_user_id(), target.app_id());
-            self.system_config_client
-                .get(&spec_key)
-                .await
-                .map_err(rpc_error)?;
-            settings.shortcuts.insert(
-                plan.shortcut_hostname.clone(),
-                ShortcutTarget::App {
-                    app_instance_id: target.clone(),
+            actions.insert(
+                APP_REGISTRY_KEY.to_string(),
+                KVAction::Update(serialize(&registry)?),
+            );
+            actions.insert(
+                GATEWAY_SETTINGS_KEY.to_string(),
+                if settings_revision.is_some() {
+                    KVAction::Update(serialize(&settings)?)
+                } else {
+                    KVAction::Create(serialize(&settings)?)
                 },
             );
-        } else {
-            settings.shortcuts.remove(&plan.shortcut_hostname);
+            actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
+            if self
+                .system_config_client
+                .exec_tx(
+                    actions,
+                    Some((APP_REGISTRY_KEY.to_string(), registry_value.version)),
+                )
+                .await
+                .is_ok()
+            {
+                return Ok(record);
+            }
         }
-        record.state = SchedulerShortcutMutationState::Committed;
-        record.settings_revision = Some(settings_revision.unwrap_or(0) + 1);
+
+        let value = self
+            .system_config_client
+            .get(&path)
+            .await
+            .map_err(rpc_error)?;
+        record = serde_json::from_str(&value.value).map_err(rpc_error)?;
+        record.state = SchedulerShortcutMutationState::Failed;
+        record.error = Some(install_error(
+            InstallErrorCode::AppMutationInProgress,
+            true,
+            "shortcut mutation CAS retry budget exhausted",
+        ));
         record.updated_at = buckyos_get_unix_timestamp();
         let mut actions = HashMap::new();
-        actions.insert(
-            GATEWAY_SETTINGS_KEY.to_string(),
-            if settings_revision.is_some() {
-                KVAction::Update(serialize(&settings)?)
-            } else {
-                KVAction::Create(serialize(&settings)?)
-            },
-        );
         actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
         self.system_config_client
-            .exec_tx(
-                actions,
-                settings_revision.map(|revision| (GATEWAY_SETTINGS_KEY.to_string(), revision)),
-            )
+            .exec_tx(actions, Some((path, value.version)))
             .await
             .map_err(rpc_error)?;
         Ok(record)

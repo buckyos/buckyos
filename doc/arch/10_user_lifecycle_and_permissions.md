@@ -239,7 +239,7 @@ system_builtin
 
 App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；无精确规则时 deny 组优先于 allow 组；没有显式匹配时 `Admin` / `User` 默认允许，`Limited` / Guest 默认拒绝。系统 App 与 Zone App 对所有有效登录用户隐式允许。
 
-session token 同时绑定 `appid`、`app_instance_id` 和非系统 App 的 `app_owner_user_id`。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。匿名 `guest` 不经过 Verify Hub，其 allow 规则由 Control Panel 同步为 App expose 配置，scheduler 编译为 Gateway `Public`；删除规则后重新编译为 `Private`。
+session token 同时绑定 `appid`、`app_instance_id` 和非系统 App 的 `app_owner_user_id`。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。匿名 `guest` 不经过 Verify Hub；Control Panel 只 CAS 写 availability policy 和审计，scheduler 读取 policy 后把 Gateway access mode 编译为 `Public` 或 `Private`，不回写 AppSpec。
 
 ---
 

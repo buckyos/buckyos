@@ -80,6 +80,7 @@ impl InstallTaskStatus {
 #[derive(Debug, Clone)]
 pub struct InstallTaskView {
     pub id: String,
+    pub planning_task_id: String,
     pub parent_id: Option<String>,
     pub root_id: String,
     pub task_type: String,
@@ -100,6 +101,7 @@ pub struct InstallTaskView {
 pub trait InstallTaskStore: Send + Sync {
     async fn create_install_task(
         &self,
+        task_id: Option<&str>,
         name: &str,
         task_type: &str,
         data: Value,
@@ -278,6 +280,7 @@ impl InstallEngine {
         &self,
         request: buckyos_api::AppInstallTaskRequest,
         task_type: &str,
+        planning_task_id: Option<String>,
     ) -> Result<InstallInspection, InstallError> {
         let mut state = Self::initial_state_from_options(request.options.as_ref())?;
         if let Some(plan) = request.submitted_plan.as_ref() {
@@ -289,8 +292,11 @@ impl InstallEngine {
             request,
             state,
         };
+        let planning_task_id =
+            planning_task_id.unwrap_or_else(|| format!("t-{}", uuid::Uuid::new_v4().simple()));
         let view = InstallTaskView {
             id: "inspect-only".to_string(),
+            planning_task_id,
             parent_id: None,
             root_id: "inspect-only".to_string(),
             task_type: task_type.to_string(),
@@ -431,9 +437,15 @@ impl InstallEngine {
             state,
         };
         let task_name = format!("Install app ({app_hint})");
+        let requested_task_id = data
+            .request
+            .submitted_plan
+            .as_ref()
+            .map(|plan| plan.task_id.as_str());
         let task_id = self
             .store
             .create_install_task(
+                requested_task_id,
                 task_name.as_str(),
                 TASK_DATA_TYPE_APP_INSTALL,
                 serde_json::to_value(&data)
@@ -467,16 +479,42 @@ impl InstallEngine {
         let user_id = request.creator_user_id.clone();
         let creator_app_id = request.creator_app_id.clone();
         let idempotency_key = request.idempotency_key.clone();
-        let state = Self::initial_state_from_options(request.options.as_ref())?;
+        let mut state = Self::initial_state_from_options(request.options.as_ref())?;
+        if let Some(plan) = request.submitted_plan.as_ref() {
+            if plan.schema_version != APP_INSTALL_SCHEMA_VERSION || !plan.fingerprint_is_valid() {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::PlanStale,
+                    false,
+                    "submitted plan schema or fingerprint is invalid",
+                ));
+            }
+            if plan.plan_use != buckyos_api::InstallPlanUse::Upgrade {
+                return Err(InstallError::new(
+                    InstallStage::Inspect,
+                    InstallErrorCode::PlanNotApplicable,
+                    false,
+                    "only an Upgrade plan can be submitted for an installed target",
+                ));
+            }
+            state.requested_target = Some(plan.target.clone());
+            state.requested_params = Some(plan.install_params.clone());
+        }
         let data = buckyos_api::AppUpdateTaskData {
             schema_version: APP_INSTALL_SCHEMA_VERSION,
             request,
             state,
         };
         let task_name = format!("Update app ({app_hint})");
+        let requested_task_id = data
+            .request
+            .submitted_plan
+            .as_ref()
+            .map(|plan| plan.task_id.as_str());
         let task_id = self
             .store
             .create_install_task(
+                requested_task_id,
                 task_name.as_str(),
                 TASK_DATA_TYPE_APP_UPDATE,
                 serde_json::to_value(&data)
@@ -610,7 +648,7 @@ impl InstallEngine {
                         return Ok(RunOutcome::Waiting);
                     };
                     if let Some(submitted) = data.request.submitted_plan.as_ref() {
-                        if submitted != &inspection.plan {
+                        if submitted.plan_fingerprint != inspection.plan.plan_fingerprint {
                             return Err(InstallError::new(
                                 InstallStage::Inspect,
                                 InstallErrorCode::PlanStale,
@@ -972,6 +1010,7 @@ impl InstallEngine {
         let new_task_id = self
             .store
             .create_install_task(
+                None,
                 format!("Retry {}", view.task_type).as_str(),
                 view.task_type.as_str(),
                 serde_json::to_value(&data)
@@ -1342,7 +1381,8 @@ impl TaskMgrInstallStore {
         let data = serde_json::to_value(transaction)
             .map_err(|err| Self::map_err("encode install transaction view", err))?;
         Ok(InstallTaskView {
-            id: task.task_id,
+            id: task.task_id.clone(),
+            planning_task_id: task.task_id,
             parent_id: task.parent_id,
             root_id: task.root_id,
             task_type,
@@ -1365,6 +1405,7 @@ impl TaskMgrInstallStore {
 impl InstallTaskStore for TaskMgrInstallStore {
     async fn create_install_task(
         &self,
+        task_id: Option<&str>,
         name: &str,
         task_type: &str,
         data: Value,
@@ -1377,6 +1418,7 @@ impl InstallTaskStore for TaskMgrInstallStore {
         let client = Self::client().await?;
         let task = client
             .create_delegated_task(buckyos_api::CreateDelegatedTaskReq {
+                task_id: task_id.map(ToOwned::to_owned),
                 name: name.to_string(),
                 schema_id: install_schema_id(task_type),
                 schema_version: None,

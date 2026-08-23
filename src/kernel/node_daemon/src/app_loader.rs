@@ -1,10 +1,12 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    get_buckyos_api_runtime, get_full_appid, get_session_token_env_key, AppDoc,
+    bind_token_app_instance, get_buckyos_api_runtime, get_local_app_runtime_key, AppDoc,
     AppServiceInstanceConfig, AppType, DeploymentIdentity, LocalAppInstanceConfig,
-    ServiceInstanceState, ServiceSpecConfig, SubPkgDesc, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
-    KEVENT_SERVICE_NATIVE_PORT, VERIFY_HUB_TOKEN_EXPIRE_TIME,
+    ServiceInstanceState, ServiceSpecConfig, SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV,
+    BUCKYOS_APP_INSTANCE_ID_ENV, BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV,
+    BUCKYOS_KEVENT_DAEMON_ADDR_ENV, BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT,
+    VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -63,7 +65,7 @@ pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
 pub(crate) const DOCKER_LABEL_APP_DID: &str = "buckyos.app_did";
 pub(crate) const DOCKER_LABEL_APP_INSTANCE_ID: &str = "buckyos.app_instance_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
-pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
+pub(crate) const DOCKER_LABEL_RUNTIME_KEY: &str = "buckyos.runtime_key";
 pub(crate) const DOCKER_LABEL_PKG_ID: &str = "buckyos.pkg_id";
 pub(crate) const DOCKER_LABEL_PKG_OBJID: &str = "buckyos.pkg_objid";
 pub(crate) const DOCKER_LABEL_IMAGE_DIGEST: &str = "buckyos.image_digest";
@@ -389,7 +391,7 @@ impl AppLoader {
             (RuntimeType::Docker, ControlOperation::Stop) => {
                 vec![CommandSpec::new(
                     "docker",
-                    ["rm", "-f", self.full_appid().as_str()],
+                    ["rm", "-f", self.container_name().as_str()],
                 )]
             }
             (RuntimeType::Docker, ControlOperation::Status) => self.preview_docker_status(),
@@ -402,7 +404,7 @@ impl AppLoader {
             (RuntimeType::HostScript, ControlOperation::Stop) => {
                 vec![CommandSpec::new(
                     "docker",
-                    ["rm", "-f", self.full_appid().as_str()],
+                    ["rm", "-f", self.container_name().as_str()],
                 )]
             }
             (RuntimeType::HostScript, ControlOperation::Status) => {
@@ -422,13 +424,17 @@ impl AppLoader {
         Ok(ControlCommandPreview { runtime, commands })
     }
 
-    fn full_appid(&self) -> String {
+    fn runtime_key(&self) -> String {
         match &self.config {
             LoaderConfig::Service(config) => {
                 config.node_execution_spec.app_instance_id.runtime_key()
             }
-            LoaderConfig::Local(_) => get_full_appid(&self.app_id, &self.owner_user_id),
+            LoaderConfig::Local(_) => get_local_app_runtime_key(&self.app_id, &self.owner_user_id),
         }
+    }
+
+    fn container_name(&self) -> String {
+        format!("buckyos-app-{}", self.runtime_key())
     }
 
     fn app_instance_id(&self) -> String {
@@ -777,7 +783,7 @@ impl AppLoader {
                 self.app_id
             ))
         })?;
-        let container_name = self.full_appid();
+        let container_name = self.container_name();
 
         self.stop_docker().await?;
 
@@ -1032,7 +1038,7 @@ impl AppLoader {
         desc: Option<&SubPkgDesc>,
     ) -> Result<()> {
         let image_name = self.worker_image_name();
-        let container_name = self.full_appid();
+        let container_name = self.container_name();
         let instance_volume = self.instance_volume_name();
         let env_vars = self
             .build_worker_runtime_env(role, app_type_label, service_port)
@@ -1203,6 +1209,20 @@ impl AppLoader {
 
         match &self.config {
             LoaderConfig::Service(config) => {
+                env_vars.insert(BUCKYOS_APP_ID_ENV.to_string(), self.app_id.clone());
+                env_vars.insert(BUCKYOS_APP_DID_ENV.to_string(), self.app_did_string());
+                env_vars.insert(
+                    BUCKYOS_APP_INSTANCE_ID_ENV.to_string(),
+                    self.app_instance_id(),
+                );
+                env_vars.insert(
+                    BUCKYOS_OWNER_USER_ID_ENV.to_string(),
+                    self.owner_user_id.clone(),
+                );
+                env_vars.insert(
+                    BUCKYOS_DATA_DIR_ENV.to_string(),
+                    container_app_data_dir(&self.owner_user_id, &self.app_id),
+                );
                 let app_config_str = serde_json::to_string(config).map_err(|error| {
                     ControlRuntItemErrors::ParserConfigError(format!(
                         "serialize app_instance_config failed: {}",
@@ -1237,7 +1257,7 @@ impl AppLoader {
                 })?;
 
                 let login_jti = timestamp.to_string();
-                let session_token = kRPC::RPCSessionToken {
+                let mut session_token = kRPC::RPCSessionToken {
                     token_type: kRPC::RPCSessionTokenType::Normal,
                     appid: Some(self.app_id.clone()),
                     jti: Some(login_jti.clone()),
@@ -1255,6 +1275,10 @@ impl AppLoader {
                     sudo: false,
                     extra: HashMap::new(),
                 };
+                bind_token_app_instance(
+                    &mut session_token,
+                    &config.node_execution_spec.app_instance_id,
+                );
                 let session_token_jwt = session_token
                     .generate_jwt(Some(device_doc.name.clone()), device_private_key)
                     .map_err(|error| {
@@ -1263,10 +1287,7 @@ impl AppLoader {
                             format!("generate session token failed: {}", error),
                         )
                     })?;
-                env_vars.insert(
-                    get_session_token_env_key(self.full_appid().as_str(), true),
-                    session_token_jwt,
-                );
+                env_vars.insert(BUCKYOS_APP_TOKEN_ENV.to_string(), session_token_jwt);
             }
             LoaderConfig::Local(config) => {
                 let local_config_str = serde_json::to_string(config).map_err(|error| {
@@ -1450,7 +1471,7 @@ impl AppLoader {
     }
 
     async fn remove_current_docker_container(&self) -> Result<()> {
-        let container_name = self.full_appid();
+        let container_name = self.container_name();
         let output = run_command(
             "docker",
             &["rm".to_string(), "-f".to_string(), container_name.clone()],
@@ -1592,20 +1613,22 @@ impl AppLoader {
         get_buckyos_root_dir()
             .join("data")
             .join("cache")
-            .join(self.full_appid())
+            .join(&self.owner_user_id)
+            .join(&self.app_id)
     }
 
     fn app_local_cache_dir(&self) -> PathBuf {
         PathBuf::from("/tmp")
             .join("buckyos")
-            .join(self.full_appid())
+            .join(&self.owner_user_id)
+            .join(&self.app_id)
     }
 
     fn worker_log_dir(&self) -> PathBuf {
         get_buckyos_root_dir()
             .join("logs")
             .join("apps")
-            .join(self.full_appid())
+            .join(self.runtime_key())
     }
 
     fn worker_storage_dir(&self) -> PathBuf {
@@ -1735,9 +1758,9 @@ impl AppLoader {
     fn instance_volume_name(&self) -> String {
         if self.safe_mode {
             let timestamp = buckyos_get_unix_timestamp();
-            format!("buckyos-instance-{}-safe-{}", self.full_appid(), timestamp)
+            format!("buckyos-instance-{}-safe-{}", self.runtime_key(), timestamp)
         } else {
-            format!("buckyos-instance-{}", self.full_appid())
+            format!("buckyos-instance-{}", self.runtime_key())
         }
     }
 
@@ -1919,19 +1942,19 @@ impl AppLoader {
         let worker_pkg_dir = self.worker_pkg_dir();
 
         // §9 env contract.
-        env_vars.insert("BUCKYOS_APP_ID".to_string(), self.app_id.clone());
-        env_vars.insert("BUCKYOS_APP_DID".to_string(), self.app_did_string());
+        env_vars.insert(BUCKYOS_APP_ID_ENV.to_string(), self.app_id.clone());
+        env_vars.insert(BUCKYOS_APP_DID_ENV.to_string(), self.app_did_string());
         env_vars.insert(
-            "BUCKYOS_APP_INSTANCE_ID".to_string(),
+            BUCKYOS_APP_INSTANCE_ID_ENV.to_string(),
             self.app_instance_id(),
         );
         env_vars.insert("BUCKYOS_APP_TYPE".to_string(), app_type_label.to_string());
         env_vars.insert(
-            "BUCKYOS_OWNER_USER_ID".to_string(),
+            BUCKYOS_OWNER_USER_ID_ENV.to_string(),
             self.owner_user_id.clone(),
         );
         env_vars.insert(
-            "BUCKYOS_DATA_DIR".to_string(),
+            BUCKYOS_DATA_DIR_ENV.to_string(),
             container_app_data_dir(&self.owner_user_id, &self.app_id),
         );
         env_vars.insert(
@@ -1997,7 +2020,7 @@ impl AppLoader {
                 DOCKER_LABEL_OWNER_USER_ID.to_string(),
                 self.owner_user_id.clone(),
             ),
-            (DOCKER_LABEL_FULL_APPID.to_string(), self.full_appid()),
+            (DOCKER_LABEL_RUNTIME_KEY.to_string(), self.runtime_key()),
             (DOCKER_LABEL_PKG_ID.to_string(), desc.pkg_id.clone()),
         ];
         if let Some(pkg_objid) = desc.pkg_objid.as_ref() {
@@ -2020,7 +2043,7 @@ impl AppLoader {
     }
 
     async fn has_current_docker_container_name(&self) -> Result<bool> {
-        let container_name = self.full_appid();
+        let container_name = self.container_name();
         let output = run_command(
             "docker",
             &[
@@ -2044,7 +2067,7 @@ impl AppLoader {
     }
 
     async fn inspect_current_docker_container(&self) -> Result<Option<DockerContainerRuntime>> {
-        let container_name = self.full_appid();
+        let container_name = self.container_name();
         let inspect_output = run_command(
             "docker",
             &[
@@ -2251,7 +2274,7 @@ impl AppLoader {
             "--rm".to_string(),
             "-d".to_string(),
             "--name".to_string(),
-            self.full_appid(),
+            self.container_name(),
         ];
         append_host_gateway_run_args(&mut docker_run_args);
 
@@ -2286,13 +2309,13 @@ impl AppLoader {
         docker_run_args.push(image_name);
 
         Ok(vec![
-            CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()]),
+            CommandSpec::new("docker", ["rm", "-f", self.container_name().as_str()]),
             CommandSpec::new("docker", docker_run_args),
         ])
     }
 
     fn preview_docker_status(&self) -> Vec<CommandSpec> {
-        let filter = format!("name=^{}$", self.full_appid());
+        let filter = format!("name=^{}$", self.container_name());
         let image_name = self
             .docker_image_desc()
             .and_then(|desc| desc.docker_image_name.clone())
@@ -2361,7 +2384,7 @@ impl AppLoader {
     }
 
     fn preview_agent_stop(&self) -> CommandSpec {
-        CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()])
+        CommandSpec::new("docker", ["rm", "-f", self.container_name().as_str()])
     }
 
     fn preview_agent_status(&self) -> Vec<CommandSpec> {
@@ -2381,7 +2404,7 @@ impl AppLoader {
             "--rm".to_string(),
             "-d".to_string(),
             "--name".to_string(),
-            self.full_appid(),
+            self.container_name(),
         ];
         append_host_gateway_run_args(&mut docker_run_args);
 
@@ -2496,13 +2519,13 @@ impl AppLoader {
         docker_run_args.push(image_name);
 
         Ok(vec![
-            CommandSpec::new("docker", ["rm", "-f", self.full_appid().as_str()]),
+            CommandSpec::new("docker", ["rm", "-f", self.container_name().as_str()]),
             CommandSpec::new("docker", docker_run_args),
         ])
     }
 
     fn preview_worker_status(&self) -> Vec<CommandSpec> {
-        let filter = format!("name=^{}$", self.full_appid());
+        let filter = format!("name=^{}$", self.container_name());
         vec![
             CommandSpec::new("docker", ["ps", "-q", "-f", filter.as_str()]),
             CommandSpec::new("docker", ["ps", "-aq", "-f", filter.as_str()]),
@@ -2527,7 +2550,7 @@ impl AppLoader {
         match &self.config {
             LoaderConfig::Service(_) => {
                 keys.push("app_instance_config".to_string());
-                keys.push(get_session_token_env_key(self.full_appid().as_str(), true));
+                keys.push(BUCKYOS_APP_TOKEN_ENV.to_string());
             }
             LoaderConfig::Local(_) => {
                 keys.push("local_app_instance_config".to_string());

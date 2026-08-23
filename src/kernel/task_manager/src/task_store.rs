@@ -74,6 +74,7 @@ pub struct MutationOutcome {
 
 /// Arguments shared by both create paths after service-level validation.
 pub struct CreateTaskArgs {
+    pub task_id: Option<TaskId>,
     pub name: String,
     pub schema_id: String,
     pub schema_version: u32,
@@ -372,6 +373,10 @@ impl TaskStore {
             conditions.push("creator_app_id = ?".into());
             params.push(Param::Text(app.to_string()));
         }
+        if let Some(idempotency_key) = req.idempotency_key.as_deref() {
+            conditions.push("idempotency_key = ?".into());
+            params.push(Param::Text(idempotency_key.to_string()));
+        }
         if let Some(schema) = req.schema_id.as_deref() {
             conditions.push("schema_id = ?".into());
             params.push(Param::Text(schema.to_string()));
@@ -591,7 +596,7 @@ impl TaskStore {
         }
 
         let now = now_ms();
-        let task_id = new_task_id();
+        let task_id = args.task_id.clone().unwrap_or_else(new_task_id);
         let (root_id, parent_root) = match args.parent_id.as_deref() {
             Some(parent_id) => {
                 let parent = self.get_task(parent_id).await?.ok_or_else(|| {
@@ -755,7 +760,11 @@ impl TaskStore {
             && existing.schema_version == args.schema_version
             && existing.input_digest == compute_task_input_digest(&args.input)
             && existing.parent_id == args.parent_id
-            && existing.executor.kind() == args.executor.kind();
+            && existing.executor.kind() == args.executor.kind()
+            && args
+                .task_id
+                .as_ref()
+                .is_none_or(|task_id| task_id == &existing.task_id);
         if !same {
             return Err(task_mgr_error(
                 TASK_ERR_IDEMPOTENCY_CONFLICT,

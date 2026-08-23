@@ -48,7 +48,7 @@ Deno.test('visible local users exclude the root tier, self, and duplicate ids', 
 
   const entities = toVisibleLocalUserEntities(
     users,
-    [],
+    new Map(),
     'lucy',
     '2026-08-11T00:00:00Z',
   )

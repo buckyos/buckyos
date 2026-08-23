@@ -294,15 +294,6 @@ function uniquePkgName(pkgId: string): string {
   return pkgId.split('#', 1)[0].trim()
 }
 
-function getFullAppId(appId: string, ownerUserId: string): string {
-  return `${ownerUserId}-${appId}`
-}
-
-function getSessionTokenEnvKey(appFullId: string, isAppService: boolean): string {
-  const upper = appFullId.toUpperCase().replaceAll('-', '_')
-  return isAppService ? `${upper}_TOKEN` : `${upper}_SESSION_TOKEN`
-}
-
 function getAppDataDir(buckyosRoot: string, appId: string, ownerUserId: string): string {
   return joinPath(buckyosRoot, 'data', 'home', ownerUserId, '.local', 'share', appId)
 }
@@ -404,6 +395,7 @@ async function generateAppServiceToken(
   subject: string,
   deviceName: string,
   privateKeyPem: string,
+  appInstanceId?: string,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   const header = {
@@ -421,7 +413,12 @@ async function generateAppServiceToken(
     exp: now + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2,
     iss: deviceName,
     token: null,
-    extra: {},
+    extra: appInstanceId
+      ? {
+        app_instance_id: appInstanceId,
+        app_owner_user_id: subject,
+      }
+      : {},
   }
 
   const encodedHeader = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)))
@@ -575,25 +572,13 @@ async function loadAppSpec(
   appId: string,
   ownerUserId: string,
 ): Promise<{ key: string; value: JsonObject }> {
-  const candidateKeys = [
-    `users/${ownerUserId}/agents/${appId}/spec`,
-    `users/${ownerUserId}/apps/${appId}/spec`,
-  ]
-
-  for (const key of candidateKeys) {
-    try {
-      const value = await sysConfigGet(client, key)
-      if (value) {
-        return { key, value }
-      }
-    } catch {
-      // try next key
-    }
+  const key = `users/${ownerUserId}/apps/${appId}/spec`
+  const value = await sysConfigGet(client, key)
+  if (value) {
+    return { key, value }
   }
 
-  throw new Error(
-    `app spec not found, checked: ${candidateKeys.join(', ')}`,
-  )
+  throw new Error(`app spec not found: ${key}`)
 }
 
 async function loadAppInstanceConfig(
@@ -601,25 +586,21 @@ async function loadAppInstanceConfig(
   nodeId: string,
   appId: string,
   ownerUserId: string,
-  spec: JsonObject,
 ): Promise<JsonObject> {
-  const nodeConfig = await sysConfigGet(client, `nodes/${nodeId}/config`).catch(() => null)
-  const instanceId = `${appId}@${ownerUserId}@${nodeId}`
-
-  if (nodeConfig) {
-    const apps = getNestedObject(nodeConfig, ['apps'])
-    const instance = apps?.[instanceId]
-    if (instance && typeof instance === 'object' && !Array.isArray(instance)) {
-      return instance as JsonObject
-    }
+  const nodeConfigKey = `nodes/${nodeId}/config`
+  const nodeConfig = await sysConfigGet(client, nodeConfigKey)
+  if (!nodeConfig) {
+    throw new Error(`node config not found: ${nodeConfigKey}`)
   }
 
-  return {
-    target_state: 'Started',
-    node_id: nodeId,
-    app_spec: spec,
-    service_ports_config: {},
+  const appInstanceId = `${appId}@${ownerUserId}`
+  const apps = getNestedObject(nodeConfig, ['apps'])
+  const instance = apps?.[appInstanceId]
+  if (!instance || typeof instance !== 'object' || Array.isArray(instance)) {
+    throw new Error(`app instance ${appInstanceId} not found in ${nodeConfigKey}`)
   }
+
+  return instance as JsonObject
 }
 
 function hasHostScriptPkg(appDoc: JsonObject): boolean {
@@ -677,12 +658,13 @@ async function buildLaunchContext(options: StartupOptions) {
   }
 
   const nodeId = options.nodeId || deviceName
-  const appFullId = getFullAppId(options.appId, options.ownerUserId)
+  const appInstanceId = `${options.appId}@${options.ownerUserId}`
   const serviceToken = await generateAppServiceToken(
     options.appId,
     options.ownerUserId,
     deviceName,
     nodePrivateKeyPem,
+    appInstanceId,
   )
   const nodeDaemonToken = await generateAppServiceToken(
     'node-daemon',
@@ -705,12 +687,23 @@ async function buildLaunchContext(options: StartupOptions) {
     nodeId,
     options.appId,
     options.ownerUserId,
-    spec,
   )
-  const appDoc = getNestedObject(appInstanceConfig, ['app_spec', 'app_doc']) ||
-    getNestedObject(spec, ['app_doc'])
+  if (getNestedString(spec, ['app_instance_id']) !== appInstanceId) {
+    throw new Error(`app spec identity does not match ${appInstanceId}`)
+  }
+  if (
+    getNestedString(appInstanceConfig, ['node_execution_spec', 'app_instance_id']) !==
+      appInstanceId
+  ) {
+    throw new Error(`node execution identity does not match ${appInstanceId}`)
+  }
+  const appDoc = getNestedObject(spec, ['app_doc'])
   if (!appDoc) {
     throw new Error('app_doc missing from app spec')
+  }
+  const appDid = getNestedString(spec, ['app_did'])
+  if (!appDid) {
+    throw new Error('app_did missing from app spec')
   }
 
   const env: Record<string, string> = {
@@ -718,12 +711,17 @@ async function buildLaunchContext(options: StartupOptions) {
     BUCKYOS_ZONE_CONFIG: JSON.stringify(zoneConfig),
     BUCKYOS_THIS_DEVICE: JSON.stringify(deviceConfig),
     BUCKYOS_HOST_GATEWAY: '127.0.0.1',
+    BUCKYOS_APP_DID: appDid,
+    BUCKYOS_APP_ID: options.appId,
+    BUCKYOS_APP_INSTANCE_ID: appInstanceId,
+    BUCKYOS_OWNER_USER_ID: options.ownerUserId,
+    BUCKYOS_DATA_DIR: getAppDataDir(buckyosRoot, options.appId, options.ownerUserId),
+    BUCKYOS_APP_TOKEN: serviceToken,
     app_instance_config: JSON.stringify(appInstanceConfig),
     app_media_info: JSON.stringify({
       pkg_id: '',
       full_path: '',
     }),
-    [getSessionTokenEnvKey(appFullId, true)]: serviceToken,
   }
 
   if (hasHostScriptPkg(appDoc)) {

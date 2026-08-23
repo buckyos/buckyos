@@ -99,16 +99,7 @@ export async function createDeterministicTarGz(
       const header = tarHeader(source)
       await writeAll(tar, header)
       if (source.kind === 'file') {
-        const input = await Deno.open(source.physicalPath, { read: true })
-        try {
-          await input.readable.pipeTo(tar.writable, { preventClose: true })
-        } finally {
-          try {
-            input.close()
-          } catch {
-            // The stream closes its resource on successful completion.
-          }
-        }
+        await copyFileToWriter(source.physicalPath, tar)
         const padding = (BLOCK_SIZE - source.size % BLOCK_SIZE) % BLOCK_SIZE
         if (padding) await writeAll(tar, new Uint8Array(padding))
       }

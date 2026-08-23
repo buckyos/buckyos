@@ -38,7 +38,7 @@ stop_buckyos_containers() {
   echo "[buckyos] preinstall: stopping BuckyOS docker containers (best effort)"
   local raw_container_ids
   local container_ids
-  raw_container_ids="$(docker ps -aq --filter "label=buckyos.full_appid" 2>/dev/null || true)"
+  raw_container_ids="$(docker ps -aq --filter "label=buckyos.app_instance_id" 2>/dev/null || true)"
   if [ -z "$raw_container_ids" ]; then
     echo "[buckyos] preinstall: no BuckyOS docker containers found"
     return

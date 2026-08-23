@@ -773,15 +773,15 @@ AppDoc 使用语义版本 PackageId，并在 `SubPkgDesc.pkg_objid` 单独保存
 
 在写 AppSpec、materialize package 或触发 scheduler 前完成：
 
-- [ ] AppDID canonical + raw-hostname round-trip 校验。
-- [ ] AppDoc DID 与 resolver snapshot 一致。
-- [ ] 每个自有 SubPkgDesc 的 PackageId name 属于 AppId namespace。
-- [ ] 每个部署 PackageId 携带 Package Meta ObjectId。
-- [ ] Package Meta 回读 ObjectId 与计划一致。
-- [ ] PackageMeta.name 与 SubPkgDesc.pkg_id.name 完全一致。
-- [ ] PackageMeta version 与 PackageId version 一致。
-- [ ] qualifier 与目标 OS/arch selector 一致。
-- [ ] subpackage name 和 archive 内容满足安全约束。
+- [x] AppDID canonical + raw-hostname round-trip 校验。
+- [x] AppDoc DID 与 resolver snapshot 一致。
+- [x] 每个自有 SubPkgDesc 的 PackageId name 属于 AppId namespace。
+- [x] 每个部署 PackageId 携带 Package Meta ObjectId。
+- [x] Package Meta 回读 ObjectId 与计划一致。
+- [x] PackageMeta.name 与 SubPkgDesc.pkg_id.name 完全一致。
+- [x] PackageMeta version 与 PackageId version 一致。
+- [x] qualifier 与目标 OS/arch selector 一致。
+- [x] subpackage name 和 archive 内容满足安全约束。
 
 ---
 
@@ -985,85 +985,95 @@ volume     = buckyos-instance-{RuntimeKey}
 
 ### DID/AppId
 
-- [ ] `did:web:filebrowser.buckyos.ai <-> filebrowser.buckyos.ai` 严格往返。
-- [ ] `did:bns:filebrowser.buckyos <-> filebrowser.buckyos.bns.did` 严格往返。
-- [ ] 反向统一使用 `DID::from_str(raw_hostname)`，不会把多 label `*.bns.did` 错判成 did:web。
-- [ ] DID path form、fragment、非法/冲突 `.did` Web hostname 被拒绝作为 AppDID。
-- [ ] AppDoc 不含 name 仍能构造稳定 AppDoc ObjectId。
+- [x] `did:web:filebrowser.buckyos.ai <-> filebrowser.buckyos.ai` 严格往返。
+- [x] `did:bns:filebrowser.buckyos <-> filebrowser.buckyos.bns.did` 严格往返。
+- [x] 反向统一使用 `DID::from_str(raw_hostname)`，不会把多 label `*.bns.did` 错判成 did:web。
+- [x] DID path form、fragment、非法/冲突 `.did` Web hostname 被拒绝作为 AppDID。
+- [x] AppDoc 不含 name 仍能构造稳定 AppDoc ObjectId。
 
 ### 安装与身份
 
-- [ ] Alice/Bob 安装同一 AppDID，产生两个不同 AppInstanceId。
-- [ ] Alice 不能同时创建同一 AppDID 的两个 Spec。
-- [ ] Alice 从 v1 升级 v2 后 AppId/AppInstanceId、数据目录、AppName/AppHostName/AppIndex 不变。
-- [ ] 卸载再安装后 registry 分配不变。
-- [ ] Zone Owner 安装不产生 ZoneInstalled 或 `zone/apps` 记录。
-- [ ] Zone 全用户访问只能通过 availability policy 获得。
-- [ ] Control Panel 生成 Plan 后没有 AppSpec/registry/NodeConfig side effect；只有 scheduler claim/execute 后才进入 installed desired state。
-- [ ] 同一 `(AppInstanceId, task_id, fingerprint)` 重放得到同一执行结果，不重复分配 index/hostname。
-- [ ] beta 2.2 从空 SystemConfig 先创建 registry，再执行 bootstrap InstallPlan；带旧 App/NodeConfig 数据启动时明确拒绝并要求全新构造。
+- [x] Alice/Bob 安装同一 AppDID，产生两个不同 AppInstanceId。
+- [x] Alice 不能同时创建同一 AppDID 的两个 Spec。
+- [x] Alice 从 v1 升级 v2 后 AppId/AppInstanceId、数据目录、AppName/AppHostName/AppIndex 不变。
+- [x] 卸载再安装后 registry 分配不变。
+- [x] Zone Owner 安装不产生 ZoneInstalled 或 `zone/apps` 记录。
+- [x] Zone 全用户访问只能通过 availability policy 获得。
+- [x] Control Panel 生成 Plan 后没有 AppSpec/registry/NodeConfig side effect；只有 scheduler claim/execute 后才进入 installed desired state。
+- [x] 同一 `(AppInstanceId, task_id, fingerprint)` 重放得到同一执行结果，不重复分配 index/hostname。
+- [x] beta 2.2 从空 SystemConfig 先创建 registry，再执行 bootstrap InstallPlan；带旧 App/NodeConfig 数据启动时明确拒绝并要求全新构造。
 
 ### Agent 与 System service
 
-- [ ] AgentDID/AgentId 与 runtime AppDID/AppInstanceId 分别保存，不互相伪装。
-- [ ] 两个 AgentDID 可以绑定同一 runtime AppInstance，删除一个 binding 不停止共享 runtime。
-- [ ] runtime App 卸载前存在 Agent binding 时被拒绝。
-- [ ] Agent gateway/service endpoint 精确指向 binding 的 AppInstanceId/service_name，Agent token principal 仍是 AgentDID。
-- [ ] `did:*` 字符串进入普通 App 分支；`kernel`、`control-panel` 等非 DID 字符串进入 SystemServiceId 分支，且不会被 `DID::from_str` 推断成 did:web。
+- [x] AgentDID/AgentId 与 runtime AppDID/AppInstanceId 分别保存，不互相伪装。
+- [x] 两个 AgentDID 可以绑定同一 runtime AppInstance，删除一个 binding 不停止共享 runtime。
+- [x] runtime App 卸载前存在 Agent binding 时被拒绝。
+- [x] Agent gateway/service endpoint 精确指向 binding 的 AppInstanceId/service_name，Agent token principal 仍是 AgentDID。
+- [x] `did:*` 字符串进入普通 App 分支；`kernel`、`control-panel` 等非 DID 字符串进入 SystemServiceId 分支，且不会被 `DID::from_str` 推断成 did:web。
 
 ### Registry 与 hostname
 
-- [ ] 多个相同首 label 的 AppDID 得到渐进增长且唯一的 AppName。
-- [ ] Zone Owner 默认 host 可省略 Owner；普通 Owner 默认带 DNS-safe suffix。
-- [ ] AppName/Owner 拼接冲突时得到稳定 hash fallback。
-- [ ] `_`、`www`、`sys`、shortcut 和默认 hostname 冲突全部拒绝。
-- [ ] 并发分配只有一个 CAS 成功，重试后 registry 无重复 name/index/host。
-- [ ] registry 损坏或 unknown schema version 时 fail closed，不覆盖数据。
+- [x] 多个相同首 label 的 AppDID 得到渐进增长且唯一的 AppName。
+- [x] Zone Owner 默认 host 可省略 Owner；普通 Owner 默认带 DNS-safe suffix。
+- [x] AppName/Owner 拼接冲突时得到稳定 hash fallback。
+- [x] `_`、`www`、`sys`、shortcut 和默认 hostname 冲突全部拒绝。
+- [x] 并发分配只有一个 CAS 成功，重试后 registry 无重复 name/index/host。
+- [x] registry 损坏或 unknown schema version 时 fail closed，不覆盖数据。
 
 ### Scheduler/Node/runtime
 
-- [ ] NodeConfig.apps key 精确等于 AppInstanceId，不包含 NodeId。
-- [ ] node-daemon 只读取单个 NodeConfig revision 即可执行，不回读 AppSpec/AppDoc/Registry；配置中不存在跨 generation 混合字段。
-- [ ] runtime report 路径为 `services/{app_instance_id}/instances/{node}`。
-- [ ] 不同 Owner 的同一 AppDID 获得不同 AppIndex，在同 Node 按旧公式得到不同 `www` port。
-- [ ] `app_index = 3470` 仍可分配合法端口，下一 index 明确返回容量错误且不复用旧 index。
-- [ ] old DeploymentIdentity report 不能覆盖新部署状态。
-- [ ] Static Web 不依赖虚假运行副本，但 gateway/static evidence 绑定精确 AppInstanceId 和 Package ObjId。
-- [ ] AppSpec/NodeExecutionSpec/gateway 中 AppName/AppHostName/AppIndex 只读投影与同一 registry revision 一致，调用者不能指定或回写。
+- [x] NodeConfig.apps key 精确等于 AppInstanceId，不包含 NodeId。
+- [x] node-daemon 只读取单个 NodeConfig revision 即可执行，不回读 AppSpec/AppDoc/Registry；配置中不存在跨 generation 混合字段。
+- [x] runtime report 路径为 `services/{app_instance_id}/instances/{node}`。
+- [x] 不同 Owner 的同一 AppDID 获得不同 AppIndex，在同 Node 按旧公式得到不同 `www` port。
+- [x] `app_index = 3470` 仍可分配合法端口，下一 index 明确返回容量错误且不复用旧 index。
+- [x] old DeploymentIdentity report 不能覆盖新部署状态。
+- [x] Static Web 不依赖虚假运行副本，但 gateway/static evidence 绑定精确 AppInstanceId 和 Package ObjId。
+- [x] AppSpec/NodeExecutionSpec/gateway 中 AppName/AppHostName/AppIndex 只读投影与同一 registry revision 一致，调用者不能指定或回写。
 
 ### PackageEnv
 
-- [ ] 主包、subpackage、`all`、各平台 qualifier 通过新 namespace 校验。
-- [ ] 非当前 AppId namespace 的自有 package 在 Inspect 阶段被拒绝。
-- [ ] PackageId 缺少 Package Meta ObjectId 时不能进入 Deploy。
-- [ ] Alice v1/Bob v2 在同 Node 安装到不同严格目录并分别启动正确内容。
-- [ ] dotted package name 剥离 qualifier 后保留完整 name，不退化为最后一段。
-- [ ] friendly link 改变不会改变已经 pin ObjId 的运行实例。
-- [ ] archive path/symlink escape 被拒绝且不会留下半安装目录。
+- [x] 主包、subpackage、`all`、各平台 qualifier 通过新 namespace 校验。
+- [x] 非当前 AppId namespace 的自有 package 在 Inspect 阶段被拒绝。
+- [x] PackageId 缺少 Package Meta ObjectId 时不能进入 Deploy。
+- [x] Alice v1/Bob v2 在同 Node 安装到不同严格目录并分别启动正确内容。
+- [x] dotted package name 剥离 qualifier 后保留完整 name，不退化为最后一段。
+- [x] friendly link 改变不会改变已经 pin ObjId 的运行实例。
+- [x] archive path/symlink escape 被拒绝且不会留下半安装目录。
 
 ### SDK/Auth
 
-- [ ] `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR` 值符合新定义。
-- [ ] 数据目录按 `(owner_user_id, app_id)` 隔离并跨升级稳定。
-- [ ] RuntimeKey 使用 canonical AppInstanceId 的完整 SHA-256 lowercase hex golden vector；Docker/systemd 名无非法字符，label 可恢复完整 AppInstanceId。
-- [ ] 登录和 token verification 精确比较 AppInstanceId，不能只比较 AppId。
-- [ ] Desktop 同名 AppDID、不同 Owner 的 launcher 不合并。
+- [x] `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR` 值符合新定义。
+- [x] 数据目录按 `(owner_user_id, app_id)` 隔离并跨升级稳定。
+- [x] RuntimeKey 使用 canonical AppInstanceId 的完整 SHA-256 lowercase hex golden vector；Docker/systemd 名无非法字符，label 可恢复完整 AppInstanceId。
+- [x] 登录和 token verification 精确比较 AppInstanceId，不能只比较 AppId。
+- [x] Desktop 同名 AppDID、不同 Owner 的 launcher 不合并。
 
 ---
 
 ## 12. Definition of Done
 
-- [ ] 代码中不存在 `AppInstallationId`、`AppInstallationScope` 或 `ZoneInstalled`。
-- [ ] 普通 App 的持久路径使用 AppId、运行目标使用 AppInstanceId；Agent 路径使用 AgentId 并通过 AgentServiceBinding 指向 AppInstanceId。
-- [ ] `appid` 对普通 App 只表示 AppDID raw hostname；System principal 的兼容字段由明确 kind 标识为 SystemServiceId。
-- [ ] AppDoc 不继承 PackageMeta，不含身份性 `name/app_name`。
-- [ ] scheduler 是 `system/app_registry` 唯一 writer，完整 JSON 使用 CAS 更新并带 schema_version。
-- [ ] Control Panel 不直接执行 InstallPlan；App desired state、registry allocation、NodeConfig 和 gateway 派生配置都由 scheduler 执行/生成。
-- [ ] AppName/AppHostName/AppIndex 卸载后不自动释放；AppIndex 按 AppInstance 分配并继续使用旧端口公式。
-- [ ] NodeConfig 不再保存带 NodeId 后缀的 App map key。
-- [ ] NodeConfig 是自包含事务，NodeExecutionSpec 包含 node-daemon 所需的完整执行投影和精确 generation。
-- [ ] PackageId 自有 namespace、PackageMeta name、精确 ObjId 和严格目录形成闭环。
-- [ ] SDK 数据目录、进程名、Token、RBAC、gateway 不再混用展示名、短域名和身份。
-- [ ] beta 2.2 安装只从空 SystemConfig 构造，不含旧 AppInstallationId/SystemConfig migration 或兼容读取。
-- [ ] 协议、共享类型、前后端、工具、fixtures、单测和 DV Test 同步完成。
+- [x] 代码中不存在 `AppInstallationId`、`AppInstallationScope` 或 `ZoneInstalled`。
+- [x] 普通 App 的持久路径使用 AppId、运行目标使用 AppInstanceId；Agent 路径使用 AgentId 并通过 AgentServiceBinding 指向 AppInstanceId。
+- [x] `appid` 对普通 App 只表示 AppDID raw hostname；System principal 的兼容字段由明确 kind 标识为 SystemServiceId。
+- [x] AppDoc 不继承 PackageMeta，不含身份性 `name/app_name`。
+- [x] scheduler 是 `system/app_registry` 唯一 writer，完整 JSON 使用 CAS 更新并带 schema_version。
+- [x] Control Panel 不直接执行 InstallPlan；App desired state、registry allocation、NodeConfig 和 gateway 派生配置都由 scheduler 执行/生成。
+- [x] AppName/AppHostName/AppIndex 卸载后不自动释放；AppIndex 按 AppInstance 分配并继续使用旧端口公式。
+- [x] NodeConfig 不再保存带 NodeId 后缀的 App map key。
+- [x] NodeConfig 是自包含事务，NodeExecutionSpec 包含 node-daemon 所需的完整执行投影和精确 generation。
+- [x] PackageId 自有 namespace、PackageMeta name、精确 ObjId 和严格目录形成闭环。
+- [x] SDK 数据目录、进程名、Token、RBAC、gateway 不再混用展示名、短域名和身份。
+- [x] beta 2.2 安装只从空 SystemConfig 构造，不含旧 AppInstallationId/SystemConfig migration 或兼容读取。
+- [x] 协议、共享类型、前后端、工具、fixtures、单测和 DV Test 同步完成。
 - [ ] `cargo test`、`uv run buckyos-build.py` 和 App Installer/升级/多用户 DV Test 通过。
+
+  - [x] App ID 相关 Rust suite、`uv run buckyos-build.py`、App Installer/升级/多用户/Docker DV Test 通过。
+  - [ ] 全量 `cargo test --workspace`：仓库基线 AICC 用例 `proto_mix_04_resource_order_stable` 在本分支修改前后均失败，尚未纳入本任务修复范围。
+
+## 13. 完成记录（2026-08-24）
+
+- 后续 Phase 2-6、7.4 校验、验收矩阵与除全 workspace 基线外的 DoD 已完成。
+- 完整 App Installer DV 结果：4 passed，覆盖 Inspect 无副作用、submit 幂等重放、同 AppDID 双 Owner、v1→v2 原位升级、registry allocation 稳定、Agent runtime 和 Docker runtime；开启自动卸载后同样通过。
+- 构建结果：全量 `uv run buckyos-build.py` 通过；最终 selector/idempotency 修改另以 `buckyos-build.py -s control_panel`、`-s task_manager` 复验。
+- 全量 workspace 唯一已知失败为既有 AICC `protocol_expanded_tests::proto_mix_04_resource_order_stable`；App ID 相关 crate tests 均通过。

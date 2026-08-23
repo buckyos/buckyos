@@ -19,7 +19,7 @@ function Stop-BuckyProcess {
 
 function Stop-BuckyContainers {
   try {
-    $containerIds = docker ps -aq --filter "label=buckyos.full_appid" 2>$null
+    $containerIds = docker ps -aq --filter "label=buckyos.app_instance_id" 2>$null
     if ($LASTEXITCODE -ne 0) {
       Write-Host "Failed to list buckyos docker containers"
       return

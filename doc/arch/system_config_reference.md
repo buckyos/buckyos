@@ -38,10 +38,10 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/profile` | `UserPrivateProfile`，用户私有 Profile，包含显示名以及系统 contact 私有扩展。 | scheduler 初始化管理员；control-panel 创建/接受用户及 profile 更新流程 | Control Panel 用户资料视图；普通用户可自行读写。 |
 | `users/<user_id>/doc` | 用户 DID Document / Owner Document。 | scheduler 初始化管理员；control-panel 创建/接受用户 | system-config DID resolver、登录和权限流程。 |
 | `users/<user_id>/key` | 用户私钥材料。 | control-panel 创建用户 | 用户身份管理。敏感数据。 |
-| `users/<user_id>/apps/<app_id>/spec` | `AppServiceSpec`，用户应用期望状态，包括 app 文档、app_index、enable、expected_instance_count、state、install_config。 | scheduler 初始化预装 app；control-panel app installer | scheduler 调度用户 app；rdb_mgr 读取 app 的 RDB 需求；Control Panel 展示和管理 app。 |
-| `users/<user_id>/agents/<agent_id>/spec` | `AppServiceSpec`，Agent app 的期望状态。 | scheduler 初始化 Jarvis；control-panel agent/app installer | scheduler 调度 Agent；Control Panel 展示和管理 Agent。 |
-| `users/<user_id>/apps/<app_id>/install_record` | `InstallRecord`（app 安装协议 v0.5 D3）：DID 解析快照、app_doc_object_id、package meta ids、pikg digest、target、状态（prepared/deploying/installed/deployed_but_activation_failed/rolled_back/failed）、task id、proof id。长期安装真相；in-flight 事务在 TaskManager `Task.data`。 | control-panel app installer（Prepare 先写 prepared，Activate 成功后改 installed） | Control Panel 升级检查/审计；未来 WebUI 安装状态页。 |
-| `users/<user_id>/agents/<agent_id>/install_record` | 同上，Agent 分树。 | control-panel app installer | 同上。 |
+| `users/<user_id>/apps/<app_id>/spec` | `AppServiceSpec`，以 AppId 为 key、以 AppInstanceId 绑定 Owner；AppName/AppHostName/AppIndex 是 registry 同 revision 的只读投影。 | scheduler InstallPlan executor | scheduler 调度、rdb_mgr、Control Panel 展示和生命周期管理。Control Panel 安装器不得直接创建该 key。 |
+| `users/<user_id>/agents/<agent_id>/spec` | `AgentSpec`，保存 AgentDocument snapshot、AgentId、generation 和指向普通 runtime AppInstanceId/service_name 的 `AgentServiceBinding`。 | scheduler bootstrap/Agent 安装事务 | gateway、service discovery、RBAC、Control Panel Agent 管理。 |
+| `users/<user_id>/apps/<app_id>/install_record` | `InstallRecord`：DID/AppDoc 快照、Package Meta ObjectId、PIKG digest、目标 DeploymentIdentity、task/fingerprint 和安装状态。 | scheduler InstallPlan executor；Control Panel 后续状态收敛 | 安装审计、升级判断和状态聚合。 |
+| `users/<user_id>/agents/<agent_id>/install_record` | `AgentInstallRecord`，记录 AgentId、AgentDoc ObjectId、binding target、generation 和绑定状态。 | scheduler bootstrap/Agent 安装事务 | Agent binding 审计与管理。 |
 | `users/<user_id>/apps/<app_id>/settings` | app 自有 settings JSON。schema 由 app 约定。 | app runtime 通过 `update_my_settings`；也可由管理界面写入 | app runtime 通过 `get_my_settings` 读取。 |
 | `users/<user_id>/agents/<agent_id>/settings` | Agent app 自有 settings JSON。schema 由 Agent app 约定。 | Agent runtime 或管理流程 | Agent runtime 读取自己的配置。 |
 | `users/<user_id>/apps/<app_id>/info` | app 自有 info 路径，RBAC 中允许 app 写。当前未发现系统组件固定 schema。 | app 自己 | app 自有运行信息。 |
@@ -50,7 +50,7 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | `users/<user_id>/desktop/<session_id>/_meta` | 桌面 UI session 元数据，包含名称和创建/更新时间。 | control-panel UI session manager | 桌面状态同步与管理。 |
 | `users/<user_id>/desktop/<session_id>/<state_key>` | 桌面 UI session 的单项状态 JSON。已知 state key 包括 `appearance`、`window_layout`、`app_items_layout`、`widgets_layout`。 | control-panel UI session manager | 桌面状态恢复。 |
 
-`users/<user_id>/apps/<app_id>/spec` 与 `users/<user_id>/agents/<agent_id>/spec` 是当前 scheduler 的主路径。安装器写 spec 前先写同级 `install_record`（v0.5 D3 顺序纪律）。旧工具里仍有 `users/<user_id>/apps/<app_id>/config`，见“旧路径与保留路径”。
+`users/<user_id>/apps/<app_id>/spec` 与 `users/<user_id>/agents/<agent_id>/spec` 分别保存普通 App desired state 和 Agent identity/binding。beta 2.2 不读取旧 `config` 或旧 Agent AppServiceSpec。
 
 ## agents/
 
@@ -69,7 +69,7 @@ system-config 是 Zone 内的 KV 真相源。value 在存储层是字符串，�
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
 | `services/<service_id>/spec` | `KernelServiceSpec`，系统/框架服务期望状态。 | scheduler 初始化；少量管理流程可更新 state | scheduler 调度服务；rdb_mgr 读取服务 RDB 需求。 |
-| `services/<service_id>/instances/<node_id>` | `ServiceInstanceReportInfo`，单个节点上的服务实例上报，包含状态、端口、pid、时间等。`service_id` 也可为 app 实例服务名，如 `<app_id>@<user_id>`。 | service runtime / node-daemon 管理的实例通过 ControlPanelClient 上报 | scheduler 聚合成 `services/<service_id>/info`。 |
+| `services/<service_id>/instances/<node_id>` | `ServiceInstanceReportInfo`，单个节点上的实例上报。普通 App 的 `service_id` 精确等于 canonical AppInstanceId。 | service runtime / node-daemon | scheduler 聚合成 `services/<service_id>/info`，并以 DeploymentIdentity/generation 拒绝旧报告覆盖新部署。 |
 | `services/<service_id>/info` | `ServiceInfo`，scheduler 派生出的服务可用节点列表和 selector 信息。 | scheduler | gateway、服务发现、调用方选择服务节点。 |
 | `services/<service_id>/settings` | 服务自有 settings JSON。通用路径，schema 由服务约定。 | 服务 runtime 或管理界面 | 对应服务通过 runtime 读取。 |
 
@@ -92,7 +92,8 @@ scheduler 初始化当前会创建这些系统服务 spec：
 
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
-| `services/gateway/settings` | `GatewaySettings`，目前主要是 `shortcuts`。 | rootfs boot template；buckycli 旧 app 创建流程可更新 shortcut | scheduler 生成 gateway 派生配置；gateway 管理。 |
+| `services/gateway/settings` | `ZoneGatewaySettings`，目前主要是 `shortcuts`。 | rootfs boot seed；scheduler shortcut mutation executor | scheduler 生成 gateway 派生配置；shortcut 与默认 hostname 通过 AppRegistry revision 串行化。 |
+| `services/control_panel/app_availability/policies/<app_instance_id>` | `AppAvailabilityPolicy`，显式用户/组/guest 规则和 revision。 | Control Panel（Owner session，CAS） | apps.list/check、verify-hub、scheduler gateway access mode 投影。 |
 
 `services/gateway/spec` 当前不是 scheduler 初始化的系统服务 spec。
 
@@ -155,21 +156,15 @@ AI provider 的运行时主配置仍是 `services/aicc/settings`；`services/con
 | `nodes/<node_id>/gateway_info` | `NodeGatewayInfo`，scheduler 派生的新 gateway 视图，包含 node_info、app_info、service_info、route map、routes、DID IP hints、trust key 等。 | scheduler | node-daemon / node gateway 读取并生成本机 gateway 运行配置。 |
 | `nodes/<node_id>/gateway_config` | 较旧的低层 gateway 配置 JSON。初始化为空；scheduler 会根据 SN、TLS/ACME、static web app 等重新生成。 | scheduler | node-daemon / cyfs-gateway 兼容读取。 |
 
-`nodes/<node_id>/config` 中 scheduler 会通过 JSON Pointer 局部更新以下位置：
-
-- `/state`
-- `/kernel/<service_id>`
-- `/apps/<instance_id>`
-- `/apps/<instance_id>/target_state`
-- `/apps/<instance_id>/app_spec/state`
-
-app instance id 当前按 `<app_id>@<user_id>@<node_id>` 组织；服务聚合 id 通常是 `<service_id>` 或 `<app_id>@<user_id>`。
+`nodes/<node_id>/config` 是 scheduler 写入的自包含目标 revision。`apps` map key 精确等于 canonical AppInstanceId `{app_id}@{owner_user_id}`，不包含 NodeId；value 的 `NodeExecutionSpec` 包含 node-daemon 所需的 AppDID、AppDoc ObjectId、packages、permission、service config 和精确 deployment generation。node-daemon 不回读 AppSpec、AppDoc 或 Registry 拼装执行配置。
 
 ## system/
 
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
-| `system/install_settings` | 安装期 seed 配置。rootfs boot template 中包含 `pre_install_apps` 和 install_config。 | rootfs boot template / scheduler 初始化导入 | scheduler 首次初始化时读取，用于创建预装 app spec。启动完成后不是运行时主配置。 |
+| `system/install_settings` | 安装期 seed 配置。rootfs boot template 中包含预装 App 输入。 | rootfs boot template / scheduler 初始化导入 | scheduler 首次初始化时只生成 bootstrap InstallPlan/staging，不直接预填普通 AppSpec。 |
+| `system/app_registry` | 严格 versioned `AppRegistry`，保存稳定 AppName、AppHostName 和按 AppInstance 分配的 AppIndex。 | scheduler InstallPlan/shortcut executor（唯一 writer，完整 JSON CAS） | scheduler 校验所有 AppSpec 投影并分配默认 hostname/端口索引。 |
+| `system/scheduler/install_plan_executions/<execution_key>` | `InstallPlanExecutionRecord`，保存 claim、commit point、registry/spec revision、错误和幂等结果。 | scheduler | submit/status/cancel/retry、重启恢复和 CAS 冲突处理。 |
 | `system/system_pkgs` | 系统包信息。当前初始化为空对象。 | scheduler 初始化 | 包管理保留路径。 |
 | `security/verify-hub/key` | verify-hub 私钥 PEM。 | scheduler 初始化 | verify-hub 启动时读取，用于 token 签发。敏感数据。 |
 | `system/rbac/policy` | Casbin policy 文本。包含初始策略、用户角色、节点角色、服务/app/kernel 分组等。 | scheduler 初始化和重建；control-panel 用户流程会追加用户分组；buckycli 旧流程会追加 app 分组 | system-config RBAC、verify-hub / 权限判断。 |
@@ -186,7 +181,7 @@ scheduler 首次启动时，如果 `boot/config` 不存在，会合并 rootfs bo
 1. 写入 Zone 身份：`boot/config`。
 2. 写入管理员、OOD、内置 Agent：`users/*`、`devices/*`、`agents/*`。
 3. 写入系统服务 spec 和 settings：`services/*/spec`、`services/*/settings`。
-4. 根据 `system/install_settings.pre_install_apps` 创建预装 app spec。
+4. 创建空 `system/app_registry`，根据预装输入 staging bootstrap InstallPlan；只有 scheduler claim/execute 后才创建普通 AppSpec。
 5. 写入初始 node target：`nodes/<ood>/config`、`nodes/<ood>/gateway_config`、`nodes/<ood>/gateway_info`。
 6. 写入安全和调度基础数据：`system/rbac/policy`、`security/verify-hub/key`、`system/system_pkgs`。
 
@@ -194,7 +189,7 @@ scheduler 首次启动时，如果 `boot/config` 不存在，会合并 rootfs bo
 
 scheduler 从 system-config dump 当前状态后执行确定性推导：
 
-1. 从 `devices/<node>/info`、`users/<user>/settings`、`services/<service>/spec`、`users/<user>/apps|agents/<app>/spec` 识别调度输入。
+1. 从 `devices/<node>/info`、`users/<user>/settings`、`services/<service>/spec`、普通 AppSpec 与 AgentSpec binding 识别调度输入，并先严格校验 AppRegistry/schema。
 2. 从 `services/<service>/instances/<node>` 聚合运行实例状态。
 3. 更新 `nodes/<node>/config`，让 node-daemon 收敛本机目标状态。
 4. 生成 `services/<service>/info`、`nodes/<node>/gateway_info`、`nodes/<node>/gateway_config`。
@@ -217,12 +212,12 @@ services/<service_id>/info
 
 gateway 和服务发现逻辑应优先使用 scheduler 派生的 `services/<service_id>/info`，而不是直接枚举 instance report。
 
-## 旧路径与保留路径
+## 禁止的旧路径
 
 | Key | 状态 | 说明 |
 | --- | --- | --- |
-| `users/<user_id>/apps/<app_id>/config` | 旧路径 | buckycli 和 node-daemon 里仍有读写逻辑，但当前 scheduler / Control Panel 主路径是 `users/<user_id>/apps/<app_id>/spec`。 |
-| `system/apps/<app_id>/spec` | 当前多为逻辑路径 | Control Panel 对部分 built-in app 会构造类似路径用于展示；当前未发现系统初始化持久写入该 key。 |
+| `users/<user_id>/apps/<app_id>/config` | 已删除 | beta 2.2 不兼容读取；必须从空 SystemConfig 构造。 |
+| `zone/apps/*`、`system/apps/<app_id>/spec` | 已删除 | 普通 App 只在真实 Owner 的 `users/<owner>/apps` 下；SystemBuiltin 不伪造普通 AppSpec。 |
 | `services/<service_id>/<config_name>` | 通用服务私有路径 | runtime 提供 helper 生成该路径，但固定语义只应按具体服务文档解释。 |
 | `users/<user_id>/apps|agents/<app_id>/<config_name>` | 通用 app 私有路径 | runtime 提供 helper 生成该路径，固定语义只应按 app 自己的 schema 解释。 |
 

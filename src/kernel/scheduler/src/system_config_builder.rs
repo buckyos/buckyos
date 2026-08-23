@@ -192,7 +192,6 @@ pub struct SystemInstallSettings {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PreInstallAppConfig {
-    #[serde(alias = "app-doc")]
     pub app_doc: AppDoc,
     #[serde(flatten)]
     pub install_config: ServiceSpecConfig,
@@ -1294,7 +1293,7 @@ async fn build_kernel_service_spec(
     mut service_doc: AppDoc,
 ) -> Result<KernelServiceSpec> {
     let _service_did = PackageId::unique_name_to_did(pkg_name);
-    attach_current_platform_service_pkg(&mut service_doc);
+    attach_current_platform_service_pkg(&mut service_doc, pkg_name);
 
     let mut install_config = ServiceSpecConfig::default();
     let service_expose_config = ServiceExposeConfig {
@@ -1327,10 +1326,8 @@ async fn build_kernel_service_spec(
     })
 }
 
-fn attach_current_platform_service_pkg(service_doc: &mut AppDoc) {
-    let app_id = AppId::from_app_did(service_doc.app_did())
-        .expect("generated system service AppDoc must have a canonical AppId");
-    let current_pkg = SubPkgDesc::new(format!("{app_id}#{}", service_doc.version));
+fn attach_current_platform_service_pkg(service_doc: &mut AppDoc, service_id: &str) {
+    let current_pkg = SubPkgDesc::new(service_id.to_string());
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -1517,6 +1514,21 @@ mod beta22_tests {
             app_doc,
             install_config: ServiceSpecConfig::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn generated_kernel_service_uses_system_service_package_id() {
+        let spec = build_kernel_service_spec(
+            VERIFY_HUB_UNIQUE_ID,
+            3300,
+            1,
+            generate_verify_hub_service_doc(),
+        )
+        .await
+        .unwrap();
+        let packages = spec.service_doc.pkg_list.iter();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].1.pkg_id, VERIFY_HUB_UNIQUE_ID);
     }
 
     #[tokio::test]

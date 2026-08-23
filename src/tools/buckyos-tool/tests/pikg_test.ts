@@ -313,6 +313,25 @@ Deno.test('deterministic tar.gz rejects source symlinks that escape the input ro
     await createDeterministicTarGz(source, first)
     await createDeterministicTarGz(source, second)
     assertEquals((await digestFile(first)).sha256, (await digestFile(second)).sha256)
+    const tarBytes = await new Response(
+      new Blob([await Deno.readFile(first)]).stream().pipeThrough(new DecompressionStream('gzip')),
+    ).bytes()
+    const decoder = new TextDecoder()
+    const entries = new Map<string, string>()
+    let offset = 0
+    while (offset + 512 <= tarBytes.length && tarBytes[offset] !== 0) {
+      const header = tarBytes.subarray(offset, offset + 512)
+      const name = decoder.decode(header.subarray(0, 100)).replace(/\0.*$/, '')
+      const sizeText = decoder.decode(header.subarray(124, 136)).replace(/\0.*$/, '').trim()
+      const size = Number.parseInt(sizeText, 8)
+      offset += 512
+      if (!name.endsWith('/')) {
+        entries.set(name, decoder.decode(tarBytes.subarray(offset, offset + size)))
+      }
+      offset += Math.ceil(size / 512) * 512
+    }
+    assertEquals(entries.get('a.txt'), 'a')
+    assertEquals(entries.get('nested/b.txt'), 'b')
 
     if (Deno.build.os !== 'windows') {
       const outside = join(root, 'outside.txt')
