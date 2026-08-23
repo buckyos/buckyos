@@ -399,7 +399,7 @@ pub async fn set_pkg_meta(meta_path: &str, db_path: &str) -> Result<(), String> 
         .map_err(|e| format!("Failed to parse meta_path: {}", e.to_string()))?;
     let (meta_obj_id, meta_obj_id_str) = meta_data.gen_obj_id();
 
-    let meta_db = MetaIndexDb::new(db_path, false);
+    let meta_db = MetaIndexDb::create_or_open(db_path);
     if meta_db.is_err() {
         return Err(format!(
             "Failed to open meta_db: {}",

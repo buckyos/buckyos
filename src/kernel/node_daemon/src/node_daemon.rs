@@ -290,7 +290,7 @@ async fn index_static_dir_pkg_meta_from_named_store(
     })?;
 
     let meta_db =
-        MetaIndexDb::new(pkg_env_path.join("pkgs/meta_index.db"), false).map_err(|err| {
+        MetaIndexDb::create_or_open(pkg_env_path.join("pkgs/meta_index.db")).map_err(|err| {
             NodeDaemonErrors::ReasonError(format!(
                 "open pkg env meta db for {} failed: {}",
                 resolved_pkg_id, err
@@ -2391,7 +2391,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let pkg_meta_str = serde_json::to_string(&pkg_meta).unwrap();
         let (meta_obj_id, _) = pkg_meta.gen_obj_id();
         let meta_obj_id_str = meta_obj_id.to_string();
-        let meta_db = MetaIndexDb::new(pkg_env_path.join("pkgs/meta_index.db"), false).unwrap();
+        let meta_db = MetaIndexDb::create_or_open(pkg_env_path.join("pkgs/meta_index.db")).unwrap();
         let package_id = pkg_meta.get_package_id();
 
         meta_db

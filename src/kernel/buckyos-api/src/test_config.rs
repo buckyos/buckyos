@@ -421,11 +421,11 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
     let mut docs = HashMap::new();
     let verify_hub_doc = crate::generate_verify_hub_service_doc();
     let verify_hub_json = serde_json::to_string(&verify_hub_doc).unwrap();
-    let verify_hub_did = PackageId::unique_name_to_did(VERIFY_HUB_UNIQUE_ID);
+    let verify_hub_did = PackageId::unique_name_to_did(VERIFY_HUB_UNIQUE_ID).unwrap();
 
     let scheduler_doc = crate::generate_scheduler_service_doc();
     let scheduler_json = serde_json::to_string(&scheduler_doc).unwrap();
-    let scheduler_did = PackageId::unique_name_to_did(SCHEDULER_SERVICE_UNIQUE_ID);
+    let scheduler_did = PackageId::unique_name_to_did(SCHEDULER_SERVICE_UNIQUE_ID).unwrap();
 
     // let repo_doc = crate::generate_repo_service_doc();
     // let repo_did = PackageId::unique_name_to_did(REPO_SERVICE_UNIQUE_ID);
@@ -433,19 +433,19 @@ pub fn gen_kernel_service_docs() -> HashMap<DID, EncodedDocument> {
 
     let smb_doc = crate::generate_smb_service_doc();
     let smb_json = serde_json::to_string(&smb_doc).unwrap();
-    let smb_did = PackageId::unique_name_to_did(SMB_SERVICE_UNIQUE_ID);
+    let smb_did = PackageId::unique_name_to_did(SMB_SERVICE_UNIQUE_ID).unwrap();
 
     let msg_center_doc = crate::generate_msg_center_service_doc();
     let msg_center_json = serde_json::to_string(&msg_center_doc).unwrap();
-    let msg_center_did = PackageId::unique_name_to_did(MSG_CENTER_SERVICE_UNIQUE_ID);
+    let msg_center_did = PackageId::unique_name_to_did(MSG_CENTER_SERVICE_UNIQUE_ID).unwrap();
 
     let opendan_doc = crate::generate_opendan_service_doc();
     let opendan_json = serde_json::to_string(&opendan_doc).unwrap();
-    let opendan_did = PackageId::unique_name_to_did(OPENDAN_SERVICE_UNIQUE_ID);
+    let opendan_did = PackageId::unique_name_to_did(OPENDAN_SERVICE_UNIQUE_ID).unwrap();
 
     let workflow_doc = crate::generate_workflow_service_doc();
     let workflow_json = serde_json::to_string(&workflow_doc).unwrap();
-    let workflow_did = PackageId::unique_name_to_did(WORKFLOW_SERVICE_UNIQUE_ID);
+    let workflow_did = PackageId::unique_name_to_did(WORKFLOW_SERVICE_UNIQUE_ID).unwrap();
     docs.insert(
         verify_hub_did,
         EncodedDocument::from_str(verify_hub_json).unwrap(),
