@@ -339,7 +339,6 @@ export function toAgentEntity(
   const raw = asRecord(agentInfo)
   const settings = asRecord(raw.settings)
   const spec = asRecord(raw.spec)
-  const appDoc = asRecord(raw.app_doc ?? spec.app_doc)
   const profile = asRecord(settings.profile ?? raw.profile)
   const capabilities = [
     ...stringArray(settings.capabilities),
@@ -351,9 +350,6 @@ export function toAgentEntity(
   const agentId = firstString(
     raw.agent_id,
     raw.agentId,
-    raw.app_id,
-    raw.appId,
-    appDoc.name,
     agentDid,
     fallback.id,
   ) ?? fallback.id
@@ -363,8 +359,6 @@ export function toAgentEntity(
     settings.display_name,
     raw.display_name,
     raw.name,
-    appDoc.show_name,
-    appDoc.showName,
     agentId,
     fallback.displayName,
   ) ?? fallback.displayName
@@ -376,7 +370,7 @@ export function toAgentEntity(
     avatarUrl: firstString(profile.avatar, profile.avatar_url, profile.avatarUrl, fallback.avatarUrl),
     did: agentDid,
     agentType: firstString(profile.agent_type, settings.agent_type, fallback.agentType) ?? fallback.agentType,
-    version: firstString(raw.version, settings.version, appDoc.version, fallback.version) ?? fallback.version,
+    version: firstString(raw.version, settings.version, fallback.version) ?? fallback.version,
     status,
     capabilities: dedupedCapabilities.length > 0 ? dedupedCapabilities : fallback.capabilities,
     socialAccounts: socialAccountsFromUnknown(settings.bindings),

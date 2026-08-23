@@ -38,8 +38,8 @@ use agent_tool::{
     LlmUnderstandMediaTool, NoopFileWriteAudit, SessionRuntimeContext, WriteFileTool,
 };
 use buckyos_api::get_buckyos_api_runtime;
-use serde_json::json;
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::agent_config::FilesystemPolicy;
 use crate::paths;
@@ -294,8 +294,7 @@ pub struct BashProgressUpdate {
     pub elapsed_ms: u64,
 }
 
-pub type BashProgressSink =
-    Arc<dyn Fn(&SessionRuntimeContext, &BashProgressUpdate) + Send + Sync>;
+pub type BashProgressSink = Arc<dyn Fn(&SessionRuntimeContext, &BashProgressUpdate) + Send + Sync>;
 
 impl TmuxBashRunner {
     pub fn new(runtime_dir: impl Into<PathBuf>) -> Self {
@@ -1186,7 +1185,10 @@ mod tests {
         let update = parse_progress_line(line).expect("progress update");
         assert_eq!(update.method, "video.img2video");
         assert_eq!(update.elapsed_ms, 5000);
-        assert_eq!(strip_progress_lines(&format!("before\n{line}\nafter\n")), "before\nafter");
+        assert_eq!(
+            strip_progress_lines(&format!("before\n{line}\nafter\n")),
+            "before\nafter"
+        );
     }
 
     #[test]

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "doc_type": "app",
+  "did": "did:web:app.example",
+  "version": "1.0.0",
+  "app_type": "web",
+  "owner": "did:web:publisher.example",
+  "controller": "did:web:publisher.example",
+  "author": "did:web:publisher.example",
+  "create_time": 1700000000,
+  "last_update_time": 1700000000,
+  "exp": 1850000000,
+  "pkg_list": {
+    "web": {
+      "pkg_id": "all.web.app.example#1.0.0",
+      "pkg_objid": "pkg:1111111111111111111111111111111111111111111111111111111111111111",
+      "selector": {},
+      "required": true
+    }
+  },
+  "show_name": "Example Web App",
+  "selector_type": "static",
+  "service_config_tips": {}
+}

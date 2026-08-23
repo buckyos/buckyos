@@ -53,12 +53,12 @@ use crate::msg_center_pump::{self, PumpConfig};
 use crate::paths;
 use crate::round_history::SessionHistoryReader;
 use crate::session_event_pump::SessionEventPump;
-use crate::task_event_pump::TaskEventPump;
 use crate::session_model::{
     AgentTaskBinding, PendingInput, SessionKind, SessionMeta, SessionStatus, SessionSummary,
     TimerEventKind, TimerReason, TimerTargetType, TimerTriggerType, UI_CLOCK_TIMER_EVENT_ID,
     UI_CLOCK_TIMER_INTERVAL_MS,
 };
+use crate::task_event_pump::TaskEventPump;
 use crate::tool_plan::{self, ResolvedToolPlan, SessionBinRenderer, ToolPlanToml};
 
 /// Reason string we tag msg-center ack updates with so audit logs can tell
@@ -353,9 +353,10 @@ impl AIAgent {
                 pump_shutdown.clone(),
             )
         });
-        let task_event_pump = runtime.kevent_client.as_ref().map(|kc| {
-            TaskEventPump::new(agent_name.clone(), kc.clone(), pump_shutdown.clone())
-        });
+        let task_event_pump = runtime
+            .kevent_client
+            .as_ref()
+            .map(|kc| TaskEventPump::new(agent_name.clone(), kc.clone(), pump_shutdown.clone()));
         let workspaces = LocalWorkspaceManager::new(config.layout.workspaces_dir.clone());
         let dispatcher: Arc<dyn DispatchEvaluator> =
             Arc::new(FixedRulesDispatch::new(&config.toml.dispatch));
@@ -1849,47 +1850,49 @@ impl AIAgent {
         let appclient_session_token = resolve_appclient_session_token().await?;
         let progress_sink = self.runtime.msg_center.as_ref().map(|msg_center| {
             let msg_center = msg_center.clone();
-            let progress_session_id =
-                progress_status_session_id(kind, &session_id, &owner);
+            let progress_session_id = progress_status_session_id(kind, &session_id, &owner);
             let i18n = self.config.i18n.clone();
-            Arc::new(move |ctx: &agent_tool::SessionRuntimeContext, progress: &crate::agent_bash::BashProgressUpdate| {
-                let line = if progress.stage == "finalizing" {
-                    i18n.render(
-                        "status.aicc_finalizing",
-                        &[("method", progress.method.clone())],
-                    )
-                } else {
-                    i18n.render(
-                        "status.aicc_running",
-                        &[
-                            ("method", progress.method.clone()),
-                            ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
-                        ],
-                    )
-                };
-                let msg_center = msg_center.clone();
-                let session_id = progress_session_id.clone();
-                let turn_nonce = ui_status_nonce(&ctx.trace_id);
-                tokio::spawn(async move {
-                    let value = serde_json::json!({
-                        "value": line,
-                        "turn_nonce": turn_nonce,
-                    });
-                    if let Err(err) = msg_center
-                        .update_ui_session_state(
-                            session_id.clone(),
-                            UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
-                            value,
+            Arc::new(
+                move |ctx: &agent_tool::SessionRuntimeContext,
+                      progress: &crate::agent_bash::BashProgressUpdate| {
+                    let line = if progress.stage == "finalizing" {
+                        i18n.render(
+                            "status.aicc_finalizing",
+                            &[("method", progress.method.clone())],
                         )
-                        .await
-                    {
-                        warn!(
-                            "opendan.agent: update AICC progress for session {} failed: {err}",
-                            session_id
-                        );
-                    }
-                });
-            }) as BashProgressSink
+                    } else {
+                        i18n.render(
+                            "status.aicc_running",
+                            &[
+                                ("method", progress.method.clone()),
+                                ("seconds", progress.elapsed_ms.div_ceil(1000).to_string()),
+                            ],
+                        )
+                    };
+                    let msg_center = msg_center.clone();
+                    let session_id = progress_session_id.clone();
+                    let turn_nonce = ui_status_nonce(&ctx.trace_id);
+                    tokio::spawn(async move {
+                        let value = serde_json::json!({
+                            "value": line,
+                            "turn_nonce": turn_nonce,
+                        });
+                        if let Err(err) = msg_center
+                            .update_ui_session_state(
+                                session_id.clone(),
+                                UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
+                                value,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "opendan.agent: update AICC progress for session {} failed: {err}",
+                                session_id
+                            );
+                        }
+                    });
+                },
+            ) as BashProgressSink
         });
 
         let tools = build_session_tools(SessionToolsBuild {
@@ -2493,10 +2496,16 @@ impl AIAgent {
                 .join("session.json");
             if meta_path.exists() {
                 let bytes = std::fs::read(&meta_path).map_err(|err| {
-                    anyhow!("forward_message: read {} failed: {err}", meta_path.display())
+                    anyhow!(
+                        "forward_message: read {} failed: {err}",
+                        meta_path.display()
+                    )
                 })?;
                 let meta: SessionMeta = serde_json::from_slice(&bytes).map_err(|err| {
-                    anyhow!("forward_message: parse {} failed: {err}", meta_path.display())
+                    anyhow!(
+                        "forward_message: parse {} failed: {err}",
+                        meta_path.display()
+                    )
                 })?;
                 if matches!(meta.status, SessionStatus::Ended) {
                     let summary = SessionSummary {

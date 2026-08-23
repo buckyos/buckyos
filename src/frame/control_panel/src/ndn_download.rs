@@ -60,8 +60,7 @@ fn download_worker_sender() -> &'static tokio::sync::mpsc::UnboundedSender<Downl
     static SENDER: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<DownloadJobEnvelope>> =
         std::sync::OnceLock::new();
     SENDER.get_or_init(|| {
-        let (sender, mut receiver) =
-            tokio::sync::mpsc::unbounded_channel::<DownloadJobEnvelope>();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<DownloadJobEnvelope>();
         std::thread::Builder::new()
             .name("cp-ndn-download".to_string())
             .spawn(move || {
@@ -124,10 +123,11 @@ fn build_ndn_client(
     {
         builder = builder.default_remote_url(default_remote_url.to_string());
     }
-    if let Some(timeout_ms) = download_options
-        .timeout_ms
-        .or_else(|| download_options.timeout_secs.map(|secs| secs.saturating_mul(1000)))
-    {
+    if let Some(timeout_ms) = download_options.timeout_ms.or_else(|| {
+        download_options
+            .timeout_secs
+            .map(|secs| secs.saturating_mul(1000))
+    }) {
         builder = builder.timeout(std::time::Duration::from_millis(timeout_ms));
     }
     if download_options.obj_id_in_host.unwrap_or(false) {
@@ -277,9 +277,13 @@ async fn pull_wrapped_file_object_to_named_store(
     let content_download_url =
         resolve_related_download_url(download_url, &content_objid, download_options)?;
 
-    let mut result =
-        pull_direct_to_named_store(client, content_download_url.as_str(), &content_objid, store_mgr)
-            .await?;
+    let mut result = pull_direct_to_named_store(
+        client,
+        content_download_url.as_str(),
+        &content_objid,
+        store_mgr,
+    )
+    .await?;
 
     store_mgr
         .put_object(&verified.obj_id, verified.obj_str.as_str())

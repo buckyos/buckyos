@@ -113,20 +113,19 @@ function parseAppInstanceIdentity(
   appInstanceConfig: string,
 ): AppInstanceIdentity {
   const parsed = JSON.parse(appInstanceConfig) as {
-    app_spec?: {
-      user_id?: unknown;
-      app_doc?: { name?: unknown };
+    node_execution_spec?: {
+      app_instance_id?: unknown;
     };
   };
-  const appId = typeof parsed.app_spec?.app_doc?.name === "string"
-    ? parsed.app_spec.app_doc.name.trim()
+  const appInstanceId = typeof parsed.node_execution_spec?.app_instance_id === "string"
+    ? parsed.node_execution_spec.app_instance_id.trim()
     : "";
-  const ownerUserId = typeof parsed.app_spec?.user_id === "string"
-    ? parsed.app_spec.user_id.trim()
-    : "";
-  if (!appId || !ownerUserId) {
+  const separator = appInstanceId.lastIndexOf("@");
+  const appId = separator > 0 ? appInstanceId.slice(0, separator) : "";
+  const ownerUserId = separator > 0 ? appInstanceId.slice(separator + 1) : "";
+  if (!appId || !ownerUserId || appId.includes("@") || ownerUserId.includes("@")) {
     throw new Error(
-      "app_instance_config is missing app_spec.user_id or app_spec.app_doc.name",
+      "app_instance_config is missing canonical node_execution_spec.app_instance_id",
     );
   }
   return { appId, ownerUserId };

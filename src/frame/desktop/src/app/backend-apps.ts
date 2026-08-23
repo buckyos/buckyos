@@ -15,7 +15,7 @@ export const DESKTOP_BUILTIN_APP_IDS = new Set([
 
 const logicalAppAliases: Readonly<Record<string, string>> = {
   'content-store': 'market',
-  buckyos_systest: 'systest',
+  'buckyos-systest.buckyos.bns.did': 'systest',
 }
 
 export function desktopCatalogIdForLogicalApp(appId: string): string {
@@ -67,7 +67,6 @@ export function createBackendAppDefinitionMapper(catalog: AppDefinition[]) {
       logicalAppId: summary.app_id,
       appInstanceId: summary.app_instance_id,
       ownerUserId: summary.owner_user_id,
-      appClass: summary.app_class,
       webHosts,
       ...(webHosts.length > 0
         ? {

@@ -68,11 +68,20 @@ fn create_test_replica_instance(
     state: InstanceState,
     last_update_time: u64,
 ) -> ReplicaInstance {
+    let service = match spec_id.parse() {
+        Ok(app_instance_id) => ReplicaServiceIdentity::App { app_instance_id },
+        Err(_) => ReplicaServiceIdentity::System {
+            service_id: buckyos_api::SystemServiceId::parse(spec_id.to_string()).unwrap(),
+        },
+    };
     ReplicaInstance {
         node_id: node_id.to_string(),
         spec_id: spec_id.to_string(),
         res_limits: HashMap::new(),
-        instance_id: format!("{}@{}", spec_id, node_id),
+        replica_key: ReplicaKey {
+            service,
+            node_id: node_id.to_string(),
+        },
         last_update_time,
         state,
         service_ports: HashMap::new(),
@@ -327,8 +336,8 @@ fn test_app_disable_updates_instance_instead_of_removing_it() {
     let mut scheduler = NodeScheduler::new_empty(1);
 
     scheduler.add_service_spec(ServiceSpec {
-        id: "buckyos_jarvis@alice".to_string(),
-        app_id: "buckyos_jarvis".to_string(),
+        id: "jarvis.example@alice".to_string(),
+        app_id: "jarvis.example".to_string(),
         owner_id: "alice".to_string(),
         spec_type: ServiceSpecType::App,
         state: ServiceSpecState::Disable,
@@ -346,9 +355,14 @@ fn test_app_disable_updates_instance_instead_of_removing_it() {
 
     scheduler.add_replica_instance(ReplicaInstance {
         node_id: "node1".to_string(),
-        spec_id: "buckyos_jarvis@alice".to_string(),
+        spec_id: "jarvis.example@alice".to_string(),
         res_limits: HashMap::new(),
-        instance_id: "buckyos_jarvis@alice@node1".to_string(),
+        replica_key: ReplicaKey {
+            service: ReplicaServiceIdentity::App {
+                app_instance_id: "jarvis.example@alice".parse().unwrap(),
+            },
+            node_id: "node1".to_string(),
+        },
         last_update_time: buckyos_get_unix_timestamp(),
         state: InstanceState::Running,
         service_ports: HashMap::new(),
@@ -357,9 +371,9 @@ fn test_app_disable_updates_instance_instead_of_removing_it() {
     let actions = scheduler.schedule_spec_change().unwrap();
     assert_eq!(actions.len(), 1);
     match &actions[0] {
-        SchedulerAction::UpdateInstance(instance_id, instance) => {
-            assert_eq!(instance_id, "buckyos_jarvis@alice@node1");
-            assert_eq!(instance.instance_id, "buckyos_jarvis@alice@node1");
+        SchedulerAction::UpdateInstance(replica_key, instance) => {
+            assert_eq!(replica_key.to_string(), "jarvis.example@alice@node1");
+            assert_eq!(instance.replica_key, *replica_key);
             assert_eq!(instance.state, InstanceState::Suspended);
         }
         other => panic!("unexpected action: {:?}", other),
@@ -795,7 +809,12 @@ fn test_service_info_only_publishes_alive_running_replicas() {
     );
     scheduler
         .replica_instances
-        .get_mut("search-service@node2")
+        .get_mut(&ReplicaKey {
+            service: ReplicaServiceIdentity::System {
+                service_id: buckyos_api::SystemServiceId::parse("search-service").unwrap(),
+            },
+            node_id: "node2".to_string(),
+        })
         .unwrap()
         .last_update_time = buckyos_get_unix_timestamp();
 

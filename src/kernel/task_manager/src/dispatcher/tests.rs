@@ -31,10 +31,9 @@ impl MockRunnerCaller {
     }
 
     fn push_busy(&self, retry_after_ms: Option<u64>) {
-        self.responses
-            .lock()
-            .unwrap()
-            .push_back(Ok(json!({"kind": "Busy", "retry_after_ms": retry_after_ms})));
+        self.responses.lock().unwrap().push_back(Ok(
+            json!({"kind": "Busy", "retry_after_ms": retry_after_ms}),
+        ));
     }
 
     fn push_rejected(&self, reason: &str) {
@@ -103,7 +102,9 @@ async fn setup_env() -> TestEnv {
     let tmp2 = tempfile::tempdir().unwrap();
     let db_path = tmp2.path().join("dispatch.db");
     let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-    let db = DispatchDb::open(&conn, RdbBackend::Sqlite, None).await.unwrap();
+    let db = DispatchDb::open(&conn, RdbBackend::Sqlite, None)
+        .await
+        .unwrap();
     let caller = Arc::new(MockRunnerCaller::default());
     let dispatcher = TaskDispatcherService::new(
         Arc::new(db),

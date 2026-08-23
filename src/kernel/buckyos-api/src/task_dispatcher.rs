@@ -1302,7 +1302,11 @@ pub trait TaskDispatcherHandler: Send + Sync {
     ) -> Result<RenewInstanceResult>;
     async fn handle_detach_instance(&self, req: DetachInstanceReq, ctx: RPCContext) -> Result<()>;
 
-    async fn handle_get_target(&self, req: GetTargetReq, ctx: RPCContext) -> Result<GetTargetResult>;
+    async fn handle_get_target(
+        &self,
+        req: GetTargetReq,
+        ctx: RPCContext,
+    ) -> Result<GetTargetResult>;
     async fn handle_list_targets(&self, ctx: RPCContext) -> Result<ListTargetsResult>;
     async fn handle_set_operation_route(
         &self,
@@ -1371,12 +1375,24 @@ impl TaskDispatcherClient {
     }
 
     pub async fn dispatch_task(&self, req: DispatchTaskReq) -> Result<DispatchTaskResult> {
-        client_call!(self, "dispatch_task", req, DispatchTaskResult, handle_dispatch_task)
+        client_call!(
+            self,
+            "dispatch_task",
+            req,
+            DispatchTaskResult,
+            handle_dispatch_task
+        )
     }
 
     pub async fn get_dispatch(&self, req: GetDispatchReq) -> Result<DispatchRecord> {
-        client_call!(self, "get_dispatch", req, GetDispatchResult, handle_get_dispatch)
-            .map(|r| r.record)
+        client_call!(
+            self,
+            "get_dispatch",
+            req,
+            GetDispatchResult,
+            handle_get_dispatch
+        )
+        .map(|r| r.record)
     }
 
     pub async fn list_dispatches(&self, req: ListDispatchesReq) -> Result<ListDispatchesResult> {
@@ -1414,7 +1430,10 @@ impl TaskDispatcherClient {
         .map(|r| r.record)
     }
 
-    pub async fn register_target(&self, registration: TargetRegistration) -> Result<TargetRegistration> {
+    pub async fn register_target(
+        &self,
+        registration: TargetRegistration,
+    ) -> Result<TargetRegistration> {
         let req = RegisterTargetReq { registration };
         client_call!(
             self,
@@ -1430,7 +1449,11 @@ impl TaskDispatcherClient {
             target_id: target_id.to_string(),
         };
         match self {
-            Self::InProcess(handler) => handler.handle_disable_target(req, RPCContext::default()).await,
+            Self::InProcess(handler) => {
+                handler
+                    .handle_disable_target(req, RPCContext::default())
+                    .await
+            }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
                     RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
@@ -1464,7 +1487,9 @@ impl TaskDispatcherClient {
     pub async fn detach_instance(&self, req: DetachInstanceReq) -> Result<()> {
         match self {
             Self::InProcess(handler) => {
-                handler.handle_detach_instance(req, RPCContext::default()).await
+                handler
+                    .handle_detach_instance(req, RPCContext::default())
+                    .await
             }
             Self::KRPC(client) => {
                 let params = serde_json::to_value(&req).map_err(|e| {
@@ -1658,7 +1683,9 @@ impl<T: TaskDispatcherHandler> RPCHandler for TaskDispatcherServerHandler<T> {
             }
             "disable_operation_route" => {
                 let route_req = DisableOperationRouteReq::from_json(req.params)?;
-                self.0.handle_disable_operation_route(route_req, ctx).await?;
+                self.0
+                    .handle_disable_operation_route(route_req, ctx)
+                    .await?;
                 RPCResult::Success(json!({}))
             }
             "get_operation_route" => {
@@ -1718,7 +1745,12 @@ mod tests {
         assert_eq!(back, accepted);
 
         let busy: OfferTaskResp = serde_json::from_value(json!({"kind": "Busy"})).unwrap();
-        assert_eq!(busy, OfferTaskResp::Busy { retry_after_ms: None });
+        assert_eq!(
+            busy,
+            OfferTaskResp::Busy {
+                retry_after_ms: None
+            }
+        );
     }
 
     #[test]

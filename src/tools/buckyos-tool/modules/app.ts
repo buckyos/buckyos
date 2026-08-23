@@ -25,7 +25,6 @@ const INSTALL_POLICIES = [
   'local-developer',
   'system-internal',
 ] as const
-const APP_CLASSES = ['user_installed', 'zone_installed'] as const
 
 type PikgPurpose = 'inspect' | 'install'
 type SourceKind = 'catalog' | 'pikg' | 'url'
@@ -119,13 +118,11 @@ function fetchCommand(dependencies: AppModuleDependencies): CommandDefinition {
     ],
     options: sourceOptions([
       { name: 'plan', description: 'Write the v4 InstallPlan to this JSON file', type: 'string' },
-      appClassOption(),
       ownerOption(),
       policyOption(),
     ]),
     inputSchema: sourceInputSchema({
       plan: { type: 'string', minLength: 1 },
-      app_class: { type: 'string', enum: [...APP_CLASSES] },
       owner_user_id: { type: 'string', minLength: 1 },
       policy: { type: 'string', enum: [...INSTALL_POLICIES] },
       target: { type: 'object', additionalProperties: true },
@@ -411,7 +408,7 @@ function statusCommand(): CommandDefinition {
       const apps = Array.isArray(listed.apps) ? listed.apps : []
       const items = await Promise.all(apps.map(async (item) => {
         const app = expectObject(item, 'apps.list item')
-        const selector = expectString(app, 'installation_id')
+        const selector = expectString(app, 'app_instance_id')
         return {
           ...expectObject(
             await callControl(ctx, 'apps.status', { selector }),
@@ -473,12 +470,7 @@ async function installApp(
     verifyPikgBinding(source, submittedPlan ?? inspection.plan)
     const app = expectObject(inspection.plan.app, 'inspection.plan.app')
     const appDid = expectString(app, 'did')
-    const plannedOwner = submittedPlan
-      ? expectString(
-        expectObject(submittedPlan.installation_scope, 'plan.installation_scope'),
-        'owner_user_id',
-      )
-      : undefined
+    const plannedOwner = submittedPlan ? expectString(submittedPlan, 'owner_user_id') : undefined
     const installed = await findInstalled(ctx, appDid, plannedOwner)
 
     if (submittedPlan && installed) {
@@ -1095,18 +1087,15 @@ function sourceRpcParams(source: PreparedSource): Record<string, unknown> {
 
 function scopeAndChoiceParams(input: Record<string, unknown>): Record<string, unknown> {
   return {
-    ...(typeof input.app_class === 'string' ? { app_class: input.app_class } : {}),
-    ...(typeof input.owner_user_id === 'string' ? { user_id: input.owner_user_id } : {}),
+    ...(typeof input.owner_user_id === 'string' ? { owner_user_id: input.owner_user_id } : {}),
     ...(isObject(input.target) ? { target: input.target } : {}),
     ...(isObject(input.install_params) ? { install_params: input.install_params } : {}),
   }
 }
 
 function planScopeAndOptions(plan: Record<string, unknown>): Record<string, unknown> {
-  const scope = expectObject(plan.installation_scope, 'plan.installation_scope')
   return {
-    app_class: expectString(scope, 'app_class'),
-    user_id: expectString(scope, 'owner_user_id'),
+    owner_user_id: expectString(plan, 'owner_user_id'),
     target: expectObject(plan.target, 'plan.target'),
     install_params: expectObject(plan.install_params, 'plan.install_params'),
   }
@@ -1114,8 +1103,7 @@ function planScopeAndOptions(plan: Record<string, unknown>): Record<string, unkn
 
 function installedScope(details: Record<string, unknown>): Record<string, unknown> {
   return {
-    app_class: expectString(details, 'app_class'),
-    user_id: expectString(details, 'owner_user_id'),
+    owner_user_id: expectString(details, 'owner_user_id'),
   }
 }
 
@@ -1140,8 +1128,8 @@ function confirmationSummary(inspection: InstallInspection): Record<string, unkn
     plan_fingerprint: plan.plan_fingerprint,
     plan_use: plan.plan_use,
     app: plan.app,
-    installation_id: plan.installation_id,
-    installation_scope: plan.installation_scope,
+    app_instance_id: plan.app_instance_id,
+    owner_user_id: plan.owner_user_id,
     target: plan.target,
     selected_packages: plan.selected_packages,
     install_params: plan.install_params,
@@ -1154,7 +1142,7 @@ function satisfiedResult(inspection: InstallInspection): Record<string, unknown>
   return {
     action: 'satisfied',
     task_id: null,
-    installation_id: inspection.plan.installation_id,
+    app_instance_id: inspection.plan.app_instance_id,
     app_doc_object_id: expectObject(inspection.plan.app, 'plan.app').object_id,
   }
 }
@@ -1207,10 +1195,11 @@ function assertPortablePlan(plan: Record<string, unknown>): void {
   const allowed = new Set([
     'schema_version',
     'plan_use',
-    'installation_id',
-    'installation_scope',
+    'app_instance_id',
+    'owner_user_id',
     'source_identity',
     'app',
+    'app_doc',
     'resolution',
     'target',
     'selected_packages',
@@ -1561,16 +1550,6 @@ function emptyInputSchema(): JsonSchema {
   return { type: 'object', properties: {}, additionalProperties: false }
 }
 
-function appClassOption(): NonNullable<CommandDefinition['options']>[number] {
-  return {
-    name: 'app-class',
-    property: 'app_class',
-    description: 'Installation App class',
-    type: 'string',
-    enum: [...APP_CLASSES],
-  }
-}
-
 function ownerOption(): NonNullable<CommandDefinition['options']>[number] {
   return {
     name: 'owner',
@@ -1647,7 +1626,6 @@ function sanitizeAppOutput(value: unknown): unknown {
   if (!isObject(value)) return value
   const result: Record<string, unknown> = {}
   const forbidden = new Set([
-    'app_instance_id',
     'spec_path',
     'staging_handle',
     'staging_path',

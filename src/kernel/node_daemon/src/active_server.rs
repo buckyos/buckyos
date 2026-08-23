@@ -1725,15 +1725,13 @@ mod tests {
             signed.zone_document.devices.get("ood1"),
             Some(&signed.device_document)
         );
-        assert!(
-            signed
-                .zone_document
-                .devices
-                .get("ood1")
-                .unwrap()
-                .device_mini_document_jwt
-                .is_none()
-        );
+        assert!(signed
+            .zone_document
+            .devices
+            .get("ood1")
+            .unwrap()
+            .device_mini_document_jwt
+            .is_none());
         assert_eq!(
             signed.zone_document.mini_device_jwts.get("ood1"),
             Some(&signed.device_mini_document_jwt)

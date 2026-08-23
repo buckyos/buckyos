@@ -88,7 +88,7 @@ pub(crate) fn token_is_zone_trusted(token: &RPCSessionToken) -> bool {
             .extra
             .get(TOKEN_PRINCIPAL_KIND_CLAIM)
             .and_then(Value::as_str),
-        Some(TOKEN_PRINCIPAL_KIND_DEVICE | TOKEN_PRINCIPAL_KIND_SERVICE)
+        Some(TOKEN_PRINCIPAL_KIND_DEVICE | TOKEN_PRINCIPAL_KIND_SYSTEM)
     )
 }
 
@@ -2150,7 +2150,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 VERIFY_HUB_UNIQUE_ID,
                 user_id,
                 app_id,
-                Some(TOKEN_PRINCIPAL_KIND_SERVICE),
+                Some(TOKEN_PRINCIPAL_KIND_SYSTEM),
             )),
             ..Default::default()
         }

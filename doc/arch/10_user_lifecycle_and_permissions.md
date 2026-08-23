@@ -48,9 +48,9 @@
 | `users/<id>/settings` | control_panel / scheduler | `UserSettings`（账户权威记录） |
 | `users/<id>/profile` | control_panel / scheduler | `UserPrivateProfile`（用户私有 Profile，含显示名和系统 contact 私有扩展，普通用户可自行读写） |
 | `users/<id>/doc` | control_panel / scheduler | 用户 DID 文档 |
-| `users/<id>/apps/<app_id>/spec` | control_panel / scheduler | 用户安装的 App 规格 |
-| `users/<id>/agents/<agent_id>/spec`、`.../settings` | scheduler | 用户的 Agent 配置 |
-| `zone/apps/<app_id>/spec`、`.../install_record` | control_panel | Zone 级 App 的唯一安装记录；不按用户复制 |
+| `users/<id>/apps/<app_id>/spec` | scheduler | 用户安装的 App 规格；由 InstallPlan 执行生成 |
+| `users/<id>/agents/<agent_id>/spec`、`.../settings` | scheduler | AgentDocument 与显式 runtime AppInstance binding |
+| `system/app_registry` | scheduler | AppId/AppInstanceId 的持久 AppName、AppHostName、AppIndex 分配真相 |
 | `services/control_panel/app_availability/policies/<app_instance_id>` | control_panel | 个人 App 的 App–User 可用性策略（revision/CAS） |
 | `services/control_panel/app_availability/audit/<app_instance_id>/<revision>` | control_panel | 可用性策略变更审计 |
 | `system/rbac/policy` | **scheduler（`ood` 身份）** | 动态策略尾部：按用户/节点/服务生成的分组行 |

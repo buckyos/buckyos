@@ -318,7 +318,7 @@ async function initCommand(
   validateVersion(version)
   const derivedDid = deriveAppDid(name, owner)
   const appDid = optionalInputString(input, 'app_did') ?? derivedDid
-  deriveAppNamespace(appDid, name, owner)
+  deriveAppNamespace(appDid)
 
   let subpackageKey: string
   let sourceValue: Record<string, string>
@@ -502,17 +502,16 @@ async function buildCommand(
 
     const timestamp = now()
     if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new Error('invalid clock value')
-    const namespace = deriveAppNamespace(appMeta.did, appMeta.name, appMeta.owner)
+    const namespace = deriveAppNamespace(appMeta.did)
     const packageObjects: Record<string, Record<string, unknown>> = {}
     const contentIndex: PackageMetaFile['content_index'] = {}
     const pkgList: Record<string, Record<string, unknown>> = {}
-    const dependencies: Record<string, string> = {}
     const generatedSubpackages: DistManifest['subpackages'] = {}
     const packageNames = new Set<string>()
     for (const item of prepared) {
-      const packageName = `${
-        packageEnvironmentQualifier(item.key, item.input.selector)
-      }.${namespace}-${packageSuffix(item.key)}`
+      const packageName = `${packageEnvironmentQualifier(item.key, item.input.selector)}.${
+        packageSuffix(item.key)
+      }.${namespace}`
       if (packageNames.has(packageName)) {
         throw new UsageError('PACKAGE_NAME_COLLISION', `subpackage names collide at ${packageName}`)
       }
@@ -527,7 +526,6 @@ async function buildCommand(
         timestamp,
       )
       packageObjects[packageMeta.objectId] = packageMeta.value
-      dependencies[packageName] = appMeta.version
       if (contentIndex[item.digest.digest]) {
         throw new UsageError(
           'DUPLICATE_PAYLOAD_DIGEST',
@@ -562,17 +560,17 @@ async function buildCommand(
       }
     }
     const appDoc: Record<string, unknown> = {
+      schema_version: 1,
+      doc_type: 'app',
       did: appMeta.did,
-      name: appMeta.name,
+      version: appMeta.version,
+      app_type: appMeta.categories[0],
       author: appMeta.author,
       owner: appMeta.owner,
+      controller: appMeta.owner,
       create_time: timestamp,
       last_update_time: timestamp,
       exp: timestamp + APP_DOCUMENT_LIFETIME_SECONDS,
-      categories: appMeta.categories,
-      version: appMeta.version,
-      deps: dependencies,
-      doc_type: 'app',
       pkg_list: pkgList,
       show_name: appMeta.show_name,
       ...(appMeta.permissions.length ? { permissions: appMeta.permissions } : {}),
@@ -764,7 +762,7 @@ function parseAppMeta(value: Record<string, unknown>): AppMeta {
   validateVersion(version)
   const did = developmentString(value.did, 'app.json.did')
   const owner = developmentString(value.owner, 'app.json.owner')
-  deriveAppNamespace(did, name, owner)
+  deriveAppNamespace(did)
   const categories = value.categories
   if (
     !Array.isArray(categories) || !categories.length ||

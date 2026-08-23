@@ -827,7 +827,10 @@ pub async fn spawn_fake_http_server_with_requests(
             }
             if let Some(range) = body_range {
                 if let Ok(request) = serde_json::from_slice::<Value>(&buf[range]) {
-                    captured.lock().expect("captured requests lock").push(request);
+                    captured
+                        .lock()
+                        .expect("captured requests lock")
+                        .push(request);
                 }
             }
             if reply.delay_ms > 0 {

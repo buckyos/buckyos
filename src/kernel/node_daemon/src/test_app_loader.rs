@@ -10,12 +10,13 @@ use crate::app_loader::{
 };
 use crate::run_item::ControlRuntItemErrors;
 use buckyos_api::{
-    AppClass, AppDoc, AppInstallationId, AppInstallationScope, AppServiceInstanceConfig,
-    AppServiceSpec, AppType, DeploymentIdentity, LocalAppInstanceConfig, ServiceEndpointConfig,
+    get_full_appid, AppDoc, AppInstanceId, AppServiceInstanceConfig, AppServiceSpec, AppType,
+    DeploymentIdentity, DeploymentPackage, LocalAppInstanceConfig, ServiceEndpointConfig,
     ServiceInstanceState, ServiceSpecConfig, ServiceState, SubPkgDesc, OBJ_TYPE_APP_DOC,
 };
 use name_lib::DID;
 use ndn_lib::ObjId;
+use package_lib::PackageId;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -31,14 +32,18 @@ fn assert_programs(commands: &[CommandSpec], expected: &[&str]) {
 
 fn build_appservice_doc() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
+    let app_did = DID::from_str("did:web:demo.example").unwrap();
     AppDoc::builder(AppType::AppService, "demo", "0.1.0", "did:bns:test", &owner)
+        .app_did(app_did)
         .amd64_docker_image(
-            SubPkgDesc::new("demo-img#0.1.0")
+            SubPkgDesc::new("image.demo.example#0.1.0")
+                .package_meta_object_id(test_package_object_id(1))
                 .docker_image_name("demo/service:0.1.0-amd64")
                 .docker_image_digest("sha256:deadbeef"),
         )
         .aarch64_docker_image(
-            SubPkgDesc::new("demo-img-arm#0.1.0")
+            SubPkgDesc::new("image-arm.demo.example#0.1.0")
+                .package_meta_object_id(test_package_object_id(2))
                 .docker_image_name("demo/service:0.1.0-aarch64")
                 .docker_image_digest("sha256:beadfeed"),
         )
@@ -49,32 +54,44 @@ fn build_appservice_doc() -> AppDoc {
 
 fn build_agent_doc_without_category() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
-    let mut doc = AppDoc::builder(
+    let app_did = DID::from_str("did:web:jarvis-runtime.example").unwrap();
+    AppDoc::builder(
         AppType::Agent,
-        "buckyos_jarvis",
+        "jarvis-runtime",
         "0.1.0",
         "did:bns:test",
         &owner,
     )
-    .agent_pkg(SubPkgDesc::new("jarvis-agent#0.1.0"))
-    .agent_skills_pkg(SubPkgDesc::new("jarvis-skills#0.1.0"))
+    .app_did(app_did)
+    .agent_pkg(
+        SubPkgDesc::new("agent.jarvis-runtime.example#0.1.0")
+            .package_meta_object_id(test_package_object_id(3)),
+    )
+    .agent_skills_pkg(
+        SubPkgDesc::new("skills.jarvis-runtime.example#0.1.0")
+            .package_meta_object_id(test_package_object_id(4)),
+    )
     .service_port("main", 4060)
     .build()
-    .unwrap();
-    doc._base.categories.clear();
-    doc
+    .unwrap()
 }
 
 fn build_web_doc() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
+    let app_did = DID::from_str("did:web:portal.example").unwrap();
     AppDoc::builder(AppType::Web, "portal", "0.1.0", "did:bns:test", &owner)
-        .web_pkg(SubPkgDesc::new("portal-web#0.1.0"))
+        .app_did(app_did)
+        .web_pkg(
+            SubPkgDesc::new("web.portal.example#0.1.0")
+                .package_meta_object_id(test_package_object_id(5)),
+        )
         .build()
         .unwrap()
 }
 
 fn build_local_service_doc() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
+    let app_did = DID::from_str("did:web:desktop-tool.example").unwrap();
     let mut doc = AppDoc::builder(
         AppType::Service,
         "desktop-tool",
@@ -82,26 +99,50 @@ fn build_local_service_doc() -> AppDoc {
         "did:bns:test",
         &owner,
     )
+    .app_did(app_did)
     .build()
     .unwrap();
 
-    doc.pkg_list.aarch64_linux_app = Some(SubPkgDesc::new("desktop-tool-linux-arm#0.1.0"));
-    doc.pkg_list.amd64_linux_app = Some(SubPkgDesc::new("desktop-tool-linux-amd#0.1.0"));
-    doc.pkg_list.aarch64_apple_app = Some(SubPkgDesc::new("desktop-tool-macos-arm#0.1.0"));
-    doc.pkg_list.amd64_apple_app = Some(SubPkgDesc::new("desktop-tool-macos-amd#0.1.0"));
-    doc.pkg_list.aarch64_win_app = Some(SubPkgDesc::new("desktop-tool-win-arm#0.1.0"));
-    doc.pkg_list.amd64_win_app = Some(SubPkgDesc::new("desktop-tool-win-amd#0.1.0"));
+    doc.pkg_list.aarch64_linux_app = Some(test_package_desc("linux-arm", 6));
+    doc.pkg_list.amd64_linux_app = Some(test_package_desc("linux-amd", 7));
+    doc.pkg_list.aarch64_apple_app = Some(test_package_desc("macos-arm", 8));
+    doc.pkg_list.amd64_apple_app = Some(test_package_desc("macos-amd", 9));
+    doc.pkg_list.aarch64_win_app = Some(test_package_desc("win-arm", 10));
+    doc.pkg_list.amd64_win_app = Some(test_package_desc("win-amd", 11));
 
     doc
 }
 
 fn build_script_service_doc() -> AppDoc {
     let owner = DID::from_str("did:bns:test").unwrap();
+    let app_did = DID::from_str("did:web:systest.example").unwrap();
     AppDoc::builder(AppType::Service, "systest", "0.1.0", "did:bns:test", &owner)
-        .script_pkg(SubPkgDesc::new("systest-script#0.1.0"))
+        .app_did(app_did)
+        .script_pkg(
+            SubPkgDesc::new("script.systest.example#0.1.0")
+                .package_meta_object_id(test_package_object_id(12)),
+        )
         .service_port("www", 3000)
         .build()
         .unwrap()
+}
+
+fn test_package_object_id(seed: u8) -> ObjId {
+    ObjId::new_by_raw("pkg".to_string(), vec![seed; 32])
+}
+
+fn test_package_desc(name: &str, seed: u8) -> SubPkgDesc {
+    SubPkgDesc::new(format!("{name}.desktop-tool.example#0.1.0"))
+        .package_meta_object_id(test_package_object_id(seed))
+}
+
+fn test_exact_package_id(name: &str, seed: u8) -> String {
+    PackageId::get_pkgid_with_objid(&format!("{name}#0.1.0"), Some(test_package_object_id(seed)))
+        .unwrap()
+}
+
+fn test_runtime_key(app_id: &str) -> String {
+    get_full_appid(app_id, "alice")
 }
 
 fn build_service_loader(
@@ -111,45 +152,83 @@ fn build_service_loader(
     support_container: bool,
 ) -> AppLoader {
     let install_config = build_spec_config(&app_doc);
-    let app_spec = build_test_app_spec(app_doc, install_config);
-    let config = AppServiceInstanceConfig {
-        target_state: ServiceInstanceState::Started,
-        node_id: "ood1".to_string(),
-        app_spec,
-        service_ports_config,
-    };
-    AppLoader::new_for_service("demo@alice@ood1", config)
+    let mut app_spec = build_test_app_spec(app_doc, install_config);
+    app_spec
+        .packages
+        .retain(|package| package_matches_platform(&package.sub_pkg_name, platform));
+    let app_instance_id = app_spec.app_instance_id.to_string();
+    let mut config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+    config.service_ports_config = service_ports_config;
+    AppLoader::new_for_service(&app_instance_id, config)
         .with_platform(platform)
         .with_container_support_override(support_container)
 }
 
+fn package_matches_platform(key: &str, platform: PlatformTarget) -> bool {
+    match key {
+        "amd64_docker_image" | "amd64_linux_app" => {
+            platform.os == PlatformOs::Linux && platform.arch == PlatformArch::Amd64
+        }
+        "aarch64_docker_image" | "aarch64_linux_app" => {
+            platform.os == PlatformOs::Linux && platform.arch == PlatformArch::Aarch64
+        }
+        "amd64_apple_app" => {
+            platform.os == PlatformOs::Macos && platform.arch == PlatformArch::Amd64
+        }
+        "aarch64_apple_app" => {
+            platform.os == PlatformOs::Macos && platform.arch == PlatformArch::Aarch64
+        }
+        "amd64_win_app" => {
+            platform.os == PlatformOs::Windows && platform.arch == PlatformArch::Amd64
+        }
+        "aarch64_win_app" => {
+            platform.os == PlatformOs::Windows && platform.arch == PlatformArch::Aarch64
+        }
+        _ => true,
+    }
+}
+
 fn build_test_app_spec(app_doc: AppDoc, spec_config: ServiceSpecConfig) -> AppServiceSpec {
-    let installation_id = AppInstallationId::derive(
-        app_doc.app_did(),
-        &AppInstallationScope {
-            zone_did: DID::new("bns", "test-zone"),
-            owner_user_id: "alice".to_string(),
-            app_class: AppClass::UserInstalled,
-        },
-    );
+    let app_instance_id = AppInstanceId::from_app_did(app_doc.app_did(), "alice").unwrap();
     let app_doc_value = serde_json::to_value(&app_doc).unwrap();
     let (app_doc_object_id, _) =
         ndn_lib::build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
+    let packages = app_doc
+        .pkg_list
+        .iter()
+        .into_iter()
+        .map(|(sub_pkg_name, desc)| {
+            let package_meta_object_id = desc.pkg_objid.clone().unwrap();
+            DeploymentPackage {
+                sub_pkg_name: sub_pkg_name.to_string(),
+                pkg_id: PackageId::get_pkgid_with_objid(
+                    &desc.pkg_id,
+                    Some(package_meta_object_id.clone()),
+                )
+                .unwrap(),
+                package_meta_object_id,
+                docker_image_name: desc.docker_image_name.clone(),
+                docker_image_digest: desc.docker_image_digest.clone(),
+            }
+        })
+        .collect();
     AppServiceSpec {
-        installation_id: installation_id.clone(),
+        app_instance_id: app_instance_id.clone(),
         app_did: app_doc.app_did().clone(),
         deployment: DeploymentIdentity {
-            installation_id,
+            app_instance_id,
             task_id: "test:install".to_string(),
             app_doc_object_id,
             spec_generation: 1,
             pikg_digest: None,
         },
+        app_name: "test-app".to_string(),
+        app_host_name: "test-app".to_string(),
+        owner_user_id: "alice".to_string(),
         permission: app_doc.permissions.clone(),
+        packages,
         app_doc,
         app_index: 1,
-        user_id: "alice".to_string(),
-        app_class: AppClass::UserInstalled,
         selected_components: Vec::new(),
         enable: true,
         expected_instance_count: 1,
@@ -176,16 +255,11 @@ fn build_agent_loader(platform: PlatformTarget) -> AppLoader {
     let app_doc = build_agent_doc_without_category();
     let install_config = build_spec_config(&app_doc);
     let app_spec = build_test_app_spec(app_doc, install_config);
-    let config = AppServiceInstanceConfig {
-        target_state: ServiceInstanceState::Started,
-        node_id: "ood1".to_string(),
-        app_spec,
-        service_ports_config: HashMap::from([
-            ("www".to_string(), 10080),
-            ("main".to_string(), 14060),
-        ]),
-    };
-    AppLoader::new_for_service("buckyos_jarvis@alice@ood1", config)
+    let app_instance_id = app_spec.app_instance_id.to_string();
+    let mut config = AppServiceInstanceConfig::new("ood1", &app_spec).unwrap();
+    config.service_ports_config =
+        HashMap::from([("www".to_string(), 10080), ("main".to_string(), 14060)]);
+    AppLoader::new_for_service(&app_instance_id, config)
         .with_platform(platform)
         .with_container_support_override(true)
         .with_worker_image_repo_override("paios/aios")
@@ -315,10 +389,11 @@ fn container_list_contains_name_only_matches_exact_container_name() {
 
 #[test]
 fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
-    let mut desc = SubPkgDesc::new("demo-img#0.1.0")
+    let exact_pkg_id = test_exact_package_id("image.demo.example", 1);
+    let mut desc = SubPkgDesc::new(exact_pkg_id.clone())
         .docker_image_name("demo/service:0.1.0-amd64")
         .docker_image_digest("demo/service@sha256:deadbeef");
-    desc.pkg_objid = Some(ObjId::new("pkg:1234567890").unwrap());
+    desc.pkg_objid = Some(test_package_object_id(1));
 
     assert!(docker_desc_requires_exact_match(&desc));
     assert!(docker_runtime_matches_target(
@@ -326,13 +401,10 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
             image_id: Some("sha256:anotherhash".to_string()),
             repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
             labels: HashMap::from([
-                (
-                    DOCKER_LABEL_PKG_ID.to_string(),
-                    "demo-img#0.1.0".to_string(),
-                ),
+                (DOCKER_LABEL_PKG_ID.to_string(), exact_pkg_id.clone(),),
                 (
                     DOCKER_LABEL_PKG_OBJID.to_string(),
-                    "pkg:1234567890".to_string(),
+                    test_package_object_id(1).to_string(),
                 ),
                 (
                     DOCKER_LABEL_IMAGE_DIGEST.to_string(),
@@ -347,10 +419,7 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
             image_id: Some("sha256:deadbeef".to_string()),
             repo_digests: vec!["demo/service@sha256:deadbeef".to_string()],
             labels: HashMap::from([
-                (
-                    DOCKER_LABEL_PKG_ID.to_string(),
-                    "demo-img#0.1.0".to_string(),
-                ),
+                (DOCKER_LABEL_PKG_ID.to_string(), exact_pkg_id.clone(),),
                 (
                     DOCKER_LABEL_PKG_OBJID.to_string(),
                     "pkg:oldversion".to_string(),
@@ -362,13 +431,10 @@ fn docker_runtime_exact_match_uses_pkg_objid_and_digest() {
     assert!(docker_runtime_matches_target(
         &DockerRuntimeIdentity {
             image_id: Some("sha256:deadbeef".to_string()),
-            labels: HashMap::from([(
-                DOCKER_LABEL_PKG_ID.to_string(),
-                "demo-img#0.1.0".to_string(),
-            )]),
+            labels: HashMap::from([(DOCKER_LABEL_PKG_ID.to_string(), exact_pkg_id.clone(),)]),
             ..Default::default()
         },
-        &SubPkgDesc::new("demo-img#0.1.0")
+        &SubPkgDesc::new(exact_pkg_id)
             .docker_image_name("demo/service:0.1.0-amd64")
             .docker_image_digest("sha256:deadbeef"),
     ));
@@ -430,12 +496,13 @@ fn docker_runtime_exact_match_rejects_another_deployment_generation() {
 
 #[test]
 fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
-    let agent_env = Path::new("/opt/buckyos/data/home/alice/.local/share/buckyos_jarvis");
-    let expected_root = Path::new("/opt/buckyos/env/pkgs/jarvis-agent#pkg:1234567890");
+    let agent_env = Path::new("/opt/buckyos/data/home/alice/.local/share/jarvis-runtime.example");
+    let expected_root =
+        Path::new("/opt/buckyos/env/pkgs/agent.jarvis-runtime.example#pkg:1234567890");
     let exact_cmd = vec![
         "opendan".to_string(),
         "--agent-id".to_string(),
-        "buckyos_jarvis".to_string(),
+        "jarvis-runtime.example".to_string(),
         "--agent-bin".to_string(),
         expected_root.to_string_lossy().to_string(),
         "--service-port".to_string(),
@@ -444,25 +511,31 @@ fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
     let old_cmd = vec![
         "opendan".to_string(),
         "--agent-id".to_string(),
-        "buckyos_jarvis".to_string(),
+        "jarvis-runtime.example".to_string(),
         "--agent-bin".to_string(),
-        "/opt/buckyos/env/pkgs/jarvis-agent#pkg:oldversion".to_string(),
+        "/opt/buckyos/env/pkgs/agent.jarvis-runtime.example#pkg:oldversion".to_string(),
         "--service-port".to_string(),
         "4060".to_string(),
     ];
 
-    assert!(command_matches_agent_process(&exact_cmd, "buckyos_jarvis"));
-    assert!(command_matches_agent_process(&old_cmd, "buckyos_jarvis"));
+    assert!(command_matches_agent_process(
+        &exact_cmd,
+        "jarvis-runtime.example"
+    ));
+    assert!(command_matches_agent_process(
+        &old_cmd,
+        "jarvis-runtime.example"
+    ));
     assert!(command_matches_exact_agent_process(
         &exact_cmd,
-        "buckyos_jarvis",
+        "jarvis-runtime.example",
         agent_env,
         Some(expected_root),
         Some("pkg:1234567890"),
     ));
     assert!(!command_matches_exact_agent_process(
         &old_cmd,
-        "buckyos_jarvis",
+        "jarvis-runtime.example",
         agent_env,
         Some(expected_root),
         Some("pkg:1234567890"),
@@ -481,7 +554,10 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Docker);
     assert_programs(&deploy.commands, &["pkg-install", "docker", "docker"]);
-    assert_eq!(deploy.commands[0].args, vec!["demo-img"]);
+    assert_eq!(
+        deploy.commands[0].args,
+        vec![test_exact_package_id("image.demo.example", 1)]
+    );
     assert_eq!(
         deploy.commands[2].args,
         vec!["pull", "demo/service:0.1.0-amd64@sha256:deadbeef"]
@@ -490,7 +566,11 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Docker);
     assert_programs(&start.commands, &["docker", "docker"]);
-    assert_eq!(start.commands[0].args, vec!["rm", "-f", "alice-demo"]);
+    let runtime_key = test_runtime_key("demo.example");
+    assert_eq!(
+        start.commands[0].args,
+        vec!["rm", "-f", runtime_key.as_str()]
+    );
     assert!(start.commands[1].args.contains(&"run".to_string()));
     assert!(start.commands[1].args.contains(&"--add-host".to_string()));
     assert!(start.commands[1]
@@ -506,9 +586,10 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_KEVENT_DAEMON_ADDR=<value>".to_string()));
-    assert!(start.commands[1]
-        .args
-        .contains(&"buckyos.pkg_id=demo-img#0.1.0".to_string()));
+    assert!(start.commands[1].args.contains(&format!(
+        "buckyos.pkg_id={}",
+        test_exact_package_id("image.demo.example", 1)
+    )));
     assert!(start.commands[1]
         .args
         .contains(&"buckyos.spec_generation=1".to_string()));
@@ -520,14 +601,17 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     let stop = loader.preview_operation(ControlOperation::Stop).unwrap();
     assert_eq!(stop.runtime, RuntimeType::Docker);
     assert_programs(&stop.commands, &["docker"]);
-    assert_eq!(stop.commands[0].args, vec!["rm", "-f", "alice-demo"]);
+    assert_eq!(
+        stop.commands[0].args,
+        vec!["rm", "-f", runtime_key.as_str()]
+    );
 
     let status = loader.preview_operation(ControlOperation::Status).unwrap();
     assert_eq!(status.runtime, RuntimeType::Docker);
     assert_programs(&status.commands, &["docker", "docker", "docker"]);
     assert_eq!(
         status.commands[0].args,
-        vec!["ps", "-q", "-f", "name=^alice-demo$"]
+        vec!["ps", "-q", "-f", format!("name=^{runtime_key}$").as_str()]
     );
 }
 
@@ -542,7 +626,10 @@ fn appservice_control_commands_match_linux_aarch64_docker_runtime() {
 
     let deploy = loader.preview_operation(ControlOperation::Deploy).unwrap();
     assert_eq!(deploy.runtime, RuntimeType::Docker);
-    assert_eq!(deploy.commands[0].args, vec!["demo-img-arm"]);
+    assert_eq!(
+        deploy.commands[0].args,
+        vec![test_exact_package_id("image-arm.demo.example", 2)]
+    );
     assert_eq!(
         deploy.commands[2].args,
         vec!["pull", "demo/service:0.1.0-aarch64@sha256:beadfeed"]
@@ -577,8 +664,14 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         &deploy.commands,
         &["pkg-install", "pkg-install", "docker", "docker", "docker"],
     );
-    assert_eq!(deploy.commands[0].args, vec!["jarvis-agent"]);
-    assert_eq!(deploy.commands[1].args, vec!["jarvis-skills"]);
+    assert_eq!(
+        deploy.commands[0].args,
+        vec![test_exact_package_id("agent.jarvis-runtime.example", 3)]
+    );
+    assert_eq!(
+        deploy.commands[1].args,
+        vec![test_exact_package_id("skills.jarvis-runtime.example", 4)]
+    );
     assert_eq!(
         deploy.commands[2].args,
         vec!["pull", "paios/aios:latest-amd64"]
@@ -595,9 +688,10 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     let start = loader.preview_operation(ControlOperation::Start).unwrap();
     assert_eq!(start.runtime, RuntimeType::Agent);
     assert_programs(&start.commands, &["docker", "docker"]);
+    let runtime_key = test_runtime_key("jarvis-runtime.example");
     assert_eq!(
         start.commands[0].args,
-        vec!["rm", "-f", "alice-buckyos_jarvis"]
+        vec!["rm", "-f", runtime_key.as_str()]
     );
     assert!(start.commands[1].args.contains(&"run".to_string()));
     // Unified worker image has the dispatcher baked in, so we no longer
@@ -610,16 +704,17 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
         .contains(&"host.docker.internal:host-gateway".to_string()));
     assert!(start.commands[1]
         .args
-        .contains(&"BUCKYOS_APP_ID=buckyos_jarvis".to_string()));
+        .contains(&"BUCKYOS_APP_ID=jarvis-runtime.example".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_APP_TYPE=agent".to_string()));
     assert!(start.commands[1].args.contains(
-        &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/.local/share/buckyos_jarvis".to_string(),
+        &"BUCKYOS_DATA_DIR=/opt/buckyos/data/home/alice/.local/share/jarvis-runtime.example"
+            .to_string(),
     ));
     assert!(start.commands[1]
         .args
-        .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/buckyos_jarvis".to_string()));
+        .contains(&"BUCKYOS_PKG_DIR=/opt/buckyos/bin/jarvis-runtime.example".to_string()));
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_PKG_SOURCE_DIR=/mnt/buckyos/pkg".to_string()));
@@ -647,7 +742,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .iter()
-        .any(|arg| arg == "buckyos-instance-alice-buckyos_jarvis:/opt/buckyos/instance:rw"));
+        .any(|arg| arg == &format!("buckyos-instance-{runtime_key}:/opt/buckyos/instance:rw")));
     // Default ExtTool Volume (§6.1) mounted ro — image seeds it with
     // FreeCADCmd + pre-warmed uv/deno caches on first start.
     assert!(start.commands[1]
@@ -657,13 +752,8 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert!(start.commands[1]
         .args
         .contains(&"BUCKYOS_EXTTOOL_DIR=/opt/buckyos/tools".to_string()));
-    assert!(
-        start.commands[1]
-            .args
-            .iter()
-            .any(|arg| arg
-                == "<app_data>:/opt/buckyos/data/home/alice/.local/share/buckyos_jarvis:rw")
-    );
+    assert!(start.commands[1].args.iter().any(|arg| arg
+        == "<app_data>:/opt/buckyos/data/home/alice/.local/share/jarvis-runtime.example:rw"));
     assert!(start.commands[1]
         .args
         .iter()
@@ -683,7 +773,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_programs(&stop.commands, &["docker"]);
     assert_eq!(
         stop.commands[0].args,
-        vec!["rm", "-f", "alice-buckyos_jarvis"]
+        vec!["rm", "-f", runtime_key.as_str()]
     );
 
     let status = loader.preview_operation(ControlOperation::Status).unwrap();
@@ -691,7 +781,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_programs(&status.commands, &["docker", "docker", "docker"]);
     assert_eq!(
         status.commands[0].args,
-        vec!["ps", "-q", "-f", "name=^alice-buckyos_jarvis$"]
+        vec!["ps", "-q", "-f", format!("name=^{runtime_key}$").as_str()]
     );
     assert_eq!(
         status.commands[2].args,
@@ -733,7 +823,11 @@ fn agent_stop_command_uses_docker_on_windows() {
     assert_eq!(stop.commands[0].program, "docker");
     assert_eq!(
         stop.commands[0].args,
-        vec!["rm", "-f", "alice-buckyos_jarvis"]
+        vec![
+            "rm",
+            "-f",
+            test_runtime_key("jarvis-runtime.example").as_str()
+        ]
     );
 }
 
@@ -760,12 +854,13 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
         .with_worker_image_repo_override("paios/aios");
 
     let preview = loader.preview_operation(ControlOperation::Start).unwrap();
+    let runtime_key = test_runtime_key("desktop-tool");
     assert_eq!(preview.runtime, RuntimeType::HostScript);
     assert_eq!(preview.commands.len(), 2);
     assert_eq!(preview.commands[0].program, "docker");
     assert_eq!(
         preview.commands[0].args,
-        vec!["rm", "-f", "alice-desktop-tool"]
+        vec!["rm", "-f", runtime_key.as_str()]
     );
     assert_eq!(preview.commands[1].program, "docker");
     assert!(preview.commands[1].args.contains(&"run".to_string()));
@@ -773,9 +868,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .contains(&"host.docker.internal:host-gateway".to_string()));
-    assert!(preview.commands[1]
-        .args
-        .contains(&"alice-desktop-tool".to_string()));
+    assert!(preview.commands[1].args.contains(&runtime_key));
     assert!(preview.commands[1]
         .args
         .iter()
@@ -784,7 +877,7 @@ fn host_script_start_preview_uses_docker_with_script_service_image() {
     assert!(preview.commands[1]
         .args
         .iter()
-        .any(|a| a == "buckyos-instance-alice-desktop-tool:/opt/buckyos/instance:rw"));
+        .any(|a| a == &format!("buckyos-instance-{runtime_key}:/opt/buckyos/instance:rw")));
     assert!(preview.commands[1]
         .args
         .iter()
@@ -823,7 +916,7 @@ fn host_script_stop_preview_uses_docker_rm() {
     assert_eq!(preview.commands[0].program, "docker");
     assert_eq!(
         preview.commands[0].args,
-        vec!["rm", "-f", "alice-desktop-tool"]
+        vec!["rm", "-f", test_runtime_key("desktop-tool").as_str()]
     );
 }
 
@@ -916,7 +1009,10 @@ fn script_pkg_field_works_on_any_platform() {
         let preview = loader.preview_operation(ControlOperation::Deploy).unwrap();
         assert_eq!(preview.runtime, RuntimeType::HostScript);
         assert_eq!(preview.commands[0].program, "pkg-install");
-        assert_eq!(preview.commands[0].args, vec!["systest-script"]);
+        assert_eq!(
+            preview.commands[0].args,
+            vec![test_exact_package_id("script.systest.example", 12)]
+        );
     }
 }
 

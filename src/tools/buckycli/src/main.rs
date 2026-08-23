@@ -1,4 +1,3 @@
-mod app;
 mod did;
 mod loader;
 mod ndn;
@@ -266,21 +265,6 @@ oods look like this 'ood1,ood2'.")
                     .value_name("data")
                     .help("sign any given json data and return the JWT content")
                     .required(true)
-                )
-        )
-        .subcommand(
-            Command::new("app")
-                .about("App controller")
-                .arg(
-                        Arg::new("create")
-                        .long("create")
-                        .value_name("mata_file")
-                        .help("Quickly create an app, buckycli app --create $meta_file")
-                )
-                .arg(Arg::new("delete")
-                    .long("delete")
-                    .value_name("app_id")
-                    .help("Delete an app, buckycli app --delete $app_id")
                 )
         )
         .subcommand(
@@ -749,16 +733,6 @@ oods look like this 'ood1,ood2'.")
         }
         Some(("did", sub_matches)) => {
             did::did_matches(sub_matches);
-        }
-        Some(("app", matches)) => {
-            if let Some(meta_file) = matches.get_one::<String>("create") {
-                app::create_app(meta_file).await;
-                return Ok(());
-            }
-            if let Some(key) = matches.get_one::<String>("delete") {
-                app::delete_app(key).await;
-                return Ok(());
-            }
         }
         Some(("create_chunk", matches)) => {
             if let Some(filepath) = matches.get_one::<String>("create") {

@@ -15,14 +15,17 @@ pub struct AppRunItem {
 
 impl AppRunItem {
     pub fn new(
-        app_instance_id: &String, // app_id@username@nodeid
+        app_instance_id: &AppInstanceId,
         app_service_config: AppServiceInstanceConfig,
     ) -> Self {
-        let app_id = app_instance_id.split("@").nth(0).unwrap().to_string();
+        let app_id = app_instance_id.app_id().to_string();
         AppRunItem {
             app_id: app_id,
             app_instance_config: app_service_config.clone(),
-            app_loader: AppLoader::new_for_service(app_instance_id.as_str(), app_service_config),
+            app_loader: AppLoader::new_for_service(
+                &app_instance_id.to_string(),
+                app_service_config,
+            ),
         }
     }
 
@@ -38,11 +41,6 @@ impl AppRunItem {
         };
         let now = buckyos_get_unix_timestamp();
         let report = ServiceInstanceReportInfo {
-            instance_id: format!(
-                "{}@{}",
-                self.app_instance_config.app_spec.app_instance_id(),
-                self.app_instance_config.node_id
-            ),
             node_id: self.app_instance_config.node_id.clone(),
             node_did: device.id.clone(),
             state: ServiceInstanceState::Exited,
@@ -50,7 +48,7 @@ impl AppRunItem {
             last_update_time: now,
             start_time: 0,
             pid: 0,
-            deployment: Some(self.app_instance_config.app_spec.deployment.clone()),
+            deployment: Some(self.app_instance_config.deployment.clone()),
             instance_epoch: format!("node-daemon:{now}"),
             node_session_id: std::env::var("BUCKYOS_NODE_SESSION_ID")
                 .unwrap_or_else(|_| device.id.to_string()),
@@ -65,7 +63,7 @@ impl AppRunItem {
         };
         let key = format!(
             "services/{}/instances/{}",
-            self.app_instance_config.app_spec.app_instance_id(),
+            self.app_instance_config.node_execution_spec.app_instance_id,
             self.app_instance_config.node_id
         );
         if let Ok(raw) = serde_json::to_string(&report) {
@@ -77,12 +75,17 @@ impl AppRunItem {
 #[async_trait]
 impl RunItemControl for AppRunItem {
     fn get_item_name(&self) -> Result<String> {
-        //appid#userid
-        let full_appid = format!(
-            "{}#{}",
-            self.app_instance_config.app_spec.user_id, self.app_id
-        );
-        Ok(full_appid)
+        Ok(get_full_appid(
+            self.app_instance_config
+                .node_execution_spec
+                .app_instance_id
+                .app_id()
+                .as_str(),
+            self.app_instance_config
+                .node_execution_spec
+                .app_instance_id
+                .owner_user_id(),
+        ))
     }
 
     fn get_item_kind(&self) -> &'static str {

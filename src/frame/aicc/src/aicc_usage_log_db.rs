@@ -1177,9 +1177,7 @@ mod tests {
             source_task_id: "task-first".to_string(),
             created_at_ms: 10,
         };
-        db.upsert_video_continuation_source(&record)
-            .await
-            .unwrap();
+        db.upsert_video_continuation_source(&record).await.unwrap();
 
         let loaded = db
             .get_video_continuation_source("alice", "mix256:video-content")
@@ -1195,9 +1193,7 @@ mod tests {
 
         record.source_task_id = "task-second".to_string();
         record.created_at_ms = 20;
-        db.upsert_video_continuation_source(&record)
-            .await
-            .unwrap();
+        db.upsert_video_continuation_source(&record).await.unwrap();
         let updated = db
             .get_video_continuation_source("alice", "mix256:video-content")
             .await

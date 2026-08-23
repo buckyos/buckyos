@@ -2,6 +2,7 @@ import { join, parse as parsePath } from 'node:path'
 import { BuckyOSToolApplication, type ToolStdio } from '../core/app.ts'
 import { createDeterministicTarGz, digestFile } from '../modules/pikg_archive.ts'
 import type { DockerClient, DockerImageInfo } from '../modules/pikg.ts'
+import { appDocObjectId, validateAppDocShape } from '../modules/pikg_protocol.ts'
 import { assert, assertEquals, assertRejects } from './test_helpers.ts'
 
 class CaptureStdio implements ToolStdio {
@@ -123,7 +124,7 @@ Deno.test('pikg path workflow is offline, self-verifying, and safely cleanable',
       await Deno.readTextFile(join(envelope.data.dist_dir, 'APPDOC.json')),
     )
     assertEquals(appDoc.exp, 1_957_680_000)
-    assertEquals(appDoc.pkg_list.web.pkg_id, 'all.root_demo-web#0.1.0')
+    assertEquals(appDoc.pkg_list.web.pkg_id, 'all.web.demo.root.bns.did#0.1.0')
 
     const packExit = await app.run(['pikg', 'pack'])
     assertEquals(packExit, 0, io.stdoutText)
@@ -216,11 +217,19 @@ Deno.test('pikg Docker workflow pins the image ID and never uses a session', asy
     assertEquals(inspected.data.subpackages[0].selector.arch, 'x86_64')
     assertEquals(
       inspected.data.subpackages[0].pkg_id,
-      'nightly-linux-amd64.root_docker-demo-amd64_docker_image#0.1.0',
+      'nightly-linux-amd64.amd64_docker_image.docker-demo.root.bns.did#0.1.0',
     )
   } finally {
     await Deno.remove(root, { recursive: true })
   }
+})
+
+Deno.test('Rust and TypeScript share the canonical AppDoc v1 golden identity', async () => {
+  const fixture = new URL('../../../../doc/fixtures/appdoc-v1.json', import.meta.url)
+  const expectedId = new URL('../../../../doc/fixtures/appdoc-v1.object-id', import.meta.url)
+  const appDoc = JSON.parse(await Deno.readTextFile(fixture))
+  validateAppDocShape(appDoc)
+  assertEquals(appDocObjectId(appDoc), (await Deno.readTextFile(expectedId)).trim())
 })
 
 Deno.test('pikg clean rejects protected, symlinked, and unmanaged targets', async () => {

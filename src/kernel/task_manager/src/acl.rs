@@ -83,9 +83,8 @@ impl Principal {
     }
 
     fn sudo_mode(&self) -> Option<rbac::SudoMode> {
-        self.sudo.then(|| {
-            rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(&self.user_id))
-        })
+        self.sudo
+            .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(&self.user_id)))
     }
 }
 
@@ -223,7 +222,10 @@ pub async fn compute_permission(
     for grant in grants {
         let anchored_here = grant.task_id == task.task_id;
         let scope_covers = anchored_here
-            || matches!(grant.scope, TaskGrantScope::Subtree | TaskGrantScope::WholeTree);
+            || matches!(
+                grant.scope,
+                TaskGrantScope::Subtree | TaskGrantScope::WholeTree
+            );
         if !scope_covers {
             continue;
         }

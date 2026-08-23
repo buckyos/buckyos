@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{
     build_device_did, device_identity_paths_for_roots, new_device_config_by_jwk_with_did,
     save_local_device_identity_for_roots, AppDoc, LocalAppInstanceConfig, LocalNodeIdentityConfig,
-    ServiceInstanceState, ServiceSpecConfig, MSG_CENTER_SERVICE_UNIQUE_ID,
+    ServiceInstanceState, ServiceSpecConfig, APP_DOC_SCHEMA_VERSION, MSG_CENTER_SERVICE_UNIQUE_ID,
     OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID,
     VERIFY_HUB_UNIQUE_ID, WORKFLOW_SERVICE_UNIQUE_ID,
 };
@@ -1297,9 +1297,10 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
     let mut app_list = HashMap::new();
 
     let cyfs_gateway_doc_json = json!({
+        "schema_version": APP_DOC_SCHEMA_VERSION,
         "did": "did:bns:cyfs-gateway.buckyos.ai",
         "doc_type": "app",
-        "name": "cyfs-gateway",
+        "app_type": "service",
         "show_name": "CYFS Gateway",
         "presentation": {
             "title": {},
@@ -1313,23 +1314,23 @@ pub fn create_applist() -> Result<HashMap<String, LocalAppInstanceConfig>, Strin
         },
         "selector_type": "single",
         "version": "0.5.1",
-        "author": "buckyos.ai",
+        "author": "did:web:buckyos.ai",
         "owner": "did:web:buckyos.ai",
+        "controller": "did:web:buckyos.ai",
         "create_time": buckyos_kit::buckyos_get_unix_timestamp(),
         "last_update_time": buckyos_kit::buckyos_get_unix_timestamp(),
-        "description": {
-            "detail": "CYFS Gateway Service"
-        },
-        "categories": ["sys_module","local_app"],
         "exp": buckyos_kit::buckyos_get_unix_timestamp() + 3600 * 24 * 30,
         "pkg_list": {
             "amd64_win_app": {
-                "pkg_id": "nightly-windows-amd64.cyfs-gateway#0.5.1",
+                "pkg_id": "nightly-windows-amd64.bin.cyfs-gateway.buckyos.ai.bns.did#0.5.1",
+                "pkg_objid": "pkg:1111111111111111111111111111111111111111111111111111111111111111"
             },
             "aarch64_apple_app": {
-                "pkg_id": "nightly-apple-aarch64.cyfs-gateway#0.5.1"
+                "pkg_id": "nightly-apple-aarch64.bin.cyfs-gateway.buckyos.ai.bns.did#0.5.1",
+                "pkg_objid": "pkg:2222222222222222222222222222222222222222222222222222222222222222"
             }
-        }
+        },
+        "service_config_tips": {}
     });
 
     let cyfs_gateway_doc: AppDoc = serde_json::from_value(cyfs_gateway_doc_json).unwrap();

@@ -4,8 +4,8 @@ use name_lib::*;
 use serde_json::json;
 
 async fn test() -> std::result::Result<(), String> {
-    let app_id = "buckyos_filebrowser";
-    let other_app_id = "buckyos_systest";
+    let app_id = "buckyos-filebrowser.buckyos.bns.did";
+    let other_app_id = "buckyos-systest.buckyos.bns.did";
 
     //读取etc下的私钥和用户信息
     let etc_dir = get_buckyos_system_etc_dir();

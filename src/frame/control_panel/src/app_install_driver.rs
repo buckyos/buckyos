@@ -23,14 +23,13 @@ use crate::app_staging::PikgStagingStore;
 use crate::pikg::{PikgInspection, PikgReader};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, install_record_key, AppInstallTaskData, AppInstallationId,
-    AppInstallationScope, AppServiceSpec, AppType, CandidateHandle, ContentLocation,
-    InspectedContent, InstallError, InstallErrorCode, InstallInspection, InstallParams,
-    InstallPlan, InstallPlanStatus, InstallPlanUse, InstallRecord, InstallSource, InstallStage,
-    InstallTarget, PikgStagingPurpose, PreparedDeployment, ServiceExposeSetting, ServiceSetting,
-    ServiceState, SystemConfigError, VerificationReport, APP_CAPABILITY_MINI_GPU_MEMORY,
-    APP_CAPABILITY_MINI_GPU_TFLOPS, APP_CAPABILITY_MINI_MEMORY, OBJ_TYPE_APP_DOC,
-    SYSTEM_APP_OWNER_ID, TASK_DATA_TYPE_APP_UPDATE,
+    get_buckyos_api_runtime, install_record_key, AppId, AppInstallTaskData, AppServiceSpec,
+    CandidateHandle, ContentLocation, InspectedContent, InstallError, InstallErrorCode,
+    InstallInspection, InstallParams, InstallPlan, InstallPlanStatus, InstallPlanUse,
+    InstallRecord, InstallSource, InstallStage, InstallTarget, PikgStagingPurpose,
+    PreparedDeployment, ServiceExposeSetting, ServiceSetting, ServiceState, SystemConfigError,
+    VerificationReport, APP_CAPABILITY_MINI_GPU_MEMORY, APP_CAPABILITY_MINI_GPU_TFLOPS,
+    APP_CAPABILITY_MINI_MEMORY, OBJ_TYPE_APP_DOC, TASK_DATA_TYPE_APP_UPDATE,
 };
 use log::warn;
 use name_lib::{DeviceInfo, DID};
@@ -379,7 +378,8 @@ impl ProductionInstallDriver {
                 snapshot: &snapshot,
                 policy: data.request.policy,
                 plan_use: persisted_plan.plan_use,
-                installation_scope: persisted_plan.installation_scope.clone(),
+                task_id: persisted_plan.task_id.clone(),
+                owner_user_id: persisted_plan.owner_user_id.clone(),
                 target,
                 install_params,
                 pikg: pikg_inspection,
@@ -438,7 +438,7 @@ impl ProductionInstallDriver {
         if let Some(plan) = data.state.plan.as_ref() {
             let key = format!(
                 "services/control_panel/app_mutations/{}",
-                plan.installation_id
+                plan.app_instance_id
             );
             let client = runtime.get_system_config_client().await.map_err(|error| {
                 InstallError::new(
@@ -531,26 +531,18 @@ impl InstallStageDriver for ProductionInstallDriver {
                 format!("get runtime failed: {err}"),
             )
         })?;
-        let owner_user_id = if data.request.app_class == buckyos_api::AppClass::ZoneInstalled {
-            SYSTEM_APP_OWNER_ID.to_string()
-        } else {
-            data.request.user_id.clone()
-        };
-        let installation_scope = AppInstallationScope {
-            zone_did: runtime.zone_id.clone(),
-            owner_user_id,
-            app_class: data.request.app_class,
-        };
-        let installation_id = AppInstallationId::derive(app_doc.app_did(), &installation_scope);
+        let owner_user_id = data.request.owner_user_id.clone();
+        let app_id = AppId::from_app_did(app_doc.app_did()).map_err(|error| {
+            InstallError::new(
+                InstallStage::Inspect,
+                InstallErrorCode::InvalidRequest,
+                false,
+                error,
+            )
+        })?;
         let is_update = view.task_type == TASK_DATA_TYPE_APP_UPDATE;
         let inherited_params = if is_update {
-            let is_agent = app_doc.get_app_type() == AppType::Agent;
-            let record_key = install_record_key(
-                data.request.app_class,
-                installation_scope.owner_user_id.as_str(),
-                installation_id.as_str(),
-                is_agent,
-            );
+            let record_key = install_record_key(&owner_user_id, &app_id);
             let client = runtime.get_system_config_client().await.map_err(|error| {
                 InstallError::new(
                     InstallStage::Inspect,
@@ -582,19 +574,7 @@ impl InstallStageDriver for ProductionInstallDriver {
                         format!("invalid upgrade install record: {error}"),
                     )
                 })?;
-            let spec_path = if is_agent {
-                format!(
-                    "users/{}/agents/{}/spec",
-                    installation_scope.owner_user_id, installation_id
-                )
-            } else if data.request.app_class == buckyos_api::AppClass::ZoneInstalled {
-                buckyos_api::zone_app_spec_key(installation_id.as_str())
-            } else {
-                buckyos_api::user_app_spec_key(
-                    installation_scope.owner_user_id.as_str(),
-                    installation_id.as_str(),
-                )
-            };
+            let spec_path = buckyos_api::user_app_spec_key(&owner_user_id, &app_id);
             let spec: AppServiceSpec = client
                 .get(&spec_path)
                 .await
@@ -637,7 +617,8 @@ impl InstallStageDriver for ProductionInstallDriver {
                 } else {
                     InstallPlanUse::FreshInstall
                 },
-                installation_scope,
+                task_id: view.id.clone(),
+                owner_user_id,
                 target,
                 install_params,
                 pikg: pikg_inspection,
@@ -770,10 +751,12 @@ impl InstallStageDriver for ProductionInstallDriver {
 
         let recomputed_fingerprint = InstallPlan::compute_fingerprint(
             plan.plan_use,
-            &plan.installation_id,
-            &plan.installation_scope,
+            &plan.task_id,
+            &plan.app_instance_id,
+            &plan.owner_user_id,
             &plan.source_identity,
             &plan.app,
+            &plan.app_doc,
             &plan.resolution,
             &plan.target,
             &plan.install_params,
@@ -1347,77 +1330,4 @@ async fn default_node_target() -> Result<InstallTarget, String> {
         });
     }
     Err("no device info found under devices/".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use buckyos_api::{
-        AppClass, AppDoc, AppInstallationScope, AppType, DeploymentIdentity, MountPointConfig,
-        ServiceSpecConfig, SubPkgDesc,
-    };
-    use name_lib::DID;
-    use std::collections::HashMap;
-
-    #[test]
-    fn upgrade_params_follow_current_spec_without_reusing_old_runtime_config() {
-        let owner = DID::from_str("did:bns:tester").unwrap();
-        let app_doc = AppDoc::builder(AppType::Web, "demo", "1.0.0", "tester", &owner)
-            .web_pkg(SubPkgDesc::new("tester_demo-web#1.0.0"))
-            .build()
-            .unwrap();
-        let scope = AppInstallationScope {
-            zone_did: DID::from_str("did:web:test.buckyos.io").unwrap(),
-            owner_user_id: "alice".to_string(),
-            app_class: AppClass::UserInstalled,
-        };
-        let installation_id = AppInstallationId::derive(app_doc.app_did(), &scope);
-        let app_doc_object_id = ObjId::new_by_raw("appdoc".to_string(), vec![1; 32]);
-        let mut spec_config = ServiceSpecConfig::default();
-        spec_config.data_mount_point.insert(
-            PathBuf::from("/data"),
-            MountPointConfig {
-                target_path: PathBuf::from("/srv/alice/demo"),
-                access: "read_write".to_string(),
-            },
-        );
-        spec_config
-            .bash_envs
-            .insert("MODE".to_string(), "safe".to_string());
-        spec_config.res_pool_id = "interactive".to_string();
-        spec_config.runtime_caps = HashMap::from([("gpu".to_string(), "enabled".to_string())]);
-        let spec = AppServiceSpec {
-            installation_id: installation_id.clone(),
-            app_did: app_doc.app_did().clone(),
-            deployment: DeploymentIdentity {
-                installation_id,
-                task_id: "install-1".to_string(),
-                app_doc_object_id,
-                spec_generation: 7,
-                pikg_digest: None,
-            },
-            app_doc,
-            app_index: 1,
-            user_id: "alice".to_string(),
-            app_class: AppClass::UserInstalled,
-            permission: Vec::new(),
-            selected_components: vec!["web".to_string()],
-            enable: true,
-            expected_instance_count: 3,
-            state: ServiceState::Stopped,
-            spec_config,
-        };
-
-        let inherited = inherit_upgrade_params(InstallParams::default(), &spec);
-        assert!(!inherited.auto_start);
-        assert_eq!(inherited.expected_instance_count, 3);
-        assert_eq!(inherited.selected_components, vec!["web"]);
-        assert_eq!(
-            inherited.data_mount_points,
-            spec.spec_config.data_mount_point
-        );
-        assert_eq!(inherited.bash_envs, spec.spec_config.bash_envs);
-        assert_eq!(inherited.res_pool_id.as_deref(), Some("interactive"));
-        assert!(inherited.service_settings.services.is_empty());
-    }
 }

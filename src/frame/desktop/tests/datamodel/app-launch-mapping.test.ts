@@ -15,9 +15,9 @@ function assertEquals<T>(actual: T, expected: T, message: string) {
 
 function summary(overrides: Partial<AppSummary> = {}): AppSummary {
   return {
-    app_id: 'notes',
-    app_instance_id: 'notes@alice',
-    app_class: 'user_installed',
+    app_id: 'notes.example' as AppSummary['app_id'],
+    app_instance_id: 'notes.example@alice' as AppSummary['app_instance_id'],
+    app_did: 'did:web:notes.example',
     runtime_type: 'dapp',
     owner_user_id: 'alice',
     availability_match: { type: 'owner', subject: 'alice' },
@@ -26,8 +26,6 @@ function summary(overrides: Partial<AppSummary> = {}): AppSummary {
     app_icon_url: null,
     icon_res_url: 'res/notes/appicon.png',
     author: 'alice',
-    tags: [],
-    categories: [],
     app_index: 1,
     enable: true,
     state: 'running',
@@ -73,13 +71,14 @@ Deno.test('Desktop built-in apps remain available without AppSpecs', () => {
   assertEquals(definitions.map((app) => app.id), expectedIds, 'Desktop built-in ids')
 })
 
-Deno.test('buckyos_systest keeps its instance id but uses the short Systest catalog identity', () => {
+Deno.test('buckyos_systest keeps its canonical instance id but uses the short Systest catalog identity', () => {
   const definitions = buildAuthorizedAppDefinitions(
     [systestCatalogEntry],
     [
       summary({
-        app_id: 'buckyos_systest',
-        app_instance_id: 'buckyos_systest@devtest',
+        app_id: 'buckyos-systest.buckyos.bns.did' as AppSummary['app_id'],
+        app_instance_id: 'buckyos-systest.buckyos.bns.did@devtest' as AppSummary['app_instance_id'],
+        app_did: 'did:bns:buckyos-systest.buckyos',
         owner_user_id: 'devtest',
         show_name: 'buckyos_systest@devtest',
         web_hosts: ['systest'],
@@ -88,8 +87,12 @@ Deno.test('buckyos_systest keeps its instance id but uses the short Systest cata
   )
   const app = definitions[0]
 
-  assertEquals(app.id, 'buckyos_systest@devtest', 'stable instance id')
-  assertEquals(app.logicalAppId, 'buckyos_systest', 'logical app id')
+  assertEquals(
+    app.id,
+    'buckyos-systest.buckyos.bns.did@devtest',
+    'canonical instance id',
+  )
+  assertEquals(app.logicalAppId, 'buckyos-systest.buckyos.bns.did', 'logical app id')
   assertEquals(app.labelKey, 'apps.systest', 'short localized label')
   assertEquals(app.iconKey, 'systest', 'catalog icon')
   assertEquals(app.webHosts, ['systest'], 'gateway launch host')
@@ -100,7 +103,7 @@ Deno.test('buckyos_systest keeps its instance id but uses the short Systest cata
 Deno.test('unknown Web apps use their AppSpec host and the iframe window contract', () => {
   const app = buildAuthorizedAppDefinitions([], [summary()])[0]
 
-  assertEquals(app.id, 'notes@alice', 'stable instance id')
+  assertEquals(app.id, 'notes.example@alice', 'canonical instance id')
   assertEquals(app.labelKey, 'Notes', 'display name')
   assertEquals(app.webHosts, ['notes'], 'gateway launch host')
   assertEquals(app.tier, 'sdk', 'embedded web tier')
@@ -111,14 +114,15 @@ Deno.test('unknown Web apps use their AppSpec host and the iframe window contrac
 Deno.test('owner-qualified app instances use a short logical display name', () => {
   const app = buildAuthorizedAppDefinitions([], [
     summary({
-      app_id: 'photos',
-      app_instance_id: 'photos@alice',
-      show_name: 'photos@alice',
+      app_id: 'photos.example' as AppSummary['app_id'],
+      app_instance_id: 'photos.example@alice' as AppSummary['app_instance_id'],
+      app_did: 'did:web:photos.example',
+      show_name: 'photos',
       web_hosts: ['photos'],
     }),
   ])[0]
 
-  assertEquals(app.id, 'photos@alice', 'stable instance id')
+  assertEquals(app.id, 'photos.example@alice', 'canonical instance id')
   assertEquals(app.labelKey, 'photos', 'short display name')
   assertEquals(app.webHosts, ['photos'], 'gateway launch host')
   assertEquals(app.manifest.placement, 'inplace', 'window placement')

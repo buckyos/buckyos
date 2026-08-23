@@ -1,7 +1,7 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
+import { createHash, createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
 import { access, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -81,9 +81,18 @@ function deriveAppDid(appId) {
   return `did:bns:${appId}.${ownerIdPart}`
 }
 
-function appPackageNamespace(appId) {
+function appIdFromName(appId) {
   const ownerIdPart = OWNER_DID.split(':').pop()
-  return `${ownerIdPart}_${appId}`
+  return `${appId}.${ownerIdPart}.bns.did`
+}
+
+function appInstanceId(appId, ownerUserId) {
+  return `${appIdFromName(appId)}@${ownerUserId}`
+}
+
+function runtimeContainerName(appInstance) {
+  const runtimeKey = createHash('sha256').update(appInstance, 'utf8').digest('hex')
+  return `buckyos-app-${runtimeKey}`
 }
 
 async function cleanupTempDir(dir) {
@@ -541,8 +550,7 @@ async function installPikgToCompletion({ stagingHandle, expectOfflineReady = tru
 
   const startResult = await callControlPanel('apps.submit', {
     source,
-    app_class: plan.installation_scope.app_class,
-    user_id: plan.installation_scope.owner_user_id,
+    owner_user_id: plan.owner_user_id,
     target: plan.target,
     install_params: plan.install_params,
     options,
@@ -561,9 +569,9 @@ async function installPikgToCompletion({ stagingHandle, expectOfflineReady = tru
   return { task, plan }
 }
 
-async function uninstallApp({ installationId, userId, removeData = false }) {
+async function uninstallApp({ appInstanceId, userId, removeData = false }) {
   const result = await callControlPanel('apps.uninstall', {
-    selector: installationId,
+    selector: appInstanceId,
     owner_user_id: userId,
     data_disposition: removeData ? 'delete' : 'retain',
     idempotency_key: createRunId('uninstall'),
@@ -589,10 +597,10 @@ async function stageStaticWebFixture() {
     version,
     projectDir,
     tempRoot,
-    specPath: (userId, installationId) =>
-      `users/${userId}/apps/${installationId}/spec`,
-    specId: (userId, installationId) => `${installationId}@${userId}`,
-    binPath: () => path.join('/opt/buckyos/bin', `${appPackageNamespace(appId)}-web`),
+    specPath: (userId) =>
+      `users/${userId}/apps/${appIdFromName(appId)}/spec`,
+    specId: (userId) => appInstanceId(appId, userId),
+    binPath: () => path.join('/opt/buckyos/bin', `web.${appIdFromName(appId)}`),
   }
 }
 
@@ -612,11 +620,11 @@ async function stageAgentFixture() {
     version,
     projectDir,
     tempRoot,
-    specPath: (userId, installationId) =>
-      `users/${userId}/agents/${installationId}/spec`,
-    specId: (userId, installationId) => `${installationId}@${userId}`,
+    specPath: (userId) =>
+      `users/${userId}/apps/${appIdFromName(appId)}/spec`,
+    specId: (userId) => appInstanceId(appId, userId),
     pidFile: (userId) =>
-      path.join('/opt/buckyos/data/home', userId, '.local', 'share', appId, '.opendan.pid'),
+      path.join('/opt/buckyos/data/home', userId, '.local', 'share', appIdFromName(appId), '.opendan.pid'),
   }
 }
 
@@ -652,10 +660,10 @@ async function stageDockerFixture() {
     projectDir,
     tempRoot,
     imageName,
-    specPath: (userId, installationId) =>
-      `users/${userId}/apps/${installationId}/spec`,
-    specId: (userId, installationId) => `${installationId}@${userId}`,
-    containerName: (userId) => `${userId}-${appId}`,
+    specPath: (userId) =>
+      `users/${userId}/apps/${appIdFromName(appId)}/spec`,
+    specId: (userId) => appInstanceId(appId, userId),
+    containerName: (userId) => runtimeContainerName(appInstanceId(appId, userId)),
   }
 }
 
@@ -730,11 +738,10 @@ test('app_installer local PIKG lifecycle', async (t) => {
       const { task: installTask, plan } = await installPikgToCompletion({
         stagingHandle: published.pikg_handle,
       })
-      const installationId = plan.installation_id
+      const installedAppInstanceId = plan.app_instance_id
 
-      const spec = await readConfigJson(fixture.specPath(userId, installationId))
-      assert.equal(spec.installation_id, installationId)
-      assert.equal(spec.app_doc.name, fixture.appId)
+      const spec = await readConfigJson(fixture.specPath(userId))
+      assert.equal(spec.app_instance_id, installedAppInstanceId)
       assert.equal(spec.app_doc.version, fixture.version)
       assert.equal(spec.app_doc.did, published.app_did)
       assert.equal(spec.app_doc.selector_type, 'static')
@@ -744,12 +751,12 @@ test('app_installer local PIKG lifecycle', async (t) => {
       )
       assert.deepEqual(
         spec.spec_config.expose_config.www?.route?.sub_hostname ?? [],
-        [`${fixture.appId}-${installationId.slice('appinst:'.length, 'appinst:'.length + 12)}`],
+        [fixture.appId],
       )
 
       // install_record（D3）与 proof 顺序：完成后 record=installed 且
       // task result 带 record key；proof id（Repo 可用时）回填进 record。
-      const installRecordKey = `users/${userId}/apps/${installationId}/install_record`
+      const installRecordKey = `users/${userId}/apps/${appIdFromName(fixture.appId)}/install_record`
       const installRecord = await readConfigJson(installRecordKey)
       assert.equal(installRecord.state, 'installed')
       assert.equal(installRecord.task_id, installTask.id)
@@ -770,9 +777,9 @@ test('app_installer local PIKG lifecycle', async (t) => {
       )
 
       if (UNINSTALL_AFTER_INSTALL) {
-        await uninstallApp({ installationId, userId, removeData: false })
+        await uninstallApp({ appInstanceId: installedAppInstanceId, userId, removeData: false })
 
-        const deletedSpec = await readConfigJson(fixture.specPath(userId, installationId))
+        const deletedSpec = await readConfigJson(fixture.specPath(userId))
         assert.equal(deletedSpec.state, 'deleted')
         assert.equal(
           await waitForCondition(
@@ -803,19 +810,18 @@ test('app_installer local PIKG lifecycle', async (t) => {
         const { plan } = await installPikgToCompletion({
           stagingHandle: published.pikg_handle,
         })
-        const installationId = plan.installation_id
+        const installedAppInstanceId = plan.app_instance_id
 
-        const spec = await readConfigJson(fixture.specPath(userId, installationId))
-        assert.equal(spec.installation_id, installationId)
-        assert.equal(spec.app_doc.name, fixture.appId)
+        const spec = await readConfigJson(fixture.specPath(userId))
+        assert.equal(spec.app_instance_id, installedAppInstanceId)
         assert.equal(spec.app_doc.version, fixture.version)
         assert.ok(
           isInstalledSpecState(spec.state),
           `agent spec should be in an installed state, got ${spec.state}`,
         )
-        assert.equal(spec.app_doc.categories[0], 'agent')
+        assert.equal(spec.app_doc.app_type, 'agent')
 
-        const instances = await listServiceInstances(fixture.specId(userId, installationId))
+        const instances = await listServiceInstances(fixture.specId(userId))
         assert.ok(instances.length >= 1, 'agent install should create a started instance')
         assert.equal(
           await waitForCondition(() => fileExists(fixture.pidFile(userId)), {
@@ -825,9 +831,9 @@ test('app_installer local PIKG lifecycle', async (t) => {
         )
 
         if (UNINSTALL_AFTER_INSTALL) {
-          await uninstallApp({ installationId, userId, removeData: false })
+          await uninstallApp({ appInstanceId: installedAppInstanceId, userId, removeData: false })
 
-          const deletedSpec = await readConfigJson(fixture.specPath(userId, installationId))
+          const deletedSpec = await readConfigJson(fixture.specPath(userId))
           assert.equal(deletedSpec.state, 'deleted')
           assert.equal(
             await waitForCondition(
@@ -859,23 +865,22 @@ test('app_installer local PIKG lifecycle', async (t) => {
         const { plan } = await installPikgToCompletion({
           stagingHandle: published.pikg_handle,
         })
-        const installationId = plan.installation_id
+        const installedAppInstanceId = plan.app_instance_id
 
-        const spec = await readConfigJson(fixture.specPath(userId, installationId))
-        assert.equal(spec.installation_id, installationId)
-        assert.equal(spec.app_doc.name, fixture.appId)
+        const spec = await readConfigJson(fixture.specPath(userId))
+        assert.equal(spec.app_instance_id, installedAppInstanceId)
         assert.equal(spec.app_doc.version, fixture.version)
         assert.ok(
           isInstalledSpecState(spec.state),
           `docker spec should be in an installed state, got ${spec.state}`,
         )
-        assert.equal(spec.app_doc.categories[0], 'dapp')
+        assert.equal(spec.app_doc.app_type, 'dapp')
         assert.equal(await isContainerRunning(fixture.containerName(userId)), true)
 
         if (UNINSTALL_AFTER_INSTALL) {
-          await uninstallApp({ installationId, userId, removeData: false })
+          await uninstallApp({ appInstanceId: installedAppInstanceId, userId, removeData: false })
 
-          const deletedSpec = await readConfigJson(fixture.specPath(userId, installationId))
+          const deletedSpec = await readConfigJson(fixture.specPath(userId))
           assert.equal(deletedSpec.state, 'deleted')
           assert.equal(await isContainerRunning(fixture.containerName(userId)), false)
         }

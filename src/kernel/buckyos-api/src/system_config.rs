@@ -125,6 +125,29 @@ impl SystemConfigValue {
 }
 
 impl SystemConfigClient {
+    pub async fn get_zone_owner_user_id(&self) -> SytemConfigResult<String> {
+        let value = self.get(crate::ZONE_OWNER_USER_ID_KEY).await?;
+        let owner_user_id: String = serde_json::from_str(&value.value).map_err(|error| {
+            SystemConfigError::ReasonError(format!(
+                "system/zone_owner_user_id is not a JSON string: {error}"
+            ))
+        })?;
+        let owner_user_id = owner_user_id.trim();
+        if owner_user_id.is_empty()
+            || owner_user_id.contains('@')
+            || !owner_user_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b'.')
+            })
+        {
+            return Err(SystemConfigError::ReasonError(
+                "system/zone_owner_user_id is not a canonical user id".to_string(),
+            ));
+        }
+        Ok(owner_user_id.to_string())
+    }
+
     fn need_cache(&self, key: &str) -> bool {
         let cache_key_control = self.cache_key_control.get();
         if cache_key_control.is_none() {

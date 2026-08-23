@@ -1,5 +1,6 @@
 #![allow(unused_mut, unused, dead_code)]
 mod app;
+mod install_plan_executor;
 mod scheduler;
 mod scheduler_server;
 mod service;
@@ -171,7 +172,10 @@ async fn do_boot_scheduler() -> Result<()> {
     }
 
     let rpc_session_token = rpc_session_token_str.unwrap();
-    let system_config_client = SystemConfigClient::new(None, Some(rpc_session_token.as_str()));
+    let system_config_client = Arc::new(SystemConfigClient::new(
+        None,
+        Some(rpc_session_token.as_str()),
+    ));
     let boot_config = system_config_client.get("boot/config").await;
     if boot_config.is_ok() {
         return Err(anyhow::anyhow!(
@@ -206,6 +210,8 @@ async fn do_boot_scheduler() -> Result<()> {
         system_config_client.create(key, value).await?;
     }
 
+    let bootstrap_executor = SchedulerServer::new(system_config_client.clone());
+    bootstrap_executor.recover_install_plan_executions().await?;
     info!("start boot schedule...");
     let boot_result = schedule_loop(true).await;
     if boot_result.is_err() {
@@ -279,7 +285,11 @@ async fn service_main(is_boot: bool) -> Result<i32> {
             anyhow::anyhow!("register global runtime failed: {}", err)
         })?;
 
-        let scheduler_server = SchedulerServer::new();
+        let system_config_client = get_buckyos_api_runtime()?
+            .get_system_config_client()
+            .await?;
+        let scheduler_server = SchedulerServer::new(system_config_client);
+        scheduler_server.recover_install_plan_executions().await?;
 
         //start!
         info!("Start Scheduler Server...");
@@ -505,137 +515,11 @@ mod test {
     fn write_boot_template(root: &Path) {
         let scheduler_dir = root.join("etc").join("scheduler");
         fs::create_dir_all(&scheduler_dir).unwrap();
-        let template = r#"
-"system/install_settings" = """
-{
-    "pre_install_apps": {
-        "buckyos_filebrowser": {
-            "app_doc": {
-                "did": "did:bns:buckyos_filebrowser.buckyos.ai",
-                "doc_type": "app",
-                "name": "buckyos_filebrowser",
-                "version": "0.5.1",
-                "meta": {
-                    "detail": "BuckyOS File Browser"
-                },
-                "create_time": 1743008063,
-                "last_update_time": 1743008063,
-                "exp": 1837616063,
-                "tag": "latest",
-                "author": "did:web:buckyos.ai",
-                "owner": "did:web:buckyos.ai",
-                "show_name": "BuckyOS File Browser",
-                "selector_type": "single",
-                "service_config_tips": {
-                    "data_mount_points": {
-                        "/srv/": null,
-                        "/database/": null,
-                        "/config/": null
-                    },
-                    "local_cache_mount_points": {},
-                    "service_endpoints": {
-                        "www": {
-                            "protocol": "http",
-                            "inner_port": 80,
-                            "required": true,
-                            "expose": {
-                                "route": {"type": "web"}
-                            }
-                        }
-                    }
-                },
-                "pkg_list": {
-                    "amd64_docker_image": {
-                        "pkg_id": "nightly-linux-amd64.buckyos_filebrowser-img#0.5.1",
-                        "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-amd64"
-                    },
-                    "aarch64_docker_image": {
-                        "pkg_id": "nightly-linux-aarch64.buckyos_filebrowser-img#0.5.1",
-                        "docker_image_name": "buckyos/nightly-buckyos_filebrowser:0.5.1-aarch64"
-                    },
-                    "amd64_win_app": {
-                        "pkg_id": "nightly-windows-amd64.buckyos_filebrowser-bin#0.5.1"
-                    },
-                    "aarch64_apple_app": {
-                        "pkg_id": "nightly-apple-aarch64.buckyos_filebrowser-bin#0.5.1"
-                    },
-                    "amd64_apple_app": {
-                        "pkg_id": "nightly-apple-amd64.buckyos_filebrowser-bin#0.5.1"
-                    }
-                }
-            },
-            "service_config": {
-                "www": {
-                    "protocol": "http",
-                    "inner_port": 80
-                }
-            },
-            "data_mount_point": {
-                "/root": {
-                    "target_path": "/root",
-                    "access": "read_write"
-                }
-            },
-            "local_cache_mount_point": {},
-            "external_mount_point": {},
-            "expose_config": {
-                "www": {
-                    "route": {
-                        "type": "web",
-                        "sub_hostname": ["filebrowser"]
-                    },
-                    "scope": "",
-                    "allow_guest": false,
-                    "bind_address": "0.0.0.0"
-                }
-            },
-            "res_pool_id": "default"
-        },
-        "buckyos_systest": {
-            "app_doc": {
-                "did": "did:bns:buckyos_systest.buckyos.ai",
-                "doc_type": "app",
-                "name": "buckyos_systest",
-                "version": "0.5.1",
-                "meta": {
-                    "detail": "BuckyOS System Test App"
-                },
-                "create_time": 1743008063,
-                "last_update_time": 1743008063,
-                "exp": 1837616063,
-                "tag": "latest",
-                "author": "did:web:buckyos.ai",
-                "owner": "did:web:buckyos.ai",
-                "show_name": "BuckyOS System Test",
-                "selector_type": "static",
-                "service_config_tips": {},
-                "pkg_list": {
-                    "web": {
-                        "pkg_id": "nightly-linux-amd64.buckyos_systest#0.5.1"
-                    }
-                }
-            },
-            "data_mount_point": {},
-            "local_cache_mount_point": {},
-            "external_mount_point": {},
-            "service_config": {},
-            "expose_config": {
-                "www": {
-                    "route": {
-                        "type": "web",
-                        "sub_hostname": ["buckyos_systest"]
-                    },
-                    "scope": "",
-                    "allow_guest": true
-                }
-            },
-            "res_pool_id": "default"
-        }
-    }
-}
-"""
-"#;
-        fs::write(scheduler_dir.join("boot.template.toml"), template).unwrap();
+        fs::write(
+            scheduler_dir.join("boot.template.toml"),
+            include_str!("../../../rootfs/etc/scheduler/boot.template.toml"),
+        )
+        .unwrap();
     }
 
     async fn prepare_scheduler_test_configs(root: &Path) -> ZoneDocument {

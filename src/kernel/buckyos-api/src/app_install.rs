@@ -7,8 +7,9 @@
 
 use crate::taskdata::TaskDataProgress;
 use crate::{
-    AppClass, AppDocType, AppServiceSpec, MountPointConfig, PermissionItem, ServiceSettings,
-    ServiceSpecConfig, TaskId, TaskOutcome, TaskPhase, TaskWaitReason, TaskWaitReasonKind,
+    AgentId, AppDoc, AppDocType, AppId, AppInstanceId, AppServiceSpec, MountPointConfig,
+    PermissionItem, ServiceSettings, ServiceSpecConfig, TaskId, TaskOutcome, TaskPhase,
+    TaskWaitReason, TaskWaitReasonKind,
 };
 use name_lib::DID;
 use ndn_lib::{build_named_object_by_json, ObjId};
@@ -17,7 +18,6 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 /// Task input/progress/result、InstallPlan 与 install_record 的当前持久格式版本。
 pub const APP_INSTALL_SCHEMA_VERSION: u32 = 4;
@@ -25,67 +25,6 @@ pub const APP_INSTALL_SCHEMA_VERSION: u32 = 4;
 /// Opaque, unguessable staging handle prefix. The handle never embeds a path
 /// or digest and is resolved only through the Control Panel staging store.
 pub const PIKG_STAGING_HANDLE_PREFIX: &str = "pikg-stage-";
-
-// ---------------------------------------------------------------------------
-// Stable installation identity and source binding
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppInstallationScope {
-    pub zone_did: DID,
-    pub owner_user_id: String,
-    pub app_class: AppClass,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AppInstallationId(String);
-
-impl AppInstallationId {
-    pub fn derive(app_did: &DID, scope: &AppInstallationScope) -> Self {
-        let material = json!({
-            "schema": "buckyos.app-installation-id.v1",
-            "app_did": app_did,
-            "scope": scope,
-        });
-        let (obj_id, _) = build_named_object_by_json("appinst", &material);
-        Self(obj_id.to_string())
-    }
-
-    pub fn new(value: impl Into<String>) -> std::result::Result<Self, String> {
-        let value = value.into();
-        let digest = value
-            .strip_prefix("appinst:")
-            .ok_or_else(|| "invalid AppInstallationId prefix".to_string())?;
-        if digest.len() != 64
-            || !digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err("invalid AppInstallationId".to_string());
-        }
-        Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for AppInstallationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl FromStr for AppInstallationId {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        Self::new(value.trim())
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -539,6 +478,7 @@ pub enum ContentLocation {
 
 /// InstallPlan 选中的 package。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectedPackage {
     /// pkg_list key，即 sub_pkg_name。
     pub sub_pkg_name: String,
@@ -586,10 +526,13 @@ pub struct InspectedContent {
 pub struct InstallPlan {
     pub schema_version: u32,
     pub plan_use: InstallPlanUse,
-    pub installation_id: AppInstallationId,
-    pub installation_scope: AppInstallationScope,
+    pub task_id: TaskId,
+    pub app_instance_id: AppInstanceId,
+    pub owner_user_id: String,
     pub source_identity: InstallSourceIdentity,
     pub app: AppDocumentRef,
+    /// Immutable AppDoc snapshot whose canonical ObjectId must equal `app.object_id`.
+    pub app_doc: AppDoc,
     pub resolution: DidResolutionSnapshot,
     pub target: InstallTarget,
     pub selected_packages: Vec<SelectedPackage>,
@@ -633,13 +576,13 @@ pub struct InstallInspection {
     pub status: InstallPlanStatus,
 }
 
-/// InstallPlan 对 App Document 的不可变引用。文档 body 仍由事务状态单独保存，
-/// Plan 不复制 AppDoc 的展示与发布字段。
+/// InstallPlan 对其内嵌 immutable AppDoc snapshot 的精确引用。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppDocumentRef {
     pub did: DID,
     pub object_id: ObjId,
-    pub name: String,
+    pub show_name: String,
     /// App Document.version，仅表示应用语义版本。
     pub version: String,
 }
@@ -648,10 +591,12 @@ impl InstallPlan {
     /// 计算 plan fingerprint（JCS + sha256，复用 named-object 规范化路径）。
     pub fn compute_fingerprint(
         plan_use: InstallPlanUse,
-        installation_id: &AppInstallationId,
-        installation_scope: &AppInstallationScope,
+        task_id: &TaskId,
+        app_instance_id: &AppInstanceId,
+        owner_user_id: &str,
         source_identity: &InstallSourceIdentity,
         app: &AppDocumentRef,
+        app_doc: &AppDoc,
         resolution: &DidResolutionSnapshot,
         target: &InstallTarget,
         install_params: &InstallParams,
@@ -662,10 +607,12 @@ impl InstallPlan {
         let material = json!({
             "schema_version": APP_INSTALL_SCHEMA_VERSION,
             "plan_use": plan_use,
-            "installation_id": installation_id,
-            "installation_scope": installation_scope,
+            "task_id": task_id,
+            "app_instance_id": app_instance_id,
+            "owner_user_id": owner_user_id,
             "source_identity": source_identity,
             "app": app,
+            "app_doc": app_doc,
             "resolution": {
                 "app_did": resolution.app_did,
                 "doc_type": resolution.doc_type,
@@ -698,10 +645,12 @@ impl InstallPlan {
     pub fn expected_fingerprint(&self) -> String {
         Self::compute_fingerprint(
             self.plan_use,
-            &self.installation_id,
-            &self.installation_scope,
+            &self.task_id,
+            &self.app_instance_id,
+            &self.owner_user_id,
             &self.source_identity,
             &self.app,
+            &self.app_doc,
             &self.resolution,
             &self.target,
             &self.install_params,
@@ -979,20 +928,14 @@ pub struct InstallApproval {
     pub auto_confirmed: bool,
 }
 
-/// Prepare Stage 输出：写 spec 前保存的全部部署与回滚材料。
+/// Control Panel 提交给 scheduler 后保存的不可变执行句柄。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreparedDeployment {
-    pub spec_path: String,
-    pub service_spec_id: String,
-    pub app_index: u16,
-    /// 升级场景保留旧 spec 供回滚；全新安装为 None。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_spec: Option<AppServiceSpec>,
-    pub new_spec: AppServiceSpec,
-    /// 为部署 materialize 进 NamedStore 的对象（审计/清理用）。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub materialized_objects: Vec<String>,
-    pub prepared_at: u64,
+    pub app_instance_id: AppInstanceId,
+    pub task_id: TaskId,
+    pub plan_fingerprint: String,
+    pub submitted_at: u64,
 }
 
 /// 事务最终结果。
@@ -1140,15 +1083,14 @@ pub enum InstallRecordState {
     Failed,
 }
 
-/// 长期安装记录，存 `users/{uid}/apps|agents/{installation_id}/install_record`（D3）。
+/// App 长期安装记录，存 `users/{uid}/apps/{app_id}/install`。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstallRecord {
     pub schema_version: u32,
     pub app: AppDocumentRef,
-    pub user_id: String,
-    pub installation_id: AppInstallationId,
-    pub installation_scope: AppInstallationScope,
-    pub app_class: AppClass,
+    pub owner_user_id: String,
+    pub app_instance_id: AppInstanceId,
     pub resolution: DidResolutionSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub package_meta_ids: Vec<ObjId>,
@@ -1173,22 +1115,12 @@ pub struct InstallRecord {
 }
 
 /// install_record 的 system-config key（app 与 agent 分树）。
-pub fn install_record_key(
-    app_class: AppClass,
-    user_id: &str,
-    installation_id: &str,
-    is_agent: bool,
-) -> String {
-    if is_agent {
-        format!(
-            "users/{}/agents/{}/install_record",
-            user_id, installation_id
-        )
-    } else if app_class == AppClass::ZoneInstalled {
-        format!("zone/apps/{}/install_record", installation_id)
-    } else {
-        format!("users/{}/apps/{}/install_record", user_id, installation_id)
-    }
+pub fn install_record_key(owner_user_id: &str, app_id: &AppId) -> String {
+    format!("users/{owner_user_id}/apps/{app_id}/install_record")
+}
+
+pub fn agent_install_record_key(owner_user_id: &str, agent_id: &AgentId) -> String {
+    format!("users/{owner_user_id}/agents/{agent_id}/install_record")
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,7 +1157,7 @@ pub struct AppInstallStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_did: Option<DID>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub installation_id: Option<AppInstallationId>,
+    pub app_instance_id: Option<AppInstanceId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1272,8 +1204,7 @@ pub struct AppScheduledInstanceStatus {
 #[serde(deny_unknown_fields)]
 pub struct AppInstallationStatusSnapshot {
     pub schema_version: u32,
-    pub installation_id: AppInstallationId,
-    pub installation_scope: AppInstallationScope,
+    pub app_instance_id: AppInstanceId,
     pub app_did: DID,
     pub app_name: String,
     pub app_version: String,
@@ -1325,7 +1256,7 @@ pub enum AppUpdateState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateAvailability {
     pub app_did: DID,
-    pub installation_id: AppInstallationId,
+    pub app_instance_id: AppInstanceId,
     pub state: AppUpdateState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_app_doc_id: Option<ObjId>,
@@ -1478,8 +1409,8 @@ pub fn build_install_status_snapshot(
         app_did: plan
             .map(|plan| plan.app.did.clone())
             .or_else(|| state.resolution.as_ref().map(|r| r.app_did.clone())),
-        installation_id: plan.map(|plan| plan.installation_id.clone()),
-        app_name: plan.map(|plan| plan.app.name.clone()),
+        app_instance_id: plan.map(|plan| plan.app_instance_id.clone()),
+        app_name: plan.map(|plan| plan.app.show_name.clone()),
         app_version: plan.map(|plan| plan.app.version.clone()),
         stage: state.stage,
         completed_stages: state.completed_stages.clone(),
@@ -1510,6 +1441,8 @@ pub type InstallOptions = BTreeMap<String, Value>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndn_lib::NamedObject;
+    use std::str::FromStr;
 
     fn sample_target() -> InstallTarget {
         InstallTarget {
@@ -1673,12 +1606,13 @@ mod tests {
 
     #[test]
     fn plan_fingerprint_is_stable_and_sensitive() {
-        let obj_id = ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]);
+        let app_doc = crate::generate_scheduler_service_doc();
+        let (obj_id, _) = app_doc.gen_obj_id();
         let target = sample_target();
         let app = AppDocumentRef {
             did: DID::new("bns", "demo.tester"),
             object_id: obj_id.clone(),
-            name: "demo".to_string(),
+            show_name: "Demo".to_string(),
             version: "1.0.0".to_string(),
         };
         let mut resolution = DidResolutionSnapshot {
@@ -1712,12 +1646,8 @@ mod tests {
             docker_image_digest: None,
             required: true,
         }];
-        let scope = AppInstallationScope {
-            zone_did: DID::new("bns", "test-zone"),
-            owner_user_id: "tester".to_string(),
-            app_class: AppClass::UserInstalled,
-        };
-        let installation_id = AppInstallationId::derive(&app.did, &scope);
+        let app_instance_id = AppInstanceId::from_app_did(&app.did, "tester").unwrap();
+        let task_id = "install:demo".to_string();
         let source_identity = InstallSourceIdentity::Catalog {
             app_doc_object_id: app.object_id.clone(),
         };
@@ -1725,10 +1655,12 @@ mod tests {
 
         let fp1 = InstallPlan::compute_fingerprint(
             InstallPlanUse::FreshInstall,
-            &installation_id,
-            &scope,
+            &task_id,
+            &app_instance_id,
+            "tester",
             &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
@@ -1738,10 +1670,12 @@ mod tests {
         );
         let fp2 = InstallPlan::compute_fingerprint(
             InstallPlanUse::FreshInstall,
-            &installation_id,
-            &scope,
+            &task_id,
+            &app_instance_id,
+            "tester",
             &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
@@ -1760,10 +1694,12 @@ mod tests {
         });
         let permission_fp = InstallPlan::compute_fingerprint(
             InstallPlanUse::FreshInstall,
-            &installation_id,
-            &scope,
+            &task_id,
+            &app_instance_id,
+            "tester",
             &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &permission_params,
@@ -1777,10 +1713,12 @@ mod tests {
         resolution.document_version = Some(4);
         let fp3 = InstallPlan::compute_fingerprint(
             InstallPlanUse::FreshInstall,
-            &installation_id,
-            &scope,
+            &task_id,
+            &app_instance_id,
+            "tester",
             &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
@@ -1796,10 +1734,12 @@ mod tests {
         other_target.arch = "aarch64".to_string();
         let fp4 = InstallPlan::compute_fingerprint(
             InstallPlanUse::FreshInstall,
-            &installation_id,
-            &scope,
+            &task_id,
+            &app_instance_id,
+            "tester",
             &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &other_target,
             &params,
@@ -1812,10 +1752,12 @@ mod tests {
         resolution.verification_status = Some(DidVerificationStatus::Failed);
         let fp5 = InstallPlan::compute_fingerprint(
             InstallPlanUse::FreshInstall,
-            &installation_id,
-            &scope,
+            &task_id,
+            &app_instance_id,
+            "tester",
             &source_identity,
             &app,
+            &app_doc,
             &resolution,
             &target,
             &params,
@@ -1827,19 +1769,12 @@ mod tests {
     }
 
     #[test]
-    fn installation_id_parse_round_trips_derived_canonical_value() {
-        let scope = AppInstallationScope {
-            zone_did: DID::new("bns", "test-zone"),
-            owner_user_id: "alice".to_string(),
-            app_class: AppClass::UserInstalled,
-        };
-        let derived = AppInstallationId::derive(&DID::new("bns", "demo"), &scope);
-        assert_eq!(
-            AppInstallationId::from_str(derived.as_str()).unwrap(),
-            derived
-        );
-        assert!(AppInstallationId::from_str("demo").is_err());
-        assert!(AppInstallationId::from_str(&format!("appinst:{}", "A".repeat(64))).is_err());
+    fn app_instance_id_is_owner_scoped() {
+        let did = DID::new("bns", "demo.tester");
+        let alice = AppInstanceId::from_app_did(&did, "alice").unwrap();
+        let bob = AppInstanceId::from_app_did(&did, "bob").unwrap();
+        assert_ne!(alice, bob);
+        assert_eq!(AppInstanceId::from_str(&alice.to_string()).unwrap(), alice);
     }
 
     #[test]

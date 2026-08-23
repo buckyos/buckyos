@@ -51,6 +51,7 @@ enum TrustedIssuerKind {
     Root,
     User,
     Device,
+    Agent,
 }
 
 #[derive(Clone)]
@@ -64,12 +65,12 @@ enum SessionPrincipalKind {
     User,
     Device,
     Service,
+    Agent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AppTokenScope {
-    app_instance_id: String,
-    owner_user_id: Option<String>,
+    app_instance_id: AppInstanceId,
 }
 
 const VERIFY_HUB_ISSUER: &str = "verify-hub";
@@ -110,7 +111,8 @@ fn set_token_principal_kind(token: &mut RPCSessionToken, principal_kind: Session
     let value = match principal_kind {
         SessionPrincipalKind::User => TOKEN_PRINCIPAL_KIND_USER,
         SessionPrincipalKind::Device => TOKEN_PRINCIPAL_KIND_DEVICE,
-        SessionPrincipalKind::Service => TOKEN_PRINCIPAL_KIND_SERVICE,
+        SessionPrincipalKind::Service => TOKEN_PRINCIPAL_KIND_SYSTEM,
+        SessionPrincipalKind::Agent => TOKEN_PRINCIPAL_KIND_AGENT,
     };
     token.extra.insert(
         TOKEN_PRINCIPAL_KIND_CLAIM.to_string(),
@@ -126,7 +128,8 @@ fn get_token_principal_kind(token: &RPCSessionToken) -> Result<SessionPrincipalK
     {
         Some(TOKEN_PRINCIPAL_KIND_USER) => Ok(SessionPrincipalKind::User),
         Some(TOKEN_PRINCIPAL_KIND_DEVICE) => Ok(SessionPrincipalKind::Device),
-        Some(TOKEN_PRINCIPAL_KIND_SERVICE) => Ok(SessionPrincipalKind::Service),
+        Some(TOKEN_PRINCIPAL_KIND_SYSTEM) => Ok(SessionPrincipalKind::Service),
+        Some(TOKEN_PRINCIPAL_KIND_AGENT) => Ok(SessionPrincipalKind::Agent),
         _ => Err(RPCErrors::InvalidToken(
             "Missing or invalid principal_kind".to_string(),
         )),
@@ -218,11 +221,7 @@ async fn generate_session_token(
     set_token_session_id(&mut session_token, session);
     set_token_principal_kind(&mut session_token, principal_kind);
     if let Some(app_scope) = app_scope {
-        bind_token_app_instance(
-            &mut session_token,
-            &app_scope.app_instance_id,
-            app_scope.owner_user_id.as_deref(),
-        );
+        bind_token_app_instance(&mut session_token, &app_scope.app_instance_id);
     }
 
     {
@@ -264,11 +263,7 @@ async fn generate_refresh_token(
     set_token_session_id(&mut refresh_token, session);
     set_token_principal_kind(&mut refresh_token, principal_kind);
     if let Some(app_scope) = app_scope {
-        bind_token_app_instance(
-            &mut refresh_token,
-            &app_scope.app_instance_id,
-            app_scope.owner_user_id.as_deref(),
-        );
+        bind_token_app_instance(&mut refresh_token, &app_scope.app_instance_id);
     }
 
     {
@@ -460,48 +455,28 @@ async fn validate_refresh_principal(
             Ok(())
         }
         SessionPrincipalKind::Service => Ok(()),
+        SessionPrincipalKind::Agent => {
+            let trusted = load_trust_public_key_from_source(userid).await?;
+            if trusted.issuer_kind != TrustedIssuerKind::Agent {
+                return Err(RPCErrors::InvalidToken(
+                    "agent token subject is not an AgentDID".to_string(),
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
 async fn resolve_user_app_scope(
     user_id: &str,
     appid: &str,
-    app_instance_id: &str,
+    app_instance_id: &AppInstanceId,
 ) -> Result<AppTokenScope> {
-    let (instance_app_id, owner_user_id) = parse_app_instance_id(app_instance_id)?;
-    if instance_app_id != appid {
+    if app_instance_id.app_id().as_str() != appid {
         return Err(RPCErrors::NoPermission("AppAccessDenied".to_string()));
     }
 
-    let resolver = AppAvailabilityResolver::new(
-        Arc::new(get_system_config_client().await?),
-        env!("CARGO_PKG_VERSION"),
-        VERIFY_SERVICE_CONFIG
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(RPCErrors::ReasonError(
-                "verify_hub service config not loaded".to_string(),
-            ))?
-            .zone_document
-            .id
-            .clone(),
-    );
-    if owner_user_id == SYSTEM_APP_OWNER_ID && is_system_login_target(appid) {
-        if find_system_builtin_app(appid).is_none() {
-            resolver.get_user_settings(user_id).await.map_err(|error| {
-                warn!(
-                    "system app availability check failed user={} app_instance_id={}: {}",
-                    user_id, app_instance_id, error
-                );
-                RPCErrors::NoPermission("AppAccessDenied".to_string())
-            })?;
-            return Ok(AppTokenScope {
-                app_instance_id: app_instance_id.to_string(),
-                owner_user_id: None,
-            });
-        }
-    }
+    let resolver = AppAvailabilityResolver::new(Arc::new(get_system_config_client().await?));
 
     let decision = resolver
         .check_user(user_id, app_instance_id)
@@ -522,11 +497,6 @@ async fn resolve_user_app_scope(
     }
     Ok(AppTokenScope {
         app_instance_id: decision.app_instance_id,
-        owner_user_id: if decision.app_class == AppClass::SystemBuiltin {
-            None
-        } else {
-            Some(decision.owner_user_id)
-        },
     })
 }
 
@@ -612,7 +582,6 @@ async fn report_service_instance_info() -> Result<()> {
     let node_session_id = env::var("BUCKYOS_NODE_SESSION_ID")
         .unwrap_or_else(|_| format!("device:{}", service_config.device_id));
     let instance_info = ServiceInstanceReportInfo {
-        instance_id: format!("{}-{}", VERIFY_HUB_UNIQUE_ID, service_config.device_id),
         node_id: service_config.device_id.clone(),
         node_did: service_config.node_did.clone(),
         state: ServiceInstanceState::Started,
@@ -697,7 +666,42 @@ async fn remove_trustkey_from_cache(kid: &str) {
 async fn load_trust_public_key_from_source(iss: &str) -> Result<TrustedKey> {
     let result_key: DecodingKey;
     let issuer_kind: TrustedIssuerKind;
-    if iss == "root" {
+    if iss.starts_with("did:") {
+        let agent_did = DID::from_str(iss)
+            .map_err(|error| RPCErrors::ReasonError(format!("invalid AgentDID issuer: {error}")))?;
+        let agent_id = AgentId::from_agent_did(&agent_did).map_err(RPCErrors::ReasonError)?;
+        let system_config_client = get_system_config_client().await?;
+        let users = system_config_client
+            .list("users")
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let mut resolved = None;
+        for owner in users {
+            let path = agent_spec_key(&owner, &agent_id);
+            let Ok(value) = system_config_client.get(&path).await else {
+                continue;
+            };
+            let spec: AgentSpec = serde_json::from_str(&value.value).map_err(|error| {
+                RPCErrors::ReasonError(format!("invalid AgentSpec at {path}: {error}"))
+            })?;
+            spec.validate().map_err(RPCErrors::ReasonError)?;
+            if spec.agent_did != agent_did {
+                continue;
+            }
+            let jwk = spec.agent_doc.get_default_key().ok_or_else(|| {
+                RPCErrors::ReasonError("AgentDocument public key not found".to_string())
+            })?;
+            resolved = Some(
+                DecodingKey::from_jwk(&jwk)
+                    .map_err(|error| RPCErrors::ReasonError(error.to_string()))?,
+            );
+            break;
+        }
+        result_key = resolved.ok_or_else(|| {
+            RPCErrors::ReasonError(format!("AgentSpec not found for issuer {iss}"))
+        })?;
+        issuer_kind = TrustedIssuerKind::Agent;
+    } else if iss == "root" {
         //load zone config from system config service
         let owner_auth_key = VERIFY_SERVICE_CONFIG
             .lock()
@@ -998,6 +1002,13 @@ impl VerifyHubApiHandler for VerifyHubServer {
             } else {
                 SessionPrincipalKind::Service
             }
+        } else if issuer_kind == TrustedIssuerKind::Agent {
+            if userid != rpc_session_token.iss.as_deref().unwrap_or_default() {
+                return Err(RPCErrors::InvalidToken(
+                    "Agent token sub and iss must both be the canonical AgentDID".to_string(),
+                ));
+            }
+            SessionPrincipalKind::Agent
         } else {
             SessionPrincipalKind::User
         };
@@ -1010,7 +1021,13 @@ impl VerifyHubApiHandler for VerifyHubServer {
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 })
-                .unwrap_or_else(|| format!("{}@{}", appid, SYSTEM_APP_OWNER_ID));
+                .ok_or_else(|| {
+                    RPCErrors::ParseRequestError(
+                        "user app login requires app_instance_id".to_string(),
+                    )
+                })?
+                .parse::<AppInstanceId>()
+                .map_err(RPCErrors::ParseRequestError)?;
             Some(resolve_user_app_scope(&userid, &appid, &app_instance_id).await?)
         } else {
             None
@@ -1025,8 +1042,8 @@ impl VerifyHubApiHandler for VerifyHubServer {
 
         let cache_scope = app_scope
             .as_ref()
-            .map(|scope| scope.app_instance_id.as_str())
-            .unwrap_or(appid.as_str());
+            .map(|scope| scope.app_instance_id.to_string())
+            .unwrap_or_else(|| appid.clone());
         let session_key = format!("{}_{}_{}", userid, cache_scope, token_jti);
 
         // Step 4: Check if this login JWT has already been used (replay protection)
@@ -1087,7 +1104,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
         validate_refresh_principal(userid.as_str(), principal_kind).await?;
         let app_scope = if principal_kind == SessionPrincipalKind::User {
             let app_instance_id = token_app_instance_id(&rpc_session_token)?;
-            Some(resolve_user_app_scope(&userid, &appid, app_instance_id).await?)
+            Some(resolve_user_app_scope(&userid, &appid, &app_instance_id).await?)
         } else {
             None
         };
@@ -1151,7 +1168,10 @@ impl VerifyHubApiHandler for VerifyHubServer {
                 .await?;
         reject_root_user_settings(&user_settings)?;
         require_active_user_settings(&user_settings)?;
-        let app_scope = resolve_user_app_scope(username, appid, app_instance_id).await?;
+        let app_instance_id = app_instance_id
+            .parse::<AppInstanceId>()
+            .map_err(RPCErrors::ParseRequestError)?;
+        let app_scope = resolve_user_app_scope(username, appid, &app_instance_id).await?;
 
         info!(
             "Password login successful for user: {}. Generating token pair.",
@@ -1205,7 +1225,10 @@ impl VerifyHubApiHandler for VerifyHubServer {
                 .await?;
         reject_root_user_settings(&user_settings)?;
         require_active_user_settings(&user_settings)?;
-        let app_scope = resolve_user_app_scope(username, appid, app_instance_id).await?;
+        let app_instance_id = app_instance_id
+            .parse::<AppInstanceId>()
+            .map_err(RPCErrors::ParseRequestError)?;
+        let app_scope = resolve_user_app_scope(username, appid, &app_instance_id).await?;
 
         let session_jti: u64;
         {
@@ -1270,8 +1293,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             let principal_kind = get_token_principal_kind(&rpc_session_token)?;
             if principal_kind == SessionPrincipalKind::User {
                 let token_instance_id = token_app_instance_id(&rpc_session_token)?;
-                let (instance_app_id, owner_user_id) = parse_app_instance_id(token_instance_id)?;
-                if rpc_session_token.appid.as_deref() != Some(instance_app_id.as_str()) {
+                if rpc_session_token.appid.as_deref() != Some(token_instance_id.app_id().as_str()) {
                     return Err(RPCErrors::InvalidToken(
                         "appid and app_instance_id claims do not match".to_string(),
                     ));
@@ -1280,13 +1302,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
                     .extra
                     .get(APP_OWNER_USER_ID_CLAIM)
                     .and_then(Value::as_str);
-                if owner_user_id == SYSTEM_APP_OWNER_ID {
-                    if owner_claim.is_some() && owner_claim != Some(SYSTEM_APP_OWNER_ID) {
-                        return Err(RPCErrors::InvalidToken(
-                            "app owner claim does not match app_instance_id".to_string(),
-                        ));
-                    }
-                } else if owner_claim != Some(owner_user_id.as_str()) {
+                if owner_claim != Some(token_instance_id.owner_user_id()) {
                     return Err(RPCErrors::InvalidToken(
                         "app owner claim does not match app_instance_id".to_string(),
                     ));
@@ -1304,7 +1320,7 @@ impl VerifyHubApiHandler for VerifyHubServer {
             }
             if let Some(expected_app_instance_id) = app_instance_id {
                 let token_app_instance_id = token_app_instance_id(&rpc_session_token)?;
-                if token_app_instance_id != expected_app_instance_id {
+                if token_app_instance_id.to_string() != expected_app_instance_id {
                     return Err(RPCErrors::InvalidToken(
                         "app_instance_id mismatch".to_string(),
                     ));
@@ -1997,8 +2013,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         setup_test_environment().await;
 
         let app_scope = AppTokenScope {
-            app_instance_id: "test-app@test-owner".to_string(),
-            owner_user_id: Some("test-owner".to_string()),
+            app_instance_id: "test-app@test-owner".parse().unwrap(),
         };
         let (token_pair, session_token, refresh_token) = generate_token_pair(
             "test-app",
@@ -2021,11 +2036,11 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
         );
         assert_eq!(
             token_app_instance_id(&session_token).unwrap(),
-            "test-app@test-owner"
+            app_scope.app_instance_id
         );
         assert_eq!(
             token_app_instance_id(&refresh_token).unwrap(),
-            "test-app@test-owner"
+            app_scope.app_instance_id
         );
         assert_eq!(
             session_token
@@ -2101,8 +2116,7 @@ MC4CAQAwBQYDK2VwBCIEIMDp9endjUnT2o4ImedpgvhVFyZEunZqG+ca0mka8oRp
             true,
             SessionPrincipalKind::User,
             Some(&AppTokenScope {
-                app_instance_id: "control-panel@system".to_string(),
-                owner_user_id: None,
+                app_instance_id: "control-panel@system".parse().unwrap(),
             }),
         )
         .await

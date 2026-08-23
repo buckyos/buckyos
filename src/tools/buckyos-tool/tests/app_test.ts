@@ -47,16 +47,15 @@ Deno.test('app fetch normalizes a BNS short name before calling Installer', asyn
   assertEquals(calls.map((call) => call.method), ['apps.inspect'])
 })
 
-Deno.test('app output hides legacy instance selectors and server paths', async () => {
+Deno.test('app output preserves AppInstanceId and hides server paths', async () => {
   const clients = clientsFor([], (method) => {
     assertEquals(method, 'apps.list')
     return {
       user_id: 'alice',
       total: 1,
       apps: [{
-        installation_id: `appinst:${'2'.repeat(64)}`,
         app_did: 'did:bns:demo',
-        app_instance_id: 'demo@alice',
+        app_instance_id: 'demo.bns.did@alice',
         spec_path: 'users/alice/apps/demo/spec',
         web_hosts: ['demo.example.com'],
       }],
@@ -64,7 +63,7 @@ Deno.test('app output hides legacy instance selectors and server paths', async (
   })
   const result = await run('list', {}, clients) as Record<string, unknown>
   const app = (result.apps as Record<string, unknown>[])[0]
-  assertEquals(app.app_instance_id, undefined)
+  assertEquals(app.app_instance_id, 'demo.bns.did@alice')
   assertEquals(app.spec_path, undefined)
   assertEquals(app.web_hosts, ['demo.example.com'])
 })
@@ -174,7 +173,7 @@ Deno.test('fresh install binds plan fingerprint, submits once, and waits to term
         return {
           action: 'fresh_install',
           task_id: 'task-1',
-          installation_id: plan.installation_id,
+          app_instance_id: plan.app_instance_id,
           plan_fingerprint: plan.plan_fingerprint,
         }
       }
@@ -337,21 +336,18 @@ function samplePlan(kind: 'catalog' | 'pikg', digest?: string): Record<string, u
   return {
     schema_version: 4,
     plan_use: 'FRESH_INSTALL',
-    installation_id: `appinst:${'2'.repeat(64)}`,
-    installation_scope: {
-      zone_did: 'did:web:test.example.com',
-      owner_user_id: 'alice',
-      app_class: 'user_installed',
-    },
+    app_instance_id: 'demo.bns.did@alice',
+    owner_user_id: 'alice',
     source_identity: kind === 'catalog'
       ? { kind: 'catalog', app_doc_object_id: appDocId }
       : { kind: 'pikg', app_doc_object_id: appDocId, pikg_digest: digest },
     app: {
       did: 'did:bns:demo',
       object_id: appDocId,
-      name: 'demo',
+      show_name: 'Demo',
       version: '1.0.0',
     },
+    app_doc: {},
     resolution: {
       app_did: 'did:bns:demo',
       doc_type: 'app',
@@ -377,9 +373,8 @@ function samplePlan(kind: 'catalog' | 'pikg', digest?: string): Record<string, u
 
 function installedDetails(): Record<string, unknown> {
   return {
-    app_id: 'demo',
-    app_instance_id: 'demo-1',
-    app_class: 'user_installed',
+    app_id: 'demo.bns.did',
+    app_instance_id: 'demo.bns.did@alice',
     owner_user_id: 'alice',
     summary: {},
     spec: {},

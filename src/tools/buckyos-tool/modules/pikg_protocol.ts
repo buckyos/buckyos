@@ -72,7 +72,7 @@ export interface PikgInspectionResult {
   valid: true
   app: {
     did: string
-    name: string
+    app_id: string
     version: string
     owner: string
     app_doc_object_id: string
@@ -177,24 +177,34 @@ export function assertSelectorCompatible(
 
 export function deriveAppNamespace(
   appDid: string,
-  appName: string,
-  ownerDid: string,
 ): string {
-  const owner = parseDid(ownerDid, 'owner')
+  return appIdFromDid(appDid)
+}
+
+export function appIdFromDid(appDid: string): string {
   const app = parseDid(appDid, 'did')
-  if (owner.method !== 'bns' || app.method !== 'bns') {
-    throw new UsageError('INVALID_APP_NAMESPACE', 'ordinary App owner and App DID must use did:bns')
-  }
-  if (!SAFE_BNS_LABEL.test(appName) || !SAFE_BNS_LABEL.test(owner.id)) {
-    throw new UsageError('INVALID_APP_NAMESPACE', 'App name and owner must be safe BNS labels')
-  }
-  if (app.id !== `${appName}.${owner.id}`) {
+  if (
+    app.id.includes('#') || app.id.includes('/') || app.id.includes('%') || app.id.includes(':')
+  ) {
     throw new UsageError(
-      'INVALID_APP_NAMESPACE',
-      `App DID must be did:bns:${appName}.${owner.id}`,
+      'INVALID_APP_ID',
+      'App DID must use hostname form without path, fragment, port, or encoding',
     )
   }
-  return `${owner.id}_${appName}`
+  const labels = app.id.split('.')
+  if (labels.some((label) => !SAFE_BNS_LABEL.test(label))) {
+    throw new UsageError('INVALID_APP_ID', 'App DID must contain canonical lowercase DNS labels')
+  }
+  if (app.method === 'web') {
+    if (labels.length >= 3 && labels.at(-1) === 'did') {
+      throw new UsageError(
+        'INVALID_APP_ID',
+        'did:web hostname conflicts with the reserved non-Web .did form',
+      )
+    }
+    return app.id
+  }
+  return `${app.id}.${app.method}.did`
 }
 
 export function createPackageMeta(
@@ -559,7 +569,7 @@ export async function inspectPikg(path: string): Promise<PikgInspectionResult> {
     valid: true,
     app: {
       did: String(appDoc.did),
-      name: String(appDoc.name),
+      app_id: appIdFromDid(String(appDoc.did)),
       version: String(appDoc.version),
       owner: String(appDoc.owner),
       app_doc_object_id: validated.appDocObjectId,
@@ -680,7 +690,14 @@ function validateObjectGraph(
       throw invalid('namespace', `subpackage ${key} must use App version ${appVersion}`)
     }
     const uniqueName = packageUniqueName(parsedId.name, key)
-    if (uniqueName !== namespace && !uniqueName.startsWith(`${namespace}-`)) {
+    const namespacePrefix = uniqueName.endsWith(`.${namespace}`)
+      ? uniqueName.slice(0, -namespace.length - 1)
+      : undefined
+    if (
+      uniqueName !== namespace &&
+      (!namespacePrefix || namespacePrefix.includes('.') ||
+        !/^[a-z0-9][a-z0-9_-]*$/.test(namespacePrefix))
+    ) {
       throw invalid('namespace', `subpackage ${key} is outside App package namespace`)
     }
     const pkgObjid = expectNonEmptyString(desc.pkg_objid, `APPDOC.pkg_list.${key}.pkg_objid`)
@@ -764,14 +781,8 @@ function validateObjectGraph(
   if (contentBySubpackage.size !== subpackages.length) {
     throw invalid('content-index', 'content index and pkg_list have different subpackages')
   }
-  const deps = expectObject(appDoc.deps ?? {}, 'APPDOC.deps')
-  for (const [name, version] of Object.entries(deps)) {
-    if (!dependencyNames.has(name) || version !== appVersion) {
-      throw invalid('self-contained', `AppDoc contains a third-party dependency: ${name}`)
-    }
-  }
-  if (Object.keys(deps).length !== dependencyNames.size) {
-    throw invalid('self-contained', 'AppDoc.deps must enumerate every bundled subpackage')
+  if (dependencyNames.size !== subpackages.length) {
+    throw invalid('self-contained', 'AppDoc package identities are not unique')
   }
   return {
     appDoc,
@@ -784,21 +795,61 @@ function validateObjectGraph(
   }
 }
 
-function validateAppDocShape(appDoc: Record<string, unknown>): void {
-  for (const field of ['did', 'name', 'version', 'owner', 'author', 'show_name', 'selector_type']) {
+export function validateAppDocShape(appDoc: Record<string, unknown>): void {
+  rejectUnknown(
+    appDoc,
+    [
+      'schema_version',
+      'doc_type',
+      'did',
+      'version',
+      'version_tag',
+      'app_type',
+      'owner',
+      'controller',
+      'author',
+      'create_time',
+      'last_update_time',
+      'exp',
+      'pkg_list',
+      'show_name',
+      'presentation',
+      'sdk_version',
+      'req_capbilities',
+      'permissions',
+      'selector_type',
+      'service_config_tips',
+    ],
+    'APPDOC',
+  )
+  if (appDoc.schema_version !== 1) {
+    throw invalid('appdoc', 'APPDOC.schema_version must be 1')
+  }
+  for (
+    const field of [
+      'did',
+      'version',
+      'app_type',
+      'owner',
+      'controller',
+      'author',
+      'show_name',
+      'selector_type',
+    ]
+  ) {
     expectNonEmptyString(appDoc[field], `APPDOC.${field}`)
   }
   if (appDoc.doc_type !== 'app') throw invalid('appdoc', 'APPDOC.doc_type must be app')
+  if (!['service', 'dapp', 'web', 'agent'].includes(String(appDoc.app_type))) {
+    throw invalid('appdoc', 'APPDOC.app_type is invalid')
+  }
   expectSafeInteger(appDoc.create_time, 'APPDOC.create_time')
   expectSafeInteger(appDoc.last_update_time, 'APPDOC.last_update_time')
   expectSafeInteger(appDoc.exp, 'APPDOC.exp')
-  const categories = appDoc.categories
-  if (
-    !Array.isArray(categories) || categories.length === 0 ||
-    categories.some((item) => typeof item !== 'string')
-  ) {
-    throw invalid('appdoc', 'APPDOC.categories must be a non-empty string array')
-  }
+  appIdFromDid(String(appDoc.did))
+  parseDid(String(appDoc.owner), 'owner')
+  parseDid(String(appDoc.controller), 'controller')
+  parseDid(String(appDoc.author), 'author')
   if (appDoc.permissions !== undefined && !Array.isArray(appDoc.permissions)) {
     throw invalid('appdoc', 'APPDOC.permissions must be an array')
   }
@@ -813,7 +864,7 @@ function validateAppDocShape(appDoc: Record<string, unknown>): void {
 
 function deriveNamespaceForPackage(appDoc: Record<string, unknown>): string {
   try {
-    return deriveAppNamespace(String(appDoc.did), String(appDoc.name), String(appDoc.owner))
+    return deriveAppNamespace(String(appDoc.did))
   } catch (error) {
     if (error instanceof UsageError) throw invalid('namespace', error.message)
     throw error
@@ -874,12 +925,10 @@ function packageUniqueName(packageName: string, key: string): string {
     'nightly-apple-amd64',
     'nightly-apple-aarch64',
   ])
-  const unique = parts.length === 1
-    ? parts[0]
-    : parts.length === 2 && environments.has(parts[0])
-    ? parts[1]
-    : undefined
-  if (!unique || !/^[a-z0-9_-]+$/.test(unique)) {
+  const unique = parts.length > 1 && environments.has(parts[0])
+    ? parts.slice(1).join('.')
+    : parts.join('.')
+  if (!unique || unique.split('.').some((label) => !/^[a-z0-9][a-z0-9_-]*$/.test(label))) {
     throw invalid('namespace', `subpackage ${key} has an invalid package name`)
   }
   return unique

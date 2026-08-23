@@ -26,8 +26,10 @@ mod aicc_client;
 mod aicc_usage_log;
 mod app_availability;
 mod app_doc;
+mod app_identity;
 pub mod app_install;
 mod app_mgr;
+mod app_schema;
 mod gateway_control;
 mod kevent_bridge;
 mod kevent_client;
@@ -46,7 +48,9 @@ pub use aicc_client::*;
 pub use aicc_usage_log::*;
 pub use app_availability::*;
 pub use app_doc::*;
+pub use app_identity::*;
 pub use app_install::*;
+pub use app_schema::*;
 pub use content_mgr_client::*;
 pub use control_panel::*;
 pub use cyfs_gateway_api::{
@@ -97,7 +101,7 @@ pub const OPENDAN_SERVICE_NAME: &str = "opendan";
 pub const OPENDAN_SERVICE_PORT: u16 = 4060;
 
 pub const BASE_APP_PORT: u16 = 10000;
-pub const MAX_APP_INDEX: u16 = 2048;
+pub const MAX_APP_INDEX: u16 = MAX_ALLOCATABLE_APP_INDEX;
 
 static CURRENT_BUCKYOS_RUNTIME: OnceCell<BuckyOSRuntime> = OnceCell::new();
 pub fn get_buckyos_api_runtime() -> Result<&'static BuckyOSRuntime> {
@@ -121,7 +125,9 @@ pub fn is_buckyos_api_runtime_set() -> bool {
 }
 
 pub fn get_full_appid(app_id: &str, owner_user_id: &str) -> String {
-    format!("{}-{}", owner_user_id, app_id)
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("{app_id}@{owner_user_id}").as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub fn get_session_token_env_key(app_full_id: &str, is_app_service: bool) -> String {
@@ -146,21 +152,29 @@ pub fn parse_app_identity_from_instance_config(
             );
             RPCErrors::ReasonError(format!("parse app_instance_config failed: {}", err))
         })?;
-    let app_id = config.app_spec.app_id().trim().to_string();
-    let owner_user_id = config.app_spec.user_id.trim().to_string();
+    let app_id = config
+        .node_execution_spec
+        .app_instance_id
+        .app_id()
+        .to_string();
+    let owner_user_id = config
+        .node_execution_spec
+        .app_instance_id
+        .owner_user_id()
+        .to_string();
     if app_id.is_empty() {
-        warn!("app_instance_config parsed but app_spec.app_id is empty");
+        warn!("app_instance_config parsed but node_execution_spec app_id is empty");
         return Err(RPCErrors::ReasonError(
-            "app_instance_config.app_spec.app_id is empty".to_string(),
+            "app_instance_config.node_execution_spec.app_id is empty".to_string(),
         ));
     }
     if owner_user_id.is_empty() {
         warn!(
-            "app_instance_config parsed for app_id={} but app_spec.user_id is empty",
+            "app_instance_config parsed for app_id={} but owner_user_id is empty",
             app_id
         );
         return Err(RPCErrors::ReasonError(
-            "app_instance_config.app_spec.user_id is empty".to_string(),
+            "app_instance_config.owner_user_id is empty".to_string(),
         ));
     }
     info!(
@@ -311,10 +325,10 @@ mod tests {
 
     use super::{
         get_full_appid, get_session_token_env_key, init_buckyos_api_runtime,
-        parse_app_identity_from_instance_config, AppClass, AppDoc, AppInstallationId,
-        AppInstallationScope, AppServiceInstanceConfig, AppServiceSpec, AppType,
-        BuckyOSRuntimeType, DeploymentIdentity, ServiceInstanceState, ServiceSpecConfig,
-        ServiceState, SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, OBJ_TYPE_APP_DOC,
+        parse_app_identity_from_instance_config, AppDoc, AppInstanceId, AppServiceInstanceConfig,
+        AppType, BuckyOSRuntimeType, DeploymentIdentity, NodeExecutionSpec, ServiceInstanceState,
+        ServiceSpecConfig, SubPkgDesc, BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV,
+        NODE_EXECUTION_SPEC_SCHEMA_VERSION, OBJ_TYPE_APP_DOC,
     };
 
     fn test_env_lock() -> &'static Mutex<()> {
@@ -341,58 +355,62 @@ mod tests {
         let owner_did = DID::from_str("did:bns:devtest").expect("parse owner did");
         let app_doc = AppDoc::builder(
             AppType::Agent,
-            "buckyos_jarvis",
+            "buckyos-jarvis",
             "0.1.0",
             "did:bns:devtest",
             &owner_did,
         )
         .show_name("Jarvis")
-        .agent_pkg(SubPkgDesc::new("jarvis-agent#0.1.0"))
+        .agent_pkg(
+            SubPkgDesc::new("agent.buckyos-jarvis.devtest.bns.did#0.1.0")
+                .package_meta_object_id(ndn_lib::ObjId::new_by_raw("pkg".to_string(), vec![1; 32])),
+        )
         .build()
         .expect("build app doc");
-        let installation_id = AppInstallationId::derive(
-            app_doc.app_did(),
-            &AppInstallationScope {
-                zone_did: DID::from_str("did:bns:test-zone").unwrap(),
-                owner_user_id: "devtest".to_string(),
-                app_class: AppClass::UserInstalled,
-            },
-        );
+        let app_instance_id = AppInstanceId::from_app_did(app_doc.app_did(), "devtest").unwrap();
         let app_doc_value = serde_json::to_value(&app_doc).unwrap();
         let (app_doc_object_id, _) =
             ndn_lib::build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_value);
         let config = AppServiceInstanceConfig {
             target_state: ServiceInstanceState::Started,
             node_id: "ood1".to_string(),
-            app_spec: AppServiceSpec {
-                installation_id: installation_id.clone(),
+            node_execution_spec: NodeExecutionSpec {
+                schema_version: NODE_EXECUTION_SPEC_SCHEMA_VERSION,
+                app_instance_id: app_instance_id.clone(),
                 app_did: app_doc.app_did().clone(),
-                deployment: DeploymentIdentity {
-                    installation_id,
-                    task_id: "test:install".to_string(),
-                    app_doc_object_id,
-                    spec_generation: 1,
-                    pikg_digest: None,
-                },
+                app_doc_object_id: app_doc_object_id.clone(),
+                spec_generation: 1,
+                app_type: app_doc.app_type,
+                packages: std::collections::BTreeMap::new(),
                 permission: app_doc.permissions.clone(),
-                app_doc,
+                service_spec_config: ServiceSpecConfig::default(),
+                app_name: "buckyos-jarvis".to_string(),
+                app_host_name: "buckyos-jarvis".to_string(),
                 app_index: 1,
-                user_id: "devtest".to_string(),
-                app_class: AppClass::UserInstalled,
-                selected_components: Vec::new(),
-                enable: true,
-                expected_instance_count: 1,
-                state: ServiceState::Running,
-                spec_config: ServiceSpecConfig::default(),
             },
             service_ports_config: HashMap::from([("www".to_string(), 10016)]),
+            deployment: DeploymentIdentity {
+                app_instance_id,
+                task_id: "test:install".to_string(),
+                app_doc_object_id,
+                spec_generation: 1,
+                pikg_digest: None,
+            },
         };
         let raw = serde_json::to_string(&config).expect("serialize app_instance_config");
 
         let (app_id, owner_user_id) =
             parse_app_identity_from_instance_config(&raw).expect("parse app_instance_config");
-        assert_eq!(app_id, "buckyos_jarvis");
+        assert_eq!(app_id, "buckyos-jarvis.devtest.bns.did");
         assert_eq!(owner_user_id, "devtest");
+    }
+
+    #[test]
+    fn runtime_key_uses_full_canonical_app_instance_sha256() {
+        assert_eq!(
+            get_full_appid("filebrowser.buckyos.ai", "alice"),
+            "0f77133700c08ac0aff571f1b710c5ade021d76b9a4a86477887f7d319c90768"
+        );
     }
 
     #[tokio::test]

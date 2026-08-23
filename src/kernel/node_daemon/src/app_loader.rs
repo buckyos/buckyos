@@ -8,7 +8,7 @@ use buckyos_api::{
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
-use ndn_lib::{load_named_object_from_obj_str, ObjId};
+use ndn_lib::{load_named_object_from_obj_str, NamedObject, ObjId};
 use package_lib::{MediaInfo, PackageEnv, PackageId, PackageMeta, PkgError};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -60,6 +60,8 @@ const DEVENV_JSON_EXTTOOL_KEY: &str = "exttool";
 /// /opt/buckyos/tools/ tree into the empty volume.
 const DEFAULT_EXTTOOL_IMAGE_REPO: &str = "paios/exttool";
 pub(crate) const DOCKER_LABEL_APP_ID: &str = "buckyos.app_id";
+pub(crate) const DOCKER_LABEL_APP_DID: &str = "buckyos.app_did";
+pub(crate) const DOCKER_LABEL_APP_INSTANCE_ID: &str = "buckyos.app_instance_id";
 pub(crate) const DOCKER_LABEL_OWNER_USER_ID: &str = "buckyos.owner_user_id";
 pub(crate) const DOCKER_LABEL_FULL_APPID: &str = "buckyos.full_appid";
 pub(crate) const DOCKER_LABEL_PKG_ID: &str = "buckyos.pkg_id";
@@ -231,12 +233,14 @@ pub struct AppLoader {
 
 impl AppLoader {
     pub fn new_for_service(app_instance_id: &str, config: AppServiceInstanceConfig) -> Self {
-        let app_id = app_instance_id
-            .split('@')
-            .next()
-            .unwrap_or(app_instance_id)
+        let identity = config.node_execution_spec.app_instance_id.clone();
+        debug_assert_eq!(app_instance_id, identity.to_string());
+        let app_id = identity.app_id().to_string();
+        let owner_user_id = config
+            .node_execution_spec
+            .app_instance_id
+            .owner_user_id()
             .to_string();
-        let owner_user_id = config.app_spec.user_id.clone();
         Self {
             app_id,
             owner_user_id,
@@ -419,19 +423,45 @@ impl AppLoader {
     }
 
     fn full_appid(&self) -> String {
-        get_full_appid(&self.app_id, &self.owner_user_id)
+        match &self.config {
+            LoaderConfig::Service(config) => {
+                config.node_execution_spec.app_instance_id.runtime_key()
+            }
+            LoaderConfig::Local(_) => get_full_appid(&self.app_id, &self.owner_user_id),
+        }
     }
 
-    fn app_doc(&self) -> &AppDoc {
+    fn app_instance_id(&self) -> String {
         match &self.config {
-            LoaderConfig::Service(config) => &config.app_spec.app_doc,
-            LoaderConfig::Local(config) => &config.app_doc,
+            LoaderConfig::Service(config) => config.node_execution_spec.app_instance_id.to_string(),
+            LoaderConfig::Local(_) => format!("{}@{}", self.app_id, self.owner_user_id),
+        }
+    }
+
+    fn app_did_string(&self) -> String {
+        match &self.config {
+            LoaderConfig::Service(config) => config.node_execution_spec.app_did.to_string(),
+            LoaderConfig::Local(config) => config.app_doc.did.to_string(),
+        }
+    }
+
+    fn local_app_doc(&self) -> Option<&AppDoc> {
+        match &self.config {
+            LoaderConfig::Service(_) => None,
+            LoaderConfig::Local(config) => Some(&config.app_doc),
+        }
+    }
+
+    fn execution_package(&self, key: &str) -> Option<&SubPkgDesc> {
+        match &self.config {
+            LoaderConfig::Service(config) => config.node_execution_spec.packages.get(key),
+            LoaderConfig::Local(config) => config.app_doc.pkg_list.get(key),
         }
     }
 
     fn deployment(&self) -> Option<&DeploymentIdentity> {
         match &self.config {
-            LoaderConfig::Service(config) => Some(&config.app_spec.deployment),
+            LoaderConfig::Service(config) => Some(&config.deployment),
             LoaderConfig::Local(_) => None,
         }
     }
@@ -443,7 +473,7 @@ impl AppLoader {
 
     fn install_config(&self) -> &ServiceSpecConfig {
         match &self.config {
-            LoaderConfig::Service(config) => &config.app_spec.spec_config,
+            LoaderConfig::Service(config) => &config.node_execution_spec.service_spec_config,
             LoaderConfig::Local(config) => &config.install_config,
         }
     }
@@ -460,12 +490,12 @@ impl AppLoader {
     }
 
     fn effective_app_type(&self) -> AppType {
-        let doc = self.app_doc();
-        if let Some(category) = doc.categories.first() {
-            if let Ok(app_type) = AppType::try_from(category.as_str()) {
-                return app_type;
-            }
+        if let LoaderConfig::Service(config) = &self.config {
+            return config.node_execution_spec.app_type;
         }
+        let doc = self
+            .local_app_doc()
+            .expect("service app type is carried by NodeExecutionSpec");
 
         if doc.pkg_list.agent.is_some() {
             return AppType::Agent;
@@ -546,7 +576,14 @@ impl AppLoader {
     }
 
     fn docker_image_desc(&self) -> Option<&SubPkgDesc> {
-        let pkg_list = &self.app_doc().pkg_list;
+        if let LoaderConfig::Service(config) = &self.config {
+            return config
+                .node_execution_spec
+                .packages
+                .values()
+                .find(|package| package.docker_image_name.is_some());
+        }
+        let pkg_list = &self.local_app_doc()?.pkg_list;
         if self.platform.arch == PlatformArch::Aarch64 {
             pkg_list
                 .aarch64_docker_image
@@ -561,11 +598,18 @@ impl AppLoader {
     }
 
     fn agent_desc(&self) -> Option<&SubPkgDesc> {
-        self.app_doc().pkg_list.agent.as_ref()
+        self.execution_package("agent")
     }
 
     fn host_app_desc(&self) -> Option<&SubPkgDesc> {
-        let pkg_list = &self.app_doc().pkg_list;
+        if let LoaderConfig::Service(config) = &self.config {
+            return config
+                .node_execution_spec
+                .packages
+                .iter()
+                .find_map(|(key, package)| key.ends_with("_app").then_some(package));
+        }
+        let pkg_list = &self.local_app_doc()?.pkg_list;
         match (self.platform.os, self.platform.arch) {
             (PlatformOs::Linux, PlatformArch::Aarch64) => pkg_list
                 .aarch64_linux_app
@@ -601,7 +645,7 @@ impl AppLoader {
     }
 
     fn script_desc(&self) -> Option<&SubPkgDesc> {
-        self.app_doc().pkg_list.script.as_ref()
+        self.execution_package("script")
     }
 
     fn script_pkg_id(&self) -> Option<String> {
@@ -622,18 +666,12 @@ impl AppLoader {
     }
 
     fn agent_pkg_id(&self) -> Option<String> {
-        self.app_doc()
-            .pkg_list
-            .agent
-            .as_ref()
+        self.execution_package("agent")
             .and_then(SubPkgDesc::get_pkg_id_with_objid)
     }
 
     fn agent_skills_pkg_id(&self) -> Option<String> {
-        self.app_doc()
-            .pkg_list
-            .agent_skills
-            .as_ref()
+        self.execution_package("agent_skills")
             .and_then(SubPkgDesc::get_pkg_id_with_objid)
     }
 
@@ -1203,7 +1241,13 @@ impl AppLoader {
                     token_type: kRPC::RPCSessionTokenType::Normal,
                     appid: Some(self.app_id.clone()),
                     jti: Some(login_jti.clone()),
-                    sub: Some(config.app_spec.user_id.clone()),
+                    sub: Some(
+                        config
+                            .node_execution_spec
+                            .app_instance_id
+                            .owner_user_id()
+                            .to_string(),
+                    ),
                     aud: None,
                     exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
                     iss: Some(device_doc.name.clone()),
@@ -1876,6 +1920,11 @@ impl AppLoader {
 
         // §9 env contract.
         env_vars.insert("BUCKYOS_APP_ID".to_string(), self.app_id.clone());
+        env_vars.insert("BUCKYOS_APP_DID".to_string(), self.app_did_string());
+        env_vars.insert(
+            "BUCKYOS_APP_INSTANCE_ID".to_string(),
+            self.app_instance_id(),
+        );
         env_vars.insert("BUCKYOS_APP_TYPE".to_string(), app_type_label.to_string());
         env_vars.insert(
             "BUCKYOS_OWNER_USER_ID".to_string(),
@@ -1939,6 +1988,11 @@ impl AppLoader {
     fn docker_runtime_labels(&self, desc: &SubPkgDesc) -> Vec<(String, String)> {
         let mut labels = vec![
             (DOCKER_LABEL_APP_ID.to_string(), self.app_id.clone()),
+            (DOCKER_LABEL_APP_DID.to_string(), self.app_did_string()),
+            (
+                DOCKER_LABEL_APP_INSTANCE_ID.to_string(),
+                self.app_instance_id(),
+            ),
             (
                 DOCKER_LABEL_OWNER_USER_ID.to_string(),
                 self.owner_user_id.clone(),
@@ -2105,6 +2159,16 @@ impl AppLoader {
         })?;
         let meta_obj_id_string = meta_obj_id.to_string();
         let pkg_meta = parse_package_meta_from_store(meta_obj_id_string.as_str(), &pkg_meta_str)?;
+        let (actual_meta_obj_id, _) = pkg_meta.gen_obj_id();
+        if actual_meta_obj_id != meta_obj_id {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "index_pkg_meta".to_string(),
+                format!(
+                    "pkg meta `{}` body hashes to `{}`",
+                    meta_obj_id, actual_meta_obj_id
+                ),
+            ));
+        }
         let expected_pkg_name = expected_env_pkg_name(env, &package_id);
         if pkg_meta.name != expected_pkg_name {
             // meta 是内容寻址对象：改名会使重算 ObjId 与引用不符，env 的
@@ -2364,6 +2428,13 @@ impl AppLoader {
         }
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_APP_ID={}", self.app_id));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!("BUCKYOS_APP_DID={}", self.app_did_string()));
+        docker_run_args.push("-e".to_string());
+        docker_run_args.push(format!(
+            "BUCKYOS_APP_INSTANCE_ID={}",
+            self.app_instance_id()
+        ));
         docker_run_args.push("-e".to_string());
         docker_run_args.push(format!("BUCKYOS_APP_TYPE={}", app_type_label));
         docker_run_args.push("-e".to_string());

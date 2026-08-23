@@ -665,13 +665,18 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::{AppType, SubPkgDesc};
+    use buckyos_api::{AppId, AppType, SubPkgDesc};
 
     fn demo_doc_value(app_did: &str, owner: &str) -> Value {
         let owner_did = DID::from_str(owner).unwrap();
-        let doc = AppDoc::builder(AppType::Web, "demo_web", "0.1.0", "tester", &owner_did)
-            .app_did(DID::from_str(app_did).unwrap())
-            .web_pkg(SubPkgDesc::new("demo_web-web#0.1.0"))
+        let app_did = DID::from_str(app_did).unwrap();
+        let app_id = AppId::from_app_did(&app_did).unwrap();
+        let doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner_did)
+            .app_did(app_did)
+            .web_pkg(
+                SubPkgDesc::new(format!("web.{app_id}#0.1.0"))
+                    .package_meta_object_id(ObjId::new_by_raw("pkg".to_string(), vec![1u8; 32])),
+            )
             .build()
             .unwrap();
         serde_json::to_value(&doc).unwrap()
@@ -729,8 +734,8 @@ mod tests {
 
     #[test]
     fn candidate_binding_enforces_did_and_owner() {
-        let app_did = DID::from_str("did:bns:demo_web.tester").unwrap();
-        let doc_value = demo_doc_value("did:bns:demo_web.tester", "did:bns:tester");
+        let app_did = DID::from_str("did:bns:demo-web.tester").unwrap();
+        let doc_value = demo_doc_value("did:bns:demo-web.tester", "did:bns:tester");
         let snapshot = fake::active_answer(&app_did, doc_value.clone(), 1).snapshot;
 
         // 一致：绑定成功且命中已发布 body。
@@ -759,7 +764,7 @@ mod tests {
 
     #[test]
     fn terminal_status_is_not_retryable() {
-        let app_did = DID::from_str("did:bns:demo_web.tester").unwrap();
+        let app_did = DID::from_str("did:bns:demo-web.tester").unwrap();
         let revoked = fake::status_answer(&app_did, DocumentStatus::Revoked);
         let err = reject_terminal_status(&app_did, &revoked.snapshot).unwrap_err();
         assert_eq!(err.code, InstallErrorCode::IdentityRevoked);
@@ -828,7 +833,7 @@ mod tests {
     #[tokio::test]
     async fn fake_resolver_rejects_mismatched_document() {
         let resolver = fake::FakeAppResolver::new();
-        let app_did = DID::from_str("did:bns:demo_web.tester").unwrap();
+        let app_did = DID::from_str("did:bns:demo-web.tester").unwrap();
         // body 的 did 指向别的 DID：契约检查必须拒绝。
         let bad_value = demo_doc_value("did:bns:other.tester", "did:bns:tester");
         let mut answer = fake::active_answer(&app_did, bad_value, 1);

@@ -416,7 +416,10 @@ fn build_request(
         strict: false,
     });
     req.budget = Some(llm_context::request::BudgetSpec {
-        max_total_tokens: Some(opts.target_tokens.saturating_add(opts.max_completion_tokens)),
+        max_total_tokens: Some(
+            opts.target_tokens
+                .saturating_add(opts.max_completion_tokens),
+        ),
         max_completion_tokens: Some(opts.max_completion_tokens),
         ..Default::default()
     });
@@ -1770,7 +1773,6 @@ mod tests {
         .await
         .expect_err("archives must be extracted before understanding");
         assert!(err.contains("must be extracted first"));
-
     }
 
     #[test]

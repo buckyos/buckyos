@@ -5,6 +5,8 @@
 > 本文冻结 beta 2.2 breaking change 中 App 身份、安装实例、Node 副本、短域名和 Package namespace 的新关系。
 >
 > 本轮不保留 `AppInstallationId`、`ZoneInstalled`、旧 `appid = AppDoc.name`、旧 `<installation_id>@<owner>` 等兼容路径；实现时必须同步共享类型、Control Panel、scheduler、node-daemon、verify-hub、SDK、WebUI/CLI、PIKG/PackageEnv 和协议文档。
+>
+> P0 已于 2026-08-23 完成；权威协议见 `doc/App 安装协议.md`。
 
 ---
 
@@ -680,14 +682,14 @@ service_config_tips
 
 这是实现 Phase 1 的前置 P0 TODO。在以下产出完成并 review 通过前，不得开始删除 `PackageMeta` flatten 或修改线上/fixture 的 `APPDOC.json`：
 
-- [ ] 在 `doc/App 安装协议.md` 给出完整 JSON Schema：字段名、类型、required/optional、default、unknown-field 策略和 `schema_version`。
-- [ ] 冻结 AppDoc named-object envelope：owner、controller、author/signer、verification method、签名覆盖范围及验证失败语义。
-- [ ] 冻结 ObjectId material：哪些 envelope/body 字段参与 JCS，ObjType 固定值，以及语义相同输入的 canonicalization 规则。
-- [ ] 冻结 `pkg_list`/SubPkgDesc、selector、runtime、SDK requirement、permissions、service config tips 的精确结构，不引用 `PackageMeta` 隐式字段。
-- [ ] 明确 resolver 返回的 DID Document、AppDoc snapshot、AppDoc ObjectId、PackageMeta ObjectId 之间的校验顺序。
-- [ ] Rust serde 与 TypeScript PIKG validator 共用相同字段语义，并提供至少一份 canonical APPDOC.json、JCS bytes、ObjectId 和签名 golden fixture。
-- [ ] 为缺字段、unknown field、错误 signer/controller、AppDID 不一致、ObjectId 不一致和旧 flatten 格式增加拒绝测试。
-- [ ] 明确 `AppType::Agent` 只表示该 App product 是 Agent runtime，不表示 AppDoc 本身是 AgentDID Document；Agent 身份使用 1.4 的 AgentDocument/AgentServiceBinding。
+- [x] 在 `doc/App 安装协议.md` 给出完整 JSON Schema：字段名、类型、required/optional、default、unknown-field 策略和 `schema_version`。
+- [x] 冻结 AppDoc named-object envelope：owner、controller、author/signer、verification method、签名覆盖范围及验证失败语义。
+- [x] 冻结 ObjectId material：哪些 envelope/body 字段参与 JCS，ObjType 固定值，以及语义相同输入的 canonicalization 规则。
+- [x] 冻结 `pkg_list`/SubPkgDesc、selector、runtime、SDK requirement、permissions、service config tips 的精确结构，不引用 `PackageMeta` 隐式字段。
+- [x] 明确 resolver 返回的 DID Document、AppDoc snapshot、AppDoc ObjectId、PackageMeta ObjectId 之间的校验顺序。
+- [x] Rust serde 与 TypeScript PIKG validator 共用相同字段语义，并提供至少一份 canonical APPDOC.json、JCS bytes、ObjectId 和签名 golden fixture。
+- [x] 为缺字段、unknown field、错误 signer/controller、AppDID 不一致、ObjectId 不一致和旧 flatten 格式增加拒绝测试。
+- [x] 明确 `AppType::Agent` 只表示该 App product 是 Agent runtime，不表示 AppDoc 本身是 AgentDID Document；Agent 身份使用 1.4 的 AgentDocument/AgentServiceBinding。
 
 ---
 
@@ -718,11 +720,18 @@ did:bns:filebrowser.buckyos
 [qualifier.]<sub_package_name>.<app_id>
 ```
 
-带精确版本/对象身份的完整 PackageId：
+AppDoc 使用语义版本 PackageId，并在 `SubPkgDesc.pkg_objid` 单独保存 Package Meta ObjectId：
 
 ```text
-[qualifier.]<app_id>#<version>#<package_meta_objid>
-[qualifier.]<sub_package_name>.<app_id>#<version>#<package_meta_objid>
+[qualifier.]<app_id>#<version> + pkg_objid
+[qualifier.]<sub_package_name>.<app_id>#<version> + pkg_objid
+```
+
+进入部署投影的 exact PackageId 使用 PackageEnv 已冻结的 ObjectId selector（version 由已验证的 AppDoc/PackageMeta 保留）：
+
+```text
+[qualifier.]<app_id>#pkg:<64 lowercase hex>
+[qualifier.]<sub_package_name>.<app_id>#pkg:<64 lowercase hex>
 ```
 
 其中：
@@ -846,61 +855,61 @@ volume     = buckyos-instance-{RuntimeKey}
 
 ### P0：身份类型
 
-- [ ] 在 name-lib 冻结 AppDID hostname profile、`to_raw_host_name -> DID::from_str` round-trip 和 `.did` 保留规则；补多 label BNS case。
-- [ ] 新增强类型 `AppId`，构造时必须由 canonical AppDID 派生或严格反解验证。
-- [ ] 新增强类型 `AppInstanceId { app_id, owner_user_id }`，Display/FromStr 统一实现。
-- [ ] 删除 `AppInstallationId`、`AppInstallationScope` 及所有 derive/parse helper。
-- [ ] 删除公开 `replica_instance_id` 类型/拼接规则，scheduler 使用结构化 `(AppInstanceId, NodeId)`。
-- [ ] `AppServiceSpec.user_id` 重命名为 `owner_user_id`。
-- [ ] `AppServiceSpec.app_id()` 返回 AppId，不再返回 AppDoc.name。
-- [ ] DeploymentIdentity 改为绑定 AppInstanceId。
-- [ ] 新增显式 `App | System` service identity 分支；在调用 DID parser 前识别非 `did:` SystemServiceId。
+- [x] 在 name-lib 冻结 AppDID hostname profile、`to_raw_host_name -> DID::from_str` round-trip 和 `.did` 保留规则；补多 label BNS case。
+- [x] 新增强类型 `AppId`，构造时必须由 canonical AppDID 派生或严格反解验证。
+- [x] 新增强类型 `AppInstanceId { app_id, owner_user_id }`，Display/FromStr 统一实现。
+- [x] 删除 `AppInstallationId`、`AppInstallationScope` 及所有 derive/parse helper。
+- [x] 删除公开 `replica_instance_id` 类型/拼接规则，scheduler 使用结构化 `(AppInstanceId, NodeId)`。
+- [x] `AppServiceSpec.user_id` 重命名为 `owner_user_id`。
+- [x] `AppServiceSpec.app_id()` 返回 AppId，不再返回 AppDoc.name。
+- [x] DeploymentIdentity 改为绑定 AppInstanceId。
+- [x] 新增显式 `App | System` service identity 分支；在调用 DID parser 前识别非 `did:` SystemServiceId。
 
 ### P0：Agent identity/service binding
 
-- [ ] 冻结 `AgentId` 强类型和 AgentDID raw-hostname round-trip。
-- [ ] 冻结 `AgentSpec` 与 `AgentServiceBinding` schema/generation，明确 AgentDoc snapshot/ObjectId 和目标 AppInstanceId/service_name。
-- [ ] 将当前 Agent `AppServiceSpec` 拆成 Agent identity/binding 与普通 runtime AppSpec；`AppType::Agent` 只保留 runtime product 语义。
-- [ ] 定义 Agent binding 对 gateway、service discovery、RBAC 和 token 的投影；Agent principal 始终使用 AgentDID。
-- [ ] 增加 runtime App 卸载前的 Agent binding 引用检查，以及共享一个 runtime 的多 Agent 测试。
+- [x] 冻结 `AgentId` 强类型和 AgentDID raw-hostname round-trip。
+- [x] 冻结 `AgentSpec` 与 `AgentServiceBinding` schema/generation，明确 AgentDoc snapshot/ObjectId 和目标 AppInstanceId/service_name。
+- [x] 将当前 Agent `AppServiceSpec` 拆成 Agent identity/binding 与普通 runtime AppSpec；`AppType::Agent` 只保留 runtime product 语义。
+- [x] 定义 Agent binding 对 gateway、service discovery、RBAC 和 token 的投影；Agent principal 始终使用 AgentDID。
+- [x] 增加 runtime App 卸载前的 Agent binding 引用检查，以及共享一个 runtime 的多 Agent 测试。
 
 ### P0：AppClass 与 Zone App
 
-- [ ] 删除 `AppClass::ZoneInstalled` 和 `zone/apps` 分支。
-- [ ] 评估 normal installed App 是否还需要 `AppClass::UserInstalled`；如只剩一个普通安装类型，删除整个字段。
-- [ ] SystemBuiltin 保持非 DID SystemServiceId/系统 registry 语义，不伪造普通用户安装记录。
-- [ ] 增加权威 `zone_owner_user_id` 读取接口。
-- [ ] 将 Zone 全用户可用语义迁移为 availability policy。
+- [x] 删除 `AppClass::ZoneInstalled` 和 `zone/apps` 分支。
+- [x] 评估 normal installed App 是否还需要 `AppClass::UserInstalled`；如只剩一个普通安装类型，删除整个字段。
+- [x] SystemBuiltin 保持非 DID SystemServiceId/系统 registry 语义，不伪造普通用户安装记录。
+- [x] 增加权威 `zone_owner_user_id` 读取接口。
+- [x] 将 Zone 全用户可用语义迁移为 availability policy。
 
 ### P0：AppDoc
 
-- [ ] 先完成 6.3 的 AppDoc format P0 Gate，并将完整 schema/golden fixture 合入 `doc/App 安装协议.md`。
-- [ ] AppDoc 从 PackageMeta 完全解耦。
-- [ ] 删除 AppDoc.name 与 AppDID label 相等校验。
-- [ ] 重建 AppDoc builder、strict deserialize、NamedObject/JCS ObjectId。
-- [ ] 同步 PIKG app.json -> APPDOC.json 构造和校验。
-- [ ] 明确 AppDoc owner/controller/signature envelope，不从 PackageMeta 继承。
+- [x] 先完成 6.3 的 AppDoc format P0 Gate，并将完整 schema/golden fixture 合入 `doc/App 安装协议.md`。
+- [x] AppDoc 从 PackageMeta 完全解耦。
+- [x] 删除 AppDoc.name 与 AppDID label 相等校验。
+- [x] 重建 AppDoc builder、strict deserialize、NamedObject/JCS ObjectId。
+- [x] 同步 PIKG app.json -> APPDOC.json 构造和校验。
+- [x] 明确 AppDoc owner/controller/signature envelope，不从 PackageMeta 继承。
 
 ### P0：SystemConfig schema
 
-- [ ] App/Agent Spec 和 InstallRecord 路径改为 AppId/AgentId。
-- [ ] NodeConfig.apps key 改为 AppInstanceId。
-- [ ] service info/instances/static evidence 改为 AppInstanceId。
-- [ ] app mutation ownership key 改为 AppInstanceId。
-- [ ] Agent mutation ownership key 改为 AgentId，AgentSpec 只保存 AgentDocument snapshot 和 AgentServiceBinding。
-- [ ] 删除所有 `zone/apps` 列举、fallback 和旧路径候选。
-- [ ] 新增 `AppRegistry` 共享类型及严格 schema/version 校验。
-- [ ] AppIndex 移入 AppInstance allocation，并把 AppSpec/NodeExecutionSpec 内同名字段标为 scheduler-only 只读投影。
-- [ ] 冻结 `NodeExecutionSpec` 精确 schema/version 和 AppSpec 投影函数，保证 NodeConfig 自包含事务。
-- [ ] bootstrap 先创建空 registry，再通过 scheduler 执行预装 InstallPlan；禁止 builder 直接预填普通 App runtime spec 或 AgentSpec。
+- [x] App/Agent Spec 和 InstallRecord 路径改为 AppId/AgentId。
+- [x] NodeConfig.apps key 改为 AppInstanceId。
+- [x] service info/instances/static evidence 改为 AppInstanceId。
+- [x] app mutation ownership key 改为 AppInstanceId。
+- [x] Agent mutation ownership key 改为 AgentId，AgentSpec 只保存 AgentDocument snapshot 和 AgentServiceBinding。
+- [x] 删除所有 `zone/apps` 列举、fallback 和旧路径候选。
+- [x] 新增 `AppRegistry` 共享类型及严格 schema/version 校验。
+- [x] AppIndex 移入 AppInstance allocation，并把 AppSpec/NodeExecutionSpec 内同名字段标为 scheduler-only 只读投影。
+- [x] 冻结 `NodeExecutionSpec` 精确 schema/version 和 AppSpec 投影函数，保证 NodeConfig 自包含事务。
+- [x] bootstrap 先创建空 registry，再通过 scheduler 执行预装 InstallPlan；禁止 builder 直接预填普通 App runtime spec 或 AgentSpec。
 
 ### P0：InstallPlan execution protocol
 
-- [ ] 冻结 Control Panel -> scheduler 的 plan submit/status/cancel/retry 协议及 TaskManager 对应关系。
-- [ ] InstallPlan schema 删除 AppName/AppHostName/AppIndex 和 scheduler 分配的 `www` instance port；显式批准的非 `www` expose_port 仍可作为计划输入。
-- [ ] 冻结 scheduler claim key、幂等键、commit point、CAS 冲突、重启恢复和失败结果。
-- [ ] 删除 Control Panel deployer 直接写 AppSpec、NodeConfig、registry 和 gateway 派生配置的路径。
-- [ ] shortcut mutation 同样提交 scheduler，保证默认 hostname namespace 只有一个串行协调者。
+- [x] 冻结 Control Panel -> scheduler 的 plan submit/status/cancel/retry 协议及 TaskManager 对应关系。
+- [x] InstallPlan schema 删除 AppName/AppHostName/AppIndex 和 scheduler 分配的 `www` instance port；显式批准的非 `www` expose_port 仍可作为计划输入。
+- [x] 冻结 scheduler claim key、幂等键、commit point、CAS 冲突、重启恢复和失败结果。
+- [x] 删除 Control Panel deployer 直接写 AppSpec、NodeConfig、registry 和 gateway 派生配置的路径。
+- [x] shortcut mutation 同样提交 scheduler，保证默认 hostname namespace 只有一个串行协调者。
 
 ---
 

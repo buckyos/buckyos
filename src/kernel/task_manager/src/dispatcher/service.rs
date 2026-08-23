@@ -101,11 +101,7 @@ impl RunnerCaller for KrpcRunnerCaller {
         // Defense in depth: attach already validates, but endpoints persisted
         // by older builds or other writers must not widen the egress.
         validate_runner_endpoint(endpoint)?;
-        let client = kRPC::new_with_timeout_secs(
-            endpoint,
-            auth_token,
-            (timeout_ms / 1000).max(1),
-        );
+        let client = kRPC::new_with_timeout_secs(endpoint, auth_token, (timeout_ms / 1000).max(1));
         client.call(method, params).await
     }
 }
@@ -367,9 +363,7 @@ impl TaskDispatcherService {
             .db
             .get_registration(&record.target_id)
             .await?
-            .ok_or_else(|| {
-                dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &record.target_id)
-            })?;
+            .ok_or_else(|| dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &record.target_id))?;
         Ok(match registration.approval_policy {
             DispatchApprovalPolicy::Never => false,
             DispatchApprovalPolicy::InteractiveCallers => !record.auth.zone_trusted_caller,
@@ -800,8 +794,14 @@ impl TaskDispatcherService {
                 RecordStateUpdate::to_status(DispatchStatus::Activating),
             )
             .await?;
-        self.run_activate(record, attempt, registration, runner_epoch, reservation_token)
-            .await
+        self.run_activate(
+            record,
+            attempt,
+            registration,
+            runner_epoch,
+            reservation_token,
+        )
+        .await
     }
 
     async fn run_activate(
@@ -813,7 +813,9 @@ impl TaskDispatcherService {
         reservation_token: &str,
     ) -> Result<()> {
         let Some(task_id) = record.task_id.clone() else {
-            return Err(RPCErrors::ReasonError("activating without a task id".into()));
+            return Err(RPCErrors::ReasonError(
+                "activating without a task id".into(),
+            ));
         };
         let function = registration
             .function_for(&record.schema_id, record.schema_version)
@@ -979,7 +981,13 @@ impl TaskDispatcherService {
                         }
                     } else if let Some(runner_epoch) = attempt.runner_epoch {
                         if let Err(err) = self
-                            .run_activate(&record, &attempt, &registration, runner_epoch, &reservation)
+                            .run_activate(
+                                &record,
+                                &attempt,
+                                &registration,
+                                runner_epoch,
+                                &reservation,
+                            )
                             .await
                         {
                             warn!("dispatcher: activate replay failed: {}", err);
@@ -1180,8 +1188,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             .await?
         {
             let existing_digest = compute_input_digest(&req.input);
-            if existing.auth.input_digest != existing_digest
-                || existing.schema_id != req.schema_id
+            if existing.auth.input_digest != existing_digest || existing.schema_id != req.schema_id
             {
                 return Err(dispatch_err(
                     DISPATCH_ERR_IDEMPOTENCY_CONFLICT,
@@ -1193,9 +1200,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             } else {
                 existing
             };
-            let task_id = existing.task_id.clone().ok_or_else(|| {
-                RPCErrors::ReasonError("dispatch record has no task yet".into())
-            })?;
+            let task_id = existing
+                .task_id
+                .clone()
+                .ok_or_else(|| RPCErrors::ReasonError("dispatch record has no task yet".into()))?;
             let task = self
                 .task_core
                 .trusted_get_task(&task_id)
@@ -1343,9 +1351,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 ))
             }
         };
-        let record = record.ok_or_else(|| {
-            RPCErrors::ReasonError("dispatch record not found".to_string())
-        })?;
+        let record = record
+            .ok_or_else(|| RPCErrors::ReasonError("dispatch record not found".to_string()))?;
         if !request_ctx.zone_trusted
             && !(record.auth.requested_by_user == request_ctx.user_id
                 && record.auth.requested_by_app == request_ctx.app_id)
@@ -1611,9 +1618,15 @@ impl TaskDispatcherHandler for TaskDispatcherService {
     async fn handle_disable_target(&self, req: DisableTargetReq, ctx: RPCContext) -> Result<()> {
         let request_ctx = self.authenticate(&ctx).await?;
         Self::require_zone_trusted(&request_ctx, "disable_target")?;
-        let changed = self.db.set_registration_enabled(&req.target_id, false).await?;
+        let changed = self
+            .db
+            .set_registration_enabled(&req.target_id, false)
+            .await?;
         if !changed {
-            return Err(dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &req.target_id));
+            return Err(dispatch_err(
+                DISPATCH_ERR_TARGET_NOT_REGISTERED,
+                &req.target_id,
+            ));
         }
         Ok(())
     }
@@ -1653,11 +1666,7 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             lease_epoch,
             lease_expires_at: instance.lease_expires_at,
             target_key: task_dispatcher_target_key(&req.target_id),
-            delivery_token: self.delivery_token_for(
-                &req.target_id,
-                &req.instance_id,
-                lease_epoch,
-            ),
+            delivery_token: self.delivery_token_for(&req.target_id, &req.instance_id, lease_epoch),
         })
     }
 
@@ -1706,7 +1715,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         let request_ctx = self.authenticate(&ctx).await?;
         self.require_target_owner(&request_ctx, &req.target_id, "detach_instance")
             .await?;
-        let instance = self.db.get_instance(&req.target_id, &req.instance_id).await?;
+        let instance = self
+            .db
+            .get_instance(&req.target_id, &req.instance_id)
+            .await?;
         if let Some(instance) = instance {
             if instance.lease_epoch != req.lease_epoch {
                 return Err(dispatch_err(
@@ -1714,12 +1726,18 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                     format!("{}/{}", req.target_id, req.instance_id),
                 ));
             }
-            self.db.remove_instance(&req.target_id, &req.instance_id).await?;
+            self.db
+                .remove_instance(&req.target_id, &req.instance_id)
+                .await?;
         }
         Ok(())
     }
 
-    async fn handle_get_target(&self, req: GetTargetReq, ctx: RPCContext) -> Result<GetTargetResult> {
+    async fn handle_get_target(
+        &self,
+        req: GetTargetReq,
+        ctx: RPCContext,
+    ) -> Result<GetTargetResult> {
         let request_ctx = self.authenticate(&ctx).await?;
         Self::require_zone_trusted(&request_ctx, "get_target")?;
         let registration = self
@@ -1759,7 +1777,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, &req.default_target_id)
             })?;
         if !registration.supports_schema(&req.schema_id) {
-            return Err(dispatch_err(DISPATCH_ERR_UNSUPPORTED_SCHEMA, &req.schema_id));
+            return Err(dispatch_err(
+                DISPATCH_ERR_UNSUPPORTED_SCHEMA,
+                &req.schema_id,
+            ));
         }
         self.db
             .set_operation_route(&req.schema_id, &req.default_target_id)

@@ -123,9 +123,8 @@
 - `sign`
 - `build_did_docs`
 
-4. 应用配置级操作
-- `app --create`
-- `app --delete`
+4. 应用安装与生命周期
+- beta 2.2 已删除 `buckycli app --create/--delete`；安装改用 `buckyos-tool app install`，并由 Scheduler 执行 InstallPlan。
 
 5. 开发/测试/初始化工具
 - `load`
@@ -630,7 +629,7 @@ CLI 不应绕过权限系统直接“偷偷改配置”。
 当前一级命令迁移建议：
 
 - `sys_config` -> `config raw`
-- `app --create/--delete` -> `app create` / `app delete`
+- `app --create/--delete` -> 删除；安装改用 `buckyos-tool app install`，生命周期改用 Control Panel API
 - `pub_pkg` / `pub_app` / `pub_index` -> `dev repo publish-*` 或 `repo publish`
 - `pack_pkg` / `load_pkg` / `install_pkg` -> `dev pkg *`
 - `create_user_env` / `create_node_configs` / `create_sn_configs` -> `dev env *`
@@ -640,9 +639,7 @@ CLI 不应绕过权限系统直接“偷偷改配置”。
 
 ### 12.2 兼容策略
 
-- v2 初期保留旧命令别名
-- 默认输出 deprecation warning
-- 两个小版本后移除旧入口
+- beta 2.2 是 breaking change，不保留会直接写 AppSpec、gateway shortcut 或 RBAC 的旧应用命令。
 
 ## 13. 分阶段落地建议
 

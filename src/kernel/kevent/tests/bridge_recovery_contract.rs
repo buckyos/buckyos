@@ -223,15 +223,24 @@ async fn reader_created_before_daemon_recovers_by_itself() {
         .await
         .unwrap();
 
-    wait_until("first connect attempt to fail", Duration::from_secs(5), || {
-        let client = client.clone();
-        async move { client.transport_status().unwrap().consecutive_failures > 0 }
-    })
+    wait_until(
+        "first connect attempt to fail",
+        Duration::from_secs(5),
+        || {
+            let client = client.clone();
+            async move { client.transport_status().unwrap().consecutive_failures > 0 }
+        },
+    )
     .await;
 
     let daemon = TestDaemon::start_on(&addr).await;
-    let data = expect_event_eventually(&daemon, &reader, "/sys/node/online", Duration::from_secs(15))
-        .await;
+    let data = expect_event_eventually(
+        &daemon,
+        &reader,
+        "/sys/node/online",
+        Duration::from_secs(15),
+    )
+    .await;
     assert_eq!(data["ping"], json!(true));
 }
 
@@ -319,11 +328,23 @@ async fn concurrent_clients_do_not_collide_on_reader_ids() {
     })
     .await;
 
-    expect_event_eventually(&daemon, &reader_a, "/agent/a/hello", Duration::from_secs(10)).await;
+    expect_event_eventually(
+        &daemon,
+        &reader_a,
+        "/agent/a/hello",
+        Duration::from_secs(10),
+    )
+    .await;
     // B subscribed elsewhere and must stay empty despite A's traffic.
     assert!(reader_b.pull_event(Some(300)).await.unwrap().is_none());
 
-    expect_event_eventually(&daemon, &reader_b, "/agent/b/hello", Duration::from_secs(10)).await;
+    expect_event_eventually(
+        &daemon,
+        &reader_b,
+        "/agent/b/hello",
+        Duration::from_secs(10),
+    )
+    .await;
 }
 
 /// While the daemon is down, `pull_event` must still consume the caller's

@@ -1206,9 +1206,8 @@ pub struct AppInstallTaskRequest {
     pub creator_user_id: String,
     pub creator_app_id: String,
     /// Installation owner; may differ from creator for audited admin on-behalf-of installs.
-    pub user_id: String,
+    pub owner_user_id: String,
     pub idempotency_key: String,
-    pub app_class: crate::AppClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_plan: Option<crate::app_install::InstallPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1282,10 +1281,7 @@ pub struct AppUninstallTaskData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppUninstallTaskRequest {
     pub selector: String,
-    pub installation_id: crate::AppInstallationId,
-    pub owner_user_id: String,
-    pub app_class: crate::AppClass,
-    pub is_agent: bool,
+    pub app_instance_id: crate::AppInstanceId,
     pub creator_user_id: String,
     pub creator_app_id: String,
     pub idempotency_key: String,
@@ -1311,7 +1307,7 @@ pub struct AppDeletionManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppUninstallTaskResult {
-    pub installation_id: crate::AppInstallationId,
+    pub app_instance_id: crate::AppInstanceId,
     pub data_disposition: AppDataDisposition,
     pub deleted_paths: Vec<String>,
     pub completed_at: u64,
@@ -1332,10 +1328,7 @@ pub struct AppStartTaskData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppStartTaskRequest {
     pub selector: String,
-    pub installation_id: crate::AppInstallationId,
-    pub owner_user_id: String,
-    pub app_class: crate::AppClass,
-    pub is_agent: bool,
+    pub app_instance_id: crate::AppInstanceId,
     pub creator_user_id: String,
     pub creator_app_id: String,
     pub idempotency_key: String,
@@ -1361,7 +1354,7 @@ pub enum RestartStrategy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppLifecycleTaskResult {
-    pub installation_id: crate::AppInstallationId,
+    pub app_instance_id: crate::AppInstanceId,
     pub action: AppLifecycleAction,
     pub desired_state: crate::ServiceState,
     pub ready_instance_count: u32,
@@ -1370,7 +1363,7 @@ pub struct AppLifecycleTaskResult {
 
 /// App 升级任务的可恢复 transaction 数据（beta 2.2 schema v4）。
 /// 与安装共用同一 Stage 流水线与中间态；旧 spec 回滚材料保存在
-/// `state.prepared.previous_spec`。
+/// `state.prepared` 中的 scheduler 执行句柄。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateTaskData {
     pub schema_version: u32,
@@ -1384,9 +1377,8 @@ pub struct AppUpdateTaskRequest {
     pub source: crate::app_install::InstallSource,
     pub creator_user_id: String,
     pub creator_app_id: String,
-    pub user_id: String,
+    pub owner_user_id: String,
     pub idempotency_key: String,
-    pub app_class: crate::AppClass,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_plan_fingerprint: Option<String>,
     #[serde(default)]
@@ -1422,10 +1414,8 @@ pub struct AppUpdateBatchTaskRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppUpdateBatchRequestItem {
-    pub installation_id: crate::AppInstallationId,
-    pub owner_user_id: String,
-    pub app_class: crate::AppClass,
-    pub app_name: String,
+    pub app_instance_id: crate::AppInstanceId,
+    pub app_id: crate::AppId,
     pub source: crate::app_install::InstallSource,
     pub availability: crate::app_install::AppUpdateAvailability,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1463,7 +1453,7 @@ pub enum AppUpdateBatchItemOutcome {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppUpdateBatchItemResult {
-    pub installation_id: crate::AppInstallationId,
+    pub app_instance_id: crate::AppInstanceId,
     pub outcome: AppUpdateBatchItemOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_task_id: Option<String>,
@@ -2269,9 +2259,8 @@ mod tests {
                     "source": { "kind": "identifier", "identifier": "did:bns:demo.tester" },
                     "creator_user_id": "user",
                     "creator_app_id": "buckyos-tool",
-                    "user_id": "user",
+                    "owner_user_id": "user",
                     "idempotency_key": "install-demo-1",
-                    "app_class": "user_installed",
                     "policy": "NORMAL"
                 },
                 "stage": "resolve",
@@ -2284,7 +2273,7 @@ mod tests {
             panic!("expected app install task data");
         };
 
-        assert_eq!(data.request.user_id, "user");
+        assert_eq!(data.request.owner_user_id, "user");
         assert_eq!(
             data.schema_version,
             crate::app_install::APP_INSTALL_SCHEMA_VERSION

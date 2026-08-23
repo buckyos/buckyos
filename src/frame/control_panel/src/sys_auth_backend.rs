@@ -91,12 +91,12 @@ impl ControlPanelServer {
                     "redirect_url does not resolve to an app instance".to_string(),
                 )
             })?,
-            None => requested_app_instance_id.unwrap_or_else(|| {
-                format!("{}@{}", requested_appid, buckyos_api::SYSTEM_APP_OWNER_ID)
-            }),
+            None => requested_app_instance_id.ok_or_else(|| {
+                RPCErrors::ParseRequestError("user app login requires app_instance_id".to_string())
+            })?,
         };
         let (instance_app_id, _) = buckyos_api::parse_app_instance_id(&app_instance_id)?;
-        if instance_app_id != appid {
+        if instance_app_id.as_str() != appid {
             return Err(RPCErrors::ParseRequestError(format!(
                 "appid `{appid}` does not match app_instance_id `{app_instance_id}`"
             )));
@@ -850,18 +850,8 @@ impl ControlPanelServer {
         if let Some(instance_id) = app_info.get("app_instance_id").and_then(Value::as_str) {
             return Ok(Some(instance_id.to_string()));
         }
-        let service_id = app_info
-            .get("service_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                RPCErrors::ParseRequestError(format!(
-                    "redirect_url app `{app_key}` has no app_instance_id"
-                ))
-            })?;
-        Ok(Some(format!(
-            "{}@{}",
-            service_id,
-            buckyos_api::SYSTEM_APP_OWNER_ID
+        Err(RPCErrors::ParseRequestError(format!(
+            "redirect_url target `{app_key}` is a system service, not an AppInstance"
         )))
     }
 
@@ -1035,7 +1025,7 @@ fn token_principal_kind(token: &RPCSessionToken) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};

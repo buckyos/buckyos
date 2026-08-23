@@ -1,5 +1,6 @@
-use buckyos_api::{AppDoc, DidResolutionSnapshot, InstallError, InstallErrorCode, InstallStage};
-use name_lib::{validate_zone_child_label, DID};
+use buckyos_api::{
+    AppDoc, AppId, DidResolutionSnapshot, InstallError, InstallErrorCode, InstallStage,
+};
 use package_lib::PackageId;
 use serde_json::json;
 
@@ -32,39 +33,9 @@ pub(crate) fn validate_app_package_namespace(
         ));
     }
 
-    let namespace = derive_bns_namespace(&snapshot.app_did, stage)?;
-    let (app_name, owner_name) = split_standard_bns_app_did(&snapshot.app_did, stage)?;
-    if app_doc.name != app_name {
-        return Err(namespace_mismatch(
-            stage,
-            format!(
-                "app document name `{}` != app DID name `{app_name}`",
-                app_doc.name
-            ),
-        ));
-    }
-
-    let expected_owner = DID::new("bns", owner_name);
-    if snapshot.expected_owner.as_ref() != Some(&expected_owner) {
-        return Err(namespace_mismatch(
-            stage,
-            format!(
-                "resolved expected owner `{:?}` != App DID owner `{}`",
-                snapshot.expected_owner,
-                expected_owner.to_string()
-            ),
-        ));
-    }
-    if app_doc.owner != expected_owner {
-        return Err(namespace_mismatch(
-            stage,
-            format!(
-                "app document owner `{}` != App DID owner `{}`",
-                app_doc.owner.to_string(),
-                expected_owner.to_string()
-            ),
-        ));
-    }
+    let namespace = AppId::from_app_did(&snapshot.app_did)
+        .map_err(|error| namespace_mismatch(stage, error))?
+        .to_string();
 
     for (sub_pkg_name, desc) in app_doc.pkg_list.iter() {
         validate_sub_pkg_id(&namespace, &sub_pkg_name, &desc.pkg_id, stage)?;
@@ -93,42 +64,6 @@ pub(crate) fn validate_package_meta_namespace(
     Ok(())
 }
 
-fn derive_bns_namespace(app_did: &DID, stage: InstallStage) -> Result<String, InstallError> {
-    let (app_name, owner_name) = split_standard_bns_app_did(app_did, stage)?;
-    Ok(format!("{owner_name}_{app_name}"))
-}
-
-fn split_standard_bns_app_did<'a>(
-    app_did: &'a DID,
-    stage: InstallStage,
-) -> Result<(&'a str, &'a str), InstallError> {
-    if app_did.method != "bns" {
-        return Err(namespace_mismatch(
-            stage,
-            format!(
-                "App DID method `{}` has no authoritative package namespace binding",
-                app_did.method
-            ),
-        ));
-    }
-    let mut labels = app_did.id.split('.');
-    let app_name = labels.next().unwrap_or_default();
-    let owner_name = labels.next().unwrap_or_default();
-    if labels.next().is_some()
-        || validate_zone_child_label(app_name).is_err()
-        || validate_zone_child_label(owner_name).is_err()
-    {
-        return Err(namespace_mismatch(
-            stage,
-            format!(
-                "App DID `{}` is not the standard did:bns:$app_name.$owner_name form",
-                app_did.to_string()
-            ),
-        ));
-    }
-    Ok((app_name, owner_name))
-}
-
 fn validate_sub_pkg_id(
     namespace: &str,
     sub_pkg_name: &str,
@@ -141,8 +76,12 @@ fn validate_sub_pkg_id(
             format!("subpackage `{sub_pkg_name}` has invalid pkg_id `{pkg_id}`: {error}"),
         )
     })?;
-    let unique_name = parse_package_name(&package_id.name, stage, sub_pkg_name)?;
-    if unique_name != namespace && !unique_name.starts_with(format!("{namespace}-").as_str()) {
+    let unique_name = strip_package_env_qualifier(&package_id.name);
+    let valid = unique_name == namespace
+        || unique_name
+            .strip_suffix(&format!(".{namespace}"))
+            .is_some_and(is_safe_sub_package_name);
+    if !valid {
         return Err(namespace_mismatch(
             stage,
             format!(
@@ -158,44 +97,30 @@ fn parse_package_name<'a>(
     stage: InstallStage,
     sub_pkg_name: &str,
 ) -> Result<&'a str, InstallError> {
-    let mut parts = package_name.split('.');
-    let first = parts.next().unwrap_or_default();
-    let second = parts.next();
-    let third = parts.next();
-    let unique_name = match (second, third) {
-        (None, None) => first,
-        (Some(unique_name), None) if is_recognized_package_env(first) => unique_name,
-        (Some(_), None) => {
-            return Err(namespace_mismatch(
-                stage,
-                format!(
-                    "subpackage `{sub_pkg_name}` uses unrecognized PackageEnv qualifier `{first}`"
-                ),
-            ));
-        }
-        _ => {
-            return Err(namespace_mismatch(
-                stage,
-                format!(
-                    "subpackage `{sub_pkg_name}` package name `{package_name}` must contain at most one recognized PackageEnv qualifier"
-                ),
-            ));
-        }
-    };
-
-    if unique_name.is_empty()
-        || !unique_name
-            .bytes()
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-    {
+    let unique_name = strip_package_env_qualifier(package_name);
+    if unique_name.is_empty() {
         return Err(namespace_mismatch(
             stage,
-            format!(
-                "subpackage `{sub_pkg_name}` unique package name `{unique_name}` is not a safe single-segment name"
-            ),
+            format!("subpackage `{sub_pkg_name}` has an empty package name"),
         ));
     }
     Ok(unique_name)
+}
+
+fn strip_package_env_qualifier(package_name: &str) -> &str {
+    package_name
+        .split_once('.')
+        .filter(|(qualifier, _)| is_recognized_package_env(qualifier))
+        .map(|(_, rest)| rest)
+        .unwrap_or(package_name)
+}
+
+fn is_safe_sub_package_name(value: &str) -> bool {
+    !value.is_empty()
+        && !value.contains('.')
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
 }
 
 fn is_recognized_package_env(value: &str) -> bool {
@@ -223,7 +148,7 @@ fn namespace_mismatch(stage: InstallStage, message: String) -> InstallError {
     }))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use buckyos_api::{

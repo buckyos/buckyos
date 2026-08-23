@@ -132,9 +132,8 @@ impl DispatchBindingStore {
             })?,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => BindingFile::default(),
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("read dispatch bindings journal {}", path.display())
-                })
+                return Err(err)
+                    .with_context(|| format!("read dispatch bindings journal {}", path.display()))
             }
         };
         Ok(Self {
@@ -896,7 +895,11 @@ mod tests {
         }
     }
 
-    async fn accept_offer(handler: &AgentRunnerHandler, delivery_id: &str, task_id: &str) -> String {
+    async fn accept_offer(
+        handler: &AgentRunnerHandler,
+        delivery_id: &str,
+        task_id: &str,
+    ) -> String {
         match handler
             .handle_offer_task(offer_req(delivery_id, task_id), ctx_with_token(Some(TOKEN)))
             .await

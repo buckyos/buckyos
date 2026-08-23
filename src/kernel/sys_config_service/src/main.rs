@@ -680,9 +680,9 @@ fn parse_tx_main_key(params: &Value) -> Result<Option<(String, u64)>> {
     let Some(main_key) = params.get("main_key") else {
         return Ok(None);
     };
-    let main_key = main_key.as_object().ok_or_else(|| {
-        RPCErrors::ParseRequestError("main_key must be an object".to_string())
-    })?;
+    let main_key = main_key
+        .as_object()
+        .ok_or_else(|| RPCErrors::ParseRequestError("main_key must be an object".to_string()))?;
     let key = main_key
         .get("key")
         .and_then(Value::as_str)

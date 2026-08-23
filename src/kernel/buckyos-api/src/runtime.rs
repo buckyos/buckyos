@@ -944,23 +944,17 @@ impl BuckyOSRuntime {
         let instance_config = env::var("app_instance_config")
             .ok()
             .and_then(|raw| serde_json::from_str::<AppServiceInstanceConfig>(&raw).ok());
-        let service_spec_id = instance_config
-            .as_ref()
-            .map(|config| config.app_spec.app_instance_id())
-            .unwrap_or_else(|| self.app_id.clone());
-        let instance_id = format!("{}-{}", service_spec_id, device_config.name);
         let main_port = *self.main_service_port.read().await;
         let mut service_ports = HashMap::new();
         if main_port > 0 {
             service_ports.insert("www".to_string(), main_port);
         }
-        let deployment = instance_config.map(|config| config.app_spec.deployment);
+        let deployment = instance_config.map(|config| config.deployment);
         let instance_epoch = env::var("BUCKYOS_INSTANCE_EPOCH")
             .unwrap_or_else(|_| format!("process:{}", std::process::id()));
         let node_session_id = env::var("BUCKYOS_NODE_SESSION_ID")
             .unwrap_or_else(|_| format!("device:{}", device_config.id.to_string()));
         let service_instance_info = ServiceInstanceReportInfo {
-            instance_id,
             node_id: node_id.clone(),
             node_did,
             state: ServiceInstanceState::Started,
@@ -979,7 +973,7 @@ impl BuckyOSRuntime {
 
         let control_panel_client = self.get_control_panel_client().await?;
         control_panel_client
-            .update_service_instance_info(&service_spec_id, &node_id, &service_instance_info)
+            .update_service_instance_info(&self.app_id, &node_id, &service_instance_info)
             .await?;
         let mut last_update_service_info_time = self.last_update_service_info_time.write().await;
         *last_update_service_info_time = now;

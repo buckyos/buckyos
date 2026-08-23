@@ -24,6 +24,7 @@ pub const APP_PERMISSION_ZONE_PUBLIC: &str = "zone/public";
 pub const APP_PERMISSION_LOCATION: &str = "zone/location";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PermissionItem {
     pub scope_path: String, //APP_PERMISSION_XXX
     pub required: bool,     //对应用来说，是不是一个必须批准的权限（拒绝可能会影响App的正确工作)

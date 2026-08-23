@@ -205,11 +205,10 @@ fn resolve_static_dir_pkg_id(app_info: &serde_json::Map<String, Value>) -> Resul
             })?
         }
         None => {
-            warn!(
-                "static web app dir package {} missing dir_pkg_objid, fallback to pkg id only",
+            return Err(NodeDaemonErrors::ReasonError(format!(
+                "static web app dir package {} is missing its Package Meta ObjectId",
                 dir_pkg_id
-            );
-            dir_pkg_id.to_string()
+            )))
         }
     };
 
@@ -260,21 +259,14 @@ async fn index_static_dir_pkg_meta_from_named_store(
         })
     })?;
 
-    let expected_pkg_name = if package_id.name.contains('.') {
-        package_id.name.clone()
-    } else {
-        format!(
-            "{}.{}",
-            new_package_env(pkg_env_path.to_path_buf()).get_prefix(),
-            package_id.name
-        )
-    };
-    let meta_obj_id_string = meta_obj_id.to_string();
-    let mut indexed_pkg_meta = pkg_meta.clone();
-    if indexed_pkg_meta.name != expected_pkg_name {
-        indexed_pkg_meta.name = expected_pkg_name;
+    if pkg_meta.name != package_id.name {
+        return Err(NodeDaemonErrors::ReasonError(format!(
+            "static dir PackageMeta name {} does not match exact PackageId name {}",
+            pkg_meta.name, package_id.name
+        )));
     }
-    let indexed_pkg_meta_str = serde_json::to_string(&indexed_pkg_meta).map_err(|err| {
+    let meta_obj_id_string = meta_obj_id.to_string();
+    let indexed_pkg_meta_str = serde_json::to_string(&pkg_meta).map_err(|err| {
         NodeDaemonErrors::ReasonError(format!(
             "serialize indexed static dir pkg meta {} failed: {}",
             meta_obj_id, err
@@ -300,7 +292,7 @@ async fn index_static_dir_pkg_meta_from_named_store(
         .add_pkg_meta(
             meta_obj_id_string.as_str(),
             indexed_pkg_meta_str.as_str(),
-            indexed_pkg_meta.author.as_str(),
+            pkg_meta.author.as_str(),
             None,
         )
         .map_err(|err| {
@@ -311,11 +303,11 @@ async fn index_static_dir_pkg_meta_from_named_store(
         })?;
     meta_db
         .set_pkg_version(
-            indexed_pkg_meta.name.as_str(),
-            indexed_pkg_meta.author.as_str(),
-            indexed_pkg_meta.version.as_str(),
+            pkg_meta.name.as_str(),
+            pkg_meta.author.as_str(),
+            pkg_meta.version.as_str(),
             meta_obj_id_string.as_str(),
-            indexed_pkg_meta.version_tag.as_deref(),
+            pkg_meta.version_tag.as_deref(),
         )
         .map_err(|err| {
             NodeDaemonErrors::ReasonError(format!(
@@ -1235,7 +1227,11 @@ async fn node_main(
     //     .await;
 
     //app services is "userA-appB-service", run in docker container
-    let app_ids = node_config.apps.keys().cloned().collect::<Vec<String>>();
+    let app_ids = node_config
+        .apps
+        .keys()
+        .map(ToString::to_string)
+        .collect::<Vec<String>>();
 
     let app_stream = stream::iter(node_config.apps);
     let app_task = app_stream.for_each_concurrent(4, |(app_id_with_name, app_cfg)| async move {
@@ -1250,7 +1246,7 @@ async fn node_main(
                     app_id_with_name.clone(),
                     err
                 );
-                return NodeDaemonErrors::SystemConfigError(app_id_with_name.clone());
+                return NodeDaemonErrors::SystemConfigError(app_id_with_name.to_string());
             });
     });
 
@@ -2427,6 +2423,13 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         })
     }
 
+    #[test]
+    fn static_web_directory_package_requires_exact_object_id() {
+        let app_info = json!({ "dir_pkg_id": "portal-web#1.0.0" });
+        let error = resolve_static_dir_pkg_id(app_info.as_object().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("Package Meta ObjectId"));
+    }
+
     async fn create_test_store_mgr(base_dir: &Path) -> NamedDataMgr {
         let store = NamedLocalStore::get_named_store_by_path(base_dir.join("named_store"))
             .await
@@ -2517,7 +2520,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
 
-        let resolved_pkg_id = format!("portal-web#{}", meta_obj_id);
+        let resolved_pkg_id =
+            PackageId::get_pkgid_with_objid("portal-web#1.0.0", Some(meta_obj_id.clone())).unwrap();
         index_static_dir_pkg_meta_from_named_store(
             pkg_env_path.as_path(),
             resolved_pkg_id.as_str(),
@@ -2534,14 +2538,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
         cleanup_temp_pkg_env_path(&pkg_env_path);
         assert_eq!(indexed_meta_obj_id, meta_obj_id.to_string());
-        assert_eq!(
-            indexed_meta.name,
-            format!(
-                "{}.{}",
-                PackageEnvConfig::get_default_prefix(),
-                "portal-web"
-            )
-        );
+        assert_eq!(indexed_meta.name, "portal-web");
         assert_eq!(indexed_meta.version, pkg_meta.version);
     }
 

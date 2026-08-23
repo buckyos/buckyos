@@ -9,9 +9,9 @@
 用户输入、读取本地或网络来源、交互构造首次安装计划、确认操作并跟踪到完成；不实现安装、
 部署或调度算法，只调用 Installer、Control Panel、TaskManager 和调度查询接口。
 
-App 的稳定用户选择器是 App 名称或 App DID，不向用户暴露 `app_id@owner_user_id`。同一安装
-作用域内，一个 App DID 最多对应一个已安装 App；作用域由当前 Zone、登录身份、App class
-和权限共同确定。调用方可见多个同名安装而无法唯一确定目标时必须失败，不做模糊选择。
+App 的稳定用户选择器是 App 名称或 App DID，不要求用户手工输入
+`AppInstanceId = app_id@owner_user_id`。同一 Owner 对一个 App DID 最多有一个 AppSpec；可见
+多个同名安装而无法唯一确定目标时必须失败，不做模糊选择。
 
 普通 App 的本地/远程安装和升级以 PIKG 为唯一文件型输入；AppDoc、PackageMeta 和 payload
 不作为多个需要用户分别提交的入口。首次安装必须先通过 `fetch` 构造并保存 `InstallPlan`，
@@ -32,17 +32,17 @@ binding、Secret 解析和其它资源/权限管理不在本模块。Secret 只�
 - Install Task：`install` / `upgrade` / `uninstall` 在同一次命令里完成预检、确认和提交。
 - PIKG Source：本地文件或网络 URL 经 CLI 读取后形成的不可变输入快照，由 `pikg_digest`
   固定；Catalog 来源由 AppDoc Object ID 固定。
-- Installed App：稳定 ID 为 `AppInstallationId`，由 canonical App DID 与 Zone/owner/AppClass
-  安装作用域确定性派生；App DID 是逻辑应用身份，不单独充当存储或运行 ID。
-- 默认 Web route label 为 `<display-name>-<installation-hash-prefix>`，同名不同 App DID 不会
-  争用同一 host；`status` 展示实际 `web_hosts`，CLI 不解析该后缀。
+- Installed App：产品身份为 AppDID，持久 key 为可逆 AppId，Owner 范围的运行目标为
+  `AppInstanceId { app_id, owner_user_id }`。
+- 默认 Web route label 是 Scheduler 从 `system/app_registry` 持久分配的 AppHostName；
+  `status` 展示实际 `web_hosts`，CLI 不自行推导。
 - Runtime Instance：scheduler/node-daemon 实际运行的实例。
 - Status：分别展示 desired、task、scheduled、runtime 和 readiness，并区分目标版本与实际
   运行版本。
 
 `InstallPlan` 是首次安装的必要输入，不是可反复执行的 operation-id，也不是升级参数。计划
-文件可以交给用户审阅、版本控制或传递给另一个调用方，但只在完全相同的 Zone DID、owner、
-AppClass 和 target snapshot 下可携带；每次安装仍必须重新验证身份、来源摘要、目标环境、权限
+文件可以交给用户审阅、版本控制或传递给另一个调用方，但只在完全相同的 Zone DID、owner
+和 target snapshot 下可携带；每次安装仍必须重新验证身份、来源摘要、目标环境、权限
 和有效性，换 Zone/用户/scope 必然使计划失效。
 
 ## 3. 初始命令
@@ -287,7 +287,7 @@ buckyos task wait <task-id>
 跟踪的 `task_id`。发起操作的用户必须能够读取并继续其任务；确认、重试、取消和等待使用
 同一任务身份与权限边界。
 
-安装或升级任务只有在目标 `DeploymentIdentity {installation_id, task_id,
+安装或升级任务只有在目标 `DeploymentIdentity {app_instance_id, task_id,
 app_doc_object_id, spec_generation, pikg_digest}` 已进入 scheduled，且约定实例数全部提供新鲜、
 健康、epoch/session 匹配的 runtime evidence 时才能成功。Static Web 还要求目标内容已物化且
 cyfs-gateway ack 对应 config generation。旧版本 Started、目录或路由不能满足条件。当前升级

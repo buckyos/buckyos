@@ -127,7 +127,9 @@ fun_instance 将调度原语从命令式的"在某节点执行某脚本"降级�
 */
 #[warn(unused, unused_mut, dead_code)]
 use anyhow::Result;
-use buckyos_api::{ServiceInstanceState, ServiceState, BASE_APP_PORT};
+use buckyos_api::{
+    AppInstanceId, ServiceInstanceState, ServiceState, SystemServiceId, BASE_APP_PORT,
+};
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::*;
 use serde::{Deserialize, Serialize};
@@ -147,7 +149,6 @@ pub enum ServiceSpecType {
     Kernel,  //kernel service 无owner_user_id
     Service, //系统服务
     App,     // 无状态的app服务，有owner_user_id
-    Agent,
 }
 
 impl From<String> for ServiceSpecType {
@@ -156,7 +157,6 @@ impl From<String> for ServiceSpecType {
             "kernel" => ServiceSpecType::Kernel,
             "service" => ServiceSpecType::Service,
             "frame" => ServiceSpecType::Service,
-            "agent" => ServiceSpecType::Agent,
             "app" => ServiceSpecType::App,
             _ => ServiceSpecType::App,
         }
@@ -165,7 +165,7 @@ impl From<String> for ServiceSpecType {
 
 impl ServiceSpecType {
     pub fn is_app_like(&self) -> bool {
-        matches!(self, ServiceSpecType::App | ServiceSpecType::Agent)
+        matches!(self, ServiceSpecType::App)
     }
 }
 
@@ -456,7 +456,7 @@ pub struct ReplicaInstance {
     pub node_id: String,
     pub spec_id: String, //service_name or app_id
     pub res_limits: HashMap<String, f64>,
-    pub instance_id: String,
+    pub replica_key: ReplicaKey,
     // last_update_time 表示“最近一次可接受的存活证明时间”。
     // 它既可能来自真实 runtime 心跳，也可能来自启动期调度器注入的 bootstrap 假上报。
     // 这里刻意不把它等同于“服务自行声明的心跳时间”。
@@ -467,14 +467,95 @@ pub struct ReplicaInstance {
 
 impl ReplicaInstance {
     pub fn is_app_instance(&self) -> bool {
-        self.spec_id.contains("@")
+        matches!(self.replica_key.service, ReplicaServiceIdentity::App { .. })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ReplicaServiceIdentity {
+    App { app_instance_id: AppInstanceId },
+    System { service_id: SystemServiceId },
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ReplicaKey {
+    pub service: ReplicaServiceIdentity,
+    pub node_id: String,
+}
+
+impl ReplicaKey {
+    pub fn for_spec(spec: &ServiceSpec, node_id: impl Into<String>) -> Result<Self> {
+        let service = if spec.spec_type.is_app_like() {
+            ReplicaServiceIdentity::App {
+                app_instance_id: spec.id.parse().map_err(anyhow::Error::msg)?,
+            }
+        } else {
+            ReplicaServiceIdentity::System {
+                service_id: SystemServiceId::parse(spec.id.clone()).map_err(anyhow::Error::msg)?,
+            }
+        };
+        Ok(Self {
+            service,
+            node_id: node_id.into(),
+        })
+    }
+
+    pub fn app_instance_id(&self) -> Option<&AppInstanceId> {
+        match &self.service {
+            ReplicaServiceIdentity::App { app_instance_id } => Some(app_instance_id),
+            ReplicaServiceIdentity::System { .. } => None,
+        }
+    }
+
+    pub fn spec_id(&self) -> String {
+        match &self.service {
+            ReplicaServiceIdentity::App { app_instance_id } => app_instance_id.to_string(),
+            ReplicaServiceIdentity::System { service_id } => service_id.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for ReplicaKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}@{}", self.spec_id(), self.node_id)
+    }
+}
+
+impl Serialize for ReplicaKey {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ReplicaKey {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let (service, node_id) = value
+            .rsplit_once('@')
+            .ok_or_else(|| serde::de::Error::custom("ReplicaKey must contain node_id"))?;
+        let service = match service.parse::<AppInstanceId>() {
+            Ok(app_instance_id) => ReplicaServiceIdentity::App { app_instance_id },
+            Err(_) => ReplicaServiceIdentity::System {
+                service_id: SystemServiceId::parse(service.to_string())
+                    .map_err(serde::de::Error::custom)?,
+            },
+        };
+        Ok(Self {
+            service,
+            node_id: node_id.to_string(),
+        })
     }
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ServiceInfo {
     SingleInstance(ReplicaInstance),
-    RandomCluster(HashMap<String, (u32, ReplicaInstance)>),
+    RandomCluster(HashMap<ReplicaKey, (u32, ReplicaInstance)>),
 }
 
 #[derive(Clone, Debug)]
@@ -483,52 +564,18 @@ pub enum SchedulerAction {
     CreateOPTask(OPTask),
     ChangeServiceStatus(String, ServiceSpecState),
     InstanceReplica(ReplicaInstance),
-    UpdateInstance(String, ReplicaInstance),
-    RemoveInstance(String, String, String), //value is spec_id,instance_id,node_id
+    UpdateInstance(ReplicaKey, ReplicaInstance),
+    RemoveInstance(String, ReplicaKey),
     UpdateServiceInfo(String, ServiceInfo),
 }
-//spec_id@owner_id@node_id
-pub fn parse_instance_id(instance_id: &str) -> Result<(String, String, String)> {
-    let parts: Vec<&str> = instance_id.split('@').collect();
-    if parts.len() == 3 {
-        return Ok((
-            parts[0].to_string(),
-            parts[1].to_string(),
-            parts[2].to_string(),
-        ));
-    }
-    if parts.len() == 2 {
-        return Ok((
-            parts[0].to_string(),
-            "root".to_string(),
-            parts[1].to_string(),
-        ));
-    }
-    Err(anyhow::anyhow!(
-        "Invalid instance_id format: {}",
-        instance_id
-    ))
-}
-
 pub fn parse_spec_id(spec_id: &str) -> Result<(String, String)> {
-    let parts: Vec<&str> = spec_id.split('@').collect();
-    if parts.len() == 2 {
-        return Ok((parts[0].to_string(), parts[1].to_string()));
+    if let Ok(app_instance_id) = spec_id.parse::<AppInstanceId>() {
+        return Ok((
+            app_instance_id.app_id().to_string(),
+            app_instance_id.owner_user_id().to_string(),
+        ));
     }
     return Ok((spec_id.to_string(), "root".to_string()));
-}
-
-// app_id@user_id
-// pub fn parse_app_instance_id(spec_id: &str) -> Result<(String, String)> {
-//     let parts: Vec<&str> = spec_id.split('@').collect();
-//     if parts.len() != 3 {
-//         return Err(anyhow::anyhow!("Invalid spec_id format: {}", spec_id));
-//     }
-//     Ok((parts[0].to_string(), parts[1].to_string()))
-// }
-
-pub fn create_replica_instance_id(spec: &ServiceSpec, node_id: &str) -> String {
-    format!("{}@{}", spec.id, node_id)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -539,7 +586,7 @@ pub struct NodeScheduler {
     pub nodes: HashMap<String, NodeItem>,
     pub specs: HashMap<String, ServiceSpec>,
 
-    pub replica_instances: HashMap<String, ReplicaInstance>,
+    pub replica_instances: HashMap<ReplicaKey, ReplicaInstance>,
     pub service_infos: HashMap<String, ServiceInfo>,
     #[serde(default)]
     pub service_info_refresh_times: HashMap<String, u64>,
@@ -566,7 +613,7 @@ impl NodeScheduler {
         users: HashMap<String, UserItem>,
         nodes: HashMap<String, NodeItem>,
         specs: HashMap<String, ServiceSpec>,
-        replica_instances: HashMap<String, ReplicaInstance>,
+        replica_instances: HashMap<ReplicaKey, ReplicaInstance>,
         service_infos: HashMap<String, ServiceInfo>,
     ) -> Self {
         let now = buckyos_get_unix_timestamp();
@@ -602,12 +649,12 @@ impl NodeScheduler {
         self.specs.get(spec_id)
     }
 
-    pub fn get_replica_instance(&self, instance_id: &str) -> Option<&ReplicaInstance> {
-        self.replica_instances.get(instance_id)
+    pub fn get_replica_instance(&self, key: &ReplicaKey) -> Option<&ReplicaInstance> {
+        self.replica_instances.get(key)
     }
 
     pub fn add_replica_instance(&mut self, instance: ReplicaInstance) {
-        let key = instance.instance_id.clone();
+        let key = instance.replica_key.clone();
         self.replica_instances.insert(key, instance);
     }
 
@@ -713,11 +760,11 @@ impl NodeScheduler {
                         // 如果调度器返回服务不可用，应用使用服务的接口应直接返回失败
                         if now - instance.last_update_time < INSTANCE_ALIVE_TIME {
                             info_map
-                                .insert(instance.instance_id.clone(), (100, (*instance).clone()));
+                                .insert(instance.replica_key.clone(), (100, (*instance).clone()));
                         } else {
                             warn!(
                                 "spec_id:{} instance:{} is not alive",
-                                spec_id, instance.instance_id
+                                spec_id, instance.replica_key
                             );
                         }
                     }
@@ -841,7 +888,7 @@ impl NodeScheduler {
                         self.reconcile_spec_instances(&spec_snapshot, &mut shadow_nodes)?;
                     for instance in new_instances {
                         self.replica_instances
-                            .insert(instance.instance_id.clone(), instance.clone());
+                            .insert(instance.replica_key.clone(), instance.clone());
                         scheduler_actions.push(SchedulerAction::InstanceReplica(instance));
                     }
                     if spec_snapshot.state == ServiceSpecState::New {
@@ -855,11 +902,11 @@ impl NodeScheduler {
                     }
                 }
                 ServiceSpecState::Deleted => {
-                    let instance_ids: Vec<String> = self
+                    let instance_ids: Vec<ReplicaKey> = self
                         .replica_instances
                         .iter()
                         .filter(|(_, instance)| instance.spec_id == spec_id)
-                        .map(|(instance_id, _)| instance_id.clone())
+                        .map(|(replica_key, _)| replica_key.clone())
                         .collect();
                     if instance_ids.is_empty() {
                         warn!(
@@ -867,16 +914,15 @@ impl NodeScheduler {
                             spec_id
                         );
                     }
-                    for instance_id in instance_ids {
-                        if let Some(instance) = self.replica_instances.remove(&instance_id) {
+                    for replica_key in instance_ids {
+                        if let Some(instance) = self.replica_instances.remove(&replica_key) {
                             info!(
                                 "will remove instance: {} @ node: {}, spec_id:{}",
-                                instance.instance_id, &instance.node_id, &instance.spec_id
+                                instance.replica_key, &instance.node_id, &instance.spec_id
                             );
                             scheduler_actions.push(SchedulerAction::RemoveInstance(
                                 instance.spec_id.clone(),
-                                instance.instance_id.clone(),
-                                instance.node_id.clone(),
+                                instance.replica_key.clone(),
                             ));
                         }
                     }
@@ -894,7 +940,7 @@ impl NodeScheduler {
                         continue;
                     }
 
-                    let instance_ids: Vec<String> = self
+                    let instance_ids: Vec<ReplicaKey> = self
                         .replica_instances
                         .iter()
                         .filter(|(_, instance)| {
@@ -902,18 +948,18 @@ impl NodeScheduler {
                                 && instance.state != InstanceState::Suspended
                                 && instance.state != InstanceState::Deleted
                         })
-                        .map(|(instance_id, _)| instance_id.clone())
+                        .map(|(replica_key, _)| replica_key.clone())
                         .collect();
 
-                    for instance_id in instance_ids {
-                        if let Some(instance) = self.replica_instances.get_mut(&instance_id) {
+                    for replica_key in instance_ids {
+                        if let Some(instance) = self.replica_instances.get_mut(&replica_key) {
                             info!(
                                 "will stop instance: {} @ node: {}, spec_id:{}",
-                                instance.instance_id, &instance.node_id, &instance.spec_id
+                                instance.replica_key, &instance.node_id, &instance.spec_id
                             );
                             instance.state = InstanceState::Suspended;
                             scheduler_actions.push(SchedulerAction::UpdateInstance(
-                                instance.instance_id.clone(),
+                                instance.replica_key.clone(),
                                 instance.clone(),
                             ));
                         }
@@ -1116,8 +1162,6 @@ impl NodeScheduler {
             .collect();
 
         let mut instances = Vec::new();
-        let instance_id_uuid = uuid::Uuid::new_v4();
-
         //alloc instance service ports
         let mut service_ports = HashMap::new();
         for (service_name, expose_port) in service_spec.service_ports_config.iter() {
@@ -1130,11 +1174,12 @@ impl NodeScheduler {
         }
         //TODO: 将port alloc的逻辑，放到调度器内部?
         for (_, node) in selected_nodes.iter() {
+            let replica_key = ReplicaKey::for_spec(service_spec, node.id.clone())?;
             instances.push(ReplicaInstance {
                 node_id: node.id.clone(),
                 spec_id: service_spec.id.clone(),
                 res_limits: HashMap::new(),
-                instance_id: create_replica_instance_id(service_spec, node.id.as_str()),
+                replica_key,
                 // 启动期第一次调度时，很多服务还不能可靠依赖 service_info 上报链路。
                 // 为了避免循环依赖，调度器在实例化时先注入一次 bootstrap 存活证明，
                 // 让 service_info 能先被构造出来；后续再由真实心跳接管该时间戳。

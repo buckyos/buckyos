@@ -83,7 +83,10 @@ impl DispatchDb {
         .await
     }
 
-    async fn apply_schema(&self, override_ddl: Option<&str>) -> std::result::Result<(), sqlx::Error> {
+    async fn apply_schema(
+        &self,
+        override_ddl: Option<&str>,
+    ) -> std::result::Result<(), sqlx::Error> {
         let ddl: &str =
             override_ddl
                 .filter(|s| !s.trim().is_empty())
@@ -111,7 +114,9 @@ impl DispatchDb {
             .is_some(),
         };
         if v2 {
-            warn!("dispatch_db: 1.x schema detected; rebuilding as dispatcher schema v3 (no-compat)");
+            warn!(
+                "dispatch_db: 1.x schema detected; rebuilding as dispatcher schema v3 (no-compat)"
+            );
             for table in [
                 "delivery_attempt",
                 "dispatch_record",
@@ -317,7 +322,10 @@ impl DispatchDb {
             .collect()
     }
 
-    pub async fn list_records_in_status(&self, statuses: &[DispatchStatus]) -> Result<Vec<DispatchRecord>> {
+    pub async fn list_records_in_status(
+        &self,
+        statuses: &[DispatchStatus],
+    ) -> Result<Vec<DispatchRecord>> {
         let mut records = Vec::new();
         for status in statuses {
             let sql = self.render_sql(
@@ -485,9 +493,8 @@ impl DispatchDb {
             .as_ref()
             .map(|r| r.registration_revision + 1)
             .unwrap_or(1);
-        let registration_json = serde_json::to_string(&registration).map_err(|e| {
-            RPCErrors::ReasonError(format!("serialize registration: {}", e))
-        })?;
+        let registration_json = serde_json::to_string(&registration)
+            .map_err(|e| RPCErrors::ReasonError(format!("serialize registration: {}", e)))?;
         if existing.is_some() {
             let sql = self.render_sql(
                 "UPDATE runner_registration SET owner_user_id = ?, owner_app_id = ?, registration_revision = ?, registration_json = ?, enabled = ?, updated_at = ? WHERE target_id = ?",
@@ -524,7 +531,9 @@ impl DispatchDb {
     }
 
     pub async fn get_registration(&self, target_id: &str) -> Result<Option<TargetRegistration>> {
-        let sql = self.render_sql("SELECT registration_json, enabled FROM runner_registration WHERE target_id = ?");
+        let sql = self.render_sql(
+            "SELECT registration_json, enabled FROM runner_registration WHERE target_id = ?",
+        );
         let row = sqlx::query(&sql)
             .bind(target_id)
             .fetch_optional(&self.pool)
@@ -540,8 +549,13 @@ impl DispatchDb {
     }
 
     pub async fn list_registrations(&self) -> Result<Vec<TargetRegistration>> {
-        let sql = self.render_sql("SELECT registration_json, enabled FROM runner_registration ORDER BY target_id");
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await.map_err(db_err)?;
+        let sql = self.render_sql(
+            "SELECT registration_json, enabled FROM runner_registration ORDER BY target_id",
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         let mut registrations = Vec::new();
         for row in rows {
             let registration_json: String = row.try_get("registration_json").map_err(db_err)?;
@@ -588,9 +602,8 @@ impl DispatchDb {
                 DISPATCH_ERR_TARGET_NOT_REGISTERED, target_id
             )));
         }
-        let sql = self.render_sql(
-            "SELECT last_lease_epoch FROM runner_registration WHERE target_id = ?",
-        );
+        let sql =
+            self.render_sql("SELECT last_lease_epoch FROM runner_registration WHERE target_id = ?");
         let row = sqlx::query(&sql)
             .bind(target_id)
             .fetch_one(&self.pool)
@@ -600,7 +613,11 @@ impl DispatchDb {
         Ok(epoch.max(0) as u64)
     }
 
-    pub async fn set_operation_route(&self, schema_id: &str, default_target_id: &str) -> Result<OperationRoute> {
+    pub async fn set_operation_route(
+        &self,
+        schema_id: &str,
+        default_target_id: &str,
+    ) -> Result<OperationRoute> {
         let now = crate::task_store::now_ms();
         let existing = self.get_operation_route(schema_id).await?;
         let revision = existing.map(|r| r.revision + 1).unwrap_or(1);
@@ -654,7 +671,10 @@ impl DispatchDb {
 
     pub async fn list_operation_routes(&self) -> Result<Vec<OperationRoute>> {
         let sql = self.render_sql("SELECT * FROM operation_route ORDER BY schema_id");
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await.map_err(db_err)?;
+        let rows = sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         rows.into_iter()
             .map(|row| route_from_row(row).map_err(db_err))
             .collect()
@@ -697,9 +717,8 @@ impl DispatchDb {
         target_id: &str,
         instance_id: &str,
     ) -> Result<Option<TargetInstance>> {
-        let sql = self.render_sql(
-            "SELECT * FROM target_instance WHERE target_id = ? AND instance_id = ?",
-        );
+        let sql = self
+            .render_sql("SELECT * FROM target_instance WHERE target_id = ? AND instance_id = ?");
         let row = sqlx::query(&sql)
             .bind(target_id)
             .bind(instance_id)
@@ -726,9 +745,8 @@ impl DispatchDb {
     }
 
     pub async fn remove_instance(&self, target_id: &str, instance_id: &str) -> Result<()> {
-        let sql = self.render_sql(
-            "DELETE FROM target_instance WHERE target_id = ? AND instance_id = ?",
-        );
+        let sql =
+            self.render_sql("DELETE FROM target_instance WHERE target_id = ? AND instance_id = ?");
         sqlx::query(&sql)
             .bind(target_id)
             .bind(instance_id)
@@ -764,7 +782,8 @@ impl DispatchDb {
 
     /// Persisted RoundRobin cursor (doc §11.2 determinism requirement).
     pub async fn get_cursor(&self, target_id: &str) -> Result<Option<String>> {
-        let sql = self.render_sql("SELECT cursor_instance_id FROM dispatch_cursor WHERE target_id = ?");
+        let sql =
+            self.render_sql("SELECT cursor_instance_id FROM dispatch_cursor WHERE target_id = ?");
         let row = sqlx::query(&sql)
             .bind(target_id)
             .fetch_optional(&self.pool)

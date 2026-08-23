@@ -162,8 +162,14 @@ fn flatten_toml(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, St
 fn default_messages(language: &str) -> BTreeMap<String, String> {
     let entries = match language {
         "zh" => [
-            ("status.aicc_running", "AICC 正在执行 {method}（{seconds} 秒）"),
-            ("status.aicc_finalizing", "AICC 已完成 {method}，正在整理结果"),
+            (
+                "status.aicc_running",
+                "AICC 正在执行 {method}（{seconds} 秒）",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC 已完成 {method}，正在整理结果",
+            ),
             ("response.delivery_failed", "结果投递失败，请重试。"),
             ("response.failed", "任务失败：{error}"),
             ("status.llm_started", "正在思考 ({model})"),
@@ -187,8 +193,14 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
             ),
         ],
         "zh-TW" => [
-            ("status.aicc_running", "AICC 正在執行 {method}（{seconds} 秒）"),
-            ("status.aicc_finalizing", "AICC 已完成 {method}，正在整理結果"),
+            (
+                "status.aicc_running",
+                "AICC 正在執行 {method}（{seconds} 秒）",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC 已完成 {method}，正在整理結果",
+            ),
             ("response.delivery_failed", "結果傳送失敗，請重試。"),
             ("response.failed", "任務失敗：{error}"),
             ("status.llm_started", "正在思考 ({model})"),
@@ -212,9 +224,18 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
             ),
         ],
         "es" => [
-            ("status.aicc_running", "AICC ejecutando {method} ({seconds} s)"),
-            ("status.aicc_finalizing", "AICC completó {method}; preparando el resultado"),
-            ("response.delivery_failed", "No se pudo entregar el resultado. Inténtalo de nuevo."),
+            (
+                "status.aicc_running",
+                "AICC ejecutando {method} ({seconds} s)",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC completó {method}; preparando el resultado",
+            ),
+            (
+                "response.delivery_failed",
+                "No se pudo entregar el resultado. Inténtalo de nuevo.",
+            ),
             ("response.failed", "La tarea falló: {error}"),
             ("status.llm_started", "LLM pensando ({model})"),
             ("status.llm_finished", "LLM finalizado"),
@@ -241,8 +262,14 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
         ],
         "fr" => [
             ("status.aicc_running", "AICC exécute {method} ({seconds} s)"),
-            ("status.aicc_finalizing", "AICC a terminé {method} ; préparation du résultat"),
-            ("response.delivery_failed", "Échec de l’envoi du résultat. Veuillez réessayer."),
+            (
+                "status.aicc_finalizing",
+                "AICC a terminé {method} ; préparation du résultat",
+            ),
+            (
+                "response.delivery_failed",
+                "Échec de l’envoi du résultat. Veuillez réessayer.",
+            ),
             ("response.failed", "La tâche a échoué : {error}"),
             ("status.llm_started", "LLM en réflexion ({model})"),
             ("status.llm_finished", "LLM terminé"),
@@ -268,9 +295,18 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
             ),
         ],
         "de" => [
-            ("status.aicc_running", "AICC führt {method} aus ({seconds} s)"),
-            ("status.aicc_finalizing", "AICC hat {method} abgeschlossen; Ergebnis wird vorbereitet"),
-            ("response.delivery_failed", "Das Ergebnis konnte nicht zugestellt werden. Bitte erneut versuchen."),
+            (
+                "status.aicc_running",
+                "AICC führt {method} aus ({seconds} s)",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC hat {method} abgeschlossen; Ergebnis wird vorbereitet",
+            ),
+            (
+                "response.delivery_failed",
+                "Das Ergebnis konnte nicht zugestellt werden. Bitte erneut versuchen.",
+            ),
             ("response.failed", "Aufgabe fehlgeschlagen: {error}"),
             ("status.llm_started", "LLM denkt nach ({model})"),
             ("status.llm_finished", "LLM abgeschlossen"),
@@ -299,9 +335,18 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
             ),
         ],
         "ko" => [
-            ("status.aicc_running", "AICC가 {method} 실행 중 ({seconds}초)"),
-            ("status.aicc_finalizing", "AICC가 {method} 완료; 결과 정리 중"),
-            ("response.delivery_failed", "결과를 전송하지 못했습니다. 다시 시도해 주세요."),
+            (
+                "status.aicc_running",
+                "AICC가 {method} 실행 중 ({seconds}초)",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC가 {method} 완료; 결과 정리 중",
+            ),
+            (
+                "response.delivery_failed",
+                "결과를 전송하지 못했습니다. 다시 시도해 주세요.",
+            ),
             ("response.failed", "작업 실패: {error}"),
             ("status.llm_started", "LLM 생각 중 ({model})"),
             ("status.llm_finished", "LLM 완료"),
@@ -324,9 +369,18 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
             ),
         ],
         "ja" => [
-            ("status.aicc_running", "AICC が {method} を実行中（{seconds} 秒）"),
-            ("status.aicc_finalizing", "AICC が {method} を完了、結果を準備中"),
-            ("response.delivery_failed", "結果を配信できませんでした。もう一度お試しください。"),
+            (
+                "status.aicc_running",
+                "AICC が {method} を実行中（{seconds} 秒）",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC が {method} を完了、結果を準備中",
+            ),
+            (
+                "response.delivery_failed",
+                "結果を配信できませんでした。もう一度お試しください。",
+            ),
             ("response.failed", "タスクに失敗しました: {error}"),
             ("status.llm_started", "LLM 思考中 ({model})"),
             ("status.llm_finished", "LLM 完了"),
@@ -352,9 +406,18 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
             ),
         ],
         "ru" => [
-            ("status.aicc_running", "AICC выполняет {method} ({seconds} с)"),
-            ("status.aicc_finalizing", "AICC завершил {method}; подготовка результата"),
-            ("response.delivery_failed", "Не удалось доставить результат. Повторите попытку."),
+            (
+                "status.aicc_running",
+                "AICC выполняет {method} ({seconds} с)",
+            ),
+            (
+                "status.aicc_finalizing",
+                "AICC завершил {method}; подготовка результата",
+            ),
+            (
+                "response.delivery_failed",
+                "Не удалось доставить результат. Повторите попытку.",
+            ),
             ("response.failed", "Ошибка задачи: {error}"),
             ("status.llm_started", "LLM думает ({model})"),
             ("status.llm_finished", "LLM завершил работу"),
@@ -384,8 +447,14 @@ fn default_messages(language: &str) -> BTreeMap<String, String> {
         ],
         _ => [
             ("status.aicc_running", "AICC running {method} ({seconds}s)"),
-            ("status.aicc_finalizing", "AICC finished {method}; preparing result"),
-            ("response.delivery_failed", "Failed to deliver the result. Please try again."),
+            (
+                "status.aicc_finalizing",
+                "AICC finished {method}; preparing result",
+            ),
+            (
+                "response.delivery_failed",
+                "Failed to deliver the result. Please try again.",
+            ),
             ("response.failed", "Task failed: {error}"),
             ("status.llm_started", "LLM thinking ({model})"),
             ("status.llm_finished", "LLM finished"),

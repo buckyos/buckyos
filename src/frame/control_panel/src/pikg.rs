@@ -126,25 +126,22 @@ pub struct PikgInspection {
 
 impl PikgInspection {
     pub fn content_entry(&self, content_id: &str) -> Option<&PikgContentIndexEntry> {
-        self.package_meta
-            .content_index
-            .get(content_id)
-            .or_else(|| {
-                self.package_meta.content_index.values().find(|entry| {
-                    let Some(desc) = self.app_doc.pkg_list.get(&entry.sub_pkg_name) else {
-                        return false;
-                    };
-                    let Some(pkg_objid) = desc.pkg_objid.as_ref() else {
-                        return false;
-                    };
-                    self.package_meta
-                        .package_objects
-                        .get(&pkg_objid.to_string())
-                        .and_then(|value| value.get("content"))
-                        .and_then(Value::as_str)
-                        == Some(content_id)
-                })
+        self.package_meta.content_index.get(content_id).or_else(|| {
+            self.package_meta.content_index.values().find(|entry| {
+                let Some(desc) = self.app_doc.pkg_list.get(&entry.sub_pkg_name) else {
+                    return false;
+                };
+                let Some(pkg_objid) = desc.pkg_objid.as_ref() else {
+                    return false;
+                };
+                self.package_meta
+                    .package_objects
+                    .get(&pkg_objid.to_string())
+                    .and_then(|value| value.get("content"))
+                    .and_then(Value::as_str)
+                    == Some(content_id)
             })
+        })
     }
 
     /// 当前 pikg 内实际携带的内容 digest 集合。
@@ -1331,14 +1328,20 @@ mod tests {
         let digest_hex = sha256_file_hex(&payload_path).unwrap();
 
         let owner = DID::from_str("did:bns:tester").unwrap();
-        let mut meta = PackageMeta::new("tester_demo-web-web", "0.1.0", "tester", &owner, None);
+        let mut meta = PackageMeta::new(
+            "all.web.demo-web.tester.bns.did",
+            "0.1.0",
+            "tester",
+            &owner,
+            None,
+        );
         meta.size = size;
         // content = sha256 chunk id，与 payload 一致，供 Verify 交叉校验。
         meta.content = format!("sha256:{digest_hex}");
         let meta_value = serde_json::to_value(&meta).unwrap();
         let (meta_obj_id, _) = build_named_object_by_json(ndn_lib::OBJ_TYPE_PKG, &meta_value);
 
-        let mut web_desc = SubPkgDesc::new("tester_demo-web-web#0.1.0");
+        let mut web_desc = SubPkgDesc::new("all.web.demo-web.tester.bns.did#0.1.0");
         web_desc.pkg_objid = Some(meta_obj_id);
         let app_doc = AppDoc::builder(AppType::Web, "demo-web", "0.1.0", "tester", &owner)
             .web_pkg(web_desc)
@@ -1421,7 +1424,10 @@ mod tests {
 
         let reader = PikgReader::open(&pikg_path, None).await.unwrap();
         let inspection = reader.inspection();
-        assert_eq!(inspection.app_doc.name, "demo-web");
+        assert_eq!(
+            inspection.app_doc.did.to_string(),
+            "did:bns:demo-web.tester"
+        );
         assert_eq!(inspection.app_doc_object_id.obj_type, OBJ_TYPE_APP_DOC);
         assert!(!inspection.has_signed_app_doc);
         assert_eq!(inspection.package_meta.content_index.len(), 1);
@@ -1672,7 +1678,10 @@ mod tests {
         // 双 APPDOC 不一致：.jwt claims 是另一个文档。
         let other_owner = DID::from_str("did:bns:other").unwrap();
         let other_doc = AppDoc::builder(AppType::Web, "other-app", "9.9.9", "other", &other_owner)
-            .web_pkg(SubPkgDesc::new("other_other-app-web#9.9.9"))
+            .web_pkg(
+                SubPkgDesc::new("all.web.other-app.other.bns.did#9.9.9")
+                    .package_meta_object_id(ObjId::new_by_raw("pkg".to_string(), vec![9; 32])),
+            )
             .build()
             .unwrap();
         let other_value = serde_json::to_value(&other_doc).unwrap();

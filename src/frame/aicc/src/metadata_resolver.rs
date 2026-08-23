@@ -1797,10 +1797,7 @@ mod tests {
     #[test]
     fn wildcard_matching_supports_internal_and_multiple_stars() {
         assert!(wildcard_matches("gemini-*-latest", "gemini-pro-latest"));
-        assert!(wildcard_matches(
-            "gemini-3*flash*",
-            "gemini-3.5-flash-lite"
-        ));
+        assert!(wildcard_matches("gemini-3*flash*", "gemini-3.5-flash-lite"));
         assert!(wildcard_matches("openai/*:*", "openai/gpt-5:fast"));
         assert!(!wildcard_matches("gemini-3*pro*", "gemini-3.5-flash"));
         assert!(!wildcard_matches("gemini-*-latest", "gemini-pro-preview"));

@@ -259,7 +259,10 @@ impl TaskStore {
 
     /// Parent chain from the task itself up to the root:
     /// `[(task_id, parent_id, permission_boundary), ...]`.
-    pub async fn get_task_chain(&self, task_id: &str) -> Result<Vec<(TaskId, Option<TaskId>, bool)>> {
+    pub async fn get_task_chain(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<(TaskId, Option<TaskId>, bool)>> {
         let mut chain = Vec::new();
         let mut cursor = Some(task_id.to_string());
         while let Some(current) = cursor {
@@ -289,8 +292,9 @@ impl TaskStore {
     pub async fn active_grants_for(&self, task_ids: &[TaskId]) -> Result<Vec<TaskAclGrant>> {
         let mut grants = Vec::new();
         for task_id in task_ids {
-            let sql = self
-                .render_sql("SELECT * FROM task_acl_grant WHERE task_id = ? AND revoked_at IS NULL");
+            let sql = self.render_sql(
+                "SELECT * FROM task_acl_grant WHERE task_id = ? AND revoked_at IS NULL",
+            );
             let rows = sqlx::query(&sql)
                 .bind(task_id)
                 .fetch_all(&self.pool)
@@ -507,7 +511,9 @@ impl TaskStore {
     /// `max_nodes`. Loads the whole tree by root_id and filters in memory —
     /// trees are bounded by the recursive-control node cap.
     pub async fn collect_subtree(&self, task: &Task, max_nodes: usize) -> Result<Vec<Task>> {
-        let (tree, _) = self.list_tree(&task.root_id, None, max_nodes.max(1) as u32).await?;
+        let (tree, _) = self
+            .list_tree(&task.root_id, None, max_nodes.max(1) as u32)
+            .await?;
         let mut result = Vec::new();
         let mut frontier: Vec<&str> = vec![task.task_id.as_str()];
         result.push(task.clone());
@@ -1013,7 +1019,10 @@ impl TaskStore {
         if task.revision != expected_revision {
             return Err(task_mgr_error(
                 TASK_ERR_REVISION_CONFLICT,
-                format!("expected revision {}, found {}", expected_revision, task.revision),
+                format!(
+                    "expected revision {}, found {}",
+                    expected_revision, task.revision
+                ),
             ));
         }
 
@@ -1159,7 +1168,10 @@ impl TaskStore {
         if task.revision != expected_revision {
             return Err(task_mgr_error(
                 TASK_ERR_REVISION_CONFLICT,
-                format!("expected revision {}, found {}", expected_revision, task.revision),
+                format!(
+                    "expected revision {}, found {}",
+                    expected_revision, task.revision
+                ),
             ));
         }
         let (subject_kind, relation, user_id, app_id, system_role) =
@@ -1242,7 +1254,10 @@ impl TaskStore {
         if task.revision != expected_revision {
             return Err(task_mgr_error(
                 TASK_ERR_REVISION_CONFLICT,
-                format!("expected revision {}, found {}", expected_revision, task.revision),
+                format!(
+                    "expected revision {}, found {}",
+                    expected_revision, task.revision
+                ),
             ));
         }
         let now = now_ms();
@@ -1295,11 +1310,13 @@ impl TaskStore {
     // Schema registry
     // -----------------------------------------------------------------
 
-    pub async fn register_schema(&self, def: &TaskSchemaDefinition) -> Result<TaskSchemaDefinition> {
+    pub async fn register_schema(
+        &self,
+        def: &TaskSchemaDefinition,
+    ) -> Result<TaskSchemaDefinition> {
         let now = now_ms();
-        let sql = self.render_sql(
-            "SELECT 1 FROM task_schema WHERE schema_id = ? AND schema_version = ?",
-        );
+        let sql =
+            self.render_sql("SELECT 1 FROM task_schema WHERE schema_id = ? AND schema_version = ?");
         let exists = sqlx::query(&sql)
             .bind(&def.schema_id)
             .bind(def.schema_version as i64)
@@ -1402,7 +1419,10 @@ impl TaskStore {
         }
         sql.push_str(" ORDER BY schema_id, schema_version");
         let sql = self.render_sql(&sql);
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await.map_err(db_err)?;
+        let rows = sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         rows.into_iter()
             .map(|row| schema_from_row(row).map_err(db_err))
             .collect()
@@ -1820,9 +1840,9 @@ fn make_cursor(created_at: u64, task_id: &str) -> String {
 }
 
 fn parse_cursor(cursor: &str) -> Result<(i64, String)> {
-    let (created_at, task_id) = cursor.split_once(':').ok_or_else(|| {
-        RPCErrors::ParseRequestError(format!("invalid cursor: {}", cursor))
-    })?;
+    let (created_at, task_id) = cursor
+        .split_once(':')
+        .ok_or_else(|| RPCErrors::ParseRequestError(format!("invalid cursor: {}", cursor)))?;
     let created_at = created_at
         .parse::<i64>()
         .map_err(|_| RPCErrors::ParseRequestError(format!("invalid cursor: {}", cursor)))?;

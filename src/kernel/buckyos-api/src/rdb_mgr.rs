@@ -9,7 +9,6 @@
  * backend + connection string + schema have already been picked when the app
  * was installed and are serialized into the app's `ServiceSpecConfig` at
  *   `users/{user}/apps/{appid}/spec`   (AppService)
- *   `users/{user}/agents/{appid}/spec` (Agent)
  *   `services/{appid}/spec`            (Kernel/Frame service)
  *
  * This module only reads that spec — it does not seed from a local manifest
@@ -161,10 +160,7 @@ async fn load_install_rdb_config(
 
 fn spec_key_candidates(appid: &str, owner_user_id: Option<&str>) -> Vec<String> {
     match owner_user_id {
-        Some(user) => vec![
-            format!("users/{}/apps/{}/spec", user, appid),
-            format!("users/{}/agents/{}/spec", user, appid),
-        ],
+        Some(user) => vec![format!("users/{}/apps/{}/spec", user, appid)],
         None => vec![format!("services/{}/spec", appid)],
     }
 }
@@ -292,10 +288,7 @@ mod tests {
     fn spec_key_candidates_for_app_and_service() {
         assert_eq!(
             spec_key_candidates("demo", Some("alice")),
-            vec![
-                "users/alice/apps/demo/spec".to_string(),
-                "users/alice/agents/demo/spec".to_string(),
-            ]
+            vec!["users/alice/apps/demo/spec".to_string()]
         );
         assert_eq!(
             spec_key_candidates("verify-hub", None),

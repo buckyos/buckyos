@@ -22,13 +22,13 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, AiContent, AiMethodRequest, AiMethodResponse,
-    AiMethodStatus, AiPayload, AiResponse, AiccComputeProgress, AiccComputeTaskData,
-    AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent,
-    AiccVideoContinuationSource, task_mgr_error_code, AckControlReq, CancelResponse, Capability,
-    CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, Feature,
-    LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec, ReportProgressReq, ReportStartedReq,
-    Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse,
+    ai_methods, get_buckyos_api_runtime, task_mgr_error_code, AckControlReq, AiContent,
+    AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload, AiResponse, AiccComputeProgress,
+    AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay,
+    AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource, CancelResponse, Capability,
+    CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, Feature, LlmChatInvokeRequest,
+    LlmChatInvokeResponse, ModelSpec, ReportProgressReq, ReportStartedReq, Requirements,
+    ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse,
     RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient, TaskPhase,
     TextToImageInvokeRequest, TextToImageInvokeResponse, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
 };
@@ -1192,8 +1192,7 @@ impl TaskEventSink for TaskAuditSink {
                 } else {
                     task
                 };
-                let message =
-                    event_message.unwrap_or_else(|| "aicc provider started".to_string());
+                let message = event_message.unwrap_or_else(|| "aicc provider started".to_string());
                 taskmgr
                     .report_progress(ReportProgressReq {
                         envelope: RunnerWriteEnvelope {
@@ -4870,8 +4869,7 @@ impl AIComputeCenter {
                 };
                 if let Ok(task) = taskmgr.get_task(&binding.task_mgr_id).await {
                     if !task.phase.is_terminal() {
-                        let mut task_data =
-                            task.progress.clone().unwrap_or_else(|| json!({}));
+                        let mut task_data = task.progress.clone().unwrap_or_else(|| json!({}));
                         merge_task_data_with_event(&mut task_data, &event);
                         let _ = taskmgr
                             .report_progress(ReportProgressReq {
@@ -6079,10 +6077,10 @@ mod tests {
     use super::*;
     use buckyos_api::{
         AckControlReq, AddTaskNoteReq, AiPayload, AiTaskOptions, CommitResultReq, CreateTaskReq,
-        GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq,
-        ReportStartedReq, RequestControlReq, RequestControlResult, Requirements, Task,
-        TaskControlRequest, TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote,
-        TaskOutcome, TaskSummaryPage, TypedTaskData,
+        GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq, ReportStartedReq,
+        RequestControlReq, RequestControlResult, Requirements, Task, TaskControlRequest,
+        TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome,
+        TaskSummaryPage, TypedTaskData,
     };
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
@@ -6178,13 +6176,11 @@ mod tests {
             let now = Self::now();
             let task_id = format!("t-mock-{}", *guard);
             let executor = match &req.executor {
-                buckyos_api::CreateTaskExecutor::SelfApp { app_instance_id } => {
-                    TaskExecutor::App {
-                        target_id: None,
-                        app_id: "aicc".to_string(),
-                        app_instance_id: app_instance_id.clone(),
-                    }
-                }
+                buckyos_api::CreateTaskExecutor::SelfApp { app_instance_id } => TaskExecutor::App {
+                    target_id: None,
+                    app_id: "aicc".to_string(),
+                    app_instance_id: app_instance_id.clone(),
+                },
                 buckyos_api::CreateTaskExecutor::HumanSet { .. } => TaskExecutor::HumanSet,
             };
             let task = Task {

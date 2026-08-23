@@ -895,9 +895,8 @@ mod tests {
     fn test_generate_verify_hub_service_doc() {
         use super::generate_verify_hub_service_doc;
         let doc = generate_verify_hub_service_doc();
-        let pkg_id = doc.get_package_id();
-        let pkg_did = pkg_id.to_did().unwrap();
-        println!("pkg_id: {}", pkg_did.to_raw_host_name());
+        assert_eq!(doc.doc_type.to_string(), "app");
+        doc.validate().unwrap();
         let json_str = serde_json::to_string_pretty(&doc).unwrap();
         println!("json: {}", json_str);
     }

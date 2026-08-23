@@ -36,8 +36,7 @@ const DEFAULT_GEMINI_IMAGE_MODELS: &str =
 const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
 const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
-const DEFAULT_GEMINI_VIDEO_MODELS: &str =
-    "gemini-omni-flash-preview,veo-3.1-generate-preview";
+const DEFAULT_GEMINI_VIDEO_MODELS: &str = "gemini-omni-flash-preview,veo-3.1-generate-preview";
 
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -404,8 +403,8 @@ impl GoogleGeminiProvider {
                     model.clone(),
                     vec![ApiType::VideoTextToVideo, ApiType::VideoImageToVideo],
                 )
-                    .with_cost(Some(0.50))
-                    .with_latency(Some(120_000)),
+                .with_cost(Some(0.50))
+                .with_latency(Some(120_000)),
             );
         }
         resolve_driver_inventory(
@@ -1474,8 +1473,9 @@ impl GoogleGeminiProvider {
 
     fn tool_result_value(content: &[AiToolResultContent]) -> Value {
         let value = match content {
-            [AiToolResultContent::Text { text }] => serde_json::from_str(text.trim())
-                .unwrap_or_else(|_| Value::String(text.clone())),
+            [AiToolResultContent::Text { text }] => {
+                serde_json::from_str(text.trim()).unwrap_or_else(|_| Value::String(text.clone()))
+            }
             _ => Value::String(Self::tool_result_text(content)),
         };
         match value {
@@ -2477,9 +2477,7 @@ impl GoogleGeminiProvider {
                 })
             })
             .ok_or_else(|| {
-                ProviderError::fatal(
-                    "google gemini interactions response is missing video output",
-                )
+                ProviderError::fatal("google gemini interactions response is missing video output")
             })?;
         let mime = video
             .get("mime_type")
@@ -2811,12 +2809,13 @@ impl GoogleGeminiProvider {
                 (None, None) => None,
             }
         };
-        let usage = (usage_metadata.is_some() || previous_usage_metadata.is_some()).then(|| AiUsage {
-            input_tokens: usage_value("promptTokenCount"),
-            output_tokens: usage_value("candidatesTokenCount"),
-            total_tokens: usage_value("totalTokenCount"),
-            request_units: None,
-        });
+        let usage =
+            (usage_metadata.is_some() || previous_usage_metadata.is_some()).then(|| AiUsage {
+                input_tokens: usage_value("promptTokenCount"),
+                output_tokens: usage_value("candidatesTokenCount"),
+                total_tokens: usage_value("totalTokenCount"),
+                request_units: None,
+            });
 
         let cost = usage
             .as_ref()
@@ -3230,10 +3229,7 @@ impl GoogleGeminiProvider {
             .and_then(Value::as_array)
             .map(Vec::len)
             .unwrap_or(0);
-        let embedding_space_id = format!(
-            "google-gemini:{}:{}",
-            provider_model, output_dimensions
-        );
+        let embedding_space_id = format!("google-gemini:{}:{}", provider_model, output_dimensions);
         let data = embeddings
             .iter()
             .enumerate()
@@ -4218,8 +4214,7 @@ fn default_features() -> Vec<String> {
 
 fn is_text2image_model_name(model: &str) -> bool {
     let lowered = model.trim().to_ascii_lowercase();
-    !lowered.contains("imagen")
-        && (lowered.contains("image") || lowered.contains("nano-banana"))
+    !lowered.contains("imagen") && (lowered.contains("image") || lowered.contains("nano-banana"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4352,7 +4347,10 @@ fn classify_gemini_model(id: &str, methods: &HashSet<String>) -> Option<GeminiMo
         "gemini-classifier",
         ProviderType::CloudApi,
         "google-gemini",
-        &[DriverModelResolveRequest::new(id.to_string(), vec![ApiType::Llm])],
+        &[DriverModelResolveRequest::new(
+            id.to_string(),
+            vec![ApiType::Llm],
+        )],
         None,
     );
     if configured.models.first().is_some_and(|model| {
@@ -5042,20 +5040,16 @@ mod tests {
 
         assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
         assert!(contents[0].pointer("/parts/0/functionCall/id").is_none());
-        assert!(
-            contents[1]
-                .pointer("/parts/0/functionResponse/id")
-                .is_none()
-        );
+        assert!(contents[1]
+            .pointer("/parts/0/functionResponse/id")
+            .is_none());
         assert_eq!(
             contents[1].pointer("/parts/0/functionResponse/name"),
             Some(&json!("get_weather"))
         );
-        assert!(
-            !serde_json::to_string(&contents)
-                .unwrap()
-                .contains("gemini-no-id")
-        );
+        assert!(!serde_json::to_string(&contents)
+            .unwrap()
+            .contains("gemini-no-id"));
     }
 
     #[test]

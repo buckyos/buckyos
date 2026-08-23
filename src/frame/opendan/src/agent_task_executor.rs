@@ -215,7 +215,12 @@ impl AIAgent {
         match pending_control_action(&task) {
             Some(TaskControlAction::Cancel) => {
                 return self
-                    .reflect_task_control_to_session(task, runner, "canceled", InterruptMode::Discard)
+                    .reflect_task_control_to_session(
+                        task,
+                        runner,
+                        "canceled",
+                        InterruptMode::Discard,
+                    )
                     .await;
             }
             Some(TaskControlAction::Pause) => {
