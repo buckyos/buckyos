@@ -2,6 +2,8 @@
   "schema_version": 1,
   "doc_type": "app",
   "did": "did:bns:filebrowser.buckyos",
+  "name": "filebrowser",
+  "categories": ["dapp"],
   "version": "0.5.1",
   "version_tag": "latest",
   "app_type": "dapp",

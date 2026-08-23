@@ -209,7 +209,8 @@ PackageMeta、`pkg_objid` 和 digest，再将 `selector`、`required` 及 Docker
   canonical `dapp_meta` 路径的单向标识 `meta_root_id`、源指纹、生成文件 allowlist、subpackage digest、
   AppDoc Object ID 和 `pikg_file`；该文件不进入 PIKG。
 - `APPDOC.json`：由 `app.json`、`pikg.json.sub_pkgs` 和实际 payload 构造的完整未签名 AppDoc
-  candidate，包含最终 `pkg_list`。
+  candidate，包含最终 `pkg_list`，并把开发态 `name/categories` 写入 flattened
+  `BaseContentObject` 内容元数据；这两个字段不用于 AppId 或 package namespace。
 - `PACKAGE_META.json`：包含 PackageMeta objects 和 content index，与 PIKG 协议中的同名 entry 一致。
 - 每个 `<sub_pkg_name>.tar.gz`：最终 payload 字节，其 hash 计算对象是 `.tar.gz` 文件本身。
 - `pikg_file` 指定的 `.pikg`：仅在 `pack` 成功后存在。

@@ -434,7 +434,11 @@ impl AppLoader {
     }
 
     fn container_name(&self) -> String {
-        format!("buckyos-app-{}", self.runtime_key())
+        let app_host_name = match &self.config {
+            LoaderConfig::Service(config) => &config.node_execution_spec.app_host_name,
+            LoaderConfig::Local(_) => &self.app_id,
+        };
+        format!("buckyos-app-{app_host_name}")
     }
 
     fn app_instance_id(&self) -> String {
@@ -447,7 +451,7 @@ impl AppLoader {
     fn app_did_string(&self) -> String {
         match &self.config {
             LoaderConfig::Service(config) => config.node_execution_spec.app_did.to_string(),
-            LoaderConfig::Local(config) => config.app_doc.did.to_string(),
+            LoaderConfig::Local(config) => config.app_doc.app_did().to_string(),
         }
     }
 

@@ -1,7 +1,7 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { createHash, createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
+import { createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
 import { access, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -90,9 +90,8 @@ function appInstanceId(appId, ownerUserId) {
   return `${appIdFromName(appId)}@${ownerUserId}`
 }
 
-function runtimeContainerName(appInstance) {
-  const runtimeKey = createHash('sha256').update(appInstance, 'utf8').digest('hex')
-  return `buckyos-app-${runtimeKey}`
+function runtimeContainerName(appHostName) {
+  return `buckyos-app-${appHostName}`
 }
 
 async function cleanupTempDir(dir) {
@@ -690,7 +689,7 @@ async function stageDockerFixture() {
     specPath: (userId) =>
       `users/${userId}/apps/${appIdFromName(appId)}/spec`,
     specId: (userId) => appInstanceId(appId, userId),
-    containerName: (userId) => runtimeContainerName(appInstanceId(appId, userId)),
+    containerName: (appHostName) => runtimeContainerName(appHostName),
   }
 }
 
@@ -990,7 +989,7 @@ test('app_installer local PIKG lifecycle', async (t) => {
         assert.equal(spec.app_doc.app_type, 'dapp')
         assert.equal(
           await waitForCondition(
-            () => isContainerRunning(fixture.containerName(userId)),
+            () => isContainerRunning(fixture.containerName(spec.app_host_name)),
             { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
           ),
           true,
@@ -1003,7 +1002,10 @@ test('app_installer local PIKG lifecycle', async (t) => {
           assert.equal(deletedSpec.state, 'deleted')
           assert.equal(
             await waitForCondition(
-              () => isContainerRunning(fixture.containerName(userId)).then((running) => !running),
+              () =>
+                isContainerRunning(fixture.containerName(spec.app_host_name)).then(
+                  (running) => !running,
+                ),
               { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS },
             ),
             true,

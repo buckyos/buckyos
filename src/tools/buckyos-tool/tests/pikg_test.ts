@@ -124,6 +124,8 @@ Deno.test('pikg path workflow is offline, self-verifying, and safely cleanable',
       await Deno.readTextFile(join(envelope.data.dist_dir, 'APPDOC.json')),
     )
     assertEquals(appDoc.exp, 1_957_680_000)
+    assertEquals(appDoc.name, 'demo')
+    assertEquals(appDoc.categories, ['web'])
     assertEquals(appDoc.pkg_list.web.pkg_id, 'all.web.demo.root.bns.did#0.1.0')
 
     const packExit = await app.run(['pikg', 'pack'])
@@ -230,6 +232,25 @@ Deno.test('Rust and TypeScript share the canonical AppDoc v1 golden identity', a
   const appDoc = JSON.parse(await Deno.readTextFile(fixture))
   validateAppDocShape(appDoc)
   assertEquals(appDocObjectId(appDoc), (await Deno.readTextFile(expectedId)).trim())
+})
+
+Deno.test('AppDoc accepts BaseContentObject metadata but rejects PackageMeta fields', async () => {
+  const fixture = new URL('../../../../doc/fixtures/appdoc-v1.json', import.meta.url)
+  const appDoc = JSON.parse(await Deno.readTextFile(fixture))
+  const contentDoc = {
+    ...appDoc,
+    name: 'portable-app-release',
+    copyright: 'Copyright 2026 Example',
+    tags: ['productivity', 'web'],
+    categories: ['web'],
+    base_on: `appdoc:${'07'.repeat(32)}`,
+    directory: { catalog: {} },
+    references: { homepage: {} },
+  }
+  validateAppDocShape(contentDoc)
+  assert(appDocObjectId(contentDoc) !== appDocObjectId(appDoc))
+  await assertRejects(() => validateAppDocShape({ ...contentDoc, deps: {} }))
+  await assertRejects(() => validateAppDocShape({ ...contentDoc, size: 0, content: '' }))
 })
 
 Deno.test('pikg clean rejects protected, symlinked, and unmanaged targets', async () => {

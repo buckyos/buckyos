@@ -3,10 +3,15 @@ use ::kRPC::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use name_lib::DID;
-use ndn_lib::{NamedObject, ObjId};
+use ndn_lib::{BaseContentObject, Curator, NamedObject, ObjId, Reference};
 use package_lib::PackageId;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+};
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
@@ -567,23 +572,62 @@ pub struct AppPresentation {
     pub license: String,
 }
 
-//App doc is store at Index-db, publish to bucky store
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AppDoc {
+struct AppDocWire {
     pub schema_version: u32,
     pub doc_type: AppDocType,
     pub did: DID,
+    #[serde(default)]
+    pub name: String,
+    pub author: DID,
+    pub owner: DID,
+    pub create_time: u64,
+    pub last_update_time: u64,
+    #[serde(default)]
+    pub copyright: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub base_on: Option<ObjId>,
+    #[serde(default)]
+    pub directory: HashMap<String, Curator>,
+    #[serde(default)]
+    pub references: HashMap<String, Reference>,
+    pub exp: u64,
+    pub version: String,
+    #[serde(default)]
+    pub version_tag: Option<String>,
+    pub app_type: AppType,
+    pub controller: DID,
+    pub pkg_list: SubPkgList,
+    pub show_name: String,
+    #[serde(default)]
+    pub presentation: Option<AppPresentation>,
+    #[serde(default)]
+    pub sdk_version: Option<String>,
+    #[serde(default)]
+    pub req_capbilities: HashMap<String, i64>,
+    #[serde(default)]
+    pub permissions: Vec<PermissionItem>,
+    pub selector_type: SelectorType,
+    pub service_config_tips: ServiceConfigTips,
+}
+
+//App doc is store at Index-db, publish to bucky store
+#[derive(Serialize, Clone, PartialEq, Debug)]
+pub struct AppDoc {
+    #[serde(flatten)]
+    pub _base: BaseContentObject,
+    pub schema_version: u32,
+    pub doc_type: AppDocType,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_tag: Option<String>,
     pub app_type: AppType,
-    pub owner: DID,
     pub controller: DID,
-    pub author: DID,
-    pub create_time: u64,
-    pub last_update_time: u64,
-    pub exp: u64,
     pub pkg_list: SubPkgList,
 
     pub show_name: String,
@@ -604,6 +648,60 @@ pub struct AppDoc {
     //UI 应该根据service_config_tips的提示，来构造UI，得到最终的ServiceConfig
     pub selector_type: SelectorType,
     pub service_config_tips: ServiceConfigTips,
+}
+
+impl<'de> Deserialize<'de> for AppDoc {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = AppDocWire::deserialize(deserializer)?;
+        Ok(Self {
+            _base: BaseContentObject {
+                did: Some(wire.did),
+                name: wire.name,
+                author: wire.author.to_string(),
+                owner: wire.owner,
+                create_time: wire.create_time,
+                last_update_time: wire.last_update_time,
+                copyright: wire.copyright,
+                tags: wire.tags,
+                categories: wire.categories,
+                base_on: wire.base_on,
+                directory: wire.directory,
+                references: wire.references,
+                exp: wire.exp,
+            },
+            schema_version: wire.schema_version,
+            doc_type: wire.doc_type,
+            version: wire.version,
+            version_tag: wire.version_tag,
+            app_type: wire.app_type,
+            controller: wire.controller,
+            pkg_list: wire.pkg_list,
+            show_name: wire.show_name,
+            presentation: wire.presentation,
+            sdk_version: wire.sdk_version,
+            req_capbilities: wire.req_capbilities,
+            permissions: wire.permissions,
+            selector_type: wire.selector_type,
+            service_config_tips: wire.service_config_tips,
+        })
+    }
+}
+
+impl Deref for AppDoc {
+    type Target = BaseContentObject;
+
+    fn deref(&self) -> &Self::Target {
+        &self._base
+    }
+}
+
+impl DerefMut for AppDoc {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self._base
+    }
 }
 
 impl NamedObject for AppDoc {
@@ -628,9 +726,10 @@ impl AppDocSignatureEnvelope {
     pub fn validate_for(&self, app_doc: &AppDoc) -> Result<()> {
         app_doc.validate()?;
         let (object_id, _) = app_doc.gen_obj_id();
+        let author = app_doc.author_did()?;
         if self.schema_version != APP_DOC_SCHEMA_VERSION
             || self.app_doc_object_id != object_id
-            || self.signer != app_doc.author
+            || self.signer != author
             || self.controller != app_doc.controller
             || !self
                 .verification_method
@@ -665,7 +764,13 @@ impl AppDocSignatureEnvelope {
 
 impl AppDoc {
     pub fn app_did(&self) -> &DID {
-        &self.did
+        self.did.as_ref().expect("AppDoc.did must be present")
+    }
+
+    pub fn author_did(&self) -> Result<DID> {
+        DID::from_str(&self.author).map_err(|error| {
+            RPCErrors::ReasonError(format!("AppDoc author must be a valid DID: {error}"))
+        })
     }
 
     /// 按 v0.5 冻结的确定性命名规则构造 App DID：`did:bns:{app_name}.{owner_id}`。
@@ -707,12 +812,17 @@ impl AppDoc {
                 self.schema_version
             )));
         }
-        let app_id = crate::AppId::from_app_did(&self.did).map_err(RPCErrors::ReasonError)?;
+        let app_did = self.did.as_ref().ok_or_else(|| {
+            RPCErrors::ReasonError("AppDoc BaseContentObject.did is required".to_string())
+        })?;
+        let app_id = crate::AppId::from_app_did(app_did).map_err(RPCErrors::ReasonError)?;
+        let author = self.author_did()?;
         if self.version.trim().is_empty()
             || self.show_name.trim().is_empty()
-            || self.author.is_undefined()
+            || author.is_undefined()
             || self.owner.is_undefined()
             || self.controller.is_undefined()
+            || self.exp == 0
             || self.exp < self.create_time
             || self.last_update_time < self.create_time
         {
@@ -770,7 +880,7 @@ impl AppDoc {
     ) -> Result<()> {
         self.validate()?;
         let (actual_object_id, _) = self.gen_obj_id();
-        if &self.did != expected_did || &actual_object_id != expected_object_id {
+        if self.app_did() != expected_did || &actual_object_id != expected_object_id {
             return Err(RPCErrors::ReasonError(
                 "resolved AppDID/AppDoc ObjectId does not match the AppDoc snapshot".to_string(),
             ));
@@ -1274,19 +1384,23 @@ impl AppDocBuilder {
             })
         });
 
+        let mut base = BaseContentObject::new(self.app_name);
+        base.did = Some(app_did);
+        base.author = self.author.to_string();
+        base.owner = self.owner;
+        base.create_time = self.create_time;
+        base.last_update_time = self.last_update_time;
+        base.categories.push(self.app_type.to_string());
+        base.exp = self.exp;
+
         let app_doc = AppDoc {
+            _base: base,
             schema_version: APP_DOC_SCHEMA_VERSION,
             doc_type: AppDocType,
-            did: app_did,
             version: self.version,
             version_tag: self.version_tag,
             app_type: self.app_type,
-            owner: self.owner,
             controller: self.controller,
-            author: self.author,
-            create_time: self.create_time,
-            last_update_time: self.last_update_time,
-            exp: self.exp,
             show_name,
             presentation,
             sdk_version: self.sdk_version,
@@ -1386,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn appdoc_v1_rejects_missing_unknown_mismatched_and_flattened_documents() {
+    fn appdoc_v1_accepts_base_content_metadata_and_rejects_package_meta_fields() {
         let source = include_str!("../../../../doc/fixtures/appdoc-v1.json");
         let value: serde_json::Value = serde_json::from_str(source).unwrap();
 
@@ -1398,10 +1512,27 @@ mod tests {
         unknown["unexpected"] = json!(true);
         assert!(serde_json::from_value::<AppDoc>(unknown).is_err());
 
-        let mut flattened = value.clone();
-        flattened["name"] = json!("legacy-name");
-        flattened["deps"] = json!({});
-        assert!(serde_json::from_value::<AppDoc>(flattened).is_err());
+        let mut content = value.clone();
+        content["name"] = json!("portable-app-release");
+        content["copyright"] = json!("Copyright 2026 Example");
+        content["tags"] = json!(["productivity", "web"]);
+        content["categories"] = json!(["web"]);
+        content["base_on"] = json!(ObjId::new_by_raw("appdoc".to_string(), vec![7; 32]));
+        content["directory"] = json!({"catalog": {}});
+        content["references"] = json!({"homepage": {}});
+        let content_doc: AppDoc = serde_json::from_value(content.clone()).unwrap();
+        content_doc.validate().unwrap();
+        assert_eq!(content_doc.name, "portable-app-release");
+        assert_eq!(content_doc.tags, vec!["productivity", "web"]);
+        assert_eq!(serde_json::to_value(&content_doc).unwrap(), content);
+        let plain_doc: AppDoc = serde_json::from_value(value.clone()).unwrap();
+        assert_ne!(content_doc.gen_obj_id().0, plain_doc.gen_obj_id().0);
+
+        let mut package_meta = value.clone();
+        package_meta["deps"] = json!({});
+        package_meta["size"] = json!(0);
+        package_meta["content"] = json!("");
+        assert!(serde_json::from_value::<AppDoc>(package_meta).is_err());
 
         let app_doc: AppDoc = serde_json::from_value(value).unwrap();
         let (object_id, _) = app_doc.gen_obj_id();
@@ -1413,7 +1544,7 @@ mod tests {
             .is_err());
         assert!(app_doc
             .validate_resolved_identity(
-                &app_doc.did,
+                app_doc.app_did(),
                 &ObjId::new_by_raw("appdoc".to_string(), vec![9; 32]),
             )
             .is_err());
@@ -1449,6 +1580,8 @@ mod tests {
 
         assert_eq!(doc.selector_type, SelectorType::Static);
         assert!(doc.permissions.is_empty());
+        assert_eq!(doc.name, "demo-web");
+        assert_eq!(doc.categories, vec!["web"]);
 
         let sys_testdoc = r#"
 {
@@ -1762,7 +1895,7 @@ mod tests {
             .web_pkg(pinned_package("all.web.demo-web.tester.bns.did#0.1.0"))
             .build()
             .unwrap();
-        assert_eq!(doc.did, DID::new("bns", "demo-web.tester"));
+        assert_eq!(doc.app_did(), &DID::new("bns", "demo-web.tester"));
         assert_eq!(doc.doc_type.to_string(), "app");
 
         // 显式 app_did 覆盖派生规则。
@@ -1772,7 +1905,7 @@ mod tests {
             .web_pkg(pinned_package("all.web.custom-app-name.bns.did#0.1.0"))
             .build()
             .unwrap();
-        assert_eq!(doc.did, explicit);
+        assert_eq!(doc.app_did(), &explicit);
     }
 
     #[test]

@@ -24,7 +24,7 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
 
 ### 2.1 完整 JSON Schema
 
-以下 schema 冻结 AppDoc body。根对象、`SubPkgDesc`、selector、presentation、permission、endpoint、mount、bash env 和 instance volume 都拒绝未知字段；`service_config_tips` 仅为显式自定义配置保留 additional properties。
+`AppDoc` flatten/inherit `BaseContentObject`，因此它仍是可以通过 Named Object/NDN 流转的内容对象；但它不再 inherit `PackageMeta`。以下 schema 冻结 AppDoc body。根对象、`SubPkgDesc`、selector、presentation、permission、endpoint、mount、bash env 和 instance volume 都拒绝未知字段；`service_config_tips` 为显式自定义配置保留 additional properties。
 
 ```json
 {
@@ -42,6 +42,25 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
     "schema_version": { "const": 1 },
     "doc_type": { "const": "app" },
     "did": { "$ref": "#/$defs/did" },
+    "name": { "type": "string", "minLength": 1 },
+    "copyright": { "type": "string" },
+    "tags": {
+      "type": "array", "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "categories": {
+      "type": "array", "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "base_on": { "type": "string", "pattern": "^[^:]+:[0-9a-f]+$" },
+    "directory": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "type": "object" }
+    },
+    "references": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": { "type": "object" }
+    },
     "version": { "type": "string", "minLength": 1 },
     "version_tag": { "type": "string" },
     "app_type": { "enum": ["service", "dapp", "web", "agent"] },
@@ -50,7 +69,7 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
     "author": { "$ref": "#/$defs/did" },
     "create_time": { "type": "integer", "minimum": 0 },
     "last_update_time": { "type": "integer", "minimum": 0 },
-    "exp": { "type": "integer", "minimum": 0 },
+    "exp": { "type": "integer", "minimum": 1 },
     "pkg_list": {
       "type": "object",
       "additionalProperties": { "$ref": "#/$defs/subPackage" }
@@ -224,12 +243,14 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
 
 Serde/default 规则：
 
+- `did/author/owner/create_time/last_update_time/exp` 来自 flattened `BaseContentObject`，其中 AppDoc specialization 继续要求它们有效且必填。
+- `name/copyright/tags/categories/base_on/directory/references` 是 `BaseContentObject` 的可选内容元数据；空 `name/tags/categories/directory/references` 序列化时省略。`name` 不是 App 身份，也不得用于推导 AppId。
 - `version_tag/presentation/sdk_version` 缺省为 `null` 且序列化时省略。
 - `req_capbilities/permissions` 缺省为空并省略。
 - `SubPkgDesc.required` 缺省解释为 `true`；PIKG 的 canonical 输出必须显式写出该布尔值。
 - selector 的 `os/arch/min_kernel_version` 均可省略；`amd64/x86_64/x64` 归一为 `x86_64`，`arm64/aarch64` 归一为 `aarch64`，`darwin/apple/osx` 归一为 `macos`。
 - 已知 package key 的 selector：各平台 key 派生相应 OS/arch；`web/agent/agent_skills/agent_tools/script` 匹配所有平台；未知 key 必须显式提供 selector 才参与自动选择。
-- `service_config_tips` 是唯一允许扩展键的位置；扩展键仍进入 AppDoc ObjectId。
+- 根对象不允许 schema 之外的扩展键；`service_config_tips` 的自定义键以及所有显式 BaseContentObject 元数据仍进入 AppDoc ObjectId。
 
 ### 2.2 App 类型约束
 
@@ -240,7 +261,7 @@ Serde/default 规则：
 
 ### 2.3 权威、签名与 ObjectId
 
-AppDoc body 的 `owner` 表示发布对象所有者，`controller` 决定可接受的 verification method，`author` 是本次签名者。冻结的 detached envelope 为：
+AppDoc body 从 `BaseContentObject` 继承的 `owner` 表示发布对象所有者，AppDoc 自有的 `controller` 决定可接受的 verification method，BaseContentObject 的 `author` 是本次签名者。冻结的 detached envelope 为：
 
 ```json
 {
@@ -281,14 +302,14 @@ Golden fixture：
 
 1. 验证请求 AppDID 的 hostname profile 和 raw-hostname round-trip。
 2. 验证 resolver 返回的 DID Document 权威链、状态、版本和 controller key。
-3. 严格反序列化 AppDoc，拒绝缺字段、未知字段、unknown schema 和旧 PackageMeta flatten。
+3. 严格反序列化 AppDoc，接收已冻结的 BaseContentObject 字段，拒绝缺字段、未知字段、unknown schema 和旧 PackageMeta flatten。
 4. 验证 `AppDoc.did == requested AppDID`。
 5. 对 body 做 JCS，重算 AppDoc ObjectId，并与 resolver snapshot 的 ObjectId 相等。
 6. 验证 detached envelope 的 signer/controller/verification method 和 Ed25519 签名。
 7. 对每个自有 SubPkgDesc 验证 package namespace、版本和 PackageMeta ObjectId。
 8. 读取 PackageMeta body，重算 `pkg:<sha256>`，验证 name/version 与 AppDoc PackageId，最后验证 selector/target 与 payload content identity。
 
-任何一步失败都不得进入 InstallPlan。拒绝测试至少覆盖：缺 required、unknown field、错误 signer/controller、AppDID 不一致、AppDoc ObjectId 不一致、PackageMeta ObjectId/name/version 不一致和旧 `name/deps/meta` flatten 格式。
+任何一步失败都不得进入 InstallPlan。拒绝测试至少覆盖：缺 required、unknown field、错误 signer/controller、AppDID 不一致、AppDoc ObjectId 不一致、PackageMeta ObjectId/name/version 不一致和旧 `size/content/deps/meta` PackageMeta flatten 格式。`BaseContentObject.name` 是合法的非身份元数据。
 
 ## 3. Package namespace 与 exact 内容
 
@@ -396,7 +417,7 @@ BUCKYOS_OWNER_USER_ID
 BUCKYOS_DATA_DIR
 ```
 
-数据目录按 `(owner_user_id, AppId)` 隔离且跨升级稳定。RuntimeKey 是 `lowercase_hex(SHA256(canonical AppInstanceId bytes))` 的完整 64 hex；Docker label 同时保存完整 AppDID、AppInstanceId、owner、exact PackageId/PackageMeta ObjectId、AppDoc ObjectId 和 generation。回收前必须用 label 复核完整身份。
+数据目录按 `(owner_user_id, AppId)` 隔离且跨升级稳定。Docker 容器名是 `buckyos-app-{AppHostName}`，其中 AppHostName 必须直接取自 NodeExecutionSpec 的 Registry 投影；instance volume/systemd 使用的 RuntimeKey 是 `lowercase_hex(SHA256(canonical AppInstanceId bytes))` 的完整 64 hex。Docker label 同时保存完整 AppDID、AppInstanceId、owner、exact PackageId/PackageMeta ObjectId、AppDoc ObjectId 和 generation。回收前必须用 label 复核完整身份。
 
 普通 App token 的 `appid` 是 AppId，并必须另带、精确比较 AppInstanceId；系统 principal 的兼容 appid 字段只有在 principal kind 为 System 时才解释为 SystemServiceId。Agent principal kind 使用 AgentDID。
 

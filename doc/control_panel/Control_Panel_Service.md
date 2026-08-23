@@ -61,7 +61,7 @@ Control Panel Service 是 Zone 内的**核心资源管理服务**，其本质是
 ### 2.3 App（应用）
 
 * 核心结构 `AppServiceSpec` 以 `app_instance_id/app_did/owner_user_id` 绑定身份，保存独立 `AppDoc` snapshot、DeploymentIdentity、批准权限、运行状态与 service config；`app_name/app_host_name/app_index` 是 scheduler 从 AppRegistry 投影的只读字段。
-* `AppDoc` 是独立 schema：`did` 是身份，`version` 是 App 语义版本，`presentation/show_name` 只用于展示；`pkg_list`、selector/runtime/SDK requirements、permissions 和 service config tips 不继承 PackageMeta。
+* `AppDoc` 是独立 schema：它 flatten/inherit `BaseContentObject` 以保持 Named Content Object 的流转语义，其中 `did` 是身份、`name/tags/categories/references` 是非身份内容元数据；`version` 是 App 语义版本，`presentation/show_name` 只用于展示。`pkg_list`、selector/runtime/SDK requirements、permissions 和 service config tips 不继承 PackageMeta。
 * 生命周期 `ServiceState`：`New → Running / Stopped / Stopping / Restarting / Updating / Deleted`。
 * `system_config` 路径：
 

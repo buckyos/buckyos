@@ -204,8 +204,12 @@ async function main() {
               "AppDoc author should match",
             );
             assert(
-              !Object.hasOwn(appDoc, "name"),
-              "AppDoc must not contain legacy name",
+              typeof appDoc.name === "string" && appDoc.name.length > 0,
+              "AppDoc should expose BaseContentObject.name as non-identity metadata",
+            );
+            assert(
+              Array.isArray(appDoc.categories),
+              "AppDoc should expose BaseContentObject.categories",
             );
             assert(
               !Object.hasOwn(appDoc, "deps"),

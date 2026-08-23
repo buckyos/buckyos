@@ -802,6 +802,13 @@ export function validateAppDocShape(appDoc: Record<string, unknown>): void {
       'schema_version',
       'doc_type',
       'did',
+      'name',
+      'copyright',
+      'tags',
+      'categories',
+      'base_on',
+      'directory',
+      'references',
       'version',
       'version_tag',
       'app_type',
@@ -843,9 +850,41 @@ export function validateAppDocShape(appDoc: Record<string, unknown>): void {
   if (!['service', 'dapp', 'web', 'agent'].includes(String(appDoc.app_type))) {
     throw invalid('appdoc', 'APPDOC.app_type is invalid')
   }
+  if (appDoc.name !== undefined) expectNonEmptyString(appDoc.name, 'APPDOC.name')
+  optionalString(appDoc.copyright, 'APPDOC.copyright')
+  for (const field of ['tags', 'categories']) {
+    const values = appDoc[field]
+    if (
+      values !== undefined &&
+      (!Array.isArray(values) || values.length === 0 ||
+        values.some((value) => typeof value !== 'string'))
+    ) {
+      throw invalid('appdoc', `APPDOC.${field} must be a non-empty string array when present`)
+    }
+  }
+  if (appDoc.base_on !== undefined) {
+    const baseOn = expectNonEmptyString(appDoc.base_on, 'APPDOC.base_on')
+    try {
+      ndn.ObjId.fromString(baseOn)
+    } catch {
+      throw invalid('appdoc', 'APPDOC.base_on must be an ObjectId')
+    }
+  }
+  for (const field of ['directory', 'references']) {
+    if (appDoc[field] === undefined) continue
+    const entries = expectObject(appDoc[field], `APPDOC.${field}`)
+    if (Object.keys(entries).length === 0) {
+      throw invalid('appdoc', `APPDOC.${field} must not be empty when present`)
+    }
+    for (const [key, value] of Object.entries(entries)) {
+      expectObject(value, `APPDOC.${field}.${key}`)
+    }
+  }
   expectSafeInteger(appDoc.create_time, 'APPDOC.create_time')
   expectSafeInteger(appDoc.last_update_time, 'APPDOC.last_update_time')
-  expectSafeInteger(appDoc.exp, 'APPDOC.exp')
+  if (expectSafeInteger(appDoc.exp, 'APPDOC.exp') === 0) {
+    throw invalid('appdoc', 'APPDOC.exp must be greater than zero')
+  }
   appIdFromDid(String(appDoc.did))
   parseDid(String(appDoc.owner), 'owner')
   parseDid(String(appDoc.controller), 'controller')

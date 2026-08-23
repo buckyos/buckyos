@@ -77,7 +77,7 @@ node-daemon 的 `AppLoader` 是 app/agent worker 环境变量的权威注入者�
 | `local_app_instance_config` | node-daemon | local app config JSON。 |
 | `loca_app_instance_config` | node-daemon | `local_app_instance_config` 的拼写兼容变量。不要新增依赖。 |
 
-App 数据目录固定为 `$BUCKYOS_ROOT/data/home/{owner_user_id}/.local/share/{app_id}`，cache 固定为 `$BUCKYOS_ROOT/data/cache/{owner_user_id}/{app_id}`。Docker 容器名为 `buckyos-app-{sha256(app_instance_id)}`，实例卷为 `buckyos-instance-{sha256(app_instance_id)}`；二者都使用完整 64 位 lowercase hex，并通过 `buckyos.app_instance_id` label 保存可诊断的语义身份。
+App 数据目录固定为 `$BUCKYOS_ROOT/data/home/{owner_user_id}/.local/share/{app_id}`，cache 固定为 `$BUCKYOS_ROOT/data/cache/{owner_user_id}/{app_id}`。Docker 容器名为 `buckyos-app-{app_host_name}`，其中 `app_host_name` 直接取自 NodeExecutionSpec 的 Registry 投影；实例卷仍为 `buckyos-instance-{sha256(app_instance_id)}`，使用完整 64 位 lowercase hex。容器通过 `buckyos.app_instance_id` label 保存可诊断的语义身份。
 
 aios entrypoint 派生或兼容变量：
 

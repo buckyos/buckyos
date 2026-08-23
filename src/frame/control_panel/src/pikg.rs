@@ -1487,7 +1487,7 @@ mod tests {
         let reader = PikgReader::open(&pikg_path, None).await.unwrap();
         let inspection = reader.inspection();
         assert_eq!(
-            inspection.app_doc.did.to_string(),
+            inspection.app_doc.app_did().to_string(),
             "did:bns:demo-web.tester"
         );
         assert_eq!(inspection.app_doc_object_id.obj_type, OBJ_TYPE_APP_DOC);

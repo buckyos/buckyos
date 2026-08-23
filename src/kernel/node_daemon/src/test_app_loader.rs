@@ -147,8 +147,8 @@ fn test_runtime_key(app_id: &str) -> String {
         .runtime_key()
 }
 
-fn test_container_name(app_id: &str) -> String {
-    format!("buckyos-app-{}", test_runtime_key(app_id))
+fn test_container_name(app_host_name: &str) -> String {
+    format!("buckyos-app-{app_host_name}")
 }
 
 fn build_service_loader(
@@ -573,7 +573,7 @@ fn appservice_control_commands_match_linux_amd64_docker_runtime() {
     assert_eq!(start.runtime, RuntimeType::Docker);
     assert_programs(&start.commands, &["docker", "docker"]);
     let runtime_key = test_runtime_key("demo.example");
-    let container_name = test_container_name("demo.example");
+    let container_name = test_container_name("test-app");
     assert_eq!(
         start.commands[0].args,
         vec!["rm", "-f", container_name.as_str()]
@@ -701,7 +701,7 @@ fn agent_control_commands_match_expected_process_flow_on_linux() {
     assert_eq!(start.runtime, RuntimeType::Agent);
     assert_programs(&start.commands, &["docker", "docker"]);
     let runtime_key = test_runtime_key("jarvis-runtime.example");
-    let container_name = test_container_name("jarvis-runtime.example");
+    let container_name = test_container_name("test-app");
     assert_eq!(
         start.commands[0].args,
         vec!["rm", "-f", container_name.as_str()]
@@ -841,11 +841,7 @@ fn agent_stop_command_uses_docker_on_windows() {
     assert_eq!(stop.commands[0].program, "docker");
     assert_eq!(
         stop.commands[0].args,
-        vec![
-            "rm",
-            "-f",
-            test_container_name("jarvis-runtime.example").as_str()
-        ]
+        vec!["rm", "-f", test_container_name("test-app").as_str()]
     );
 }
 

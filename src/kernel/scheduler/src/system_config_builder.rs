@@ -419,7 +419,7 @@ impl SystemConfigBuilder {
         if selected_packages.is_empty() {
             return Err(anyhow!(
                 "bootstrap AppDoc {} has no package for {}/{}",
-                app_doc.did.to_string(),
+                app_doc.app_did().to_string(),
                 target.os,
                 target.arch
             ));
@@ -429,13 +429,13 @@ impl SystemConfigBuilder {
             app_doc_object_id: app_doc_object_id.clone(),
         };
         let app = AppDocumentRef {
-            did: app_doc.did.clone(),
+            did: app_doc.app_did().clone(),
             object_id: app_doc_object_id.clone(),
             show_name: app_doc.show_name.clone(),
             version: app_doc.version.clone(),
         };
         let resolution = DidResolutionSnapshot {
-            app_did: app_doc.did.clone(),
+            app_did: app_doc.app_did().clone(),
             doc_type: AppDocType,
             app_doc_object_id: Some(app_doc_object_id),
             resolver_id: Some("bootstrap".to_string()),

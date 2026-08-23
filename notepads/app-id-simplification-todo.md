@@ -55,7 +55,7 @@ Package Meta ObjectId          精确 package 内容版本
 - 不同用户安装同一个 AppDID 时形成完全独立的 AppInstance。
 - Zone Owner 安装的 App 仍是普通用户 App；是否对 Zone 全体用户开放由 availability policy 表达。
 - App 短域名、AppIndex 只是 Zone 内的持久分配结果，不参与 App 身份。
-- AppDoc 不再继承 PackageMeta，不再声明身份字段 `app_name/name`。
+- AppDoc 不再继承 PackageMeta，但仍 flatten/inherit `BaseContentObject`；其 `name` 是非身份内容元数据，AppDoc 不再声明 `app_name`。
 - App 自有 package namespace 只由 AppId 决定；所有部署 package 必须精确绑定 Package Meta ObjectId。
 - NodeConfig 已经包含 Node 范围，`apps` 的 key 不再重复拼接 `node_id`。
 - AgentDID 是 Agent 身份；Agent 的运行实现通过显式 binding 指向一个普通 App Service，不把 AgentDID 伪装成 AppDID。
@@ -641,14 +641,15 @@ zone/apps/*
 
 ### 6.1 设计结论
 
-AppDoc 不再 flatten/inherit PackageMeta。AppDoc 是 App 发布文档，PackageMeta 是某个部署 package 的内容文档，两者职责不同。
+AppDoc 不再 flatten/inherit PackageMeta，但仍直接 flatten/inherit BaseContentObject。AppDoc 是可通过 Named Object/NDN 流转的 App 发布内容，PackageMeta 是某个部署 package 的内容文档，两者职责不同。
 
-AppDoc 不再定义身份字段 `app_name/name`。名称分工：
+AppDoc 不再定义身份字段 `app_name`；继承的 `BaseContentObject.name` 只表示内容友好名称，不参与任何身份推导。名称分工：
 
 ```text
 AppDID                     唯一身份
 AppId                      AppDID raw hostname
 presentation/show_name     展示文本
+BaseContentObject.name     可选内容友好名称，非身份
 AppName                    Zone 内短域名分配
 PackageMeta.name           package namespace 中的包名
 ```
@@ -659,7 +660,8 @@ PackageMeta.name           package namespace 中的包名
 
 ```text
 doc_type = "app"
-did: AppDID
+BaseContentObject.did: AppDID
+BaseContentObject.name/author/owner/timestamps/tags/categories/references
 version: App semantic version
 presentation/show_name
 pkg_list
@@ -674,6 +676,7 @@ service_config_tips
 - AppDoc ObjectId 继续使用 canonical JSON/JCS + `appdoc` ObjType。
 - `did` 必填，且与 resolver 返回的 AppDID 完全一致。
 - 不再校验 `AppDoc.name == AppDID first label`。
+- `BaseContentObject.name/categories/tags/base_on/directory/references` 是可选流转元数据，进入 AppDoc ObjectId，但不得作为 AppId、package namespace 或 runtime identity。
 - PackageMeta 的 `name/version/content/deps` 不得通过 flatten 混入 AppDoc 顶层。
 - PIKG 的 `APPDOC.json`、builder、resolver、Repo/NamedStore 读取、签名与对象 ID 全部同步新 schema。
 - AppDoc version 标识语义版本；DID document revision/version 与其分开。
@@ -828,18 +831,23 @@ AppInstanceId 是语义身份，但 Docker container/volume、systemd unit 或�
 
 - SystemConfig key、协议字段、环境变量、日志和支持 `@` 的本地路径直接使用 canonical AppInstanceId，不再引入 `full_appid` 等第二逻辑身份。
 - Docker container/volume 和 systemd unit 不能直接使用 AppInstanceId：`@` 有非法字符或特殊语义，且完整 AppId + Owner 可能超过长度限制。
-- 统一实现 `AppInstanceId -> RuntimeKey`：
+- AppHostName 是 Scheduler 为 AppInstance 持久分配的合法、Zone 内唯一 DNS label，因此 Docker container 使用可读的 AppHostName；local app 没有 Registry 投影，使用其本地短 AppId：
+
+```text
+container = buckyos-app-{AppHostName}
+```
+
+- instance volume 和 systemd unit 继续统一使用 `AppInstanceId -> RuntimeKey`：
 
 ```text
 RuntimeKey = lowercase_hex(sha256(utf8(canonical_app_instance_id)))
-container  = buckyos-app-{RuntimeKey}
 volume     = buckyos-instance-{RuntimeKey}
 ```
 
 - 使用完整 64 hex digest，不截断；输入字节、前缀和 lowercase 编码必须跨平台一致，并增加 golden vector。
-- RuntimeKey/容器名只是可重算的本地控制柄，不进入 SystemConfig 主键、token、RBAC、service discovery 或公开协议，不增加新的身份概念。
+- RuntimeKey/容器名只是本地控制柄，不进入 SystemConfig 主键、token、RBAC、service discovery 或公开协议，不增加新的身份概念。
 - Docker label/annotation 中必须保存完整 AppInstanceId；诊断和回收先通过 label 校验完整身份，不能只相信容器名。
-- 禁止各模块自行 `replace('@', '-')`、截断 AppInstanceId 或使用 AppName/AppHostName 生成运行时控制柄。
+- 禁止各模块自行 `replace('@', '-')` 或截断 AppInstanceId；容器名统一使用 NodeExecutionSpec 的 AppHostName 投影，不得从 AppId 或 AppInstanceId 自行推断。
 
 ### 8.4 Token/RBAC/Gateway
 
@@ -888,7 +896,7 @@ volume     = buckyos-instance-{RuntimeKey}
 - [x] 删除 AppDoc.name 与 AppDID label 相等校验。
 - [x] 重建 AppDoc builder、strict deserialize、NamedObject/JCS ObjectId。
 - [x] 同步 PIKG app.json -> APPDOC.json 构造和校验。
-- [x] 明确 AppDoc owner/controller/signature envelope，不从 PackageMeta 继承。
+- [x] 明确 AppDoc owner/author 来自 BaseContentObject、controller/signature envelope 为 AppDoc 自有语义，均不从 PackageMeta 继承。
 
 ### P0：SystemConfig schema
 
@@ -964,7 +972,7 @@ volume     = buckyos-instance-{RuntimeKey}
 - `src/kernel/verify_hub/src/main.rs`
 - boot gateway 配置和 SDK 文档
 
-产出：数据目录、RuntimeKey/容器、环境变量、JWT/RBAC、gateway 全部使用新定义；AgentDID binding 指向普通 App Service，不再从旧 appid/InstallationId 猜身份。
+产出：数据目录、RuntimeKey/容器、环境变量、JWT/RBAC、gateway 全部使用新定义；容器名使用 Registry 投影的 AppHostName；AgentDID binding 指向普通 App Service，不再从旧 appid/InstallationId 猜身份。
 
 ### Phase 6：前端、CLI、文档与清理
 
@@ -989,7 +997,7 @@ volume     = buckyos-instance-{RuntimeKey}
 - [x] `did:bns:filebrowser.buckyos <-> filebrowser.buckyos.bns.did` 严格往返。
 - [x] 反向统一使用 `DID::from_str(raw_hostname)`，不会把多 label `*.bns.did` 错判成 did:web。
 - [x] DID path form、fragment、非法/冲突 `.did` Web hostname 被拒绝作为 AppDID。
-- [x] AppDoc 不含 name 仍能构造稳定 AppDoc ObjectId。
+- [x] AppDoc 缺省 BaseContentObject.name 时仍能构造稳定 AppDoc ObjectId；存在 name 时它只作为参与 ObjectId 的非身份内容元数据。
 
 ### 安装与身份
 
@@ -1045,7 +1053,7 @@ volume     = buckyos-instance-{RuntimeKey}
 
 - [x] `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR` 值符合新定义。
 - [x] 数据目录按 `(owner_user_id, app_id)` 隔离并跨升级稳定。
-- [x] RuntimeKey 使用 canonical AppInstanceId 的完整 SHA-256 lowercase hex golden vector；Docker/systemd 名无非法字符，label 可恢复完整 AppInstanceId。
+- [x] RuntimeKey 使用 canonical AppInstanceId 的完整 SHA-256 lowercase hex golden vector；Docker 容器名使用合法且唯一的 AppHostName，volume/systemd 名无非法字符，label 可恢复完整 AppInstanceId。
 - [x] 登录和 token verification 精确比较 AppInstanceId，不能只比较 AppId。
 - [x] Desktop 同名 AppDID、不同 Owner 的 launcher 不合并。
 
@@ -1056,7 +1064,7 @@ volume     = buckyos-instance-{RuntimeKey}
 - [x] 代码中不存在 `AppInstallationId`、`AppInstallationScope` 或 `ZoneInstalled`。
 - [x] 普通 App 的持久路径使用 AppId、运行目标使用 AppInstanceId；Agent 路径使用 AgentId 并通过 AgentServiceBinding 指向 AppInstanceId。
 - [x] `appid` 对普通 App 只表示 AppDID raw hostname；System principal 的兼容字段由明确 kind 标识为 SystemServiceId。
-- [x] AppDoc 不继承 PackageMeta，不含身份性 `name/app_name`。
+- [x] AppDoc 继承 BaseContentObject、不继承 PackageMeta；不含 `app_name`，继承的 `name` 不具有身份语义。
 - [x] scheduler 是 `system/app_registry` 唯一 writer，完整 JSON 使用 CAS 更新并带 schema_version。
 - [x] Control Panel 不直接执行 InstallPlan；App desired state、registry allocation、NodeConfig 和 gateway 派生配置都由 scheduler 执行/生成。
 - [x] AppName/AppHostName/AppIndex 卸载后不自动释放；AppIndex 按 AppInstance 分配并继续使用旧端口公式。
