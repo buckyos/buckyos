@@ -1,10 +1,7 @@
 FROM ubuntu:24.04
 
 ARG TARGET_ARCH
-
-LABEL org.opencontainers.image.title="paios/aios (BuckyOS Worker Image)" \
-      org.opencontainers.image.description="Unified worker runtime for BuckyOS apps and OpenDAN agents" \
-      org.opencontainers.image.vendor="BuckyOS DAO"
+ARG OPENDAN_SHA256=
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -94,7 +91,10 @@ RUN mkdir -p \
 # OpenDAN binaries shipped by the image (Agent dispatch target).
 COPY opendan /opt/buckyos/bin/opendan/opendan
 COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
-RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool
+RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool && \
+    if [ -n "${OPENDAN_SHA256}" ]; then \
+      printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -; \
+    fi
 
 # Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
 # agent/script/custom dispatch (replaces the old overlayfs/fuse bootstrap
@@ -113,5 +113,15 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     PATH="/opt/buckyos/tools/bin:${PATH}"
 
 EXPOSE 3180
+
+ARG IMAGE_VERSION=unknown
+ARG SOURCE_REVISION=unknown
+ARG BUILD_CREATED=unknown
+LABEL org.opencontainers.image.title="paios/aios (BuckyOS Worker Image)" \
+      org.opencontainers.image.description="Unified worker runtime for BuckyOS apps and OpenDAN agents" \
+      org.opencontainers.image.vendor="BuckyOS DAO" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.created="${BUILD_CREATED}"
 
 ENTRYPOINT ["/opt/buckyos/entrypoint.sh"]

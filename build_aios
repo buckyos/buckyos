@@ -33,6 +33,8 @@ BUCKYOS_WEBSDK_REPO="https://github.com/buckyos/buckyos-websdk.git"
 BUCKYOS_WEBSDK_REF="${BUCKYOS_WEBSDK_REF:-main}"
 REUSE_CARGO_TARGET=0
 CARGO_TARGET_DIR_OVERRIDE="${AIOS_CARGO_TARGET_DIR:-}"
+AIOS_SOURCE_REVISION=""
+AIOS_BUILD_CREATED=""
 
 usage() {
   cat <<'EOF'
@@ -115,6 +117,70 @@ done
 
 log() {
   printf '[build_aios] %s\n' "$*"
+}
+
+resolve_build_metadata() {
+  local revision="unknown"
+
+  if revision="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null)"; then
+    if ! git -C "$ROOT_DIR" diff --quiet --ignore-submodules HEAD --; then
+      revision="${revision}-dirty"
+    fi
+  fi
+
+  AIOS_SOURCE_REVISION="$revision"
+  AIOS_BUILD_CREATED="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+}
+
+sha256_file() {
+  local path="$1"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return
+  fi
+
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return
+  fi
+
+  "$(resolve_python)" - "$path" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as fh:
+    for chunk in iter(lambda: fh.read(1 << 20), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+}
+
+validate_entrypoint_contract() {
+  if [[ ! -f "$ENTRYPOINT_SOURCE" ]]; then
+    echo "Missing paios/aios entrypoint at $ENTRYPOINT_SOURCE" >&2
+    exit 1
+  fi
+
+  if grep -Fq -- '--agent-id' "$ENTRYPOINT_SOURCE"; then
+    cat >&2 <<EOF
+The AIOS entrypoint still passes the removed OpenDAN --agent-id argument:
+  $ENTRYPOINT_SOURCE
+Agent identity is resolved from the bound AgentSpec. Pass the runtime AppId with
+--appid and let OpenDAN load AgentId/AgentDID from system config.
+EOF
+    exit 1
+  fi
+
+  if ! grep -Fq -- '--appid "$BUCKYOS_APP_ID"' "$ENTRYPOINT_SOURCE"; then
+    cat >&2 <<EOF
+The AIOS entrypoint does not pass the runtime AppId using the supported contract:
+  --appid "\$BUCKYOS_APP_ID"
+Entry point: $ENTRYPOINT_SOURCE
+EOF
+    exit 1
+  fi
 }
 
 default_reused_cargo_target_dir() {
@@ -349,12 +415,7 @@ render_dockerfile() {
 FROM ubuntu:24.04
 
 ARG TARGET_ARCH
-
-LABEL org.opencontainers.image.title="paios/aios (BuckyOS Worker Image)" \
-EOF
-    printf '      org.opencontainers.image.description="Unified worker runtime for %s" \\\n' "$IMAGE_NAME"
-    cat <<'EOF'
-      org.opencontainers.image.vendor="BuckyOS DAO"
+ARG OPENDAN_SHA256
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -427,7 +488,8 @@ RUN mkdir -p \
 
 COPY opendan /opt/buckyos/bin/opendan/opendan
 COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
-RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool
+RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool && \
+    printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -
 
 # Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
 # agent/script/custom dispatch.
@@ -445,6 +507,18 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     PATH="/opt/buckyos/tools/bin:${PATH}"
 
 EXPOSE 3180
+
+ARG IMAGE_VERSION
+ARG SOURCE_REVISION
+ARG BUILD_CREATED
+LABEL org.opencontainers.image.title="paios/aios (BuckyOS Worker Image)" \
+EOF
+    printf '      org.opencontainers.image.description="Unified worker runtime for %s" \\\n' "$IMAGE_NAME"
+    cat <<'EOF'
+      org.opencontainers.image.vendor="BuckyOS DAO" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.created="${BUILD_CREATED}"
 
 ENTRYPOINT ["/opt/buckyos/entrypoint.sh"]
 EOF
@@ -1035,6 +1109,9 @@ build_image() {
   local dockerfile_path="$4"
   local version_arch_tag="$IMAGE_NAME:$VERSION_TAG-$arch"
   local latest_arch_tag="$IMAGE_NAME:latest-$arch"
+  local opendan_sha256
+
+  opendan_sha256="$(sha256_file "$context_dir/opendan")"
 
   log "Building Docker image $version_arch_tag"
 
@@ -1042,6 +1119,10 @@ build_image() {
     docker buildx build \
       --platform "$platform" \
       --build-arg TARGET_ARCH="$arch" \
+      --build-arg IMAGE_VERSION="$VERSION_TAG" \
+      --build-arg SOURCE_REVISION="$AIOS_SOURCE_REVISION" \
+      --build-arg BUILD_CREATED="$AIOS_BUILD_CREATED" \
+      --build-arg OPENDAN_SHA256="$opendan_sha256" \
       --tag "$version_arch_tag" \
       --tag "$latest_arch_tag" \
       --push \
@@ -1051,12 +1132,57 @@ build_image() {
     docker buildx build \
       --platform "$platform" \
       --build-arg TARGET_ARCH="$arch" \
+      --build-arg IMAGE_VERSION="$VERSION_TAG" \
+      --build-arg SOURCE_REVISION="$AIOS_SOURCE_REVISION" \
+      --build-arg BUILD_CREATED="$AIOS_BUILD_CREATED" \
+      --build-arg OPENDAN_SHA256="$opendan_sha256" \
       --tag "$version_arch_tag" \
       --tag "$latest_arch_tag" \
       --load \
       -f "$dockerfile_path" \
       "$context_dir"
+
+    verify_loaded_image "$latest_arch_tag" "$platform" "$opendan_sha256"
   fi
+}
+
+verify_loaded_image() {
+  local image_ref="$1"
+  local platform="$2"
+  local expected_opendan_sha256="$3"
+  local actual_opendan_sha256
+  local actual_revision
+  local actual_version
+
+  actual_opendan_sha256="$(
+    docker run --rm \
+      --platform "$platform" \
+      --entrypoint sha256sum \
+      "$image_ref" \
+      /opt/buckyos/bin/opendan/opendan \
+      | awk '{print $1}'
+  )"
+  if [[ "$actual_opendan_sha256" != "$expected_opendan_sha256" ]]; then
+    cat >&2 <<EOF
+Loaded image OpenDAN digest mismatch for $image_ref:
+  expected: $expected_opendan_sha256
+  actual:   ${actual_opendan_sha256:-<empty>}
+EOF
+    exit 1
+  fi
+
+  actual_revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+  actual_version="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+  if [[ "$actual_revision" != "$AIOS_SOURCE_REVISION" || "$actual_version" != "$VERSION_TAG" ]]; then
+    cat >&2 <<EOF
+Loaded image metadata mismatch for $image_ref:
+  expected revision/version: $AIOS_SOURCE_REVISION / $VERSION_TAG
+  actual revision/version:   $actual_revision / $actual_version
+EOF
+    exit 1
+  fi
+
+  log "Verified $image_ref: opendan_sha256=$actual_opendan_sha256 revision=$actual_revision version=$actual_version"
 }
 
 publish_manifests() {
@@ -1087,6 +1213,8 @@ main() {
 
   resolve_default_image_name
   resolve_version_tag
+  resolve_build_metadata
+  validate_entrypoint_contract
   python_bin="$(resolve_python)"
   while IFS= read -r _arch_line; do
     target_arches+=("$_arch_line")
@@ -1113,6 +1241,8 @@ main() {
   ensure_buildx_support "${target_arches[@]}"
 
   log "Version tag: $VERSION_TAG"
+  log "Source revision: $AIOS_SOURCE_REVISION"
+  log "Build created: $AIOS_BUILD_CREATED"
   log "Image repo: $IMAGE_NAME"
   log "Target arches: $(package_list_to_string "${target_arches[@]}")"
   log "Cargo target dir: $cargo_target_dir ($cargo_target_mode)"
@@ -1154,10 +1284,11 @@ main() {
     log "Pushed: $IMAGE_NAME:$VERSION_TAG and $IMAGE_NAME:latest"
   else
     log "Loaded local images:"
-    log "  $IMAGE_NAME:$VERSION_TAG-amd64"
-    log "  $IMAGE_NAME:latest-amd64"
-    log "  $IMAGE_NAME:$VERSION_TAG-aarch64"
-    log "  $IMAGE_NAME:latest-aarch64"
+    local built_arch
+    for built_arch in "${target_arches[@]}"; do
+      log "  $IMAGE_NAME:$VERSION_TAG-$built_arch"
+      log "  $IMAGE_NAME:latest-$built_arch"
+    done
   fi
 }
 

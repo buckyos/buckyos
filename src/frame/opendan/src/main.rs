@@ -126,6 +126,11 @@ where
                         .ok_or_else(|| anyhow!("missing value for {arg}"))?,
                 );
             }
+            "--agent-id" => {
+                return Err(anyhow!(
+                    "{arg} was removed; OpenDAN resolves AgentId and AgentDID from the AgentSpec bound to the runtime AppInstanceId"
+                ));
+            }
             "--agent-root" | "--agent-env" => {
                 return Err(anyhow!(
                     "{arg} is no longer supported; opendan resolves agent_root from BuckyOS app data folder"
@@ -164,6 +169,11 @@ where
             }
             other if other.starts_with("--owner-user-id=") => {
                 parsed.owner_id = Some(other["--owner-user-id=".len()..].to_string());
+            }
+            other if other.starts_with("--agent-id=") => {
+                return Err(anyhow!(
+                    "{other} was removed; OpenDAN resolves AgentId and AgentDID from the AgentSpec bound to the runtime AppInstanceId"
+                ));
             }
             other if other.starts_with("--agent-root=") || other.starts_with("--agent-env=") => {
                 return Err(anyhow!(
@@ -782,22 +792,15 @@ mod tests {
 
     #[test]
     fn parses_positional_appid() {
-        let parsed =
-            parse_startup_args_from_iter(["jarvis.buckyos.bns.did"]).expect("parse args");
-        assert_eq!(
-            parsed.appid.as_deref(),
-            Some("jarvis.buckyos.bns.did")
-        );
+        let parsed = parse_startup_args_from_iter(["jarvis.buckyos.bns.did"]).expect("parse args");
+        assert_eq!(parsed.appid.as_deref(), Some("jarvis.buckyos.bns.did"));
     }
 
     #[test]
     fn parses_appid_flag() {
         let parsed = parse_startup_args_from_iter(["--appid", "jarvis.buckyos.bns.did"])
             .expect("parse args");
-        assert_eq!(
-            parsed.appid.as_deref(),
-            Some("jarvis.buckyos.bns.did")
-        );
+        assert_eq!(parsed.appid.as_deref(), Some("jarvis.buckyos.bns.did"));
     }
 
     #[test]
@@ -812,6 +815,17 @@ mod tests {
             parsed.agent_bin.unwrap(),
             std::path::PathBuf::from("/pkg/buckyos_jarvis")
         );
+    }
+
+    #[test]
+    fn agent_id_flag_is_removed() {
+        for args in [
+            vec!["--agent-id", "jarvis.test.buckyos.io"],
+            vec!["--agent-id=jarvis.test.buckyos.io"],
+        ] {
+            let err = parse_startup_args_from_iter(args).expect_err("flag must be refused");
+            assert!(err.to_string().contains("AgentSpec"), "{}", err);
+        }
     }
 
     #[test]

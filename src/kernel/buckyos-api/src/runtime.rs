@@ -1250,6 +1250,14 @@ impl BuckyOSRuntime {
 
         init_name_lib(&self.web3_bridges).await;
 
+        // AppService processes receive a device-signed LoginAssertion from
+        // node-daemon. Exchange it before the first system-config request;
+        // system-config accepts only Verify Hub sessions (apart from the
+        // narrowly scoped kernel bootstrap assertion).
+        if self.runtime_type == BuckyOSRuntimeType::AppService {
+            self.renew_token_from_verify_hub_once().await?;
+        }
+
         authenticated_session_token = {
             let mut session_token = self.session_token.write().await;
             if session_token.is_empty() {
@@ -2198,9 +2206,28 @@ impl BuckyOSRuntime {
     /// Returns a short-session client. Acquire it again from the runtime for
     /// each operation instead of keeping it in long-lived state.
     pub async fn get_verify_hub_client(&self) -> Result<VerifyHubClient> {
-        let krpc_client = self.get_zone_service_krpc_client("verify-hub").await?;
+        let krpc_client = if let Some(url) = self.verify_hub_bootstrap_url() {
+            // AppService authentication must not depend on service discovery:
+            // node-daemon may inject ZoneConfig before the LoginAssertion has
+            // been exchanged for a Verify Hub session. Node Gateway exposes
+            // Verify Hub on this canonical route, and login_by_jwt clears any
+            // client session before sending the signed assertion.
+            kRPC::new_with_timeout_secs(&url, None, DEFAULT_KRPC_TIMEOUT_SECS)
+        } else {
+            self.get_zone_service_krpc_client("verify-hub").await?
+        };
         let client = VerifyHubClient::new(krpc_client);
         Ok(client)
+    }
+
+    fn verify_hub_bootstrap_url(&self) -> Option<String> {
+        (self.runtime_type == BuckyOSRuntimeType::AppService).then(|| {
+            format!(
+                "http://{}:{}/kapi/verify-hub",
+                self.resolve_local_service_host(),
+                DEFAULT_NODE_GATEWAY_PORT
+            )
+        })
     }
 
     /// Returns a short-session client. Acquire it again from the runtime for
@@ -2668,6 +2695,27 @@ mod tests {
             resolve_container_gateway_host(Some("localhost")),
             "127.0.0.1"
         );
+    }
+
+    #[test]
+    fn app_service_uses_node_gateway_for_verify_hub_before_zone_bootstrap() {
+        let app = BuckyOSRuntime::new(
+            "jarvis.buckyos.bns.did",
+            Some("devtest".to_string()),
+            BuckyOSRuntimeType::AppService,
+        );
+        let expected_url = format!(
+            "http://{}:{}/kapi/verify-hub",
+            app.resolve_local_service_host(),
+            DEFAULT_NODE_GATEWAY_PORT
+        );
+        assert_eq!(
+            app.verify_hub_bootstrap_url().as_deref(),
+            Some(expected_url.as_str())
+        );
+
+        let kernel = BuckyOSRuntime::new("node-daemon", None, BuckyOSRuntimeType::Kernel);
+        assert_eq!(kernel.verify_hub_bootstrap_url(), None);
     }
 
     #[test]

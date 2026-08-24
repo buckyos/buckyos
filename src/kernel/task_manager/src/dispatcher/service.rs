@@ -21,6 +21,7 @@ use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
+use name_lib::DID;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -157,19 +158,11 @@ impl TaskDispatcherService {
         self.db.clone()
     }
 
-    /// The runner surface (register/attach/renew/detach) authenticates APP
-    /// identities, not the zone-trusted kernel grade: a runner is an app
-    /// service, and an app service's steady-state session token is issued
-    /// by verify-hub (the runtime's keep-alive exchanges the boot-time
-    /// device-signed token within seconds), so a zone-trusted gate here
-    /// only ever passes during that boot window. Protection is ownership
-    /// instead: the first registrant's verified app id is stamped as the
-    /// owner and every later mutation must come from the same app
-    /// (zone-trusted kernel identities keep an admin override). Known v1
-    /// limit: a hostile *installed* app could squat an unregistered
-    /// target id — surfaced loudly to the real owner as a permission
-    /// error on register; per-user app instance identity can tighten this
-    /// later.
+    /// The runner surface (register/attach/renew/detach) authenticates App
+    /// identities, not the zone-trusted kernel grade. Ownership is the full
+    /// AppInstance identity `(owner_user_id, app_id)`, so installations of
+    /// the same App product for different users cannot mutate each other's
+    /// targets. Zone-trusted kernel identities retain an admin override.
     async fn require_target_owner(
         &self,
         request_ctx: &RequestContext,
@@ -181,13 +174,56 @@ impl TaskDispatcherService {
             .get_registration(target_id)
             .await?
             .ok_or_else(|| dispatch_err(DISPATCH_ERR_TARGET_NOT_REGISTERED, target_id))?;
-        if !request_ctx.zone_trusted && registration.owner_app_id != request_ctx.app_id {
+        if !request_ctx.zone_trusted
+            && (registration.owner_user_id != request_ctx.user_id
+                || registration.owner_app_id != request_ctx.app_id)
+        {
             return Err(RPCErrors::NoPermission(format!(
-                "{} must come from the registered owner app {}",
-                what, registration.owner_app_id
+                "{} must come from registered owner {}@{}",
+                what, registration.owner_app_id, registration.owner_user_id
             )));
         }
         Ok(registration)
+    }
+
+    /// A stable Agent DID is implemented by the AppInstance named in its
+    /// AgentServiceBinding. This check lets the currently bound runtime
+    /// recover a registration left by an obsolete AppId without allowing an
+    /// unrelated App to take it over.
+    async fn request_matches_agent_binding(
+        &self,
+        request_ctx: &RequestContext,
+        target_id: &str,
+    ) -> Result<bool> {
+        let Some(raw_app_instance_id) = request_ctx.app_instance_id.as_deref() else {
+            return Ok(false);
+        };
+        let app_instance_id = match raw_app_instance_id.parse::<AppInstanceId>() {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let agent_did = match DID::from_str(target_id) {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let agent_id = match AgentId::from_agent_did(&agent_did) {
+            Ok(value) => value,
+            Err(_) => return Ok(false),
+        };
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let key = agent_spec_key(&request_ctx.user_id, &agent_id);
+        let value = client.get(&key).await.map_err(|error| {
+            RPCErrors::ReasonError(format!("load AgentSpec {key} failed: {error}"))
+        })?;
+        let spec: AgentSpec = serde_json::from_str(&value.value).map_err(|error| {
+            RPCErrors::ReasonError(format!("decode AgentSpec {key} failed: {error}"))
+        })?;
+        spec.validate()
+            .map_err(|error| RPCErrors::ReasonError(format!("invalid AgentSpec {key}: {error}")))?;
+        Ok(spec.agent_did == agent_did
+            && spec.agent_id == agent_id
+            && spec.binding.references_runtime(&app_instance_id))
     }
 
     /// Deterministic per-lease push credential. Scoped to
@@ -1597,15 +1633,31 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 "a registration needs at least one runner function".into(),
             ));
         }
-        // First-writer-wins ownership: an existing registration may only be
-        // updated by its owner app (or a zone-trusted admin identity).
+        // Existing registrations are AppInstance-owned. A new AppInstance
+        // may replace stale ownership only when the AgentSpec explicitly
+        // binds this stable Agent DID to it.
         let existing = self.db.get_registration(&registration.target_id).await?;
+        let mut binding_authorized_takeover = false;
         if let Some(existing) = existing.as_ref() {
-            if !request_ctx.zone_trusted && existing.owner_app_id != request_ctx.app_id {
-                return Err(RPCErrors::NoPermission(format!(
-                    "target {} is owned by app {}",
-                    registration.target_id, existing.owner_app_id
-                )));
+            let same_owner = existing.owner_user_id == request_ctx.user_id
+                && existing.owner_app_id == request_ctx.app_id;
+            if !request_ctx.zone_trusted && !same_owner {
+                binding_authorized_takeover = self
+                    .request_matches_agent_binding(&request_ctx, &registration.target_id)
+                    .await
+                    .unwrap_or_else(|error| {
+                        warn!(
+                            "cannot authorize AgentServiceBinding takeover for {}: {}",
+                            registration.target_id, error
+                        );
+                        false
+                    });
+                if !binding_authorized_takeover {
+                    return Err(RPCErrors::NoPermission(format!(
+                        "target {} is owned by app instance {}@{}",
+                        registration.target_id, existing.owner_app_id, existing.owner_user_id
+                    )));
+                }
             }
         }
         // Owner identity comes from the verified token, never the payload.
@@ -1613,7 +1665,11 @@ impl TaskDispatcherHandler for TaskDispatcherService {
         // keeps the original owner — admin edits must not hijack the
         // target away from its runner.
         match existing {
-            Some(existing) if existing.owner_app_id != request_ctx.app_id => {
+            Some(existing)
+                if request_ctx.zone_trusted
+                    && (existing.owner_user_id != request_ctx.user_id
+                        || existing.owner_app_id != request_ctx.app_id) =>
+            {
                 registration.owner_user_id = existing.owner_user_id;
                 registration.owner_app_id = existing.owner_app_id;
             }
@@ -1621,6 +1677,12 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 registration.owner_user_id = request_ctx.user_id.clone();
                 registration.owner_app_id = request_ctx.app_id.clone();
             }
+        }
+        if binding_authorized_takeover {
+            info!(
+                "AgentServiceBinding transferred target {} to app instance {}@{}",
+                registration.target_id, registration.owner_app_id, registration.owner_user_id
+            );
         }
         let stored = self.db.upsert_registration(registration).await?;
         self.notify_evaluate();

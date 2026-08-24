@@ -107,11 +107,12 @@ p, app, obj://config/users/{user}/apps/{app}/settings,read|write,allow
 p, app, obj://config/users/{user}/apps/{app}/spec,read,allow
 p, app, obj://config/users/{user}/apps/{app}/info,read|write,allow
 p, app, obj://config/services/{service}/info,read,allow
+p, app, obj://config/services/{app}/instances/{node},write,allow
 
 # An App runtime is promoted to this role only when an AgentSpec binds to it.
 # AgentSpec is public runtime identity/configuration; the sibling private key
 # deliberately remains inaccessible to the runtime App principal.
-p, agent_runtime, obj://config/users/{user}/agents,list|query,allow
+p, agent_runtime, obj://config/users/{user}/agents,read|list|query,allow
 p, agent_runtime, obj://config/users/{user}/agents/{agent}/spec,read,allow
 
 p, agent, obj://config/boot/*, read,allow
@@ -565,11 +566,11 @@ g, bob, users
     }
 
     #[tokio::test]
-    async fn agent_can_report_own_service_instance() {
+    async fn app_can_report_own_service_instance() {
         let _guard = TEST_LOCK.lock().await;
 
         let config = build_current_rbac_config(Some(
-            "g, alice, admin\ng, bob, users\ng, app:buckyos_jarvis, agent",
+            "g, alice, admin\ng, bob, users\ng, app:jarvis.buckyos.bns.did, app",
         ));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
@@ -578,8 +579,8 @@ g, bob, users
         assert!(
             rbac::enforce(
                 "alice",
-                "app:buckyos_jarvis",
-                "obj://config/services/buckyos_jarvis/instances/ood1",
+                "app:jarvis.buckyos.bns.did",
+                "obj://config/services/jarvis.buckyos.bns.did/instances/ood1",
                 "write",
                 None,
             )
@@ -588,8 +589,8 @@ g, bob, users
         assert!(
             rbac::enforce(
                 "bob",
-                "app:buckyos_jarvis",
-                "obj://config/services/buckyos_jarvis/instances/ood1",
+                "app:jarvis.buckyos.bns.did",
+                "obj://config/services/jarvis.buckyos.bns.did/instances/ood1",
                 "write",
                 None,
             )
@@ -598,7 +599,7 @@ g, bob, users
         assert!(
             !rbac::enforce(
                 "alice",
-                "app:buckyos_jarvis",
+                "app:jarvis.buckyos.bns.did",
                 "obj://config/services/other-agent/instances/ood1",
                 "write",
                 None,
@@ -608,8 +609,8 @@ g, bob, users
         assert!(
             !rbac::enforce(
                 "alice",
-                "app:buckyos_jarvis",
-                "obj://config/services/buckyos_jarvis/settings",
+                "app:jarvis.buckyos.bns.did",
+                "obj://config/services/jarvis.buckyos.bns.did/settings",
                 "write",
                 None,
             )
@@ -634,7 +635,7 @@ g, bob, users
                 "alice",
                 runtime,
                 "obj://config/users/alice/agents",
-                "list",
+                "read",
                 None,
             )
             .await

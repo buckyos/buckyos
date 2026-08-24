@@ -829,15 +829,15 @@ async fn app_identity_runs_the_full_runner_lease_lifecycle() {
         )
         .await
         .expect("app identity registers its own target");
-    // Re-register (process restart) under the same app id also passes,
-    // even if the first registration was stamped with a different user
-    // (the boot-window device identity).
+    // Re-register (process restart) under the same AppInstance also passes.
+    // AppService runtime exchanges its boot assertion before reaching this
+    // API, so dispatcher ownership never needs the device identity.
     env.dispatcher
         .handle_register_target(
             RegisterTargetReq {
                 registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
             },
-            user_ctx("ood1", "buckyos-jarvis"),
+            user_ctx("devtest", "buckyos-jarvis"),
         )
         .await
         .expect("same app re-registers across identity refresh");
@@ -923,6 +923,17 @@ async fn foreign_app_cannot_touch_another_apps_target() {
         .await
         .expect_err("foreign app must not overwrite a registration");
     assert!(matches!(overwrite, RPCErrors::NoPermission(_)));
+    let other_installation = env
+        .dispatcher
+        .handle_register_target(
+            RegisterTargetReq {
+                registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
+            },
+            user_ctx("mallory", "buckyos-jarvis"),
+        )
+        .await
+        .expect_err("the same App installed by another owner must not overwrite the target");
+    assert!(matches!(other_installation, RPCErrors::NoPermission(_)));
     let hijack = env
         .dispatcher
         .handle_attach_instance(
