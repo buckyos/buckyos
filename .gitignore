@@ -73,6 +73,9 @@ src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
 
 src/apps/sys_test/dist/
+src/apps/sys_test/dapp_dist/
+src/rootfs/data/cache/*.pikg
+src/rootfs/local/did_docs/buckyos-systest.buckyos.bns.did.doc.json
 old/*
 src/frame/desktop/dist/favicon.svg
 aicc_remote_runner.toml

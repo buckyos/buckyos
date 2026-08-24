@@ -17,14 +17,81 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 /// Task input/progress/result、InstallPlan 与 install_record 的当前持久格式版本。
 pub const APP_INSTALL_SCHEMA_VERSION: u32 = 4;
 
+/// `system/install_settings.pre_install_apps` 的当前配置版本。
+pub const PRE_INSTALL_APP_SCHEMA_VERSION: u32 = 1;
+
 /// Opaque, unguessable staging handle prefix. The handle never embeds a path
 /// or digest and is resolved only through the Control Panel staging store.
 pub const PIKG_STAGING_HANDLE_PREFIX: &str = "pikg-stage-";
+
+/// SystemConfig 中的预装 App 配置。这里只保存 rootfs seed，不保存运行时
+/// inspection 产生的 ObjectId、digest、target snapshot 或 plan fingerprint。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemInstallSettings {
+    pub pre_install_apps: HashMap<String, PreInstallAppConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreInstallAppConfig {
+    pub schema_version: u32,
+    pub pikg_path: String,
+    pub install_plan: PreInstallPlanSeed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreInstallPlanSeed {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<InstallTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_params: Option<InstallParams>,
+}
+
+impl PreInstallAppConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != PRE_INSTALL_APP_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported pre-install app schema version {}",
+                self.schema_version
+            ));
+        }
+        validate_preinstall_pikg_path(&self.pikg_path)
+    }
+}
+
+/// Validate the portable, `$BUCKYOS_ROOT`-relative representation before any
+/// host filesystem lookup. Canonical containment is enforced by Control Panel.
+pub fn validate_preinstall_pikg_path(raw: &str) -> Result<(), String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("pre-install pikg_path is empty".to_string());
+    }
+    if raw.contains('\\') || raw.contains('\0') {
+        return Err("pre-install pikg_path must use portable `/` separators".to_string());
+    }
+    let path = Path::new(raw);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("pre-install pikg_path must be a safe relative path".to_string());
+    }
+    if !raw.starts_with("data/cache/") || !raw.ends_with(".pikg") {
+        return Err("pre-install pikg_path must name a .pikg below data/cache".to_string());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1793,6 +1860,64 @@ mod tests {
         assert!(state.is_stage_completed(InstallStage::Resolve));
         assert!(!state.is_stage_completed(InstallStage::Inspect));
         assert_eq!(state.stage, Some(InstallStage::Inspect));
+    }
+
+    #[test]
+    fn preinstall_config_accepts_seed_and_rejects_legacy_or_unknown_fields() {
+        let value = json!({
+            "pre_install_apps": {
+                "demo.example.web.did": {
+                    "schema_version": 1,
+                    "pikg_path": "data/cache/demo.example.web.did-1.0.0.pikg",
+                    "install_plan": {}
+                }
+            }
+        });
+        let settings: SystemInstallSettings = serde_json::from_value(value).unwrap();
+        settings
+            .pre_install_apps
+            .get("demo.example.web.did")
+            .unwrap()
+            .validate()
+            .unwrap();
+
+        for invalid in [
+            json!({
+                "pre_install_apps": {
+                    "demo.example.web.did": {
+                        "schema_version": 1,
+                        "pikg_path": "data/cache/demo.pikg",
+                        "install_plan": {},
+                        "app_doc": {}
+                    }
+                }
+            }),
+            json!({
+                "pre_install_apps": {
+                    "demo.example.web.did": {
+                        "app_doc": {},
+                        "service_config": {}
+                    }
+                }
+            }),
+        ] {
+            assert!(serde_json::from_value::<SystemInstallSettings>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn preinstall_path_rejects_absolute_traversal_and_non_cache_paths() {
+        for invalid in [
+            "",
+            "/data/cache/demo.pikg",
+            "data/cache/../demo.pikg",
+            "data\\cache\\demo.pikg",
+            "etc/demo.pikg",
+            "data/cache/demo.zip",
+        ] {
+            assert!(validate_preinstall_pikg_path(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_preinstall_pikg_path("data/cache/demo.pikg").is_ok());
     }
 
     #[test]

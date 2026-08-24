@@ -12,6 +12,7 @@ mod app_staging;
 mod dashboard;
 mod ndn_download;
 mod pikg;
+mod pre_install_reconciler;
 mod sys_auth_backend;
 mod sys_log_mgr;
 mod ui_session_mgr;
@@ -1190,6 +1191,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
     }
 
     let _ = runner.start();
+    pre_install_reconciler::PreInstallReconciler::new(control_panel_server.clone()).start();
     info!(
         "control-panel service started at port {}",
         CONTROL_PANEL_SERVICE_PORT

@@ -162,7 +162,8 @@ AI provider 的运行时主配置仍是 `services/aicc/settings`；`services/con
 
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
-| `system/install_settings` | 安装期 seed 配置。rootfs boot template 中包含预装 App 输入。 | rootfs boot template / scheduler 初始化导入 | scheduler 首次初始化时只生成 bootstrap InstallPlan/staging，不直接预填普通 AppSpec。 |
+| `system/install_settings` | 安装期 seed 配置。`pre_install_apps` 每项只包含严格版本化的 `pikg_path` 和 `PreInstallPlanSeed`；raw path 是 `$BUCKYOS_ROOT` 相对路径。 | rootfs boot template / scheduler 初始化原样导入 | Control Panel 登录且 InstallRunner 启动后消费；canonicalize 到 `data/cache`、复制到 immutable staging 并生成标准安装任务。Scheduler 不打开 PIKG，也不为普通预装 App 生成 execution record。 |
+| `system/control_panel/pre_install_apps/<app_id>` | 预装 seed 尚未成功创建标准 Task 时的最小观测状态，记录 path、digest、task/fingerprint 或 structured error。Task 创建后 TaskManager 是唯一 Stage 真相源。 | Control Panel PreInstallReconciler | Control Panel 诊断和后台低频重试；Scheduler 不读取。 |
 | `system/app_registry` | 严格 versioned `AppRegistry`，保存稳定 AppName、AppHostName 和按 AppInstance 分配的 AppIndex。 | scheduler InstallPlan/shortcut executor（唯一 writer，完整 JSON CAS） | scheduler 校验所有 AppSpec 投影并分配默认 hostname/端口索引。 |
 | `system/scheduler/install_plan_executions/<execution_key>` | `InstallPlanExecutionRecord`，保存 claim、commit point、registry/spec revision、错误和幂等结果。 | scheduler | submit/status/cancel/retry、重启恢复和 CAS 冲突处理。 |
 | `system/system_pkgs` | 系统包信息。当前初始化为空对象。 | scheduler 初始化 | 包管理保留路径。 |
@@ -181,7 +182,7 @@ scheduler 首次启动时，如果 `boot/config` 不存在，会合并 rootfs bo
 1. 写入 Zone 身份：`boot/config`。
 2. 写入管理员、OOD、内置 Agent：`users/*`、`devices/*`、`agents/*`。
 3. 写入系统服务 spec 和 settings：`services/*/spec`、`services/*/settings`。
-4. 创建空 `system/app_registry`，根据预装输入 staging bootstrap InstallPlan；只有 scheduler claim/execute 后才创建普通 AppSpec。
+4. 创建空 `system/app_registry`，原样保留预装 seed；此时不读取 PIKG，不创建普通 AppSpec、InstallRecord、安装 Task 或 scheduler execution record。Control Panel 启动后才把 seed 转换为标准 Installer Task，最终完整 InstallPlan 仍由 scheduler transaction 创建 Registry/AppSpec/InstallRecord。
 5. 写入初始 node target：`nodes/<ood>/config`、`nodes/<ood>/gateway_config`、`nodes/<ood>/gateway_info`。
 6. 写入安全和调度基础数据：`system/rbac/policy`、`security/verify-hub/key`、`system/system_pkgs`。
 

@@ -185,18 +185,6 @@ pub struct StartConfigSummary {
     pub jarvis_msg_tunnel_config: JarvisMsgTunnelConfigSummary,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct SystemInstallSettings {
-    pub pre_install_apps: HashMap<String, PreInstallAppConfig>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PreInstallAppConfig {
-    pub app_doc: AppDoc,
-    #[serde(flatten)]
-    pub install_config: ServiceSpecConfig,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BootstrapAgentProvision {
@@ -307,13 +295,7 @@ impl SystemConfigBuilder {
         let agent_doc_json = serde_json::to_value(&jarvis_doc)?;
         let (agent_doc_object_id, _) = build_named_object_by_json("agentdoc", &agent_doc_json);
         let runtime_spec = build_default_jarvis_agent_spec(config)?;
-        self.stage_bootstrap_install_plan(
-            config,
-            &PreInstallAppConfig {
-                app_doc: runtime_spec.app_doc.clone(),
-                install_config: runtime_spec.spec_config.clone(),
-            },
-        )?;
+        self.stage_bootstrap_agent_runtime_plan(config, &runtime_spec)?;
         let agent_spec = AgentSpec {
             schema_version: AGENT_SPEC_SCHEMA_VERSION,
             agent_id: agent_id.clone(),
@@ -349,36 +331,27 @@ impl SystemConfigBuilder {
         Ok(self)
     }
 
-    pub async fn add_default_apps(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
+    pub async fn add_default_apps(&mut self, _config: &StartConfigSummary) -> Result<&mut Self> {
         let install_settings = self.entries.get("system/install_settings");
         if install_settings.is_none() {
             return Err(anyhow!("system/install_settings not found"));
         }
-        let install_settings: SystemInstallSettings =
+        let install_settings: buckyos_api::SystemInstallSettings =
             serde_json::from_str(install_settings.unwrap())?;
-        for (app_id, pre_install_app) in install_settings.pre_install_apps.iter() {
-            let app_doc = pre_install_app.app_doc.clone();
-            let canonical_app_id =
-                AppId::from_app_did(app_doc.app_did()).map_err(|error| anyhow!(error))?;
-            if canonical_app_id.as_str() != app_id {
-                return Err(anyhow!(
-                    "pre_install_apps[{}] does not match AppDoc DID-derived AppId {}",
-                    app_id,
-                    canonical_app_id
-                ));
-            }
-            self.stage_bootstrap_install_plan(config, pre_install_app)?;
-        }
+        let _ = install_settings;
 
         Ok(self)
     }
 
-    fn stage_bootstrap_install_plan(
+    /// Jarvis still needs its runtime before the Agent binding can be committed.
+    /// Keep that legacy bootstrap isolated from ordinary pre-install App config.
+    fn stage_bootstrap_agent_runtime_plan(
         &mut self,
         config: &StartConfigSummary,
-        pre_install_app: &PreInstallAppConfig,
+        runtime_spec: &AppServiceSpec,
     ) -> Result<()> {
-        let app_doc = pre_install_app.app_doc.clone();
+        let app_doc = runtime_spec.app_doc.clone();
+        let install_config = &runtime_spec.spec_config;
         app_doc.validate().map_err(|error| anyhow!(error))?;
         let app_instance_id = AppInstanceId::from_app_did(app_doc.app_did(), &config.user_name)
             .map_err(|error| anyhow!(error))?;
@@ -454,14 +427,11 @@ impl SystemConfigBuilder {
         };
         let install_params = InstallParams {
             permissions: app_doc.permissions.clone(),
-            data_mount_points: pre_install_app.install_config.data_mount_point.clone(),
-            local_cache_mount_points: pre_install_app
-                .install_config
-                .local_cache_mount_point
-                .clone(),
-            external_mount_points: pre_install_app.install_config.external_mount_point.clone(),
-            bash_envs: pre_install_app.install_config.bash_envs.clone(),
-            res_pool_id: Some(pre_install_app.install_config.res_pool_id.clone()),
+            data_mount_points: install_config.data_mount_point.clone(),
+            local_cache_mount_points: install_config.local_cache_mount_point.clone(),
+            external_mount_points: install_config.external_mount_point.clone(),
+            bash_envs: install_config.bash_envs.clone(),
+            res_pool_id: Some(install_config.res_pool_id.clone()),
             ..Default::default()
         };
         let fingerprint = InstallPlan::compute_fingerprint(
@@ -475,7 +445,7 @@ impl SystemConfigBuilder {
             &resolution,
             &target,
             &install_params,
-            &pre_install_app.install_config,
+            install_config,
             &selected_packages,
             &[],
         );
@@ -493,7 +463,7 @@ impl SystemConfigBuilder {
             selected_packages,
             required_contents: Vec::new(),
             install_params,
-            service_spec_config: pre_install_app.install_config.clone(),
+            service_spec_config: install_config.clone(),
             plan_fingerprint: fingerprint,
             created_at: buckyos_kit::buckyos_get_unix_timestamp(),
         };
@@ -1459,7 +1429,6 @@ impl StartConfigSummary {
 #[cfg(test)]
 mod beta22_tests {
     use super::*;
-    use ndn_lib::ObjId;
 
     fn start_config() -> StartConfigSummary {
         StartConfigSummary::from_value(&json!({
@@ -1494,28 +1463,6 @@ mod beta22_tests {
         .unwrap()
     }
 
-    fn preinstall_app() -> PreInstallAppConfig {
-        let owner = DID::from_str("did:web:publisher.example").unwrap();
-        let app_did = DID::from_str("did:web:app.example").unwrap();
-        let mut package = SubPkgDesc::new("all.script.app.example#1.0.0");
-        package.pkg_objid = Some(ObjId::new_by_raw("pkg".to_string(), vec![7; 32]));
-        let app_doc = AppDoc::builder(
-            AppType::AppService,
-            "development-only-name",
-            "1.0.0",
-            "did:web:publisher.example",
-            &owner,
-        )
-        .app_did(app_did)
-        .script_pkg(package)
-        .build()
-        .unwrap();
-        PreInstallAppConfig {
-            app_doc,
-            install_config: ServiceSpecConfig::default(),
-        }
-    }
-
     #[tokio::test]
     async fn generated_kernel_service_uses_system_service_package_id() {
         let spec = build_kernel_service_spec(
@@ -1532,13 +1479,17 @@ mod beta22_tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_stages_install_plan_without_app_spec_or_registry_allocation() {
+    async fn bootstrap_preserves_preinstall_seed_without_execution_or_registry_allocation() {
         let config = start_config();
-        let preinstall = preinstall_app();
-        let app_id = AppId::from_app_did(preinstall.app_doc.app_did()).unwrap();
+        let app_id = AppId::parse("app.buckyos.bns.did").unwrap();
+        let preinstall = buckyos_api::PreInstallAppConfig {
+            schema_version: buckyos_api::PRE_INSTALL_APP_SCHEMA_VERSION,
+            pikg_path: "data/cache/app.buckyos.bns.did-1.0.0.pikg".to_string(),
+            install_plan: buckyos_api::PreInstallPlanSeed::default(),
+        };
         let mut builder = SystemConfigBuilder::new(HashMap::from([(
             "system/install_settings".to_string(),
-            serde_json::to_string(&SystemInstallSettings {
+            serde_json::to_string(&buckyos_api::SystemInstallSettings {
                 pre_install_apps: HashMap::from([(app_id.to_string(), preinstall)]),
             })
             .unwrap(),
@@ -1558,10 +1509,10 @@ mod beta22_tests {
             .iter()
             .filter(|(key, _)| key.starts_with("system/scheduler/install_plan_executions/"))
             .collect::<Vec<_>>();
-        assert_eq!(records.len(), 1);
-        let record: InstallPlanExecutionRecord = serde_json::from_str(records[0].1).unwrap();
-        assert_eq!(record.state, InstallPlanExecutionState::Pending);
-        assert!(record.plan.fingerprint_is_valid());
+        assert!(records.is_empty());
+        let persisted: buckyos_api::SystemInstallSettings =
+            serde_json::from_str(builder.entries.get("system/install_settings").unwrap()).unwrap();
+        assert_eq!(persisted.pre_install_apps.len(), 1);
     }
 
     #[tokio::test]

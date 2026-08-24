@@ -71,7 +71,7 @@ Deno.test('Desktop built-in apps remain available without AppSpecs', () => {
   assertEquals(definitions.map((app) => app.id), expectedIds, 'Desktop built-in ids')
 })
 
-Deno.test('buckyos_systest keeps its canonical instance id but uses the short Systest catalog identity', () => {
+Deno.test('buckyos-systest keeps its canonical instance id but uses the short Systest catalog identity', () => {
   const definitions = buildAuthorizedAppDefinitions(
     [systestCatalogEntry],
     [
@@ -80,7 +80,7 @@ Deno.test('buckyos_systest keeps its canonical instance id but uses the short Sy
         app_instance_id: 'buckyos-systest.buckyos.bns.did@devtest' as AppSummary['app_instance_id'],
         app_did: 'did:bns:buckyos-systest.buckyos',
         owner_user_id: 'devtest',
-        show_name: 'buckyos_systest@devtest',
+        show_name: 'BuckyOS System Test',
         web_hosts: ['systest'],
       }),
     ],

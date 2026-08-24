@@ -128,51 +128,31 @@ impl PikgStagingStore {
         self.gc_locked(buckyos_get_unix_timestamp()).await
     }
 
-    pub async fn finalize_named_object(
+    async fn register_staged_content(
         &self,
-        source: &ObjId,
+        digest: String,
+        path: PathBuf,
+        size: u64,
         owner_user_id: &str,
         owner_app_id: &str,
         zone_did: &DID,
         purpose: PikgStagingPurpose,
     ) -> Result<PikgStagingMetadata, RPCErrors> {
-        if !source.is_chunk() {
-            return Err(RPCErrors::ParseRequestError(
-                "staging source must be an uploaded chunk object".to_string(),
-            ));
-        }
-        self.ensure_roots().await?;
-        let runtime = get_buckyos_api_runtime()?;
-        let named_store = runtime.get_named_store().await?;
-        let chunk_id = ChunkId::from_obj_id(source);
-        let (mut reader, _) = named_store
-            .open_chunk_reader(&chunk_id, 0)
-            .await
-            .map_err(|error| Self::error(format!("uploaded staging chunk unavailable: {error}")))?;
-        let tmp = self
-            .root
-            .join(format!(".finalize-{}.tmp", uuid::Uuid::new_v4().simple()));
-        let mut file = tokio::fs::File::create(&tmp)
-            .await
-            .map_err(|error| Self::error(format!("create staging temp file failed: {error}")))?;
-        tokio::io::copy(&mut reader, &mut file)
-            .await
-            .map_err(|error| Self::error(format!("copy staging upload failed: {error}")))?;
-        file.flush().await.ok();
-        drop(file);
-        let staged = PikgReader::stage_pikg_file(&tmp, &self.root).await;
-        let _ = tokio::fs::remove_file(&tmp).await;
-        let (digest, path) = staged
-            .map_err(|error| Self::error(format!("finalize pikg validation failed: {error}")))?;
-        let size = tokio::fs::metadata(&path)
-            .await
-            .map_err(|error| Self::error(format!("read staged pikg size failed: {error}")))?
-            .len();
-
         let _guard = self.lock.lock().await;
         let now = buckyos_get_unix_timestamp();
         self.gc_locked(now).await?;
         let all = self.list_metadata().await?;
+        if let Some(existing) = all.iter().find(|item| {
+            item.owner_user_id == owner_user_id
+                && item.owner_app_id == owner_app_id
+                && item.zone_did == *zone_did
+                && item.pikg_digest == digest
+                && item.purpose == purpose
+                && (item.expires_at > now || !item.leases.is_empty())
+        }) {
+            return Ok(existing.clone());
+        }
+
         let principal_content = all
             .iter()
             .filter(|item| {
@@ -238,6 +218,91 @@ impl PikgStagingStore {
         };
         self.write_metadata(&metadata).await?;
         Ok(metadata)
+    }
+
+    pub(crate) async fn stage_preinstall_file(
+        &self,
+        source: &Path,
+        owner_user_id: &str,
+        owner_app_id: &str,
+        zone_did: &DID,
+    ) -> Result<PikgStagingMetadata, RPCErrors> {
+        self.ensure_roots().await?;
+        let (digest, path) = PikgReader::stage_pikg_file(source, &self.root)
+            .await
+            .map_err(|error| Self::error(format!("stage pre-install pikg failed: {error}")))?;
+        PikgReader::open(&path, Some(&digest))
+            .await
+            .map_err(|error| {
+                Self::error(format!("open staged pre-install pikg failed: {error}"))
+            })?;
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map_err(|error| Self::error(format!("read staged pikg size failed: {error}")))?
+            .len();
+        self.register_staged_content(
+            digest,
+            path,
+            size,
+            owner_user_id,
+            owner_app_id,
+            zone_did,
+            PikgStagingPurpose::Install,
+        )
+        .await
+    }
+
+    pub async fn finalize_named_object(
+        &self,
+        source: &ObjId,
+        owner_user_id: &str,
+        owner_app_id: &str,
+        zone_did: &DID,
+        purpose: PikgStagingPurpose,
+    ) -> Result<PikgStagingMetadata, RPCErrors> {
+        if !source.is_chunk() {
+            return Err(RPCErrors::ParseRequestError(
+                "staging source must be an uploaded chunk object".to_string(),
+            ));
+        }
+        self.ensure_roots().await?;
+        let runtime = get_buckyos_api_runtime()?;
+        let named_store = runtime.get_named_store().await?;
+        let chunk_id = ChunkId::from_obj_id(source);
+        let (mut reader, _) = named_store
+            .open_chunk_reader(&chunk_id, 0)
+            .await
+            .map_err(|error| Self::error(format!("uploaded staging chunk unavailable: {error}")))?;
+        let tmp = self
+            .root
+            .join(format!(".finalize-{}.tmp", uuid::Uuid::new_v4().simple()));
+        let mut file = tokio::fs::File::create(&tmp)
+            .await
+            .map_err(|error| Self::error(format!("create staging temp file failed: {error}")))?;
+        tokio::io::copy(&mut reader, &mut file)
+            .await
+            .map_err(|error| Self::error(format!("copy staging upload failed: {error}")))?;
+        file.flush().await.ok();
+        drop(file);
+        let staged = PikgReader::stage_pikg_file(&tmp, &self.root).await;
+        let _ = tokio::fs::remove_file(&tmp).await;
+        let (digest, path) = staged
+            .map_err(|error| Self::error(format!("finalize pikg validation failed: {error}")))?;
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map_err(|error| Self::error(format!("read staged pikg size failed: {error}")))?
+            .len();
+
+        self.register_staged_content(
+            digest,
+            path,
+            size,
+            owner_user_id,
+            owner_app_id,
+            zone_did,
+            purpose,
+        )
+        .await
     }
 
     pub async fn resolve(

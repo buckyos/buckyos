@@ -1944,6 +1944,15 @@ impl AppInstaller {
 
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCRequest, RPCResponse, RPCResult};
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreInstallSubmitOutcome {
+    pub action: String,
+    pub task_id: Option<String>,
+    pub app_instance_id: buckyos_api::AppInstanceId,
+    pub plan_fingerprint: String,
+}
+
 impl ControlPanelServer {
     pub(crate) fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
         Self::param_str(req, "owner_user_id").unwrap_or_else(|| principal.username.clone())
@@ -3186,6 +3195,298 @@ impl ControlPanelServer {
         }
     }
 
+    fn preinstall_intent_id(
+        owner_user_id: &str,
+        app_id: &buckyos_api::AppId,
+        pikg_digest: &str,
+        seed: &buckyos_api::PreInstallPlanSeed,
+    ) -> Result<String, RPCErrors> {
+        let material = serde_json::json!({
+            "kind": "preinstall",
+            "owner_user_id": owner_user_id,
+            "app_id": app_id,
+            "pikg_digest": pikg_digest,
+            "install_plan": seed,
+        });
+        let (object_id, _) = build_named_object_by_json("preseed", &material);
+        let object_id = object_id.to_string();
+        let digest = object_id
+            .split_once(':')
+            .map(|(_, digest)| digest)
+            .ok_or_else(|| {
+                RPCErrors::ReasonError("pre-install intent ObjectId is malformed".to_string())
+            })?;
+        Ok(format!("t-{}", &digest[..32]))
+    }
+
+    fn preinstall_idempotency_key(
+        owner_user_id: &str,
+        app_id: &buckyos_api::AppId,
+        pikg_digest: &str,
+        plan_fingerprint: &str,
+    ) -> String {
+        let material = serde_json::json!({
+            "kind": "preinstall",
+            "owner_user_id": owner_user_id,
+            "app_id": app_id,
+            "pikg_digest": pikg_digest,
+            "plan_fingerprint": plan_fingerprint,
+        });
+        let (object_id, _) = build_named_object_by_json("preidem", &material);
+        format!("preinstall:{}", object_id.to_string().replace(':', "-"))
+    }
+
+    fn preinstall_replay_matches(
+        task: &buckyos_api::Task,
+        owner_user_id: &str,
+        plan_fingerprint: &str,
+        idempotency_key: &str,
+    ) -> Result<bool, RPCErrors> {
+        let request = match task.schema_id.as_str() {
+            APP_INSTALL_TASK_SCHEMA_ID => {
+                serde_json::from_value::<buckyos_api::AppInstallTaskData>(task.input.clone())
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!("invalid install task input: {error}"))
+                    })?
+                    .request
+            }
+            APP_UPDATE_TASK_SCHEMA_ID => {
+                let data =
+                    serde_json::from_value::<buckyos_api::AppUpdateTaskData>(task.input.clone())
+                        .map_err(|error| {
+                            RPCErrors::ReasonError(format!("invalid update task input: {error}"))
+                        })?;
+                buckyos_api::AppInstallTaskRequest {
+                    source: data.request.source,
+                    creator_user_id: data.request.creator_user_id,
+                    creator_app_id: data.request.creator_app_id,
+                    owner_user_id: data.request.owner_user_id,
+                    idempotency_key: data.request.idempotency_key,
+                    submitted_plan: data.request.submitted_plan,
+                    approved_plan_fingerprint: data.request.approved_plan_fingerprint,
+                    policy: data.request.policy,
+                    options: data.request.options,
+                }
+            }
+            _ => return Ok(false),
+        };
+        Ok(request.creator_user_id == owner_user_id
+            && request.creator_app_id == buckyos_api::CONTROL_PANEL_SERVICE_NAME
+            && request.owner_user_id == owner_user_id
+            && request.idempotency_key == idempotency_key
+            && request.policy == InstallPolicy::SystemInternal
+            && request.approved_plan_fingerprint.as_deref() == Some(plan_fingerprint)
+            && request.submitted_plan.as_ref().is_some_and(|plan| {
+                plan.fingerprint_is_valid() && plan.plan_fingerprint == plan_fingerprint
+            }))
+    }
+
+    /// Internal pre-install entry. It uses the same inspect, action matrix,
+    /// mutation ownership, TaskManager persistence and runner path as apps.submit.
+    pub(crate) async fn submit_preinstall(
+        &self,
+        owner_user_id: &str,
+        app_id: &buckyos_api::AppId,
+        pikg_digest: &str,
+        pikg_app_doc_object_id: &ObjId,
+        pikg_app_doc: &buckyos_api::AppDoc,
+        staging_handle: &str,
+        seed: &buckyos_api::PreInstallPlanSeed,
+    ) -> Result<PreInstallSubmitOutcome, RPCErrors> {
+        let canonical_app_id = buckyos_api::AppId::from_app_did(pikg_app_doc.app_did())
+            .map_err(RPCErrors::ReasonError)?;
+        let expected_owner = pikg_app_doc.app_did().upper_did().ok_or_else(|| {
+            RPCErrors::ReasonError("pre-install AppDID has no structural owner".to_string())
+        })?;
+        let app_doc_value = serde_json::to_value(pikg_app_doc).map_err(|error| {
+            RPCErrors::ReasonError(format!("serialize pre-install AppDoc failed: {error}"))
+        })?;
+        let (canonical_app_doc_object_id, _) =
+            build_named_object_by_json(buckyos_api::OBJ_TYPE_APP_DOC, &app_doc_value);
+        if &canonical_app_id != app_id
+            || &canonical_app_doc_object_id != pikg_app_doc_object_id
+            || pikg_app_doc.owner != expected_owner
+        {
+            return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                buckyos_api::InstallStage::Resolve,
+                buckyos_api::InstallErrorCode::VerificationFailed,
+                false,
+                "pre-install AppDID, structural owner or canonical AppDoc ObjectId is inconsistent",
+            )));
+        }
+        let name_client = name_client::get_name_client().ok_or_else(|| {
+            RPCErrors::ReasonError("name client unavailable for pre-install authority".to_string())
+        })?;
+        name_client.set_local_authority_override(
+            pikg_app_doc.app_did().clone(),
+            name_client::DidDocType::Custom(
+                crate::app_install_resolver::APP_DID_DOC_TYPE.to_string(),
+            ),
+            name_lib::EncodedDocument::JsonLd(app_doc_value),
+            "rootfs-preinstall",
+            None,
+        );
+        let principal = RpcAuthPrincipal {
+            username: owner_user_id.to_string(),
+            owner_user_id: owner_user_id.to_string(),
+            authenticated_app_id: buckyos_api::CONTROL_PANEL_SERVICE_NAME.to_string(),
+            user_type: crate::UserType::Admin,
+            owner_did: String::new(),
+            is_user_session: false,
+            is_control_panel_session: true,
+        };
+        let mut options = serde_json::json!({
+            "policy": "SYSTEM_INTERNAL",
+            "auto_confirm": true,
+        });
+        if let Some(target) = seed.target.as_ref() {
+            options["target"] = serde_json::to_value(target).map_err(|error| {
+                RPCErrors::ReasonError(format!("serialize pre-install target failed: {error}"))
+            })?;
+        }
+        if let Some(install_params) = seed.install_params.as_ref() {
+            options["install_params"] = serde_json::to_value(install_params).map_err(|error| {
+                RPCErrors::ReasonError(format!("serialize pre-install params failed: {error}"))
+            })?;
+        }
+        let source = buckyos_api::InstallSource::local_pikg(staging_handle.to_string());
+        let mut request = RPCRequest::new(
+            "apps.submit",
+            serde_json::json!({
+                "source": source,
+                "owner_user_id": owner_user_id,
+                "options": options,
+            }),
+        );
+        let planning_task_id =
+            Self::preinstall_intent_id(owner_user_id, app_id, pikg_digest, seed)?;
+        let mut inspection = self
+            .inspect_from_rpc(
+                &request,
+                &principal,
+                buckyos_api::TASK_DATA_TYPE_APP_INSTALL,
+                Some(planning_task_id.clone()),
+            )
+            .await?;
+        let installed = Self::find_spec_for_inspection(&inspection).await?;
+        if installed.is_some() {
+            inspection = self
+                .inspect_from_rpc(
+                    &request,
+                    &principal,
+                    buckyos_api::TASK_DATA_TYPE_APP_UPDATE,
+                    Some(planning_task_id),
+                )
+                .await?;
+        }
+        if inspection.plan.app_instance_id.app_id() != app_id
+            || inspection.plan.owner_user_id != owner_user_id
+        {
+            return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                buckyos_api::InstallStage::Inspect,
+                buckyos_api::InstallErrorCode::VerificationFailed,
+                false,
+                "pre-install map key, AppDID-derived AppId or owner scope does not match",
+            )));
+        }
+        match &inspection.plan.source_identity {
+            buckyos_api::InstallSourceIdentity::Pikg {
+                app_doc_object_id,
+                pikg_digest: inspected_digest,
+            } if app_doc_object_id == pikg_app_doc_object_id
+                && inspection.plan.app.object_id == *pikg_app_doc_object_id
+                && inspected_digest == pikg_digest => {}
+            _ => {
+                return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                    buckyos_api::InstallStage::Inspect,
+                    buckyos_api::InstallErrorCode::VerificationFailed,
+                    false,
+                    "pre-install PIKG digest or AppDoc identity does not bind the final plan",
+                )))
+            }
+        }
+        if inspection.plan.selected_packages.is_empty()
+            || inspection.plan.required_contents.is_empty()
+        {
+            return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                buckyos_api::InstallStage::Inspect,
+                buckyos_api::InstallErrorCode::InvalidPackage,
+                false,
+                "pre-install plan has no selected packages or required contents",
+            )));
+        }
+
+        if installed
+            .as_ref()
+            .is_some_and(|spec| spec.deployment.app_doc_object_id == inspection.plan.app.object_id)
+        {
+            return Ok(PreInstallSubmitOutcome {
+                action: "satisfied".to_string(),
+                task_id: None,
+                app_instance_id: inspection.plan.app_instance_id,
+                plan_fingerprint: inspection.plan.plan_fingerprint,
+            });
+        }
+
+        let idempotency_key = Self::preinstall_idempotency_key(
+            owner_user_id,
+            app_id,
+            pikg_digest,
+            inspection.plan.plan_fingerprint.as_str(),
+        );
+        if let Some(task) = self
+            .find_app_submit_replay(&principal, idempotency_key.as_str())
+            .await?
+        {
+            if !Self::preinstall_replay_matches(
+                &task,
+                owner_user_id,
+                inspection.plan.plan_fingerprint.as_str(),
+                idempotency_key.as_str(),
+            )? {
+                return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                    buckyos_api::InstallStage::Inspect,
+                    buckyos_api::InstallErrorCode::IdempotencyConflict,
+                    false,
+                    "pre-install idempotency key belongs to different immutable input",
+                )));
+            }
+            self.install_runner.spawn_run(task.task_id.clone());
+            return Ok(PreInstallSubmitOutcome {
+                action: "replay".to_string(),
+                task_id: Some(task.task_id),
+                app_instance_id: inspection.plan.app_instance_id,
+                plan_fingerprint: inspection.plan.plan_fingerprint,
+            });
+        }
+
+        request.params["idempotency_key"] = Value::String(idempotency_key.clone());
+        request.params["plan"] = serde_json::to_value(&inspection.plan).map_err(|error| {
+            RPCErrors::ReasonError(format!("serialize pre-install plan failed: {error}"))
+        })?;
+        request.params["approved_plan_fingerprint"] =
+            Value::String(inspection.plan.plan_fingerprint.clone());
+        self.handle_apps_submit(request, Some(&principal)).await?;
+        let task = self
+            .find_app_submit_replay(&principal, idempotency_key.as_str())
+            .await?
+            .ok_or_else(|| {
+                RPCErrors::ReasonError(
+                    "apps.submit succeeded without a persisted install task".to_string(),
+                )
+            })?;
+        Ok(PreInstallSubmitOutcome {
+            action: if installed.is_some() {
+                "upgrade".to_string()
+            } else {
+                "fresh_install".to_string()
+            },
+            task_id: Some(task.task_id),
+            app_instance_id: inspection.plan.app_instance_id,
+            plan_fingerprint: inspection.plan.plan_fingerprint,
+        })
+    }
+
     /// Authoritative six-cell action matrix for first install/upgrade/satisfied.
     pub(crate) async fn handle_apps_submit(
         &self,
@@ -3786,6 +4087,30 @@ mod submit_action_tests {
                 .code,
             buckyos_api::InstallErrorCode::DowngradeNotAllowed
         );
+    }
+
+    #[test]
+    fn preinstall_intent_and_idempotency_bind_immutable_inputs() {
+        let app_id = buckyos_api::AppId::parse("demo.buckyos.bns.did").unwrap();
+        let seed = buckyos_api::PreInstallPlanSeed::default();
+        let first =
+            ControlPanelServer::preinstall_intent_id("alice", &app_id, "digest-a", &seed).unwrap();
+        let replay =
+            ControlPanelServer::preinstall_intent_id("alice", &app_id, "digest-a", &seed).unwrap();
+        let changed =
+            ControlPanelServer::preinstall_intent_id("alice", &app_id, "digest-b", &seed).unwrap();
+        assert_eq!(first, replay);
+        assert_ne!(first, changed);
+        assert_eq!(first.len(), 34);
+        assert!(first.starts_with("t-"));
+        assert!(first[2..].bytes().all(|byte| byte.is_ascii_hexdigit()
+            && (!byte.is_ascii_alphabetic() || byte.is_ascii_lowercase())));
+
+        let first_key =
+            ControlPanelServer::preinstall_idempotency_key("alice", &app_id, "digest-a", "plan-a");
+        let changed_key =
+            ControlPanelServer::preinstall_idempotency_key("alice", &app_id, "digest-a", "plan-b");
+        assert_ne!(first_key, changed_key);
     }
 }
 

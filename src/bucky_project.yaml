@@ -89,7 +89,6 @@ apps:
       repo_service: bin/repo-service/
       buckycli: bin/buckycli/
       node_active: bin/node-active/
-      buckyos_systest: bin/buckyos_systest/
       aicc: bin/aicc/
       msg_center: bin/msg-center/
       opendan: bin/opendan/
@@ -103,6 +102,7 @@ apps:
       stop_osx.sh: bin/stop_osx.sh
       buckyos_jarvis: bin/buckyos_jarvis/
       desktop: bin/control-panel/web/
+      systest-preinstall-pikg: data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 

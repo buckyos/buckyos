@@ -362,7 +362,7 @@ services/{app_instance_id}/instances/{node_id}
 
 `NodeConfig.apps` 的 key 是 AppInstanceId，不拼 NodeId。每个 value 携带一个完整 `NodeExecutionSpec v1`：AppInstanceId、AppDID、AppDoc ObjectId、spec generation、AppType、已选 exact package map、权限、ServiceSpecConfig 和 Registry 投影。它不嵌入完整 AppDoc/AppSpec。node-daemon 只读同一 NodeConfig revision 即可执行，禁止回读 AppSpec、AppDoc 或 Registry 来补字段。
 
-beta 2.2 bootstrap 先创建空 Registry，再把预装 App/runtime 作为 `InstallPlanExecutionRecord(state=pending)` 交给 Scheduler。builder 不直接创建普通 AppSpec 或 AgentSpec。Registry 缺失或 schema 不支持时 Scheduler 拒绝运行并要求从空 SystemConfig 重建。
+beta 2.2 bootstrap 先创建空 Registry，并把普通预装 App 仅保存为 `system/install_settings` 中的 `PreInstallPlanSeed`；builder 不读取 PIKG、不创建普通 App 的 Task、execution record、AppSpec 或 Registry allocation。Control Panel 登录且安装 runner 启动后，将 rootfs PIKG 复制到 immutable staging，以 `LocalPikg + SystemInternal + auto_confirm` 走标准 Installer。仅这个内部入口可把已经过结构、AppDID、structural owner 和 canonical AppDoc ObjectId 校验的 rootfs AppDoc 注册为进程内 `LocalAuthorityOverride`；该 override 不写普通 cache、不暴露给公共 RPC。运行时 Inspect 生成完整 immutable `InstallPlan` 后才提交 Scheduler。PIKG 缺失或损坏只形成 Control Panel 的后台预装错误，不阻断 kernel boot。Jarvis runtime 暂由独立的 internal Agent bootstrap helper 处理，不复用普通预装配置。
 
 ## 5. InstallPlan execution protocol
 

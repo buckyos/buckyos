@@ -246,18 +246,8 @@ async function main(): Promise<void> {
     const self = await controlPanel(localToken, "user.get");
     assert(self.user_id === userId, "user.get did not default to self");
     assert(self.state === "active" && self.is_local === true, "self detail is not active/local");
-    const appList = await controlPanel(localToken, "apps.list");
-    const apps = Array.isArray(appList.apps) ? appList.apps.map((item) => asRecord(item, "apps.list item")) : [];
-    for (const expectedAppId of ["buckyos_filebrowser", "buckyos_systest"]) {
-      const app = apps.find((item) => item.app_id === expectedAppId);
-      assert(app, `ordinary local user cannot see default app ${expectedAppId}`);
-      const availabilityMatch = asRecord(app.availability_match, `${expectedAppId} availability_match`);
-      assert(
-        availabilityMatch.type === "group" && availabilityMatch.subject === "users",
-        `${expectedAppId} did not use the ordinary-user default policy`,
-      );
-    }
-    console.log("  ✓ ordinary local user sees default apps");
+    await controlPanel(localToken, "apps.list");
+    console.log("  ✓ ordinary local user can query its authorized apps");
     await expectReject("local user cannot read another user", () =>
       controlPanel(localToken, "user.get", { user_id: adminUser })
     );

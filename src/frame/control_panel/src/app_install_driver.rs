@@ -26,10 +26,11 @@ use buckyos_api::{
     get_buckyos_api_runtime, install_record_key, AppId, AppInstallTaskData, AppServiceSpec,
     CandidateHandle, ContentLocation, InspectedContent, InstallError, InstallErrorCode,
     InstallInspection, InstallParams, InstallPlan, InstallPlanStatus, InstallPlanUse,
-    InstallRecord, InstallSource, InstallStage, InstallTarget, PikgStagingPurpose,
-    PreparedDeployment, ServiceExposeSetting, ServiceSetting, ServiceState, SystemConfigError,
-    VerificationReport, APP_CAPABILITY_MINI_GPU_MEMORY, APP_CAPABILITY_MINI_GPU_TFLOPS,
-    APP_CAPABILITY_MINI_MEMORY, OBJ_TYPE_APP_DOC, TASK_DATA_TYPE_APP_UPDATE,
+    InstallRecord, InstallSource, InstallSourceIdentity, InstallStage, InstallTarget,
+    PikgStagingPurpose, PreparedDeployment, ServiceExposeSetting, ServiceSetting, ServiceState,
+    SystemConfigError, VerificationReport, APP_CAPABILITY_MINI_GPU_MEMORY,
+    APP_CAPABILITY_MINI_GPU_TFLOPS, APP_CAPABILITY_MINI_MEMORY, OBJ_TYPE_APP_DOC,
+    TASK_DATA_TYPE_APP_UPDATE,
 };
 use log::warn;
 use name_lib::{DeviceInfo, DID};
@@ -1004,6 +1005,61 @@ impl InstallStageDriver for ProductionInstallDriver {
         });
 
         let pikg_reader = self.open_candidate_pikg(data).await?;
+
+        match (&plan.source_identity, pikg_reader.as_ref()) {
+            (
+                InstallSourceIdentity::Pikg {
+                    app_doc_object_id,
+                    pikg_digest,
+                },
+                Some(reader),
+            ) => {
+                checks.push(if reader.pikg_digest() == pikg_digest {
+                    VerificationCheck::pass("pikg", "digest_binding")
+                } else {
+                    VerificationCheck::fail(
+                        "pikg",
+                        "digest_binding",
+                        format!("staged {} != plan {pikg_digest}", reader.pikg_digest()),
+                    )
+                });
+                checks.push(
+                    if reader.inspection().app_doc_object_id == *app_doc_object_id
+                        && plan.app.object_id == *app_doc_object_id
+                    {
+                        VerificationCheck::pass("pikg", "appdoc_binding")
+                    } else {
+                        VerificationCheck::fail(
+                            "pikg",
+                            "appdoc_binding",
+                            "PIKG AppDoc ObjectId, source identity and plan AppDoc do not match",
+                        )
+                    },
+                );
+                checks.push(if reader.inspection().app_doc.app_did() == &plan.app.did {
+                    VerificationCheck::pass("pikg", "app_did_binding")
+                } else {
+                    VerificationCheck::fail(
+                        "pikg",
+                        "app_did_binding",
+                        "PIKG AppDID does not match the plan AppDID",
+                    )
+                });
+            }
+            (InstallSourceIdentity::Pikg { .. }, None) => checks.push(VerificationCheck::fail(
+                "pikg",
+                "source_binding",
+                "PIKG plan has no available immutable staged source",
+            )),
+            (InstallSourceIdentity::Catalog { .. }, Some(_)) => {
+                checks.push(VerificationCheck::fail(
+                    "pikg",
+                    "source_binding",
+                    "staged PIKG candidate produced a Catalog source identity",
+                ))
+            }
+            (InstallSourceIdentity::Catalog { .. }, None) => {}
+        }
 
         let app_doc: buckyos_api::AppDoc =
             serde_json::from_value(doc_value.clone()).map_err(|err| {

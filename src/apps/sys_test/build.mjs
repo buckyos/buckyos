@@ -1,5 +1,13 @@
-import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
@@ -8,6 +16,59 @@ const webDistDir = join(rootDir, "web", "dist");
 const sdkPackageDir = join(rootDir, "node_modules", "buckyos");
 const sdkDistDir = join(sdkPackageDir, "dist");
 const sdkTargetDir = join(distDir, "node_modules", "buckyos");
+const dappMetaDir = join(rootDir, "dapp_meta");
+const dappDistDir = join(rootDir, "dapp_dist");
+const pikgName = "buckyos-systest.buckyos.bns.did-0.5.1.pikg";
+const toolDir = join(rootDir, "..", "..", "tools", "buckyos-tool");
+const toolPath = join(toolDir, "buckyos");
+const rootfsDir = join(rootDir, "..", "..", "rootfs");
+
+function runPikgTool(args) {
+  const result = spawnSync(toolPath, args, {
+    cwd: rootDir,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`buckyos ${args.join(" ")} failed with ${result.status}`);
+  }
+}
+
+function installGeneratedFiles(files) {
+  const transaction = `${process.pid}-${Date.now()}`;
+  const prepared = files.map(({ source, target }) => {
+    mkdirSync(dirname(target), { recursive: true });
+    const temporary = join(dirname(target), `.${transaction}-${basename(target)}.tmp`);
+    const backup = join(dirname(target), `.${transaction}-${basename(target)}.bak`);
+    copyFileSync(source, temporary);
+    return { target, temporary, backup, hadTarget: existsSync(target), installed: false };
+  });
+  try {
+    for (const item of prepared) {
+      if (item.hadTarget) {
+        renameSync(item.target, item.backup);
+      }
+      renameSync(item.temporary, item.target);
+      item.installed = true;
+    }
+    for (const item of prepared) {
+      rmSync(item.backup, { force: true });
+    }
+  } catch (error) {
+    for (const item of [...prepared].reverse()) {
+      if (item.installed) {
+        rmSync(item.target, { force: true });
+      }
+      if (existsSync(item.backup)) {
+        renameSync(item.backup, item.target);
+      }
+      rmSync(item.temporary, { force: true });
+    }
+    throw error;
+  }
+}
 
 if (!existsSync(webDistDir)) {
   throw new Error(`missing web dist: ${webDistDir}`);
@@ -28,3 +89,21 @@ copyFileSync(
   join(sdkTargetDir, "package.json"),
 );
 cpSync(sdkDistDir, join(sdkTargetDir, "dist"), { recursive: true });
+
+runPikgTool(["pikg", "build", dappMetaDir]);
+runPikgTool(["pikg", "pack", dappDistDir]);
+const builtPikg = join(dappDistDir, pikgName);
+runPikgTool(["pikg", "info", builtPikg]);
+
+const rootfsPikg = join(rootfsDir, "data", "cache", pikgName);
+const rootfsAppDoc = join(
+  rootfsDir,
+  "local",
+  "did_docs",
+  "buckyos-systest.buckyos.bns.did.doc.json",
+);
+installGeneratedFiles([
+  { source: builtPikg, target: rootfsPikg },
+  { source: join(dappDistDir, "APPDOC.json"), target: rootfsAppDoc },
+]);
+runPikgTool(["pikg", "info", rootfsPikg]);

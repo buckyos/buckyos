@@ -352,6 +352,12 @@ old app.pikg → new app.pikg
 - 增量路径与完整安装路径得到相同 AppSpec 和运行内容；
 - 失败时可以恢复旧 AppSpec 和旧版本内容。
 
+### 8.5 rootfs 预装仍然是标准 Installer 输入
+
+系统镜像可以在 `system/install_settings` 保存 `pikg_path + PreInstallPlanSeed`，但该 seed 不是 InstallPlan，也不授权 Scheduler 在 boot 阶段安装 App。Control Panel 登录并启动 InstallRunner 后，由内部 `PreInstallReconciler` 校验 rootfs cache 路径，把 PIKG 复制到 immutable staging，并以 `LocalPikg + SystemInternal + auto_confirm` 创建标准、持久、可恢复的 install/update Task。
+
+`SystemInternal` 只省略用户交互，不省略 PIKG digest、AppDID structural owner、AppDoc ObjectId、PackageMeta、required contents、target、permission/mount/config tips 或 final fingerprint 校验。只有 rootfs reconciler 的内部提交方法能把通过上述校验的 AppDoc 注册为进程内 `LocalAuthorityOverride`；公共 RPC 不能借 `SYSTEM_INTERNAL` 注入 authority。PIKG 内容变化产生新的安装意图；同一内容重放复用同一 Task 或得到 `Satisfied`。Scheduler 只接收 Prepare 阶段提交的完整 immutable InstallPlan，继续负责 Registry/AppSpec CAS 和目标状态推导，不读取 rootfs 路径或 PIKG。
+
 ## 9. 调度与运行收敛
 
 调度与运行领域从 AppSpec 开始，不处理 App 的外部发现、签名、发布身份和用户安装决策。

@@ -183,7 +183,8 @@ async function bootstrapSdk(): Promise<BootstrapState> {
     };
   }
 
-  if (!getEnv("BUCKYOS_APP_TOKEN")) {
+  const appToken = getEnv("BUCKYOS_APP_TOKEN");
+  if (!appToken) {
     return {
       kind: "missing-env",
       reason: "missing BUCKYOS_APP_TOKEN; service_debug.tsx should inject it",
@@ -192,12 +193,13 @@ async function bootstrapSdk(): Promise<BootstrapState> {
 
   try {
     const sdk = await loadSdkModule();
-    await sdk.buckyos.initBuckyOS("", {
-      appId: "",
+    await sdk.buckyos.initBuckyOS(identity.appId, {
+      appId: identity.appId,
       ownerUserId: identity.ownerUserId,
       runtimeType: sdk.RuntimeType.AppService,
       zoneHost: getEnv("BUCKYOS_ZONE_HOST") ?? "",
       defaultProtocol: "https://",
+      sessionToken: appToken,
     });
     await sdk.buckyos.login();
     return { kind: "ready", identity, sdk };

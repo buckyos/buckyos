@@ -143,7 +143,7 @@ allow = enforce(appid, resource, action)   // App 角色是否允许
 | 写 `users/<admin>/doc` | `OwnerConfig`，**Owner 公钥**写入；私钥留在 Owner 侧，绝不入库 | ✅ |
 | 追加 `g,<admin>,admin` | 引导期 RBAC 分组 | ✅ |
 | 安装默认 Agent `buckyos_jarvis` | 生成 Ed25519 密钥对并写入 | ✅ |
-| 安装默认 App | `buckyos_filebrowser`、`buckyos_systest`（来自 `boot.template.toml` 的 `pre_install_apps`） | ✅ |
+| 安装默认 App | Scheduler 只保存 `buckyos-systest.buckyos.bns.did` 的 PIKG seed；Control Panel 启动后通过标准 Installer Task 安装 | ✅ |
 
 > 默认 App/Agent **只为引导期 admin 用户**预装，后续用户没有。
 

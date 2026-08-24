@@ -1489,14 +1489,11 @@ mod tests {
     }
 
     #[test]
-    fn rootfs_appdoc_fixtures_follow_v1_schema() {
-        for source in [
-            include_str!("../../../rootfs/local/did_docs/systest.buckyos.bns.did.doc.json"),
-            include_str!("../../../rootfs/local/did_docs/filebrowser.buckyos.bns.did.doc.json"),
-        ] {
-            let app_doc: AppDoc = serde_json::from_str(source).unwrap();
-            app_doc.validate().unwrap();
-        }
+    fn rootfs_appdoc_fixture_follows_v1_schema() {
+        let source =
+            include_str!("../../../rootfs/local/did_docs/filebrowser.buckyos.bns.did.doc.json");
+        let app_doc: AppDoc = serde_json::from_str(source).unwrap();
+        app_doc.validate().unwrap();
     }
 
     #[test]

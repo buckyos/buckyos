@@ -210,8 +210,6 @@ async fn do_boot_scheduler() -> Result<()> {
         system_config_client.create(key, value).await?;
     }
 
-    let bootstrap_executor = SchedulerServer::new(system_config_client.clone());
-    bootstrap_executor.recover_install_plan_executions().await?;
     info!("start boot schedule...");
     let boot_result = schedule_loop(true, true).await;
     if boot_result.is_err() {
@@ -431,6 +429,38 @@ mod test {
         assert!(init_map.contains_key("services/msg-center/spec"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
         assert!(init_map.contains_key(&format!("users/{}/profile", TEST_USERNAME)));
+        let install_settings: buckyos_api::SystemInstallSettings = serde_json::from_str(
+            init_map
+                .get("system/install_settings")
+                .expect("install settings should be preserved"),
+        )
+        .expect("install settings should use the pre-install seed schema");
+        assert_eq!(install_settings.pre_install_apps.len(), 1);
+        assert!(install_settings
+            .pre_install_apps
+            .contains_key("buckyos-systest.buckyos.bns.did"));
+        let registry: AppRegistry = serde_json::from_str(
+            init_map
+                .get(APP_REGISTRY_KEY)
+                .expect("AppRegistry should be initialized"),
+        )
+        .expect("AppRegistry should be valid");
+        assert!(registry.apps.is_empty());
+        assert!(registry.instances.is_empty());
+        assert!(!init_map.keys().any(|key| {
+            key.starts_with("users/") && key.contains("/apps/buckyos-systest.buckyos.bns.did/")
+        }));
+        for (key, value) in init_map
+            .iter()
+            .filter(|(key, _)| key.starts_with("system/scheduler/install_plan_executions/"))
+        {
+            let record: InstallPlanExecutionRecord = serde_json::from_str(value)
+                .unwrap_or_else(|error| panic!("invalid execution record {key}: {error}"));
+            assert!(
+                !record.plan.task_id.contains("buckyos-systest"),
+                "ordinary pre-install App must not create a scheduler execution record"
+            );
+        }
         let user_settings: serde_json::Value = serde_json::from_str(
             init_map
                 .get(&format!("users/{}/settings", TEST_USERNAME))

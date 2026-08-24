@@ -450,7 +450,20 @@ impl AppDidResolver for NameClientAppResolver {
         };
 
         let buckyos_meta = &resolved.document_metadata.buckyos;
-        let document_status = Self::map_document_status(buckyos_meta.document_status.as_ref());
+        let warnings: Vec<String> = resolved
+            .resolution_metadata
+            .warnings
+            .iter()
+            .map(|warning| format!("{warning:?}"))
+            .collect();
+        let mut document_status = Self::map_document_status(buckyos_meta.document_status.as_ref());
+        if matches!(document_status, DocumentStatus::Unknown)
+            && warnings
+                .iter()
+                .any(|warning| warning.contains("LocalAuthorityOverride"))
+        {
+            document_status = DocumentStatus::Active;
+        }
 
         let document_value = if matches!(
             document_status,
@@ -474,13 +487,6 @@ impl AppDidResolver for NameClientAppResolver {
         let app_doc_object_id = document_value
             .as_ref()
             .map(|value| build_named_object_by_json(OBJ_TYPE_APP_DOC, value).0);
-
-        let warnings: Vec<String> = resolved
-            .resolution_metadata
-            .warnings
-            .iter()
-            .map(|warning| format!("{warning:?}"))
-            .collect();
 
         // migration_target：name-client 元数据未直接暴露，Migrated 时从 body 提取。
         let migration_target = if matches!(document_status, DocumentStatus::Migrated) {

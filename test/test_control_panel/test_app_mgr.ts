@@ -28,13 +28,6 @@ type ExpectedApp = {
 
 const PREINSTALLED_APPS: ExpectedApp[] = [
   {
-    appId: "buckyos-filebrowser.buckyos.bns.did",
-    appDid: "did:bns:buckyos-filebrowser.buckyos",
-    showName: "BuckyOS File Browser",
-    author: "did:web:buckyos.ai",
-    version: "0.5.1",
-  },
-  {
     appId: "buckyos-systest.buckyos.bns.did",
     appDid: "did:bns:buckyos-systest.buckyos",
     showName: "BuckyOS System Test",
