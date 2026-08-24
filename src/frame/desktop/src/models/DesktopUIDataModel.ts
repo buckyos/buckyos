@@ -867,7 +867,20 @@ export class DesktopUIStore {
     const nextWindows = this.snapshot.runtime.windows.map((w, i) => {
       const app = findDesktopAppById(this.snapshot.apps, w.appId)
       if (!app) return w
-      const geometry = this.normalizeWindowGeometry(app, w, i, bounds)
+      const normalizedGeometry = this.normalizeWindowGeometry(app, w, i, bounds)
+      const geometry = {
+        ...normalizedGeometry,
+        x: clamp(
+          normalizedGeometry.x,
+          bounds.minX,
+          bounds.maxRight - normalizedGeometry.width,
+        ),
+        y: clamp(
+          normalizedGeometry.y,
+          bounds.minY,
+          bounds.maxBottom - normalizedGeometry.height,
+        ),
+      }
       if (sameWindowGeometry(w, geometry)) return w
       changed = true
       this.persistWindowGeometry(w.appId, geometry)
