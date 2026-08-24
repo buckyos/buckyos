@@ -8,7 +8,7 @@ use buckyos_api::{
     AppUpdateBatchRequestItem, AppUpdateBatchTaskData, AppUpdateBatchTaskRequest,
     AppUpdateBatchTaskResult, AppUpdateState, AvailabilityEffect, InstallPolicy, RepoClient,
     RestartStrategy, ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SubPkgDesc,
-    SystemConfigClient, SystemConfigError, TaskManagerClient, TaskPhase,
+    SystemConfigClient, SystemConfigError, TaskManagerClient, TaskOutcome, TaskPhase,
     APP_AVAILABILITY_SCHEMA_VERSION, APP_INSTALL_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID,
     APP_START_TASK_SCHEMA_ID, APP_UNINSTALL_TASK_SCHEMA_ID, APP_UPDATE_BATCH_TASK_SCHEMA_ID,
     APP_UPDATE_TASK_SCHEMA_ID,
@@ -3236,6 +3236,19 @@ impl ControlPanelServer {
         format!("preinstall:{}", object_id.to_string().replace(':', "-"))
     }
 
+    fn preinstall_retry_idempotency_key(retry_of_task_id: &str, plan_fingerprint: &str) -> String {
+        let material = serde_json::json!({
+            "kind": "preinstall_retry",
+            "retry_of_task_id": retry_of_task_id,
+            "plan_fingerprint": plan_fingerprint,
+        });
+        let (object_id, _) = build_named_object_by_json("preretry", &material);
+        format!(
+            "preinstall-retry:{}",
+            object_id.to_string().replace(':', "-")
+        )
+    }
+
     fn preinstall_replay_matches(
         task: &buckyos_api::Task,
         owner_user_id: &str,
@@ -3279,6 +3292,116 @@ impl ControlPanelServer {
             && request.submitted_plan.as_ref().is_some_and(|plan| {
                 plan.fingerprint_is_valid() && plan.plan_fingerprint == plan_fingerprint
             }))
+    }
+
+    async fn resume_preinstall_replay(
+        &self,
+        principal: &RpcAuthPrincipal,
+        owner_user_id: &str,
+        app_instance_id: &buckyos_api::AppInstanceId,
+        plan_fingerprint: &str,
+        mut task: buckyos_api::Task,
+        mut idempotency_key: String,
+    ) -> Result<PreInstallSubmitOutcome, RPCErrors> {
+        const MAX_RETRY_CHAIN_DEPTH: usize = 32;
+
+        for _ in 0..MAX_RETRY_CHAIN_DEPTH {
+            if !Self::preinstall_replay_matches(
+                &task,
+                owner_user_id,
+                plan_fingerprint,
+                idempotency_key.as_str(),
+            )? {
+                return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                    buckyos_api::InstallStage::Inspect,
+                    buckyos_api::InstallErrorCode::IdempotencyConflict,
+                    false,
+                    "pre-install idempotency key belongs to different immutable input",
+                )));
+            }
+
+            let should_retry = task.phase == TaskPhase::Paused
+                || (task.phase == TaskPhase::Terminal && task.outcome == Some(TaskOutcome::Failed));
+            if should_retry {
+                let retry_key =
+                    Self::preinstall_retry_idempotency_key(&task.task_id, plan_fingerprint);
+                if let Some(retry_task) = self
+                    .find_app_submit_replay(principal, retry_key.as_str())
+                    .await?
+                {
+                    if retry_task.retry_of.as_deref() != Some(task.task_id.as_str()) {
+                        return Err(Self::install_error_to_rpc(
+                            buckyos_api::InstallError::new(
+                                buckyos_api::InstallStage::Inspect,
+                                buckyos_api::InstallErrorCode::IdempotencyConflict,
+                                false,
+                                "pre-install retry idempotency key belongs to a different predecessor task",
+                            ),
+                        ));
+                    }
+                    task = retry_task;
+                    idempotency_key = retry_key;
+                    continue;
+                }
+
+                let retry_task_id = self
+                    .install_engine
+                    .retry(
+                        task.task_id.as_str(),
+                        owner_user_id,
+                        true,
+                        buckyos_api::CONTROL_PANEL_SERVICE_NAME,
+                        retry_key.as_str(),
+                    )
+                    .await
+                    .map_err(Self::install_error_to_rpc)?;
+                self.install_runner.spawn_run(retry_task_id.clone());
+                return Ok(PreInstallSubmitOutcome {
+                    action: "retry".to_string(),
+                    task_id: Some(retry_task_id),
+                    app_instance_id: app_instance_id.clone(),
+                    plan_fingerprint: plan_fingerprint.to_string(),
+                });
+            }
+
+            if task.phase == TaskPhase::Terminal {
+                let message = match task.outcome {
+                    Some(TaskOutcome::Succeeded) => format!(
+                        "pre-install task {} succeeded but the AppSpec is missing",
+                        task.task_id
+                    ),
+                    Some(TaskOutcome::Canceled) => {
+                        format!("pre-install task {} was canceled", task.task_id)
+                    }
+                    Some(TaskOutcome::Failed) => unreachable!("failed task handled above"),
+                    None => format!(
+                        "pre-install task {} is terminal without an outcome",
+                        task.task_id
+                    ),
+                };
+                return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+                    buckyos_api::InstallStage::Deploy,
+                    buckyos_api::InstallErrorCode::Conflict,
+                    false,
+                    message,
+                )));
+            }
+
+            self.install_runner.spawn_run(task.task_id.clone());
+            return Ok(PreInstallSubmitOutcome {
+                action: "replay".to_string(),
+                task_id: Some(task.task_id),
+                app_instance_id: app_instance_id.clone(),
+                plan_fingerprint: plan_fingerprint.to_string(),
+            });
+        }
+
+        Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
+            buckyos_api::InstallStage::Inspect,
+            buckyos_api::InstallErrorCode::Conflict,
+            false,
+            "pre-install retry chain exceeds the supported depth",
+        )))
     }
 
     /// Internal pre-install entry. It uses the same inspect, action matrix,
@@ -3438,26 +3561,16 @@ impl ControlPanelServer {
             .find_app_submit_replay(&principal, idempotency_key.as_str())
             .await?
         {
-            if !Self::preinstall_replay_matches(
-                &task,
-                owner_user_id,
-                inspection.plan.plan_fingerprint.as_str(),
-                idempotency_key.as_str(),
-            )? {
-                return Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
-                    buckyos_api::InstallStage::Inspect,
-                    buckyos_api::InstallErrorCode::IdempotencyConflict,
-                    false,
-                    "pre-install idempotency key belongs to different immutable input",
-                )));
-            }
-            self.install_runner.spawn_run(task.task_id.clone());
-            return Ok(PreInstallSubmitOutcome {
-                action: "replay".to_string(),
-                task_id: Some(task.task_id),
-                app_instance_id: inspection.plan.app_instance_id,
-                plan_fingerprint: inspection.plan.plan_fingerprint,
-            });
+            return self
+                .resume_preinstall_replay(
+                    &principal,
+                    owner_user_id,
+                    &inspection.plan.app_instance_id,
+                    inspection.plan.plan_fingerprint.as_str(),
+                    task,
+                    idempotency_key,
+                )
+                .await;
         }
 
         request.params["idempotency_key"] = Value::String(idempotency_key.clone());
@@ -4111,6 +4224,12 @@ mod submit_action_tests {
         let changed_key =
             ControlPanelServer::preinstall_idempotency_key("alice", &app_id, "digest-a", "plan-b");
         assert_ne!(first_key, changed_key);
+
+        let retry = ControlPanelServer::preinstall_retry_idempotency_key("task-a", "plan-a");
+        let retry_replay = ControlPanelServer::preinstall_retry_idempotency_key("task-a", "plan-a");
+        let next_retry = ControlPanelServer::preinstall_retry_idempotency_key("task-b", "plan-a");
+        assert_eq!(retry, retry_replay);
+        assert_ne!(retry, next_retry);
     }
 }
 

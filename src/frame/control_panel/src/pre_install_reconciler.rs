@@ -16,6 +16,14 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const DEPENDENCY_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const SCHEDULER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
+fn next_sweep_interval(stable_interval: Duration, needs_follow_up: bool) -> Duration {
+    if needs_follow_up {
+        DEPENDENCY_RETRY_INTERVAL
+    } else {
+        stable_interval
+    }
+}
+
 #[derive(Debug)]
 struct PreInstallError {
     code: &'static str,
@@ -51,7 +59,9 @@ impl PreInstallReconciler {
         tokio::spawn(async move {
             loop {
                 let delay = match reconciler.reconcile_once().await {
-                    Ok(()) => reconciler.sweep_interval,
+                    Ok(needs_follow_up) => {
+                        next_sweep_interval(reconciler.sweep_interval, needs_follow_up)
+                    }
                     Err(error) => {
                         log::warn!("pre-install reconcile sweep deferred: {error}");
                         DEPENDENCY_RETRY_INTERVAL
@@ -62,7 +72,7 @@ impl PreInstallReconciler {
         });
     }
 
-    async fn reconcile_once(&self) -> Result<(), String> {
+    async fn reconcile_once(&self) -> Result<bool, String> {
         let runtime = get_buckyos_api_runtime().map_err(|error| error.to_string())?;
         let system_config = runtime
             .get_system_config_client()
@@ -114,6 +124,7 @@ impl PreInstallReconciler {
         let mut apps = settings.pre_install_apps.into_iter().collect::<Vec<_>>();
         apps.sort_by(|(left, _), (right, _)| left.cmp(right));
         let mut retry_needed = false;
+        let mut follow_up_needed = false;
         for (raw_app_id, config) in apps {
             let app_id = match AppId::parse(&raw_app_id) {
                 Ok(app_id) if app_id.as_str() == raw_app_id => app_id,
@@ -126,46 +137,51 @@ impl PreInstallReconciler {
                     continue;
                 }
             };
-            if let Err(error) = self
+            match self
                 .reconcile_app(&system_config, owner_user_id.as_str(), &app_id, &config)
                 .await
             {
-                retry_needed |= error.retryable;
-                let state = json!({
-                    "schema_version": 1,
-                    "app_id": app_id,
-                    "pikg_path": config.pikg_path,
-                    "updated_at": buckyos_get_unix_timestamp(),
-                    "error": {
-                        "code": error.code,
-                        "retryable": error.retryable,
-                        "message": error.message,
+                Ok(needs_follow_up) => follow_up_needed |= needs_follow_up,
+                Err(error) => {
+                    retry_needed |= error.retryable;
+                    let state = json!({
+                        "schema_version": 1,
+                        "app_id": app_id,
+                        "pikg_path": config.pikg_path,
+                        "updated_at": buckyos_get_unix_timestamp(),
+                        "error": {
+                            "code": error.code,
+                            "retryable": error.retryable,
+                            "message": error.message,
+                        }
+                    });
+                    if let Err(write_error) =
+                        Self::write_state(&system_config, &app_id, state).await
+                    {
+                        log::warn!(
+                            "pre-install app_id={} path={} error_code={} state_write_error={}",
+                            app_id,
+                            config.pikg_path,
+                            error.code,
+                            write_error
+                        );
+                    } else {
+                        log::error!(
+                            "pre-install app_id={} path={} error_code={} retryable={} error={}",
+                            app_id,
+                            config.pikg_path,
+                            error.code,
+                            error.retryable,
+                            error.message
+                        );
                     }
-                });
-                if let Err(write_error) = Self::write_state(&system_config, &app_id, state).await {
-                    log::warn!(
-                        "pre-install app_id={} path={} error_code={} state_write_error={}",
-                        app_id,
-                        config.pikg_path,
-                        error.code,
-                        write_error
-                    );
-                } else {
-                    log::error!(
-                        "pre-install app_id={} path={} error_code={} retryable={} error={}",
-                        app_id,
-                        config.pikg_path,
-                        error.code,
-                        error.retryable,
-                        error.message
-                    );
                 }
             }
         }
         if retry_needed {
             Err("one or more pre-install apps need a dependency retry".to_string())
         } else {
-            Ok(())
+            Ok(follow_up_needed)
         }
     }
 
@@ -175,7 +191,7 @@ impl PreInstallReconciler {
         owner_user_id: &str,
         app_id: &AppId,
         config: &PreInstallAppConfig,
-    ) -> Result<(), PreInstallError> {
+    ) -> Result<bool, PreInstallError> {
         config
             .validate()
             .map_err(|error| PreInstallError::new("INVALID_CONFIG", false, error))?;
@@ -239,6 +255,7 @@ impl PreInstallReconciler {
             .map_err(|error| {
                 PreInstallError::new("INSTALL_SUBMIT_FAILED", true, error.to_string())
             })?;
+        let needs_follow_up = outcome.task_id.is_some();
         let state = json!({
             "schema_version": 1,
             "app_id": app_id,
@@ -263,7 +280,7 @@ impl PreInstallReconciler {
             outcome.plan_fingerprint,
             outcome.action
         );
-        Ok(())
+        Ok(needs_follow_up)
     }
 
     async fn write_state(
@@ -359,6 +376,16 @@ mod tests {
         assert!(!scheduler_transport_unavailable(
             "system config key not found"
         ));
+    }
+
+    #[test]
+    fn submitted_or_retried_install_gets_fast_follow_up() {
+        let stable_interval = Duration::from_secs(600);
+        assert_eq!(
+            next_sweep_interval(stable_interval, true),
+            DEPENDENCY_RETRY_INTERVAL
+        );
+        assert_eq!(next_sweep_interval(stable_interval, false), stable_interval);
     }
 
     #[tokio::test]

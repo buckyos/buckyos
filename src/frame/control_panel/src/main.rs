@@ -1103,6 +1103,13 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         ));
     }
     runtime
+        .renew_token_from_verify_hub()
+        .await
+        .map_err(|error| {
+            log::error!("exchange control-panel login assertion failed: {:?}", error);
+            anyhow::anyhow!("exchange control-panel login assertion failed: {:?}", error)
+        })?;
+    runtime
         .set_main_service_port(CONTROL_PANEL_SERVICE_PORT)
         .await;
     set_buckyos_api_runtime(runtime)

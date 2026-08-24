@@ -278,6 +278,10 @@ async fn service_main(is_boot: bool) -> Result<i32> {
             error!("buckyos-api-runtime::login failed: {:?}", e);
             e
         })?;
+        runtime.renew_token_from_verify_hub().await.map_err(|e| {
+            error!("exchange scheduler login assertion failed: {:?}", e);
+            e
+        })?;
         runtime
             .set_main_service_port(SCHEDULER_SERVICE_MAIN_PORT)
             .await;

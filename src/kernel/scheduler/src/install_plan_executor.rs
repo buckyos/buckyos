@@ -154,6 +154,31 @@ fn apply_default_hostname(config: &mut ServiceSpecConfig, hostname: &str) {
     }
 }
 
+fn initial_guest_availability_policy(
+    app_instance_id: &AppInstanceId,
+    config: &ServiceSpecConfig,
+    updated_by: &str,
+    updated_at: u64,
+) -> Option<AppAvailabilityPolicy> {
+    config
+        .expose_config
+        .values()
+        .any(|expose| expose.allow_guest)
+        .then(|| AppAvailabilityPolicy {
+            schema_version: APP_AVAILABILITY_SCHEMA_VERSION,
+            app_instance_id: app_instance_id.clone(),
+            default_effect: AvailabilityEffect::Deny,
+            group_rules: vec![AppAvailabilityGroupRule {
+                group_id: "guest".to_string(),
+                effect: AvailabilityEffect::Allow,
+            }],
+            user_rules: Vec::new(),
+            revision: 1,
+            updated_by: updated_by.to_string(),
+            updated_at,
+        })
+}
+
 impl SchedulerServer {
     async fn load_gateway_settings(&self) -> Result<(ZoneGatewaySettings, Option<u64>)> {
         match self.system_config_client.get(GATEWAY_SETTINGS_KEY).await {
@@ -443,6 +468,22 @@ impl SchedulerServer {
                 .await
                 .ok();
             let now = buckyos_get_unix_timestamp();
+            let initial_guest_policy = initial_guest_availability_policy(
+                &record.plan.app_instance_id,
+                &spec_config,
+                &record.plan.owner_user_id,
+                now,
+            );
+            let policy_key = app_availability_policy_key(&record.plan.app_instance_id);
+            let create_initial_guest_policy = if initial_guest_policy.is_some() {
+                match self.system_config_client.get(&policy_key).await {
+                    Ok(_) => false,
+                    Err(SystemConfigError::KeyNotFound(_)) => true,
+                    Err(error) => return Err(rpc_error(error)),
+                }
+            } else {
+                false
+            };
             let install_record = InstallRecord {
                 schema_version: APP_INSTALL_SCHEMA_VERSION,
                 app: record.plan.app.clone(),
@@ -507,6 +548,30 @@ impl SchedulerServer {
                     KVAction::Create(serialize(&install_record)?)
                 },
             );
+            if create_initial_guest_policy {
+                let policy = initial_guest_policy
+                    .as_ref()
+                    .expect("guest policy creation requires a policy");
+                actions.insert(policy_key, KVAction::Create(serialize(policy)?));
+                actions.insert(
+                    app_availability_audit_key(&record.plan.app_instance_id, policy.revision),
+                    KVAction::Create(
+                        serde_json::json!({
+                            "schema_version": APP_AVAILABILITY_SCHEMA_VERSION,
+                            "app_instance_id": record.plan.app_instance_id,
+                            "updated_by": policy.updated_by,
+                            "updated_at": policy.updated_at,
+                            "old_revision": 0,
+                            "new_revision": policy.revision,
+                            "change": "install_default",
+                            "group_rule_count": policy.group_rules.len(),
+                            "user_rule_count": policy.user_rules.len(),
+                            "guest_allowed": true,
+                        })
+                        .to_string(),
+                    ),
+                );
+            }
             actions.insert(path.clone(), KVAction::Update(serialize(&record)?));
             match self
                 .system_config_client
@@ -651,6 +716,57 @@ impl SchedulerServer {
                 .map_err(rpc_error)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_instance_id() -> AppInstanceId {
+        AppInstanceId::new(AppId::parse("demo.buckyos.bns.did").unwrap(), "alice").unwrap()
+    }
+
+    #[test]
+    fn public_expose_seeds_guest_policy() {
+        let app_instance_id = app_instance_id();
+        let mut config = ServiceSpecConfig::default();
+        config.expose_config.insert(
+            "www".to_string(),
+            ServiceExposeConfig::web(Vec::new(), String::new(), true),
+        );
+
+        let policy =
+            initial_guest_availability_policy(&app_instance_id, &config, "alice", 42).unwrap();
+        assert_eq!(policy.app_instance_id, app_instance_id);
+        assert_eq!(policy.default_effect, AvailabilityEffect::Deny);
+        assert_eq!(policy.revision, 1);
+        assert_eq!(policy.updated_by, "alice");
+        assert_eq!(policy.updated_at, 42);
+        assert_eq!(policy.group_rules.len(), 1);
+        assert_eq!(policy.group_rules[0].group_id, "guest");
+        assert_eq!(policy.group_rules[0].effect, AvailabilityEffect::Allow);
+    }
+
+    #[test]
+    fn private_expose_does_not_seed_guest_policy() {
+        let app_instance_id = app_instance_id();
+        let mut config = ServiceSpecConfig::default();
+        config.expose_config.insert(
+            "www".to_string(),
+            ServiceExposeConfig::web(Vec::new(), String::new(), false),
+        );
+
+        assert!(
+            initial_guest_availability_policy(&app_instance_id, &config, "alice", 42).is_none()
+        );
+        assert!(initial_guest_availability_policy(
+            &app_instance_id,
+            &ServiceSpecConfig::default(),
+            "alice",
+            42,
+        )
+        .is_none());
     }
 }
 

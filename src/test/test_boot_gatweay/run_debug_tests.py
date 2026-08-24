@@ -77,7 +77,7 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
                 "app_instance_id": "publicview@alice",
                 "app_owner_user_id": "alice",
                 "sdk_version": 10,
-                "access_mode": "private",
+                "access_mode": "public",
                 "node_id": "ood1",
                 "port": 10161,
             },
@@ -338,6 +338,8 @@ def request_header_equals(name, expected_value):
 
 
 def assertions_for_case(case_name: str):
+    if case_name == "req_app_public_no_cookie_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10161")]
     if case_name == "req_app_root_no_cookie_redirect_ok":
         return [
             control_matches(

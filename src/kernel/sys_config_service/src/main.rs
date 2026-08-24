@@ -218,17 +218,9 @@ fn bootstrap_request_allowed_after_boot(
     }
 }
 
-async fn authorize_bootstrap_request(
-    method: &str,
-    params: &Value,
-    token: &RPCSessionToken,
-) -> Result<()> {
-    let device_name = current_bootstrap_device_name()?;
-    validate_system_config_bootstrap_assertion(token, device_name.as_str())?;
-    let service_id = token.appid.as_deref().unwrap_or_default();
-
-    if BOOTSTRAP_CONFIG_MODE.load(Ordering::Acquire) && service_id == NODE_DAEMON_SERVICE_ID {
-        if matches!(
+fn bootstrap_request_allowed_during_boot(method: &str, service_id: &str) -> bool {
+    service_id == NODE_DAEMON_SERVICE_ID
+        && matches!(
             method,
             "sys_config_create"
                 | "sys_config_get"
@@ -238,14 +230,25 @@ async fn authorize_bootstrap_request(
                 | "sys_config_delete"
                 | "sys_config_append"
                 | "sys_config_list"
+                | "dump_configs_for_scheduler"
                 | "sys_refresh_trust_keys"
-        ) {
-            return Ok(());
-        }
-    } else {
-        if bootstrap_request_allowed_after_boot(method, params, device_name.as_str(), service_id) {
-            return Ok(());
-        }
+        )
+}
+
+async fn authorize_bootstrap_request(
+    method: &str,
+    params: &Value,
+    token: &RPCSessionToken,
+) -> Result<()> {
+    let device_name = current_bootstrap_device_name()?;
+    validate_system_config_bootstrap_assertion(token, device_name.as_str())?;
+    let service_id = token.appid.as_deref().unwrap_or_default();
+
+    let allowed = (BOOTSTRAP_CONFIG_MODE.load(Ordering::Acquire)
+        && bootstrap_request_allowed_during_boot(method, service_id))
+        || bootstrap_request_allowed_after_boot(method, params, device_name.as_str(), service_id);
+    if allowed {
+        return Ok(());
     }
 
     Err(RPCErrors::NoPermission(
@@ -1519,6 +1522,28 @@ mod test {
         };
         assert!(validate_system_config_bootstrap_assertion(&assertion, "ood1").is_ok());
 
+        for method in [
+            "sys_config_create",
+            "sys_config_get",
+            "sys_config_set",
+            "sys_config_set_by_json_path",
+            "sys_config_exec_tx",
+            "sys_config_delete",
+            "sys_config_append",
+            "sys_config_list",
+            "dump_configs_for_scheduler",
+            "sys_refresh_trust_keys",
+        ] {
+            assert!(bootstrap_request_allowed_during_boot(
+                method,
+                NODE_DAEMON_SERVICE_ID,
+            ));
+        }
+        assert!(!bootstrap_request_allowed_during_boot(
+            "dump_configs_for_scheduler",
+            "scheduler",
+        ));
+
         for params in [
             json!({"key": "boot/config"}),
             json!({"key": "devices"}),
@@ -1552,6 +1577,12 @@ mod test {
         assert!(!bootstrap_request_allowed_after_boot(
             "sys_config_exec_tx",
             &json!({"actions": {}}),
+            "ood1",
+            NODE_DAEMON_SERVICE_ID,
+        ));
+        assert!(!bootstrap_request_allowed_after_boot(
+            "dump_configs_for_scheduler",
+            &json!({}),
             "ood1",
             NODE_DAEMON_SERVICE_ID,
         ));

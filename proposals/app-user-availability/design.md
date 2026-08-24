@@ -39,7 +39,7 @@ services/control_panel/app_availability/audit/{app_instance_id}/{revision}
 
 策略 schema 固定为 v1，字段为 `schema_version`、`app_instance_id`、`default_effect=deny`、`group_rules`、`user_rules`、`revision`、`updated_by`、`updated_at`。`default_effect=deny` 是 `Limited` / Guest 等非默认开放主体的最终回退；`admins` / `users` 在没有显式匹配规则时使用系统内置的默认 allow。
 
-写入是一次 system-config 事务：策略 create/update、不可变审计事件、以及 App spec 内所有 expose service 的 `allow_guest` 同时提交。更新现有策略时以策略 KV 的 system-config version 为 CAS 主键；请求的 `expected_revision` 必须等于策略内容 revision。未配置策略等价 revision 0，首次写入使用 Create。卸载个人 App 时用同一事务把 spec 标记为 Deleted、清空规则并关闭所有 `allow_guest`，策略 revision 继续递增并写入 `uninstall_reset` 审计事件；因此重装不会继承旧授权，同时不会丢失审计序列。
+`apps.availability.set` 用一次 system-config 事务提交策略 create/update 和不可变审计事件。更新现有策略时以策略 KV 的 system-config version 为 CAS 主键；请求的 `expected_revision` 必须等于策略内容 revision。未配置策略等价 revision 0，首次写入使用 Create。安装事务根据最终获批的 `ServiceSpecConfig` 初始化策略：任一 expose service 声明 `allow_guest=true` 时创建 revision 1 的 `guest=allow` 策略和 `install_default` 审计；已有策略不会被升级覆盖。卸载个人 App 时用同一事务把 spec 标记为 Deleted、清空规则并关闭所有 `allow_guest`，策略 revision 继续递增并写入 `uninstall_reset` 审计事件；因此重装不会继承旧授权，同时不会丢失审计序列。
 
 ## 2. Control Panel kRPC
 
@@ -104,7 +104,7 @@ Verify Hub 在密码登录、用户主体 JWT/SSO、sudo 和每次 refresh 签�
 
 ## 4. Gateway 与 Guest
 
-可用性策略是 Guest 的逻辑真相源。Control Panel 在同一 CAS 事务内把 `guest=allow` 编译到 App spec 的每个 `ServiceExposeConfig.allow_guest`。scheduler 将该字段编译为 Gateway `access_mode=Public|Private`，并在 App entry 中携带 `app_instance_id` 与 `app_owner_user_id`。
+可用性策略是 Guest 的运行时真相源。scheduler 直接读取实例策略，将 `guest=allow` 编译为 Gateway `access_mode=Public`，否则 fail closed 为 `Private`，并在 App entry 中携带 `app_instance_id` 与 `app_owner_user_id`。`ServiceExposeConfig.allow_guest` 只作为最终获批安装计划中的初始公开声明和安装记录快照，不再作为 Gateway 鉴权依据。
 
 Static Web 不再因部署类型自动公开。系统内置 App 的匿名声明由系统 registry/公开配置控制，默认不公开。
 
