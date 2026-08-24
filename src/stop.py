@@ -57,6 +57,46 @@ def kill_devtest_containers():
         else:
             print(f"{container_name} container killed")
 
+def kill_buckyos_containers():
+    if system == "Windows":
+        return
+
+    result_list = subprocess.run(
+        ["docker", "ps", "-a", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result_list.returncode != 0:
+        stderr = result_list.stderr.strip()
+        print(f"Failed to list buckyos docker containers: {stderr or 'unknown error'}")
+        return
+
+    container_names = [
+        name.strip()
+        for name in result_list.stdout.splitlines()
+        if name.strip().startswith("buckyos-app-")
+    ]
+    if not container_names:
+        print("No buckyos docker containers found")
+        return
+
+    result_rm = subprocess.run(
+        ["docker", "rm", "-f", *container_names],
+        capture_output=True,
+        text=True,
+    )
+    if result_rm.returncode != 0:
+        stderr = result_rm.stderr.strip()
+        print(f"Failed to remove buckyos docker containers: {stderr or 'unknown error'}")
+        return
+
+    removed = result_rm.stdout.strip()
+    if removed:
+        for container_name in removed.splitlines():
+            print(f"{container_name} container removed")
+    else:
+        print("BuckyOS docker containers removed")
+
 def kill_process(name):
     if system == "Windows":
         result = subprocess.run(
@@ -101,6 +141,7 @@ def kill_all():
     kill_process("msg_center")
     kill_process("opendan")
     kill_process("workflow")
+    kill_buckyos_containers()
     kill_devtest_containers()
 
 
