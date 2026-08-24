@@ -17,8 +17,7 @@ import {
   Typography,
 } from '@mui/material'
 import { Eye, EyeOff, Lock, ExternalLink } from 'lucide-react'
-
-const APP_ID = 'control-panel'
+import { buildAuthLoginTargetParams } from './loginTarget'
 
 const resolveZoneDisplayName = (): string => {
   let zoneHost: string | null = null
@@ -132,11 +131,7 @@ const LoginPage = () => {
     () => searchParams.get('redirect_url') ?? '',
     [searchParams],
   )
-  const appid = useMemo(
-    () => searchParams.get('appid') ?? APP_ID,
-    [searchParams],
-  )
-  const zoneDisplayName = useMemo(resolveZoneDisplayName, [])
+  const zoneDisplayName = useMemo(() => resolveZoneDisplayName(), [])
 
   const sourceAppId = useMemo(() => {
     if (!redirectUrl) return null
@@ -200,13 +195,9 @@ const LoginPage = () => {
         const response = (await rpcClient.call('auth.login', {
           username: trimmedUsername,
           password: passwordHash,
-          appid,
           login_nonce: nonce,
           remember_me: rememberMe,
-          ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
-          ...(!redirectUrl
-            ? { target: { kind: 'system', service_id: appid } }
-            : {}),
+          ...buildAuthLoginTargetParams(redirectUrl),
         })) as Record<string, unknown>
         // console.log('[login] response', response)
 
@@ -246,7 +237,7 @@ const LoginPage = () => {
         setSubmitting(false)
       }
     },
-    [username, password, submitting, appid, redirectUrl, rememberMe],
+    [username, password, submitting, redirectUrl, rememberMe],
   )
 
   const disabled = submitting

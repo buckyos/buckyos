@@ -164,7 +164,7 @@ const account = await buckyos.login();
 
 Web SSO 是面向浏览器页面的封装：
 
-1. 页面跳到 `https://sys.<zone>/login?client_id=<appid>&redirect_url=<url>`。
+1. 页面跳到 `https://sys.<zone>/login?redirect_url=<url>`，control-panel 通过 Gateway 路由解析精确的 AuthTarget。
 2. control-panel 调 `login_by_password`。
 3. 目标 App origin 上的 `/sso_callback` 同时写入 host-only 的短期 `buckyos_session_token` 和 host-only、HttpOnly 的 `buckyos_refresh_token`；前者让 gateway 能在页面加载前放行 App，后者只用于刷新。
 4. 页面调用 `/sso_refresh`，拿到 JS 可读的 `session_token`。

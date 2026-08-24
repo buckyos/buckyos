@@ -1492,10 +1492,7 @@ impl AppLoader {
     }
 
     fn build_volume_mounts(&self) -> Result<Vec<(String, PathBuf, &'static str)>> {
-        let mut mounts: HashMap<String, (PathBuf, &'static str)> = HashMap::new();
-        let app_data_container = container_app_data_dir(&self.owner_user_id, &self.app_id);
-        mounts.insert("/tmp".to_string(), (self.app_local_cache_dir(), "rw"));
-        mounts.insert(app_data_container.clone(), (self.app_data_dir(), "rw"));
+        let mut mounts = self.default_volume_mounts();
 
         for (container_path, config) in &self.install_config().data_mount_point {
             let container_path = container_path.to_string_lossy().to_string();
@@ -1555,6 +1552,16 @@ impl AppLoader {
         Ok(result)
     }
 
+    fn default_volume_mounts(&self) -> HashMap<String, (PathBuf, &'static str)> {
+        HashMap::from([
+            ("/tmp".to_string(), (self.app_local_cache_dir(), "rw")),
+            (
+                container_app_data_dir(&self.owner_user_id, &self.app_id),
+                (self.app_data_dir(), "rw"),
+            ),
+        ])
+    }
+
     fn select_agent_service_port(&self) -> u16 {
         let instance_ports = self.service_ports_config();
         if instance_ports.is_empty() {
@@ -1604,7 +1611,12 @@ impl AppLoader {
     }
 
     fn app_local_cache_dir(&self) -> PathBuf {
-        PathBuf::from("/tmp")
+        let temp_dir = if cfg!(target_os = "windows") {
+            std::env::temp_dir()
+        } else {
+            PathBuf::from("/tmp")
+        };
+        temp_dir
             .join("buckyos")
             .join(&self.owner_user_id)
             .join(&self.app_id)
@@ -2567,6 +2579,10 @@ impl AppLoader {
 
     pub(crate) fn test_instance_volume_name(&self) -> String {
         self.instance_volume_name()
+    }
+
+    pub(crate) fn test_default_tmp_mount(&self) -> (PathBuf, &'static str) {
+        self.default_volume_mounts().remove("/tmp").unwrap()
     }
 }
 

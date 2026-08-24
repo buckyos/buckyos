@@ -545,8 +545,8 @@ DNS、HTTP、SN、镜像源都可以参与发现和加速，但不能伪造最�
 - verify-hub 签发 `session_token`。
 - 服务通过 trust keys 验证 token。
 - `boot/config` 提供 owner key 和 verify-hub public key。
-- control panel 有 `/login` 和 `/sso/login`。
-- `/sso/login` 会用 `client_id` 作为 `appid` 登录，并写入 `buckyos_session_token` cookie。
+- control panel 有 `/login`，同 Zone Web SSO 传入 `redirect_url`。
+- control panel 通过 redirect URL 对应的 Gateway 路由解析 AuthTarget，并在目标 origin 写入 SSO cookie。
 
 新的联合登录有两条路径：
 
@@ -804,5 +804,4 @@ did:bns:bob在 OwnerConfig中配置 face url (cyfs:///$objid) 和 binded zone: d
 
 通过 https://bob.zhicong.me/.well-known/doc.json 也能得到一个非上链的profile(UserInfo),可以定义更多的实时信息
 如果通过 http://bob.zhicong.me/.well-known/doc.json 访问，这个就必须是一个JWT（有必要的签名），密钥用的是 key@zone
-
 

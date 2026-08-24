@@ -310,6 +310,33 @@ fn helper_functions_keep_expected_normalization() {
 }
 
 #[test]
+fn default_tmp_mount_uses_platform_valid_host_path() {
+    let loader = build_service_loader(
+        build_appservice_doc(),
+        HashMap::new(),
+        PlatformTarget::new(PlatformOs::Linux, PlatformArch::Amd64),
+        true,
+    );
+
+    let (host_path, permission) = loader.test_default_tmp_mount();
+    let expected_root = if cfg!(target_os = "windows") {
+        std::env::temp_dir()
+    } else {
+        std::path::PathBuf::from("/tmp")
+    };
+
+    assert_eq!(permission, "rw");
+    assert!(host_path.is_absolute());
+    assert_eq!(
+        host_path,
+        expected_root
+            .join("buckyos")
+            .join("alice")
+            .join("demo.example")
+    );
+}
+
+#[test]
 fn resolve_aios_image_repo_from_paths_reads_devenv_override() {
     let temp_dir = unique_temp_path("node-daemon-devenv");
     fs::create_dir_all(&temp_dir).unwrap();

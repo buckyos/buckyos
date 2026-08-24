@@ -45,7 +45,7 @@
 ```ts
 import { AuthClient } from "buckyos";
 
-const auth = new AuthClient(zoneHostname /* 如 "alice.buckyos.io" */, appId /* 你的 appid */);
+const auth = new AuthClient(zoneHostname /* 如 "alice.buckyos.io" */);
 
 // 跳到 Zone 的登录页，登录完成后回到 redirectUri（默认当前页）
 auth.login(/* redirectUri? */);
@@ -54,10 +54,10 @@ auth.login(/* redirectUri? */);
 `buildLoginURL()` 生成的目标就是 Zone 的 control panel 登录页：
 
 ```text
-https://sys.<zoneHostname>/login?client_id=<appId>&redirect_url=<encoded redirect>
+https://sys.<zoneHostname>/login?redirect_url=<encoded redirect>
 ```
 
-> `/login` 是 control panel 自身的登录页；当带上 `client_id` + `redirect_url` 时，它同时充当 SSO 授权页。（历史上也规划过独立的 `/sso/login` 授权弹窗页。）
+> `/login` 是 control panel 自身的登录页；当带上 `redirect_url` 时，它同时充当 SSO 授权页。登录目标由 redirect URL 对应的 Gateway 路由确定。（历史上也规划过独立的 `/sso/login` 授权弹窗页。）
 
 ### 2. 登录完成 → 回调写 Cookie
 
@@ -217,7 +217,7 @@ sudo 由 verify-hub 提供：弹出提权对话框，要求管理员**再次输�
 **当前已经能用（本仓库已落地）：**
 
 - verify-hub `auth.login`（用户名/DID + 密码）签发 session_token + refresh_token。
-- websdk `AuthClient.login()` -> `sys.<zone>/login?client_id=&redirect_url=`。
+- websdk `AuthClient.login()` -> `sys.<zone>/login?redirect_url=`。
 - control panel `/sso_callback`（把 nonce、canonical origin/route 与 AuthTarget 一起校验后才写 cookie）、`/sso_refresh`（只接受同 origin/route 的 refresh target并轮换 token）、`/sso_logout`。
 - session_token 多通道传递（X-Auth / Bearer / query / kRPC token）+ trust keys 验签 + RBAC。
 - sudo 机制（提权对话框 + 短时 sudo token，受 appid 限制）。
