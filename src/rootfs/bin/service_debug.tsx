@@ -95,12 +95,12 @@ function printUsage(): never {
       '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]',
       '',
       'Example:',
-      '  service_debug buckyos_jarvis alice',
+      '  service_debug jarvis.buckyos.bns.did alice',
       '  service_debug buckyos_systest devtest',
-      '  service_debug buckyos_jarvis alice --port 14060',
-      '  service_debug buckyos_jarvis alice --agent-package-root ./rootfs/bin/buckyos_jarvis',
-      '  service_debug buckyos_jarvis alice --worksession-test ./case.json',
-      '  service_debug buckyos_jarvis alice --worksession-task-test ./case.json',
+      '  service_debug jarvis.buckyos.bns.did alice --port 14060',
+      '  service_debug jarvis.buckyos.bns.did alice --agent-package-root ./rootfs/bin/buckyos_jarvis',
+      '  service_debug jarvis.buckyos.bns.did alice --worksession-test ./case.json',
+      '  service_debug jarvis.buckyos.bns.did alice --worksession-task-test ./case.json',
     ].join('\n'),
   )
   Deno.exit(1)
@@ -797,7 +797,7 @@ async function runForeground(
 ): Promise<number> {
   const child = new Deno.Command(opendanBinary, {
     args: [
-      '--agent-id',
+      '--app-id',
       appId,
       '--agent-bin',
       agentPackageRoot,
@@ -1009,7 +1009,7 @@ async function runDetached(
 ): Promise<void> {
   const child = new Deno.Command(opendanBinary, {
     args: [
-      '--agent-id',
+      '--app-id',
       appId,
       '--agent-bin',
       agentPackageRoot,

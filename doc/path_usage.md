@@ -4,7 +4,9 @@
 
 应用看到的Path是一个在标准的linux FS，我们在标准的linux FS上做的扩展有
 
-> Agent也是一个应用，比如 Jarvis agent 的权限就是 appid = buckyos_jarvis 的权限
+> Agent 是独立身份，不等同于 App。`AgentSpec.binding` 把 AgentDID/AgentId 绑定到普通
+> App runtime 的 AppInstanceId + service_name；例如 Jarvis runtime 的 AppId 是
+> `jarvis.buckyos.bns.did`，AgentId 则由 Zone 的 Jarvis AgentDID 独立派生。
 
 /opt/buckyos/bin/$appid ：我们鼓励应用开发把二进制文件放在这个目录，这样脱离容器运行时改动也很小（比如容器变成了VM）
 
@@ -45,6 +47,8 @@
 应用不能把运行时生成物写入 `/opt/buckyos/tools`;需要写入且可执行的内容放到 `/opt/buckyos/instance`。
 `/home/$username/.local/share/$appid` 仍是 app 的永久 user/app data,host 上对应
 `$buckyos_root/data/home/$username/.local/share/$appid`,不用于承载 session-bin 或依赖缓存 upper。
+OpenDAN 在该 App 数据目录下继续按 AgentId 隔离 AgentRootFS：
+`/home/$username/.local/share/$appid/agents/$agent_id`。
 
 当应用关闭兼容性开关后，应用使用buckyos-sdk访问cyfs://,所有的到cyfs://的自动mount都会消失，本地文件读写只有/tmp/会成功
 

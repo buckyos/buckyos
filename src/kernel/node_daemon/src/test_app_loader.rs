@@ -534,7 +534,7 @@ fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
         Path::new("/opt/buckyos/env/pkgs/agent.jarvis-runtime.example#pkg:1234567890");
     let exact_cmd = vec![
         "opendan".to_string(),
-        "--agent-id".to_string(),
+        "--app-id".to_string(),
         "jarvis-runtime.example".to_string(),
         "--agent-bin".to_string(),
         expected_root.to_string_lossy().to_string(),
@@ -543,7 +543,7 @@ fn agent_process_matching_distinguishes_wildcard_and_exact_checks() {
     ];
     let old_cmd = vec![
         "opendan".to_string(),
-        "--agent-id".to_string(),
+        "--app-id".to_string(),
         "jarvis-runtime.example".to_string(),
         "--agent-bin".to_string(),
         "/opt/buckyos/env/pkgs/agent.jarvis-runtime.example#pkg:oldversion".to_string(),

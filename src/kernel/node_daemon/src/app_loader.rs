@@ -1989,10 +1989,6 @@ impl AppLoader {
             // Legacy name kept for OpenDAN which still reads OPENDAN_SERVICE_PORT.
             env_vars.insert("OPENDAN_SERVICE_PORT".to_string(), port.to_string());
         }
-        if app_type_label == "agent" {
-            env_vars.insert("OPENDAN_AGENT_ID".to_string(), self.app_id.clone());
-        }
-
         // The app sees itself at BUCKYOS_PKG_DIR, not at the host media path.
         if let Some(media_info) = env_vars.get("app_media_info").cloned() {
             if let Ok(mut value) = serde_json::from_str::<Value>(media_info.as_str()) {
@@ -2502,11 +2498,6 @@ impl AppLoader {
                 docker_run_args.push(format!("OPENDAN_SERVICE_PORT={port}"));
             }
         }
-        if app_type_label == "agent" {
-            docker_run_args.push("-e".to_string());
-            docker_run_args.push(format!("OPENDAN_AGENT_ID={}", self.app_id));
-        }
-
         if let Some(desc) = desc {
             for (key, value) in self.docker_runtime_labels(desc) {
                 docker_run_args.push("--label".to_string());
@@ -2729,7 +2720,7 @@ pub(crate) fn docker_runtime_matches_deployment(
 }
 
 pub(crate) fn command_matches_agent_process(cmd: &[String], app_id: &str) -> bool {
-    command_arg_value(cmd, "--agent-id") == Some(app_id)
+    command_arg_value(cmd, "--app-id") == Some(app_id)
 }
 
 pub(crate) fn command_matches_exact_agent_process(

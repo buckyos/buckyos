@@ -108,6 +108,12 @@ p, app, obj://config/users/{user}/apps/{app}/spec,read,allow
 p, app, obj://config/users/{user}/apps/{app}/info,read|write,allow
 p, app, obj://config/services/{service}/info,read,allow
 
+# An App runtime is promoted to this role only when an AgentSpec binds to it.
+# AgentSpec is public runtime identity/configuration; the sibling private key
+# deliberately remains inaccessible to the runtime App principal.
+p, agent_runtime, obj://config/users/{user}/agents,list|query,allow
+p, agent_runtime, obj://config/users/{user}/agents/{agent}/spec,read,allow
+
 p, agent, obj://config/boot/*, read,allow
 p, agent, obj://config/agents/{agent}/*,read,allow
 p, agent, obj://config/users/{user}/agents/{agent}/settings,read|write,allow
@@ -123,6 +129,7 @@ p, admin,obj://config/agents/{agent}/settings,read|write,allow
 p, admin,obj://config/users/{admin}/*,read,allow
 p, admin,obj://config/users/{admin}/profile,read|write,allow
 p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
+p, admin,obj://config/users/{admin}/agents,list|query,allow
 p, admin,obj://config/users/{admin}/agents/{agent}/{key},read|write,allow
 p, admin,obj://config/services/aicc/settings,read|write,allow
 p, admin,obj://config/services/msg-center/settings,read|write,allow
@@ -136,6 +143,7 @@ p, users,obj://config/agents/{agent}/doc,read,allow
 p, users,obj://config/users/{users}/*,read,allow
 p, users,obj://config/users/{users}/profile,read|write,allow
 p, users,obj://config/users/{users}/apps/{app}/{key},read|write,allow
+p, users,obj://config/users/{users}/agents,list|query,allow
 p, users,obj://config/users/{users}/agents/{agent}/{key},read|write,allow
 p, users,obj://config/services/{service}/info,read,allow
 p, users,obj://config/services/{service}/instances/{node},write,allow
@@ -603,6 +611,60 @@ g, bob, users
                 "app:buckyos_jarvis",
                 "obj://config/services/buckyos_jarvis/settings",
                 "write",
+                None,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn bound_agent_runtime_can_discover_specs_but_not_private_keys() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let config = build_current_rbac_config(Some(
+            "g, alice, admin\ng, app:jarvis.buckyos.bns.did, app\ng, app:jarvis.buckyos.bns.did, agent_runtime\ng, app:gallery.buckyos.bns.did, app",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let runtime = "app:jarvis.buckyos.bns.did";
+        assert!(
+            rbac::enforce(
+                "alice",
+                runtime,
+                "obj://config/users/alice/agents",
+                "list",
+                None,
+            )
+            .await
+        );
+        assert!(
+            rbac::enforce(
+                "alice",
+                runtime,
+                "obj://config/users/alice/agents/jarvis.example.com/spec",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "alice",
+                runtime,
+                "obj://config/users/alice/agents/jarvis.example.com/key",
+                "read",
+                None,
+            )
+            .await
+        );
+        assert!(
+            !rbac::enforce(
+                "alice",
+                "app:gallery.buckyos.bns.did",
+                "obj://config/users/alice/agents/jarvis.example.com/spec",
+                "read",
                 None,
             )
             .await

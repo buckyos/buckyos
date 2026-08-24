@@ -74,6 +74,7 @@ src/rootfs/bin/opendan/agent_tool
 
 src/apps/sys_test/dist/
 src/apps/sys_test/dapp_dist/
+src/apps/jarvis_runtime/dapp_dist/
 src/rootfs/data/cache/*.pikg
 src/rootfs/local/did_docs/buckyos-systest.buckyos.bns.did.doc.json
 old/*

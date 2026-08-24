@@ -1514,6 +1514,13 @@ async fn update_rbac(
             &mut rbac_policy,
             format!("g, {}, agent", agent_spec.agent_did.to_string()),
         );
+        push_policy_line(
+            &mut rbac_policy,
+            format!(
+                "g, app:{}, agent_runtime",
+                agent_spec.binding.target_app_instance_id.app_id()
+            ),
+        );
     }
 
     let mut result = HashMap::new();

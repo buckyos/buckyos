@@ -4,6 +4,11 @@
 "system/install_settings" = """
 {
   "pre_install_apps": {
+    "jarvis.buckyos.bns.did": {
+      "schema_version": 1,
+      "pikg_path": "data/cache/jarvis.buckyos.bns.did-0.7.0.pikg",
+      "install_plan": {}
+    },
     "buckyos-systest.buckyos.bns.did": {
       "schema_version": 1,
       "pikg_path": "data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg",

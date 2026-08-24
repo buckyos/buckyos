@@ -64,6 +64,10 @@ modules:
     type: web
     name: buckyos_systest
     src_dir: apps/sys_test
+  jarvis_runtime:
+    type: web
+    name: jarvis_runtime
+    src_dir: apps/jarvis_runtime
 
 apps:
   buckyos:
@@ -103,6 +107,7 @@ apps:
       buckyos_jarvis: bin/buckyos_jarvis/
       desktop: bin/control-panel/web/
       systest-preinstall-pikg: data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg
+      jarvis-preinstall-pikg: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)
     data_paths: 

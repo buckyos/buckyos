@@ -19,7 +19,6 @@ Press Ctrl+C to stop it.
 Environment:
   BUCKYOS_ROOT=/opt/buckyos
   JARVIS_PACKAGE_ROOT=src/rootfs/bin/buckyos_jarvis
-  DEBUG_JARVIS_REFRESH=1
 EOF
 }
 
@@ -30,9 +29,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
-APP_ID="buckyos_jarvis"
+APP_ID="jarvis.buckyos.bns.did"
 OWNER_USER_ID="devtest"
-DEBUG_JARVIS_REFRESH="${DEBUG_JARVIS_REFRESH:-1}"
 
 if [[ $# -gt 0 && "${1}" != -* ]]; then
   OWNER_USER_ID="$1"
@@ -47,7 +45,6 @@ for arg in "$@"; do
 done
 
 JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/rootfs/bin/buckyos_jarvis}"
-TARGET_ROOT="${BUCKYOS_ROOT}/data/home/${OWNER_USER_ID}/.local/share/${APP_ID}"
 SERVICE_DEBUG_SCRIPT="${SCRIPT_DIR}/rootfs/bin/service_debug.tsx"
 
 if [[ ! -d "${JARVIS_PACKAGE_ROOT}" ]]; then
@@ -63,23 +60,6 @@ fi
 if ! command -v deno >/dev/null 2>&1; then
   echo "deno is required but was not found in PATH" >&2
   exit 2
-fi
-
-if [[ "${DEBUG_JARVIS_REFRESH}" != "0" ]]; then
-  mkdir -p "${TARGET_ROOT}"
-  for file in agent.toml role.md self.md; do
-    if [[ -f "${JARVIS_PACKAGE_ROOT}/${file}" ]]; then
-      cp "${JARVIS_PACKAGE_ROOT}/${file}" "${TARGET_ROOT}/${file}"
-      chmod 0644 "${TARGET_ROOT}/${file}"
-    fi
-  done
-  for dir in behaviors tool_plans tools; do
-    if [[ -d "${JARVIS_PACKAGE_ROOT}/${dir}" ]]; then
-      mkdir -p "${TARGET_ROOT}/${dir}"
-      cp -R "${JARVIS_PACKAGE_ROOT}/${dir}/." "${TARGET_ROOT}/${dir}/"
-    fi
-  done
-  echo "[debug_jarvis] refreshed editable jarvis assets in ${TARGET_ROOT}"
 fi
 
 echo "[debug_jarvis] launching foreground service_debug for ${APP_ID}/${OWNER_USER_ID}"

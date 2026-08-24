@@ -243,6 +243,10 @@ impl SchedulerServer {
         key: &InstallPlanExecutionKey,
     ) -> Result<InstallPlanExecutionRecord> {
         let path = key.storage_key();
+        // The desired AppServiceSpec is already committed at this point.  Bind
+        // any bootstrap Agent that targets it before publishing NodeConfig, so
+        // the runtime starts with its AgentSpec and gateway projection present.
+        self.recover_bootstrap_agent_provisions().await?;
         match schedule_loop(false, true).await {
             Ok(_) => {
                 let (mut record, record_revision) = self.load_execution(key).await?;
@@ -663,11 +667,18 @@ impl SchedulerServer {
             provision.agent_spec.validate().map_err(rpc_error)?;
             let target = &provision.agent_spec.binding.target_app_instance_id;
             let target_spec_path = user_app_spec_key(target.owner_user_id(), target.app_id());
-            let target_value = self
-                .system_config_client
-                .get(&target_spec_path)
-                .await
-                .map_err(rpc_error)?;
+            let target_value = match self.system_config_client.get(&target_spec_path).await {
+                Ok(value) => value,
+                Err(SystemConfigError::KeyNotFound(_)) => {
+                    log::info!(
+                        "bootstrap Agent {} is waiting for runtime {}",
+                        provision.agent_spec.agent_id,
+                        target
+                    );
+                    continue;
+                }
+                Err(error) => return Err(rpc_error(error)),
+            };
             let target_spec: AppServiceSpec =
                 serde_json::from_str(&target_value.value).map_err(rpc_error)?;
             if target_spec.app_instance_id != *target

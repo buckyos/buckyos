@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "output_dir": "../dapp_dist",
+  "pikg_file": "jarvis.buckyos.bns.did-0.7.0.pikg",
+  "sub_pkgs": {
+    "agent": {
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../../../rootfs/bin/buckyos_jarvis"
+      }
+    }
+  }
+}

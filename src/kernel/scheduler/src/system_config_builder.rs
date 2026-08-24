@@ -7,20 +7,14 @@ use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
-    generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppDocType,
-    AppDocumentRef, AppId, AppInstanceId, AppRegistry, AppServiceSpec, AppType, DeploymentIdentity,
-    DidCacheStatus, DidEvidenceLevel, DidResolutionSnapshot, DidVerificationStatus, DocumentStatus,
-    GatewaySettings, GatewayShortcut, InstallParams, InstallPlan, InstallPlanCommitPoint,
-    InstallPlanExecutionKey, InstallPlanExecutionRecord, InstallPlanExecutionState, InstallPlanUse,
-    InstallSourceIdentity, InstallTarget, KernelServiceSpec, NodeConfig, NodeState,
-    SelectedPackage, SelectorType, ServiceEndpointConfig, ServiceExposeConfig,
-    ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo, ServiceInstanceState,
-    ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings,
-    UserPrivateProfile, UserProfile, UserSettings, UserState, UserTunnelBinding, UserType,
-    ZoneConfig, AGENT_SPEC_SCHEMA_VERSION, APP_INSTALL_SCHEMA_VERSION, APP_REGISTRY_KEY,
-    INSTALL_PLAN_EXECUTION_SCHEMA_VERSION, OBJ_TYPE_APP_DOC, OPENDAN_SERVICE_PORT,
-    OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
-    ZONE_OWNER_USER_ID_KEY,
+    generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
+    AppInstanceId, AppRegistry, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig,
+    NodeState, ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteConfig, ServiceInfo,
+    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceProtocol,
+    ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile,
+    UserProfile, UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig,
+    AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, OPENDAN_SERVICE_UNIQUE_ID,
+    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID, ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -41,6 +35,7 @@ use std::convert::TryFrom;
 use url::Url;
 
 const DEFAULT_OOD_ID: &str = "ood1";
+const DEFAULT_JARVIS_APP_DID: &str = "did:bns:jarvis.buckyos";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 const DEFAULT_SN_AI_PROVIDER_MODELS: &[&str] =
     &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
@@ -275,8 +270,8 @@ impl SystemConfigBuilder {
     }
 
     pub async fn add_default_agents(&mut self, config: &StartConfigSummary) -> Result<&mut Self> {
-        //add jarvis agent as default agent
-        // agents/buckyos_jarvis/doc -> agent doc
+        // Stage Jarvis as an Agent identity. Its OpenDAN App runtime is
+        // independently installed by the rootfs pre-install PIKG reconciler.
         let zone_did = DID::from_str(&config.zone_name)?;
         let jarvis_did = DID::new(
             zone_did.method.as_str(),
@@ -294,8 +289,7 @@ impl SystemConfigBuilder {
         let agent_id = AgentId::from_agent_did(&jarvis_doc.id).map_err(|error| anyhow!(error))?;
         let agent_doc_json = serde_json::to_value(&jarvis_doc)?;
         let (agent_doc_object_id, _) = build_named_object_by_json("agentdoc", &agent_doc_json);
-        let runtime_spec = build_default_jarvis_agent_spec(config)?;
-        self.stage_bootstrap_agent_runtime_plan(config, &runtime_spec)?;
+        let runtime_instance_id = default_jarvis_runtime_instance_id(config)?;
         let agent_spec = AgentSpec {
             schema_version: AGENT_SPEC_SCHEMA_VERSION,
             agent_id: agent_id.clone(),
@@ -306,7 +300,7 @@ impl SystemConfigBuilder {
                 schema_version: AGENT_SPEC_SCHEMA_VERSION,
                 agent_did: jarvis_doc.id.clone(),
                 agent_doc_object_id,
-                target_app_instance_id: runtime_spec.app_instance_id.clone(),
+                target_app_instance_id: runtime_instance_id,
                 service_name: "www".to_string(),
                 generation: 1,
             },
@@ -341,147 +335,6 @@ impl SystemConfigBuilder {
         let _ = install_settings;
 
         Ok(self)
-    }
-
-    /// Jarvis still needs its runtime before the Agent binding can be committed.
-    /// Keep that legacy bootstrap isolated from ordinary pre-install App config.
-    fn stage_bootstrap_agent_runtime_plan(
-        &mut self,
-        config: &StartConfigSummary,
-        runtime_spec: &AppServiceSpec,
-    ) -> Result<()> {
-        let app_doc = runtime_spec.app_doc.clone();
-        let install_config = &runtime_spec.spec_config;
-        app_doc.validate().map_err(|error| anyhow!(error))?;
-        let app_instance_id = AppInstanceId::from_app_did(app_doc.app_did(), &config.user_name)
-            .map_err(|error| anyhow!(error))?;
-        let app_doc_json = serde_json::to_value(&app_doc)?;
-        let (app_doc_object_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_json);
-        let target = InstallTarget {
-            node_did: None,
-            node_id: Some(DEFAULT_OOD_ID.to_string()),
-            os: buckyos_api::normalize_os(std::env::consts::OS),
-            arch: buckyos_api::normalize_arch(std::env::consts::ARCH),
-            kernel_version: None,
-            runtime_version: None,
-            capabilities: Default::default(),
-        };
-        let mut selected_packages = Vec::new();
-        for (key, desc) in app_doc.pkg_list.iter() {
-            let Some(selector) = buckyos_api::SubPkgList::effective_selector(&key, desc) else {
-                continue;
-            };
-            if !selector.matches_platform(&target.os, &target.arch) {
-                continue;
-            }
-            let package_meta_id = desc.pkg_objid.clone().ok_or_else(|| {
-                anyhow!("bootstrap package {key} must pin a Package Meta ObjectId")
-            })?;
-            let pkg_id = desc
-                .get_pkg_id_with_objid()
-                .ok_or_else(|| anyhow!("bootstrap package {key} has an invalid exact PackageId"))?;
-            selected_packages.push(SelectedPackage {
-                sub_pkg_name: key,
-                pkg_id,
-                package_meta_id: Some(package_meta_id),
-                docker_image_name: desc.docker_image_name.clone(),
-                docker_image_digest: desc.docker_image_digest.clone(),
-                required: desc.is_required(),
-            });
-        }
-        if selected_packages.is_empty() {
-            return Err(anyhow!(
-                "bootstrap AppDoc {} has no package for {}/{}",
-                app_doc.app_did().to_string(),
-                target.os,
-                target.arch
-            ));
-        }
-        let task_id = format!("bootstrap:preinstall:{}", app_instance_id.app_id());
-        let source_identity = InstallSourceIdentity::Catalog {
-            app_doc_object_id: app_doc_object_id.clone(),
-        };
-        let app = AppDocumentRef {
-            did: app_doc.app_did().clone(),
-            object_id: app_doc_object_id.clone(),
-            show_name: app_doc.show_name.clone(),
-            version: app_doc.version.clone(),
-        };
-        let resolution = DidResolutionSnapshot {
-            app_did: app_doc.app_did().clone(),
-            doc_type: AppDocType,
-            app_doc_object_id: Some(app_doc_object_id),
-            resolver_id: Some("bootstrap".to_string()),
-            document_status: DocumentStatus::Active,
-            document_version: None,
-            authority_seq: None,
-            effective_owner: Some(app_doc.owner.clone()),
-            expected_owner: Some(app_doc.owner.clone()),
-            evidence: Some(DidEvidenceLevel::Anchored),
-            verification_status: Some(DidVerificationStatus::Passed),
-            cache_status: Some(DidCacheStatus::Disabled),
-            doc_hash: None,
-            warnings: Vec::new(),
-            migration_target: None,
-            resolved_at: Some(buckyos_kit::buckyos_get_unix_timestamp()),
-        };
-        let install_params = InstallParams {
-            permissions: app_doc.permissions.clone(),
-            data_mount_points: install_config.data_mount_point.clone(),
-            local_cache_mount_points: install_config.local_cache_mount_point.clone(),
-            external_mount_points: install_config.external_mount_point.clone(),
-            bash_envs: install_config.bash_envs.clone(),
-            res_pool_id: Some(install_config.res_pool_id.clone()),
-            ..Default::default()
-        };
-        let fingerprint = InstallPlan::compute_fingerprint(
-            InstallPlanUse::FreshInstall,
-            &task_id,
-            &app_instance_id,
-            &config.user_name,
-            &source_identity,
-            &app,
-            &app_doc,
-            &resolution,
-            &target,
-            &install_params,
-            install_config,
-            &selected_packages,
-            &[],
-        );
-        let plan = InstallPlan {
-            schema_version: APP_INSTALL_SCHEMA_VERSION,
-            plan_use: InstallPlanUse::FreshInstall,
-            task_id,
-            app_instance_id,
-            owner_user_id: config.user_name.clone(),
-            source_identity,
-            app,
-            app_doc,
-            resolution,
-            target,
-            selected_packages,
-            required_contents: Vec::new(),
-            install_params,
-            service_spec_config: install_config.clone(),
-            plan_fingerprint: fingerprint,
-            created_at: buckyos_kit::buckyos_get_unix_timestamp(),
-        };
-        let key = InstallPlanExecutionKey::from_plan(&plan);
-        let record = InstallPlanExecutionRecord {
-            schema_version: INSTALL_PLAN_EXECUTION_SCHEMA_VERSION,
-            key: key.clone(),
-            plan,
-            state: InstallPlanExecutionState::Pending,
-            commit_point: InstallPlanCommitPoint::BeforeClaim,
-            registry_revision: None,
-            app_spec_revision: None,
-            registry: None,
-            error: None,
-            claimed_at: 0,
-            updated_at: buckyos_kit::buckyos_get_unix_timestamp(),
-        };
-        self.insert_json(&key.storage_key(), &record)
     }
 
     pub fn add_device_doc(
@@ -813,96 +666,9 @@ impl SystemConfigBuilder {
     }
 }
 
-fn default_jarvis_agent_doc(config: &StartConfigSummary) -> Value {
-    let jarvis_did = config
-        .zone_name
-        .strip_prefix("did:web:")
-        .map(|zone_host| format!("did:web:jarvis.{zone_host}"))
-        .unwrap_or_else(|| "did:web:jarvis.test.buckyos.io".to_string());
-    json!({
-        "id": jarvis_did,
-        "name": "Jarvis",
-        "kind": "root-agent",
-        "description": "Default built-in OpenDAN agent for BuckyOS"
-    })
-}
-
-fn build_default_jarvis_agent_spec(config: &StartConfigSummary) -> Result<AppServiceSpec> {
-    const VERSION: &str = env!("CARGO_PKG_VERSION");
-    const JARVIS_APP_ID: &str = "buckyos-jarvis";
-    const JARVIS_PKG_NAME: &str = "buckyos_jarvis";
-
-    let owner_did = DID::from_str("did:bns:buckyos")?;
-    let app_did = AppDoc::derive_bns_app_did(JARVIS_APP_ID, &owner_did)?;
-    let app_id = AppId::from_app_did(&app_did).map_err(|error| anyhow!(error))?;
-    let package_name = format!("all.agent.{app_id}");
-    let package_meta = json!({
-        "name": package_name,
-        "version": VERSION,
-        "author": owner_did,
-        "owner": owner_did,
-        "bootstrap_package": JARVIS_PKG_NAME,
-    });
-    let (package_meta_object_id, _) = build_named_object_by_json("pkg", &package_meta);
-    let mut runtime_package = SubPkgDesc::new(format!("{package_name}#{VERSION}"));
-    runtime_package.pkg_objid = Some(package_meta_object_id);
-    let app_doc = AppDoc::builder(
-        AppType::Agent,
-        JARVIS_APP_ID,
-        VERSION,
-        "did:bns:buckyos",
-        &owner_did,
-    )
-    .show_name("Jarvis")
-    .description_detail("Default built-in OpenDAN agent for BuckyOS")
-    .selector_type(SelectorType::Single)
-    .service_port("www", OPENDAN_SERVICE_PORT)
-    .app_did(app_did)
-    .agent_pkg(runtime_package)
-    .build()
-    .map_err(|err| anyhow!("build default jarvis app doc failed: {err}"))?;
-
-    let mut install_config = ServiceSpecConfig::default();
-    install_config.service_config.insert(
-        "www".to_string(),
-        ServiceEndpointConfig {
-            protocol: ServiceProtocol::Http,
-            inner_port: OPENDAN_SERVICE_PORT,
-        },
-    );
-    install_config.expose_config.insert(
-        "www".to_string(),
-        ServiceExposeConfig::web(Vec::new(), String::new(), false),
-    );
-
-    let app_instance_id = AppInstanceId::from_app_did(app_doc.app_did(), &config.user_name)
-        .map_err(|error| anyhow!(error))?;
-    let app_doc_json = serde_json::to_value(&app_doc)?;
-    let (app_doc_object_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, &app_doc_json);
-
-    Ok(AppServiceSpec {
-        app_instance_id: app_instance_id.clone(),
-        app_did: app_doc.app_did().clone(),
-        deployment: DeploymentIdentity {
-            app_instance_id,
-            task_id: "bootstrap:jarvis".to_string(),
-            app_doc_object_id,
-            spec_generation: 1,
-            pikg_digest: None,
-        },
-        permission: app_doc.permissions.clone(),
-        app_doc,
-        app_name: JARVIS_APP_ID.to_string(),
-        app_host_name: JARVIS_APP_ID.to_string(),
-        app_index: 1,
-        owner_user_id: config.user_name.clone(),
-        selected_components: Vec::new(),
-        packages: Vec::new(),
-        enable: true,
-        expected_instance_count: 1,
-        state: ServiceState::default(),
-        spec_config: install_config,
-    })
+fn default_jarvis_runtime_instance_id(config: &StartConfigSummary) -> Result<AppInstanceId> {
+    let app_did = DID::from_str(DEFAULT_JARVIS_APP_DID)?;
+    AppInstanceId::from_app_did(&app_did, &config.user_name).map_err(|error| anyhow!(error))
 }
 
 fn trim_to_option(value: &str) -> Option<String> {
@@ -1516,7 +1282,7 @@ mod beta22_tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_stages_agent_binding_after_runtime_install_plan() {
+    async fn bootstrap_stages_agent_binding_for_preinstalled_runtime() {
         let config = start_config();
         let mut builder = SystemConfigBuilder::new(HashMap::new());
         builder.add_system_defaults().unwrap();
@@ -1540,7 +1306,21 @@ mod beta22_tests {
                 .keys()
                 .filter(|key| key.starts_with("system/scheduler/install_plan_executions/"))
                 .count(),
-            1
+            0
+        );
+        let provision = builder
+            .entries
+            .iter()
+            .find(|(key, _)| key.starts_with("system/scheduler/bootstrap_agents/"))
+            .map(|(_, value)| serde_json::from_str::<BootstrapAgentProvision>(value).unwrap())
+            .unwrap();
+        assert_eq!(
+            provision
+                .agent_spec
+                .binding
+                .target_app_instance_id
+                .to_string(),
+            format!("jarvis.buckyos.bns.did@{}", config.user_name)
         );
     }
 }

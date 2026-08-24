@@ -91,7 +91,6 @@ aios entrypoint 派生或兼容变量：
 | `SCRIPT_PACKAGE_ROOT` | aios entrypoint | 旧 script-service 兼容变量，值来自 `BUCKYOS_PKG_DIR`。 |
 | `SCRIPT_DATA_ROOT` | aios entrypoint | 旧 script-service 兼容变量，值来自 `BUCKYOS_DATA_DIR`。 |
 | `OPENDAN_SERVICE_PORT` | node-daemon | OpenDAN 兼容变量，值同 `BUCKYOS_SERVICE_PORT`。 |
-| `OPENDAN_AGENT_ID` | node-daemon | OpenDAN 兼容变量，值同 `BUCKYOS_APP_ID`。 |
 
 ## AppClient 和 AgentTool 变量
 

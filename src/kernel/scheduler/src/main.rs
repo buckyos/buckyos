@@ -439,7 +439,10 @@ mod test {
                 .expect("install settings should be preserved"),
         )
         .expect("install settings should use the pre-install seed schema");
-        assert_eq!(install_settings.pre_install_apps.len(), 1);
+        assert_eq!(install_settings.pre_install_apps.len(), 2);
+        assert!(install_settings
+            .pre_install_apps
+            .contains_key("jarvis.buckyos.bns.did"));
         assert!(install_settings
             .pre_install_apps
             .contains_key("buckyos-systest.buckyos.bns.did"));

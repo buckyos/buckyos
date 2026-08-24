@@ -1,0 +1,6 @@
+{
+  "lock": false,
+  "tasks": {
+    "build": "node build.mjs"
+  }
+}
