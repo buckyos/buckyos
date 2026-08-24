@@ -96,13 +96,13 @@
 
 ### 2.3 双主体 enforce：用户权限与 App 权限是“与”关系
 
-一次来自 App 的请求，是否放行由 `rbac::enforce(userid, appid, resource, action)` 决定，它**分别对用户维度和 App 维度各判一次，再取 AND**（`src/kernel/buckyos-api/src/runtime.rs`、`src/rbac`）：
+一次请求是否放行由 `rbac::enforce(userid, authorization_target, resource, action)` 决定，它**分别对用户维度和 target 维度各判一次，再取 AND**。授权 target 必须带 kind：App 为 `app:<app_id>`，系统服务为 `system:<service_id>`，同名二者不能串权：
 
 ```
-allow = enforce(appid, resource, action)   // App 角色是否允许
+allow = enforce(authorization_target, resource, action)
       AND
         enforce(userid, resource, action)   // 用户角色是否允许
-//（appid == "kernel" 时跳过用户维度）
+// kernel 例外仍由明确的系统身份处理，不通过裸 appid 猜测
 ```
 
 **含义**：一个 App 能对某资源做的事 = 该 App 声明的权限 ∩ 当前操作用户的权限。降权用户（如 `user`）用某个权限很大的 App，也只能在自己 `users/{user}/*` 名下操作。这是“用户类型差异”在运行期真正生效的地方。
@@ -181,7 +181,7 @@ system_builtin
 
 1. **首次访问即初始化（lazy provisioning）。** App 不能假设系统已为新用户建好数据目录或 App 记录。App 在该用户**首次访问**时，应在自己的 per-user 数据区（§6.2 的 `…/home/<user>/.local/share/<appid>/`）按需创建初始结构。
 2. **数据严格按 `owner_user_id` 隔离。** App 的可写数据路径由 loader 烘焙了 `owner_user_id`（系统强制，§6.2），App 不得跨用户读写，也不得把多个用户的数据混存到同一路径。
-3. **身份只认 session-token，不自建用户表。** App 判断“当前是谁”必须解析系统下发的 session-token（含 `userid`+`appid`），不得维护独立的用户名/口令体系（§6.1）。
+3. **身份只认 session-token，不自建用户表。** App 必须通过共享 verifier 校验 Verify Hub issuer、`principal_kind`、`token_use=session` 和精确 AuthTarget；不得只解码 `userid+appid` 或维护独立口令体系。
 4. **权限判断交给系统 RBAC，不自行放行。** App 对 system-config / kRPC 资源的访问会被 `enforce()` 透明拦截（§2.3）。App 不应假设“能创建用户就能访问其数据”，越权访问会被系统拒绝。
 
 > 标准缺口（❌，待平台补齐以支撑上述约定）：当前没有 `onUserCreate` 事件让 App 预热数据；App 只能依赖“首次访问即初始化”。若未来要支持“管理员建号即为各 App 预置空间”，需要新增用户级生命周期事件（与 §5 的 `onUserDelete` 对称）。
@@ -239,7 +239,7 @@ system_builtin
 
 App 可用性回答“该用户能否发现、登录并使用某个 App 实例”，由 Control Panel 持久化、由共享解析器确定性判定，并由 Verify Hub 在签发和刷新 token 前强制执行。个人 App 的 Owner 隐式允许；精确用户规则优先于组规则；无精确规则时 deny 组优先于 allow 组；没有显式匹配时 `Admin` / `User` 默认允许，`Limited` / Guest 默认拒绝。系统 App 与 Zone App 对所有有效登录用户隐式允许。
 
-session token 同时绑定 `appid`、`app_instance_id` 和非系统 App 的 `app_owner_user_id`。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。匿名 `guest` 不经过 Verify Hub；Control Panel 只 CAS 写 availability policy 和审计，scheduler 读取 policy 后把 Gateway access mode 编译为 `Public` 或 `Private`，不回写 AppSpec。
+session token 带显式 `target_kind` 与 `token_use`。App target 同时绑定 `appid + app_instance_id + app_owner_user_id`；System target 绑定 `SystemServiceId` 且禁止 App instance/owner claims。策略撤销会立即阻止新登录和 refresh；已签发的短期 session token 最长可继续到自身 TTL 到期。
 
 ---
 

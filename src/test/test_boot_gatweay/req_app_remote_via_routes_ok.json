@@ -5,7 +5,7 @@
       "host": "filebrowser.test.buckyos.io",
       "uri": "/index.html",
       "url": "https://filebrowser.test.buckyos.io/index.html",
-      "Cookie": "test=123; buckyos_session_token=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJpc3N1ZXItbWFpbiIsImFwcGlkIjoiZmlsZWJyb3dzZXIiLCJzdWIiOiJkZWJ1Zy11c2VyIiwiZXhwIjoyMDU4ODM4OTM5fQ.vtPYqhdaJcfjml69rrf6LoKMYGU-2FHaO9aM7HNTsM6-EVtL9NJAilq1TRQW8e2SCjhrpxReQlWiTwAEOX6gDg"
+      "Cookie": "test=123; buckyos_session_token=eyJhbGciOiJFZERTQSIsImtpZCI6InZlcmlmeS1odWIifQ.eyJpc3MiOiJ2ZXJpZnktaHViIiwiYXBwaWQiOiJmaWxlYnJvd3NlciIsInN1YiI6ImRlYnVnLXVzZXIiLCJleHAiOjIwNTg4Mzg5MzksInByaW5jaXBhbF9raW5kIjoidXNlciIsInRva2VuX3VzZSI6InNlc3Npb24iLCJ0YXJnZXRfa2luZCI6ImFwcCIsImFwcF9pbnN0YW5jZV9pZCI6ImZpbGVicm93c2VyQGFsaWNlIiwiYXBwX293bmVyX3VzZXJfaWQiOiJhbGljZSJ9.My1LUtTjpJrPYs5N6UqbjsfkuSwJN5Bw8NYGqIlo53MjC7eFVudB2Kf-mJW5d74HF23wBsASk7fcPzQqCs83CA"
     }
   },
   "id": "server:node_gateway:main",

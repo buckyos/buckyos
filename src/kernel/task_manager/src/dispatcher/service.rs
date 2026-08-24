@@ -215,7 +215,17 @@ impl TaskDispatcherService {
                 RPCErrors::NoPermission("task-dispatcher requires a session token".to_string())
             })?;
         let verified = self.token_verifier.verify(token).await?;
-        let (user_id, app_id) = verified.get_subs()?;
+        let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)?;
+        let user_id = verified
+            .sub
+            .clone()
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        let app_id = claims.target.appid_claim().to_string();
+        let authorization_id = claims.target.authorization_key();
+        let app_instance_id = match claims.target {
+            AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+            AuthTarget::System { .. } => None,
+        };
         if user_id.trim().is_empty() || app_id.trim().is_empty() {
             return Err(RPCErrors::InvalidToken(
                 "session token has an empty subject or app id".to_string(),
@@ -225,6 +235,8 @@ impl TaskDispatcherService {
         Ok(RequestContext {
             user_id,
             app_id,
+            app_instance_id,
+            authorization_id,
             zone_trusted,
             sudo: verified.sudo,
         })

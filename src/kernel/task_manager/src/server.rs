@@ -35,12 +35,13 @@ const MAX_RECURSIVE_CONTROL_NODES: usize = 512;
 
 /// The caller identity resolved from the *verified* session token.
 ///
-/// `zone_trusted` marks callers whose token was signed by the zone owner/device
-/// key, or whose verify-hub session preserves a device/service principal.
+/// `zone_trusted` marks Verify Hub sessions that preserve a device/service principal.
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub user_id: String,
     pub app_id: String,
+    pub app_instance_id: Option<String>,
+    pub authorization_id: String,
     pub zone_trusted: bool,
     pub sudo: bool,
 }
@@ -54,6 +55,7 @@ impl RequestContext {
         Principal {
             user_id: self.user_id.clone(),
             app_id: self.app_id.clone(),
+            authorization_id: self.authorization_id.clone(),
             roles,
             sudo: self.sudo,
             view_gate: Default::default(),
@@ -64,7 +66,7 @@ impl RequestContext {
         ActorRef {
             user_id: self.user_id.clone(),
             app_id: self.app_id.clone(),
-            app_instance_id: None,
+            app_instance_id: self.app_instance_id.clone(),
         }
     }
 }
@@ -80,15 +82,10 @@ pub trait SessionTokenVerifier: Send + Sync {
 pub struct RuntimeSessionTokenVerifier;
 
 pub(crate) fn token_is_zone_trusted(token: &RPCSessionToken) -> bool {
-    if token.iss.as_deref() != Some(VERIFY_HUB_UNIQUE_ID) {
-        return true;
-    }
     matches!(
-        token
-            .extra
-            .get(TOKEN_PRINCIPAL_KIND_CLAIM)
-            .and_then(Value::as_str),
-        Some(TOKEN_PRINCIPAL_KIND_DEVICE | TOKEN_PRINCIPAL_KIND_SYSTEM)
+        validate_verify_hub_token_claims(token, TokenUse::Session)
+            .map(|claims| claims.principal_kind),
+        Ok(TokenPrincipalKind::Device | TokenPrincipalKind::System)
     )
 }
 
@@ -156,7 +153,17 @@ impl TaskManagerService {
                 RPCErrors::NoPermission("task-manager requires a session token".to_string())
             })?;
         let verified = self.token_verifier.verify(token).await?;
-        let (user_id, app_id) = verified.get_subs()?;
+        let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)?;
+        let user_id = verified
+            .sub
+            .clone()
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        let app_id = claims.target.appid_claim().to_string();
+        let authorization_id = claims.target.authorization_key();
+        let app_instance_id = match claims.target {
+            AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+            AuthTarget::System { .. } => None,
+        };
         if user_id.trim().is_empty() {
             return Err(RPCErrors::InvalidToken(
                 "session token has an empty subject".to_string(),
@@ -171,6 +178,8 @@ impl TaskManagerService {
         Ok(RequestContext {
             user_id,
             app_id,
+            app_instance_id,
+            authorization_id,
             zone_trusted,
             sudo: verified.sudo,
         })
@@ -1275,9 +1284,29 @@ impl TaskManagerHandler for TaskManagerService {
                 "controller and request_id are required".into(),
             ));
         }
+        let authorization_id = if let Some(app_instance_id) = &req.controller.app_instance_id {
+            let app_instance: AppInstanceId = app_instance_id.parse().map_err(|err| {
+                RPCErrors::ParseRequestError(format!("invalid controller app_instance_id: {err}"))
+            })?;
+            if app_instance.app_id().as_str() != req.controller.app_id {
+                return Err(RPCErrors::ParseRequestError(
+                    "controller app_id does not match app_instance_id".into(),
+                ));
+            }
+            AuthTarget::app(app_instance).authorization_key()
+        } else {
+            AuthTarget::system(
+                SystemServiceId::parse(&req.controller.app_id).map_err(|err| {
+                    RPCErrors::ParseRequestError(format!("invalid controller service id: {err}"))
+                })?,
+            )
+            .authorization_key()
+        };
         let controller_ctx = RequestContext {
             user_id: req.controller.user_id.clone(),
             app_id: req.controller.app_id.clone(),
+            app_instance_id: req.controller.app_instance_id.clone(),
+            authorization_id,
             zone_trusted: false,
             sudo: false,
         };
@@ -2117,15 +2146,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         EncodingKey::from_ed_pem(TEST_PRIVATE_KEY.as_bytes()).unwrap()
     }
 
-    fn signed_token(issuer: &str, user_id: &str, app_id: &str) -> String {
-        signed_token_with_principal(issuer, user_id, app_id, None)
-    }
-
-    fn signed_token_with_principal(
-        issuer: &str,
+    fn signed_token(
         user_id: &str,
-        app_id: &str,
-        principal_kind: Option<&str>,
+        target: AuthTarget,
+        principal_kind: TokenPrincipalKind,
     ) -> String {
         let now = buckyos_kit::buckyos_get_unix_timestamp();
         let mut session_token = RPCSessionToken {
@@ -2133,48 +2157,44 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             token: None,
             aud: None,
             exp: Some(now + 3600),
-            iss: Some(issuer.to_string()),
+            iss: Some(VERIFY_HUB_UNIQUE_ID.to_string()),
             jti: None,
             sub: Some(user_id.to_string()),
-            appid: Some(app_id.to_string()),
+            appid: None,
             sudo: false,
             extra: HashMap::new(),
         };
-        if let Some(principal_kind) = principal_kind {
-            session_token.extra.insert(
-                TOKEN_PRINCIPAL_KIND_CLAIM.to_string(),
-                Value::String(principal_kind.to_string()),
-            );
-        }
+        bind_token_principal_kind(&mut session_token, principal_kind);
+        bind_token_target(&mut session_token, &target, TokenUse::Session).unwrap();
         session_token
             .generate_jwt(None, &test_encoding_key())
             .unwrap()
     }
 
-    /// Zone-trusted service token (issuer != verify-hub).
-    fn service_ctx(user_id: &str, app_id: &str) -> RPCContext {
+    fn service_ctx(user_id: &str, service_id: &str) -> RPCContext {
         RPCContext {
-            token: Some(signed_token("ood1", user_id, app_id)),
-            ..Default::default()
-        }
-    }
-
-    fn refreshed_service_ctx(user_id: &str, app_id: &str) -> RPCContext {
-        RPCContext {
-            token: Some(signed_token_with_principal(
-                VERIFY_HUB_UNIQUE_ID,
+            token: Some(signed_token(
                 user_id,
-                app_id,
-                Some(TOKEN_PRINCIPAL_KIND_SYSTEM),
+                AuthTarget::system(SystemServiceId::parse(service_id).unwrap()),
+                TokenPrincipalKind::System,
             )),
             ..Default::default()
         }
     }
 
+    fn refreshed_service_ctx(user_id: &str, service_id: &str) -> RPCContext {
+        service_ctx(user_id, service_id)
+    }
+
     /// Interactive (verify-hub issued) session token: never zone-trusted.
     fn user_ctx(user_id: &str, app_id: &str) -> RPCContext {
+        let target = if app_id == CONTROL_PANEL_SERVICE_NAME {
+            AuthTarget::system(SystemServiceId::parse(app_id).unwrap())
+        } else {
+            AuthTarget::app(format!("{app_id}@{user_id}").parse().unwrap())
+        };
         RPCContext {
-            token: Some(signed_token(VERIFY_HUB_UNIQUE_ID, user_id, app_id)),
+            token: Some(signed_token(user_id, target, TokenPrincipalKind::User)),
             ..Default::default()
         }
     }
@@ -2211,6 +2231,37 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         );
         service.ensure_builtin_schemas().await.unwrap();
         (service, temp_dir)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn authentication_keeps_app_and_system_targets_distinct() {
+        let (service, _tmp) = setup_service().await;
+        let app_ctx = RPCContext {
+            token: Some(signed_token(
+                "alice",
+                AuthTarget::app("control-panel@alice".parse().unwrap()),
+                TokenPrincipalKind::User,
+            )),
+            ..Default::default()
+        };
+        let system_ctx = RPCContext {
+            token: Some(signed_token(
+                "alice",
+                AuthTarget::system(SystemServiceId::parse("control-panel").unwrap()),
+                TokenPrincipalKind::User,
+            )),
+            ..Default::default()
+        };
+
+        let app = service.authenticate(&app_ctx).await.unwrap();
+        let system = service.authenticate(&system_ctx).await.unwrap();
+
+        assert_eq!(app.authorization_id, "app:control-panel");
+        assert_eq!(system.authorization_id, "system:control-panel");
+        assert_eq!(app.app_instance_id.as_deref(), Some("control-panel@alice"));
+        assert_eq!(system.app_instance_id, None);
+        assert_ne!(app.authorization_id, system.authorization_id);
+        assert_ne!(app.actor_ref(), system.actor_ref());
     }
 
     fn raw_create_req(name: &str, key: &str) -> CreateTaskReq {
@@ -3334,7 +3385,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     /// that creates the tasks left in `agent`.
     async fn install_zone_like_enforcer() {
         let config = build_current_rbac_config(Some(
-            "g, devtest, admin\ng, bob, users\ng, control-panel, kernel\ng, buckyos_jarvis, agent",
+            "g, devtest, admin\ng, bob, users\ng, system:control-panel, kernel\ng, app:buckyos-jarvis, agent",
         ));
         rbac::create_enforcer(&config.model, &config.policy)
             .await
@@ -3350,7 +3401,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         install_zone_like_enforcer().await;
         let (service, _tmp) = setup_service().await;
 
-        let agent = user_ctx("devtest", "buckyos_jarvis");
+        let agent = user_ctx("devtest", "buckyos-jarvis");
         let task = service
             .handle_create_task(raw_create_req("aicc:job-1", "k-aicc-1"), agent)
             .await
@@ -3397,7 +3448,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let page = service
             .handle_list_tasks(
                 ListTasksReq::default(),
-                user_ctx("devtest", "buckyos_filebrowser"),
+                user_ctx("devtest", "buckyos-filebrowser"),
             )
             .await
             .unwrap();

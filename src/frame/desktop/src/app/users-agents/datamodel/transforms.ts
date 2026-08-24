@@ -23,6 +23,21 @@ import type {
 
 const fallbackCreatedAt = '1970-01-01T00:00:00Z'
 
+export function appListTargetUserIds(
+  selfUserId: string | undefined,
+  callerUserType: string | undefined,
+  users: readonly Pick<UserInfo, 'user_id'>[],
+): string[] {
+  const targetUserIds = new Set<string>()
+  if (selfUserId) targetUserIds.add(selfUserId)
+  if (callerUserType === 'root' || callerUserType === 'admin') {
+    for (const user of users) {
+      if (user.user_id) targetUserIds.add(user.user_id)
+    }
+  }
+  return [...targetUserIds]
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>

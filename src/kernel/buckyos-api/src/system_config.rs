@@ -18,6 +18,7 @@ use tokio::sync::{OnceCell, RwLock};
 use crate::KVAction;
 
 const CONFIG_CACHE_TIME: u64 = 10; //10s
+pub const SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE: &str = "system-config-bootstrap";
 type ConfigCache = HashMap<String, (String, u64, u64)>;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]

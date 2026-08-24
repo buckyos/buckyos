@@ -24,7 +24,7 @@ const restartEnabled = ["1", "true", "yes"].includes(
   (Deno.env.get("BUCKYOS_TEST_RESTART") || "").toLowerCase(),
 );
 const appId = "control-panel";
-const appInstanceId = "control-panel@system";
+const authTarget = { kind: "system", service_id: appId };
 let lastNonce = Date.now();
 
 function nextNonce(): number {
@@ -72,6 +72,7 @@ async function login(username: string, password: string): Promise<JsonRecord> {
       username,
       password: hashPassword(username, password, nonce),
       appid: appId,
+      target: authTarget,
       login_nonce: nonce,
     }),
     "auth.login response",
@@ -84,8 +85,7 @@ async function sudo(username: string, password: string): Promise<string> {
     await call("verify-hub", "sudo_by_password", {
       username,
       password: hashPassword(username, password, nonce),
-      appid: appId,
-      app_instance_id: appInstanceId,
+      target: authTarget,
       aud: "system-config",
       login_nonce: nonce,
     }),

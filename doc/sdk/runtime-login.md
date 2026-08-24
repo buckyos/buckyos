@@ -8,7 +8,7 @@
 
 1. `init_buckyos_api_runtime()` 只是收集配置，不能把 `user_id` 当成已认证身份。
 2. `runtime.login()` 的目标是让 runtime 拥有一个可用的 `session_token`，并拉取 `zone_config`；它不等价于“总是立刻向 verify-hub 发起密码登录”。
-3. `session_token` 绑定 `appid` 和主体，`refresh_token` 只用于向 verify-hub 换新 token，两者不能混用。
+3. Verify Hub token 同时绑定主体、结构化 `AuthTarget` 和 `token_use`；session、refresh、sudo 与 LoginAssertion 不能混用。
 
 推荐初始化顺序如下：
 
@@ -40,19 +40,19 @@ let system_config = runtime.get_system_config_client().await?;
 
 当前实现里主要有三种容易混淆的 token。
 
-### 登录 JWT
+### LoginAssertion（登录断言）
 
-登录 JWT 是“用已有身份去换 verify-hub token pair”的启动凭证。它通常由本地私钥签发：
+LoginAssertion 是“用已有身份去换 Verify Hub token pair”的一次性启动凭证，不是 session token。它通常由本地私钥签发：
 
 - AppClient 可以用用户私钥签发。
 - AppService 通常由 node-daemon 在启动服务时用本机 device private key 签发，并通过环境变量注入。
 - Kernel/Frame service 使用设备私钥签名或启动环境传入的 token，token 的主体是所在 DeviceId。
 
-普通 AppService 与系统服务使用不同的主动请求主体。普通 AppService 的设备签名登录 JWT 使用设备名作为 `iss`、OwnerUserId 作为 `sub`；Kernel/Frame 系统服务使用设备名作为 `iss` 和 `sub`。两者都使用 Service 自己的 AppId 作为 `appid`。verify-hub 会在 token pair 中保留用户或设备主体类型，刷新用户会话时检查用户状态，刷新设备会话时检查 Device Document 是否仍存在。
+普通 AppService 与系统服务使用不同的主动请求主体。普通 AppService 的设备签名 LoginAssertion 使用设备名作为 `iss`、OwnerUserId 作为 `sub`；Kernel/Frame 系统服务使用设备名作为 `iss` 和 `sub`。交换请求另带结构化 target：AppService 是精确 `AppInstanceId`，Kernel/Frame 是 `SystemServiceId`。Verify Hub 会在 token pair 中保留主体类型与 target。
 
 当前 runtime 对私钥加载有一个重要约束：`login()` 不会隐式读取设备私钥。AppClient 会在 `fill_by_load_config()` 中尝试加载 `user_private_key.pem`；设备私钥只会在组件显式调用 `load_device_private_key()` 后进入 runtime。普通 AppService 不应该自己读取设备私钥，而是使用 node-daemon 注入的登录 JWT。
 
-verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`、`appid`、`jti`。同一个登录 JWT 只能用一次，当前实现用 `sub + appid + jti` 作为重放检测 key。
+Verify Hub 的 `login_by_jwt` 会验证断言的签名、过期时间、`sub`、`appid`、`jti`，并拒绝带 Verify Hub session claims 的输入。同一个断言只能用一次，重放 key 由可信 `iss + sub + jti` 构成，不包含 target，因此换 target 重放也会失败。
 
 ### session_token
 
@@ -63,6 +63,10 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 | `iss` | 签发者。verify-hub 签发的 token 为 `verify-hub` |
 | `sub` | 当前主体；用户请求使用请求用户，普通 AppService 自身请求使用 OwnerUserId，Kernel/Frame 系统服务自身请求使用 DeviceId |
 | `appid` | token 绑定的应用 |
+| `principal_kind` | `user/device/app/system/agent`，与 target kind 正交 |
+| `target_kind` | `app` 或 `system` |
+| `app_instance_id` / `app_owner_user_id` | App target 必填且必须与 `appid` 一致；System target 禁止携带 |
+| `token_use` | session token 固定为 `session`；sudo 也是 session |
 | `exp` | 过期时间 |
 | `jti` | token id |
 | `session` | 当前会话 id，存在 extra claims 里 |
@@ -72,9 +76,9 @@ verify-hub 的 `login_by_jwt` 会验证该 JWT 的签名、过期时间、`sub`�
 
 ### refresh_token
 
-`refresh_token` 只用于调用 verify-hub 的 `refresh_token`。它当前有效期是 7 天，`aud` 为 `verify-hub`。每次 refresh 都会返回新的 `session_token + refresh_token`，旧 refresh token 立即失效；如果旧 token 被复用，verify-hub 会按重放风险处理并撤销该 session 的缓存。
+`refresh_token` 只用于调用 verify-hub 的 `refresh_token`，固定为 `token_use=refresh, sudo=false`，并与对应 session 携带完全相同的 AuthTarget。它当前有效期是 7 天，`aud` 为 `verify-hub`。每次 refresh 都会返回新的 token pair，旧 refresh token 立即失效。
 
-业务服务不能把 refresh token 当 session token 用。verify-hub 的 `verify_token` 会拒绝 `aud=verify-hub` 的 refresh token。
+业务服务不能把 refresh token 或 LoginAssertion 当 session token 用。共享本地验签入口只信任 `iss/kid=verify-hub` 且通过 `token_use=session + AuthTarget` 集中校验的 token。
 
 ## RuntimeType 决定登录材料从哪来
 

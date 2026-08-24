@@ -204,6 +204,9 @@ const LoginPage = () => {
           login_nonce: nonce,
           remember_me: rememberMe,
           ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
+          ...(!redirectUrl
+            ? { target: { kind: 'system', service_id: appid } }
+            : {}),
         })) as Record<string, unknown>
         // console.log('[login] response', response)
 

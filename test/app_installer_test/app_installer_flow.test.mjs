@@ -1,7 +1,7 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
+import { createHash, createPrivateKey, randomBytes, sign as signDetached } from 'node:crypto'
 import { access, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -46,6 +46,8 @@ const INSTALL_EVIDENCE_TIMEOUT_MS = Number(
 )
 const UNINSTALL_AFTER_INSTALL =
   getEnv('BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL') === '1'
+const SSO_ZONE_BASE_URL = getEnv('BUCKYOS_TEST_ZONE_BASE_URL')
+const SSO_PASSWORD = getEnv('BUCKYOS_TEST_ADMIN_PASSWORD')
 const tempPaths = new Set()
 const dockerImages = new Set()
 
@@ -63,6 +65,41 @@ function getEnv(name) {
 
 function createRunId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}`
+}
+
+function hashPassword(username, password, nonce) {
+  const original = createHash('sha256')
+    .update(`${password}${username}.buckyos`, 'utf8')
+    .digest('base64')
+  return createHash('sha256').update(`${original}${nonce}`, 'utf8').digest('base64')
+}
+
+function decodeJwtPayload(token) {
+  const segments = token.split('.')
+  assert.equal(segments.length, 3, 'SSO session token must be a JWT')
+  return JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8'))
+}
+
+function responseSetCookies(response) {
+  if (typeof response.headers.getSetCookie === 'function') {
+    return response.headers.getSetCookie()
+  }
+  const combined = response.headers.get('set-cookie')
+  return combined ? [combined] : []
+}
+
+function cookieValue(setCookies, name) {
+  const prefix = `${name}=`
+  const header = setCookies.find((value) => value.startsWith(prefix))
+  if (!header) return null
+  return header.slice(prefix.length).split(';', 1)[0] || null
+}
+
+function appOriginForHost(appHostName) {
+  assert.ok(SSO_ZONE_BASE_URL, 'App SSO DV requires a zone URL')
+  const appUrl = new URL(SSO_ZONE_BASE_URL)
+  appUrl.hostname = `${appHostName}.${appUrl.hostname}`
+  return appUrl.origin
 }
 
 function buildVersion() {
@@ -242,6 +279,7 @@ async function loginWithAppClient() {
   const tokenPair = await verifyHubRpc.call('login_by_jwt', {
     type: 'jwt',
     jwt: accountInfo.session_token,
+    target: { kind: 'system', service_id: 'control-panel' },
   })
 
   if (!tokenPair?.session_token) {
@@ -379,6 +417,103 @@ async function callControlPanel(method, params) {
   return ctx.controlPanelRpc.call(method, params)
 }
 
+async function loginStaticAppThroughSso({ appHostName, appId, appInstanceId, ownerUserId }) {
+  assert.ok(SSO_ZONE_BASE_URL && SSO_PASSWORD, 'App SSO DV requires zone URL and password')
+  const ctx = await getSdkContext()
+  const appUrl = new URL(appOriginForHost(appHostName))
+  appUrl.pathname = '/fixture'
+  appUrl.search = '?source=app-sso-dv'
+  const nonce = Date.now()
+  const login = await callControlPanel('auth.login', {
+    username: ctx.accountInfo.user_id,
+    password: hashPassword(ctx.accountInfo.user_id, SSO_PASSWORD, nonce),
+    appid: appId,
+    redirect_url: appUrl.toString(),
+    login_nonce: nonce,
+  })
+  assert.equal(typeof login.sso_nonce, 'number')
+
+  const callbackUrl = new URL('/sso_callback', appUrl.origin)
+  callbackUrl.searchParams.set('nonce', String(login.sso_nonce))
+  callbackUrl.searchParams.set('redirect_url', appUrl.toString())
+  const callback = await fetch(callbackUrl, { redirect: 'manual' })
+  assert.equal(callback.status, 302)
+  assert.equal(callback.headers.get('location'), appUrl.toString())
+  const setCookies = responseSetCookies(callback)
+  const sessionToken = cookieValue(setCookies, 'buckyos_session_token')
+  const refreshToken = cookieValue(setCookies, 'buckyos_refresh_token')
+  assert.ok(sessionToken, 'App SSO callback omitted session cookie')
+  assert.ok(refreshToken, 'App SSO callback omitted refresh cookie')
+  const claims = decodeJwtPayload(sessionToken)
+  assert.deepEqual(
+    {
+      iss: claims.iss,
+      sub: claims.sub,
+      principal_kind: claims.principal_kind,
+      token_use: claims.token_use,
+      target_kind: claims.target_kind,
+      appid: claims.appid,
+      app_instance_id: claims.app_instance_id,
+      app_owner_user_id: claims.app_owner_user_id,
+    },
+    {
+      iss: 'verify-hub',
+      sub: ctx.accountInfo.user_id,
+      principal_kind: 'user',
+      token_use: 'session',
+      target_kind: 'app',
+      appid: appId,
+      app_instance_id: appInstanceId,
+      app_owner_user_id: ownerUserId,
+    },
+  )
+  assert.notEqual(claims.sudo, true, 'ordinary App SSO session must not be sudo')
+  return { appOrigin: appUrl.origin, sessionToken, refreshToken }
+}
+
+async function verifyCrossOwnerRefreshRejected(source, destinationOrigin) {
+  const response = await fetch(new URL('/sso_refresh', destinationOrigin), {
+    method: 'POST',
+    headers: {
+      Cookie: `buckyos_session_token=${source.sessionToken}; buckyos_refresh_token=${source.refreshToken}`,
+    },
+    redirect: 'manual',
+  })
+  assert.equal(response.status, 401)
+  const clearCookies = responseSetCookies(response)
+  assert.ok(
+    clearCookies.some((value) => value.startsWith('buckyos_session_token=;')),
+    'cross-owner refresh must clear the session cookie',
+  )
+  assert.ok(
+    clearCookies.some((value) => value.startsWith('buckyos_refresh_token=;')),
+    'cross-owner refresh must clear the refresh cookie',
+  )
+}
+
+async function logoutStaticAppSso(session) {
+  await fetch(new URL('/sso_logout', session.appOrigin), {
+    method: 'POST',
+    headers: {
+      Cookie: `buckyos_session_token=${session.sessionToken}; buckyos_refresh_token=${session.refreshToken}`,
+    },
+  })
+}
+
+async function waitForGatewayAppRoute(appHostName, appInstanceId) {
+  const ready = await waitForCondition(async () => {
+    try {
+      const gatewayInfo = JSON.parse(
+        await readFile('/opt/buckyos/etc/node_gateway_info.json', 'utf8'),
+      )
+      return gatewayInfo.app_info?.[appHostName]?.app_instance_id === appInstanceId
+    } catch {
+      return false
+    }
+  }, { timeoutMs: INSTALL_EVIDENCE_TIMEOUT_MS })
+  assert.equal(ready, true, `Gateway route ${appHostName} did not bind ${appInstanceId}`)
+}
+
 async function buildAndStagePikg(projectDir) {
   const result = await buildPikgProject(projectDir)
   const digest = result.pack.pikg_digest.replace(/^sha256:/, '')
@@ -424,33 +559,30 @@ function escapeResolverSegment(raw) {
 }
 
 // resolver/cache/* 的写入受 RBAC 限制（kernel/root 级）。fixture 种入使用
-// 本机 node/device key 铸 root 会话（等价于 DV 管理注入，Installer 自身
-// 永不写这些 key）。
+// Verify Hub 签发的 system-config sudo session；boot LoginAssertion 不能在系统
+// 启动完成后作为通用配置写凭证。
 let seedRpcClient = null
 async function getSeedRpcClient() {
   if (seedRpcClient) {
     return seedRpcClient
   }
-  const credential = await getNodeSigningCredential()
-  const keyPem = (await readFile(credential.path, 'utf8')).trim()
-  const now = Math.floor(Date.now() / 1000)
-  const header = { alg: 'EdDSA', kid: credential.kid }
-  const payload = {
-    appid: 'node-daemon',
-    userid: 'root',
-    sub: 'root',
-    iss: credential.kid,
-    jti: String(now),
-    session: now,
-    exp: now + 3600,
+  if (!SSO_PASSWORD) {
+    throw new Error('BUCKYOS_TEST_ADMIN_PASSWORD is required for resolver fixture writes')
   }
-  const input = `${encodeJwtPart(header)}.${encodeJwtPart(payload)}`
-  const signature = signDetached(
-    null,
-    Buffer.from(input),
-    createPrivateKey(keyPem),
-  ).toString('base64url')
-  seedRpcClient = new buckyos.kRPCClient(SYSTEM_CONFIG_URL, `${input}.${signature}`)
+  const ctx = await getSdkContext()
+  const nonce = Date.now() + 1
+  const verifyHubRpc = new buckyos.kRPCClient(VERIFY_HUB_URL)
+  const sudo = await verifyHubRpc.call('sudo_by_password', {
+    username: ctx.accountInfo.user_id,
+    password: hashPassword(ctx.accountInfo.user_id, SSO_PASSWORD, nonce),
+    target: { kind: 'system', service_id: 'control-panel' },
+    aud: 'system-config',
+    login_nonce: nonce,
+  })
+  if (!sudo?.session_token) {
+    throw new Error('verify-hub sudo_by_password did not return a session token')
+  }
+  seedRpcClient = new buckyos.kRPCClient(SYSTEM_CONFIG_URL, sudo.session_token)
   return seedRpcClient
 }
 
@@ -727,6 +859,31 @@ async function removeDockerImage(imageName) {
   }
 }
 
+async function cleanupStaticWebTestApps() {
+  let gatewayInfo
+  try {
+    gatewayInfo = JSON.parse(
+      await readFile('/opt/buckyos/etc/node_gateway_info.json', 'utf8'),
+    )
+  } catch {
+    return
+  }
+  const instances = new Map()
+  for (const entry of Object.values(gatewayInfo.app_info ?? {})) {
+    if (!entry || typeof entry !== 'object') continue
+    if (!String(entry.app_id ?? '').startsWith('cp-web-')) continue
+    if (!entry.app_instance_id || !entry.app_owner_user_id) continue
+    instances.set(entry.app_instance_id, entry.app_owner_user_id)
+  }
+  for (const [appInstanceId, userId] of instances) {
+    try {
+      await uninstallApp({ appInstanceId, userId, removeData: false })
+    } catch {
+      // Best-effort cleanup is retried by the next DV run.
+    }
+  }
+}
+
 async function fileExists(targetPath) {
   try {
     await access(targetPath)
@@ -738,6 +895,7 @@ async function fileExists(targetPath) {
 
 after(async () => {
   if (UNINSTALL_AFTER_INSTALL) {
+    await cleanupStaticWebTestApps()
     for (const imageName of [...dockerImages]) {
       await removeDockerImage(imageName)
     }
@@ -827,6 +985,25 @@ test('app_installer local PIKG lifecycle', async (t) => {
       assert.equal(otherSpec.app_name, spec.app_name)
       assert.notEqual(otherSpec.app_host_name, spec.app_host_name)
       assert.notEqual(otherSpec.app_index, spec.app_index)
+
+      if (SSO_ZONE_BASE_URL && SSO_PASSWORD) {
+        await waitForGatewayAppRoute(spec.app_host_name, installedAppInstanceId)
+        await waitForGatewayAppRoute(otherSpec.app_host_name, otherSpec.app_instance_id)
+        const firstSso = await loginStaticAppThroughSso({
+          appHostName: spec.app_host_name,
+          appId: appIdFromName(fixture.appId),
+          appInstanceId: installedAppInstanceId,
+          ownerUserId: userId,
+        })
+        try {
+          await verifyCrossOwnerRefreshRejected(
+            firstSso,
+            appOriginForHost(otherSpec.app_host_name),
+          )
+        } finally {
+          await logoutStaticAppSso(firstSso)
+        }
+      }
 
       const registryBeforeUpgrade = await readConfigJson('system/app_registry')
       const appAllocationBeforeUpgrade = structuredClone(

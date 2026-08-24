@@ -18,7 +18,9 @@
 //! 形态调用方使用，后者由直连 HTTP 客户端使用——同 msg_center / aicc 的惯例。
 
 use ::kRPC::*;
-use buckyos_api::{get_buckyos_api_runtime, WorkflowDefinition};
+use buckyos_api::{
+    get_buckyos_api_runtime, validate_verify_hub_token_claims, TokenUse, WorkflowDefinition,
+};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -66,7 +68,12 @@ impl WorkflowCallerVerifier for RuntimeWorkflowCallerVerifier {
         let verified = get_buckyos_api_runtime()?
             .verify_trusted_session_token(token)
             .await?;
-        let (user_id, app_id) = verified.get_subs()?;
+        let claims = validate_verify_hub_token_claims(&verified, TokenUse::Session)?;
+        let user_id = verified
+            .sub
+            .clone()
+            .ok_or_else(|| RPCErrors::InvalidToken("workflow token has no subject".to_string()))?;
+        let app_id = claims.target.canonical_key();
         if user_id.trim().is_empty() || app_id.trim().is_empty() {
             return Err(RPCErrors::InvalidToken(
                 "workflow caller identity is incomplete".to_string(),

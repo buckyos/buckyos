@@ -16,6 +16,7 @@ import type {
   UsersAgentsSnapshot,
 } from './types'
 import {
+  appListTargetUserIds,
   toAgentEntity,
   toEntityGroupEntity,
   toSelfEntity,
@@ -83,13 +84,13 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
     fetchAgentListWithRuntime(),
   ])
 
-  const targetUserIds = new Set<string>()
-  if (selfUserId) targetUserIds.add(selfUserId)
-  for (const user of usersResult.data?.users ?? []) {
-    if (user.user_id) targetUserIds.add(user.user_id)
-  }
+  const targetUserIds = appListTargetUserIds(
+    selfUserId,
+    accountInfo?.user_type,
+    usersResult.data?.users ?? [],
+  )
   const appsByUser = new Map<string, NonNullable<Awaited<ReturnType<typeof fetchAppList>>['data']>['apps']>()
-  await Promise.all([...targetUserIds].map(async (userId) => {
+  await Promise.all(targetUserIds.map(async (userId) => {
     const result = await fetchAppList({ userId })
     if (result.data) appsByUser.set(userId, result.data.apps)
   }))

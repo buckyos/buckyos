@@ -22,16 +22,19 @@ use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, task_mgr_error_code, AckControlReq, AiContent,
-    AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload, AiResponse, AiccComputeProgress,
-    AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler, AiccRouteOverlay,
-    AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource, CancelResponse, Capability,
-    CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq, Feature, LlmChatInvokeRequest,
-    LlmChatInvokeResponse, ModelSpec, ReportProgressReq, ReportStartedReq, Requirements,
-    ResourceRef, RouteFallbackAttempt, RouteResolveRequest, RouteResolveResponse,
-    RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient, TaskPhase,
-    TextToImageInvokeRequest, TextToImageInvokeResponse, TypedTaskData, AICC_SERVICE_SERVICE_NAME,
+    ai_methods, get_buckyos_api_runtime, task_mgr_error_code, validate_verify_hub_token_claims,
+    AckControlReq, AiContent, AiMethodRequest, AiMethodResponse, AiMethodStatus, AiPayload,
+    AiResponse, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler,
+    AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
+    CancelResponse, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
+    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec, ReportProgressReq,
+    ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest,
+    RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient,
+    TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse, TypedTaskData,
+    AICC_SERVICE_SERVICE_NAME,
 };
+#[cfg(test)]
+use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
 use log::{debug, error, info, warn};
 use ndn_lib::{
     load_named_object_from_obj_str, ChunkHasher, ChunkId, FileObject, NamedObject, ObjId,
@@ -135,33 +138,42 @@ pub struct InvokeCtx {
 }
 
 impl InvokeCtx {
-    pub fn from_rpc(ctx: &RPCContext) -> Self {
-        let session_token = ctx.token.clone();
-        let mut tenant_id = "anonymous".to_string();
-        let mut caller_app_id: Option<String> = None;
-
-        if let Some(token) = session_token.as_ref() {
-            if !token.trim().is_empty() {
-                if let Ok(parsed) = RPCSessionToken::from_string(token.as_str()) {
-                    if let Ok((sub, appid)) = parsed.get_subs() {
-                        tenant_id = sub;
-                        caller_app_id = Some(appid);
-                    } else {
-                        tenant_id = token.clone();
-                    }
-                } else {
-                    tenant_id = token.clone();
-                }
-            }
-        }
-
+    fn from_unverified_rpc(ctx: &RPCContext) -> Self {
         Self {
-            tenant_id,
-            caller_app_id,
-            session_token,
+            tenant_id: "anonymous".to_string(),
+            caller_app_id: None,
+            session_token: ctx.token.clone(),
             trace_id: ctx.trace_id.clone(),
             task_id: None,
         }
+    }
+
+    fn apply_verified_session(&mut self, parsed: &RPCSessionToken) -> Result<()> {
+        let claims = validate_verify_hub_token_claims(parsed, TokenUse::Session)?;
+        let sub = parsed
+            .sub
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
+        self.tenant_id = sub.to_string();
+        self.caller_app_id = Some(claims.target.canonical_key());
+        Ok(())
+    }
+
+    pub async fn from_rpc(ctx: &RPCContext) -> Self {
+        let mut invoke_ctx = Self::from_unverified_rpc(ctx);
+        if let Some(token) = ctx
+            .token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if let Ok(runtime) = get_buckyos_api_runtime() {
+                if let Ok(parsed) = runtime.verify_trusted_session_token(token).await {
+                    let _ = invoke_ctx.apply_verified_session(&parsed);
+                }
+            }
+        }
+        invoke_ctx
     }
 }
 
@@ -4185,10 +4197,10 @@ impl AIComputeCenter {
         .await
     }
 
-    pub fn resolve_route(
+    fn resolve_route_with_invoke_ctx(
         &self,
         request: RouteResolveRequest,
-        rpc_ctx: RPCContext,
+        invoke_ctx: InvokeCtx,
     ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
         if crate::model_types::is_exact_model_name(request.logical_model.as_str()) {
             return Err(reason_error(
@@ -4196,7 +4208,6 @@ impl AIComputeCenter {
                 "route.resolve logical_model must be a logical model name; exact model names are only valid for typed inference APIs",
             ));
         }
-        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
         let request_id = request
             .request_id
             .clone()
@@ -4273,6 +4284,23 @@ impl AIComputeCenter {
         Ok(response)
     }
 
+    pub fn resolve_route(
+        &self,
+        request: RouteResolveRequest,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
+        self.resolve_route_with_invoke_ctx(request, InvokeCtx::from_unverified_rpc(&rpc_ctx))
+    }
+
+    async fn resolve_route_authenticated(
+        &self,
+        request: RouteResolveRequest,
+        rpc_ctx: RPCContext,
+    ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
+        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx).await;
+        self.resolve_route_with_invoke_ctx(request, invoke_ctx)
+    }
+
     pub async fn create_chat_completion(
         &self,
         request: LlmChatInvokeRequest,
@@ -4302,10 +4330,12 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let route = self.resolve_route(
-            route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
-            rpc_ctx.clone(),
-        )?;
+        let route = self
+            .resolve_route_authenticated(
+                route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
+                rpc_ctx.clone(),
+            )
+            .await?;
         let provider_options = helper_provider_options(route.provider_options, &request.payload);
         let typed_response = self
             .create_chat_completion(
@@ -4342,10 +4372,12 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let route = self.resolve_route(
-            route_request_from_method_request(ai_methods::IMAGE_TXT2IMG, &request)?,
-            rpc_ctx.clone(),
-        )?;
+        let route = self
+            .resolve_route_authenticated(
+                route_request_from_method_request(ai_methods::IMAGE_TXT2IMG, &request)?,
+                rpc_ctx.clone(),
+            )
+            .await?;
         let provider_options = helper_provider_options(route.provider_options, &request.payload);
         let prompt = request.payload.text.clone().unwrap_or_else(|| {
             request
@@ -4419,7 +4451,7 @@ impl AIComputeCenter {
         mut request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
-        let mut invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let mut invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx).await;
         apply_default_features_for_method(method, &mut request);
         info!(
             "aicc.complete received: tenant={} caller_app={:?} method={} capability={:?} model_alias={} idempotency_key={:?}",
@@ -4821,7 +4853,7 @@ impl AIComputeCenter {
         task_id: &str,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<CancelResponse, RPCErrors> {
-        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx);
+        let invoke_ctx = InvokeCtx::from_rpc(&rpc_ctx).await;
         info!(
             "aicc.cancel received: tenant={} caller_app={:?} task_id={}",
             invoke_ctx.tenant_id, invoke_ctx.caller_app_id, task_id
@@ -5266,7 +5298,7 @@ impl AiccHandler for AIComputeCenter {
         request: RouteResolveRequest,
         ctx: RPCContext,
     ) -> std::result::Result<RouteResolveResponse, RPCErrors> {
-        self.resolve_route(request, ctx)
+        self.resolve_route_authenticated(request, ctx).await
     }
 
     async fn handle_chat_completions_create(
@@ -7085,7 +7117,7 @@ mod tests {
 
     #[test]
     fn task_manager_context_forwards_upstream_token_and_trace() {
-        let session_token = RPCSessionToken {
+        let mut session_token = RPCSessionToken {
             token_type: RPCSessionTokenType::Normal,
             token: Some("test-user-session".to_string()),
             aud: None,
@@ -7093,21 +7125,38 @@ mod tests {
             iss: Some("verify-hub".to_string()),
             jti: None,
             sub: Some("alice".to_string()),
-            appid: Some("third-party-app".to_string()),
+            appid: None,
             sudo: false,
             extra: HashMap::new(),
         };
+        bind_token_principal_kind(&mut session_token, TokenPrincipalKind::User);
+        bind_token_target(
+            &mut session_token,
+            &AuthTarget::app("third-party-app@alice".parse().unwrap()),
+            TokenUse::Session,
+        )
+        .unwrap();
         let raw_token = serde_json::to_string(&session_token).unwrap();
         let upstream = RPCContext {
             token: Some(raw_token),
             trace_id: Some("trace-aicc-task".to_string()),
             ..Default::default()
         };
-        let invoke_ctx = InvokeCtx::from_rpc(&upstream);
+        let mut invoke_ctx = InvokeCtx {
+            tenant_id: "anonymous".to_string(),
+            caller_app_id: None,
+            session_token: upstream.token.clone(),
+            trace_id: upstream.trace_id.clone(),
+            task_id: None,
+        };
+        invoke_ctx.apply_verified_session(&session_token).unwrap();
         let downstream = task_manager_rpc_context(&invoke_ctx);
 
         assert_eq!(invoke_ctx.tenant_id, "alice");
-        assert_eq!(invoke_ctx.caller_app_id.as_deref(), Some("third-party-app"));
+        assert_eq!(
+            invoke_ctx.caller_app_id.as_deref(),
+            Some("app:third-party-app@alice")
+        );
         assert_eq!(downstream.token, upstream.token);
         assert_eq!(downstream.trace_id, upstream.trace_id);
     }

@@ -1482,18 +1482,21 @@ async fn update_rbac(
     for (spec_id, service_spec) in scheduler_ctx.specs.iter() {
         match service_spec.spec_type {
             ServiceSpecType::App => {
-                push_policy_line(&mut rbac_policy, format!("g, {}, app", service_spec.app_id));
+                push_policy_line(
+                    &mut rbac_policy,
+                    format!("g, app:{}, app", service_spec.app_id),
+                );
             }
             ServiceSpecType::Service => {
                 push_policy_line(
                     &mut rbac_policy,
-                    format!("g, {}, system", service_spec.app_id),
+                    format!("g, system:{}, system", service_spec.app_id),
                 );
             }
             ServiceSpecType::Kernel => {
                 push_policy_line(
                     &mut rbac_policy,
-                    format!("g, {}, kernel", service_spec.app_id),
+                    format!("g, system:{}, kernel", service_spec.app_id),
                 );
             }
         }

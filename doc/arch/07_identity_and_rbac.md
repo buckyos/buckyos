@@ -83,8 +83,8 @@ token 有效期：
 
 ### verify_token：集中验证接口（可选路径）
 verify-hub 提供 `verify_token` 协议（`src/kernel/verify_hub/README.md`）：
-- request: `{ "method": "verify_token", "params": { "session_token": "$session_token", "appid": "notes", "app_instance_id": "notes@alice" } }`；两个期望目标字段可选，但业务 App 应同时提交。
-- response: `true`；签名、有效期、token 类型和期望 App 身份任一不匹配都会返回错误。用户 token 必须自带 `principal_kind=user`、`app_instance_id`，非系统 App 还必须带匹配的 `app_owner_user_id`。
+- request: `{ "method": "verify_token", "params": { "session_token": "$session_token", "expected_target": { "kind": "app", "app_instance_id": "notes@alice" } } }`。System 目标使用 `{ "kind": "system", "service_id": "control-panel" }`。
+- response: `true`；签名、有效期、Verify Hub issuer、`token_use=session` 和期望 AuthTarget 任一不匹配都会返回错误。App target 还会精确校验 AppId、AppInstanceId 与 owner。
 
 这条路径适用于“验证方不想/不能维护 trust keys”的场景：把 token 发给 verify-hub 由其验证。
 
@@ -107,12 +107,12 @@ call_other_service(req):
 service_handle(req):
   // 3) 先验证 token（两种模式）
   if local_has_trust_keys:
-     (userid, appid) = local_verify_jwt(req.session_token)
+     (userid, auth_target) = local_verify_verify_hub_session(req.session_token)
   else:
-     valid = verify_hub.verify_token(req.session_token, expected_appid, expected_app_instance_id)
+     valid = verify_hub.verify_token(req.session_token, expected_target)
 
   // 4) enforce
-  allowed = rbac.enforce(userid, appid, req.resource_path, req.action)
+  allowed = rbac.enforce(userid, auth_target.authorization_key(), req.resource_path, req.action)
   if !allowed:
      deny
 

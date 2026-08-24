@@ -1,6 +1,6 @@
 use crate::{
-    AppId, AppInstanceId, AppServiceSpec, ServiceState, SystemConfigClient, SystemConfigError,
-    UserSettings, UserState, UserType,
+    AppId, AppInstanceId, AppServiceSpec, AuthTarget, ServiceState, SystemConfigClient,
+    SystemConfigError, SystemServiceId, UserSettings, UserState, UserType,
 };
 use ::kRPC::{RPCErrors, RPCSessionToken};
 use serde::{Deserialize, Serialize};
@@ -14,11 +14,59 @@ pub const APP_AVAILABILITY_AUDIT_PREFIX: &str = "services/control_panel/app_avai
 pub const APP_INSTANCE_ID_CLAIM: &str = "app_instance_id";
 pub const APP_OWNER_USER_ID_CLAIM: &str = "app_owner_user_id";
 pub const TOKEN_PRINCIPAL_KIND_CLAIM: &str = "principal_kind";
+pub const TOKEN_TARGET_KIND_CLAIM: &str = "target_kind";
+pub const TOKEN_USE_CLAIM: &str = "token_use";
+pub const VERIFY_HUB_TOKEN_ISSUER: &str = "verify-hub";
 pub const TOKEN_PRINCIPAL_KIND_USER: &str = "user";
 pub const TOKEN_PRINCIPAL_KIND_DEVICE: &str = "device";
 pub const TOKEN_PRINCIPAL_KIND_APP: &str = "app";
 pub const TOKEN_PRINCIPAL_KIND_SYSTEM: &str = "system";
 pub const TOKEN_PRINCIPAL_KIND_AGENT: &str = "agent";
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenPrincipalKind {
+    User,
+    Device,
+    App,
+    System,
+    Agent,
+}
+
+impl TokenPrincipalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => TOKEN_PRINCIPAL_KIND_USER,
+            Self::Device => TOKEN_PRINCIPAL_KIND_DEVICE,
+            Self::App => TOKEN_PRINCIPAL_KIND_APP,
+            Self::System => TOKEN_PRINCIPAL_KIND_SYSTEM,
+            Self::Agent => TOKEN_PRINCIPAL_KIND_AGENT,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenUse {
+    Session,
+    Refresh,
+}
+
+impl TokenUse {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Refresh => "refresh",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedTokenClaims {
+    pub principal_kind: TokenPrincipalKind,
+    pub token_use: TokenUse,
+    pub target: AuthTarget,
+}
 
 const SYSTEM_LOGIN_TARGETS: &[&str] = &["control-panel", "kernel", "system-config"];
 
@@ -146,25 +194,194 @@ pub fn is_system_login_target(service_id: &str) -> bool {
     SYSTEM_LOGIN_TARGETS.contains(&service_id) || find_system_builtin_app(service_id).is_some()
 }
 
-pub fn bind_token_app_instance(token: &mut RPCSessionToken, app_instance_id: &AppInstanceId) {
+pub fn bind_token_principal_kind(token: &mut RPCSessionToken, principal_kind: TokenPrincipalKind) {
     token.extra.insert(
-        APP_INSTANCE_ID_CLAIM.to_string(),
-        serde_json::Value::String(app_instance_id.to_string()),
-    );
-    token.extra.insert(
-        APP_OWNER_USER_ID_CLAIM.to_string(),
-        serde_json::Value::String(app_instance_id.owner_user_id().to_string()),
+        TOKEN_PRINCIPAL_KIND_CLAIM.to_string(),
+        serde_json::Value::String(principal_kind.as_str().to_string()),
     );
 }
 
-pub fn token_app_instance_id(token: &RPCSessionToken) -> Result<AppInstanceId, RPCErrors> {
+pub fn token_principal_kind(token: &RPCSessionToken) -> Result<TokenPrincipalKind, RPCErrors> {
+    match token
+        .extra
+        .get(TOKEN_PRINCIPAL_KIND_CLAIM)
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(TOKEN_PRINCIPAL_KIND_USER) => Ok(TokenPrincipalKind::User),
+        Some(TOKEN_PRINCIPAL_KIND_DEVICE) => Ok(TokenPrincipalKind::Device),
+        Some(TOKEN_PRINCIPAL_KIND_APP) => Ok(TokenPrincipalKind::App),
+        Some(TOKEN_PRINCIPAL_KIND_SYSTEM) => Ok(TokenPrincipalKind::System),
+        Some(TOKEN_PRINCIPAL_KIND_AGENT) => Ok(TokenPrincipalKind::Agent),
+        _ => Err(RPCErrors::InvalidToken(
+            "missing or invalid principal_kind claim".to_string(),
+        )),
+    }
+}
+
+pub fn bind_token_target(
+    token: &mut RPCSessionToken,
+    target: &AuthTarget,
+    token_use: TokenUse,
+) -> Result<(), RPCErrors> {
+    if token_use == TokenUse::Refresh && token.sudo {
+        return Err(RPCErrors::InvalidToken(
+            "refresh token cannot be a sudo token".to_string(),
+        ));
+    }
+
+    token.appid = Some(target.appid_claim().to_string());
+    token.extra.remove(APP_INSTANCE_ID_CLAIM);
+    token.extra.remove(APP_OWNER_USER_ID_CLAIM);
+    token.extra.insert(
+        TOKEN_USE_CLAIM.to_string(),
+        serde_json::Value::String(token_use.as_str().to_string()),
+    );
+    match target {
+        AuthTarget::App { app_instance_id } => {
+            token.extra.insert(
+                TOKEN_TARGET_KIND_CLAIM.to_string(),
+                serde_json::Value::String("app".to_string()),
+            );
+            token.extra.insert(
+                APP_INSTANCE_ID_CLAIM.to_string(),
+                serde_json::Value::String(app_instance_id.to_string()),
+            );
+            token.extra.insert(
+                APP_OWNER_USER_ID_CLAIM.to_string(),
+                serde_json::Value::String(app_instance_id.owner_user_id().to_string()),
+            );
+        }
+        AuthTarget::System { .. } => {
+            token.extra.insert(
+                TOKEN_TARGET_KIND_CLAIM.to_string(),
+                serde_json::Value::String("system".to_string()),
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn token_use(token: &RPCSessionToken) -> Result<TokenUse, RPCErrors> {
     let value = token
         .extra
-        .get(APP_INSTANCE_ID_CLAIM)
+        .get(TOKEN_USE_CLAIM)
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| RPCErrors::InvalidToken("missing app_instance_id claim".to_string()))?;
-    AppInstanceId::from_str(value)
-        .map_err(|error| RPCErrors::InvalidToken(format!("invalid app_instance_id claim: {error}")))
+        .ok_or_else(|| RPCErrors::InvalidToken("missing token_use claim".to_string()))?;
+    let token_use = match value {
+        "session" => TokenUse::Session,
+        "refresh" => TokenUse::Refresh,
+        _ => {
+            return Err(RPCErrors::InvalidToken(
+                "invalid token_use claim".to_string(),
+            ));
+        }
+    };
+    if token_use == TokenUse::Refresh && token.sudo {
+        return Err(RPCErrors::InvalidToken(
+            "refresh token cannot be a sudo token".to_string(),
+        ));
+    }
+    Ok(token_use)
+}
+
+pub fn token_auth_target(token: &RPCSessionToken) -> Result<AuthTarget, RPCErrors> {
+    let appid = token
+        .appid
+        .as_deref()
+        .ok_or_else(|| RPCErrors::InvalidToken("missing appid claim".to_string()))?;
+    let target_kind = token
+        .extra
+        .get(TOKEN_TARGET_KIND_CLAIM)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| RPCErrors::InvalidToken("missing target_kind claim".to_string()))?;
+    match target_kind {
+        "app" => {
+            let instance_value = token
+                .extra
+                .get(APP_INSTANCE_ID_CLAIM)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    RPCErrors::InvalidToken("missing app_instance_id claim".to_string())
+                })?;
+            let app_instance_id = AppInstanceId::from_str(instance_value).map_err(|error| {
+                RPCErrors::InvalidToken(format!("invalid app_instance_id claim: {error}"))
+            })?;
+            if app_instance_id.app_id().as_str() != appid {
+                return Err(RPCErrors::InvalidToken(
+                    "appid and app_instance_id claims do not match".to_string(),
+                ));
+            }
+            let owner = token
+                .extra
+                .get(APP_OWNER_USER_ID_CLAIM)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    RPCErrors::InvalidToken("missing app_owner_user_id claim".to_string())
+                })?;
+            if owner != app_instance_id.owner_user_id() {
+                return Err(RPCErrors::InvalidToken(
+                    "app_owner_user_id and app_instance_id claims do not match".to_string(),
+                ));
+            }
+            Ok(AuthTarget::app(app_instance_id))
+        }
+        "system" => {
+            if token.extra.contains_key(APP_INSTANCE_ID_CLAIM)
+                || token.extra.contains_key(APP_OWNER_USER_ID_CLAIM)
+            {
+                return Err(RPCErrors::InvalidToken(
+                    "system target cannot contain app instance claims".to_string(),
+                ));
+            }
+            let service_id = SystemServiceId::parse(appid).map_err(|error| {
+                RPCErrors::InvalidToken(format!("invalid system service target: {error}"))
+            })?;
+            Ok(AuthTarget::system(service_id))
+        }
+        _ => Err(RPCErrors::InvalidToken(
+            "invalid target_kind claim".to_string(),
+        )),
+    }
+}
+
+pub fn validate_token_claims(
+    token: &RPCSessionToken,
+    expected_use: TokenUse,
+) -> Result<ValidatedTokenClaims, RPCErrors> {
+    let actual_use = token_use(token)?;
+    if actual_use != expected_use {
+        return Err(RPCErrors::InvalidToken(format!(
+            "token_use mismatch: expected {}, got {}",
+            expected_use.as_str(),
+            actual_use.as_str()
+        )));
+    }
+    Ok(ValidatedTokenClaims {
+        principal_kind: token_principal_kind(token)?,
+        token_use: actual_use,
+        target: token_auth_target(token)?,
+    })
+}
+
+pub fn validate_verify_hub_token_claims(
+    token: &RPCSessionToken,
+    expected_use: TokenUse,
+) -> Result<ValidatedTokenClaims, RPCErrors> {
+    if token.iss.as_deref() != Some(VERIFY_HUB_TOKEN_ISSUER) {
+        return Err(RPCErrors::InvalidToken(
+            "ordinary session tokens must be issued by verify-hub".to_string(),
+        ));
+    }
+    validate_token_claims(token, expected_use)
+}
+
+pub fn token_app_instance_id(token: &RPCSessionToken) -> Result<AppInstanceId, RPCErrors> {
+    match token_auth_target(token)? {
+        AuthTarget::App { app_instance_id } => Ok(app_instance_id),
+        AuthTarget::System { .. } => Err(RPCErrors::InvalidToken(
+            "system target has no app_instance_id".to_string(),
+        )),
+    }
 }
 
 pub fn parse_app_instance_id(value: &str) -> Result<(AppId, String), RPCErrors> {
@@ -518,6 +735,21 @@ async fn list_children_or_empty(
 mod tests {
     use super::*;
 
+    fn token() -> RPCSessionToken {
+        RPCSessionToken {
+            token_type: ::kRPC::RPCSessionTokenType::JWT,
+            token: None,
+            aud: None,
+            exp: Some(u64::MAX),
+            iss: Some(VERIFY_HUB_TOKEN_ISSUER.to_string()),
+            jti: Some("1".to_string()),
+            sub: Some("alice".to_string()),
+            appid: None,
+            sudo: false,
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
     #[test]
     fn parse_app_instance_selector_rejects_noncanonical_values() {
         let parsed = parse_app_instance_id("notes.example.com@alice").unwrap();
@@ -551,5 +783,91 @@ mod tests {
             &[],
         )
         .is_err());
+    }
+
+    #[test]
+    fn token_target_bind_and_parse_round_trip() {
+        let targets = [
+            AuthTarget::app("notes.example.com@alice".parse().unwrap()),
+            AuthTarget::system("control-panel".parse().unwrap()),
+        ];
+        for target in targets {
+            let mut token = token();
+            bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+            bind_token_target(&mut token, &target, TokenUse::Session).unwrap();
+            let validated = validate_verify_hub_token_claims(&token, TokenUse::Session).unwrap();
+            assert_eq!(validated.principal_kind, TokenPrincipalKind::User);
+            assert_eq!(validated.target, target);
+        }
+    }
+
+    #[test]
+    fn token_claim_validation_fails_closed() {
+        let app_target = AuthTarget::app("notes.example.com@alice".parse().unwrap());
+        let mut valid = token();
+        bind_token_principal_kind(&mut valid, TokenPrincipalKind::User);
+        bind_token_target(&mut valid, &app_target, TokenUse::Session).unwrap();
+
+        let mut cases = Vec::new();
+        let mut missing_kind = valid.clone();
+        missing_kind.extra.remove(TOKEN_TARGET_KIND_CLAIM);
+        cases.push(missing_kind);
+        let mut missing_use = valid.clone();
+        missing_use.extra.remove(TOKEN_USE_CLAIM);
+        cases.push(missing_use);
+        let mut bad_instance = valid.clone();
+        bad_instance.extra.insert(
+            APP_INSTANCE_ID_CLAIM.to_string(),
+            serde_json::Value::String("other.example.com@alice".to_string()),
+        );
+        cases.push(bad_instance);
+        let mut bad_owner = valid.clone();
+        bad_owner.extra.insert(
+            APP_OWNER_USER_ID_CLAIM.to_string(),
+            serde_json::Value::String("bob".to_string()),
+        );
+        cases.push(bad_owner);
+        let mut wrong_issuer = valid.clone();
+        wrong_issuer.iss = Some("alice".to_string());
+        cases.push(wrong_issuer);
+
+        for token in cases {
+            assert!(validate_verify_hub_token_claims(&token, TokenUse::Session).is_err());
+        }
+
+        assert!(validate_verify_hub_token_claims(&valid, TokenUse::Refresh).is_err());
+    }
+
+    #[test]
+    fn token_use_and_sudo_combinations_are_strict() {
+        let target = AuthTarget::system("control-panel".parse().unwrap());
+        for (token_use, sudo, expected_ok) in [
+            (TokenUse::Session, false, true),
+            (TokenUse::Session, true, true),
+            (TokenUse::Refresh, false, true),
+            (TokenUse::Refresh, true, false),
+        ] {
+            let mut token = token();
+            token.sudo = sudo;
+            bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+            let result = bind_token_target(&mut token, &target, token_use);
+            assert_eq!(result.is_ok(), expected_ok);
+            if expected_ok {
+                assert!(validate_token_claims(&token, token_use).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn system_target_rejects_app_claims() {
+        let target = AuthTarget::system("control-panel".parse().unwrap());
+        let mut token = token();
+        bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+        bind_token_target(&mut token, &target, TokenUse::Session).unwrap();
+        token.extra.insert(
+            APP_INSTANCE_ID_CLAIM.to_string(),
+            serde_json::Value::String("control-panel.example@alice".to_string()),
+        );
+        assert!(token_auth_target(&token).is_err());
     }
 }

@@ -222,13 +222,13 @@ cache key 必须区分两种用途：
 
 修改 `src/kernel/buckyos-api/src/verify_hub_client.rs`：
 
-- [ ] `LoginByPasswordRequest` 使用结构化 `target: AuthTarget`，删除强制的 `appid + app_instance_id` 双字符串输入。
-- [ ] `VerifyHubClient::login_by_password` 和 `VerifyHubApiHandler::handle_login_by_password` 接收 `AuthTarget`。
-- [ ] `LoginByJwtRequest.login_params` 改成有 `deny_unknown_fields` 的 typed params，并使用结构化 target；不再保留可覆盖 `type`/`jwt` 等字段的任意 `Value` 合并路径，也不能默认拼出 `@system`。
-- [ ] `SudoByPasswordRequest`、`sudo_by_password` 同步改为 `AuthTarget`；当前 `control-panel@system` sudo 调用必须迁移为 System target。
-- [ ] `VerifyTokenRequest` 改用 `expected_target: Option<AuthTarget>`；传入时必须精确比较 kind/id，App 调用方必须提供 AppInstanceId，不保留 AppId-only 的弱校验模式。
-- [ ] serde 使用 `deny_unknown_fields`，补齐 JSON round-trip 和非法组合测试。
-- [ ] 所有 Verify Hub token response 都写入 `token_use`，并保证 refresh/session target 完全一致。
+- [x] `LoginByPasswordRequest` 使用结构化 `target: AuthTarget`，删除强制的 `appid + app_instance_id` 双字符串输入。
+- [x] `VerifyHubClient::login_by_password` 和 `VerifyHubApiHandler::handle_login_by_password` 接收 `AuthTarget`。
+- [x] `LoginByJwtRequest.login_params` 改成有 `deny_unknown_fields` 的 typed params，并使用结构化 target；不再保留可覆盖 `type`/`jwt` 等字段的任意 `Value` 合并路径，也不能默认拼出 `@system`。
+- [x] `SudoByPasswordRequest`、`sudo_by_password` 同步改为 `AuthTarget`；当前 `control-panel@system` sudo 调用必须迁移为 System target。
+- [x] `VerifyTokenRequest` 改用 `expected_target: Option<AuthTarget>`；传入时必须精确比较 kind/id，App 调用方必须提供 AppInstanceId，不保留 AppId-only 的弱校验模式。
+- [x] serde 使用 `deny_unknown_fields`，补齐 JSON round-trip 和非法组合测试。
+- [x] 所有 Verify Hub token response 都写入 `token_use`，并保证 refresh/session target 完全一致。
 
 不要只修改 Control Panel 到 Verify Hub 的某一个调用点，否则 refresh、sudo 或直接 Verify Hub 调用仍会保留错误模型。
 
@@ -290,11 +290,11 @@ resolve_sso_auth_target(redirect_url, zone_host) -> ResolvedSsoAuthTarget {
 
 ### 4.2 `auth.login`
 
-- [ ] 有 `redirect_url` 时，通过统一 resolver 得到 target。
-- [ ] 无 `redirect_url` 的直接登录必须显式提交结构化 target，不能默认 `control-panel@system`。
-- [ ] 如果暂时保留浏览器传入的 `appid`，只把它当一致性校验，不把它当权威 target。
-- [ ] 调用 Verify Hub 时传递结构化 target。
-- [ ] 日志分别输出 `principal_kind`、`target_kind`、canonical target id，不再记录伪造 instance。
+- [x] 有 `redirect_url` 时，通过统一 resolver 得到 target。
+- [x] 无 `redirect_url` 的直接登录必须显式提交结构化 target，不能默认 `control-panel@system`。
+- [x] 如果暂时保留浏览器传入的 `appid`，只把它当一致性校验，不把它当权威 target。
+- [x] 调用 Verify Hub 时传递结构化 target。
+- [x] 日志分别输出 `principal_kind`、`target_kind`、canonical target id，不再记录伪造 instance。
 
 ### 4.3 Pending SSO 与 callback
 
@@ -308,13 +308,13 @@ redirect origin 或经过规范化的 redirect_url
 created_at
 ```
 
-- [ ] `/sso_callback` 重新解析 callback 的 `redirect_url` 后，必须与 pending target 一致。
-- [ ] callback 实际 request origin、callback `redirect_url` canonical origin、pending canonical origin 必须三者一致；同 target 的不同 shortcut origin 也不能互换。
-- [ ] App token 只能写到对应 App origin；System `control-panel` token 写到 Zone 根域。
-- [ ] target/origin 不匹配时拒绝并消费 pending nonce；尽力用 pending refresh token 调用 logout/revoke，不能继续写 Cookie 或遗留可刷新的孤儿 session。
-- [ ] `/sso_refresh` 在 rotation 前解析并验证 refresh token 的 `token_use + AuthTarget`，再把当前 HTTP request origin/Host 解析成 Gateway AuthTarget，kind/id 不一致时拒绝并清 Cookie。
-- [ ] `/sso_refresh` 保持原 target，不能在刷新时把 System token 转成 App token，反之亦然；也不能把 App A 的 token 从已改指 App B 的 shortcut host 返回给 App B。
-- [ ] `/sso_logout` 仍可在 session 过期时使用 refresh Cookie，并在本地清除两枚 Cookie；服务端 revoke 失败要记录但不能阻止清 Cookie。
+- [x] `/sso_callback` 重新解析 callback 的 `redirect_url` 后，必须与 pending target 一致。
+- [x] callback 实际 request origin、callback `redirect_url` canonical origin、pending canonical origin 必须三者一致；同 target 的不同 shortcut origin 也不能互换。
+- [x] App token 只能写到对应 App origin；System `control-panel` token 写到 Zone 根域。
+- [x] target/origin 不匹配时拒绝并消费 pending nonce；尽力用 pending refresh token 调用 logout/revoke，不能继续写 Cookie 或遗留可刷新的孤儿 session。
+- [x] `/sso_refresh` 在 rotation 前解析并验证 refresh token 的 `token_use + AuthTarget`，再把当前 HTTP request origin/Host 解析成 Gateway AuthTarget，kind/id 不一致时拒绝并清 Cookie。
+- [x] `/sso_refresh` 保持原 target，不能在刷新时把 System token 转成 App token，反之亦然；也不能把 App A 的 token 从已改指 App B 的 shortcut host 返回给 App B。
+- [x] `/sso_logout` 仍可在 session 过期时使用 refresh Cookie，并在本地清除两枚 Cookie；服务端 revoke 失败要记录但不能阻止清 Cookie。
 
 ### 4.4 Control Panel 自身鉴权
 
@@ -330,10 +330,10 @@ appid == CONTROL_PANEL_SERVICE_UNIQUE_ID
 不存在 app_instance_id/app_owner_user_id claim
 ```
 
-- [ ] 使用 `CONTROL_PANEL_SERVICE_UNIQUE_ID`，删除本文件重复硬编码的 `CONTROL_PANEL_AUTH_APPID`，或使其直接引用权威常量。
-- [ ] `RpcAuthPrincipal.is_user_session` 仍为 true。
-- [ ] `RpcAuthPrincipal.is_control_panel_session` 对合法 System target 为 true。
-- [ ] App token 即使 `appid` 文本碰巧类似 `control-panel`，也不能被判定为 Control Panel system session。
+- [x] 使用 `CONTROL_PANEL_SERVICE_UNIQUE_ID`，删除本文件重复硬编码的 `CONTROL_PANEL_AUTH_APPID`，或使其直接引用权威常量。
+- [x] `RpcAuthPrincipal.is_user_session` 仍为 true。
+- [x] `RpcAuthPrincipal.is_control_panel_session` 对合法 System target 为 true。
+- [x] App token 即使 `appid` 文本碰巧类似 `control-panel`，也不能被判定为 Control Panel system session。
 
 ### 4.5 Boot Gateway 鉴权与路由边界
 
@@ -341,9 +341,9 @@ appid == CONTROL_PANEL_SERVICE_UNIQUE_ID
 
 `get_app_info_from_req` 必须与 Control Panel resolver 使用相同的 entry invariants：
 
-- [ ] App entry 必须有合法的 `app_id + app_instance_id + app_owner_user_id`，且不得带 `service_id`。
-- [ ] System entry 必须有合法 `service_id`，且不得带 App 身份字段。
-- [ ] 两类字段同时存在、必填字段缺失或字段为空时 fail closed，不再仅靠“是否有 service_id”宽松分类。
+- [x] App entry 必须有合法的 `app_id + app_instance_id + app_owner_user_id`，且不得带 `service_id`。
+- [x] System entry 必须有合法 `service_id`，且不得带 App 身份字段。
+- [x] 两类字段同时存在、必填字段缺失或字段为空时 fail closed，不再仅靠“是否有 service_id”宽松分类。
 
 私有 App 的 `check_oauth` 在 `verify-jwt` 成功后必须继续检查：
 
@@ -358,11 +358,11 @@ app_instance_id == TARGET_APP_INFO.app_instance_id
 app_owner_user_id == TARGET_APP_INFO.app_owner_user_id
 ```
 
-- [ ] 缺少/未知 target claim、非 Verify Hub issuer、System target、不同 Owner 的同 AppId token 全部拒绝。
-- [ ] refresh token 和 sudo token 不能作为 `buckyos_session_token` 放行 App 页面。
-- [ ] `/sso_callback`、`/sso_refresh`、`/sso_logout` 保持无需现有 session 即可转发到 Control Panel；不能在 Gateway 提前加 session gate，真正的 origin/target 校验由 4.3 完成。
-- [ ] `forward_to_app` 的 group id 改为包含 `app_instance_id`，避免不同 Owner 实例在 failure-state/日志中共用 `app:<app_id>` 名称。
-- [ ] `service_info["system_config"]` 和 `/kapi/system_config` 是 Gateway 内部 routing service name，不是 SSO `SystemServiceId`；本任务不要机械重命名为 `system-config`。
+- [x] 缺少/未知 target claim、非 Verify Hub issuer、System target、不同 Owner 的同 AppId token 全部拒绝。
+- [x] refresh token 和 sudo token 不能作为 `buckyos_session_token` 放行 App 页面。
+- [x] `/sso_callback`、`/sso_refresh`、`/sso_logout` 保持无需现有 session 即可转发到 Control Panel；不能在 Gateway 提前加 session gate，真正的 origin/target 校验由 4.3 完成。
+- [x] `forward_to_app` 的 group id 改为包含 `app_instance_id`，避免不同 Owner 实例在 failure-state/日志中共用 `app:<app_id>` 名称。
+- [x] `service_info["system_config"]` 和 `/kapi/system_config` 是 Gateway 内部 routing service name，不是 SSO `SystemServiceId`；本任务不要机械重命名为 `system-config`。
 
 scheduler 当前生成的 App entry 已包含 `app_id/app_instance_id/app_owner_user_id`，System entry 已包含 `service_id`，因此本任务不需要新增 Gateway schema；需要同步旧 example、debug fixture 和重复的 Gateway 测试配置。
 
@@ -376,55 +376,55 @@ scheduler 当前生成的 App entry 已包含 `app_id/app_instance_id/app_owner_
 
 当前 `AppTokenScope` 只接受 AppInstanceId，应替换为能表达两类 target 的结构，或直接复用共享 `AuthTarget`。
 
-- [ ] App target：执行 AppId 一致性校验和 `AppAvailabilityResolver::check_user`。
-- [ ] System target：验证 SystemServiceId 和 user-login allowlist，不调用 AppAvailabilityResolver。
-- [ ] cache/session key 使用带 kind 的 canonical key。
-- [ ] LoginAssertion replay key 不包含 target；同一 issuer/subject/JTI assertion 换 target 重放也必须拒绝。
-- [ ] session/refresh token 通过统一 helper 绑定 target claims。
+- [x] App target：执行 AppId 一致性校验和 `AppAvailabilityResolver::check_user`。
+- [x] System target：验证 SystemServiceId 和 user-login allowlist，不调用 AppAvailabilityResolver。
+- [x] cache/session key 使用带 kind 的 canonical key。
+- [x] LoginAssertion replay key 不包含 target；同一 issuer/subject/JTI assertion 换 target 重放也必须拒绝。
+- [x] session/refresh token 通过统一 helper 绑定 target claims。
 
 ### 5.2 Password/JWT/Sudo
 
-- [ ] password login 对 App/System target 都签发 `principal_kind=user` token。
-- [ ] JWT user login 使用同一 target 校验流程。
-- [ ] sudo 的主体仍是 user，目标可以是 SystemServiceId；`aud` 继续表示 sudo 授权范围，不替代 target。
-- [ ] Root 用户拒绝逻辑保持不变。
-- [ ] 系统服务进程自身的 `principal_kind=system` token 流程不应被用户登录改动破坏；Verify Hub exchange 后的 token 同样携带显式 AuthTarget。
-- [ ] AppService 进程若获得 App target token，必须从 runtime 的真实 AppInstanceId 构造 target，不能退化到 AppId-only。
-- [ ] LoginAssertion 只能用于 exchange，Verify Hub 必须根据可信 issuer/principal 规则校验 assertion 与请求 target 的一致性和授权。
+- [x] password login 对 App/System target 都签发 `principal_kind=user` token。
+- [x] JWT user login 使用同一 target 校验流程。
+- [x] sudo 的主体仍是 user，目标可以是 SystemServiceId；`aud` 继续表示 sudo 授权范围，不替代 target。
+- [x] Root 用户拒绝逻辑保持不变。
+- [x] 系统服务进程自身的 `principal_kind=system` token 流程不应被用户登录改动破坏；Verify Hub exchange 后的 token 同样携带显式 AuthTarget。
+- [x] AppService 进程若获得 App target token，必须从 runtime 的真实 AppInstanceId 构造 target，不能退化到 AppId-only。
+- [x] LoginAssertion 只能用于 exchange，Verify Hub 必须根据可信 issuer/principal 规则校验 assertion 与请求 target 的一致性和授权。
 
 ### 5.3 Refresh 与 verify
 
-- [ ] refresh 从 refresh token 严格恢复 AuthTarget。
-- [ ] App refresh 重新检查精确 AppInstance availability。
-- [ ] System refresh 重新检查用户状态和 System login target 是否仍允许。
-- [ ] 生成的新 token pair 保留原 target kind/id。
-- [ ] refresh/session 分别写入并验证正确 `token_use`；refresh token 不能通过 session verify。
-- [ ] verify 对 App/System 分支分别执行 claim invariants，并拒绝非 Verify Hub LoginAssertion 冒充 session。
-- [ ] expected target 校验同时比较 kind 与 id，不能只比较裸 `appid` 字符串。
+- [x] refresh 从 refresh token 严格恢复 AuthTarget。
+- [x] App refresh 重新检查精确 AppInstance availability。
+- [x] System refresh 重新检查用户状态和 System login target 是否仍允许。
+- [x] 生成的新 token pair 保留原 target kind/id。
+- [x] refresh/session 分别写入并验证正确 `token_use`；refresh token 不能通过 session verify。
+- [x] verify 对 App/System 分支分别执行 claim invariants，并拒绝非 Verify Hub LoginAssertion 冒充 session。
+- [x] expected target 校验同时比较 kind 与 id，不能只比较裸 `appid` 字符串。
 
 ### 5.4 共享本地验签与 RBAC
 
 主要入口：`src/kernel/buckyos-api/src/runtime.rs`，以及使用它的 Control Panel、task-manager、workflow 和其它系统服务。
 
-- [ ] `BuckyOSRuntime::verify_trusted_session_token` 验签成功后调用共享 `token_use/AuthTarget` validator，返回的 token target 可被调用方以强类型读取。
-- [ ] `BuckyOSRuntime::enforce` 不再从裸 `appid`/`aud` 猜授权应用身份；先验证 target，再将其转换成 kind-aware authorization identity。
-- [ ] RBAC policy、模板和调用参数至少区分 `app:<app_id>` 与 `system:<service_id>`；App target 仍额外保留精确 AppInstanceId 校验。
-- [ ] `RpcAuthPrincipal.authenticated_app_id`、task/workflow `ActorRef`、creator/audit identity 等如继续保存裸字符串，会产生 App/System 碰撞；改成共享强类型或同时保存 kind + canonical id。
-- [ ] 搜索所有直接调用 `RPCSessionToken::from_string`、`get_subs()` 或读取 `token.appid` 后做授权的路径，迁移到共享 validator/helper。
-- [ ] 不允许仅修 Verify Hub 的 `verify_token` RPC；多数生产服务当前走本地验签，并不会调用该 RPC。
+- [x] `BuckyOSRuntime::verify_trusted_session_token` 验签成功后调用共享 `token_use/AuthTarget` validator，返回的 token target 可被调用方以强类型读取。
+- [x] `BuckyOSRuntime::enforce` 不再从裸 `appid`/`aud` 猜授权应用身份；先验证 target，再将其转换成 kind-aware authorization identity。
+- [x] RBAC policy、模板和调用参数至少区分 `app:<app_id>` 与 `system:<service_id>`；App target 仍额外保留精确 AppInstanceId 校验。
+- [x] `RpcAuthPrincipal.authenticated_app_id`、task/workflow `ActorRef`、creator/audit identity 等如继续保存裸字符串，会产生 App/System 碰撞；改成共享强类型或同时保存 kind + canonical id。
+- [x] 搜索所有直接调用 `RPCSessionToken::from_string`、`get_subs()` 或读取 `token.appid` 后做授权的路径，迁移到共享 validator/helper。
+- [x] 不允许仅修 Verify Hub 的 `verify_token` RPC；多数生产服务当前走本地验签，并不会调用该 RPC。
 
 ---
 
 ## 6. Desktop、WebSDK 与调用方迁移
 
-- [ ] Desktop 根域无 session 时仍跳到 `/login`，登录成功后能在根域写入 host-only session/refresh Cookie。
-- [ ] `LoginPage.tsx` 不再假设所有 redirect target 都有 AppInstanceId。
-- [ ] 登出后重新登录仍使用 System target `control-panel`。
-- [ ] WebSDK 普通 App SSO 保持 AppInstance target；目标来自 Gateway route，不由 SDK 猜 owner。
-- [ ] 更新 `test/test_control_panel/test_local_user.ts`：删除 `control-panel@system`，admin/local user 登录和 sudo 使用 System target。
-- [ ] 更新 `src/test/test_boot_gatweay` 的 `node_gateway_info` builder 和 JWT fixtures，使 App route/合法 token 携带精确 instance、owner、target kind 和 token use。
-- [ ] 检查 `cyfs-gateway/tests/buckyos/boot_gateway.yaml` 这份重复且已落后的测试配置：同步相关鉴权逻辑，或删除副本并让测试引用权威配置，不能继续验证旧的 appid-only 模型。
-- [ ] 全仓搜索并迁移所有用于系统服务认证的 `*@system` 字符串；不要误改真正的普通 AppInstance fixture。
+- [x] Desktop 根域无 session 时仍跳到 `/login`，登录成功后能在根域写入 host-only session/refresh Cookie。
+- [x] `LoginPage.tsx` 不再假设所有 redirect target 都有 AppInstanceId。
+- [x] 登出后重新登录仍使用 System target `control-panel`。
+- [x] WebSDK 普通 App SSO 保持 AppInstance target；目标来自 Gateway route，不由 SDK 猜 owner。
+- [x] 更新 `test/test_control_panel/test_local_user.ts`：删除 `control-panel@system`，admin/local user 登录和 sudo 使用 System target。
+- [x] 更新 `src/test/test_boot_gatweay` 的 `node_gateway_info` builder 和 JWT fixtures，使 App route/合法 token 携带精确 instance、owner、target kind 和 token use。
+- [x] 检查 `cyfs-gateway/tests/buckyos/boot_gateway.yaml` 这份重复且已落后的测试配置：同步相关鉴权逻辑，或删除副本并让测试引用权威配置，不能继续验证旧的 appid-only 模型。
+- [x] 全仓搜索并迁移所有用于系统服务认证的 `*@system` 字符串；不要误改真正的普通 AppInstance fixture。
 
 ---
 
@@ -432,49 +432,49 @@ scheduler 当前生成的 App entry 已包含 `app_id/app_instance_id/app_owner_
 
 ### 7.1 `buckyos-api` 单元测试
 
-- [ ] AuthTarget App/System serde round-trip。
-- [ ] `control-panel`、`kmsg` 可解析为 SystemServiceId。
-- [ ] AppInstanceId 必须带合法 `@owner`。
-- [ ] unknown kind、空 service id、非法字符、App/System 字段混用被拒绝。
-- [ ] token target bind/parse helper 的合法和非法 claim 组合。
-- [ ] `token_use` 缺失/未知、session/refresh 用途混用被拒绝。
-- [ ] `token_use` 与 `sudo` 的三种合法组合通过，其它组合被拒绝。
-- [ ] Verify Hub session 与非 Verify Hub LoginAssertion 的共享解析边界测试。
+- [x] AuthTarget App/System serde round-trip。
+- [x] `control-panel`、`kmsg` 可解析为 SystemServiceId。
+- [x] AppInstanceId 必须带合法 `@owner`。
+- [x] unknown kind、空 service id、非法字符、App/System 字段混用被拒绝。
+- [x] token target bind/parse helper 的合法和非法 claim 组合。
+- [x] `token_use` 缺失/未知、session/refresh 用途混用被拒绝。
+- [x] `token_use` 与 `sudo` 的三种合法组合通过，其它组合被拒绝。
+- [x] Verify Hub session 与非 Verify Hub LoginAssertion 的共享解析边界测试。
 
 ### 7.2 Verify Hub 单元测试
 
-- [ ] 用户登录 System `control-panel` 成功，token 没有 AppInstance/owner claim。
-- [ ] System 登录 token 的 `principal_kind` 是 user、`target_kind` 是 system。
-- [ ] 用户登录普通 App 时仍精确绑定 AppInstanceId。
-- [ ] App target 缺 instance、owner 不匹配、appid 不匹配全部拒绝。
-- [ ] System target 携带 App claims 时拒绝。
-- [ ] 未授权 SystemServiceId 的交互式登录被拒绝。
-- [ ] System target refresh 后 target 不变。
-- [ ] App target refresh 后 instance 不变且重新检查 availability。
-- [ ] verify expected target 的 kind 不一致时拒绝，即使裸字符串相同。
-- [ ] verify expected App target 必须精确到 AppInstanceId，不接受 AppId-only。
-- [ ] 同一 LoginAssertion 首次 exchange 成功后，改成另一个 AppInstance 或同名 System target 再提交仍按 replay 拒绝。
-- [ ] refresh token 作为 session token 验证时拒绝；sudo token 不会进入普通 SSO Cookie 流程。
-- [ ] System target sudo 成功且 `aud` 正确。
-- [ ] root password/JWT/sudo 拒绝用例继续通过。
+- [x] 用户登录 System `control-panel` 成功，token 没有 AppInstance/owner claim。
+- [x] System 登录 token 的 `principal_kind` 是 user、`target_kind` 是 system。
+- [x] 用户登录普通 App 时仍精确绑定 AppInstanceId。
+- [x] App target 缺 instance、owner 不匹配、appid 不匹配全部拒绝。
+- [x] System target 携带 App claims 时拒绝。
+- [x] 未授权 SystemServiceId 的交互式登录被拒绝。
+- [x] System target refresh 后 target 不变。
+- [x] App target refresh 后 instance 不变且重新检查 availability。
+- [x] verify expected target 的 kind 不一致时拒绝，即使裸字符串相同。
+- [x] verify expected App target 必须精确到 AppInstanceId，不接受 AppId-only。
+- [x] 同一 LoginAssertion 首次 exchange 成功后，改成另一个 AppInstance 或同名 System target 再提交仍按 replay 拒绝。
+- [x] refresh token 作为 session token 验证时拒绝；sudo token 不会进入普通 SSO Cookie 流程。
+- [x] System target sudo 成功且 `aud` 正确。
+- [x] root password/JWT/sudo 拒绝用例继续通过。
 
 ### 7.3 Control Panel 单元测试
 
 恢复当前被 `#[cfg(all(test, any()))]` 禁用的 `sys_auth_backend` tests，并补充：
 
-- [ ] Zone 根域 `_` 解析为 `System(control-panel)`。
-- [ ] 带 `app_instance_id` 的 App route 解析为精确 App target。
-- [ ] App entry 的 `app_id`/owner 与 AppInstanceId 不一致时拒绝。
-- [ ] Zone 外 URL、HTTP downgrade、非 Gateway 端口和带 credentials URL 被拒绝。
-- [ ] Gateway entry 同时有/同时没有 `service_id`、`app_instance_id` 时拒绝。
-- [ ] Pending target 与 callback redirect target 不一致时拒绝。
-- [ ] Pending target 相同但 callback canonical origin/shortcut 不一致时拒绝。
-- [ ] callback 实际 request origin 与 redirect/pending origin 不一致时拒绝。
-- [ ] App A refresh Cookie 从当前已路由到 App B 的 host 请求时拒绝并清 Cookie。
-- [ ] `System(control-panel)` 的 `sys`/`www` callback origin 被拒绝，Zone 根域成功。
-- [ ] 合法 System control-panel token 被识别为 user/control-panel session。
-- [ ] 旧 `control-panel@system` token 被拒绝。
-- [ ] Cookie 仍为 host-only，session 与 refresh Cookie 属性不回退。
+- [x] Zone 根域 `_` 解析为 `System(control-panel)`。
+- [x] 带 `app_instance_id` 的 App route 解析为精确 App target。
+- [x] App entry 的 `app_id`/owner 与 AppInstanceId 不一致时拒绝。
+- [x] Zone 外 URL、HTTP downgrade、非 Gateway 端口和带 credentials URL 被拒绝。
+- [x] Gateway entry 同时有/同时没有 `service_id`、`app_instance_id` 时拒绝。
+- [x] Pending target 与 callback redirect target 不一致时拒绝。
+- [x] Pending target 相同但 callback canonical origin/shortcut 不一致时拒绝。
+- [x] callback 实际 request origin 与 redirect/pending origin 不一致时拒绝。
+- [x] App A refresh Cookie 从当前已路由到 App B 的 host 请求时拒绝并清 Cookie。
+- [x] `System(control-panel)` 的 `sys`/`www` callback origin 被拒绝，Zone 根域成功。
+- [x] 合法 System control-panel token 被识别为 user/control-panel session。
+- [x] 旧 `control-panel@system` token 被拒绝。
+- [x] Cookie 仍为 host-only，session 与 refresh Cookie 属性不回退。
 
 ### 7.4 Boot Gateway debug tests
 
@@ -482,23 +482,23 @@ scheduler 当前生成的 App entry 已包含 `app_id/app_instance_id/app_owner_
 
 扩充 `src/test/test_boot_gatweay`：
 
-- [ ] 合法 Verify Hub user/session/App target token 精确匹配 route instance/owner 时放行。
-- [ ] 同 AppId、不同 AppInstanceId/owner 的 token 被拒绝。
-- [ ] `target_kind=system` 但裸 `appid` 与 AppId 相同的 token 被拒绝。
-- [ ] 缺少 `target_kind`/`token_use` 的旧 token 被拒绝。
-- [ ] appid、instance、owner 任一不匹配时拒绝。
-- [ ] 非 Verify Hub issuer 即使自己填写合法 target claims 也被拒绝。
-- [ ] refresh/sudo token 放入 `buckyos_session_token` 时拒绝。
-- [ ] `app_info` entry 字段混用/缺失时拒绝。
-- [ ] `/sso_callback`、`/sso_refresh`、`/sso_logout` 在没有 session Cookie 时仍正确转发到 Control Panel。
+- [x] 合法 Verify Hub user/session/App target token 精确匹配 route instance/owner 时放行。
+- [x] 同 AppId、不同 AppInstanceId/owner 的 token 被拒绝。
+- [x] `target_kind=system` 但裸 `appid` 与 AppId 相同的 token 被拒绝。
+- [x] 缺少 `target_kind`/`token_use` 的旧 token 被拒绝。
+- [x] appid、instance、owner 任一不匹配时拒绝。
+- [x] 非 Verify Hub issuer 即使自己填写合法 target claims 也被拒绝。
+- [x] refresh/sudo token 放入 `buckyos_session_token` 时拒绝。
+- [x] `app_info` entry 字段混用/缺失时拒绝。
+- [x] `/sso_callback`、`/sso_refresh`、`/sso_logout` 在没有 session Cookie 时仍正确转发到 Control Panel。
 
 ### 7.5 共享验签与 RBAC tests
 
-- [ ] `BuckyOSRuntime::verify_trusted_session_token` 对 Verify Hub token 强制 target/token-use invariants。
-- [ ] task-manager/workflow/Control Panel 等本地 verifier 拒绝缺 target kind 的旧 Verify Hub user token。
-- [ ] LoginAssertion 不能直接通过普通 session verifier，但仍可进入明确的 Verify Hub exchange 路径。
-- [ ] `App(control-panel@alice)` 不能获得 `System(control-panel)` 的 RBAC 权限，即使两者裸 `appid` 相同。
-- [ ] kind-aware ActorRef/creator/audit identity round-trip 后不发生 App/System 碰撞。
+- [x] `BuckyOSRuntime::verify_trusted_session_token` 对 Verify Hub token 强制 target/token-use invariants。
+- [x] task-manager/workflow/Control Panel 等本地 verifier 拒绝缺 target kind 的旧 Verify Hub user token。
+- [x] LoginAssertion 不能直接通过普通 session verifier，但仍可进入明确的 Verify Hub exchange 路径。
+- [x] `App(control-panel@alice)` 不能获得 `System(control-panel)` 的 RBAC 权限，即使两者裸 `appid` 相同。
+- [x] kind-aware ActorRef/creator/audit identity round-trip 后不发生 App/System 碰撞。
 
 ### 7.6 DV/E2E
 
@@ -519,13 +519,13 @@ scheduler 当前生成的 App entry 已包含 `app_id/app_instance_id/app_owner_
 
 ## 8. 文档联动
 
-- [ ] `doc/sdk/SSO.md`：redirect 可解析到 AppInstance 或 SystemServiceId。
-- [ ] `doc/sdk/runtime-login.md`：补充 System target token claims。
-- [ ] `doc/control_panel/Control_Panel_Service.md`：更新 `auth.login`、callback、refresh 请求与校验流程。
-- [ ] `doc/arch/10_user_lifecycle_and_permissions.md`：把 Gateway 的“appid-only 强制鉴权”更新为精确 AppInstance + target kind/token use 校验。
-- [ ] Gateway 架构/配置文档：说明 `app_info` 的 App/System entry invariants、`system_config` routing alias 与 SystemServiceId 的区别。
-- [ ] `doc/App 安装协议.md`：把 token 的主体类型与目标类型分开描述，避免“只有 system principal 才能以 SystemServiceId 为 appid”被误读为用户不能登录系统服务。
-- [ ] `notepads/app-id-simplification-todo.md`：修正 SDK/Auth 完成状态或补充本回归修复链接。
+- [x] `doc/sdk/SSO.md`：redirect 可解析到 AppInstance 或 SystemServiceId。
+- [x] `doc/sdk/runtime-login.md`：补充 System target token claims。
+- [x] `doc/control_panel/Control_Panel_Service.md`：更新 `auth.login`、callback、refresh 请求与校验流程。
+- [x] `doc/arch/10_user_lifecycle_and_permissions.md`：把 Gateway 的“appid-only 强制鉴权”更新为精确 AppInstance + target kind/token use 校验。
+- [x] Gateway 架构/配置文档：说明 `app_info` 的 App/System entry invariants、`system_config` routing alias 与 SystemServiceId 的区别。
+- [x] `doc/App 安装协议.md`：把 token 的主体类型与目标类型分开描述，避免“只有 system principal 才能以 SystemServiceId 为 appid”被误读为用户不能登录系统服务。
+- [x] `notepads/app-id-simplification-todo.md`：修正 SDK/Auth 完成状态或补充本回归修复链接。
 
 ---
 
@@ -533,43 +533,43 @@ scheduler 当前生成的 App entry 已包含 `app_id/app_instance_id/app_owner_
 
 ### Phase 1：先建立失败测试和共享类型
 
-- [ ] 为根域 `_ -> control-panel` 写失败测试，确认能稳定复现当前错误。
-- [ ] 新增 AuthTarget、token use、LoginAssertion/session 边界和 target claim helper。
-- [ ] 冻结 kind-aware authorization identity 和 RBAC key 迁移规则。
-- [ ] 完成 buckyos-api serde/claim 单测。
+- [x] 为根域 `_ -> control-panel` 写失败测试，确认能稳定复现当前错误。
+- [x] 新增 AuthTarget、token use、LoginAssertion/session 边界和 target claim helper。
+- [x] 冻结 kind-aware authorization identity 和 RBAC key 迁移规则。
+- [x] 完成 buckyos-api serde/claim 单测。
 
 ### Phase 2：改 Verify Hub
 
-- [ ] 修改 password/JWT/sudo 请求和 handler。
-- [ ] 修改 token generation、session cache key、target-independent replay key、refresh、verify。
-- [ ] 跑 Verify Hub 全部单测。
+- [x] 修改 password/JWT/sudo 请求和 handler。
+- [x] 修改 token generation、session cache key、target-independent replay key、refresh、verify。
+- [x] 跑 Verify Hub 全部单测。
 
 ### Phase 3：改共享本地验签与 RBAC
 
-- [ ] 修改 `BuckyOSRuntime::verify_trusted_session_token` 和 `enforce`。
-- [ ] 迁移 RBAC policy/key、ActorRef、creator/audit identity 及直接读取 token.appid 的授权路径。
-- [ ] 跑 buckyos-api、task-manager、workflow 和 RBAC 定向测试。
+- [x] 修改 `BuckyOSRuntime::verify_trusted_session_token` 和 `enforce`。
+- [x] 迁移 RBAC policy/key、ActorRef、creator/audit identity 及直接读取 token.appid 的授权路径。
+- [x] 跑 buckyos-api、task-manager、workflow 和 RBAC 定向测试。
 
 ### Phase 4：改 Control Panel 与 Boot Gateway
 
-- [ ] 合并 target resolver。
-- [ ] 修改 login、pending callback、refresh 和 principal 判定。
-- [ ] 恢复并扩充 sys_auth_backend 单测。
-- [ ] 修改 `boot_gateway.yaml` 的 entry validation、Cookie target 校验和 AppInstance forward group。
-- [ ] 更新并运行 boot Gateway debug tests。
+- [x] 合并 target resolver。
+- [x] 修改 login、pending callback、refresh 和 principal 判定。
+- [x] 恢复并扩充 sys_auth_backend 单测。
+- [x] 修改 `boot_gateway.yaml` 的 entry validation、Cookie target 校验和 AppInstance forward group。
+- [x] 更新并运行 boot Gateway debug tests。
 
 ### Phase 5：迁移前端、测试和文档
 
-- [ ] 修改 Desktop/LoginPage/WebSDK 受影响调用。
-- [ ] 迁移 local-user 和其它 sudo/login 测试。
-- [ ] 更新协议与 SDK 文档。
+- [x] 修改 Desktop/LoginPage/WebSDK 受影响调用。
+- [x] 迁移 local-user 和其它 sudo/login 测试。
+- [x] 更新协议与 SDK 文档。
 
 ### Phase 6：构建与 DV 验收
 
-- [ ] Rust 定向测试。
-- [ ] Web 构建和 BuckyOS 全量构建。
-- [ ] 全新启动 DV 环境。
-- [ ] 完成 Desktop + App SSO + refresh + logout + local-user DV 矩阵。
+- [x] Rust 定向测试。
+- [x] Web 构建和 BuckyOS 全量构建。
+- [x] 全新启动 DV 环境。
+- [x] 完成 Desktop + App SSO + refresh + logout + local-user DV 矩阵。
 
 按阶段提交时，不允许出现“Phase 2 完成但仓库无法编译”的中间提交；共享 API 改动与调用方迁移应保持每个提交可构建。
 
@@ -611,20 +611,44 @@ grep -RIn --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules \
 
 ## 11. Definition of Done
 
-- [ ] Desktop 在全新 DV 环境能从 Zone 根域登录。
-- [ ] `_` 被解析为 `SystemServiceId("control-panel")`，而不是 AppInstanceId。
-- [ ] 用户 System token 的 principal/target 两个维度正确且可独立校验。
-- [ ] 普通 App token 仍精确绑定 AppInstanceId 和 owner。
-- [ ] login、JWT login、sudo、refresh、verify、callback、Gateway 和共享本地验签使用同一 AuthTarget 模型。
-- [ ] Verify Hub token 明确区分 session/refresh，LoginAssertion 不能直接作为 session 使用。
-- [ ] RBAC 和 creator/audit identity 区分同名 App/System target，不再只依赖裸 `appid`。
-- [ ] 不存在 `control-panel@system` 运行时兼容路径。
-- [ ] callback 不能把 pending token 改送到不同 target 或同 target 的不同 origin。
-- [ ] refresh request origin 当前 Gateway target 与 token target 不一致时拒绝并清 Cookie。
-- [ ] Boot Gateway 私有 App 页面精确校验 Verify Hub user/session/AppInstance/owner claims。
-- [ ] Control Panel 被禁用的 auth tests 恢复执行。
-- [ ] 定向 Rust tests、Boot Gateway debug tests、BuckyOS build、local-user DV、Desktop/App SSO 验收通过。
-- [ ] 协议、SDK、Control Panel、Gateway 和 RBAC 文档已同步。
+- [x] Desktop 在全新 DV 环境能从 Zone 根域登录。
+- [x] `_` 被解析为 `SystemServiceId("control-panel")`，而不是 AppInstanceId。
+- [x] 用户 System token 的 principal/target 两个维度正确且可独立校验。
+- [x] 普通 App token 仍精确绑定 AppInstanceId 和 owner。
+- [x] login、JWT login、sudo、refresh、verify、callback、Gateway 和共享本地验签使用同一 AuthTarget 模型。
+- [x] Verify Hub token 明确区分 session/refresh，LoginAssertion 不能直接作为 session 使用。
+- [x] RBAC 和 creator/audit identity 区分同名 App/System target，不再只依赖裸 `appid`。
+- [x] 不存在 `control-panel@system` 运行时兼容路径。
+- [x] callback 不能把 pending token 改送到不同 target 或同 target 的不同 origin。
+- [x] refresh request origin 当前 Gateway target 与 token target 不一致时拒绝并清 Cookie。
+- [x] Boot Gateway 私有 App 页面精确校验 Verify Hub user/session/AppInstance/owner claims。
+- [x] Control Panel 被禁用的 auth tests 恢复执行。
+- [x] 定向 Rust tests、Boot Gateway debug tests、BuckyOS build、local-user DV、Desktop/App SSO 验收通过。
+- [x] 协议、SDK、Control Panel、Gateway 和 RBAC 文档已同步。
+
+---
+
+## 11.1 完成记录（2026-08-24）
+
+- 共享模型已统一为 `AuthTarget::{App, System}`、`target_kind`、`token_use` 和
+  kind-aware authorization/actor identity；Verify Hub、Runtime、RBAC、Control Panel、
+  Gateway、Desktop、TaskManager、Workflow、System Config 与测试调用方均已迁移。
+- LoginAssertion 仅进入明确的 exchange/bootstrap 边界；Verify Hub session、refresh、sudo
+  统一执行 issuer、principal、target 和用途组合校验。系统启动使用带固定 audience 的短期
+  assertion，启动完成后不能作为通用 system-config 写凭证。
+- SSO pending、callback 和 refresh 精确绑定 canonical origin 与 Gateway route target；Gateway
+  覆盖写入可信 `X-Forwarded-Proto`，App 页面校验精确 AppInstanceId/owner。
+- 定向 Rust 回归全部通过：buckyos-api 163、Verify Hub 12、Control Panel 48、TaskManager 34、
+  Workflow 50、System Config 32、Node Daemon 66。
+- Boot Gateway 主配置 27/27、cyfs-gateway 同步副本 13/13；全量构建通过，DV 重启后核心进程
+  与端口健康，`local_user_dv.sh` 通过。
+- Chromium 真实 Zone DV 2/2：callback 备用 origin 篡改被拒绝并消费 nonce；管理员/本地用户
+  System SSO、缺失 session Cookie 的 refresh rotation、页面重载、sudo 创建用户、logout 清除
+  两枚 Cookie、重新登录均通过。
+- 临时 static-web App DV 通过并完成卸载清理：App SSO token 精确绑定 AppInstanceId/owner；
+  同 AppId 另一 owner route 上的 refresh 返回 401 并清除两枚 Cookie。
+- 冷启动时 Control Panel 若先于 Verify Hub 尝试预装写入，bootstrap assertion 会按预期
+  fail closed；可重试错误改为 5 秒依赖重试，并已验证随后使用 Verify Hub session 自动成功。
 
 ---
 

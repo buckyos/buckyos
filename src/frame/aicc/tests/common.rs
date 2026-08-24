@@ -1464,6 +1464,8 @@ async fn login_remote_token_once(
     };
 
     let appid = first_non_empty_env(&["AICC_LOGIN_APPID"]).unwrap_or_else(|| "aicc-tests".into());
+    let app_instance_id = first_non_empty_env(&["AICC_LOGIN_APP_INSTANCE_ID"])
+        .unwrap_or_else(|| format!("{}@{}", appid, username));
     let login_endpoint = resolve_login_endpoint(endpoint_hint)?;
     let seq = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1480,7 +1482,10 @@ async fn login_remote_token_once(
                 "type": "password",
                 "username": username,
                 "password": password_hash,
-                "appid": appid,
+                "target": {
+                    "kind": "app",
+                    "app_instance_id": app_instance_id,
+                },
                 "login_nonce": login_nonce,
             }),
             seq,

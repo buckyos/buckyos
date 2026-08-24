@@ -189,9 +189,9 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 **(a) 登录鉴权层**（`sys_auth_backend`）—— 处理登入/登出与 token：
 
-* `auth.login`：取 `username` + `password`（+可选 `appid` / `app_instance_id` / `redirect_url` / `login_nonce`），从 Gateway/redirect 解出完整 App 实例后经 `verify_hub_client.login_by_password(...)` 校验可用性并签发 token pair；若带 `redirect_url` 走 SSO（生成 pending nonce，经目标 App origin 的 `/sso_callback` 回跳并写 cookie）。
+* `auth.login`：取 `username` + `password` + 结构化 `target`；SSO 模式以 Gateway/redirect 为真相源解析 `AuthTarget::App(AppInstanceId)` 或 `AuthTarget::System(SystemServiceId)`，前端 `appid` 只做一致性检查。根域 `_` 固定解析为 `System(control-panel)`，不创建 `control-panel@system`。若带 `redirect_url`，pending nonce 同时绑定 target、canonical origin 和完整 redirect。
 * `auth.refresh` / `auth.verify` / `auth.logout` / `auth.issue_sso_token`：刷新 / 校验 / 注销 / 签发 SSO token。
-* HTTP 侧：`/sso_callback` 同时写入 host-only 的短期 `buckyos_session_token`（供 gateway 在 App 页面加载前鉴权）和 host-only、`HttpOnly` 的 `buckyos_refresh_token`；`/sso_refresh` 只读取并轮换 refresh cookie，同时更新 session cookie；`/sso_logout` 吊销 refresh token 并清理两种 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散到父域或其它 App 子域。
+* HTTP 侧：`/sso_callback` 只有在 pending/callback/实际 request 的 origin、redirect 和 Gateway route target 全部一致，且 token pair 的 target/use 合法后才写两枚 host-only cookie；失败会尽力吊销 pending refresh。`/sso_refresh` 在调用 Verify Hub 前后都校验当前 origin/route 和 target，任何失败都清 cookie；`/sso_logout` 尽力吊销后始终清 cookie。两种 cookie 都使用 `Path=/; SameSite=Lax`，HTTPS 请求还会使用 `Secure`，且禁止通过 `Domain` 扩散。
 * **取当前用户**：受保护方法在 `authenticate_session_token_for_method()` 中校验 token（`verify_trusted_session_token`），从 `sub` 解出 username，加载 `users/{username}/settings` 校验状态为 `Active`，构造 `RpcAuthPrincipal { username, user_type, owner_did }` 传给各 handler。
 
 **(b) 桌面 UI Session 状态层**（`ui_session_mgr`）—— 持久化每个用户的桌面会话（外观/窗口布局/图标布局/小组件布局）：

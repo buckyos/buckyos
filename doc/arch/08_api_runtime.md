@@ -191,25 +191,21 @@ process_main():
 - 这意味着：NodeGateway 不是“可选加速层”，在 AppService 的兼容模式下它是主链路。
 - 对应 notepads 的提醒：NodeGateway down 会导致大量 app/service 暂时不可用（`new_doc/ref/notepads/buckyos-api-runtime.md`）。
 
-### 2) token 刷新语义：有两套刷新路径，别混淆
+### 2) LoginAssertion 兑换与 refresh token 刷新不能混淆
 
 代码里同时存在两种“续命”方式：
 
 - `renew_token_from_verify_hub()`：
-  - 只有当当前 token 非空且接近过期时才会触发（`exp` 小于当前时间 + 30s）。
-  - 如果 token 的 `iss` 不是 `verify-hub` 也会触发刷新。
-  - 刷新方式是调用 `verify_hub_client.login_by_jwt(old_token)` 并把返回的 token 写回 `self.session_token`。
+  - 非 Verify Hub issuer 的启动材料是一次性 LoginAssertion，只能在明确的 exchange 路径调用 `login_by_jwt`。
+  - Verify Hub session/refresh token 都携带严格 `token_use + AuthTarget`；普通本地 session verifier 会拒绝 LoginAssertion 和 refresh token。
+  - 已取得 token pair 后，正常续签只用 refresh token 调用 `refresh_token`；若 refresh material 缺失，可以重新生成一份新的 LoginAssertion 走 exchange，但绝不能把 session token 重新提交到 `login_by_jwt`。
   - 触发点是 keep-alive 定时任务（`login()` 启动的 5s timer）。
   - 代码路径：`src/kernel/buckyos-api/src/runtime.rs`。
 
-- `get_session_token()`：
-  - 在获取 token 时，如果发现 token 即将过期（`exp` 小于当前时间 + 10s），会尝试用 `device_private_key` 重新生成一个 JWT 并覆盖内存里的 token。
-  - 这条路径不依赖 verify-hub 在线，但要求本进程有 device private key。
-  - 代码路径：`src/kernel/buckyos-api/src/runtime.rs`。
+- `get_session_token()` 返回当前业务 session；设备/用户私钥直接签发的材料不再能作为普通 session 使用。
 
 实际影响：
-- 你可能看到“verify-hub 暂时不可用但调用仍能继续一段时间”，因为 `get_session_token()` 还能本地续签（前提是有 device private key）。
-- 也可能看到“token 看起来没过期但仍然会 refresh”，因为 `iss != verify-hub` 会触发刷新（例如某些自签 token 场景）。
+- Verify Hub 暂时不可用时，已有 session 在自身 TTL 内仍可本地验签使用；无法用设备私钥绕过 Verify Hub 续签普通 session。
 
 ### 3) 环境变量 token 缺失会导致服务启动直接失败
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 use ::kRPC::Result;
 use ::kRPC::*;
 use buckyos_kit::*;
-use jsonwebtoken::{decode, DecodingKey, EncodingKey, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use log::*;
 use ndn_lib::{load_named_object_from_obj_str, ChunkId, ObjId};
 use rand::Rng;
@@ -42,8 +42,10 @@ use crate::verify_hub_client::*;
 use crate::workflow_service::{WorkflowServiceClient, WORKFLOW_SERVICE_NAME};
 use crate::{
     get_buckyos_api_runtime, get_service_session_token_env_key, load_local_device_config,
-    load_local_device_private_key, load_local_node_identity_config, token_app_instance_id, AppId,
-    AppInstanceId, RbacConfig, BUCKYOS_APP_TOKEN_ENV, OPENDAN_SERVICE_NAME,
+    load_local_device_private_key, load_local_node_identity_config,
+    validate_verify_hub_token_claims, AppId, AppInstanceId, AuthTarget, RbacConfig,
+    SystemServiceId, TokenUse, BUCKYOS_APP_TOKEN_ENV, OPENDAN_SERVICE_NAME,
+    VERIFY_HUB_TOKEN_ISSUER,
 };
 
 const DEFAULT_NODE_GATEWAY_PORT: u16 = 3180;
@@ -979,6 +981,7 @@ impl BuckyOSRuntime {
     }
 
     async fn renew_token_from_verify_hub_once(&self) -> Result<()> {
+        let auth_target = self.get_auth_target()?;
         let session_token = self.session_token.write().await;
         if session_token.is_empty() {
             debug!("session_token is empty,skip refresh token");
@@ -1026,14 +1029,14 @@ impl BuckyOSRuntime {
                 drop(refresh_token);
                 let (fallback_jwt, _) = self.create_local_login_jwt().await?;
                 verify_hub_client
-                    .login_by_jwt(fallback_jwt.as_str(), None)
+                    .login_by_jwt(fallback_jwt.as_str(), auth_target.clone())
                     .await?
             }
         } else {
             // First login / exchange: accept trusted JWT (device/root/etc)
             info!("use session-token to renew session-token from verify-hub...");
             verify_hub_client
-                .login_by_jwt(session_token_str.as_str(), None)
+                .login_by_jwt(session_token_str.as_str(), auth_target)
                 .await?
         };
 
@@ -1056,10 +1059,9 @@ impl BuckyOSRuntime {
 
         if self.runtime_type == BuckyOSRuntimeType::AppClient {
             if self.user_private_key.is_some() && self.user_id.is_some() {
-                let (jwt, token) = RPCSessionToken::generate_jwt_token(
+                let (jwt, token) = generate_user_login_assertion(
                     self.user_id.as_ref().unwrap(),
                     self.app_id.as_str(),
-                    None,
                     self.user_private_key.as_ref().unwrap(),
                 )?;
                 return Ok((jwt, token));
@@ -1070,7 +1072,7 @@ impl BuckyOSRuntime {
             let device_private_key = self.device_private_key.as_ref().unwrap();
             let device_config = self.device_config.as_ref().unwrap();
             let subject_id = self.device_signed_login_subject(device_config.name.as_str())?;
-            let (jwt, token) = generate_service_login_jwt(
+            let (jwt, token) = generate_service_login_assertion(
                 subject_id,
                 self.app_id.as_str(),
                 device_config.name.as_str(),
@@ -1257,10 +1259,9 @@ impl BuckyOSRuntime {
                     if self.user_private_key.is_some() && self.user_config.is_some() {
                         info!("api-runtime: session token is empty,runtime_type:{:?},try to create session token by user_private_key",self.runtime_type);
                         let (session_token_str, real_session_token) =
-                            RPCSessionToken::generate_jwt_token(
+                            generate_user_login_assertion(
                                 self.user_id.as_ref().unwrap(),
                                 self.app_id.as_str(),
-                                None,
                                 self.user_private_key.as_ref().unwrap(),
                             )?;
                         *session_token = session_token_str;
@@ -1277,7 +1278,7 @@ impl BuckyOSRuntime {
                     let device_config = self.device_config.as_ref().unwrap();
                     let subject_id =
                         self.device_signed_login_subject(device_config.name.as_str())?;
-                    let (session_token_str, real_session_token) = generate_service_login_jwt(
+                    let (session_token_str, real_session_token) = generate_service_login_assertion(
                         subject_id,
                         self.app_id.as_str(),
                         device_config.name.as_str(),
@@ -1319,12 +1320,17 @@ impl BuckyOSRuntime {
                         "Session token is not valid".to_string(),
                     ));
                 }
-                if self.runtime_type == BuckyOSRuntimeType::AppService {
-                    let expected = self.get_app_instance_id()?;
-                    let actual = token_app_instance_id(&authenticated_session_token)?;
-                    if actual != expected {
+                if authenticated_session_token.iss.as_deref() == Some(VERIFY_HUB_TOKEN_ISSUER) {
+                    let claims = validate_verify_hub_token_claims(
+                        &authenticated_session_token,
+                        TokenUse::Session,
+                    )?;
+                    let expected = self.get_auth_target()?;
+                    if claims.target != expected {
                         return Err(RPCErrors::InvalidToken(format!(
-                            "session token AppInstanceId {actual} does not match {expected}"
+                            "session token target {} does not match runtime target {}",
+                            claims.target.canonical_key(),
+                            expected.canonical_key(),
                         )));
                     }
                 }
@@ -1512,28 +1518,20 @@ impl BuckyOSRuntime {
         let header = jsonwebtoken::decode_header(raw_jwt).map_err(|error| {
             RPCErrors::InvalidToken(format!("JWT decode header error: {}", error))
         })?;
-        let claims = decode_jwt_claim_without_verify(raw_jwt).ok();
-
-        let mut kid = header
-            .kid
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| {
-                claims.as_ref().and_then(|value| {
-                    value
-                        .get("iss")
-                        .and_then(|iss| iss.as_str())
-                        .and_then(|iss| {
-                            let trimmed = iss.trim();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(trimmed.to_string())
-                            }
-                        })
-                })
-            })
-            .unwrap_or_else(|| "root".to_string());
+        let claims = decode_jwt_claim_without_verify(raw_jwt).map_err(|error| {
+            RPCErrors::InvalidToken(format!("JWT claims decode error: {error}"))
+        })?;
+        if claims.get("iss").and_then(Value::as_str) != Some(VERIFY_HUB_TOKEN_ISSUER) {
+            return Err(RPCErrors::InvalidToken(
+                "ordinary session tokens must be issued by verify-hub".to_string(),
+            ));
+        }
+        if header.kid.as_deref() != Some(VERIFY_HUB_TOKEN_ISSUER) {
+            return Err(RPCErrors::InvalidToken(
+                "verify-hub session token has an invalid kid".to_string(),
+            ));
+        }
+        let kid = VERIFY_HUB_TOKEN_ISSUER.to_string();
 
         let mut decoding_key = {
             let key_map = self.trust_keys.read().await;
@@ -1548,20 +1546,13 @@ impl BuckyOSRuntime {
             };
         }
 
-        if decoding_key.is_none() && kid != "root" {
-            kid = "root".to_string();
-            decoding_key = {
-                let key_map = self.trust_keys.read().await;
-                key_map.get(&kid).cloned()
-            };
-        }
-
         let decoding_key =
             decoding_key.ok_or(RPCErrors::NoPermission(format!("kid {} not found", kid)))?;
 
         rpc_token
             .verify_by_key(&decoding_key)
             .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error: {}", error)))?;
+        validate_verify_hub_token_claims(&rpc_token, TokenUse::Session)?;
 
         Ok(rpc_token)
     }
@@ -1581,55 +1572,14 @@ impl BuckyOSRuntime {
         let token_str = req.token.as_deref().ok_or(RPCErrors::ParseRequestError(
             "Invalid params, session_token is none".to_string(),
         ))?;
-        let token = RPCSessionToken::from_string(token_str).map_err(|error| {
-            RPCErrors::InvalidToken(format!("Invalid session token: {}", error))
-        })?;
-        if !token.is_self_verify() {
-            return Err(RPCErrors::InvalidToken(
-                "Session token is not valid".to_string(),
-            ));
-        }
-        let token_str = token.token.as_deref().ok_or(RPCErrors::InvalidToken(
-            "Session token is missing raw JWT".to_string(),
-        ))?;
-        let header: jsonwebtoken::Header =
-            jsonwebtoken::decode_header(token_str).map_err(|error| {
-                RPCErrors::InvalidToken(format!("JWT decode header error : {}", error))
-            })?;
-
-        let key_map = self.trust_keys.read().await;
-        let kid = header.kid.unwrap_or("root".to_string());
-        let decoding_key = key_map.get(&kid);
-        if decoding_key.is_none() {
-            warn!("kid {} not found,Session token is not valid", kid.as_str());
-            return Err(RPCErrors::NoPermission(format!(
-                "kid {} not found",
-                kid.as_str()
-            )));
-        }
-        let decoding_key = decoding_key.unwrap();
-
-        let validation = Validation::new(header.alg);
-        //exp always checked
-        let decoded_token = decode::<serde_json::Value>(token_str, &decoding_key, &validation)
-            .map_err(|error| RPCErrors::InvalidToken(format!("JWT decode error:{}", error)))?;
-        let decoded_json = decoded_token
-            .claims
-            .as_object()
-            .ok_or(RPCErrors::InvalidToken("Invalid token".to_string()))?;
-
-        let userid = decoded_json
-            .get("userid")
-            .or_else(|| decoded_json.get("sub"))
-            .ok_or(RPCErrors::InvalidToken("Missing userid".to_string()))?;
-        let userid = userid
-            .as_str()
-            .ok_or(RPCErrors::InvalidToken("Invalid userid".to_string()))?;
-        let appid = decoded_json
-            .get("appid")
-            .and_then(|appid| appid.as_str())
-            .or_else(|| decoded_json.get("aud").and_then(|aud| aud.as_str()))
-            .unwrap_or("kernel");
+        let token = self.verify_trusted_session_token(token_str).await?;
+        let userid = token
+            .sub
+            .as_deref()
+            .ok_or_else(|| RPCErrors::InvalidToken("missing session subject".to_string()))?;
+        let claims = validate_verify_hub_token_claims(&token, TokenUse::Session)?;
+        let authorization_key = claims.target.authorization_key();
+        let canonical_target = claims.target.canonical_key();
 
         let system_config_client = self.get_system_config_client().await?;
         let rbac_config = crate::load_current_rbac_config(system_config_client.as_ref()).await?;
@@ -1641,20 +1591,18 @@ impl BuckyOSRuntime {
                 })?;
         }
 
-        let sudo = decoded_json
-            .get("sudo")
-            .and_then(|sudo| sudo.as_bool())
-            .unwrap_or(false)
+        let sudo = token
+            .sudo
             .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(userid)));
 
-        let result = rbac::enforce(userid, appid, resource_path, action, sudo).await;
+        let result = rbac::enforce(userid, &authorization_key, resource_path, action, sudo).await;
         if !result {
             return Err(RPCErrors::NoPermission(format!(
                 "enforce failed,userid:{},appid:{},resource:{},action:{}",
-                userid, appid, resource_path, action
+                userid, authorization_key, resource_path, action
             )));
         }
-        Ok((userid.to_string(), appid.to_string()))
+        Ok((userid.to_string(), canonical_target))
     }
 
     //     pub async fn enable_zone_provider (_is_gateway: bool) -> Result<()> {
@@ -1711,6 +1659,19 @@ impl BuckyOSRuntime {
         AppInstanceId::new(app_id, owner_user_id).map_err(RPCErrors::ReasonError)
     }
 
+    pub fn get_auth_target(&self) -> Result<AuthTarget> {
+        match self.runtime_type {
+            BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::AppClient => {
+                Ok(AuthTarget::app(self.get_app_instance_id()?))
+            }
+            BuckyOSRuntimeType::FrameService
+            | BuckyOSRuntimeType::KernelService
+            | BuckyOSRuntimeType::Kernel => Ok(AuthTarget::system(
+                SystemServiceId::parse(self.app_id.as_str()).map_err(RPCErrors::ReasonError)?,
+            )),
+        }
+    }
+
     pub async fn get_session_token(&self) -> String {
         let session_token = self.session_token.read().await;
         let session_token_str = session_token.clone();
@@ -1744,7 +1705,7 @@ impl BuckyOSRuntime {
                                 return "".to_string();
                             }
                         };
-                    let jwt_result = generate_service_login_jwt(
+                    let jwt_result = generate_service_login_assertion(
                         subject_id,
                         self.app_id.as_str(),
                         device_config.name.as_str(),

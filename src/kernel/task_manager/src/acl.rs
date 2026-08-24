@@ -48,7 +48,7 @@ impl TaskViewGate {
         }
         let allowed = rbac::enforce(
             &principal.user_id,
-            &principal.app_id,
+            &principal.authorization_id,
             &task_collection_resource(owner_user_id),
             "read",
             principal.sudo_mode(),
@@ -66,6 +66,7 @@ impl TaskViewGate {
 pub struct Principal {
     pub user_id: String,
     pub app_id: String,
+    pub authorization_id: String,
     pub roles: Vec<String>,
     pub sudo: bool,
     /// Shared with every clone so one request pays for one RBAC evaluation

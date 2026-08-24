@@ -55,7 +55,7 @@ export interface SudoGrant {
   expiresInSeconds: number
   username: string
   appid: string
-  appInstanceId: string
+  appInstanceId?: string
   aud?: string
 }
 
@@ -126,12 +126,6 @@ function resolveAppId(appid?: string) {
   return appid?.trim() || buckyos.getAppId()?.trim() || DEFAULT_APP_ID
 }
 
-function resolveAppInstanceId(appid: string, appInstanceId?: string) {
-  const explicit = appInstanceId?.trim()
-  if (explicit) return explicit
-  return `${appid}@system`
-}
-
 function normalizeSudoError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error ?? '')
   const lower = message.toLowerCase()
@@ -164,7 +158,7 @@ export async function sudoByPassword({
 }: SudoByPasswordParams): Promise<SudoGrant> {
   const normalizedUsername = username.trim()
   const normalizedAppId = appid.trim()
-  const normalizedAppInstanceId = appInstanceId?.trim() || `${normalizedAppId}@system`
+  const normalizedAppInstanceId = appInstanceId?.trim()
 
   if (!normalizedUsername || !normalizedAppId) {
     throw new SudoRequestError(
@@ -188,8 +182,9 @@ export async function sudoByPassword({
       {
         username: normalizedUsername,
         password: passwordHash,
-        appid: normalizedAppId,
-        app_instance_id: normalizedAppInstanceId,
+        target: normalizedAppInstanceId
+          ? { kind: 'app', app_instance_id: normalizedAppInstanceId }
+          : { kind: 'system', service_id: normalizedAppId },
         ...(aud ? { aud } : {}),
         login_nonce: nonce,
       },
@@ -215,7 +210,7 @@ export async function sudoByPassword({
       expiresInSeconds,
       username: normalizedUsername,
       appid: normalizedAppId,
-      appInstanceId: normalizedAppInstanceId,
+      ...(normalizedAppInstanceId ? { appInstanceId: normalizedAppInstanceId } : {}),
       ...(aud ? { aud } : {}),
     }
   } catch (error) {
@@ -238,7 +233,7 @@ function SudoPasswordForm({
   username,
 }: {
   appid: string
-  appInstanceId: string
+  appInstanceId?: string
   aud?: string
   cancelLabel: string
   confirmLabel: string
@@ -381,7 +376,7 @@ export function useSudoByPassword() {
       const accountInfo = await buckyos.getAccountInfo()
       const username = resolveUsername(accountInfo, options.username)
       const appid = resolveAppId(options.appid)
-      const appInstanceId = resolveAppInstanceId(appid, options.appInstanceId)
+      const appInstanceId = options.appInstanceId?.trim()
       const title = options.title ?? t('sudo.title', 'Administrator permission')
       const description =
         options.description ??

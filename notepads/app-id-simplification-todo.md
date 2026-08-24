@@ -852,10 +852,10 @@ volume     = buckyos-instance-{RuntimeKey}
 ### 8.4 Token/RBAC/Gateway
 
 - token 必须精确绑定 AppInstanceId；不能只比较 AppId/AppDID。
-- `appid` claim 对普通 App 固定表示 raw-hostname AppId；system principal 按 1.8 保存显式 SystemServiceId，并由 principal kind 区分。
+- `appid` claim 对普通 App 固定表示 raw-hostname AppId；System target 保存显式 SystemServiceId，并由独立 `target_kind` 区分，不能从 `principal_kind` 推断 target。
 - 非系统 App token 同时携带并校验 `app_owner_user_id`。
 - gateway host entry 保存 AppId、AppDID（如诊断需要）和精确 AppInstanceId。
-- RBAC principal 以 AppInstanceId 区分不同 Owner 安装；AppId 只可用于同一 AppDID 的产品级策略。
+- RBAC 授权键保留 kind：`app:<app_id>` 或 `system:<service_id>`；token/Gateway 仍精确绑定 AppInstanceId 与 owner，授权粒度与认证绑定粒度不得混淆。
 
 ---
 

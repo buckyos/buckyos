@@ -819,7 +819,7 @@ async fn stale_lease_instance_cannot_renew() {
 #[tokio::test(flavor = "current_thread")]
 async fn app_identity_runs_the_full_runner_lease_lifecycle() {
     let env = setup_env().await;
-    let app = user_ctx("devtest", "buckyos_jarvis");
+    let app = user_ctx("devtest", "buckyos-jarvis");
     env.dispatcher
         .handle_register_target(
             RegisterTargetReq {
@@ -837,7 +837,7 @@ async fn app_identity_runs_the_full_runner_lease_lifecycle() {
             RegisterTargetReq {
                 registration: test_registration("did:web:jarvis", DispatchApprovalPolicy::Never),
             },
-            user_ctx("ood1", "buckyos_jarvis"),
+            user_ctx("ood1", "buckyos-jarvis"),
         )
         .await
         .expect("same app re-registers across identity refresh");
@@ -885,7 +885,7 @@ async fn app_identity_runs_the_full_runner_lease_lifecycle() {
 #[tokio::test(flavor = "current_thread")]
 async fn foreign_app_cannot_touch_another_apps_target() {
     let env = setup_env().await;
-    let owner = user_ctx("devtest", "buckyos_jarvis");
+    let owner = user_ctx("devtest", "buckyos-jarvis");
     env.dispatcher
         .handle_register_target(
             RegisterTargetReq {
@@ -967,7 +967,7 @@ async fn foreign_app_cannot_touch_another_apps_target() {
         )
         .await
         .expect("zone-trusted admin edits the registration");
-    assert_eq!(updated.owner_app_id, "buckyos_jarvis");
+    assert_eq!(updated.owner_app_id, "buckyos-jarvis");
 }
 
 #[tokio::test(flavor = "current_thread")]

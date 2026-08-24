@@ -113,6 +113,7 @@ impl PreInstallReconciler {
 
         let mut apps = settings.pre_install_apps.into_iter().collect::<Vec<_>>();
         apps.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let mut retry_needed = false;
         for (raw_app_id, config) in apps {
             let app_id = match AppId::parse(&raw_app_id) {
                 Ok(app_id) if app_id.as_str() == raw_app_id => app_id,
@@ -129,6 +130,7 @@ impl PreInstallReconciler {
                 .reconcile_app(&system_config, owner_user_id.as_str(), &app_id, &config)
                 .await
             {
+                retry_needed |= error.retryable;
                 let state = json!({
                     "schema_version": 1,
                     "app_id": app_id,
@@ -160,7 +162,11 @@ impl PreInstallReconciler {
                 }
             }
         }
-        Ok(())
+        if retry_needed {
+            Err("one or more pre-install apps need a dependency retry".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     async fn reconcile_app(

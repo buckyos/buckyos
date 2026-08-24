@@ -4,19 +4,19 @@ use jsonwebtoken::EncodingKey;
 use name_lib::DID;
 use rand::random;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{AppDoc, AppType, SelectorType, UserInfo};
+use crate::{AppDoc, AppType, AuthTarget, SelectorType, UserInfo};
 
 pub const VERIFY_HUB_UNIQUE_ID: &str = "verify-hub";
 pub const VERIFY_HUB_SERVICE_NAME: &str = "verify-hub";
 pub const VERIFY_HUB_TOKEN_EXPIRE_TIME: u64 = 60 * 10; //10 minutes
 pub const VERIFY_HUB_SERVICE_PORT: u16 = 3210;
 
-pub fn generate_service_login_jwt(
+pub fn generate_service_login_assertion(
     subject_id: &str,
     appid: &str,
     device_name: &str,
@@ -52,6 +52,39 @@ pub fn generate_service_login_jwt(
     Ok((jwt, login_token))
 }
 
+pub fn generate_user_login_assertion(
+    user_id: &str,
+    target_appid: &str,
+    user_private_key: &EncodingKey,
+) -> Result<(String, RPCSessionToken)> {
+    let user_id = user_id.trim();
+    let target_appid = target_appid.trim();
+    if user_id.is_empty() || target_appid.is_empty() {
+        return Err(RPCErrors::ReasonError(
+            "user_id and target_appid are required".to_string(),
+        ));
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut assertion = RPCSessionToken {
+        token_type: RPCSessionTokenType::Normal,
+        token: None,
+        aud: None,
+        exp: Some(now + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
+        iss: Some(user_id.to_string()),
+        jti: Some(random::<u64>().to_string()),
+        sub: Some(user_id.to_string()),
+        appid: Some(target_appid.to_string()),
+        sudo: false,
+        extra: HashMap::new(),
+    };
+    let jwt = assertion.generate_jwt(None, user_private_key)?;
+    assertion.token = Some(jwt.clone());
+    Ok((jwt, assertion))
+}
+
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize)]
 struct VerifyHubSettings {
@@ -65,73 +98,57 @@ pub struct TokenPair {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginByJwtParams {
+    pub target: AuthTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoginByJwtRequest {
+    #[serde(rename = "type")]
+    login_type: String,
     pub jwt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub login_params: Option<Value>,
+    #[serde(flatten)]
+    pub login_params: LoginByJwtParams,
 }
 
 impl LoginByJwtRequest {
-    pub fn new(jwt: String, login_params: Option<Value>) -> Self {
-        Self { jwt, login_params }
+    pub fn new(jwt: String, target: AuthTarget) -> Self {
+        Self {
+            login_type: "jwt".to_string(),
+            jwt,
+            login_params: LoginByJwtParams { target },
+        }
     }
 
     pub fn to_json(&self) -> Result<Value> {
-        let mut params = Map::new();
-        params.insert("type".to_string(), Value::String("jwt".to_string()));
-        params.insert("jwt".to_string(), Value::String(self.jwt.clone()));
-
-        if let Some(extra) = &self.login_params {
-            if let Some(extra_obj) = extra.as_object() {
-                for (key, value) in extra_obj {
-                    params.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
-        Ok(Value::Object(params))
+        serde_json::to_value(self).map_err(|error| {
+            RPCErrors::ReasonError(format!("Failed to serialize LoginByJwtRequest: {error}"))
+        })
     }
 
-    pub fn from_json(value: Value) -> Result<(String, Option<Value>)> {
-        let mut params = value.as_object().cloned().ok_or_else(|| {
-            RPCErrors::ParseRequestError("Expected object params for login".to_string())
+    pub fn from_json(value: Value) -> Result<Self> {
+        let request: Self = serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Failed to parse LoginByJwtRequest: {error}"))
         })?;
-
-        let login_type = params
-            .get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("jwt");
-        if login_type != "jwt" {
+        if request.login_type != "jwt" {
             return Err(RPCErrors::ParseRequestError(
                 "login type must be jwt".to_string(),
             ));
         }
-
-        let jwt = params
-            .get("jwt")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing jwt".to_string()))?
-            .to_string();
-
-        params.remove("type");
-        params.remove("jwt");
-
-        let login_params = if params.is_empty() {
-            None
-        } else {
-            Some(Value::Object(params))
-        };
-
-        Ok((jwt, login_params))
+        Ok(request)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoginByPasswordRequest {
+    #[serde(rename = "type")]
+    login_type: String,
     pub username: String,
     pub password: String,
-    pub appid: String,
-    pub app_instance_id: String,
+    pub target: AuthTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_nonce: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,74 +159,37 @@ impl LoginByPasswordRequest {
     pub fn new(
         username: String,
         password: String,
-        appid: String,
-        app_instance_id: String,
+        target: AuthTarget,
         login_nonce: Option<u64>,
     ) -> Self {
         Self {
+            login_type: "password".to_string(),
             username,
             password,
-            appid,
-            app_instance_id,
+            target,
             login_nonce,
             source_url: None,
         }
     }
 
     pub fn to_json(&self) -> Result<Value> {
-        let mut params = Map::new();
-        params.insert("type".to_string(), Value::String("password".to_string()));
-        params.insert("username".to_string(), Value::String(self.username.clone()));
-        params.insert("password".to_string(), Value::String(self.password.clone()));
-        params.insert("appid".to_string(), Value::String(self.appid.clone()));
-        params.insert(
-            "app_instance_id".to_string(),
-            Value::String(self.app_instance_id.clone()),
-        );
-        if let Some(login_nonce) = self.login_nonce {
-            params.insert("login_nonce".to_string(), Value::Number(login_nonce.into()));
-        }
-        Ok(Value::Object(params))
+        serde_json::to_value(self).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to serialize LoginByPasswordRequest: {error}"
+            ))
+        })
     }
 
-    pub fn from_json(value: Value) -> Result<(String, String, String, String, Option<u64>)> {
-        let params = value.as_object().cloned().ok_or_else(|| {
-            RPCErrors::ParseRequestError("Expected object params for login".to_string())
+    pub fn from_json(value: Value) -> Result<Self> {
+        let request: Self = serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Failed to parse LoginByPasswordRequest: {error}"))
         })?;
-
-        let login_type = params
-            .get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("jwt");
-        if login_type != "password" {
+        if request.login_type != "password" {
             return Err(RPCErrors::ParseRequestError(
                 "login type must be password".to_string(),
             ));
         }
-
-        let username = params
-            .get("username")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing username".to_string()))?
-            .to_string();
-        let password = params
-            .get("password")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing password".to_string()))?
-            .to_string();
-        let appid = params
-            .get("appid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing appid".to_string()))?
-            .to_string();
-        let app_instance_id = params
-            .get("app_instance_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing app_instance_id".to_string()))?
-            .to_string();
-        let login_nonce = params.get("login_nonce").and_then(|value| value.as_u64());
-
-        Ok((username, password, appid, app_instance_id, login_nonce))
+        Ok(request)
     }
 }
 
@@ -221,11 +201,11 @@ pub struct LoginByPasswordResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SudoByPasswordRequest {
     pub username: String,
     pub password: String,
-    pub appid: String,
-    pub app_instance_id: String,
+    pub target: AuthTarget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -236,73 +216,31 @@ impl SudoByPasswordRequest {
     pub fn new(
         username: String,
         password: String,
-        appid: String,
-        app_instance_id: String,
+        target: AuthTarget,
         aud: Option<String>,
         login_nonce: Option<u64>,
     ) -> Self {
         Self {
             username,
             password,
-            appid,
-            app_instance_id,
+            target,
             aud,
             login_nonce,
         }
     }
 
     pub fn to_json(&self) -> Result<Value> {
-        let mut params = Map::new();
-        params.insert("username".to_string(), Value::String(self.username.clone()));
-        params.insert("password".to_string(), Value::String(self.password.clone()));
-        params.insert("appid".to_string(), Value::String(self.appid.clone()));
-        params.insert(
-            "app_instance_id".to_string(),
-            Value::String(self.app_instance_id.clone()),
-        );
-        if let Some(aud) = &self.aud {
-            params.insert("aud".to_string(), Value::String(aud.clone()));
-        }
-        if let Some(login_nonce) = self.login_nonce {
-            params.insert("login_nonce".to_string(), Value::Number(login_nonce.into()));
-        }
-        Ok(Value::Object(params))
+        serde_json::to_value(self).map_err(|error| {
+            RPCErrors::ReasonError(format!(
+                "Failed to serialize SudoByPasswordRequest: {error}"
+            ))
+        })
     }
 
-    pub fn from_json(
-        value: Value,
-    ) -> Result<(String, String, String, String, Option<String>, Option<u64>)> {
-        let params = value.as_object().cloned().ok_or_else(|| {
-            RPCErrors::ParseRequestError("Expected object params for sudo".to_string())
-        })?;
-
-        let username = params
-            .get("username")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing username".to_string()))?
-            .to_string();
-        let password = params
-            .get("password")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing password".to_string()))?
-            .to_string();
-        let appid = params
-            .get("appid")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing appid".to_string()))?
-            .to_string();
-        let app_instance_id = params
-            .get("app_instance_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing app_instance_id".to_string()))?
-            .to_string();
-        let aud = params
-            .get("aud")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string());
-        let login_nonce = params.get("login_nonce").and_then(|value| value.as_u64());
-
-        Ok((username, password, appid, app_instance_id, aud, login_nonce))
+    pub fn from_json(value: Value) -> Result<Self> {
+        serde_json::from_value(value).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("Failed to parse SudoByPasswordRequest: {error}"))
+        })
     }
 }
 
@@ -312,24 +250,18 @@ pub struct SudoByPasswordResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifyTokenRequest {
     pub session_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub appid: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_instance_id: Option<String>,
+    pub expected_target: Option<AuthTarget>,
 }
 
 impl VerifyTokenRequest {
-    pub fn new(
-        session_token: String,
-        appid: Option<String>,
-        app_instance_id: Option<String>,
-    ) -> Self {
+    pub fn new(session_token: String, expected_target: Option<AuthTarget>) -> Self {
         Self {
             session_token,
-            appid,
-            app_instance_id,
+            expected_target,
         }
     }
 
@@ -347,6 +279,7 @@ impl VerifyTokenRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
@@ -421,12 +354,12 @@ impl VerifyHubClient {
         }
     }
 
-    pub async fn login_by_jwt(&self, jwt: &str, login_params: Option<Value>) -> Result<TokenPair> {
+    pub async fn login_by_jwt(&self, jwt: &str, target: AuthTarget) -> Result<TokenPair> {
         match self {
-            Self::InProcess(handler) => handler.handle_login_by_jwt(jwt, login_params).await,
+            Self::InProcess(handler) => handler.handle_login_by_jwt(jwt, &target).await,
             Self::KRPC(client) => {
                 client.reset_session_token().await;
-                let params = LoginByJwtRequest::new(jwt.to_string(), login_params).to_json()?;
+                let params = LoginByJwtRequest::new(jwt.to_string(), target).to_json()?;
                 let result = client.call("login_by_jwt", params).await?;
                 let token_pair: TokenPair = serde_json::from_value(result)
                     .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
@@ -439,33 +372,20 @@ impl VerifyHubClient {
         &self,
         username: String,
         password: String,
-        appid: String,
-        app_instance_id: String,
+        target: AuthTarget,
         login_nonce: Option<u64>,
     ) -> Result<LoginByPasswordResponse> {
         match self {
             Self::InProcess(handler) => {
                 let login_nonce = login_nonce.unwrap_or_else(current_login_nonce_millis);
                 handler
-                    .handle_login_by_password(
-                        &username,
-                        &password,
-                        &appid,
-                        &app_instance_id,
-                        login_nonce,
-                    )
+                    .handle_login_by_password(&username, &password, &target, login_nonce)
                     .await
             }
             Self::KRPC(client) => {
                 client.reset_session_token().await;
-                let params = LoginByPasswordRequest::new(
-                    username,
-                    password,
-                    appid,
-                    app_instance_id,
-                    login_nonce,
-                )
-                .to_json()?;
+                let params = LoginByPasswordRequest::new(username, password, target, login_nonce)
+                    .to_json()?;
                 let result = client.call("login_by_password", params).await?;
                 let login_by_password_response: LoginByPasswordResponse =
                     serde_json::from_value(result)
@@ -479,8 +399,7 @@ impl VerifyHubClient {
         &self,
         username: String,
         password: String,
-        appid: String,
-        app_instance_id: String,
+        target: AuthTarget,
         aud: Option<String>,
         login_nonce: Option<u64>,
     ) -> Result<SudoByPasswordResponse> {
@@ -488,28 +407,15 @@ impl VerifyHubClient {
             Self::InProcess(handler) => {
                 let login_nonce = login_nonce.unwrap_or_else(current_login_nonce_millis);
                 handler
-                    .handle_sudo_by_password(
-                        &username,
-                        &password,
-                        &appid,
-                        &app_instance_id,
-                        aud,
-                        login_nonce,
-                    )
+                    .handle_sudo_by_password(&username, &password, &target, aud, login_nonce)
                     .await
             }
             Self::KRPC(client) => {
                 client.reset_session_token().await;
                 let login_nonce = login_nonce.or_else(|| Some(current_login_nonce_millis()));
-                let params = SudoByPasswordRequest::new(
-                    username,
-                    password,
-                    appid,
-                    app_instance_id,
-                    aud,
-                    login_nonce,
-                )
-                .to_json()?;
+                let params =
+                    SudoByPasswordRequest::new(username, password, target, aud, login_nonce)
+                        .to_json()?;
                 let result = client.call("sudo_by_password", params).await?;
                 let sudo_by_password_response: SudoByPasswordResponse =
                     serde_json::from_value(result)
@@ -522,21 +428,17 @@ impl VerifyHubClient {
     pub async fn verify_token(
         &self,
         session_token: &str,
-        appid: Option<&str>,
-        app_instance_id: Option<&str>,
+        expected_target: Option<AuthTarget>,
     ) -> Result<bool> {
-        let appid = appid.map(|value| value.to_string());
-        let app_instance_id = app_instance_id.map(|value| value.to_string());
         match self {
             Self::InProcess(handler) => {
                 handler
-                    .handle_verify_token(session_token, appid, app_instance_id)
+                    .handle_verify_token(session_token, expected_target)
                     .await
             }
             Self::KRPC(client) => {
-                let params =
-                    VerifyTokenRequest::new(session_token.to_string(), appid, app_instance_id)
-                        .to_json()?;
+                let params = VerifyTokenRequest::new(session_token.to_string(), expected_target)
+                    .to_json()?;
                 let result = client.call("verify_token", params).await?;
                 let value: bool = serde_json::from_value(result)
                     .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?;
@@ -558,17 +460,12 @@ impl VerifyHubClient {
 
 #[async_trait]
 pub trait VerifyHubApiHandler: Send + Sync {
-    async fn handle_login_by_jwt(
-        &self,
-        jwt: &str,
-        login_params: Option<Value>,
-    ) -> Result<TokenPair>;
+    async fn handle_login_by_jwt(&self, jwt: &str, target: &AuthTarget) -> Result<TokenPair>;
 
     async fn handle_verify_token(
         &self,
         session_token: &str,
-        appid: Option<String>,
-        app_instance_id: Option<String>,
+        expected_target: Option<AuthTarget>,
     ) -> Result<bool>;
 
     async fn handle_refresh_token(&self, refresh_jwt: &str) -> Result<TokenPair>;
@@ -579,8 +476,7 @@ pub trait VerifyHubApiHandler: Send + Sync {
         &self,
         username: &str,
         password: &str,
-        appid: &str,
-        app_instance_id: &str,
+        target: &AuthTarget,
         login_nonce: u64,
     ) -> Result<LoginByPasswordResponse>;
 
@@ -588,8 +484,7 @@ pub trait VerifyHubApiHandler: Send + Sync {
         &self,
         username: &str,
         password: &str,
-        appid: &str,
-        app_instance_id: &str,
+        target: &AuthTarget,
         aud: Option<String>,
         login_nonce: u64,
     ) -> Result<SudoByPasswordResponse>;
@@ -612,29 +507,30 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
 
         let result = match req.method.as_str() {
             "login_by_jwt" => {
-                let (jwt, login_params) = LoginByJwtRequest::from_json(req.params)?;
-                let token_pair = self.0.handle_login_by_jwt(&jwt, login_params).await?;
+                let request = LoginByJwtRequest::from_json(req.params)?;
+                let token_pair = self
+                    .0
+                    .handle_login_by_jwt(&request.jwt, &request.login_params.target)
+                    .await?;
                 RPCResult::Success(
                     serde_json::to_value(token_pair)
                         .map_err(|e| RPCErrors::ParserResponseError(e.to_string()))?,
                 )
             }
             "login_by_password" => {
-                let (username, password, appid, app_instance_id, login_nonce) =
-                    LoginByPasswordRequest::from_json(req.params)?;
+                let request = LoginByPasswordRequest::from_json(req.params)?;
                 let fallback_nonce = if req.seq > 10_000_000_000_000 {
                     req.seq / 1000
                 } else {
                     req.seq
                 };
-                let login_nonce = login_nonce.unwrap_or(fallback_nonce);
+                let login_nonce = request.login_nonce.unwrap_or(fallback_nonce);
                 let result = self
                     .0
                     .handle_login_by_password(
-                        &username,
-                        &password,
-                        &appid,
-                        &app_instance_id,
+                        &request.username,
+                        &request.password,
+                        &request.target,
                         login_nonce,
                     )
                     .await?;
@@ -644,22 +540,20 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                 )
             }
             "sudo_by_password" => {
-                let (username, password, appid, app_instance_id, aud, login_nonce) =
-                    SudoByPasswordRequest::from_json(req.params)?;
+                let request = SudoByPasswordRequest::from_json(req.params)?;
                 let fallback_nonce = if req.seq > 10_000_000_000_000 {
                     req.seq / 1000
                 } else {
                     req.seq
                 };
-                let login_nonce = login_nonce.unwrap_or(fallback_nonce);
+                let login_nonce = request.login_nonce.unwrap_or(fallback_nonce);
                 let result = self
                     .0
                     .handle_sudo_by_password(
-                        &username,
-                        &password,
-                        &appid,
-                        &app_instance_id,
-                        aud,
+                        &request.username,
+                        &request.password,
+                        &request.target,
+                        request.aud,
                         login_nonce,
                     )
                     .await?;
@@ -691,11 +585,7 @@ impl<T: VerifyHubApiHandler> RPCHandler for VerifyHubRpcHandler<T> {
                 let verify_req = VerifyTokenRequest::from_json(req.params)?;
                 let value = self
                     .0
-                    .handle_verify_token(
-                        &verify_req.session_token,
-                        verify_req.appid,
-                        verify_req.app_instance_id,
-                    )
+                    .handle_verify_token(&verify_req.session_token, verify_req.expected_target)
                     .await?;
                 RPCResult::Success(
                     serde_json::to_value(value)
@@ -751,7 +641,8 @@ mod tests {
         )
         .unwrap();
         let (jwt, token) =
-            generate_service_login_jwt("alice", "control-panel", "ood1", &private_key).unwrap();
+            generate_service_login_assertion("alice", "control-panel", "ood1", &private_key)
+                .unwrap();
 
         assert_eq!(token.sub.as_deref(), Some("alice"));
         assert_eq!(token.appid.as_deref(), Some("control-panel"));
@@ -771,7 +662,7 @@ mod tests {
         )
         .unwrap();
         let (jwt, token) =
-            generate_service_login_jwt("ood1", "node-daemon", "ood1", &private_key).unwrap();
+            generate_service_login_assertion("ood1", "node-daemon", "ood1", &private_key).unwrap();
 
         assert_eq!(token.sub.as_deref(), Some("ood1"));
         assert_eq!(token.appid.as_deref(), Some("node-daemon"));
@@ -783,12 +674,70 @@ mod tests {
         assert_eq!(parsed.iss.as_deref(), Some("ood1"));
     }
 
+    #[test]
+    fn typed_requests_round_trip_and_reject_unknown_or_mixed_targets() {
+        let app_target = AuthTarget::app("filebrowser@alice".parse().unwrap());
+        let password = LoginByPasswordRequest::new(
+            "alice".to_string(),
+            "digest".to_string(),
+            app_target.clone(),
+            Some(42),
+        );
+        let decoded = LoginByPasswordRequest::from_json(password.to_json().unwrap()).unwrap();
+        assert_eq!(decoded.target, app_target);
+
+        assert!(LoginByPasswordRequest::from_json(json!({
+            "type": "password",
+            "username": "alice",
+            "password": "digest",
+            "target": {"kind": "system", "service_id": "control-panel"},
+            "appid": "control-panel"
+        }))
+        .is_err());
+        assert!(LoginByPasswordRequest::from_json(json!({
+            "type": "password",
+            "username": "alice",
+            "password": "digest",
+            "target": {
+                "kind": "app",
+                "app_instance_id": "filebrowser@alice",
+                "service_id": "control-panel"
+            }
+        }))
+        .is_err());
+
+        let jwt = LoginByJwtRequest::new(
+            "assertion".to_string(),
+            AuthTarget::system("kernel".parse().unwrap()),
+        );
+        assert_eq!(
+            LoginByJwtRequest::from_json(jwt.to_json().unwrap())
+                .unwrap()
+                .jwt,
+            "assertion"
+        );
+        assert!(LoginByJwtRequest::from_json(json!({
+            "type": "jwt",
+            "jwt": "assertion",
+            "target": {"kind": "system", "service_id": "kernel"},
+            "unexpected": true
+        }))
+        .is_err());
+
+        assert!(VerifyTokenRequest::from_json(json!({
+            "session_token": "session",
+            "expected_target": {"kind": "app", "app_instance_id": "filebrowser@alice"},
+            "expected_appid": "filebrowser"
+        }))
+        .is_err());
+    }
+
     #[derive(Default, Debug)]
     struct MockCalls {
-        login_jwt: Option<(String, Option<Value>)>,
-        login_password: Option<(String, String, String, String, u64)>,
-        sudo_password: Option<(String, String, String, String, Option<String>, u64)>,
-        verify_token: Option<(String, Option<String>, Option<String>)>,
+        login_jwt: Option<(String, AuthTarget)>,
+        login_password: Option<(String, String, AuthTarget, u64)>,
+        sudo_password: Option<(String, String, AuthTarget, Option<String>, u64)>,
+        verify_token: Option<(String, Option<AuthTarget>)>,
         refresh_token: Option<String>,
         logout: Option<String>,
     }
@@ -800,13 +749,9 @@ mod tests {
 
     #[async_trait]
     impl VerifyHubApiHandler for MockVerifyHub {
-        async fn handle_login_by_jwt(
-            &self,
-            jwt: &str,
-            login_params: Option<Value>,
-        ) -> Result<TokenPair> {
+        async fn handle_login_by_jwt(&self, jwt: &str, target: &AuthTarget) -> Result<TokenPair> {
             let mut calls = self.calls.lock().unwrap();
-            calls.login_jwt = Some((jwt.to_string(), login_params));
+            calls.login_jwt = Some((jwt.to_string(), target.clone()));
             Ok(TokenPair {
                 session_token: "session-1".to_string(),
                 refresh_token: "refresh-1".to_string(),
@@ -817,16 +762,14 @@ mod tests {
             &self,
             username: &str,
             password: &str,
-            appid: &str,
-            app_instance_id: &str,
+            target: &AuthTarget,
             login_nonce: u64,
         ) -> Result<LoginByPasswordResponse> {
             let mut calls = self.calls.lock().unwrap();
             calls.login_password = Some((
                 username.to_string(),
                 password.to_string(),
-                appid.to_string(),
-                app_instance_id.to_string(),
+                target.clone(),
                 login_nonce,
             ));
             Ok(LoginByPasswordResponse {
@@ -845,8 +788,7 @@ mod tests {
             &self,
             username: &str,
             password: &str,
-            appid: &str,
-            app_instance_id: &str,
+            target: &AuthTarget,
             aud: Option<String>,
             login_nonce: u64,
         ) -> Result<SudoByPasswordResponse> {
@@ -854,8 +796,7 @@ mod tests {
             calls.sudo_password = Some((
                 username.to_string(),
                 password.to_string(),
-                appid.to_string(),
-                app_instance_id.to_string(),
+                target.clone(),
                 aud,
                 login_nonce,
             ));
@@ -882,11 +823,10 @@ mod tests {
         async fn handle_verify_token(
             &self,
             session_token: &str,
-            appid: Option<String>,
-            app_instance_id: Option<String>,
+            expected_target: Option<AuthTarget>,
         ) -> Result<bool> {
             let mut calls = self.calls.lock().unwrap();
-            calls.verify_token = Some((session_token.to_string(), appid, app_instance_id));
+            calls.verify_token = Some((session_token.to_string(), expected_target));
             Ok(true)
         }
     }
@@ -909,16 +849,17 @@ mod tests {
         };
         let client = VerifyHubClient::new_in_process(Box::new(handler));
 
-        let login_params = json!({"client": "mock"});
+        let kernel_target = AuthTarget::system("kernel".parse().unwrap());
+        let control_panel_target = AuthTarget::system("control-panel".parse().unwrap());
         let token_pair = client
-            .login_by_jwt("jwt-1", Some(login_params.clone()))
+            .login_by_jwt("jwt-1", kernel_target.clone())
             .await
             .unwrap();
         assert_eq!(token_pair.session_token, "session-1");
         assert_eq!(token_pair.refresh_token, "refresh-1");
 
         let verify_result = client
-            .verify_token("session-1", Some("kernel"), Some("kernel@system"))
+            .verify_token("session-1", Some(kernel_target.clone()))
             .await
             .unwrap();
         assert!(verify_result);
@@ -927,8 +868,7 @@ mod tests {
             .sudo_by_password(
                 "alice".to_string(),
                 "password-hash".to_string(),
-                "control-panel".to_string(),
-                "control-panel@system".to_string(),
+                control_panel_target.clone(),
                 Some("system-config".to_string()),
                 Some(123),
             )
@@ -942,17 +882,17 @@ mod tests {
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-1");
-        assert_eq!(params, Some(login_params));
-        let (session_token, appid, app_instance_id) = calls.verify_token.clone().unwrap();
+        assert_eq!(params, kernel_target);
+        let (session_token, expected_target) = calls.verify_token.clone().unwrap();
         assert_eq!(session_token, "session-1");
-        assert_eq!(appid, Some("kernel".to_string()));
-        assert_eq!(app_instance_id, Some("kernel@system".to_string()));
-        let (username, password, appid, app_instance_id, aud, login_nonce) =
-            calls.sudo_password.clone().unwrap();
+        assert_eq!(
+            expected_target,
+            Some(AuthTarget::system("kernel".parse().unwrap()))
+        );
+        let (username, password, target, aud, login_nonce) = calls.sudo_password.clone().unwrap();
         assert_eq!(username, "alice");
         assert_eq!(password, "password-hash");
-        assert_eq!(appid, "control-panel");
-        assert_eq!(app_instance_id, "control-panel@system");
+        assert_eq!(target, control_panel_target);
         assert_eq!(aud, Some("system-config".to_string()));
         assert_eq!(login_nonce, 123);
         assert_eq!(calls.logout.as_deref(), Some("refresh-1"));
@@ -969,7 +909,11 @@ mod tests {
 
         let login_req = RPCRequest {
             method: "login_by_jwt".to_string(),
-            params: json!({"type": "jwt", "jwt": "jwt-2", "extra": "value"}),
+            params: json!({
+                "type": "jwt",
+                "jwt": "jwt-2",
+                "target": {"kind": "system", "service_id": "kernel"}
+            }),
             seq: 7,
             token: None,
             trace_id: None,
@@ -988,8 +932,7 @@ mod tests {
             method: "verify_token".to_string(),
             params: json!({
                 "session_token": "session-1",
-                "appid": "kernel",
-                "app_instance_id": "kernel@system"
+                "expected_target": {"kind": "system", "service_id": "kernel"}
             }),
             seq: 8,
             token: None,
@@ -1009,8 +952,7 @@ mod tests {
             params: json!({
                 "username": "alice",
                 "password": "password-hash",
-                "appid": "control-panel",
-                "app_instance_id": "control-panel@system",
+                "target": {"kind": "system", "service_id": "control-panel"},
                 "aud": "system-config",
                 "login_nonce": 123
             }),
@@ -1046,17 +988,17 @@ mod tests {
         let calls = calls.lock().unwrap();
         let (jwt, params) = calls.login_jwt.clone().unwrap();
         assert_eq!(jwt, "jwt-2");
-        assert_eq!(params, Some(json!({"extra": "value"})));
-        let (session_token, appid, app_instance_id) = calls.verify_token.clone().unwrap();
+        assert_eq!(params, AuthTarget::system("kernel".parse().unwrap()));
+        let (session_token, expected_target) = calls.verify_token.clone().unwrap();
         assert_eq!(session_token, "session-1");
-        assert_eq!(appid, Some("kernel".to_string()));
-        assert_eq!(app_instance_id, Some("kernel@system".to_string()));
-        let (username, password, appid, app_instance_id, aud, login_nonce) =
-            calls.sudo_password.clone().unwrap();
+        assert_eq!(
+            expected_target,
+            Some(AuthTarget::system("kernel".parse().unwrap()))
+        );
+        let (username, password, target, aud, login_nonce) = calls.sudo_password.clone().unwrap();
         assert_eq!(username, "alice");
         assert_eq!(password, "password-hash");
-        assert_eq!(appid, "control-panel");
-        assert_eq!(app_instance_id, "control-panel@system");
+        assert_eq!(target, AuthTarget::system("control-panel".parse().unwrap()));
         assert_eq!(aud, Some("system-config".to_string()));
         assert_eq!(login_nonce, 123);
         assert_eq!(calls.logout.as_deref(), Some("refresh-2"));

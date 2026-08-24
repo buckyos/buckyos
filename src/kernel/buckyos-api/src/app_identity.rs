@@ -269,16 +269,16 @@ impl<'de> Deserialize<'de> for AgentId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SystemServiceId(String);
 
 impl SystemServiceId {
-    pub fn parse(value: impl Into<String>) -> Result<Self, String> {
-        let value = value.into();
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, String> {
+        let value = value.as_ref();
         if value.starts_with("did:")
             || value.is_empty()
             || value.len() > 128
+            || value.contains('@')
             || !value
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
@@ -288,11 +288,32 @@ impl SystemServiceId {
                     .into(),
             );
         }
-        Ok(Self(value))
+        Ok(Self(value.to_string()))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl FromStr for SystemServiceId {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl Serialize for SystemServiceId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SystemServiceId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -320,6 +341,62 @@ impl ServiceIdentity {
             Ok(Self::System {
                 service_id: SystemServiceId::parse(value.to_string())?,
             })
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthTarget {
+    App { app_instance_id: AppInstanceId },
+    System { service_id: SystemServiceId },
+}
+
+impl AuthTarget {
+    pub fn app(app_instance_id: AppInstanceId) -> Self {
+        Self::App { app_instance_id }
+    }
+
+    pub fn system(service_id: SystemServiceId) -> Self {
+        Self::System { service_id }
+    }
+
+    pub fn appid_claim(&self) -> &str {
+        match self {
+            Self::App { app_instance_id } => app_instance_id.app_id().as_str(),
+            Self::System { service_id } => service_id.as_str(),
+        }
+    }
+
+    pub fn canonical_id(&self) -> String {
+        match self {
+            Self::App { app_instance_id } => app_instance_id.to_string(),
+            Self::System { service_id } => service_id.to_string(),
+        }
+    }
+
+    pub fn canonical_key(&self) -> String {
+        match self {
+            Self::App { app_instance_id } => format!("app:{app_instance_id}"),
+            Self::System { service_id } => format!("system:{service_id}"),
+        }
+    }
+
+    pub fn authorization_identity(&self) -> ServiceIdentity {
+        match self {
+            Self::App { app_instance_id } => ServiceIdentity::App {
+                app_id: app_instance_id.app_id().clone(),
+            },
+            Self::System { service_id } => ServiceIdentity::System {
+                service_id: service_id.clone(),
+            },
+        }
+    }
+
+    pub fn authorization_key(&self) -> String {
+        match self.authorization_identity() {
+            ServiceIdentity::App { app_id } => format!("app:{app_id}"),
+            ServiceIdentity::System { service_id } => format!("system:{service_id}"),
         }
     }
 }
@@ -376,5 +453,46 @@ mod tests {
             ServiceIdentity::parse("control-panel").unwrap(),
             ServiceIdentity::System { .. }
         ));
+    }
+
+    #[test]
+    fn auth_target_round_trips_and_uses_kind_aware_keys() {
+        let app = AuthTarget::app("filebrowser.buckyos.ai@alice".parse().unwrap());
+        let app_json = serde_json::to_value(&app).unwrap();
+        assert_eq!(serde_json::from_value::<AuthTarget>(app_json).unwrap(), app);
+        assert_eq!(app.canonical_key(), "app:filebrowser.buckyos.ai@alice");
+        assert_eq!(app.authorization_key(), "app:filebrowser.buckyos.ai");
+
+        let system = AuthTarget::system("control-panel".parse().unwrap());
+        let system_json = serde_json::to_value(&system).unwrap();
+        assert_eq!(
+            serde_json::from_value::<AuthTarget>(system_json).unwrap(),
+            system
+        );
+        assert_eq!(system.canonical_key(), "system:control-panel");
+        assert_eq!(system.authorization_key(), "system:control-panel");
+    }
+
+    #[test]
+    fn auth_target_deserialization_rejects_unknown_or_mixed_fields() {
+        for value in [
+            serde_json::json!({"kind": "unknown", "service_id": "control-panel"}),
+            serde_json::json!({"kind": "system", "service_id": ""}),
+            serde_json::json!({"kind": "system", "service_id": "Control-Panel"}),
+            serde_json::json!({"kind": "system", "service_id": "control-panel", "app_instance_id": "filebrowser.buckyos.ai@alice"}),
+            serde_json::json!({"kind": "app", "app_instance_id": "filebrowser.buckyos.ai"}),
+            serde_json::json!({"kind": "app", "app_instance_id": "filebrowser.buckyos.ai@alice", "service_id": "control-panel"}),
+        ] {
+            assert!(serde_json::from_value::<AuthTarget>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn canonical_system_service_ids_parse() {
+        assert_eq!(
+            SystemServiceId::parse("control-panel").unwrap().as_str(),
+            "control-panel"
+        );
+        assert_eq!(SystemServiceId::parse("kmsg").unwrap().as_str(), "kmsg");
     }
 }

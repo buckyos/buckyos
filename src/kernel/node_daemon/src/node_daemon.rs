@@ -1662,7 +1662,10 @@ async fn generate_boot_session_token(
         appid: Some("node-daemon".to_string()),
         jti: Some(login_jti),
         sub: Some("kernel".to_string()),
-        aud: None,
+        // This assertion exists only to break the System Config/Verify Hub
+        // bootstrap cycle. System Config validates this exact audience and
+        // restricts it to boot-time operations; it is never a session token.
+        aud: Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string()),
         exp: Some(timestamp + 60 * 15),
         iss: Some(device_doc.name.clone()),
         token: None,
@@ -1684,14 +1687,18 @@ fn generate_node_daemon_login_token(
     device_doc: &DeviceDocument,
     device_private_key: &EncodingKey,
 ) -> std::result::Result<String, String> {
-    generate_service_login_jwt(
+    let (_, mut assertion) = generate_service_login_assertion(
         device_doc.name.as_str(),
         "node-daemon",
         device_doc.name.as_str(),
         device_private_key,
     )
-    .map(|(jwt, _)| jwt)
-    .map_err(|err| err.to_string())
+    .map_err(|err| err.to_string())?;
+    assertion.aud = Some(SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE.to_string());
+    assertion.token = None;
+    assertion
+        .generate_jwt(Some(device_doc.name.clone()), device_private_key)
+        .map_err(|err| err.to_string())
 }
 
 async fn async_main(matches: ArgMatches) -> std::result::Result<(), String> {

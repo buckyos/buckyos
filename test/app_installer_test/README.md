@@ -6,9 +6,12 @@
 >   AppInstanceId、AppName、hostname、AppIndex 和 registry allocation 保持不变。
 > - Agent runtime PIKG 以 `auto_start=false` 安装，验证它不会在缺少独立 AgentSpec binding 时
 >   把 AppDID 伪装成 AgentDID；Docker app case 依赖可用的 Docker daemon。
-> - 登录凭证：优先 zone owner key；否则从
+> - LoginAssertion 凭证：优先 zone owner key；否则从
 >   `/opt/buckyos/etc/node_identity.json` 解析当前设备，读取
 >   `/opt/buckyos/security/<device-host>/authentication.private.pem`。
+> - `resolver/cache/*` 夹具写入使用 Verify Hub 的 System(control-panel) sudo session；
+>   boot LoginAssertion 不再作为运行期 system-config 通用写凭证。设置 Zone URL 与管理员
+>   密码后，static-web 还验证真实 App SSO、精确 AppInstance/owner claims 和跨 owner refresh 拒绝。
 > - fixture 的 pkg 名由 `buckyos-tool pikg` 按 App DID 派生的 raw-hostname
 >   AppId namespace 生成（如 `all.web.<app_id>`）。不属于该 AppId namespace 的名字会在 Inspect
 >   阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
@@ -80,6 +83,8 @@ BUCKYOS_PIKG_OUTPUT_DIR=/tmp/buckyos-pikg-samples
 BUCKYOS_ROOT=/opt/buckyos
 BUCKYOS_TEST_INSTALL_EVIDENCE_TIMEOUT_MS=120000
 BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=0
+BUCKYOS_TEST_ADMIN_PASSWORD=<zone-admin-password>
+BUCKYOS_TEST_ZONE_BASE_URL=https://<zone-host>
 ```
 
 示例代码从发布包的 Node 入口导入：

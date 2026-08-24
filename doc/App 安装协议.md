@@ -16,7 +16,7 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
 - `AppInstanceId` 的 canonical 字符串是 `<app_id>@<owner_user_id>`，不含版本、Node、短域名或 AppIndex。
 - `ReplicaKey` 是 Scheduler 内部结构化的 `(AppInstanceId, node_id)`，不是公共字符串身份。
 - `DeploymentIdentity` 精确绑定 `app_instance_id/task_id/app_doc_object_id/spec_generation/pikg_digest?`。
-- 非 `did:` 的系统服务名先归类为 `SystemServiceId`，不得先交给 DID parser。共享服务身份使用显式 `App | System` 分支。
+- 非 `did:` 的系统服务名先归类为 `SystemServiceId`，不得先交给 DID parser。认证目标使用显式 `AuthTarget::App { app_instance_id } | AuthTarget::System { service_id }`，系统服务不创建虚假 AppSpec/AppRegistry/AppInstanceId。
 
 `AppType::Agent` 只表示 App 产品提供 Agent runtime。Agent 本身使用独立的 AgentDID、AgentDocument、AgentId 和 AgentSpec；AgentSpec.binding 指向普通 `AppInstanceId + service_name`。多个 Agent 可以共享一个 runtime，删除 Agent binding 不卸载 runtime，卸载 runtime 前必须拒绝仍被引用的目标。
 
@@ -419,7 +419,7 @@ BUCKYOS_DATA_DIR
 
 数据目录按 `(owner_user_id, AppId)` 隔离且跨升级稳定。Docker 容器名是 `buckyos-app-{AppHostName}`，其中 AppHostName 必须直接取自 NodeExecutionSpec 的 Registry 投影；instance volume/systemd 使用的 RuntimeKey 是 `lowercase_hex(SHA256(canonical AppInstanceId bytes))` 的完整 64 hex。Docker label 同时保存完整 AppDID、AppInstanceId、owner、exact PackageId/PackageMeta ObjectId、AppDoc ObjectId 和 generation。回收前必须用 label 复核完整身份。
 
-普通 App token 的 `appid` 是 AppId，并必须另带、精确比较 AppInstanceId；系统 principal 的兼容 appid 字段只有在 principal kind 为 System 时才解释为 SystemServiceId。Agent principal kind 使用 AgentDID。
+普通 App token 的 `appid` 是 AppId，并必须另带、精确比较 AppInstanceId 与 owner；System target 的兼容 `appid` 是 SystemServiceId。`principal_kind` 与 `target_kind` 正交，例如用户登录 control-panel 是 `principal_kind=user,target_kind=system`。Agent principal kind 使用 AgentDID。
 
 ## 8. Golden/rejection gate
 

@@ -1,12 +1,11 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    bind_token_app_instance, get_buckyos_api_runtime, get_local_app_runtime_key, AppDoc,
+    generate_service_login_assertion, get_buckyos_api_runtime, get_local_app_runtime_key, AppDoc,
     AppServiceInstanceConfig, AppType, DeploymentIdentity, LocalAppInstanceConfig,
     ServiceInstanceState, ServiceSpecConfig, SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV,
     BUCKYOS_APP_INSTANCE_ID_ENV, BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV,
     BUCKYOS_KEVENT_DAEMON_ADDR_ENV, BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT,
-    VERIFY_HUB_TOKEN_EXPIRE_TIME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -1240,7 +1239,6 @@ impl AppLoader {
                 );
                 env_vars.insert("BUCKYOS_INSTANCE_EPOCH".to_string(), new_instance_epoch());
 
-                let timestamp = buckyos_get_unix_timestamp();
                 let runtime = get_buckyos_api_runtime().map_err(|error| {
                     ControlRuntItemErrors::ExecuteError(
                         "build_env".to_string(),
@@ -1260,37 +1258,21 @@ impl AppLoader {
                     )
                 })?;
 
-                let login_jti = timestamp.to_string();
-                let mut session_token = kRPC::RPCSessionToken {
-                    token_type: kRPC::RPCSessionTokenType::Normal,
-                    appid: Some(self.app_id.clone()),
-                    jti: Some(login_jti.clone()),
-                    sub: Some(
-                        config
-                            .node_execution_spec
-                            .app_instance_id
-                            .owner_user_id()
-                            .to_string(),
-                    ),
-                    aud: None,
-                    exp: Some(timestamp + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2),
-                    iss: Some(device_doc.name.clone()),
-                    token: None,
-                    sudo: false,
-                    extra: HashMap::new(),
-                };
-                bind_token_app_instance(
-                    &mut session_token,
-                    &config.node_execution_spec.app_instance_id,
-                );
-                let session_token_jwt = session_token
-                    .generate_jwt(Some(device_doc.name.clone()), device_private_key)
-                    .map_err(|error| {
-                        ControlRuntItemErrors::ExecuteError(
-                            "build_env".to_string(),
-                            format!("generate session token failed: {}", error),
-                        )
-                    })?;
+                // App processes receive a device-signed LoginAssertion. Their runtime
+                // exchanges it for a Verify Hub session bound to the exact AppInstance;
+                // the assertion itself must never masquerade as a session token.
+                let (session_token_jwt, _) = generate_service_login_assertion(
+                    config.node_execution_spec.app_instance_id.owner_user_id(),
+                    self.app_id.as_str(),
+                    device_doc.name.as_str(),
+                    device_private_key,
+                )
+                .map_err(|error| {
+                    ControlRuntItemErrors::ExecuteError(
+                        "build_env".to_string(),
+                        format!("generate app login assertion failed: {}", error),
+                    )
+                })?;
                 env_vars.insert(BUCKYOS_APP_TOKEN_ENV.to_string(), session_token_jwt);
             }
             LoaderConfig::Local(config) => {
