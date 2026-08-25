@@ -913,6 +913,76 @@ mod tests {
         }
     }
 
+    fn spawn_sleeper() -> std::process::Child {
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/c", "ping -n 30 127.0.0.1 > nul"]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+        command.spawn().expect("spawn sleeper")
+    }
+
+    fn fill_directory_with_owner(region: &mut SharedRegion, owner_pid: u32) {
+        for ring_id in 0..MAX_RINGS {
+            let entry = &region.directory[ring_id];
+            entry.owner_pid.store(owner_pid, Ordering::Relaxed);
+            entry.state.store(ENTRY_READY, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn is_process_alive_distinguishes_live_and_reaped_processes() {
+        let mut child = spawn_sleeper();
+        let child_pid = child.id();
+        assert!(is_process_alive(std::process::id()));
+        assert!(is_process_alive(child_pid));
+
+        child.kill().expect("kill sleeper");
+        child.wait().expect("reap sleeper");
+        assert!(!is_process_alive(child_pid));
+        assert!(!is_process_alive(0));
+    }
+
+    /// A full directory owned by a dead process must not lock everyone out:
+    /// entries are only ever returned to the pool by this reclaim path.
+    #[test]
+    fn allocate_ring_reclaims_directory_full_of_dead_owners() {
+        let mut child = spawn_sleeper();
+        let dead_pid = child.id();
+        child.kill().expect("kill sleeper");
+        child.wait().expect("reap sleeper");
+
+        let mut region = heap_region();
+        reset_region(&mut region);
+        fill_directory_with_owner(&mut region, dead_pid);
+
+        assert!(allocate_ring(&mut region, std::process::id()).is_some());
+    }
+
+    #[test]
+    fn allocate_ring_does_not_steal_entries_from_live_owners() {
+        let mut child = spawn_sleeper();
+        let live_pid = child.id();
+
+        let mut region = heap_region();
+        reset_region(&mut region);
+        fill_directory_with_owner(&mut region, live_pid);
+
+        let taken = allocate_ring(&mut region, std::process::id());
+        child.kill().expect("kill sleeper");
+        child.wait().expect("reap sleeper");
+        assert_eq!(taken, None);
+    }
+
+    #[test]
+    fn default_ringbuffer_path_is_absolute() {
+        assert!(default_ringbuffer_path().is_absolute());
+    }
+
     #[test]
     fn test_slot_seqlock_roundtrip() {
         // Create a ring in a heap buffer (not shared memory)
