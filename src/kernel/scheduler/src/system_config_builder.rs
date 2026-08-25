@@ -37,12 +37,12 @@ use url::Url;
 const DEFAULT_OOD_ID: &str = "ood1";
 const DEFAULT_JARVIS_APP_DID: &str = "did:bns:jarvis.buckyos";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
-const DEFAULT_SN_AI_PROVIDER_MODELS: &[&str] =
-    &["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro"];
-const DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS: &[&str] = &["dall-e-3", "dall-e-2"];
+const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
+const SN_AI_PROVIDER_ACTIVATION_KEY: &str = "sn-ai-provider-activated";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
+    pub login_url: String,
     pub responses_url: String,
 }
 
@@ -77,34 +77,84 @@ pub(crate) fn derive_sn_ai_provider_endpoints(
     }
 
     origin.set_path("/");
+    let login_url = origin
+        .join("api/user/login_by_device_token")
+        .map_err(|err| anyhow!("failed to derive SN user login URL: {err}"))?
+        .to_string();
     let responses_url = origin
         .join("api/v1/ai/")
         .map_err(|err| anyhow!("failed to derive SN AI responses URL: {err}"))?
         .to_string();
-    Ok(SnAiProviderEndpoints { responses_url })
+    Ok(SnAiProviderEndpoints {
+        login_url,
+        responses_url,
+    })
 }
 
 pub(crate) fn reconcile_managed_sn_ai_provider(
     current: &Value,
     endpoints: std::result::Result<&SnAiProviderEndpoints, &anyhow::Error>,
+    user_name: Option<&str>,
 ) -> Result<Option<Value>> {
     let mut next = current.clone();
-    let Some(provider) = next
+    let valid_config = match (endpoints.as_ref(), user_name.map(str::trim)) {
+        (Ok(endpoints), Some(user_name)) if !user_name.is_empty() => Some((*endpoints, user_name)),
+        _ => None,
+    };
+    let Some(root) = next.as_object_mut() else {
+        return Ok(None);
+    };
+    let activated = root
+        .get(SN_AI_PROVIDER_ACTIVATION_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !activated {
+        return Ok(None);
+    }
+    if !root.contains_key("sn-ai-provider") {
+        let Some((endpoints, user_name)) = valid_config else {
+            return Ok(None);
+        };
+        root.insert(
+            "sn-ai-provider".to_string(),
+            json!({
+                "enabled": true,
+                "api_token": "",
+                "alias_map": {},
+                "instances": [managed_sn_ai_provider_instance(endpoints, user_name)]
+            }),
+        );
+        return Ok(Some(next));
+    }
+    let Some(provider) = root
         .get_mut("sn-ai-provider")
         .and_then(Value::as_object_mut)
     else {
         return Ok(None);
     };
-    let Some(instances) = provider.get_mut("instances").and_then(Value::as_array_mut) else {
+    if provider.get("enabled").and_then(Value::as_bool) != Some(true) {
         return Ok(None);
-    };
+    }
+    if provider
+        .get("instances")
+        .and_then(Value::as_array)
+        .is_none()
+    {
+        if valid_config.is_none() {
+            return Ok(None);
+        }
+        provider.insert("instances".to_string(), json!([]));
+    }
+    let instances = provider
+        .get_mut("instances")
+        .and_then(Value::as_array_mut)
+        .expect("instances was normalized to an array");
 
     let mut managed_found = false;
     let mut changed = false;
     for instance in instances.iter_mut().filter_map(Value::as_object_mut) {
-        let is_managed = instance.get("provider_driver").and_then(Value::as_str)
-            == Some("sn-ai-provider")
-            && instance.get("auth_mode").and_then(Value::as_str) == Some("runtime_session");
+        let is_managed =
+            instance.get("provider_driver").and_then(Value::as_str) == Some("sn-ai-provider");
         if !is_managed {
             continue;
         }
@@ -119,19 +169,48 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
                 );
                 changed = true;
             }
+            if instance.get("login_url").and_then(Value::as_str)
+                != Some(endpoints.login_url.as_str())
+            {
+                instance.insert(
+                    "login_url".to_string(),
+                    Value::String(endpoints.login_url.clone()),
+                );
+                changed = true;
+            }
+            if let Some(user_name) = user_name.map(str::trim).filter(|value| !value.is_empty()) {
+                if instance.get("user_name").and_then(Value::as_str) != Some(user_name) {
+                    instance.insert(
+                        "user_name".to_string(),
+                        Value::String(user_name.to_string()),
+                    );
+                    changed = true;
+                }
+            }
         }
     }
 
     if !managed_found {
-        return Ok(None);
-    }
-    let enabled = endpoints.is_ok();
-    if provider.get("enabled").and_then(Value::as_bool) != Some(enabled) {
-        provider.insert("enabled".to_string(), Value::Bool(enabled));
+        let Some((endpoints, user_name)) = valid_config else {
+            return Ok(None);
+        };
+        instances.push(managed_sn_ai_provider_instance(endpoints, user_name));
         changed = true;
     }
 
     Ok(changed.then_some(next))
+}
+
+fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name: &str) -> Value {
+    json!({
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_type": "cloud_api",
+        "provider_driver": "sn-ai-provider",
+        "base_url": endpoints.responses_url,
+        "login_url": endpoints.login_url,
+        "user_name": user_name,
+        "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -760,11 +839,10 @@ fn build_aicc_settings_with_endpoints(
     config: &StartConfigSummary,
     sn_ai_provider_endpoints: Option<&SnAiProviderEndpoints>,
 ) -> Value {
-    const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
     let mut settings = serde_json::Map::new();
     let mut openai_alias_map = serde_json::Map::new();
     let mut openai_instances = Vec::<Value>::new();
-    let mut sn_ai_provider_alias_map = serde_json::Map::new();
+    let sn_ai_provider_alias_map = serde_json::Map::new();
     let mut sn_ai_provider_instances = Vec::<Value>::new();
     let openai_api_token =
         trim_to_option(config.ai_provider_config.openai_api_token.as_str()).unwrap_or_default();
@@ -788,39 +866,9 @@ fn build_aicc_settings_with_endpoints(
     if config.llm_router_enabled() {
         let endpoints = sn_ai_provider_endpoints
             .expect("SN AI endpoints are validated before building enabled provider settings");
-        let sn_model_settings = build_sn_ai_provider_model_settings();
-        if !sn_ai_provider_alias_map.contains_key("llm.default") {
-            sn_ai_provider_alias_map.insert(
-                "llm.default".to_string(),
-                json!(sn_model_settings.default_model.as_str()),
-            );
-        }
-        if !sn_ai_provider_alias_map.contains_key("llm.plan.default") {
-            sn_ai_provider_alias_map.insert(
-                "llm.plan.default".to_string(),
-                json!(sn_model_settings.plan_default_model.as_str()),
-            );
-        }
-        if !sn_ai_provider_alias_map.contains_key("llm.code.default") {
-            sn_ai_provider_alias_map.insert(
-                "llm.code.default".to_string(),
-                json!(sn_model_settings.default_model.as_str()),
-            );
-        }
-
-        sn_ai_provider_instances.push(json!({
-            "provider_instance_name": "sn-ai-provider-default",
-            "provider_type": "cloud_api",
-            "provider_driver": "sn-ai-provider",
-            "base_url": endpoints.responses_url,
-            "timeout_ms": DEFAULT_PROVIDER_TIMEOUT_MS,
-            "models": sn_model_settings.models,
-            "default_model": sn_model_settings.default_model,
-            "image_models": sn_model_settings.image_models,
-            "default_image_model": sn_model_settings.default_image_model,
-            "features": ["plan", "json_output", "tool_calling", "web_search"],
-            "auth_mode": "runtime_session"
-        }));
+        let instance = managed_sn_ai_provider_instance(endpoints, config.user_name.as_str());
+        sn_ai_provider_instances.push(instance);
+        settings.insert(SN_AI_PROVIDER_ACTIVATION_KEY.to_string(), Value::Bool(true));
     }
 
     if !openai_instances.is_empty() {
@@ -912,67 +960,6 @@ fn build_aicc_settings_with_endpoints(
     } else {
         Value::Object(settings)
     }
-}
-
-#[derive(Debug)]
-struct SnAIProviderModelSettings {
-    models: Vec<String>,
-    default_model: String,
-    plan_default_model: String,
-    image_models: Vec<String>,
-    default_image_model: String,
-}
-
-fn build_sn_ai_provider_model_settings() -> SnAIProviderModelSettings {
-    let models = DEFAULT_SN_AI_PROVIDER_MODELS
-        .iter()
-        .map(|item| item.to_string())
-        .collect::<Vec<_>>();
-
-    let default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4-mini", "gpt-5.4"])
-        .unwrap_or_else(|| models[0].clone());
-    let plan_default_model = pick_preferred_model(models.as_slice(), &["gpt-5.4", "gpt-5.4-mini"])
-        .unwrap_or_else(|| default_model.clone());
-
-    let mut image_models = models
-        .iter()
-        .filter(|item| is_image_model(item.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if image_models.is_empty() {
-        image_models = DEFAULT_SN_AI_PROVIDER_IMAGE_MODELS
-            .iter()
-            .map(|item| item.to_string())
-            .collect::<Vec<_>>();
-    }
-    let default_image_model =
-        pick_preferred_model(image_models.as_slice(), &["dall-e-3", "gpt-image-1"])
-            .unwrap_or_else(|| image_models[0].clone());
-
-    SnAIProviderModelSettings {
-        models,
-        default_model,
-        plan_default_model,
-        image_models,
-        default_image_model,
-    }
-}
-
-fn pick_preferred_model(models: &[String], preferred: &[&str]) -> Option<String> {
-    for target in preferred.iter() {
-        if let Some(matched) = models.iter().find(|item| item == target) {
-            return Some(matched.clone());
-        }
-    }
-    None
-}
-
-fn is_image_model(model_id: &str) -> bool {
-    let value = model_id.to_ascii_lowercase();
-    value.contains("dall-e")
-        || value.contains("gpt-image")
-        || value.contains("image")
-        || value.contains("vision")
 }
 
 fn read_default_device_subject() -> String {
@@ -1322,5 +1309,83 @@ mod beta22_tests {
                 .to_string(),
             format!("jarvis.buckyos.bns.did@{}", config.user_name)
         );
+    }
+
+    #[test]
+    fn aicc_settings_persist_sn_router_activation() {
+        let mut config = start_config();
+        config.enabled_features.llm_router = true;
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+
+        let settings = build_aicc_settings_with_endpoints(&config, Some(&endpoints));
+
+        assert_eq!(settings[SN_AI_PROVIDER_ACTIVATION_KEY], true);
+        assert_eq!(settings["sn-ai-provider"]["enabled"], true);
+    }
+
+    #[test]
+    fn reconcile_does_not_activate_unrequested_sn_router() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&json!({}), Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap();
+
+        assert!(reconciled.is_none());
+    }
+
+    #[test]
+    fn reconcile_restores_activated_sn_router_section() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+        let current = json!({ (SN_AI_PROVIDER_ACTIVATION_KEY): true });
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(reconciled["sn-ai-provider"]["enabled"], true);
+        assert_eq!(
+            reconciled["sn-ai-provider"]["instances"][0]["user_name"],
+            "did:bns:alice"
+        );
+    }
+
+    #[test]
+    fn reconcile_preserves_explicitly_disabled_sn_router() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+        let current = json!({
+            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
+            "sn-ai-provider": {
+                "enabled": false,
+                "instances": []
+            }
+        });
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap();
+
+        assert!(reconciled.is_none());
+    }
+
+    #[test]
+    fn reconcile_keeps_activated_config_when_endpoint_is_temporarily_invalid() {
+        let current = json!({
+            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
+            "sn-ai-provider": {
+                "enabled": true,
+                "instances": [{
+                    "provider_driver": "sn-ai-provider",
+                    "base_url": "https://sn.example/api/v1/ai/"
+                }]
+            }
+        });
+        let endpoint_error = anyhow!("temporary endpoint error");
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Err(&endpoint_error), None).unwrap();
+
+        assert!(reconciled.is_none());
     }
 }

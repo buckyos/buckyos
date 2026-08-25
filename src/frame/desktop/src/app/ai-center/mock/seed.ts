@@ -273,19 +273,19 @@ function provider(
       name,
       provider_type: providerType,
       provider_instance_name: instanceName,
-      provider_runtime_type: providerType === 'sn_router' ? 'proxy_unknown' : 'cloud_api',
+      provider_runtime_type: 'cloud_api',
       provider_driver: driver,
-      provider_origin: providerType === 'sn_router' ? 'builtin' : 'user_config',
-      auth_mode: providerType === 'sn_router' ? 'oauth' : 'api_key',
+      provider_origin: providerType === 'sn_router' ? 'system_config' : 'user_config',
+      auth_mode: providerType === 'sn_router' ? undefined : 'api_key',
       endpoint: options.endpoint,
       auto_sync_models: true,
       created_at: '2026-05-20T08:00:00Z',
     },
     inventory: {
       provider_instance_name: instanceName,
-      provider_type: providerType === 'sn_router' ? 'proxy_unknown' : 'cloud_api',
+      provider_type: 'cloud_api',
       provider_driver: driver,
-      provider_origin: providerType === 'sn_router' ? 'builtin' : 'user_config',
+      provider_origin: providerType === 'sn_router' ? 'system_config' : 'user_config',
       inventory_revision: `${instanceName}-rev-20260529`,
       version: '2026.05',
       models,
@@ -316,11 +316,7 @@ function provider(
 }
 
 const providers = [
-  provider('sn-router-1', 'SN Router', 'sn_router', 'sn-router', 'sn', snModels, {
-    balanceUnit: 'credit',
-    balanceValue: 860,
-    pricingMode: 'free_quota',
-  }),
+  provider('sn-router-1', 'SN Router', 'sn_router', 'sn-ai-provider-default', 'sn-ai-provider', snModels),
   provider('openai-1', 'OpenAI Main Key', 'openai', 'openai-main', 'openai', openaiModels, {
     balanceUnit: 'usd',
     balanceValue: 38.25,

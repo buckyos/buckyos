@@ -31,13 +31,16 @@ async fn sec_01_cancel_reject_cross_tenant() {
     let center = center_with_taskmgr(registry, catalog);
 
     let start = center
-        .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-alice")))
+        .complete(
+            base_request(),
+            verified_rpc_ctx_with_tenant("tenant-alice").await,
+        )
         .await
         .unwrap();
     let err = center
         .cancel(
             start.task_id.as_str(),
-            rpc_ctx_with_tenant(Some("tenant-bob")),
+            verified_rpc_ctx_with_tenant("tenant-bob").await,
         )
         .await
         .expect_err("cross tenant cancel must fail");
@@ -70,13 +73,16 @@ async fn sec_02_cancel_accept_same_tenant() {
     let center = center_with_taskmgr(registry, catalog);
 
     let start = center
-        .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-alice")))
+        .complete(
+            base_request(),
+            verified_rpc_ctx_with_tenant("tenant-alice").await,
+        )
         .await
         .unwrap();
     let resp = center
         .cancel(
             start.task_id.as_str(),
-            rpc_ctx_with_tenant(Some("tenant-alice")),
+            verified_rpc_ctx_with_tenant("tenant-alice").await,
         )
         .await
         .unwrap();

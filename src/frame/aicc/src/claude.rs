@@ -11,9 +11,11 @@ use crate::model_types::{
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Capability,
-    Feature, ResourceRef,
+    ai_methods, features, AiCost, AiMethodRequest, AiResponse, AiToolCall, AiUsage, Feature,
+    ResourceRef,
 };
+#[cfg(test)]
+use buckyos_api::Capability;
 use log::{info, warn};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
@@ -118,8 +120,6 @@ impl ClaudeProvider {
             provider_origin: ProviderOrigin::SystemConfig,
             provider_type_trusted_source: ProviderTypeTrustedSource::SystemConfig,
             provider_type_revision: None,
-            capabilities: vec![Capability::Llm, Capability::Vision],
-            features: cfg.features.clone(),
             endpoint: Some(cfg.base_url.clone()),
             plugin_key: None,
         };

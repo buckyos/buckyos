@@ -18,6 +18,7 @@
 P0 Provider 最小集合按 `aicc_provider_plan.md`：
 
 - `openai.rs`
+- `sn_ai_provider.rs`（独立 adapter，不实例化 `OpenAIProvider`）
 - `claude.rs`
 - `gemini.rs` / `google-gemini` driver（代码中保留历史拼写，配置与 metadata 统一按 Google Gemini 语义验收）
 - `fal.rs`

@@ -470,7 +470,7 @@ async fn proto_mix_04_resource_order_stable() {
     let task = common::all_tasks(&center.task_manager_client().unwrap())
         .await
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, resp.task_id.as_str()))
         .unwrap();
     let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
