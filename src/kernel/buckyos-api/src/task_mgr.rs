@@ -21,7 +21,7 @@ use std::net::IpAddr;
 use std::str::FromStr;
 
 use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
-use crate::{AppDoc, AppType, SelectorType};
+use crate::{AppDoc, AppType, AuthTarget, SelectorType};
 
 pub const TASK_MANAGER_SERVICE_UNIQUE_ID: &str = "task-manager";
 pub const TASK_MANAGER_SERVICE_NAME: &str = "task-manager";
@@ -32,10 +32,9 @@ pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
 /// (when it calls `get_rdb_instance`).
 pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 
-/// Version of the Task Core durable schema. v7 is the TaskMgr 2.0 model:
-/// opaque string task ids, immutable input, one-shot result, composite
-/// phase, executor binding with runner epoch, ACL grants and durable events.
-pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 7;
+/// Version of the Task Core durable schema. v8 adds the append-only audit
+/// event stream next to the TaskMgr 2.0 task/event model.
+pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 8;
 
 /// Sqlite DDL for the Task Core database. `CREATE TABLE IF NOT EXISTS` so the
 /// bootstrap is safe to re-run on every process start. Boolean-like columns
@@ -166,6 +165,26 @@ CREATE TABLE IF NOT EXISTS task_note (
     updated_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_note_task_created ON task_note(task_id, created_at ASC, id ASC);
+
+CREATE TABLE IF NOT EXISTS audit_event (
+    audit_id            TEXT PRIMARY KEY,
+    actor_user_id       TEXT NOT NULL,
+    actor_app_id        TEXT NOT NULL,
+    actor_instance_id   TEXT,
+    action              TEXT NOT NULL,
+    resource            TEXT NOT NULL,
+    trace_id            TEXT,
+    outcome             TEXT NOT NULL,
+    error_code          TEXT,
+    details_json        TEXT NOT NULL DEFAULT '{}',
+    redaction_version   INTEGER NOT NULL DEFAULT 1,
+    created_at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor_created ON audit_event(actor_user_id, actor_app_id, created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_event(action, created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_resource_created ON audit_event(resource, created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_trace ON audit_event(trace_id);
 "#;
 
 /// Postgres DDL: same logical schema as the sqlite variant.
@@ -295,6 +314,26 @@ CREATE TABLE IF NOT EXISTS task_note (
     updated_at      BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_note_task_created ON task_note(task_id, created_at ASC, id ASC);
+
+CREATE TABLE IF NOT EXISTS audit_event (
+    audit_id            TEXT PRIMARY KEY,
+    actor_user_id       TEXT NOT NULL,
+    actor_app_id        TEXT NOT NULL,
+    actor_instance_id   TEXT,
+    action              TEXT NOT NULL,
+    resource            TEXT NOT NULL,
+    trace_id            TEXT,
+    outcome             TEXT NOT NULL,
+    error_code          TEXT,
+    details_json        TEXT NOT NULL DEFAULT '{}',
+    redaction_version   BIGINT NOT NULL DEFAULT 1,
+    created_at          BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor_created ON audit_event(actor_user_id, actor_app_id, created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_event(action, created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_resource_created ON audit_event(resource, created_at, audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_trace ON audit_event(trace_id);
 "#;
 
 /// Default rdb-instance config for the task-manager service.
@@ -433,6 +472,33 @@ impl ActorRef {
             app_id: app_id.into(),
             app_instance_id: None,
         }
+    }
+
+    pub fn from_auth_target(user_id: impl Into<String>, target: &AuthTarget) -> Self {
+        Self {
+            user_id: user_id.into(),
+            app_id: target.canonical_key(),
+            app_instance_id: match target {
+                AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+                AuthTarget::System { .. } => None,
+            },
+        }
+    }
+
+    pub fn auth_target(&self) -> std::result::Result<AuthTarget, String> {
+        let target = AuthTarget::from_canonical_key(&self.app_id)?;
+        if let Some(app_instance_id) = self.app_instance_id.as_deref() {
+            let expected = match &target {
+                AuthTarget::App { app_instance_id } => app_instance_id.to_string(),
+                AuthTarget::System { .. } => {
+                    return Err("system ActorRef must not contain app_instance_id".into());
+                }
+            };
+            if app_instance_id != expected {
+                return Err("ActorRef app_id does not match app_instance_id".into());
+            }
+        }
+        Ok(target)
     }
 }
 
@@ -942,6 +1008,7 @@ pub const APP_UNINSTALL_TASK_SCHEMA_ID: &str = "app.uninstall/v1";
 pub const APP_START_TASK_SCHEMA_ID: &str = "app.start/v1";
 pub const APP_UPDATE_TASK_SCHEMA_ID: &str = "app.update/v1";
 pub const APP_UPDATE_BATCH_TASK_SCHEMA_ID: &str = "app.update_batch/v1";
+pub const DIAGNOSTIC_COLLECT_TASK_SCHEMA_ID: &str = "diagnostic.collect/v1";
 
 /// Versioned schema id of a 1.x task-data type.
 pub fn task_schema_id_for(kind: crate::TaskDataType) -> &'static str {
@@ -1080,6 +1147,11 @@ const BUILTIN_TASK_SCHEMAS: &[(&str, &str, &[TaskExecutorKind])] = &[
         APP_UPDATE_BATCH_TASK_SCHEMA_ID,
         crate::CONTROL_PANEL_SERVICE_NAME,
         &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        DIAGNOSTIC_COLLECT_TASK_SCHEMA_ID,
+        crate::CONTROL_PANEL_SERVICE_NAME,
+        &[TaskExecutorKind::App],
     ),
 ];
 
@@ -1303,6 +1375,54 @@ pub struct TaskEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<ActorRef>,
     pub payload: Value,
+    pub created_at: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Durable operation audit
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuditOutcome {
+    Succeeded,
+    Failed,
+}
+
+impl fmt::Display for AuditOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for AuditOutcome {
+    type Err = RPCErrors;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "Succeeded" => Ok(Self::Succeeded),
+            "Failed" => Ok(Self::Failed),
+            _ => Err(RPCErrors::ParseRequestError(format!(
+                "invalid audit outcome: {}",
+                value
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEvent {
+    pub audit_id: String,
+    pub actor: ActorRef,
+    pub action: String,
+    pub resource: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    pub outcome: AuditOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub details: Value,
+    pub redaction_version: u32,
     pub created_at: u64,
 }
 
@@ -1839,6 +1959,59 @@ pub struct ListTaskEventsResult {
     pub next_cursor: Option<String>,
 }
 
+// --- Audit events ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendAuditEventReq {
+    pub actor: ActorRef,
+    pub action: String,
+    pub resource: String,
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    pub outcome: AuditOutcome,
+    #[serde(default)]
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub details: Value,
+    #[serde(default = "default_redaction_version")]
+    pub redaction_version: u32,
+}
+impl_from_json!(AppendAuditEventReq);
+
+fn default_redaction_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListAuditEventsReq {
+    #[serde(default)]
+    pub actor_user_id: Option<String>,
+    #[serde(default)]
+    pub actor_app_id: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    #[serde(default)]
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    #[serde(default)]
+    pub created_after: Option<u64>,
+    #[serde(default)]
+    pub created_before: Option<u64>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+impl_from_json!(ListAuditEventsReq);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEventPage {
+    pub events: Vec<AuditEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 // --- Notes ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2193,6 +2366,28 @@ pub trait TaskManagerHandler: Send + Sync {
         let _ = (req, ctx);
         Err(RPCErrors::ReasonError(
             "list_task_events not implemented".to_string(),
+        ))
+    }
+
+    async fn handle_append_audit_event(
+        &self,
+        req: AppendAuditEventReq,
+        ctx: RPCContext,
+    ) -> Result<AuditEvent> {
+        let _ = (req, ctx);
+        Err(RPCErrors::ReasonError(
+            "append_audit_event not implemented".to_string(),
+        ))
+    }
+
+    async fn handle_list_audit_events(
+        &self,
+        req: ListAuditEventsReq,
+        ctx: RPCContext,
+    ) -> Result<AuditEventPage> {
+        let _ = (req, ctx);
+        Err(RPCErrors::ReasonError(
+            "list_audit_events not implemented".to_string(),
         ))
     }
 
@@ -2644,6 +2839,44 @@ impl TaskManagerClient {
         }
     }
 
+    pub async fn append_audit_event(&self, req: AppendAuditEventReq) -> Result<AuditEvent> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_append_audit_event(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let params = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("append_audit_event", params).await?;
+                serde_json::from_value(result).map_err(|e| {
+                    RPCErrors::ParserResponseError(format!("Expected AuditEvent: {}", e))
+                })
+            }
+        }
+    }
+
+    pub async fn list_audit_events(&self, req: ListAuditEventsReq) -> Result<AuditEventPage> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_list_audit_events(req, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let params = serde_json::to_value(&req).map_err(|e| {
+                    RPCErrors::ReasonError(format!("Failed to serialize request: {}", e))
+                })?;
+                let result = client.call("list_audit_events", params).await?;
+                serde_json::from_value(result).map_err(|e| {
+                    RPCErrors::ParserResponseError(format!("Expected AuditEventPage: {}", e))
+                })
+            }
+        }
+    }
+
     pub async fn add_task_note(
         &self,
         task_id: &str,
@@ -3087,6 +3320,16 @@ impl<T: TaskManagerHandler> RPCHandler for TaskManagerServerHandler<T> {
             "list_task_events" => {
                 let events_req = ListTaskEventsReq::from_json(req.params)?;
                 let result = self.0.handle_list_task_events(events_req, ctx).await?;
+                RPCResult::Success(json!(result))
+            }
+            "append_audit_event" => {
+                let audit_req = AppendAuditEventReq::from_json(req.params)?;
+                let event = self.0.handle_append_audit_event(audit_req, ctx).await?;
+                RPCResult::Success(json!(event))
+            }
+            "list_audit_events" => {
+                let audit_req = ListAuditEventsReq::from_json(req.params)?;
+                let result = self.0.handle_list_audit_events(audit_req, ctx).await?;
                 RPCResult::Success(json!(result))
             }
             "add_task_note" => {

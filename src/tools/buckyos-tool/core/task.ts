@@ -5,6 +5,7 @@ const TASK_MANAGER_SERVICE = 'task-manager'
 const DEFAULT_POLL_INTERVAL_MS = 500
 
 export interface TaskObservation {
+  revision?: number
   phase: string
   outcome?: string
   message?: string
@@ -15,12 +16,15 @@ export interface TaskObservation {
     details?: Record<string, unknown>
   }
   data: Record<string, unknown>
+  progress?: unknown
 }
 
 export interface TaskWaitOptions {
   observe?: (ctx: CommandContext, taskId: string) => Promise<TaskObservation>
   pollIntervalMs?: number
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>
+  failOnTaskFailure?: boolean
+  onObservation?: (observation: TaskObservation) => Promise<void>
 }
 
 export async function waitForTask(
@@ -31,46 +35,70 @@ export async function waitForTask(
   const observe = options.observe ?? observeTask
   const sleep = options.sleep ?? abortableSleep
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const failOnTaskFailure = options.failOnTaskFailure ?? true
   let lastProgress = ''
+  let lastRevision: number | undefined
+  let reader: Awaited<ReturnType<NonNullable<typeof ctx.clients.createEventReader>>> | undefined
 
-  while (true) {
-    const observation = await observe(ctx, taskId)
-    const progress = JSON.stringify({
-      task_id: taskId,
-      phase: observation.phase,
-      outcome: observation.outcome,
-      message: observation.message,
-    })
-    if (progress !== lastProgress) {
-      await ctx.io.stderr(`${progress}\n`)
-      lastProgress = progress
-    }
+  try {
+    const remaining = Math.max(1, (ctx.deadline ?? Date.now()) - Date.now())
+    const eventSignal = AbortSignal.any([ctx.signal, AbortSignal.timeout(remaining)])
+    reader = await ctx.clients.createEventReader?.(`/task_mgr/${taskId}`, eventSignal)
+  } catch {
+    reader = undefined
+  }
 
-    if (observation.phase === 'Terminal') {
-      if (observation.outcome !== 'Succeeded') {
-        const error = observation.error
+  try {
+    while (true) {
+      const observation = await observe(ctx, taskId)
+      const progress = JSON.stringify({
+        task_id: taskId,
+        revision: observation.revision,
+        phase: observation.phase,
+        outcome: observation.outcome,
+        progress: observation.progress,
+        message: observation.message,
+      })
+      const changed = observation.revision === undefined
+        ? progress !== lastProgress
+        : observation.revision !== lastRevision
+      if (changed) {
+        if (options.onObservation) await options.onObservation(observation)
+        else await ctx.io.stderr(`${progress}\n`)
+        lastProgress = progress
+        lastRevision = observation.revision
+      }
+
+      if (observation.phase === 'Terminal') {
+        if (failOnTaskFailure && observation.outcome !== 'Succeeded') {
+          const error = observation.error
+          throw new ToolError(
+            normalizeTaskErrorCode(error?.code, observation.outcome),
+            error?.message ?? `task ${taskId} ended with ${observation.outcome ?? 'no outcome'}`,
+            observation.outcome === 'Canceled' ? EXIT_TIMEOUT : EXIT_OPERATION,
+            error?.retryable ?? false,
+            { task_id: taskId },
+          )
+        }
+        return observation.data
+      }
+
+      const remaining = (ctx.deadline ?? Date.now()) - Date.now()
+      if (remaining <= 0) {
         throw new ToolError(
-          normalizeTaskErrorCode(error?.code, observation.outcome),
-          error?.message ?? `task ${taskId} ended with ${observation.outcome ?? 'no outcome'}`,
-          observation.outcome === 'Canceled' ? EXIT_TIMEOUT : EXIT_OPERATION,
-          error?.retryable ?? false,
-          { task_id: taskId, ...(error?.details ?? {}) },
+          'TIMEOUT',
+          `timed out waiting for task ${taskId}`,
+          EXIT_TIMEOUT,
+          true,
+          { task_id: taskId },
         )
       }
-      return observation.data
+      const interval = Math.min(pollIntervalMs, remaining)
+      if (reader) await reader.pullEvent(interval)
+      else await sleep(interval, ctx.signal)
     }
-
-    const remaining = (ctx.deadline ?? Date.now()) - Date.now()
-    if (remaining <= 0) {
-      throw new ToolError(
-        'TIMEOUT',
-        `timed out waiting for task ${taskId}`,
-        EXIT_TIMEOUT,
-        true,
-        { task_id: taskId },
-      )
-    }
-    await sleep(Math.min(pollIntervalMs, remaining), ctx.signal)
+  } finally {
+    await reader?.close().catch(() => undefined)
   }
 }
 
@@ -87,6 +115,7 @@ async function observeTask(ctx: CommandContext, taskId: string): Promise<TaskObs
   const outcome = optionalString(task.outcome)
   const taskError = isObject(task.error) ? task.error : undefined
   return {
+    revision: typeof task.revision === 'number' ? task.revision : undefined,
     phase,
     outcome,
     message: optionalString(task.message),
@@ -94,20 +123,12 @@ async function observeTask(ctx: CommandContext, taskId: string): Promise<TaskObs
       ? {
         code: optionalString(taskError.code),
         message: optionalString(taskError.message),
+        retryable: typeof taskError.retryable === 'boolean' ? taskError.retryable : undefined,
         details: isObject(taskError.detail) ? taskError.detail : undefined,
       }
       : undefined,
-    data: {
-      task_id: taskId,
-      schema_id: optionalString(task.schema_id),
-      phase,
-      outcome,
-      message: optionalString(task.message),
-      result: task.result ?? null,
-      error: task.error ?? null,
-      updated_at: task.updated_at,
-      completed_at: task.completed_at ?? null,
-    },
+    progress: task.progress,
+    data: task,
   }
 }
 

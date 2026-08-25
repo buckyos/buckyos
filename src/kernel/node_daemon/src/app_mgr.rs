@@ -1,10 +1,9 @@
-use crate::app_loader::AppLoader;
+use crate::app_loader::{process_node_session_id, AppLoader};
 use crate::run_item::*;
 use async_trait::async_trait;
 use buckyos_api::AppServiceInstanceConfig;
 use buckyos_api::*;
 use buckyos_kit::buckyos_get_unix_timestamp;
-use std::collections::HashMap;
 
 // 统一交给 Rust AppLoader 处理 app runtime 的 deploy/start/stop/status。
 pub struct AppRunItem {
@@ -29,7 +28,12 @@ impl AppRunItem {
         }
     }
 
-    async fn report_deployment_failure(&self, code: &str, message: &str) {
+    async fn report_state(
+        &self,
+        state: ServiceInstanceState,
+        health: DeploymentHealth,
+        deployment_error: Option<DeploymentError>,
+    ) {
         let Ok(runtime) = get_buckyos_api_runtime() else {
             return;
         };
@@ -43,23 +47,25 @@ impl AppRunItem {
         let report = ServiceInstanceReportInfo {
             node_id: self.app_instance_config.node_id.clone(),
             node_did: device.id.clone(),
-            state: ServiceInstanceState::Exited,
-            service_ports: HashMap::new(),
+            state,
+            service_ports: self.app_instance_config.service_ports_config.clone(),
             last_update_time: now,
             start_time: 0,
             pid: 0,
             deployment: Some(self.app_instance_config.deployment.clone()),
-            instance_epoch: format!("node-daemon:{now}"),
-            node_session_id: std::env::var("BUCKYOS_NODE_SESSION_ID")
-                .unwrap_or_else(|_| device.id.to_string()),
+            instance_epoch: format!(
+                "node-daemon:{}:{}",
+                std::process::id(),
+                self.app_instance_config
+                    .node_execution_spec
+                    .app_instance_id
+                    .runtime_key()
+            ),
+            node_session_id: process_node_session_id().to_string(),
             observed_at: now,
             expires_at: now.saturating_add(90),
-            health: DeploymentHealth::Unhealthy,
-            deployment_error: Some(DeploymentError {
-                code: code.to_string(),
-                message: message.to_string(),
-                detail: None,
-            }),
+            health,
+            deployment_error,
         };
         let key = format!(
             "services/{}/instances/{}",
@@ -69,6 +75,19 @@ impl AppRunItem {
         if let Ok(raw) = serde_json::to_string(&report) {
             let _ = client.set(&key, &raw).await;
         }
+    }
+
+    async fn report_deployment_failure(&self, code: &str, message: &str) {
+        self.report_state(
+            ServiceInstanceState::Exited,
+            DeploymentHealth::Unhealthy,
+            Some(DeploymentError {
+                code: code.to_string(),
+                message: message.to_string(),
+                detail: None,
+            }),
+        )
+        .await;
     }
 }
 
@@ -115,6 +134,9 @@ impl RunItemControl for AppRunItem {
     }
 
     async fn get_state(&self, params: Option<&Vec<String>>) -> Result<ServiceInstanceState> {
-        self.app_loader.status().await
+        let state = self.app_loader.status().await?;
+        let health = self.app_loader.deployment_health().await?;
+        self.report_state(state.clone(), health, None).await;
+        Ok(state)
     }
 }

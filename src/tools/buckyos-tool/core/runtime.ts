@@ -21,6 +21,12 @@ export interface ServiceClientRegistry {
     params: Record<string, unknown>,
     options: RpcCallOptions,
   ): Promise<T>
+  createEventReader?(pattern: string, signal?: AbortSignal): Promise<EventReader>
+}
+
+export interface EventReader {
+  pullEvent(timeoutMs?: number): Promise<unknown | null>
+  close(): Promise<void>
 }
 
 interface RpcClient {
@@ -96,6 +102,10 @@ export class BuckyOSServiceClientRegistry implements ServiceClientRegistry {
     }
     const request = client.call(method, params, { traceId: options.traceId }) as Promise<T>
     return await withDeadline(request, options.timeoutMs, options.signal)
+  }
+
+  async createEventReader(pattern: string, signal?: AbortSignal): Promise<EventReader> {
+    return await buckyos.createEventReader(pattern, { keepaliveMs: 5_000, signal })
   }
 }
 

@@ -492,7 +492,18 @@ pub async fn build_install_plan(
     // Package Integrity：pikg 结构校验在 Reader 构造时已完成。
     let package_integrity = ReadinessState::Ready;
     let content = ReadinessState::from_bool(!required_content_missing);
-    let trust = ReadinessState::from_bool(snapshot.is_trust_ready(input.policy));
+    let source_identity = match input.pikg {
+        Some(pikg) => InstallSourceIdentity::Pikg {
+            app_doc_object_id: input.app_doc_object_id.clone(),
+            pikg_digest: pikg.pikg_digest.clone(),
+        },
+        None => InstallSourceIdentity::Catalog {
+            app_doc_object_id: input.app_doc_object_id.clone(),
+        },
+    };
+    let trust = ReadinessState::from_bool(
+        snapshot.is_trust_ready_for_source(input.policy, &source_identity),
+    );
     let config = ReadinessState::from_bool(config_issues.is_empty());
 
     let readiness = PlanReadiness::compose(
@@ -510,15 +521,6 @@ pub async fn build_install_plan(
         object_id: input.app_doc_object_id.clone(),
         show_name: app_doc.show_name.clone(),
         version: app_doc.version.clone(),
-    };
-    let source_identity = match input.pikg {
-        Some(pikg) => InstallSourceIdentity::Pikg {
-            app_doc_object_id: input.app_doc_object_id.clone(),
-            pikg_digest: pikg.pikg_digest.clone(),
-        },
-        None => InstallSourceIdentity::Catalog {
-            app_doc_object_id: input.app_doc_object_id.clone(),
-        },
     };
     let mut frozen_resolution = snapshot.clone();
     frozen_resolution.cache_status = None;

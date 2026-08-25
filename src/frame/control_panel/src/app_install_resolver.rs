@@ -402,6 +402,13 @@ impl NameClientAppResolver {
             name_client::CacheStatus::ObservedFallback => DidCacheStatus::ObservedFallback,
         })
     }
+
+    fn map_resolve_error_status(error: &name_lib::NSError) -> DocumentStatus {
+        match error {
+            name_lib::NSError::NotFound(_) => DocumentStatus::Missing,
+            _ => DocumentStatus::Unknown,
+        }
+    }
 }
 
 #[async_trait]
@@ -419,10 +426,11 @@ impl AppDidResolver for NameClientAppResolver {
         let resolved = match result {
             Ok(resolved) => resolved,
             Err(err) => {
-                // 解析器没有回答：Unknown（不是 Missing）。
+                let document_status = Self::map_resolve_error_status(&err);
                 warn!(
-                    "resolve_did_ex for `{}` (app) got no answer: {}",
+                    "resolve_did_ex for `{}` (app) returned {:?}: {}",
                     app_did.to_string(),
+                    document_status,
                     err
                 );
                 return Ok(ResolvedApp {
@@ -430,8 +438,9 @@ impl AppDidResolver for NameClientAppResolver {
                         app_did: app_did.clone(),
                         doc_type: AppDocType,
                         app_doc_object_id: None,
+                        local_authority_app_doc_object_id: None,
                         resolver_id: None,
-                        document_status: DocumentStatus::Unknown,
+                        document_status,
                         document_version: None,
                         authority_seq: None,
                         effective_owner: None,
@@ -513,6 +522,7 @@ impl AppDidResolver for NameClientAppResolver {
             app_did: app_did.clone(),
             doc_type: AppDocType,
             app_doc_object_id,
+            local_authority_app_doc_object_id: None,
             resolver_id: resolved.resolution_metadata.resolver_id.clone(),
             document_status,
             document_version: buckyos_meta.document_version,
@@ -592,6 +602,7 @@ pub mod fake {
                     app_did: app_did.clone(),
                     doc_type: AppDocType,
                     app_doc_object_id: None,
+                    local_authority_app_doc_object_id: None,
                     resolver_id: Some("fake".to_string()),
                     document_status: DocumentStatus::Unknown,
                     document_version: None,
@@ -621,6 +632,7 @@ pub mod fake {
                 app_did: app_did.clone(),
                 doc_type: AppDocType,
                 app_doc_object_id: Some(obj_id),
+                local_authority_app_doc_object_id: None,
                 resolver_id: Some("fake".to_string()),
                 document_status: DocumentStatus::Active,
                 document_version: Some(version),
@@ -649,6 +661,7 @@ pub mod fake {
                 app_did: app_did.clone(),
                 doc_type: AppDocType,
                 app_doc_object_id: None,
+                local_authority_app_doc_object_id: None,
                 resolver_id: Some("fake".to_string()),
                 document_status: status,
                 document_version: None,
@@ -766,6 +779,22 @@ mod tests {
         older["version"] = Value::String("0.0.9".to_string());
         let binding = bind_candidate_document(&app_did, &snapshot, &older).unwrap();
         assert!(!binding.matches_published);
+    }
+
+    #[test]
+    fn resolver_error_preserves_authoritative_missing() {
+        assert_eq!(
+            NameClientAppResolver::map_resolve_error_status(&name_lib::NSError::NotFound(
+                "app document".to_string(),
+            )),
+            DocumentStatus::Missing
+        );
+        assert_eq!(
+            NameClientAppResolver::map_resolve_error_status(&name_lib::NSError::Failed(
+                "network unavailable".to_string(),
+            )),
+            DocumentStatus::Unknown
+        );
     }
 
     #[test]

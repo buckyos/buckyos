@@ -1,3 +1,4 @@
+use crate::redaction::redact_text;
 use crate::{external_command, ControlPanelServer};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose, Engine as _};
@@ -18,7 +19,7 @@ use zip::CompressionMethod;
 pub(crate) const LOG_ROOT_DIR: &str = "/opt/buckyos/logs";
 pub(crate) const LOG_DOWNLOAD_TTL_SECS: u64 = 600;
 const DEFAULT_LOG_LIMIT: usize = 200;
-const MAX_LOG_LIMIT: usize = 1000;
+const MAX_LOG_LIMIT: usize = 500;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct LogQueryCursor {
@@ -26,6 +27,18 @@ struct LogQueryCursor {
     file: String,
     line_index: u64,
     direction: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_file_selector_rejects_host_paths() {
+        assert!(ControlPanelServer::validate_log_file_name(Some("scheduler.log")).is_ok());
+        assert!(ControlPanelServer::validate_log_file_name(Some("../scheduler.log")).is_err());
+        assert!(ControlPanelServer::validate_log_file_name(Some("/etc/passwd")).is_err());
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -134,7 +147,7 @@ impl ControlPanelServer {
         Some(Utc.from_utc_datetime(&parsed))
     }
 
-    fn parse_filter_time(value: &str) -> Option<DateTime<Utc>> {
+    pub(crate) fn parse_filter_time(value: &str) -> Option<DateTime<Utc>> {
         if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
             return Some(parsed.with_timezone(&Utc));
         }
@@ -151,6 +164,19 @@ impl ControlPanelServer {
             return Some(Utc.from_utc_datetime(&parsed));
         }
         None
+    }
+
+    fn parse_request_filter_time(
+        req: &RPCRequest,
+        name: &str,
+    ) -> Result<Option<DateTime<Utc>>, RPCErrors> {
+        Self::param_str(req, name)
+            .map(|value| {
+                Self::parse_filter_time(&value).ok_or_else(|| {
+                    RPCErrors::ParseRequestError(format!("{} must be RFC 3339", name))
+                })
+            })
+            .transpose()
     }
 
     fn format_log_filter_key(value: &DateTime<Utc>) -> String {
@@ -280,6 +306,19 @@ impl ControlPanelServer {
         Ok(files)
     }
 
+    fn validate_log_file_name(value: Option<&str>) -> Result<(), RPCErrors> {
+        if let Some(value) = value {
+            let valid = !matches!(value, "." | "..")
+                && Path::new(value).file_name().and_then(|name| name.to_str()) == Some(value);
+            if !valid {
+                return Err(RPCErrors::ParseRequestError(
+                    "log file must be an exact filename".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn cleanup_log_downloads(&self) {
         let mut downloads = self.log_downloads.lock().await;
         let now = std::time::SystemTime::now();
@@ -308,7 +347,6 @@ impl ControlPanelServer {
                 json!({
                     "id": service,
                     "label": Self::format_log_service_label(service),
-                    "path": format!("{}/{}", LOG_ROOT_DIR, service),
                 })
             })
             .collect();
@@ -354,6 +392,7 @@ impl ControlPanelServer {
         }
 
         let file_filter = Self::param_str(&req, "file");
+        Self::validate_log_file_name(file_filter.as_deref())?;
         let direction = Self::param_str(&req, "direction").unwrap_or_else(|| "forward".to_string());
         let direction = if direction == "backward" {
             "backward".to_string()
@@ -363,10 +402,8 @@ impl ControlPanelServer {
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_raw = Self::param_str(&req, "keyword");
         let keyword_filter = keyword_raw.as_ref().map(|value| value.to_lowercase());
-        let since_filter =
-            Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
-        let until_filter =
-            Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
+        let since_filter = Self::parse_request_filter_time(&req, "since")?;
+        let until_filter = Self::parse_request_filter_time(&req, "until")?;
         let since_key = since_filter.as_ref().map(Self::format_log_filter_key);
         let until_key = until_filter.as_ref().map(Self::format_log_filter_key);
         let limit = req
@@ -521,8 +558,8 @@ impl ControlPanelServer {
                     collected.push(json!({
                         "timestamp": ts,
                         "level": level,
-                        "message": message,
-                        "raw": raw,
+                        "message": redact_text(&message),
+                        "raw": redact_text(&raw),
                         "service": file.service.clone(),
                         "file": file.name.clone(),
                         "line": line_index,
@@ -612,8 +649,8 @@ impl ControlPanelServer {
                                 entries.push(json!({
                                     "timestamp": ts,
                                     "level": level,
-                                    "message": message,
-                                    "raw": raw,
+                                    "message": redact_text(&message),
+                                    "raw": redact_text(&raw),
                                     "service": file.service.clone(),
                                     "file": file.name.clone(),
                                     "line": line_index,
@@ -704,8 +741,8 @@ impl ControlPanelServer {
                         entries.push(json!({
                             "timestamp": ts,
                             "level": level,
-                            "message": message,
-                            "raw": raw_line,
+                            "message": redact_text(&message),
+                            "raw": redact_text(&raw_line),
                             "service": file.service.clone(),
                             "file": file.name.clone(),
                             "line": line_index,
@@ -783,8 +820,11 @@ impl ControlPanelServer {
         }
 
         let file_param = Self::param_str(&req, "file");
+        Self::validate_log_file_name(file_param.as_deref())?;
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_filter = Self::param_str(&req, "keyword").map(|value| value.to_lowercase());
+        let since_filter = Self::parse_request_filter_time(&req, "since")?;
+        let until_filter = Self::parse_request_filter_time(&req, "until")?;
         let limit = req
             .params
             .get("limit")
@@ -826,12 +866,7 @@ impl ControlPanelServer {
             })?;
             let file_len = metadata.len();
             if read_from_end {
-                let mut buffer = String::new();
-                file.read_to_string(&mut buffer).map_err(|err| {
-                    RPCErrors::ReasonError(format!("Failed to read log file: {}", err))
-                })?;
-                let lines = buffer.lines().map(|line| line.to_string()).collect();
-                return Ok((lines, file_len));
+                return Ok((Vec::new(), file_len));
             }
             let offset = start_offset.min(file_len);
             file.seek(SeekFrom::Start(offset)).map_err(|err| {
@@ -876,11 +911,24 @@ impl ControlPanelServer {
                     continue;
                 }
             }
+            if since_filter.is_some() || until_filter.is_some() {
+                let timestamp = match Self::parse_log_timestamp(&ts) {
+                    Some(timestamp) => timestamp,
+                    None => continue,
+                };
+                if since_filter
+                    .as_ref()
+                    .is_some_and(|start| &timestamp < start)
+                    || until_filter.as_ref().is_some_and(|end| &timestamp > end)
+                {
+                    continue;
+                }
+            }
             entries.push(json!({
                 "timestamp": ts,
                 "level": level,
-                "message": message,
-                "raw": raw_line,
+                "message": redact_text(&message),
+                "raw": redact_text(&raw_line),
                 "service": service.clone(),
                 "file": file_name.clone(),
             }));
@@ -934,12 +982,20 @@ impl ControlPanelServer {
         }
 
         let mode = Self::param_str(&req, "mode").unwrap_or_else(|| "filtered".to_string());
+        if mode != "filtered" {
+            return Err(RPCErrors::ParseRequestError(
+                "only filtered log downloads are supported".to_string(),
+            ));
+        }
         let level_filter = Self::param_str(&req, "level").map(|value| value.to_lowercase());
         let keyword_filter = Self::param_str(&req, "keyword").map(|value| value.to_lowercase());
-        let since_filter =
-            Self::param_str(&req, "since").and_then(|value| Self::parse_filter_time(&value));
-        let until_filter =
-            Self::param_str(&req, "until").and_then(|value| Self::parse_filter_time(&value));
+        let since_filter = Self::parse_request_filter_time(&req, "since")?;
+        let until_filter = Self::parse_request_filter_time(&req, "until")?;
+        if since_filter.is_none() && until_filter.is_none() {
+            return Err(RPCErrors::ParseRequestError(
+                "log download requires since or until".to_string(),
+            ));
+        }
 
         let token = Uuid::new_v4().to_string();
         let file_name = format!("buckyos-logs-{}.zip", token);
@@ -949,6 +1005,7 @@ impl ControlPanelServer {
         let services_clone = services.clone();
         let mode_clone = mode.clone();
         let file_filter = Self::param_str(&req, "file");
+        Self::validate_log_file_name(file_filter.as_deref())?;
 
         task::spawn_blocking(move || -> Result<(), RPCErrors> {
             let file = std::fs::File::create(&zip_path_clone)
@@ -990,7 +1047,8 @@ impl ControlPanelServer {
                         file_reader.read_to_end(&mut buffer).map_err(|err| {
                             RPCErrors::ReasonError(format!("Failed to read log file: {}", err))
                         })?;
-                        zip.write_all(&buffer).map_err(|err| {
+                        let redacted = redact_text(&String::from_utf8_lossy(&buffer));
+                        zip.write_all(redacted.as_bytes()).map_err(|err| {
                             RPCErrors::ReasonError(format!("Failed to write zip: {}", err))
                         })?;
                     }
@@ -1052,7 +1110,7 @@ impl ControlPanelServer {
                                 "{} {} {}\n",
                                 ts,
                                 level.to_uppercase(),
-                                message
+                                redact_text(&message)
                             ));
                         }
                     }

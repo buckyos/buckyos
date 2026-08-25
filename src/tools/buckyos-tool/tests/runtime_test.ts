@@ -44,3 +44,11 @@ Deno.test('invalid token errors are not misclassified as missing resources', () 
   assertEquals(error.code, 'INVALID_SESSION')
   assertEquals(error.exitCode, 3)
 })
+
+Deno.test('error normalization removes named and database credentials', () => {
+  const error = normalizeError(
+    new Error('RPC call error: password=hunter2 database=postgres://alice:pw@db/app'),
+  )
+  assertEquals(error.message.includes('hunter2'), false)
+  assertEquals(error.message.includes('alice:pw'), false)
+})

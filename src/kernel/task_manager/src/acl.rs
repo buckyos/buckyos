@@ -65,7 +65,10 @@ impl TaskViewGate {
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: String,
+    /// Kind-aware `AuthTarget::canonical_key()` used for creator and grant relations.
     pub app_id: String,
+    /// Bare app/service id used only for executor bindings.
+    pub executor_app_id: String,
     pub authorization_id: String,
     pub roles: Vec<String>,
     pub sudo: bool,
@@ -148,7 +151,7 @@ pub async fn compute_permission(
         task.creator.user_id == principal.user_id && task.creator.app_id == principal.app_id;
     let is_runner = matches!(
         &task.executor,
-        TaskExecutor::App { app_id, .. } if *app_id == principal.app_id
+        TaskExecutor::App { app_id, .. } if *app_id == principal.executor_app_id
     );
     let assignees = match task.assignees.clone() {
         Some(list) => list,
@@ -211,7 +214,12 @@ pub async fn compute_permission(
     // inherited rows.
     if root_reachable && !permission.visible() {
         if store
-            .is_tree_participant(&task.root_id, &principal.user_id, &principal.app_id)
+            .is_tree_participant(
+                &task.root_id,
+                &principal.user_id,
+                &principal.app_id,
+                &principal.executor_app_id,
+            )
             .await?
         {
             permission.add(&[TaskAction::ReadMeta], TaskDataScope::MetaOnly);

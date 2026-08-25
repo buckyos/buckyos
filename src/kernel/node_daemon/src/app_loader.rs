@@ -2,11 +2,11 @@ use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
     generate_service_login_assertion, get_buckyos_api_runtime, get_local_app_runtime_key,
-    hide_child_console_async, AppDoc, AppServiceInstanceConfig, AppType, DeploymentIdentity,
-    LocalAppInstanceConfig, ServiceInstanceState, ServiceSpecConfig, SubPkgDesc,
-    BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV, BUCKYOS_APP_INSTANCE_ID_ENV, BUCKYOS_APP_TOKEN_ENV,
-    BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV, BUCKYOS_OWNER_USER_ID_ENV,
-    KEVENT_SERVICE_NATIVE_PORT,
+    hide_child_console_async, AppDoc, AppServiceInstanceConfig, AppType, DeploymentHealth,
+    DeploymentIdentity, LocalAppInstanceConfig, ServiceInstanceState, ServiceSpecConfig,
+    SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV, BUCKYOS_APP_INSTANCE_ID_ENV,
+    BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV,
+    BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -78,7 +78,7 @@ enum LoaderConfig {
     Local(LocalAppInstanceConfig),
 }
 
-fn process_node_session_id() -> &'static str {
+pub(crate) fn process_node_session_id() -> &'static str {
     static SESSION_ID: OnceLock<String> = OnceLock::new();
     SESSION_ID
         .get_or_init(|| {
@@ -188,16 +188,54 @@ pub(crate) struct DockerRuntimeIdentity {
     pub labels: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct DockerContainerRuntime {
     running: bool,
+    health: DeploymentHealth,
     identity: DockerRuntimeIdentity,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct DockerImageLayout {
+    pub(crate) config_digest: String,
+    pub(crate) load_references: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DockerArchiveManifestEntry {
+    #[serde(rename = "Config")]
+    config: String,
+    #[serde(rename = "RepoTags", default)]
+    repo_tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OciImageIndex {
+    manifests: Vec<OciDescriptor>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OciDescriptor {
+    digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OciImageManifest {
+    config: OciDescriptor,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DockerInspectState {
     #[serde(rename = "Running", default)]
     pub(crate) running: bool,
+    #[serde(rename = "Health", default)]
+    pub(crate) health: Option<DockerInspectHealth>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct DockerInspectHealth {
+    #[serde(rename = "Status", default)]
+    pub(crate) status: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -378,6 +416,26 @@ impl AppLoader {
                 "vm runtime is reserved but not implemented".to_string(),
             )),
         }
+    }
+
+    pub async fn deployment_health(&self) -> Result<DeploymentHealth> {
+        let runtime = self.resolve_runtime()?;
+        if runtime == RuntimeType::Docker {
+            let desc = self
+                .docker_image_desc()
+                .ok_or_else(|| self.pkg_not_found("docker image"))?;
+            return Ok(match self.inspect_current_docker_container().await? {
+                Some(container) if self.runtime_matches_target(&container.identity, desc) => {
+                    container.health
+                }
+                _ => DeploymentHealth::Unknown,
+            });
+        }
+        Ok(match self.status().await? {
+            ServiceInstanceState::Started => DeploymentHealth::Healthy,
+            ServiceInstanceState::Exited => DeploymentHealth::Unhealthy,
+            _ => DeploymentHealth::Unknown,
+        })
     }
 
     pub(crate) fn preview_operation(
@@ -755,6 +813,34 @@ impl AppLoader {
                     {
                         return Ok(());
                     }
+                } else if let Some(layout) = inspect_docker_image_layout(&media_info.full_path)? {
+                    let expected_digest = normalize_digest(digest.as_deref());
+                    if expected_digest
+                        .map(|expected| expected != layout.config_digest)
+                        .unwrap_or(false)
+                    {
+                        return Err(ControlRuntItemErrors::ExecuteError(
+                            "docker image layout".to_string(),
+                            format!(
+                                "docker image config digest mismatch for app {}: expected {}, got {}",
+                                self.app_id,
+                                expected_digest.unwrap_or_default(),
+                                layout.config_digest
+                            ),
+                        ));
+                    }
+                    info!(
+                        "load docker image layout for app {} from {}",
+                        self.app_id,
+                        media_info.full_path.display()
+                    );
+                    self.load_docker_image_from_layout(
+                        media_info.full_path.as_path(),
+                        &layout,
+                        image_name.as_str(),
+                    )
+                    .await?;
+                    return Ok(());
                 }
             }
         }
@@ -1328,6 +1414,125 @@ impl AppLoader {
         .await?;
         ensure_success("docker load", &output)?;
         Ok(())
+    }
+
+    async fn load_docker_image_from_layout(
+        &self,
+        layout_root: &Path,
+        layout: &DockerImageLayout,
+        image_name: &str,
+    ) -> Result<()> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let archive_path = std::env::temp_dir().join(format!(
+            "buckyos-docker-load-{}-{nanos}.tar",
+            std::process::id()
+        ));
+        let tar_result = run_command(
+            "tar",
+            &[
+                "-cf".to_string(),
+                archive_path.to_string_lossy().to_string(),
+                "-C".to_string(),
+                layout_root.to_string_lossy().to_string(),
+                ".".to_string(),
+            ],
+            None,
+            None,
+        )
+        .await;
+        let tar_output = match tar_result {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(archive_path.as_path()).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = ensure_success("tar docker image layout", &tar_output) {
+            let _ = tokio::fs::remove_file(archive_path.as_path()).await;
+            return Err(error);
+        }
+
+        let load_result = self
+            .load_docker_image_from_tar(archive_path.as_path())
+            .await;
+        if let Err(error) = tokio::fs::remove_file(archive_path.as_path()).await {
+            warn!(
+                "remove temporary docker archive {} failed: {}",
+                archive_path.display(),
+                error
+            );
+        }
+        load_result?;
+
+        let mut loaded_reference = None;
+        for reference in &layout.load_references {
+            if self
+                .docker_image_reference_exists(reference.as_str())
+                .await?
+            {
+                loaded_reference = Some(reference.as_str());
+                break;
+            }
+        }
+        let loaded_reference = loaded_reference.ok_or_else(|| {
+            ControlRuntItemErrors::ExecuteError(
+                "docker load".to_string(),
+                format!(
+                    "docker load completed but none of the image references were available: {}",
+                    layout.load_references.join(", ")
+                ),
+            )
+        })?;
+        let tag_output = run_command(
+            "docker",
+            &[
+                "tag".to_string(),
+                loaded_reference.to_string(),
+                image_name.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        ensure_success("docker tag", &tag_output)?;
+        if !self.check_docker_image_exists(image_name, None).await? {
+            return Err(ControlRuntItemErrors::ExecuteError(
+                "docker tag".to_string(),
+                format!(
+                    "docker image {} was not available after tagging",
+                    image_name
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn docker_image_reference_exists(&self, image_ref: &str) -> Result<bool> {
+        let output = run_command(
+            "docker",
+            &[
+                "image".to_string(),
+                "inspect".to_string(),
+                "--format={{.Id}}".to_string(),
+                image_ref.to_string(),
+            ],
+            None,
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(!output.stdout.trim().is_empty());
+        }
+        if docker_object_missing(&output) {
+            return Ok(false);
+        }
+        Err(ControlRuntItemErrors::ExecuteError(
+            "docker image inspect".to_string(),
+            format_command_failure("docker image inspect", &output),
+        ))
     }
 
     async fn pull_docker_image(&self, image_name: &str, digest: Option<&str>) -> Result<()> {
@@ -2086,6 +2291,7 @@ impl AppLoader {
         }
 
         let inspect_doc = parse_docker_container_inspect(inspect_output.stdout.trim())?;
+        let health = docker_deployment_health(&inspect_doc.state);
         let image_id = inspect_doc.image.as_deref().and_then(trim_to_option);
         let repo_digests = match image_id.as_deref() {
             Some(image_id) => self.inspect_docker_image_repo_digests(image_id).await?,
@@ -2094,6 +2300,7 @@ impl AppLoader {
 
         Ok(Some(DockerContainerRuntime {
             running: inspect_doc.state.running,
+            health,
             identity: DockerRuntimeIdentity {
                 image_id,
                 repo_digests,
@@ -2595,6 +2802,155 @@ pub(crate) fn docker_image_tar_candidates_for_arch(
 
 pub(crate) fn docker_image_tar_candidates(app_id: &str) -> Vec<String> {
     docker_image_tar_candidates_for_arch(app_id, PlatformTarget::current().arch)
+}
+
+fn canonical_sha256_digest(value: &str) -> Option<String> {
+    let value = value.trim();
+    let hash = value.strip_prefix("sha256:").unwrap_or(value);
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(format!("sha256:{}", hash.to_ascii_lowercase()))
+}
+
+fn archive_config_digest(path: &str) -> Option<String> {
+    let path = Path::new(path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let file_name = path.file_name()?.to_str()?;
+    canonical_sha256_digest(file_name.strip_suffix(".json").unwrap_or(file_name))
+}
+
+fn docker_layout_error(message: impl Into<String>) -> ControlRuntItemErrors {
+    ControlRuntItemErrors::ExecuteError("docker image layout".to_string(), message.into())
+}
+
+pub(crate) fn inspect_docker_image_layout(root: &Path) -> Result<Option<DockerImageLayout>> {
+    let archive_manifest_path = root.join("manifest.json");
+    if !archive_manifest_path.is_file() {
+        return Ok(None);
+    }
+    let archive_manifest_raw =
+        fs::read_to_string(archive_manifest_path.as_path()).map_err(|error| {
+            docker_layout_error(format!(
+                "read {} failed: {}",
+                archive_manifest_path.display(),
+                error
+            ))
+        })?;
+    let archive_entries: Vec<DockerArchiveManifestEntry> =
+        serde_json::from_str(archive_manifest_raw.as_str()).map_err(|error| {
+            docker_layout_error(format!(
+                "parse {} failed: {}",
+                archive_manifest_path.display(),
+                error
+            ))
+        })?;
+    if archive_entries.len() != 1 {
+        return Err(docker_layout_error(format!(
+            "{} must describe exactly one image",
+            archive_manifest_path.display()
+        )));
+    }
+    let archive_entry = &archive_entries[0];
+    let config_digest = archive_config_digest(archive_entry.config.as_str()).ok_or_else(|| {
+        docker_layout_error(format!(
+            "invalid Docker config path `{}` in {}",
+            archive_entry.config,
+            archive_manifest_path.display()
+        ))
+    })?;
+    let config_path = root.join(archive_entry.config.as_str());
+    if !config_path.is_file() {
+        return Err(docker_layout_error(format!(
+            "Docker config {} is missing",
+            config_path.display()
+        )));
+    }
+
+    let index_path = root.join("index.json");
+    let oci_layout_path = root.join("oci-layout");
+    let mut load_references = Vec::new();
+    if index_path.exists() || oci_layout_path.exists() {
+        if !index_path.is_file() || !oci_layout_path.is_file() {
+            return Err(docker_layout_error(format!(
+                "OCI image layout at {} requires both index.json and oci-layout",
+                root.display()
+            )));
+        }
+        let index_raw = fs::read_to_string(index_path.as_path()).map_err(|error| {
+            docker_layout_error(format!("read {} failed: {}", index_path.display(), error))
+        })?;
+        let index: OciImageIndex = serde_json::from_str(index_raw.as_str()).map_err(|error| {
+            docker_layout_error(format!("parse {} failed: {}", index_path.display(), error))
+        })?;
+        if index.manifests.len() != 1 {
+            return Err(docker_layout_error(format!(
+                "{} must describe exactly one image manifest",
+                index_path.display()
+            )));
+        }
+        let manifest_digest = canonical_sha256_digest(index.manifests[0].digest.as_str())
+            .ok_or_else(|| {
+                docker_layout_error(format!(
+                    "invalid OCI manifest digest `{}`",
+                    index.manifests[0].digest
+                ))
+            })?;
+        let manifest_hash = manifest_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(manifest_digest.as_str());
+        let manifest_path = root.join("blobs").join("sha256").join(manifest_hash);
+        let manifest_raw = fs::read_to_string(manifest_path.as_path()).map_err(|error| {
+            docker_layout_error(format!(
+                "read {} failed: {}",
+                manifest_path.display(),
+                error
+            ))
+        })?;
+        let manifest: OciImageManifest =
+            serde_json::from_str(manifest_raw.as_str()).map_err(|error| {
+                docker_layout_error(format!(
+                    "parse {} failed: {}",
+                    manifest_path.display(),
+                    error
+                ))
+            })?;
+        let oci_config_digest = canonical_sha256_digest(manifest.config.digest.as_str())
+            .ok_or_else(|| {
+                docker_layout_error(format!(
+                    "invalid OCI config digest `{}`",
+                    manifest.config.digest
+                ))
+            })?;
+        if oci_config_digest != config_digest {
+            return Err(docker_layout_error(format!(
+                "Docker archive config {} does not match OCI manifest config {}",
+                config_digest, oci_config_digest
+            )));
+        }
+        load_references.push(manifest_digest);
+    }
+    load_references.push(config_digest.clone());
+    if let Some(repo_tags) = archive_entry.repo_tags.as_ref() {
+        load_references.extend(
+            repo_tags
+                .iter()
+                .filter(|tag| !tag.trim().is_empty())
+                .cloned(),
+        );
+    }
+    load_references.dedup();
+
+    Ok(Some(DockerImageLayout {
+        config_digest,
+        load_references,
+    }))
 }
 
 pub(crate) fn normalize_digest(digest: Option<&str>) -> Option<&str> {
@@ -3108,6 +3464,17 @@ pub(crate) fn parse_docker_container_inspect(raw: &str) -> Result<DockerContaine
             format!("parse docker inspect result failed: {}", error),
         )
     })
+}
+
+pub(crate) fn docker_deployment_health(state: &DockerInspectState) -> DeploymentHealth {
+    if !state.running {
+        return DeploymentHealth::Unhealthy;
+    }
+    match state.health.as_ref().map(|health| health.status.as_str()) {
+        Some("unhealthy") => DeploymentHealth::Unhealthy,
+        Some("starting") => DeploymentHealth::Unknown,
+        _ => DeploymentHealth::Healthy,
+    }
 }
 
 pub(crate) fn container_list_contains_name(raw: &str, expected_name: &str) -> bool {

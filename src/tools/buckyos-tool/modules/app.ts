@@ -16,6 +16,7 @@ import { type TaskObservation, waitForTask } from '../core/task.ts'
 
 const CONTROL_PANEL_SERVICE = 'control-panel'
 const PLAN_SCHEMA_VERSION = 4
+const STAGING_RELEASE_TIMEOUT_MS = 5_000
 const ZIP_LOCAL_MAGIC = [0x50, 0x4b, 0x03, 0x04] as const
 const OBJECT_OUTPUT: JsonSchema = { type: 'object', additionalProperties: true }
 const INSTALL_POLICIES = [
@@ -465,8 +466,9 @@ async function installApp(
   const source = await prepareSource(ctx, input, 'install', dependencies)
   let keepStaging = false
   try {
-    const baseOverrides = submittedPlan ? planScopeAndOptions(submittedPlan) : {}
-    let inspection = await inspectSource(ctx, source, input, baseOverrides)
+    let inspection = submittedPlan
+      ? await recomputePlan(ctx, source, input, submittedPlan)
+      : await inspectSource(ctx, source, input)
     verifyPikgBinding(source, submittedPlan ?? inspection.plan)
     const app = expectObject(inspection.plan.app, 'inspection.plan.app')
     const appDid = expectString(app, 'did')
@@ -847,23 +849,31 @@ async function stagePikg(
     fetcher: (request: RequestInfo | URL, init?: RequestInit) =>
       fetch(normalizeNdmRequestUrl(request), { ...init, signal: ctx.signal }),
   })
+  let uploadError: unknown
   try {
     await proxy.putChunk(chunkId, snapshot.bytes)
   } catch (error) {
+    uploadError = error
+  }
+  let value: Record<string, unknown>
+  try {
+    value = expectObject(
+      await callControl(ctx, 'apps.staging.finalize', {
+        source_obj_id: chunkId,
+        purpose,
+      }),
+      'apps.staging.finalize response',
+    )
+  } catch (error) {
+    if (uploadError === undefined) throw error
     throw new ToolError(
       'PIKG_UPLOAD_FAILED',
-      `failed to upload PIKG snapshot: ${errorMessage(error)}`,
+      `failed to upload PIKG snapshot: ${errorMessage(uploadError)}`,
       5,
       true,
+      { finalize_error: errorMessage(error) },
     )
   }
-  const value = expectObject(
-    await callControl(ctx, 'apps.staging.finalize', {
-      source_obj_id: chunkId,
-      purpose,
-    }),
-    'apps.staging.finalize response',
-  )
   return {
     schema_version: expectNumber(value, 'schema_version'),
     handle: expectString(value, 'handle'),
@@ -899,6 +909,24 @@ async function inspectSource(
   return expectInspection(result)
 }
 
+async function recomputePlan(
+  ctx: CommandContext,
+  source: PreparedSource,
+  input: Record<string, unknown>,
+  plan: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+): Promise<InstallInspection> {
+  return expectInspection(
+    await callControl(ctx, 'apps.plan.recompute', {
+      ...sourceRpcParams(source),
+      ...planScopeAndOptions(plan),
+      ...overrides,
+      plan,
+      options: installOptions(input),
+    }),
+  )
+}
+
 async function finalizePlanChoices(
   ctx: CommandContext,
   source: PreparedSource,
@@ -931,15 +959,7 @@ async function finalizePlanChoices(
   if (answer === 'e' || answer === 'edit') {
     const raw = await ctx.io.prompt('Plan choices JSON ({"target":...,"install_params":...}): ')
     const choices = parsePlanChoices(raw)
-    inspection = expectInspection(
-      await callControl(ctx, 'apps.plan.recompute', {
-        ...sourceRpcParams(source),
-        ...planScopeAndOptions(initial.plan),
-        ...choices,
-        plan: initial.plan,
-        options: installOptions(input),
-      }),
-    )
+    inspection = await recomputePlan(ctx, source, input, initial.plan, choices)
   }
   if (readinessValue(inspection, 'config') !== 'READY') {
     throw new ToolError(
@@ -1192,9 +1212,11 @@ function assertPortablePlan(plan: Record<string, unknown>): void {
     )
   }
   expectString(plan, 'plan_fingerprint')
+  expectString(plan, 'task_id')
   const allowed = new Set([
     'schema_version',
     'plan_use',
+    'task_id',
     'app_instance_id',
     'owner_user_id',
     'source_identity',
@@ -1311,7 +1333,16 @@ async function writePlanFile(
 async function releaseStaging(ctx: CommandContext, source: PreparedSource): Promise<void> {
   if (source.kind === 'catalog') return
   try {
-    await callControl(ctx, 'apps.staging.release', { staging_handle: source.staging.handle })
+    await ctx.clients.call(
+      CONTROL_PANEL_SERVICE,
+      'apps.staging.release',
+      { staging_handle: source.staging.handle },
+      {
+        traceId: ctx.traceId,
+        timeoutMs: STAGING_RELEASE_TIMEOUT_MS,
+        signal: new AbortController().signal,
+      },
+    )
   } catch (error) {
     await ctx.io.stderr(`warning: failed to release PIKG staging lease: ${errorMessage(error)}\n`)
   }

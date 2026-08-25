@@ -9,6 +9,7 @@ export interface IdentityMaterial {
   did: string
   subject: string
   issuer: string
+  principalKind: 'user' | 'device'
   publicRoot: string
   securityRoot: string
   documentPath: string
@@ -169,6 +170,7 @@ export async function resolveIdentityMaterial(
           did,
           subject,
           issuer: subject,
+          principalKind: typeof document.device_type === 'string' ? 'device' : 'user',
           publicRoot: roots.publicRoot,
           securityRoot: roots.securityRoot,
           documentPath,

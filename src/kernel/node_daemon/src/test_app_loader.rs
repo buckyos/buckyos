@@ -1,10 +1,10 @@
 use crate::app_loader::{
     command_matches_agent_process, command_matches_exact_agent_process,
-    container_list_contains_name, docker_desc_requires_exact_match,
+    container_list_contains_name, docker_deployment_health, docker_desc_requires_exact_match,
     docker_image_tar_candidates_for_arch, docker_missing_text, docker_runtime_matches_deployment,
-    docker_runtime_matches_target, normalize_digest, parse_docker_container_inspect,
-    resolve_aios_image_repo_from_paths, AppLoader, CommandSpec, ControlOperation,
-    DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
+    docker_runtime_matches_target, inspect_docker_image_layout, normalize_digest,
+    parse_docker_container_inspect, resolve_aios_image_repo_from_paths, AppLoader, CommandSpec,
+    ControlOperation, DockerRuntimeIdentity, PlatformArch, PlatformOs, PlatformTarget, RuntimeType,
     DOCKER_LABEL_APP_DOC_OBJECT_ID, DOCKER_LABEL_IMAGE_DIGEST, DOCKER_LABEL_PKG_ID,
     DOCKER_LABEL_PKG_OBJID, DOCKER_LABEL_SPEC_GENERATION,
 };
@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::tempdir;
 
 fn assert_programs(commands: &[CommandSpec], expected: &[&str]) {
     let actual = commands
@@ -385,7 +386,7 @@ fn docker_missing_text_matches_lowercase_runtime_errors() {
 fn parse_docker_container_inspect_extracts_state_labels_and_image() {
     let inspect = parse_docker_container_inspect(
         r#"{
-            "State": {"Running": true},
+            "State": {"Running": true, "Health": {"Status": "healthy"}},
             "Config": {
                 "Labels": {
                     "buckyos.runtime_key": "alice-demo",
@@ -398,6 +399,10 @@ fn parse_docker_container_inspect_extracts_state_labels_and_image() {
     .unwrap();
 
     assert!(inspect.state.running);
+    assert_eq!(
+        docker_deployment_health(&inspect.state),
+        buckyos_api::DeploymentHealth::Healthy
+    );
     assert_eq!(inspect.image.as_deref(), Some("sha256:deadbeef"));
     assert_eq!(
         inspect
@@ -408,6 +413,23 @@ fn parse_docker_container_inspect_extracts_state_labels_and_image() {
             .map(String::as_str),
         Some("alice-demo")
     );
+}
+
+#[test]
+fn docker_health_distinguishes_unhealthy_and_starting_containers() {
+    for (status, expected) in [
+        ("unhealthy", buckyos_api::DeploymentHealth::Unhealthy),
+        ("starting", buckyos_api::DeploymentHealth::Unknown),
+    ] {
+        let inspect = parse_docker_container_inspect(
+            format!(
+                r#"{{"State":{{"Running":true,"Health":{{"Status":"{status}"}}}},"Config":{{}},"Image":"sha256:deadbeef"}}"#
+            )
+            .as_str(),
+        )
+        .unwrap();
+        assert_eq!(docker_deployment_health(&inspect.state), expected);
+    }
 }
 
 #[test]
@@ -487,6 +509,79 @@ fn docker_runtime_exact_match_rejects_another_pkg_version_without_objid() {
         },
         &desc,
     ));
+}
+
+#[test]
+fn extracted_oci_docker_layout_binds_config_and_load_identity() {
+    let root = tempdir().unwrap();
+    let config_hash = "5fccaf14085240ea2f3ef3e732bbddd5aad0a61934456012ed942a2f940b8557";
+    let manifest_hash = "80aec7dbfa7cd9ad2e73352c7189c88c4752dc2dbdce487e9dfbd2e27f36176c";
+    let blobs = root.path().join("blobs/sha256");
+    fs::create_dir_all(blobs.as_path()).unwrap();
+    fs::write(
+        root.path().join("oci-layout"),
+        r#"{"imageLayoutVersion":"1.0.0"}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("manifest.json"),
+        format!(r#"[{{"Config":"blobs/sha256/{config_hash}","RepoTags":null,"Layers":[]}}]"#),
+    )
+    .unwrap();
+    fs::write(blobs.join(config_hash), "{}").unwrap();
+    fs::write(
+        root.path().join("index.json"),
+        format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"sha256:{manifest_hash}"}}]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        blobs.join(manifest_hash),
+        format!(r#"{{"config":{{"digest":"sha256:{config_hash}"}},"layers":[]}}"#),
+    )
+    .unwrap();
+
+    let layout = inspect_docker_image_layout(root.path()).unwrap().unwrap();
+    assert_eq!(layout.config_digest, format!("sha256:{config_hash}"));
+    assert_eq!(
+        layout.load_references,
+        vec![
+            format!("sha256:{manifest_hash}"),
+            format!("sha256:{config_hash}")
+        ]
+    );
+}
+
+#[test]
+fn extracted_oci_docker_layout_rejects_config_identity_mismatch() {
+    let root = tempdir().unwrap();
+    let config_hash = "5fccaf14085240ea2f3ef3e732bbddd5aad0a61934456012ed942a2f940b8557";
+    let other_hash = "6fccaf14085240ea2f3ef3e732bbddd5aad0a61934456012ed942a2f940b8557";
+    let manifest_hash = "80aec7dbfa7cd9ad2e73352c7189c88c4752dc2dbdce487e9dfbd2e27f36176c";
+    let blobs = root.path().join("blobs/sha256");
+    fs::create_dir_all(blobs.as_path()).unwrap();
+    fs::write(
+        root.path().join("oci-layout"),
+        r#"{"imageLayoutVersion":"1.0.0"}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("manifest.json"),
+        format!(r#"[{{"Config":"blobs/sha256/{config_hash}","RepoTags":null,"Layers":[]}}]"#),
+    )
+    .unwrap();
+    fs::write(blobs.join(config_hash), "{}").unwrap();
+    fs::write(
+        root.path().join("index.json"),
+        format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"sha256:{manifest_hash}"}}]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        blobs.join(manifest_hash),
+        format!(r#"{{"config":{{"digest":"sha256:{other_hash}"}},"layers":[]}}"#),
+    )
+    .unwrap();
+
+    assert!(inspect_docker_image_layout(root.path()).is_err());
 }
 
 #[test]

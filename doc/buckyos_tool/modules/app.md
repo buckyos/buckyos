@@ -219,7 +219,7 @@ buckyos app install https://example.com/apps/app1-1.2.0.pikg
   digest。
 - 包内存在 `APPDOC.jwt` 不等于已发布；无法证明 BNS 当前权威状态时，公开安装必须拒绝。
 - 未签名 `APPDOC.json` 只能在显式、受限、可撤销的 local developer authority 下安装；CLI
-  不得自行创建、扩大或伪造该 authority。
+  通过 `--policy local-developer` 显式选择该 authority。Installer 只能将其用于当前已验证的 staged PIKG，不得扩大到 Catalog/Identifier 来源。此时使用 PIKG 内嵌 AppDoc，不要求签名或 BNS 发布，但仍完整验证 PIKG 内容图和安全约束。
 - InstallPlan、install record 和 `app get/status` 必须保留 App DID、AppDoc Object ID、
   `pikg_digest`、签名/发布验证结果与安装来源。
 
@@ -373,5 +373,7 @@ CLI 可以组合这些能力完成同一条用户命令，但不能自行比较�
   lease 引用保护、release 与启动 GC；上传字节仍复用 NDN 通道。
 - 当前 Plan schema 是严格 v4，unknown field、旧 schema、source/scope/target/config/fingerprint
   变化都使计划失效；fingerprint 是 JCS 等值/完整性标识，不是授权凭据。
+- v4 `InstallPlan` 包含 Installer 分配的 `task_id`，并将其纳入 fingerprint；CLI 必须原样保存、
+  校验和提交，不能把它当成未知字段删除。
 - 尚待 Catalog/Repo 另行冻结远程 PIKG 的权威 URL 结构和“AppDoc Object ID → PIKG URL”映射；
   这不改变 URL 必须由 CLI 下载字节、Control Panel 不打开客户端 URL 的边界。

@@ -117,13 +117,12 @@ impl ControlPanelServer {
         principal: &RpcAuthPrincipal,
     ) -> Result<ResolvedAppInstallation, RPCErrors> {
         let selector = Self::app_selector_from_req(req)?;
-        let owner_user_id = Self::param_str(req, "owner_user_id")
-            .unwrap_or_else(|| principal.owner_user_id.clone());
-        require_self_or_admin(principal, owner_user_id.as_str())?;
-
         let resolver = Self::app_availability_resolver().await?;
         let selector = selector.trim();
         if let Ok(app_instance_id) = selector.parse::<AppInstanceId>() {
+            let owner_user_id = Self::param_str(req, "owner_user_id")
+                .unwrap_or_else(|| app_instance_id.owner_user_id().to_string());
+            require_self_or_admin(principal, owner_user_id.as_str())?;
             if app_instance_id.owner_user_id() != owner_user_id {
                 return Err(RPCErrors::ParseRequestError(format!(
                     "selector owner `{}` does not match requested owner `{owner_user_id}`",
@@ -132,6 +131,9 @@ impl ControlPanelServer {
             }
             return resolver.resolve_installation(&app_instance_id).await;
         }
+        let owner_user_id = Self::param_str(req, "owner_user_id")
+            .unwrap_or_else(|| principal.owner_user_id.clone());
+        require_self_or_admin(principal, owner_user_id.as_str())?;
         let mut candidates = resolver
             .list_user_installations(owner_user_id.as_str())
             .await?

@@ -1,8 +1,12 @@
-import { buckyos, parseSessionTokenClaims, VerifyHubClient } from 'buckyos'
+import { buckyos, createAppInstanceId, parseSessionTokenClaims, VerifyHubClient } from 'buckyos'
 import { type Environment, readEnvironment, type ResolvedConfig } from './config.ts'
 import { EXIT_AUTH, ToolError } from './errors.ts'
 import { resolveIdentityMaterial } from './identity.ts'
 import { resolveServiceUrl } from './runtime.ts'
+
+type AuthTarget =
+  | { kind: 'app'; app_instance_id: string }
+  | { kind: 'system'; service_id: string }
 
 export type AuthenticationKind =
   | 'session-token'
@@ -28,12 +32,12 @@ export interface AuthenticatedSession {
 }
 
 export interface AuthenticationTransport {
-  loginByJwt(url: string, jwt: string, timeoutMs: number): Promise<string>
+  loginByJwt(url: string, jwt: string, target: AuthTarget, timeoutMs: number): Promise<string>
   loginByPassword(
     url: string,
     username: string,
     password: string,
-    appId: string,
+    target: AuthTarget,
     timeoutMs: number,
   ): Promise<string>
 }
@@ -178,6 +182,7 @@ export class AuthenticationSession implements SessionController {
         const token = await this.#transport.loginByJwt(
           resolveServiceUrl(this.config, 'verify-hub'),
           loginJwt,
+          identityAuthTarget(material.principalKind, material.subject),
           this.config.timeoutMs,
         )
         return authenticatedSession(token, 'identity', true, this.#now())
@@ -204,7 +209,7 @@ export class AuthenticationSession implements SessionController {
       resolveServiceUrl(this.config, 'verify-hub'),
       username.trim(),
       password,
-      LOGIN_APP_ID,
+      appAuthTarget(username.trim()),
       this.config.timeoutMs,
     )
     return authenticatedSession(token, 'password', true, this.#now())
@@ -212,10 +217,15 @@ export class AuthenticationSession implements SessionController {
 }
 
 export class SdkAuthenticationTransport implements AuthenticationTransport {
-  async loginByJwt(url: string, jwt: string, timeoutMs: number): Promise<string> {
+  async loginByJwt(
+    url: string,
+    jwt: string,
+    target: AuthTarget,
+    timeoutMs: number,
+  ): Promise<string> {
     const client = new buckyos.kRPCClient(url)
     const response = await withLocalTimeout(
-      new VerifyHubClient(client).loginByJwt({ jwt }),
+      new VerifyHubClient(client).loginByJwt({ jwt, target }),
       timeoutMs,
     )
     if (!response.session_token) throw new Error('verify-hub returned no session token')
@@ -226,7 +236,7 @@ export class SdkAuthenticationTransport implements AuthenticationTransport {
     url: string,
     username: string,
     password: string,
-    appId: string,
+    target: AuthTarget,
     timeoutMs: number,
   ): Promise<string> {
     const client = new buckyos.kRPCClient(url)
@@ -241,13 +251,30 @@ export class SdkAuthenticationTransport implements AuthenticationTransport {
           password: string,
           nonce?: number | null,
         ) => string)(username, password, nonce),
-        appid: appId,
+        target,
+        login_nonce: nonce,
       }),
       timeoutMs,
     )
     const normalized = VerifyHubClient.normalizeLoginResponse(response)
     if (!normalized.session_token) throw new Error('verify-hub returned no session token')
     return normalized.session_token
+  }
+}
+
+function identityAuthTarget(
+  principalKind: 'user' | 'device',
+  subject: string,
+): AuthTarget {
+  return principalKind === 'device'
+    ? { kind: 'system', service_id: LOGIN_APP_ID }
+    : appAuthTarget(subject)
+}
+
+function appAuthTarget(ownerUserId: string): AuthTarget {
+  return {
+    kind: 'app',
+    app_instance_id: createAppInstanceId(LOGIN_APP_ID, ownerUserId),
   }
 }
 

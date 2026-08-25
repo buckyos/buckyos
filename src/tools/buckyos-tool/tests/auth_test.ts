@@ -72,6 +72,7 @@ Deno.test('identity login reads the new IdentityRoots layout and exchanges a sig
     )
 
     let exchangedJwt = ''
+    let exchangedTarget: unknown
     const finalToken = jwt({
       sub: 'alice',
       appid: 'buckycli',
@@ -79,8 +80,9 @@ Deno.test('identity login reads the new IdentityRoots layout and exchanges a sig
       exp: Math.floor(Date.now() / 1_000) + 600,
     })
     const transport: AuthenticationTransport = {
-      loginByJwt: (_url, loginJwt) => {
+      loginByJwt: (_url, loginJwt, target) => {
         exchangedJwt = loginJwt
+        exchangedTarget = target
         return Promise.resolve(finalToken)
       },
       loginByPassword: () => Promise.reject(new Error('unexpected password login')),
@@ -104,9 +106,107 @@ Deno.test('identity login reads the new IdentityRoots layout and exchanges a sig
     assertEquals(claims?.sub, 'alice')
     assertEquals(claims?.iss, 'alice')
     assertEquals(claims?.appid, 'buckycli')
+    assertEquals(exchangedTarget, {
+      kind: 'app',
+      app_instance_id: 'buckycli@alice',
+    })
   } finally {
     await Deno.remove(root, { recursive: true })
   }
+})
+
+Deno.test('device identity login uses the buckycli system auth target', async () => {
+  const root = await Deno.makeTempDir()
+  try {
+    const publicRoot = `${root}/identity`
+    const securityRoot = `${root}/security`
+    const did = 'did:web:ood1.test.example.com'
+    const directory = namelib.DID.fromStr(did).toFilename()
+    await Deno.mkdir(`${publicRoot}/${directory}`, { recursive: true })
+    await Deno.mkdir(`${securityRoot}/${directory}`, { recursive: true })
+    await Deno.writeTextFile(
+      `${publicRoot}/${directory}/did.json`,
+      JSON.stringify({
+        id: did,
+        name: 'ood1',
+        device_type: 'ood',
+        zone_did: 'did:web:test.example.com',
+      }),
+    )
+    const keyPair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify'])
+    const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
+    await Deno.writeTextFile(
+      `${securityRoot}/${directory}/authentication.private.pem`,
+      pem(pkcs8),
+    )
+
+    let exchangedTarget: unknown
+    const finalToken = jwt({
+      sub: 'ood1',
+      appid: 'buckycli',
+      iss: 'verify-hub',
+      exp: Math.floor(Date.now() / 1_000) + 600,
+    })
+    const transport: AuthenticationTransport = {
+      loginByJwt: (_url, _loginJwt, target) => {
+        exchangedTarget = target
+        return Promise.resolve(finalToken)
+      },
+      loginByPassword: () => Promise.reject(new Error('unexpected password login')),
+    }
+    const authentication = new AuthenticationSession(
+      testConfig({
+        configDir: root,
+        identity: did,
+        identityRoot: publicRoot,
+        securityRoot,
+        nonInteractive: true,
+      }),
+      {},
+      { transport },
+    )
+
+    await authentication.connect()
+    assertEquals(exchangedTarget, {
+      kind: 'system',
+      service_id: 'buckycli',
+    })
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+Deno.test('password login uses the user-owned buckycli app target', async () => {
+  let exchangedTarget: unknown
+  const finalToken = jwt({
+    sub: 'alice',
+    appid: 'buckycli',
+    app_instance_id: 'buckycli@alice',
+    iss: 'verify-hub',
+    exp: Math.floor(Date.now() / 1_000) + 600,
+  })
+  const transport: AuthenticationTransport = {
+    loginByJwt: () => Promise.reject(new Error('unexpected JWT login')),
+    loginByPassword: (_url, _username, _password, target) => {
+      exchangedTarget = target
+      return Promise.resolve(finalToken)
+    },
+  }
+  const authentication = new AuthenticationSession(
+    testConfig({ nonInteractive: false }),
+    {},
+    {
+      transport,
+      readUsername: () => Promise.resolve('alice'),
+      readPassword: () => Promise.resolve('secret'),
+    },
+  )
+
+  await authentication.connect()
+  assertEquals(exchangedTarget, {
+    kind: 'app',
+    app_instance_id: 'buckycli@alice',
+  })
 })
 
 function pem(bytes: Uint8Array): string {

@@ -978,7 +978,7 @@ async fn foreign_app_cannot_touch_another_apps_target() {
         )
         .await
         .expect("zone-trusted admin edits the registration");
-    assert_eq!(updated.owner_app_id, "buckyos-jarvis");
+    assert_eq!(updated.owner_app_id, "app:buckyos-jarvis@devtest");
 }
 
 #[tokio::test(flavor = "current_thread")]

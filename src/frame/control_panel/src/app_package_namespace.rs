@@ -190,6 +190,7 @@ mod tests {
             app_did: app_doc.app_did().clone(),
             doc_type: AppDocType,
             app_doc_object_id: None,
+            local_authority_app_doc_object_id: None,
             resolver_id: Some("test".to_string()),
             document_status: DocumentStatus::Active,
             document_version: Some(1),

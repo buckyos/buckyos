@@ -11,6 +11,7 @@ export interface ResolvedConnection {
 }
 
 export interface CommandIO {
+  stdout(value: string): Promise<void>
   stderr(value: string): Promise<void>
   prompt(message: string): Promise<string | null>
   inputIsTerminal: boolean
@@ -65,6 +66,7 @@ export function createMockCommandContext(options: MockContextOptions): CommandCo
     signal: new AbortController().signal,
     cwd: Deno.cwd(),
     io: {
+      stdout: () => Promise.resolve(),
       stderr: () => Promise.resolve(),
       prompt: () => Promise.resolve(null),
       inputIsTerminal: false,

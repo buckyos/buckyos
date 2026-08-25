@@ -3,7 +3,6 @@ use crate::ControlPanelServer;
 use buckyos_api::{
     get_buckyos_api_runtime, validate_preinstall_pikg_path, AppId, AppInstanceId,
     InstallPlanExecutionKey, PreInstallAppConfig, SystemConfigClient, SystemInstallSettings,
-    CONTROL_PANEL_SERVICE_NAME,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use serde_json::{json, Value};
@@ -206,7 +205,7 @@ impl PreInstallReconciler {
             .stage_preinstall_file(
                 &source_path,
                 owner_user_id,
-                CONTROL_PANEL_SERVICE_NAME,
+                "system:control-panel",
                 &runtime.zone_id,
             )
             .await
@@ -217,7 +216,7 @@ impl PreInstallReconciler {
             .resolve(
                 metadata.handle.as_str(),
                 owner_user_id,
-                CONTROL_PANEL_SERVICE_NAME,
+                "system:control-panel",
                 &runtime.zone_id,
                 buckyos_api::PikgStagingPurpose::Install,
                 None,

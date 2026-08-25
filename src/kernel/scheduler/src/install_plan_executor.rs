@@ -68,10 +68,15 @@ fn validate_plan(plan: &InstallPlan) -> std::result::Result<Vec<DeploymentPackag
             "InstallPlan fingerprint does not match its immutable material",
         ));
     }
+    let app_doc_binding_valid = plan.resolution.app_doc_object_id.as_ref()
+        == Some(&plan.app.object_id)
+        || plan
+            .resolution
+            .has_local_developer_authority_for(&plan.source_identity);
     if plan.owner_user_id != plan.app_instance_id.owner_user_id()
         || plan.app.did != *plan.app_doc.app_did()
         || plan.resolution.app_did != plan.app.did
-        || plan.resolution.app_doc_object_id.as_ref() != Some(&plan.app.object_id)
+        || !app_doc_binding_valid
         || AppId::from_app_did(&plan.app.did).as_ref() != Ok(plan.app_instance_id.app_id())
     {
         return Err(install_error(

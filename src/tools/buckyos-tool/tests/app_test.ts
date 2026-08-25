@@ -10,6 +10,7 @@ interface RecordedCall {
   service: string
   method: string
   params: Record<string, unknown>
+  options: RpcCallOptions
 }
 
 Deno.test('app module exposes the frozen beta 2.2 command surface', () => {
@@ -117,6 +118,7 @@ Deno.test('app fetch stages the exact local PIKG snapshot and releases it', asyn
       size: bytes.length,
     })
     assertEquals(calls.map((call) => call.method), ['apps.inspect', 'apps.staging.release'])
+    assertEquals(calls[1].options.timeoutMs, 5_000)
   } finally {
     await Deno.remove(root, { recursive: true })
   }
@@ -164,7 +166,10 @@ Deno.test('fresh install binds plan fingerprint, submits once, and waits to term
     await Deno.writeTextFile(planPath, JSON.stringify(plan))
     const calls: RecordedCall[] = []
     const clients = clientsFor(calls, (method, params) => {
-      if (method === 'apps.inspect') return inspection('catalog')
+      if (method === 'apps.plan.recompute') {
+        assertEquals(params.plan, plan)
+        return inspection('catalog')
+      }
       if (method === 'apps.details') throw new Error('RPC call error: APP_NOT_INSTALLED: demo')
       if (method === 'apps.submit') {
         assertEquals(params.plan, plan)
@@ -201,7 +206,7 @@ Deno.test('fresh install binds plan fingerprint, submits once, and waits to term
     assertEquals(result.task_id, 'task-1')
     assertEquals((result.status as Record<string, unknown>).task_outcome, 'Succeeded')
     assertEquals(calls.map((call) => call.method), [
-      'apps.inspect',
+      'apps.plan.recompute',
       'apps.details',
       'apps.submit',
       'apps.install.status',
@@ -217,7 +222,7 @@ Deno.test('installed App rejects a fresh plan before submission', async () => {
     const planPath = join(root, 'demo.install-plan.json')
     await Deno.writeTextFile(planPath, JSON.stringify(samplePlan('catalog')))
     const clients = clientsFor([], (method) => {
-      if (method === 'apps.inspect') return inspection('catalog')
+      if (method === 'apps.plan.recompute') return inspection('catalog')
       if (method === 'apps.details') return installedDetails()
       throw new Error(`unexpected method ${method}`)
     })
@@ -272,9 +277,9 @@ function clientsFor(
       service: string,
       method: string,
       params: Record<string, unknown>,
-      _options: RpcCallOptions,
+      options: RpcCallOptions,
     ) => {
-      calls.push({ service, method, params })
+      calls.push({ service, method, params, options })
       return Promise.resolve(response(method, params) as T)
     },
   }
@@ -336,6 +341,7 @@ function samplePlan(kind: 'catalog' | 'pikg', digest?: string): Record<string, u
   return {
     schema_version: 4,
     plan_use: 'FRESH_INSTALL',
+    task_id: 'task-plan',
     app_instance_id: 'demo.bns.did@alice',
     owner_user_id: 'alice',
     source_identity: kind === 'catalog'

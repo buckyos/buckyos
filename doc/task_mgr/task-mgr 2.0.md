@@ -250,6 +250,10 @@ pub struct TaskOriginRef {
 }
 ```
 
+`ActorRef.app_id` 保存 kind-aware 的 `AuthTarget::canonical_key()`：System target 为
+`system:<service_id>`，App target 为 `app:<app_instance_id>`。它用于 creator、ACL 和审计身份；
+`TaskExecutor::App.app_id` 仍保存裸 app/service id，用于 runner 绑定。两者不能混用。
+
 `creator.user_id/app_id` 必须来自通过验证的调用上下文，不能相信 payload。`app_instance_id`
 主要用于执行和审计；它的字符串格式可以包含 app_id，但权限判断必须以注册信息和验签上下文
 为准，不能仅靠解析字符串获得身份。

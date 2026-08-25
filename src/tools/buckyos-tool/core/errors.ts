@@ -38,13 +38,16 @@ export class UsageError extends ToolError {
 
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g
 const URL_CREDENTIAL_PATTERN = /(\w+:\/\/)[^\s/@:]+:[^\s/@]+@/g
+const DATABASE_URI_PATTERN =
+  /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|sqlite):\/\/[^\s,;]+/gi
 
 export function sanitizeMessage(message: string): string {
   return message
     .replaceAll(JWT_PATTERN, '[REDACTED_TOKEN]')
     .replaceAll(URL_CREDENTIAL_PATTERN, '$1[REDACTED]@')
+    .replaceAll(DATABASE_URI_PATTERN, '[REDACTED_DATABASE_URI]')
     .replace(
-      /(session[_-]?token|refresh[_-]?token|private[_-]?key)\s*[=:]\s*[^\s,;]+/gi,
+      /(session[_-]?token|refresh[_-]?token|access[_-]?token|private[_-]?key|password|passwd|api[_-]?key|client[_-]?secret|secret)\s*[=:]\s*[^\s,;]+/gi,
       '$1=[REDACTED]',
     )
 }

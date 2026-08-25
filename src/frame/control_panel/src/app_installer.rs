@@ -1955,7 +1955,22 @@ pub(crate) struct PreInstallSubmitOutcome {
 
 impl ControlPanelServer {
     pub(crate) fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> String {
-        Self::param_str(req, "owner_user_id").unwrap_or_else(|| principal.username.clone())
+        Self::param_str(req, "owner_user_id").unwrap_or_else(|| principal.owner_user_id.clone())
+    }
+
+    fn requested_app_owner(
+        req: &RPCRequest,
+        principal: &RpcAuthPrincipal,
+        selector: &str,
+    ) -> String {
+        Self::param_str(req, "owner_user_id")
+            .or_else(|| {
+                selector
+                    .parse::<AppInstanceId>()
+                    .ok()
+                    .map(|value| value.owner_user_id().to_string())
+            })
+            .unwrap_or_else(|| principal.owner_user_id.clone())
     }
 
     fn parse_app_type(raw: &str) -> Result<AppType, RPCErrors> {
@@ -2450,7 +2465,7 @@ impl ControlPanelServer {
         let mut results = Vec::new();
         if is_batch {
             let user_id = Self::param_str(&req, "owner_user_id")
-                .unwrap_or_else(|| principal.username.clone());
+                .unwrap_or_else(|| principal.owner_user_id.clone());
             Self::require_install_scope(principal, user_id.as_str())?;
             for (installation, _) in Self::app_availability_resolver()
                 .await?
@@ -2524,8 +2539,8 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let idempotency_key = Self::require_param_str(&req, "idempotency_key")?;
-        let owner_user_id =
-            Self::param_str(&req, "owner_user_id").unwrap_or_else(|| principal.username.clone());
+        let owner_user_id = Self::param_str(&req, "owner_user_id")
+            .unwrap_or_else(|| principal.owner_user_id.clone());
         Self::require_install_scope(principal, owner_user_id.as_str())?;
 
         if let Some(task) = self
@@ -3284,7 +3299,7 @@ impl ControlPanelServer {
             _ => return Ok(false),
         };
         Ok(request.creator_user_id == owner_user_id
-            && request.creator_app_id == buckyos_api::CONTROL_PANEL_SERVICE_NAME
+            && request.creator_app_id == "system:control-panel"
             && request.owner_user_id == owner_user_id
             && request.idempotency_key == idempotency_key
             && request.policy == InstallPolicy::SystemInternal
@@ -3452,7 +3467,7 @@ impl ControlPanelServer {
         let principal = RpcAuthPrincipal {
             username: owner_user_id.to_string(),
             owner_user_id: owner_user_id.to_string(),
-            authenticated_app_id: buckyos_api::CONTROL_PANEL_SERVICE_NAME.to_string(),
+            authenticated_app_id: "system:control-panel".to_string(),
             user_type: crate::UserType::Admin,
             owner_did: String::new(),
             is_user_session: false,
@@ -3908,8 +3923,7 @@ impl ControlPanelServer {
             }
         };
         let idempotency_key = Self::require_param_str(&req, "idempotency_key")?;
-        let requested_owner =
-            Self::param_str(&req, "owner_user_id").unwrap_or_else(|| principal.username.clone());
+        let requested_owner = Self::requested_app_owner(&req, principal, selector.as_str());
         if let Some(task) = self
             .find_app_submit_replay(principal, idempotency_key.as_str())
             .await?
@@ -4037,8 +4051,7 @@ impl ControlPanelServer {
             }
         };
         let idempotency_key = Self::require_param_str(&req, "idempotency_key")?;
-        let requested_owner =
-            Self::param_str(&req, "owner_user_id").unwrap_or_else(|| principal.username.clone());
+        let requested_owner = Self::requested_app_owner(&req, principal, selector.as_str());
         if let Some(task) = self
             .find_app_submit_replay(principal, idempotency_key.as_str())
             .await?
@@ -4124,6 +4137,43 @@ impl ControlPanelServer {
 #[cfg(test)]
 mod submit_action_tests {
     use super::*;
+
+    fn device_principal() -> RpcAuthPrincipal {
+        RpcAuthPrincipal {
+            username: "ood1".to_string(),
+            owner_user_id: "devtest".to_string(),
+            authenticated_app_id: "control-panel".to_string(),
+            user_type: crate::UserType::Root,
+            owner_did: "did:bns:devtest".to_string(),
+            is_user_session: false,
+            is_control_panel_session: false,
+        }
+    }
+
+    #[test]
+    fn device_install_defaults_to_device_owner() {
+        let principal = device_principal();
+        let request = RPCRequest::new("apps.submit", json!({}));
+        assert_eq!(
+            ControlPanelServer::resolve_target_user_id(&request, &principal),
+            "devtest"
+        );
+
+        let explicit = RPCRequest::new("apps.submit", json!({ "owner_user_id": "alice" }));
+        assert_eq!(
+            ControlPanelServer::resolve_target_user_id(&explicit, &principal),
+            "alice"
+        );
+
+        assert_eq!(
+            ControlPanelServer::requested_app_owner(
+                &request,
+                &principal,
+                "filebrowser.buckyos.bns.did@ood1"
+            ),
+            "ood1"
+        );
+    }
 
     #[test]
     fn submitted_plan_use_selects_fresh_install_or_upgrade() {

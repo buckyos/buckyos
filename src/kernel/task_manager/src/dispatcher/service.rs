@@ -109,11 +109,10 @@ impl RunnerCaller for KrpcRunnerCaller {
 
 /// The dispatcher's own actor identity for Task Core writes and audits.
 fn dispatcher_actor() -> ActorRef {
-    ActorRef {
-        user_id: TASK_DISPATCHER_SERVICE_NAME.to_string(),
-        app_id: TASK_DISPATCHER_SERVICE_NAME.to_string(),
-        app_instance_id: None,
-    }
+    ActorRef::from_auth_target(
+        TASK_DISPATCHER_SERVICE_NAME,
+        &AuthTarget::system(SystemServiceId::parse(TASK_DISPATCHER_SERVICE_NAME).unwrap()),
+    )
 }
 
 #[derive(Clone)]
@@ -256,9 +255,10 @@ impl TaskDispatcherService {
             .sub
             .clone()
             .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
-        let app_id = claims.target.appid_claim().to_string();
+        let app_id = claims.target.canonical_key();
+        let executor_app_id = claims.target.appid_claim().to_string();
         let authorization_id = claims.target.authorization_key();
-        let app_instance_id = match claims.target {
+        let app_instance_id = match &claims.target {
             AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
             AuthTarget::System { .. } => None,
         };
@@ -271,6 +271,7 @@ impl TaskDispatcherService {
         Ok(RequestContext {
             user_id,
             app_id,
+            executor_app_id,
             app_instance_id,
             authorization_id,
             zone_trusted,
@@ -807,13 +808,22 @@ impl TaskDispatcherService {
                 ..
             } if bound.as_deref() == Some(app_instance_id) => task.runner_epoch,
             _ => {
+                let runner_app_id = AuthTarget::from_canonical_key(&registration.owner_app_id)
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!(
+                            "invalid target owner identity {}: {error}",
+                            registration.owner_app_id
+                        ))
+                    })?
+                    .appid_claim()
+                    .to_string();
                 let bound_task = self
                     .task_core
                     .trusted_bind_app_executor(
                         BindAppExecutorReq {
                             task_id: task_id.clone(),
                             target_id: Some(record.target_id.clone()),
-                            app_id: registration.owner_app_id.clone(),
+                            app_id: runner_app_id,
                             app_instance_id: app_instance_id.to_string(),
                             delivery_id: Some(attempt.delivery_id.clone()),
                             expected_revision: task.revision,

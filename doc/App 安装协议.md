@@ -14,6 +14,8 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
 - `AppDID` 是产品身份，必须是 canonical lowercase hostname-form DID，不得含 path、port、fragment 或 percent encoding。
 - `AppId` 是 `AppDID.to_raw_host_name()` 的严格可逆结果。解析后必须满足 `DID::from_str(AppId) == AppDID`；多 label 非 Web DID 使用 `<id>.<method>.did`。
 - `AppInstanceId` 的 canonical 字符串是 `<app_id>@<owner_user_id>`，不含版本、Node、短域名或 AppIndex。
+- 安装请求未显式提供 `owner_user_id` 时，用户身份取当前用户，设备身份取该设备 DID Document 的 `owner.id`；设备名不是 App owner。
+- 生命周期请求使用完整 `AppInstanceId` selector 时，owner 从 selector 派生；若同时显式提供 `owner_user_id`，两者必须完全一致。
 - `ReplicaKey` 是 Scheduler 内部结构化的 `(AppInstanceId, node_id)`，不是公共字符串身份。
 - `DeploymentIdentity` 精确绑定 `app_instance_id/task_id/app_doc_object_id/spec_generation/pikg_digest?`。
 - 非 `did:` 的系统服务名先归类为 `SystemServiceId`，不得先交给 DID parser。认证目标使用显式 `AuthTarget::App { app_instance_id } | AuthTarget::System { service_id }`，系统服务不创建虚假 AppSpec/AppRegistry/AppInstanceId。
@@ -311,6 +313,8 @@ Golden fixture：
 
 任何一步失败都不得进入 InstallPlan。拒绝测试至少覆盖：缺 required、unknown field、错误 signer/controller、AppDID 不一致、AppDoc ObjectId 不一致、PackageMeta ObjectId/name/version 不一致和旧 `size/content/deps/meta` PackageMeta flatten 格式。`BaseContentObject.name` 是合法的非身份元数据。
 
+`LocalPikg + LocalDeveloper` 是唯一公开的未发布例外。该组合显式选择受当前 Zone 安装权限和 staging lease 约束的 local developer authority，以 PIKG 内嵌 AppDoc 作为待安装 body，不要求 AppDoc 已签名或已发布到 BNS。它可在权威状态为 `Active/Missing/Expired/Unknown` 时进入 InstallPlan；`Migrated/Revoked/Tombstoned` 仍必须拒绝。解析快照必须保留 BNS 的原始 `document_status/app_doc_object_id`，并另行记录 `evidence=LocalDeveloperAuthority` 与 `local_authority_app_doc_object_id`；Scheduler 只在该 ObjectId 与 PIKG source identity 及计划 AppDoc 三者完全相等时接受。PIKG 结构、AppDID structural owner、canonical AppDoc ObjectId、PackageMeta、namespace、payload digest、目标、权限和路径安全校验不得省略。该例外不适用于 Catalog/Identifier 来源，也不会把 candidate 写入 BNS 或公开 resolver cache。
+
 ## 3. Package namespace 与 exact 内容
 
 App 自有 namespace 固定为 `AppId`。允许的 unique name：
@@ -418,6 +422,8 @@ BUCKYOS_DATA_DIR
 ```
 
 数据目录按 `(owner_user_id, AppId)` 隔离且跨升级稳定。Docker 容器名是 `buckyos-app-{AppHostName}`，其中 AppHostName 必须直接取自 NodeExecutionSpec 的 Registry 投影；instance volume/systemd 使用的 RuntimeKey 是 `lowercase_hex(SHA256(canonical AppInstanceId bytes))` 的完整 64 hex。Docker label 同时保存完整 AppDID、AppInstanceId、owner、exact PackageId/PackageMeta ObjectId、AppDoc ObjectId 和 generation。回收前必须用 label 复核完整身份。
+
+Docker PIKG payload 是 `docker image save` 输出的 `tar.gz`。PackageEnv 解包后，Node Daemon 必须同时识别传统单一 `.tar` 和解出的 Docker/OCI archive layout。OCI layout 必须由 `manifest.json`、`oci-layout`、`index.json` 交叉确认唯一 image，且 archive Config digest、OCI manifest config digest 与 AppDoc 的 `docker_image_digest` 完全一致后，才能执行本地 `docker load` 并把加载出的 immutable manifest identity 标记为 AppDoc 指定的 image name；校验失败不得回退到同名远端镜像。
 
 普通 App token 的 `appid` 是 AppId，并必须另带、精确比较 AppInstanceId 与 owner；System target 的兼容 `appid` 是 SystemServiceId。`principal_kind` 与 `target_kind` 正交，例如用户登录 control-panel 是 `principal_kind=user,target_kind=system`。Agent principal kind 使用 AgentDID。
 

@@ -361,6 +361,16 @@ impl AuthTarget {
         Self::System { service_id }
     }
 
+    pub fn from_canonical_key(value: &str) -> Result<Self, String> {
+        if let Some(app_instance_id) = value.strip_prefix("app:") {
+            return Ok(Self::app(app_instance_id.parse()?));
+        }
+        if let Some(service_id) = value.strip_prefix("system:") {
+            return Ok(Self::system(service_id.parse()?));
+        }
+        Err("AuthTarget key must be `app:<app_instance_id>` or `system:<service_id>`".into())
+    }
+
     pub fn appid_claim(&self) -> &str {
         match self {
             Self::App { app_instance_id } => app_instance_id.app_id().as_str(),
@@ -462,6 +472,10 @@ mod tests {
         assert_eq!(serde_json::from_value::<AuthTarget>(app_json).unwrap(), app);
         assert_eq!(app.canonical_key(), "app:filebrowser.buckyos.ai@alice");
         assert_eq!(app.authorization_key(), "app:filebrowser.buckyos.ai");
+        assert_eq!(
+            AuthTarget::from_canonical_key(&app.canonical_key()).unwrap(),
+            app
+        );
 
         let system = AuthTarget::system("control-panel".parse().unwrap());
         let system_json = serde_json::to_value(&system).unwrap();
@@ -471,6 +485,17 @@ mod tests {
         );
         assert_eq!(system.canonical_key(), "system:control-panel");
         assert_eq!(system.authorization_key(), "system:control-panel");
+        assert_eq!(
+            AuthTarget::from_canonical_key(&system.canonical_key()).unwrap(),
+            system
+        );
+    }
+
+    #[test]
+    fn auth_target_canonical_key_rejects_untyped_ids() {
+        assert!(AuthTarget::from_canonical_key("control-panel").is_err());
+        assert!(AuthTarget::from_canonical_key("app:control-panel").is_err());
+        assert!(AuthTarget::from_canonical_key("system:filebrowser@alice").is_err());
     }
 
     #[test]

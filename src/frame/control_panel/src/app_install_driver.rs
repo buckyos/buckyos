@@ -372,16 +372,22 @@ impl ProductionInstallDriver {
             Self::invalid_request(format!("serialize candidate app doc failed: {err}"))
         })?;
 
-        let resolved = self.resolver.resolve_app(&app_did, policy).await?;
+        let mut resolved = self.resolver.resolve_app(&app_did, policy).await?;
         // candidate 绑定：did/owner 硬约束（owner 冒充在这里拒绝）。
         let binding = bind_candidate_document(&app_did, &resolved.snapshot, &candidate_value)?;
 
-        // 文档取舍：权威 body 优先；无权威 body 时 candidate 作为待信任候选
-        // 进入 Inspect（trust 未 ready 时引擎会停在 WAITING_FOR_TRUST_RESOLUTION）。
-        let resolved_app_doc = resolved
-            .document_value
-            .clone()
-            .or(Some(candidate_value.clone()));
+        let resolved_app_doc = if matches!(policy, buckyos_api::InstallPolicy::LocalDeveloper) {
+            resolved.snapshot.evidence =
+                Some(buckyos_api::DidEvidenceLevel::LocalDeveloperAuthority);
+            resolved.snapshot.local_authority_app_doc_object_id =
+                Some(binding.candidate_obj_id.clone());
+            Some(candidate_value.clone())
+        } else {
+            resolved
+                .document_value
+                .clone()
+                .or(Some(candidate_value.clone()))
+        };
 
         Ok(ResolveOutcome {
             candidate: Some(CandidateHandle {
@@ -984,7 +990,18 @@ impl InstallStageDriver for ProductionInstallDriver {
                 format!("recomputed {doc_obj_id} != plan {}", plan.app.object_id),
             )
         });
-        if let Some(published) = plan.resolution.app_doc_object_id.as_ref() {
+        let uses_local_developer_authority = plan
+            .source_identity
+            .uses_local_developer_authority(data.request.policy)
+            && plan
+                .resolution
+                .has_local_developer_authority_for(&plan.source_identity);
+        if uses_local_developer_authority {
+            checks.push(VerificationCheck::pass(
+                "appdoc",
+                "local_developer_authority",
+            ));
+        } else if let Some(published) = plan.resolution.app_doc_object_id.as_ref() {
             checks.push(if *published == plan.app.object_id {
                 VerificationCheck::pass("appdoc", "publication_binding")
             } else {

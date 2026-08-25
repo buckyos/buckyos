@@ -61,7 +61,6 @@ const COMMAND_READ_PATH_OPTIONS = new Set([
   '--session-token-file',
   '--identity-root',
   '--security-root',
-  '--file',
   '--pikg',
 ])
 const COMMAND_PLAIN_VALUE_OPTIONS = new Set([
@@ -131,7 +130,7 @@ function computePermissionPaths(args: string[], shape: CommandShape) {
     if (value !== '-') readPaths.push(value)
   }
 
-  let expectPath: 'config' | 'read' | 'plan' | '' = ''
+  let expectPath: 'config' | 'read' | 'plan' | 'write' | '' = ''
   let expectValue = false
   let stage = 0
   let appSourceAdded = false
@@ -143,9 +142,11 @@ function computePermissionPaths(args: string[], shape: CommandShape) {
         writePaths.push(argument)
       } else if (expectPath === 'read') {
         addRead(argument)
-      } else {
+      } else if (expectPath === 'plan') {
         readPaths.push(argument)
         if (planWritable) writePaths.push(argument)
+      } else {
+        writePaths.push(argument)
       }
       expectPath = ''
       continue
@@ -200,8 +201,20 @@ function computePermissionPaths(args: string[], shape: CommandShape) {
       expectPath = 'read'
       continue
     }
+    if (argument === '--file') {
+      if (shape.moduleName === 'system-config' && shape.verbName === 'set-file') {
+        expectPath = 'read'
+      } else {
+        expectValue = true
+      }
+      continue
+    }
     if (argument === '--plan') {
       expectPath = 'plan'
+      continue
+    }
+    if (argument === '--path') {
+      expectPath = 'write'
       continue
     }
     const commandRead = inlineValue(argument, COMMAND_READ_PATH_OPTIONS)
@@ -209,10 +222,20 @@ function computePermissionPaths(args: string[], shape: CommandShape) {
       addRead(commandRead)
       continue
     }
+    if (argument.startsWith('--file=')) {
+      if (shape.moduleName === 'system-config' && shape.verbName === 'set-file') {
+        addRead(argument.slice('--file='.length))
+      }
+      continue
+    }
     if (argument.startsWith('--plan=')) {
       const value = argument.slice('--plan='.length)
       readPaths.push(value)
       if (planWritable) writePaths.push(value)
+      continue
+    }
+    if (argument.startsWith('--path=')) {
+      writePaths.push(argument.slice('--path='.length))
       continue
     }
     if (COMMAND_PLAIN_VALUE_OPTIONS.has(argument)) {

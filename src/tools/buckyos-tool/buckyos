@@ -70,6 +70,9 @@ for ARGUMENT in "$@"; do
           WRITE_PATHS="$WRITE_PATHS,$ARGUMENT"
         fi
         ;;
+      write)
+        WRITE_PATHS="$WRITE_PATHS,$ARGUMENT"
+        ;;
     esac
     EXPECT_PATH=""
     continue
@@ -126,15 +129,31 @@ for ARGUMENT in "$@"; do
       CONFIG_DIR=${ARGUMENT#--config-dir=}
       READ_PATHS="$READ_PATHS,$CONFIG_DIR"
       ;;
-    --input|--session-token-file|--identity-root|--security-root|--file|--pikg)
+    --input|--session-token-file|--identity-root|--security-root|--pikg)
       EXPECT_PATH=read
+      ;;
+    --file)
+      if [ "$MODULE_NAME" = "system-config" ] && [ "$VERB_NAME" = "set-file" ]; then
+        EXPECT_PATH=read
+      else
+        EXPECT_VALUE=1
+      fi
       ;;
     --plan)
       EXPECT_PATH=plan
       ;;
-    --input=*|--session-token-file=*|--identity-root=*|--security-root=*|--file=*|--pikg=*)
+    --path)
+      EXPECT_PATH=write
+      ;;
+    --input=*|--session-token-file=*|--identity-root=*|--security-root=*|--pikg=*)
       PATH_VALUE=${ARGUMENT#*=}
       if [ "$PATH_VALUE" != "-" ]; then
+        READ_PATHS="$READ_PATHS,$PATH_VALUE"
+      fi
+      ;;
+    --file=*)
+      if [ "$MODULE_NAME" = "system-config" ] && [ "$VERB_NAME" = "set-file" ]; then
+        PATH_VALUE=${ARGUMENT#*=}
         READ_PATHS="$READ_PATHS,$PATH_VALUE"
       fi
       ;;
@@ -144,6 +163,10 @@ for ARGUMENT in "$@"; do
       if [ "$MODULE_NAME" = "app" ] && [ "$VERB_NAME" = "fetch" ]; then
         WRITE_PATHS="$WRITE_PATHS,$PATH_VALUE"
       fi
+      ;;
+    --path=*)
+      PATH_VALUE=${ARGUMENT#*=}
+      WRITE_PATHS="$WRITE_PATHS,$PATH_VALUE"
       ;;
     --from|--app-class|--owner|--policy|--data|--strategy)
       EXPECT_VALUE=1

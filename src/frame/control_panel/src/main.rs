@@ -10,15 +10,19 @@ mod app_package_namespace;
 mod app_servcie_mgr;
 mod app_staging;
 mod dashboard;
+mod diagnostic_mgr;
 mod ndn_download;
 mod pikg;
 mod pre_install_reconciler;
+mod redaction;
 mod sys_auth_backend;
 mod sys_log_mgr;
+mod task_ops;
 mod ui_session_mgr;
 mod user_mgr;
 mod zone_mgr;
 
+use diagnostic_mgr::DiagnosticBundleEntry;
 use sys_log_mgr::LogDownloadEntry;
 
 use ::kRPC::*;
@@ -204,6 +208,8 @@ struct DockerOverviewCacheEntry {
 #[derive(Clone)]
 struct ControlPanelServer {
     log_downloads: Arc<Mutex<HashMap<String, LogDownloadEntry>>>,
+    diagnostic_bundles: Arc<Mutex<HashMap<String, DiagnosticBundleEntry>>>,
+    running_diagnostic_tasks: Arc<Mutex<HashSet<String>>>,
     metrics_snapshot: Arc<RwLock<SystemMetricsSnapshot>>,
     pending_sso_logins: Arc<Mutex<HashMap<u64, sys_auth_backend::PendingSsoLogin>>>,
     docker_overview_cache: Arc<Mutex<Option<DockerOverviewCacheEntry>>>,
@@ -237,6 +243,8 @@ impl ControlPanelServer {
         let install_runner = app_install_runner::InstallRunner::new(install_engine.clone());
         ControlPanelServer {
             log_downloads: Arc::new(Mutex::new(HashMap::new())),
+            diagnostic_bundles: Arc::new(Mutex::new(HashMap::new())),
+            running_diagnostic_tasks: Arc::new(Mutex::new(HashSet::new())),
             metrics_snapshot,
             pending_sso_logins: Arc::new(Mutex::new(HashMap::new())),
             docker_overview_cache: Arc::new(Mutex::new(None)),
@@ -835,7 +843,10 @@ impl RPCHandler for ControlPanelServer {
             );
         }
 
-        match req.method.as_str() {
+        let audit_method = req.method.clone();
+        let audit_params = req.params.clone();
+        let audit_trace_id = req.trace_id.clone();
+        let result = match req.method.as_str() {
             // Core / UI bootstrap
             "main" | "ui.main" => self.handle_main(req).await,
 
@@ -904,10 +915,29 @@ impl RPCHandler for ControlPanelServer {
             "network.overview" | "system.network" => self.handle_network_overview(req).await,
 
             //SystemLogs
-            "system.logs.list" => self.handle_system_logs_list(req).await,
-            "system.logs.query" => self.handle_system_logs_query(req).await,
-            "system.logs.tail" => self.handle_system_logs_tail(req).await,
-            "system.logs.download" => self.handle_system_logs_download(req).await,
+            "system.logs.list" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_list(req).await
+            }
+            "system.logs.query" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_query(req).await
+            }
+            "system.logs.tail" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_tail(req).await
+            }
+            "system.logs.download" => {
+                Self::require_rpc_principal(principal.as_ref())?;
+                self.handle_system_logs_download(req).await
+            }
+            "audit.query" => self.handle_audit_query(req, principal.as_ref()).await,
+            "task.retry" => self.handle_task_retry(req, principal.as_ref()).await,
+            "diagnostic.collect" => {
+                self.handle_diagnostic_collect(req, principal.as_ref())
+                    .await
+            }
+            "diagnostic.export" => self.handle_diagnostic_export(req, principal.as_ref()).await,
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
 
@@ -1011,7 +1041,18 @@ impl RPCHandler for ControlPanelServer {
             }
 
             _ => Err(RPCErrors::UnknownMethod(req.method)),
+        };
+        if let Some(principal) = principal.as_ref() {
+            self.append_rpc_audit(
+                principal,
+                &audit_method,
+                &audit_params,
+                audit_trace_id,
+                result.is_ok(),
+            )
+            .await;
         }
+        result
     }
 }
 
@@ -1048,6 +1089,12 @@ impl HttpServer for ControlPanelServer {
             if let Some(token) = path.strip_prefix("/kapi/control-panel/logs/download/") {
                 if !token.is_empty() {
                     return self.handle_logs_download_http(token).await;
+                }
+            }
+            if let Some(bundle_id) = path.strip_prefix("/kapi/control-panel/diagnostics/download/")
+            {
+                if !bundle_id.is_empty() {
+                    return self.handle_diagnostic_download_http(bundle_id).await;
                 }
             }
         }

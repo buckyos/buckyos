@@ -1,10 +1,10 @@
 # BuckyOS Tool
 
 `buckyos-tool` is the TypeScript/Deno implementation of the production-facing `buckyos` command. The
-current implementation covers the PRD core through Phase 2 plus the Phase 3 App module: command
-discovery, profiles, JSON protocols, authentication, online system operations, the shared
-interactive session, the fully local `pikg` development workflow, and App installation/runtime
-lifecycle management.
+current implementation covers the PRD core through Phase 2 plus the Phase 3 App and Phase 4
+observability modules: command discovery, profiles, JSON protocols, authentication, online system
+operations, the shared interactive session, the fully local `pikg` development workflow, and App
+installation/runtime lifecycle management.
 
 ## Run from source
 
@@ -28,9 +28,9 @@ cd src\tools\buckyos-tool
 ```
 
 The launcher grants network access, read access to the tool, SDK, selected config/input/identity
-paths, and write access only to the selected config directory. It does not grant process execution
-or use Deno's `-A` permission. `buckyos.cmd` derives the same permission set through
-`win_launcher.ts`; both entries run the same `main.ts` and Command Registry.
+paths, and write access only to the selected config directory and explicit export `--path`. It does
+not grant process execution or use Deno's `-A` permission. `buckyos.cmd` derives the same permission
+set through `win_launcher.ts`; both entries run the same `main.ts` and Command Registry.
 
 `pikg` is the local-development exception. For these commands the launcher grants filesystem access
 but no network access; Docker builds additionally use only `docker image inspect` and
@@ -73,6 +73,8 @@ upgrade plans that preserve their current settings.
 ```bash
 ./buckyos app fetch did:bns:app1.alice --plan ./app1.install-plan.json
 ./buckyos --yes app install did:bns:app1.alice --plan ./app1.install-plan.json
+./buckyos app fetch ./demo.pikg --policy local-developer --plan ./demo.install-plan.json
+./buckyos --yes app install ./demo.pikg --policy local-developer --plan ./demo.install-plan.json
 ./buckyos app status did:bns:app1.alice
 ./buckyos --yes app upgrade did:bns:app1.alice
 ./buckyos --yes app uninstall did:bns:app1.alice --data retain
@@ -90,6 +92,22 @@ must confirm this high-privilege fallback once per process. Non-interactive exec
 
 Identity lookup uses only the PRD IdentityRoots order. It never scans `~/.buckycli` or `~/buckycli`.
 Session and refresh tokens are never persisted by the tool.
+
+## Tasks, logs, audit, and diagnostics
+
+```bash
+./buckyos task list --state running
+./buckyos --timeout 10m task wait t-0123456789abcdef0123456789abcdef
+./buckyos log query --service scheduler --level error
+./buckyos log export --services scheduler --since 2026-08-25T00:00:00Z --path ./logs.zip
+./buckyos audit query --scope own
+./buckyos diagnostic collect --services scheduler,node_daemon --no-wait
+./buckyos diagnostic export diag-opaque --path ./diagnostic.zip
+```
+
+Task waiting uses KEvent as a wake-up hint and always rereads the TaskManager snapshot. Log and
+diagnostic artifacts are redacted by Control Panel, written with create-new semantics, and never
+expose their short-lived download URL in command output.
 
 ## Verification
 

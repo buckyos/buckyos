@@ -39,7 +39,10 @@ const MAX_RECURSIVE_CONTROL_NODES: usize = 512;
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub user_id: String,
+    /// Kind-aware `AuthTarget::canonical_key()` used for ActorRef identity.
     pub app_id: String,
+    /// Bare app/service id used for executor and schema bindings.
+    pub executor_app_id: String,
     pub app_instance_id: Option<String>,
     pub authorization_id: String,
     pub zone_trusted: bool,
@@ -55,6 +58,7 @@ impl RequestContext {
         Principal {
             user_id: self.user_id.clone(),
             app_id: self.app_id.clone(),
+            executor_app_id: self.executor_app_id.clone(),
             authorization_id: self.authorization_id.clone(),
             roles,
             sudo: self.sudo,
@@ -158,9 +162,10 @@ impl TaskManagerService {
             .sub
             .clone()
             .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
-        let app_id = claims.target.appid_claim().to_string();
+        let app_id = claims.target.canonical_key();
+        let executor_app_id = claims.target.appid_claim().to_string();
         let authorization_id = claims.target.authorization_key();
-        let app_instance_id = match claims.target {
+        let app_instance_id = match &claims.target {
             AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
             AuthTarget::System { .. } => None,
         };
@@ -178,6 +183,7 @@ impl TaskManagerService {
         Ok(RequestContext {
             user_id,
             app_id,
+            executor_app_id,
             app_instance_id,
             authorization_id,
             zone_trusted,
@@ -316,12 +322,12 @@ impl TaskManagerService {
                 "task has no App executor",
             ));
         };
-        if *app_id != request_ctx.app_id {
+        if *app_id != request_ctx.executor_app_id {
             return Err(task_mgr_error(
                 TASK_ERR_PERMISSION_DENIED,
                 format!(
                     "caller app {} is not the bound runner {}",
-                    request_ctx.app_id, app_id
+                    request_ctx.executor_app_id, app_id
                 ),
             ));
         }
@@ -895,6 +901,25 @@ impl TaskManagerService {
             )
             .await
     }
+
+    async fn append_control_audit(&self, request_ctx: &RequestContext, req: &RequestControlReq) {
+        if let Err(error) = self
+            .store
+            .append_audit_event(AppendAuditEventReq {
+                actor: request_ctx.actor_ref(),
+                action: format!("task.{}", req.action.to_string().to_lowercase()),
+                resource: format!("task:{}", req.task_id),
+                trace_id: None,
+                outcome: AuditOutcome::Succeeded,
+                error_code: None,
+                details: json!({ "recursive": req.recursive }),
+                redaction_version: 1,
+            })
+            .await
+        {
+            warn!("append task control audit failed: {}", error);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -920,7 +945,7 @@ impl TaskManagerHandler for TaskManagerService {
             CreateTaskExecutor::SelfApp { app_instance_id } => (
                 TaskExecutor::App {
                     target_id: None,
-                    app_id: request_ctx.app_id.clone(),
+                    app_id: request_ctx.executor_app_id.clone(),
                     app_instance_id: app_instance_id.clone(),
                 },
                 Vec::new(),
@@ -974,14 +999,7 @@ impl TaskManagerHandler for TaskManagerService {
                 schema_id: schema.schema_id.clone(),
                 schema_version: schema.schema_version,
                 input: req.input.clone(),
-                creator: ActorRef {
-                    user_id: request_ctx.user_id.clone(),
-                    app_id: request_ctx.app_id.clone(),
-                    app_instance_id: match &req.executor {
-                        CreateTaskExecutor::SelfApp { app_instance_id } => app_instance_id.clone(),
-                        _ => None,
-                    },
-                },
+                creator: request_ctx.actor_ref(),
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 parent_id: req.parent_id.clone(),
@@ -1041,7 +1059,6 @@ impl TaskManagerHandler for TaskManagerService {
                 TaskExecutorKind::App,
             )
             .await?;
-        let runner = request_ctx.actor_ref();
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
@@ -1063,7 +1080,7 @@ impl TaskManagerHandler for TaskManagerService {
                 supersedes: req.supersedes,
                 executor: TaskExecutor::App {
                     target_id: None,
-                    app_id: runner.app_id,
+                    app_id: request_ctx.executor_app_id,
                     app_instance_id: req.runner_app_instance_id,
                 },
                 assignees: Vec::new(),
@@ -1213,6 +1230,7 @@ impl TaskManagerHandler for TaskManagerService {
                 )
                 .await?;
             self.publish_outcome(&outcome).await;
+            self.append_control_audit(&request_ctx, &req).await;
             return Ok(RequestControlResult::Task { task: outcome.task });
         }
 
@@ -1266,6 +1284,7 @@ impl TaskManagerHandler for TaskManagerService {
                 },
             }
         }
+        self.append_control_audit(&request_ctx, &req).await;
         Ok(RequestControlResult::Batch { result })
     }
 
@@ -1284,28 +1303,19 @@ impl TaskManagerHandler for TaskManagerService {
                 "controller and request_id are required".into(),
             ));
         }
-        let authorization_id = if let Some(app_instance_id) = &req.controller.app_instance_id {
-            let app_instance: AppInstanceId = app_instance_id.parse().map_err(|err| {
-                RPCErrors::ParseRequestError(format!("invalid controller app_instance_id: {err}"))
-            })?;
-            if app_instance.app_id().as_str() != req.controller.app_id {
-                return Err(RPCErrors::ParseRequestError(
-                    "controller app_id does not match app_instance_id".into(),
-                ));
-            }
-            AuthTarget::app(app_instance).authorization_key()
-        } else {
-            AuthTarget::system(
-                SystemServiceId::parse(&req.controller.app_id).map_err(|err| {
-                    RPCErrors::ParseRequestError(format!("invalid controller service id: {err}"))
-                })?,
-            )
-            .authorization_key()
+        let target = req.controller.auth_target().map_err(|err| {
+            RPCErrors::ParseRequestError(format!("invalid controller identity: {err}"))
+        })?;
+        let authorization_id = target.authorization_key();
+        let app_instance_id = match &target {
+            AuthTarget::App { app_instance_id } => Some(app_instance_id.to_string()),
+            AuthTarget::System { .. } => None,
         };
         let controller_ctx = RequestContext {
             user_id: req.controller.user_id.clone(),
-            app_id: req.controller.app_id.clone(),
-            app_instance_id: req.controller.app_instance_id.clone(),
+            app_id: target.canonical_key(),
+            executor_app_id: target.appid_claim().to_string(),
+            app_instance_id,
             authorization_id,
             zone_trusted: false,
             sudo: false,
@@ -1868,7 +1878,7 @@ impl TaskManagerHandler for TaskManagerService {
         }
         // Apps publish their own schemas; publishing for another app needs a
         // zone-trusted identity.
-        if !request_ctx.zone_trusted && def.publisher_app_id != request_ctx.app_id {
+        if !request_ctx.zone_trusted && def.publisher_app_id != request_ctx.executor_app_id {
             return Err(task_mgr_error(
                 TASK_ERR_PERMISSION_DENIED,
                 "publisher_app_id must match the caller app",
@@ -1939,6 +1949,42 @@ impl TaskManagerHandler for TaskManagerService {
             .await?;
         let next_cursor = events.last().map(|e| e.event_id.clone());
         Ok(ListTaskEventsResult {
+            events,
+            next_cursor,
+        })
+    }
+
+    async fn handle_append_audit_event(
+        &self,
+        req: AppendAuditEventReq,
+        ctx: RPCContext,
+    ) -> Result<AuditEvent> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        Self::require_zone_trusted(&request_ctx, "append_audit_event")?;
+        self.store.append_audit_event(req).await
+    }
+
+    async fn handle_list_audit_events(
+        &self,
+        mut req: ListAuditEventsReq,
+        ctx: RPCContext,
+    ) -> Result<AuditEventPage> {
+        let request_ctx = self.authenticate(&ctx).await?;
+        if !request_ctx.zone_trusted {
+            if req
+                .actor_user_id
+                .as_deref()
+                .is_some_and(|actor| actor != request_ctx.user_id)
+            {
+                return Err(task_mgr_error(
+                    TASK_ERR_PERMISSION_DENIED,
+                    "cross-user audit query requires a zone-trusted control surface",
+                ));
+            }
+            req.actor_user_id = Some(request_ctx.user_id);
+        }
+        let (events, next_cursor) = self.store.list_audit_events(&req).await?;
+        Ok(AuditEventPage {
             events,
             next_cursor,
         })
@@ -2055,7 +2101,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     let store = TaskStore::open_from_service_spec()
         .await
         .map_err(RPCErrors::ReasonError)?;
-    info!("task-manager database initialized (schema v7)");
+    info!("task-manager database initialized (schema v8)");
 
     let kevent_client = get_buckyos_api_runtime()
         .map_err(|err| RPCErrors::ReasonError(format!("api runtime unavailable: {}", err)))?
@@ -2256,6 +2302,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let app = service.authenticate(&app_ctx).await.unwrap();
         let system = service.authenticate(&system_ctx).await.unwrap();
 
+        assert_eq!(app.app_id, "app:control-panel@alice");
+        assert_eq!(system.app_id, "system:control-panel");
+        assert_eq!(app.executor_app_id, "control-panel");
+        assert_eq!(system.executor_app_id, "control-panel");
         assert_eq!(app.authorization_id, "app:control-panel");
         assert_eq!(system.authorization_id, "system:control-panel");
         assert_eq!(app.app_instance_id.as_deref(), Some("control-panel@alice"));
@@ -2352,13 +2402,17 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     async fn delegated_task_freezes_business_owner_and_runner_identity() {
         let (service, _tmp) = setup_service().await;
         let runner_ctx = refreshed_service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
+        let creator = ActorRef::from_auth_target(
+            "alice",
+            &AuthTarget::app("buckyos-tool@alice".parse().unwrap()),
+        );
         let request = CreateDelegatedTaskReq {
             task_id: Some("t-0123456789abcdef0123456789abcdef".to_string()),
             name: "install demo".to_string(),
             schema_id: APP_INSTALL_TASK_SCHEMA_ID.to_string(),
             schema_version: None,
             input: json!({"request": "immutable"}),
-            creator: ActorRef::new("alice", "buckyos-tool"),
+            creator: creator.clone(),
             runner_app_instance_id: None,
             parent_id: None,
             child_control_policy: None,
@@ -2374,7 +2428,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
         assert_eq!(task.task_id, request.task_id.clone().unwrap());
-        assert_eq!(task.creator, ActorRef::new("alice", "buckyos-tool"));
+        assert_eq!(task.creator, creator);
         assert!(matches!(
             task.executor,
             TaskExecutor::App { ref app_id, .. } if app_id == CONTROL_PANEL_SERVICE_NAME
@@ -2422,6 +2476,84 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
         assert_eq!(running.phase, TaskPhase::Running);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_delegated_creator_can_cancel_directly_and_via_service() {
+        let (service, _tmp) = setup_service().await;
+        let runner_ctx = refreshed_service_ctx("system", CONTROL_PANEL_SERVICE_NAME);
+        let creator_target = AuthTarget::system(SystemServiceId::parse("buckycli").unwrap());
+        let creator = ActorRef::from_auth_target("ood1", &creator_target);
+        let request = CreateDelegatedTaskReq {
+            task_id: Some("t-11111111111111111111111111111111".to_string()),
+            name: "install direct cancel".to_string(),
+            schema_id: APP_INSTALL_TASK_SCHEMA_ID.to_string(),
+            schema_version: None,
+            input: json!({"request": "direct"}),
+            creator: creator.clone(),
+            runner_app_instance_id: None,
+            parent_id: None,
+            child_control_policy: None,
+            policy_preset: None,
+            permission_boundary: false,
+            idempotency_key: "direct-cancel".to_string(),
+            retry_of: None,
+            supersedes: None,
+            message: None,
+        };
+        let direct_task = service
+            .handle_create_delegated_task(request.clone(), runner_ctx.clone())
+            .await
+            .unwrap();
+        let direct = service
+            .handle_request_control(
+                RequestControlReq {
+                    task_id: direct_task.task_id,
+                    action: TaskControlAction::Cancel,
+                    request_id: "direct-cancel-request".to_string(),
+                    recursive: false,
+                    expected_revision: None,
+                },
+                service_ctx("ood1", "buckycli"),
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = direct else {
+            panic!("expected direct task control result")
+        };
+        assert_eq!(task.pending_control.unwrap().requested_by, creator);
+
+        let delegated_request = CreateDelegatedTaskReq {
+            task_id: Some("t-22222222222222222222222222222222".to_string()),
+            idempotency_key: "delegated-cancel".to_string(),
+            name: "install delegated cancel".to_string(),
+            input: json!({"request": "delegated"}),
+            ..request
+        };
+        let delegated_task = service
+            .handle_create_delegated_task(delegated_request, runner_ctx.clone())
+            .await
+            .unwrap();
+        let delegated = service
+            .handle_request_delegated_control(
+                RequestDelegatedControlReq {
+                    controller: ActorRef::from_auth_target("ood1", &creator_target),
+                    task_id: delegated_task.task_id,
+                    action: TaskControlAction::Cancel,
+                    request_id: "delegated-cancel-request".to_string(),
+                    expected_revision: None,
+                },
+                runner_ctx,
+            )
+            .await
+            .unwrap();
+        let RequestControlResult::Task { task } = delegated else {
+            panic!("expected delegated task control result")
+        };
+        assert_eq!(
+            task.pending_control.unwrap().requested_by.app_id,
+            "system:buckycli"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3539,7 +3671,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .handle_list_tasks(
                 ListTasksReq {
                     creator_user_id: Some("alice".to_string()),
-                    creator_app_id: Some("app-a".to_string()),
+                    creator_app_id: Some("app:app-a@alice".to_string()),
                     idempotency_key: Some("key-second".to_string()),
                     include_archived: true,
                     ..Default::default()
@@ -3551,5 +3683,91 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert_eq!(page.tasks.len(), 1);
         assert_eq!(page.tasks[0].task_id, second.task_id);
         assert_ne!(page.tasks[0].task_id, first.task_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn audit_events_are_append_only_and_trimmed_to_the_authenticated_user() {
+        let (service, _tmp) = setup_service().await;
+        let trusted = service_ctx("ood1", CONTROL_PANEL_SERVICE_NAME);
+        for (user_id, trace_id) in [("alice", "trace-a"), ("bob", "trace-b")] {
+            service
+                .handle_append_audit_event(
+                    AppendAuditEventReq {
+                        actor: ActorRef::new(user_id, "system:control-panel"),
+                        action: "apps.install".to_string(),
+                        resource: format!("app:{}", user_id),
+                        trace_id: Some(trace_id.to_string()),
+                        outcome: AuditOutcome::Succeeded,
+                        error_code: None,
+                        details: json!({}),
+                        redaction_version: 1,
+                    },
+                    trusted.clone(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let error = service
+            .handle_list_audit_events(
+                ListAuditEventsReq {
+                    actor_user_id: Some("bob".to_string()),
+                    limit: Some(10),
+                    ..Default::default()
+                },
+                user_ctx("alice", "app-a"),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RPCErrors::NoPermission(_)));
+
+        let own = service
+            .handle_list_audit_events(
+                ListAuditEventsReq {
+                    limit: Some(10),
+                    ..Default::default()
+                },
+                user_ctx("alice", "app-a"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(own.events.len(), 1);
+        assert_eq!(own.events[0].actor.user_id, "alice");
+
+        let traced = service
+            .handle_list_audit_events(
+                ListAuditEventsReq {
+                    trace_id: Some("trace-b".to_string()),
+                    limit: Some(10),
+                    ..Default::default()
+                },
+                trusted,
+            )
+            .await
+            .unwrap();
+        assert_eq!(traced.events.len(), 1);
+        assert_eq!(traced.events[0].actor.user_id, "bob");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn untrusted_callers_cannot_append_audit_events() {
+        let (service, _tmp) = setup_service().await;
+        let error = service
+            .handle_append_audit_event(
+                AppendAuditEventReq {
+                    actor: ActorRef::new("alice", "app:app-a@alice"),
+                    action: "task.cancel".to_string(),
+                    resource: "task:t-1".to_string(),
+                    trace_id: None,
+                    outcome: AuditOutcome::Succeeded,
+                    error_code: None,
+                    details: json!({}),
+                    redaction_version: 1,
+                },
+                user_ctx("alice", "app-a"),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RPCErrors::NoPermission(_)));
     }
 }

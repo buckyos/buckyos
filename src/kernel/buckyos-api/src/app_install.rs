@@ -105,6 +105,12 @@ pub enum InstallSourceIdentity {
     },
 }
 
+impl InstallSourceIdentity {
+    pub fn uses_local_developer_authority(&self, policy: InstallPolicy) -> bool {
+        matches!(self, Self::Pikg { .. }) && matches!(policy, InstallPolicy::LocalDeveloper)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InstallPlanUse {
@@ -250,6 +256,7 @@ pub enum DidEvidenceLevel {
     Anchored,
     NeedProof,
     UnproofInfo,
+    LocalDeveloperAuthority,
 }
 
 /// 验证结果（对齐 name-client `VerificationStatus`）。
@@ -282,6 +289,8 @@ pub struct DidResolutionSnapshot {
     pub doc_type: AppDocType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_doc_object_id: Option<ObjId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_authority_app_doc_object_id: Option<ObjId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolver_id: Option<String>,
     pub document_status: DocumentStatus,
@@ -321,6 +330,26 @@ impl DidResolutionSnapshot {
             .any(|warning| warning.contains("LocalAuthorityOverride"))
     }
 
+    pub fn has_local_developer_authority_for(&self, source: &InstallSourceIdentity) -> bool {
+        let InstallSourceIdentity::Pikg {
+            app_doc_object_id, ..
+        } = source
+        else {
+            return false;
+        };
+        matches!(
+            self.evidence,
+            Some(DidEvidenceLevel::LocalDeveloperAuthority)
+        ) && self.local_authority_app_doc_object_id.as_ref() == Some(app_doc_object_id)
+            && matches!(
+                self.document_status,
+                DocumentStatus::Active
+                    | DocumentStatus::Missing
+                    | DocumentStatus::Expired
+                    | DocumentStatus::Unknown
+            )
+    }
+
     /// 快照是否构成当前策略下可接受的 Trust Ready 证据。
     pub fn is_trust_ready(&self, policy: InstallPolicy) -> bool {
         if self.document_status.is_terminal() {
@@ -354,6 +383,17 @@ impl DidResolutionSnapshot {
             DocumentStatus::Unknown => false,
             DocumentStatus::Revoked | DocumentStatus::Tombstoned => false,
         }
+    }
+
+    pub fn is_trust_ready_for_source(
+        &self,
+        policy: InstallPolicy,
+        source: &InstallSourceIdentity,
+    ) -> bool {
+        if !source.uses_local_developer_authority(policy) {
+            return self.is_trust_ready(policy);
+        }
+        self.has_local_developer_authority_for(source)
     }
 }
 
@@ -1686,6 +1726,7 @@ mod tests {
             app_did: app.did.clone(),
             doc_type: AppDocType,
             app_doc_object_id: Some(obj_id),
+            local_authority_app_doc_object_id: None,
             resolver_id: Some("test".to_string()),
             document_status: DocumentStatus::Active,
             document_version: Some(3),
@@ -1942,6 +1983,7 @@ mod tests {
             app_did: did,
             doc_type: AppDocType,
             app_doc_object_id: Some(ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32])),
+            local_authority_app_doc_object_id: None,
             resolver_id: None,
             document_status: DocumentStatus::Active,
             document_version: Some(1),
@@ -1975,5 +2017,58 @@ mod tests {
         snapshot.cache_status = Some(DidCacheStatus::ZoneHit);
         snapshot.document_status = DocumentStatus::Revoked;
         assert!(!snapshot.is_trust_ready(InstallPolicy::LocalDeveloper));
+    }
+
+    #[test]
+    fn local_developer_authority_is_scoped_to_pikg_sources() {
+        let mut snapshot = DidResolutionSnapshot {
+            app_did: DID::new("bns", "demo.tester"),
+            doc_type: AppDocType,
+            app_doc_object_id: None,
+            local_authority_app_doc_object_id: None,
+            resolver_id: None,
+            document_status: DocumentStatus::Missing,
+            document_version: None,
+            authority_seq: None,
+            effective_owner: None,
+            expected_owner: Some(DID::new("bns", "tester")),
+            evidence: None,
+            verification_status: None,
+            cache_status: None,
+            doc_hash: None,
+            warnings: vec![],
+            migration_target: None,
+            resolved_at: None,
+        };
+        let pikg = InstallSourceIdentity::Pikg {
+            app_doc_object_id: ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]),
+            pikg_digest: "sha256:test".to_string(),
+        };
+        let catalog = InstallSourceIdentity::Catalog {
+            app_doc_object_id: ObjId::new_by_raw("appdoc".to_string(), vec![1u8; 32]),
+        };
+
+        snapshot.evidence = Some(DidEvidenceLevel::LocalDeveloperAuthority);
+        snapshot.local_authority_app_doc_object_id = match &pikg {
+            InstallSourceIdentity::Pikg {
+                app_doc_object_id, ..
+            } => Some(app_doc_object_id.clone()),
+            InstallSourceIdentity::Catalog { .. } => None,
+        };
+        assert!(snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &pikg));
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::Normal, &pikg));
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &catalog));
+        let mismatched_pikg = InstallSourceIdentity::Pikg {
+            app_doc_object_id: ObjId::new_by_raw("appdoc".to_string(), vec![2u8; 32]),
+            pikg_digest: "sha256:other".to_string(),
+        };
+        assert!(
+            !snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &mismatched_pikg)
+        );
+
+        snapshot.document_status = DocumentStatus::Revoked;
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &pikg));
+        snapshot.document_status = DocumentStatus::Migrated;
+        assert!(!snapshot.is_trust_ready_for_source(InstallPolicy::LocalDeveloper, &pikg));
     }
 }
