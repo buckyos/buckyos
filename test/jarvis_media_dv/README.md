@@ -81,6 +81,8 @@ Provider 列表是本轮期望覆盖目标，不锁定模型或篡改 AICC 路�
 
 runner 通过 Zone Gateway 的 `control-panel.auth.login` 获取临时 session token，再调用 msg-center。密码和 token 不写入报告。
 
+Gateway URL 没有默认值，是所有运行模式的必填参数。可通过 `--gateway-url`、配置文件中的 `msg_center.gateway_url` 或 `BUCKYOS_TEST_GATEWAY_URL` 提供；普通模式缺失时 runner 会提示输入，`--yes` 自动模式缺失时直接失败。复制 [`jarvis_media_dv.example.toml`](./jarvis_media_dv.example.toml) 可创建本地配置模板。
+
 | 参数 | 环境变量 |
 |---|---|
 | Gateway | `BUCKYOS_TEST_GATEWAY_URL` |
@@ -92,7 +94,7 @@ runner 通过 Zone Gateway 的 `control-panel.auth.login` 获取临时 session t
 | Zone DID | `JARVIS_DV_ZONE_DID` |
 | Jarvis DID | `JARVIS_DV_AGENT_DID` |
 
-附件必须使用完整类型化 Named Object ID，例如 `cyfile:...` 或 `chunk:...`。六类素材分别通过 `--image-primary-id`、`--image-secondary-id`、`--image-ocr-id`、`--audio-sfx-id`、`--audio-speech-id`、`--video-fresh-id` 配置；示例 TOML 列出了对应字段。
+msg-center 默认使用测试工程 `assets/` 中已提交的六类素材。runner 登录后会把当前场景需要的文件上传到 Named Object Store，并使用生成的 `chunk:` ID 发送附件。也可以通过 `--image-primary-id`、`--image-secondary-id`、`--image-ocr-id`、`--audio-sfx-id`、`--audio-speech-id`、`--video-fresh-id` 或示例 TOML 中的对应字段提供已有的完整类型化 Named Object ID（例如 `cyfile:...` 或 `chunk:...`）；显式 ID 优先于工程素材。
 
 ## Telegram
 

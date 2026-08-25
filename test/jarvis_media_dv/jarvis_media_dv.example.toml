@@ -12,7 +12,9 @@ yes = false
 providers = ["openai", "gemini", "claude", "fal", "minimax"]
 
 [msg_center]
-gateway_url = "https://test.buckyos.io"
+# Required. Set the externally reachable Zone Gateway base URL, including scheme.
+# Example: gateway_url = "https://your-zone.example.com"
+gateway_url = ""
 username = "devtest"
 password = ""
 session_token = ""
@@ -22,6 +24,7 @@ zone_did = ""
 jarvis_did = ""
 
 [msg_center.assets]
+# Optional Named Object ID overrides. Blank values use the committed assets/ files.
 image_primary_id = ""
 image_secondary_id = ""
 image_ocr_id = ""

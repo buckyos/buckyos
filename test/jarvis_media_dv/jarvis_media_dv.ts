@@ -26,6 +26,10 @@ type RpcClient = {
   call: (method: string, params: Record<string, unknown>) => Promise<unknown>;
 };
 
+type NdmProxyClient = {
+  putChunk: (objId: string, bytes: Uint8Array) => Promise<unknown>;
+};
+
 type PasswordLoginResponse = {
   session_token?: unknown;
   user_info?: { user_id?: unknown };
@@ -103,6 +107,9 @@ type RunReport = {
 };
 
 type Transport = "msg-center" | "telegram";
+
+const GATEWAY_REQUIRED_ERROR =
+  "gateway URL is required; use --gateway-url, msg_center.gateway_url, or BUCKYOS_TEST_GATEWAY_URL";
 
 type CliOptions = {
   transports: Transport[];
@@ -260,8 +267,6 @@ async function parseArgs(args: string[]): Promise<CliOptions> {
   const config = loaded.config;
   const configuredRetries = tomlNumber(config, "telegram.connection_retries");
   const configuredSettleMs = tomlNumber(config, "common.settle_ms");
-  const zoneHost = tomlString(config, "msg_center.zone_host") ??
-    env("BUCKYOS_TEST_ZONE_HOST") ?? "test.buckyos.io";
   const options: CliOptions = {
     transports: uniqueValues(
       (tomlStrings(config, "common.transports") ??
@@ -279,7 +284,7 @@ async function parseArgs(args: string[]): Promise<CliOptions> {
     caseIds: tomlStrings(config, "common.cases") ?? [],
     configPath: loaded.path,
     gatewayUrl: tomlString(config, "msg_center.gateway_url") ??
-      env("BUCKYOS_TEST_GATEWAY_URL") ?? `https://${zoneHost}`,
+      env("BUCKYOS_TEST_GATEWAY_URL") ?? "",
     sessionToken: tomlString(config, "msg_center.session_token") ??
       env("BUCKYOS_APPCLIENT_SESSION_TOKEN"),
     username: tomlString(config, "msg_center.username") ?? env("BUCKYOS_TEST_USERNAME"),
@@ -475,7 +480,7 @@ async function parseArgs(args: string[]): Promise<CliOptions> {
       ["JARVIS_DV_ALLOW_REVIEW"],
     ),
     assumeYes: source(["--yes", "--no"], "common.yes", ["JARVIS_DV_YES"]),
-    gatewayUrl: source(["--gateway-url"], "msg_center.gateway_url", ["BUCKYOS_TEST_GATEWAY_URL", "BUCKYOS_TEST_ZONE_HOST"]),
+    gatewayUrl: source(["--gateway-url"], "msg_center.gateway_url", ["BUCKYOS_TEST_GATEWAY_URL"]),
     sessionToken: source(["--session-token"], "msg_center.session_token", ["BUCKYOS_APPCLIENT_SESSION_TOKEN"]),
     username: source(["--username"], "msg_center.username", ["BUCKYOS_TEST_USERNAME"]),
     password: source(["--password"], "msg_center.password", ["BUCKYOS_TEST_PASSWORD"]),
@@ -518,7 +523,7 @@ Options:
   --provider <name>                     Repeat to declare expected providers
   --suite <smoke|linked|matrix|all>     Default: all
   --case <scenario_id>                  Repeat to select specific scenarios
-  --gateway-url <url>                   Zone Gateway base URL
+  --gateway-url <url>                   Zone Gateway base URL (required)
   --username <name>                     Prefer BUCKYOS_TEST_USERNAME
   --password <password>                 Prefer BUCKYOS_TEST_PASSWORD
   --session-token <token>               Optional login override for debugging
@@ -818,7 +823,7 @@ async function runMsgCenter(
     options.username ||= await promptValue("BuckyOS username");
     options.password ||= await promptValue("BuckyOS password", true);
   }
-  const { buckyos } = await import("buckyos");
+  const { buckyos, ndm_proxy, ndn } = await import("buckyos");
   let sessionToken = options.sessionToken;
   let loginUserId = "";
   if (!sessionToken) {
@@ -872,6 +877,37 @@ async function runMsgCenter(
     with_object: false,
   });
   console.log("[probe] authenticated msg-center path is ready");
+  const defaultAssets = selectedAssets(scenarios).filter((asset) => !options.assets[asset]);
+  if (defaultAssets.length > 0) {
+    const ndmProxy = ndm_proxy.createNdmProxyClient({
+      endpoint: options.gatewayUrl,
+      sessionToken,
+      fetcher: (request: RequestInfo | URL, init?: RequestInit) => {
+        const target = typeof request === "string"
+          ? request.replaceAll("%3A", ":").replaceAll("%3a", ":")
+          : request instanceof URL
+          ? new URL(request.toString().replaceAll("%3A", ":").replaceAll("%3a", ":"))
+          : request;
+        return fetch(target, init);
+      },
+    }) as NdmProxyClient;
+    for (const asset of defaultAssets) {
+      const path = ASSET_FILE[asset];
+      if (!await pathExists(path)) {
+        console.warn(`[asset] project asset is missing: ${path}`);
+        continue;
+      }
+      const bytes = await Deno.readFile(path);
+      const objId = ndn.ChunkId.fromMix256Result(
+        bytes.byteLength,
+        ndn.sha256Bytes(bytes),
+      ).toString();
+      await ndmProxy.putChunk(objId, bytes);
+      options.assets[asset] = objId;
+      options.parameterSources[`msg:${asset}`] = `project asset:${path}`;
+      console.log(`[asset] uploaded ${asset}: ${path} -> ${objId}`);
+    }
+  }
 
   for (const scenario of scenarios) {
     const missing = scenario.requiredAssets.filter((asset) => !options.assets[asset]);
@@ -1262,6 +1298,10 @@ function configuredSecret(value: string | undefined): string {
 }
 
 async function collectPreflightInputs(options: CliOptions): Promise<void> {
+  if (!options.gatewayUrl && !options.assumeYes) {
+    options.gatewayUrl = (await promptValue("Zone Gateway base URL")).replace(/\/+$/, "");
+    options.parameterSources.gatewayUrl = "interactive input";
+  }
   if (options.dryRun || options.assumeYes) return;
   if (options.transports.includes("msg-center") && !options.sessionToken) {
     if (!options.username) {
@@ -1300,6 +1340,9 @@ async function collectPreflightInputs(options: CliOptions): Promise<void> {
 
 async function requiredParameterErrors(options: CliOptions): Promise<string[]> {
   const errors: string[] = [];
+  if (!options.gatewayUrl) {
+    errors.push(GATEWAY_REQUIRED_ERROR);
+  }
   if (options.assumeYes && options.interactiveReview) {
     errors.push("automated mode cannot use --interactive-review");
   }
@@ -1350,7 +1393,12 @@ async function printEnvironmentChecklist(
     console.log(`  msg-center.zone_did: ${options.zoneDid ?? "<runtime lookup>"}${sourceSuffix(options, "zoneDid")}`);
     console.log(`  msg-center.jarvis_did: ${options.jarvisDid ?? "<derived>"}${sourceSuffix(options, "jarvisDid")}`);
     for (const asset of assets) {
-      console.log(`  msg-center.asset.${asset}: ${options.assets[asset] ?? "<missing; related scenarios will be skipped>"}${sourceSuffix(options, `msg:${asset}`)}`);
+      const configured = options.assets[asset];
+      const path = ASSET_FILE[asset];
+      const defaultStatus = await pathExists(path)
+        ? `${path}; ready; uploads on start`
+        : `${path}; missing`;
+      console.log(`  msg-center.asset.${asset}: ${configured ?? defaultStatus}${sourceSuffix(options, `msg:${asset}`)}`);
     }
   }
   if (options.transports.includes("telegram")) {
@@ -1434,8 +1482,9 @@ function printDryRun(options: CliOptions, scenarios: Scenario[]): void {
     console.log(`\n${scenario.id}: ${scenario.title}`);
     for (const asset of scenario.requiredAssets) {
       if (options.transports.includes("msg-center")) {
-        const supplied = options.assets[asset] ? "configured" : "missing";
-        console.log(`  msg-center asset ${asset}: ${supplied} (${ASSET_ENV[asset]})`);
+        console.log(
+          `  msg-center asset ${asset}: ${options.assets[asset] ?? `${ASSET_FILE[asset]} (project default; uploads on start)`}`,
+        );
       }
       if (options.transports.includes("telegram")) {
         console.log(`  telegram asset ${asset}: ${options.telegramAssets[asset] ?? "missing"}`);
@@ -1477,6 +1526,11 @@ async function main(): Promise<void> {
   }
   const scenarios = selectScenarios(options);
   await collectPreflightInputs(options);
+  if (!options.gatewayUrl) {
+    console.error(`[fatal] ${GATEWAY_REQUIRED_ERROR}`);
+    Deno.exitCode = 1;
+    return;
+  }
   await printEnvironmentChecklist(options, scenarios);
   if (options.dryRun) {
     printDryRun(options, scenarios);
