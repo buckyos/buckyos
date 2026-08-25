@@ -717,6 +717,47 @@ fn get_kevent_service(source_node: &str) -> Arc<kevent::KEventService> {
         .clone()
 }
 
+/// Body of the `/devices/{name}/info` event.
+///
+/// The full `DeviceInfo` is written to system_config immediately before this is
+/// published, and every consumer reads the record from there, so the event only
+/// has to say which device changed. Carrying the whole record instead overflows
+/// the kevent slot (`SLOT_DATA_SIZE`), and the flattened DID document would put
+/// key material on a bus any local process can drain.
+#[derive(Serialize)]
+struct DeviceInfoChangedEvent<'a> {
+    name: &'a str,
+    id: &'a DID,
+    device_type: &'a str,
+    owner: &'a DID,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zone_did: Option<&'a DID>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<&'a str>,
+    update_time: u64,
+}
+
+impl<'a> DeviceInfoChangedEvent<'a> {
+    fn from_device_info(device_info: &'a DeviceInfo) -> Self {
+        let doc = &device_info.device_doc;
+        Self {
+            name: doc.name.as_str(),
+            id: &doc.id,
+            device_type: doc.device_type.as_str(),
+            owner: &doc.owner,
+            zone_did: doc.zone_did.as_ref(),
+            net_id: doc.net_id.as_deref(),
+            version_seq: doc.version_seq,
+            state: device_info.state.as_deref(),
+            update_time: device_info.update_time,
+        }
+    }
+}
+
 async fn publish_device_info_kevent(device_info: &DeviceInfo) {
     let Some(service) = KEVENT_SERVICE.get() else {
         warn!(
@@ -726,7 +767,8 @@ async fn publish_device_info_kevent(device_info: &DeviceInfo) {
         return;
     };
     let eventid = format!("/devices/{}/info", device_info.name.as_str());
-    let event_data = serde_json::to_value(device_info).unwrap();
+    let event_data =
+        serde_json::to_value(DeviceInfoChangedEvent::from_device_info(device_info)).unwrap();
 
     if let Err(err) = service
         .publish_local_global(eventid.as_str(), event_data)
