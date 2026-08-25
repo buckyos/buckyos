@@ -25,8 +25,9 @@ use ::kRPC::*;
 use anyhow::Result;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, BuckyOSRuntimeType,
-    SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME, CONTROL_PANEL_SERVICE_PORT,
+    get_buckyos_api_runtime, hide_child_console, init_buckyos_api_runtime, set_buckyos_api_runtime,
+    BuckyOSRuntimeType, SystemConfigClient, UserType, CONTROL_PANEL_SERVICE_NAME,
+    CONTROL_PANEL_SERVICE_PORT,
 };
 use buckyos_http_server::*;
 use buckyos_kit::*;
@@ -56,29 +57,14 @@ pub(crate) fn bytes_to_gb(bytes: u64) -> f64 {
     (bytes as f64) / 1024.0 / 1024.0 / 1024.0
 }
 
-#[cfg(not(target_os = "windows"))]
-fn external_command(program: impl AsRef<OsStr>) -> Command {
-    Command::new(program)
-}
-
-#[cfg(target_os = "windows")]
 fn external_command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
-    use std::os::windows::process::CommandExt;
-    command.creation_flags(windows_hidden_process_creation_flags());
+    hide_child_console(&mut command);
     command
 }
 
 fn docker_command() -> Command {
     external_command("docker")
-}
-
-#[cfg(target_os = "windows")]
-fn windows_hidden_process_creation_flags() -> u32 {
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 const METRICS_DISK_REFRESH_INTERVAL_SECS: u64 = 5;

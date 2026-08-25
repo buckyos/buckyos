@@ -1,4 +1,4 @@
-use buckyos_api::ServiceInstanceState;
+use buckyos_api::{hide_background_child_console, hide_child_console_async, ServiceInstanceState};
 use buckyos_kit::*;
 use log::*;
 use package_lib::*;
@@ -676,12 +676,7 @@ async fn run_command(
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(windows_hidden_process_creation_flags());
-    }
+    hide_child_console_async(&mut cmd);
 
     let output = cmd.output().await.map_err(|error| {
         ServiceControlError::ReasonError(format!("spawn {} failed: {}", program.display(), error))
@@ -712,11 +707,7 @@ fn spawn_detached(
         cmd.envs(envs);
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(windows_hidden_process_creation_flags());
-    }
+    hide_background_child_console(&mut cmd);
 
     #[cfg(unix)]
     {
@@ -735,14 +726,6 @@ fn spawn_detached(
         ServiceControlError::ReasonError(format!("spawn {} failed: {}", program.display(), error))
     })?;
     Ok(child.id())
-}
-
-#[cfg(target_os = "windows")]
-fn windows_hidden_process_creation_flags() -> u32 {
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 fn exit_code(status: &std::process::ExitStatus) -> i32 {

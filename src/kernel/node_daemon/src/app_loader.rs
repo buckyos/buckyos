@@ -1,11 +1,12 @@
 use crate::run_item::{ControlRuntItemErrors, Result};
 use crate::service_pkg::new_system_package_env;
 use buckyos_api::{
-    generate_service_login_assertion, get_buckyos_api_runtime, get_local_app_runtime_key, AppDoc,
-    AppServiceInstanceConfig, AppType, DeploymentIdentity, LocalAppInstanceConfig,
-    ServiceInstanceState, ServiceSpecConfig, SubPkgDesc, BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV,
-    BUCKYOS_APP_INSTANCE_ID_ENV, BUCKYOS_APP_TOKEN_ENV, BUCKYOS_DATA_DIR_ENV,
-    BUCKYOS_KEVENT_DAEMON_ADDR_ENV, BUCKYOS_OWNER_USER_ID_ENV, KEVENT_SERVICE_NATIVE_PORT,
+    generate_service_login_assertion, get_buckyos_api_runtime, get_local_app_runtime_key,
+    hide_child_console_async, AppDoc, AppServiceInstanceConfig, AppType, DeploymentIdentity,
+    LocalAppInstanceConfig, ServiceInstanceState, ServiceSpecConfig, SubPkgDesc,
+    BUCKYOS_APP_DID_ENV, BUCKYOS_APP_ID_ENV, BUCKYOS_APP_INSTANCE_ID_ENV, BUCKYOS_APP_TOKEN_ENV,
+    BUCKYOS_DATA_DIR_ENV, BUCKYOS_KEVENT_DAEMON_ADDR_ENV, BUCKYOS_OWNER_USER_ID_ENV,
+    KEVENT_SERVICE_NATIVE_PORT,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use log::{debug, error, info, warn};
@@ -2939,12 +2940,7 @@ async fn run_command(
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(windows_hidden_process_creation_flags());
-    }
+    hide_child_console_async(&mut cmd);
 
     let output = cmd.output().await.map_err(|error| {
         ControlRuntItemErrors::ExecuteError(
@@ -2959,14 +2955,6 @@ async fn run_command(
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
-}
-
-#[cfg(target_os = "windows")]
-fn windows_hidden_process_creation_flags() -> u32 {
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
 }
 
 fn ensure_success(step: &str, output: &CommandOutput) -> Result<()> {

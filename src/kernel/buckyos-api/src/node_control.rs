@@ -698,6 +698,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::process_util::{hide_background_child_console, hide_child_console};
+
 use serde::{Deserialize, Serialize};
 
 const TCP_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -1189,13 +1191,13 @@ fn normalize_name(value: &str) -> String {
 }
 
 fn run_capture(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .ok()?;
+        .stderr(Stdio::piped());
+    let output = hide_child_console(&mut command).output().ok()?;
     if !output.status.success() && output.stdout.is_empty() {
         return None;
     }
@@ -2129,6 +2131,7 @@ fn spawn_node_daemon_direct(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    hide_background_child_console(&mut cmd);
 
     #[cfg(unix)]
     {
@@ -2169,9 +2172,9 @@ fn start_via_launchd(host: &NodeHostControlState, actions: &mut Vec<String>) -> 
 
     run_quiet("launchctl", &["enable", &target], actions);
     // bootstrap; if already loaded, bootout-then-bootstrap.
-    let bs = Command::new("launchctl")
-        .args(["bootstrap", "system", plist.to_str().unwrap_or_default()])
-        .output();
+    let mut bs_cmd = Command::new("launchctl");
+    bs_cmd.args(["bootstrap", "system", plist.to_str().unwrap_or_default()]);
+    let bs = hide_child_console(&mut bs_cmd).output();
     match bs {
         Ok(out) if out.status.success() => {
             actions.push(format!("launchctl bootstrap system {}", plist.display()));
@@ -2218,7 +2221,9 @@ fn start_via_scheduled_task(
 
 fn run_quiet(program: &str, args: &[&str], actions: &mut Vec<String>) {
     let label = format!("{} {}", program, args.join(" "));
-    match Command::new(program).args(args).output() {
+    let mut command = Command::new(program);
+    command.args(args);
+    match hide_child_console(&mut command).output() {
         Ok(out) if out.status.success() => actions.push(format!("ok: {}", label)),
         Ok(out) => actions.push(format!(
             "warn: {} exit={:?} stderr={}",
@@ -2232,8 +2237,9 @@ fn run_quiet(program: &str, args: &[&str], actions: &mut Vec<String>) {
 
 fn run_must(program: &str, args: &[&str], actions: &mut Vec<String>) -> Result<(), String> {
     let label = format!("{} {}", program, args.join(" "));
-    let out = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    let out = hide_child_console(&mut command)
         .output()
         .map_err(|e| format!("execute {} failed: {}", label, e))?;
     if !out.status.success() {
@@ -2488,7 +2494,9 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
         }
 
         for target in targets {
-            let r = Command::new("docker").args(["rm", "-f", &target]).output();
+            let mut command = Command::new("docker");
+            command.args(["rm", "-f", &target]);
+            let r = hide_child_console(&mut command).output();
             match r {
                 Ok(out) if out.status.success() => {
                     report.stopped_containers.push(target);
@@ -2516,8 +2524,9 @@ fn blackbox_stop(req: &NodeStopRequest, host: &NodeHostControlState, report: &mu
 
 fn kill_process_by_pid(pid: u32) -> Result<(), String> {
     if cfg!(target_os = "windows") {
-        let out = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+        let mut command = Command::new("taskkill");
+        command.args(["/F", "/PID", &pid.to_string()]);
+        let out = hide_child_console(&mut command)
             .output()
             .map_err(|e| e.to_string())?;
         if !out.status.success() {
@@ -2538,14 +2547,16 @@ fn kill_process_by_pid(pid: u32) -> Result<(), String> {
 pub fn kill_process_by_name(name: &str) -> Result<bool, String> {
     if cfg!(target_os = "windows") {
         let exe_name = format!("{}.exe", name);
-        let out = Command::new("taskkill")
-            .args(["/F", "/IM", &exe_name])
+        let mut command = Command::new("taskkill");
+        command.args(["/F", "/IM", &exe_name]);
+        let out = hide_child_console(&mut command)
             .output()
             .map_err(|e| e.to_string())?;
         Ok(out.status.success())
     } else {
-        let out = Command::new("killall")
-            .arg(name)
+        let mut command = Command::new("killall");
+        command.arg(name);
+        let out = hide_child_console(&mut command)
             .output()
             .map_err(|e| e.to_string())?;
         Ok(out.status.success())
