@@ -12,20 +12,26 @@ use aicc::{
 use async_trait::async_trait;
 use base64::Engine as _;
 use buckyos_api::{
-    AckControlReq, AddTaskNoteReq, AiMethodRequest, AiPayload, Capability, CommitResultReq,
-    CreateTaskExecutor, CreateTaskReq, FailTaskReq, GetTaskReq, ListTaskNotesReq, ListTasksReq,
-    ModelSpec, ReportProgressReq, ReportStartedReq, RequestControlReq, RequestControlResult,
-    Requirements, ResourceRef, Task, TaskControlProfile, TaskControlRequest, TaskExecutor,
-    TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummaryPage,
-    TypedTaskData,
+    bind_token_principal_kind, bind_token_target, get_buckyos_api_runtime, set_buckyos_api_runtime,
+    AckControlReq, AddTaskNoteReq, AiMethodRequest, AiPayload, AuthTarget, BuckyOSRuntime,
+    BuckyOSRuntimeType, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq,
+    FailTaskReq, GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq,
+    ReportStartedReq, RequestControlReq, RequestControlResult, Requirements, ResourceRef, Task,
+    TaskControlProfile, TaskControlRequest, TaskExecutor, TaskManagerClient, TaskManagerHandler,
+    TaskNote, TaskOutcome, TaskPhase, TaskSummaryPage, TokenPrincipalKind, TokenUse, TypedTaskData,
+    VERIFY_HUB_TOKEN_ISSUER,
 };
-use kRPC::{RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse};
+use kRPC::{
+    RPCContext, RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCSessionToken,
+    RPCSessionTokenType,
+};
+use name_lib::{generate_ed25519_key_pair, load_private_key, DID};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -73,11 +79,35 @@ pub fn typed_aicc_task_data(task: &Task) -> Option<buckyos_api::AiccComputeTaskD
 }
 
 pub fn typed_aicc_request(task: &Task) -> Option<Value> {
-    typed_aicc_task_data(task).and_then(|data| data.request.request)
+    match buckyos_api::parse_typed_task_data("aicc.compute", task.input.clone()).ok()? {
+        TypedTaskData::AiccCompute(data) => data.request.request,
+        _ => None,
+    }
 }
 
 pub fn typed_aicc_external_task_id(task: &Task) -> Option<String> {
-    typed_aicc_task_data(task).and_then(|data| data.request.external_task_id)
+    match buckyos_api::parse_typed_task_data("aicc.compute", task.input.clone()).ok()? {
+        TypedTaskData::AiccCompute(data) => data.request.external_task_id,
+        _ => None,
+    }
+}
+
+pub fn aicc_task_matches_response_id(task: &Task, response_task_id: &str) -> bool {
+    task.task_id == response_task_id
+        || typed_aicc_external_task_id(task).as_deref() == Some(response_task_id)
+}
+
+pub async fn external_task_id_for_response(
+    center: &AIComputeCenter,
+    response_task_id: &str,
+) -> String {
+    let taskmgr = center.task_manager_client().expect("task manager");
+    all_tasks(&taskmgr)
+        .await
+        .into_iter()
+        .find(|task| aicc_task_matches_response_id(task, response_task_id))
+        .and_then(|task| typed_aicc_external_task_id(&task))
+        .expect("external task id")
 }
 
 #[allow(dead_code)]
@@ -111,6 +141,81 @@ pub fn rpc_ctx_with_tenant(tenant: Option<&str>) -> RPCContext {
     }
 }
 
+pub async fn verified_rpc_ctx_with_tenant(tenant: &str) -> RPCContext {
+    static KEY_PAIR: OnceLock<(String, String)> = OnceLock::new();
+    static RUNTIME_READY: OnceCell<()> = OnceCell::const_new();
+
+    let (private_key_pem, public_key_x) = KEY_PAIR.get_or_init(|| {
+        let (private_key_pem, public_jwk) = generate_ed25519_key_pair();
+        let public_key_x = public_jwk
+            .get("x")
+            .and_then(Value::as_str)
+            .expect("generated Ed25519 JWK x")
+            .to_string();
+        (private_key_pem, public_key_x)
+    });
+    RUNTIME_READY
+        .get_or_init(|| async {
+            let public_key = DID::new("dev", public_key_x)
+                .get_auth_key()
+                .expect("generated Ed25519 public key")
+                .0;
+            if let Ok(runtime) = get_buckyos_api_runtime() {
+                runtime
+                    .set_trust_key(VERIFY_HUB_TOKEN_ISSUER, &public_key)
+                    .await
+                    .expect("set test verify-hub key");
+            } else {
+                let runtime = BuckyOSRuntime::new("aicc", None, BuckyOSRuntimeType::FrameService);
+                runtime
+                    .set_trust_key(VERIFY_HUB_TOKEN_ISSUER, &public_key)
+                    .await
+                    .expect("set test verify-hub key");
+                set_buckyos_api_runtime(runtime).expect("set test BuckyOS runtime");
+            }
+        })
+        .await;
+
+    let key_file = tempfile::NamedTempFile::new().expect("create private key file");
+    std::fs::write(key_file.path(), private_key_pem).expect("write private key file");
+    let private_key = load_private_key(key_file.path()).expect("load private key");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut token = RPCSessionToken {
+        token_type: RPCSessionTokenType::JWT,
+        token: None,
+        aud: None,
+        exp: Some(now.saturating_add(3600)),
+        iss: Some(VERIFY_HUB_TOKEN_ISSUER.to_string()),
+        jti: Some(format!("aicc-test-{tenant}-{now}")),
+        sub: Some(tenant.to_string()),
+        appid: None,
+        sudo: false,
+        extra: HashMap::new(),
+    };
+    bind_token_principal_kind(&mut token, TokenPrincipalKind::User);
+    bind_token_target(
+        &mut token,
+        &AuthTarget::app(
+            format!("aicc-tests@{tenant}")
+                .parse()
+                .expect("app instance"),
+        ),
+        TokenUse::Session,
+    )
+    .expect("bind token target");
+    RPCContext {
+        token: Some(
+            token
+                .generate_jwt(Some(VERIFY_HUB_TOKEN_ISSUER.to_string()), &private_key)
+                .expect("sign test session token"),
+        ),
+        ..Default::default()
+    }
+}
+
 #[allow(dead_code)]
 pub fn mock_instance(
     instance_id: &str,
@@ -140,6 +245,17 @@ pub fn mock_instance(
         api_capabilities: capabilities,
         model_features: features,
     }
+}
+
+pub fn mock_local_instance(
+    instance_id: &str,
+    provider_driver: &str,
+    capabilities: Vec<Capability>,
+    features: Vec<String>,
+) -> MockInstanceConfig {
+    let mut config = mock_instance(instance_id, provider_driver, capabilities, features);
+    config.instance.provider_type = ProviderType::LocalInference;
+    config
 }
 
 #[derive(Debug)]

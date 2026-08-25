@@ -38,6 +38,7 @@ const DEFAULT_OOD_ID: &str = "ood1";
 const DEFAULT_JARVIS_APP_DID: &str = "did:bns:jarvis.buckyos";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
+const SN_AI_PROVIDER_ACTIVATION_KEY: &str = "sn-ai-provider-activated";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
@@ -103,6 +104,13 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
     let Some(root) = next.as_object_mut() else {
         return Ok(None);
     };
+    let activated = root
+        .get(SN_AI_PROVIDER_ACTIVATION_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !activated {
+        return Ok(None);
+    }
     if !root.contains_key("sn-ai-provider") {
         let Some((endpoints, user_name)) = valid_config else {
             return Ok(None);
@@ -124,6 +132,9 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
     else {
         return Ok(None);
     };
+    if provider.get("enabled").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
     if provider
         .get("instances")
         .and_then(Value::as_array)
@@ -184,12 +195,6 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
             return Ok(None);
         };
         instances.push(managed_sn_ai_provider_instance(endpoints, user_name));
-        changed = true;
-    }
-
-    let enabled = endpoints.is_ok();
-    if provider.get("enabled").and_then(Value::as_bool) != Some(enabled) {
-        provider.insert("enabled".to_string(), Value::Bool(enabled));
         changed = true;
     }
 
@@ -863,6 +868,7 @@ fn build_aicc_settings_with_endpoints(
             .expect("SN AI endpoints are validated before building enabled provider settings");
         let instance = managed_sn_ai_provider_instance(endpoints, config.user_name.as_str());
         sn_ai_provider_instances.push(instance);
+        settings.insert(SN_AI_PROVIDER_ACTIVATION_KEY.to_string(), Value::Bool(true));
     }
 
     if !openai_instances.is_empty() {
@@ -1303,5 +1309,83 @@ mod beta22_tests {
                 .to_string(),
             format!("jarvis.buckyos.bns.did@{}", config.user_name)
         );
+    }
+
+    #[test]
+    fn aicc_settings_persist_sn_router_activation() {
+        let mut config = start_config();
+        config.enabled_features.llm_router = true;
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+
+        let settings = build_aicc_settings_with_endpoints(&config, Some(&endpoints));
+
+        assert_eq!(settings[SN_AI_PROVIDER_ACTIVATION_KEY], true);
+        assert_eq!(settings["sn-ai-provider"]["enabled"], true);
+    }
+
+    #[test]
+    fn reconcile_does_not_activate_unrequested_sn_router() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&json!({}), Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap();
+
+        assert!(reconciled.is_none());
+    }
+
+    #[test]
+    fn reconcile_restores_activated_sn_router_section() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+        let current = json!({ (SN_AI_PROVIDER_ACTIVATION_KEY): true });
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(reconciled["sn-ai-provider"]["enabled"], true);
+        assert_eq!(
+            reconciled["sn-ai-provider"]["instances"][0]["user_name"],
+            "did:bns:alice"
+        );
+    }
+
+    #[test]
+    fn reconcile_preserves_explicitly_disabled_sn_router() {
+        let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
+        let current = json!({
+            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
+            "sn-ai-provider": {
+                "enabled": false,
+                "instances": []
+            }
+        });
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Ok(&endpoints), Some("did:bns:alice"))
+                .unwrap();
+
+        assert!(reconciled.is_none());
+    }
+
+    #[test]
+    fn reconcile_keeps_activated_config_when_endpoint_is_temporarily_invalid() {
+        let current = json!({
+            (SN_AI_PROVIDER_ACTIVATION_KEY): true,
+            "sn-ai-provider": {
+                "enabled": true,
+                "instances": [{
+                    "provider_driver": "sn-ai-provider",
+                    "base_url": "https://sn.example/api/v1/ai/"
+                }]
+            }
+        });
+        let endpoint_error = anyhow!("temporary endpoint error");
+
+        let reconciled =
+            reconcile_managed_sn_ai_provider(&current, Err(&endpoint_error), None).unwrap();
+
+        assert!(reconciled.is_none());
     }
 }

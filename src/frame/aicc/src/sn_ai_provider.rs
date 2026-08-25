@@ -993,11 +993,6 @@ impl SnAIProvider {
         }
 
         let models = normalize_model_list(model_ids);
-        if models.is_empty() {
-            return Err(anyhow!(
-                "sn-ai-provider inventory refresh returned no llm models"
-            ));
-        }
         Ok(Self::build_inventory(
             self.instance.provider_instance_name.as_str(),
             self.provider_type.clone(),
@@ -1045,12 +1040,11 @@ impl SnAIProvider {
     }
 
     async fn refresh_inventory_once(&self) -> Result<ProviderInventory> {
-        let token = self.build_auth_token(&InvokeCtx::default()).await?;
+        let url = self.models_endpoint();
         let response = self
-            .client
-            .get(self.models_endpoint())
-            .bearer_auth(token.as_str())
-            .send()
+            .send_authenticated(&InvokeCtx::default(), url.as_str(), |client, token| {
+                client.get(url.as_str()).bearer_auth(token)
+            })
             .await?;
         if !response.status().is_success() {
             let status = response.status();
@@ -1113,6 +1107,51 @@ impl SnAIProvider {
             expires_at: now.saturating_add(session.expires_in),
         });
         Ok(session_token)
+    }
+
+    async fn invalidate_auth_token(&self, rejected_token: &str) {
+        let mut cached = self.auth_session.lock().await;
+        if cached
+            .as_ref()
+            .is_some_and(|session| session.session_token == rejected_token)
+        {
+            *cached = None;
+        }
+    }
+
+    async fn send_authenticated(
+        &self,
+        ctx: &InvokeCtx,
+        url: &str,
+        build_request: impl Fn(&Client, &str) -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, ProviderError> {
+        for attempt in 0..=1 {
+            let auth_token = self.build_auth_token(ctx).await?;
+            let response = build_request(&self.client, auth_token.as_str())
+                .send()
+                .await
+                .map_err(|err| {
+                    let retryable = err.is_timeout() || err.is_connect();
+                    error!(
+                        "aicc.sn_ai_provider.http_send_failed provider_instance_name={} url={} retryable={} status={:?} err_chain={}",
+                        self.instance.provider_instance_name,
+                        url,
+                        retryable,
+                        err.status(),
+                        Self::format_error_chain(&err)
+                    );
+                    if retryable {
+                        ProviderError::retryable(format!("SN request failed: {err}"))
+                    } else {
+                        ProviderError::fatal(format!("SN request failed: {err}"))
+                    }
+                })?;
+            if response.status() != StatusCode::UNAUTHORIZED || attempt == 1 {
+                return Ok(response);
+            }
+            self.invalidate_auth_token(auth_token.as_str()).await;
+        }
+        unreachable!("authenticated request loop always returns")
     }
 
     fn format_error_chain(err: &reqwest::Error) -> String {
@@ -1219,31 +1258,12 @@ impl SnAIProvider {
         url: &str,
         request_obj: &Map<String, Value>,
     ) -> Result<(StatusCode, Value, u64), ProviderError> {
-        let auth_token = self.build_auth_token(ctx).await?;
         let started_at = std::time::Instant::now();
         let response = self
-            .client
-            .post(url)
-            .bearer_auth(auth_token.as_str())
-            .json(request_obj)
-            .send()
-            .await
-            .map_err(|err| {
-                let retryable = err.is_timeout() || err.is_connect();
-                error!(
-                    "aicc.sn_ai_provider.http_send_failed provider_instance_name={} url={} retryable={} status={:?} err_chain={}",
-                    self.instance.provider_instance_name,
-                    url,
-                    retryable,
-                    err.status(),
-                    Self::format_error_chain(&err)
-                );
-                if retryable {
-                    ProviderError::retryable(format!("sn-ai-provider request failed: {}", err))
-                } else {
-                    ProviderError::fatal(format!("sn-ai-provider request failed: {}", err))
-                }
-            })?;
+            .send_authenticated(ctx, url, |client, token| {
+                client.post(url).bearer_auth(token).json(request_obj)
+            })
+            .await?;
         let latency_ms = started_at.elapsed().as_millis() as u64;
         let status = response.status();
         let content_type = response
@@ -1297,22 +1317,12 @@ impl SnAIProvider {
         url: &str,
         request_obj: &Map<String, Value>,
     ) -> Result<(StatusCode, Vec<u8>, String, u64), ProviderError> {
-        let auth_token = self.build_auth_token(ctx).await?;
         let started_at = std::time::Instant::now();
         let response = self
-            .client
-            .post(url)
-            .bearer_auth(auth_token)
-            .json(request_obj)
-            .send()
-            .await
-            .map_err(|err| {
-                if err.is_timeout() || err.is_connect() {
-                    ProviderError::retryable(format!("SN request failed: {err}"))
-                } else {
-                    ProviderError::fatal(format!("SN request failed: {err}"))
-                }
-            })?;
+            .send_authenticated(ctx, url, |client, token| {
+                client.post(url).bearer_auth(token).json(request_obj)
+            })
+            .await?;
         let latency_ms = started_at.elapsed().as_millis() as u64;
         let status = response.status();
         let content_type = response
@@ -1409,26 +1419,19 @@ impl SnAIProvider {
         }
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
-        let auth_token = self.build_auth_token(ctx).await?;
         let started_at = std::time::Instant::now();
         let response = self
-            .client
-            .post(url)
-            .bearer_auth(auth_token)
-            .header(
-                CONTENT_TYPE,
-                format!("multipart/form-data; boundary={boundary}"),
-            )
-            .body(body)
-            .send()
-            .await
-            .map_err(|err| {
-                if err.is_timeout() || err.is_connect() {
-                    ProviderError::retryable(format!("SN multipart request failed: {err}"))
-                } else {
-                    ProviderError::fatal(format!("SN multipart request failed: {err}"))
-                }
-            })?;
+            .send_authenticated(ctx, url, |client, token| {
+                client
+                    .post(url)
+                    .bearer_auth(token)
+                    .header(
+                        CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(body.clone())
+            })
+            .await?;
         let latency_ms = started_at.elapsed().as_millis() as u64;
         let status = response.status();
         let body = response.json::<Value>().await.map_err(|err| {
@@ -1445,14 +1448,9 @@ impl SnAIProvider {
         ctx: &InvokeCtx,
         url: &str,
     ) -> Result<(StatusCode, Value), ProviderError> {
-        let auth_token = self.build_auth_token(ctx).await?;
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(auth_token)
-            .send()
-            .await
-            .map_err(|err| ProviderError::fatal(format!("SN status request failed: {err}")))?;
+            .send_authenticated(ctx, url, |client, token| client.get(url).bearer_auth(token))
+            .await?;
         let status = response.status();
         let body = response.json::<Value>().await.map_err(|err| {
             Self::classify_api_error(status, format!("failed to parse SN status response: {err}"))
@@ -1465,14 +1463,9 @@ impl SnAIProvider {
         ctx: &InvokeCtx,
         url: &str,
     ) -> Result<(StatusCode, Vec<u8>, String), ProviderError> {
-        let auth_token = self.build_auth_token(ctx).await?;
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(auth_token)
-            .send()
-            .await
-            .map_err(|err| ProviderError::fatal(format!("SN download failed: {err}")))?;
+            .send_authenticated(ctx, url, |client, token| client.get(url).bearer_auth(token))
+            .await?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -1489,8 +1482,8 @@ impl SnAIProvider {
     fn classify_api_error(status: StatusCode, message: String) -> ProviderError {
         let lower = message.to_ascii_lowercase();
         if status.as_u16() == 401 {
-            return ProviderError::fatal(format!(
-                "{}; SN AI Provider requires a valid sn-sso session obtained from device login",
+            return ProviderError::retryable(format!(
+                "{}; SN AI Provider rejected the refreshed sn-sso session",
                 message
             ));
         }
@@ -3151,6 +3144,7 @@ impl Provider for SnAIProvider {
             .or_else(|| {
                 max_driver_metadata_cost(
                     SN_AI_PROVIDER_DRIVER,
+                    &input.api_type,
                     usage.input_tokens.unwrap_or_default(),
                     usage.output_tokens.unwrap_or_default(),
                 )
@@ -3519,6 +3513,19 @@ mod tests {
     }
 
     #[test]
+    fn successful_empty_remote_inventory_clears_candidates() {
+        let provider = SnAIProvider::new(test_instance_config()).expect("provider");
+
+        for body in [json!({ "items": [] }), json!({ "data": [] })] {
+            let inventory = provider
+                .build_inventory_from_remote_value(body)
+                .expect("empty inventory snapshot");
+            assert!(inventory.models.is_empty());
+            assert!(inventory.inventory_revision.is_some());
+        }
+    }
+
+    #[test]
     fn text2image_request_and_response_use_sn_proxy_shape() {
         let request = AiMethodRequest::new(
             Capability::Image,
@@ -3630,7 +3637,7 @@ mod tests {
     }
 
     #[test]
-    fn cost_estimate_uses_model_price_then_metadata_maximum_for_unknown_model() {
+    fn cost_estimate_uses_model_price_then_same_api_type_maximum_for_unknown_model() {
         let provider = SnAIProvider::new(test_instance_config()).expect("provider");
         let refreshed_inventory = provider
             .build_inventory_from_remote_value(json!({
@@ -3670,7 +3677,7 @@ mod tests {
         });
 
         assert_eq!(known.estimated_cost_usd, 3.0);
-        assert_eq!(unknown.estimated_cost_usd, 1.2);
+        assert_eq!(unknown.estimated_cost_usd, 0.01);
         assert!(provider
             .estimate_cost_for_usage(
                 "unknown",
@@ -3776,6 +3783,39 @@ mod tests {
             provider.build_auth_token(&ctx).await.expect("token"),
             "sn-sso-session"
         );
+    }
+
+    #[tokio::test]
+    async fn rejected_auth_token_does_not_clear_a_concurrently_refreshed_session() {
+        let provider = SnAIProvider::new(test_instance_config()).expect("provider");
+        *provider.auth_session.lock().await = Some(CachedSnSession {
+            session_token: "refreshed-session".to_string(),
+            expires_at: u64::MAX,
+        });
+
+        provider.invalidate_auth_token("rejected-session").await;
+        assert_eq!(
+            provider
+                .auth_session
+                .lock()
+                .await
+                .as_ref()
+                .map(|session| session.session_token.as_str()),
+            Some("refreshed-session")
+        );
+
+        provider.invalidate_auth_token("refreshed-session").await;
+        assert!(provider.auth_session.lock().await.is_none());
+    }
+
+    #[test]
+    fn unauthorized_after_relogin_allows_runtime_failover() {
+        let error = SnAIProvider::classify_api_error(
+            StatusCode::UNAUTHORIZED,
+            "SN request returned 401".to_string(),
+        );
+
+        assert!(error.is_retryable());
     }
 
     #[test]

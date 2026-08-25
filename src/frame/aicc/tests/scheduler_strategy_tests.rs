@@ -4,7 +4,7 @@ use aicc::{
     CostEstimate, ModelCatalog, ProviderError, ProviderStartResult, Registry, RouteConfig,
     RouteWeights, Router, TenantRouteConfig,
 };
-use buckyos_api::Capability;
+use buckyos_api::{Capability, RoutePolicy};
 use common::*;
 use std::sync::Arc;
 
@@ -595,17 +595,17 @@ fn sched_04_agent_tier_policy_routes_to_expected_provider_group() {
 }
 
 #[test]
-fn sched_05_master_feature_local_required_filters_non_local() {
+fn sched_05_local_only_policy_filters_non_local_provider_type() {
     let r = Registry::default();
     let c = ModelCatalog::default();
     c.set_mapping(Capability::Llm, "llm.plan.default", "local", "m");
     c.set_mapping(Capability::Llm, "llm.plan.default", "remote", "m");
     r.add_provider(Arc::new(MockProvider::new(
-        mock_instance(
+        mock_local_instance(
             "p-local",
             "local",
             vec![Capability::Llm],
-            vec!["local".into()],
+            vec!["plan".into()],
         ),
         CostEstimate {
             estimated_cost_usd: Some(0.01),
@@ -627,7 +627,10 @@ fn sched_05_master_feature_local_required_filters_non_local() {
         vec![Ok(ProviderStartResult::Started)],
     )));
     let mut req = base_request();
-    req.requirements.must_features = vec!["local".into()];
+    req.policy = Some(RoutePolicy {
+        local_only: true,
+        ..Default::default()
+    });
     let selected = Router
         .route(
             "tenant-a",

@@ -381,6 +381,7 @@ pub(crate) fn driver_metadata_model_ids(provider_driver: &str, api_type: &ApiTyp
 
 pub(crate) fn max_driver_metadata_cost(
     provider_driver: &str,
+    api_type: &ApiType,
     input_tokens: u64,
     output_tokens: u64,
 ) -> Option<(f64, String)> {
@@ -394,6 +395,12 @@ pub(crate) fn max_driver_metadata_cost(
                 .iter()
                 .chain(source.document.patterns.iter())
                 .chain(std::iter::once(&source.document.defaults))
+        })
+        .filter(|rule| {
+            rule.api_types
+                .as_ref()
+                .map(|api_types| api_types.contains(api_type))
+                .unwrap_or(false)
         })
         .filter_map(|rule| rule.pricing.as_ref())
         .filter(|pricing| pricing.currency.eq_ignore_ascii_case("USD"))
@@ -1905,8 +1912,8 @@ mod tests {
             "vendor-new-model"
         ));
         assert_eq!(
-            max_driver_metadata_cost("sn-ai-provider", 1_000, 1_000),
-            max_driver_metadata_cost("openai", 1_000, 1_000)
+            max_driver_metadata_cost("sn-ai-provider", &ApiType::Llm, 1_000, 1_000),
+            max_driver_metadata_cost("openai", &ApiType::Llm, 1_000, 1_000)
         );
     }
 

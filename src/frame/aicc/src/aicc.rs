@@ -2108,7 +2108,11 @@ impl Router {
             let Some(provider_model) = provider_model else {
                 continue;
             };
-
+            if request_policy.local_only
+                && candidate.inventory.provider_type != ProviderType::LocalInference
+            {
+                continue;
+            }
             let estimate = provider.estimate_cost(&CostEstimateInput {
                 api_type: api_type_for_capability(&req.capability).unwrap_or(ApiType::Llm),
                 exact_model: exact_model_name(provider_model.as_str(), instance_id),
@@ -7641,19 +7645,22 @@ mod tests {
 
         let center = center_with_taskmgr(registry, catalog);
 
-        let alice_ctx = RPCContext {
-            token: Some("tenant-alice".to_string()),
-            ..Default::default()
-        };
-        let start_response = center.complete(base_request(), alice_ctx).await.unwrap();
+        let start_response = center
+            .complete(base_request(), RPCContext::default())
+            .await
+            .unwrap();
         assert_eq!(start_response.status, AiMethodStatus::Running);
+        center
+            .task_bindings
+            .write()
+            .unwrap()
+            .values_mut()
+            .find(|binding| binding.task_mgr_id == start_response.task_id)
+            .expect("task binding")
+            .tenant_id = "tenant-alice".to_string();
 
-        let bob_ctx = RPCContext {
-            token: Some("tenant-bob".to_string()),
-            ..Default::default()
-        };
         let cancel_result = center
-            .handle_cancel(start_response.task_id.as_str(), bob_ctx)
+            .handle_cancel(start_response.task_id.as_str(), RPCContext::default())
             .await;
         assert!(cancel_result.is_err());
         assert!(matches!(

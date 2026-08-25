@@ -386,14 +386,17 @@ async fn route_08_tenant_mapping_override_global_on_complete() {
     )));
     let center = center_with_taskmgr(registry, catalog);
     let response = center
-        .complete(base_request(), rpc_ctx_with_tenant(Some("tenant-x")))
+        .complete(
+            base_request(),
+            verified_rpc_ctx_with_tenant("tenant-x").await,
+        )
         .await
         .unwrap();
     let taskmgr = center.task_manager_client().expect("task manager");
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, response.task_id.as_str()))
         .expect("task should exist");
     assert_eq!(
         typed_aicc_task_data(&task)

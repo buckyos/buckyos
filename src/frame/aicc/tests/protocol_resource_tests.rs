@@ -198,7 +198,7 @@ async fn proto_sec_04_idempotency_key_preserved() {
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(response.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, response.task_id.as_str()))
         .expect("task should exist");
     let request = typed_aicc_request(&task).expect("typed aicc request");
     assert_eq!(
@@ -476,7 +476,7 @@ async fn proto_res_01_named_object_passthrough_preserved() {
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, resp.task_id.as_str()))
         .unwrap();
     let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
@@ -676,7 +676,7 @@ async fn proto_res_08_named_object_and_url_mixed_order_stable() {
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, resp.task_id.as_str()))
         .unwrap();
     let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
@@ -711,7 +711,7 @@ async fn proto_res_09_mime_hint_consistency_after_translation() {
     let tasks = common::all_tasks(&taskmgr).await;
     let task = tasks
         .into_iter()
-        .find(|t| typed_aicc_external_task_id(t).as_deref() == Some(resp.task_id.as_str()))
+        .find(|task| aicc_task_matches_response_id(task, resp.task_id.as_str()))
         .unwrap();
     let request = typed_aicc_request(&task).unwrap();
     assert_eq!(
