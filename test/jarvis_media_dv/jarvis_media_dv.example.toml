@@ -1,0 +1,49 @@
+[common]
+transports = ["msg-center"]
+suite = "all"
+cases = []
+report_dir = "reports/jarvis_media_dv"
+settle_ms = 10000
+interactive_review = false
+allow_review = false
+yes = false
+
+[environment]
+providers = ["openai", "gemini", "claude", "fal", "minimax"]
+
+[msg_center]
+gateway_url = "https://test.buckyos.io"
+username = "devtest"
+password = ""
+session_token = ""
+user_id = ""
+user_did = ""
+zone_did = ""
+jarvis_did = ""
+
+[msg_center.assets]
+image_primary_id = ""
+image_secondary_id = ""
+image_ocr_id = ""
+audio_sfx_id = ""
+audio_speech_id = ""
+video_fresh_id = ""
+
+[telegram]
+# api_id = 123456
+api_hash = ""
+phone = ""
+code = ""
+password = ""
+bot_username = ""
+session = ""
+session_file = ".jarvis_media_dv.telegram.session"
+connection_retries = 5
+
+[telegram.assets]
+image_primary_file = "assets/image_primary.png"
+image_secondary_file = "assets/image_secondary.png"
+image_ocr_file = "assets/image_ocr.png"
+audio_sfx_file = "assets/audio_sfx.wav"
+audio_speech_file = "assets/audio_speech.wav"
+video_fresh_file = "assets/video_fresh.mp4"

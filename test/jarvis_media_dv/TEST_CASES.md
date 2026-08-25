@@ -56,5 +56,5 @@
 1. 先运行 `smoke`，确认 Provider、附件回传和长任务链路可用。
 2. 运行 `matrix`，逐格确认 16 种输入输出组合及当前 Provider 覆盖能力。
 3. 再运行 `linked`，每个 scenario 使用独立会话并从 `/clean` 开始。
-4. 先使用 `native` 自动模式收集结构报告，再使用 `telegram-manual` 对关键场景做完整 tunnel 复验。
+4. 默认通过 `msg-center` 收集结构报告；需要验证完整 tunnel 时，在同一入口中显式加入 `telegram`。
 5. 失败时保存本次 `summary.json`，同时收集相同时间段的 OpenDAN、AICC 和 msg-center 日志。

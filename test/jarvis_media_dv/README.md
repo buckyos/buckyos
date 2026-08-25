@@ -1,184 +1,130 @@
 # Jarvis Media DV Test
 
-本目录用于在真实 BuckyOS 环境验证 Jarvis 的媒体任务闭环。测试关注实际用户行为，不替代 AICC、OpenDAN 或 msg-center 的单元测试。
+本目录在真实 BuckyOS 环境中验证 Jarvis 的文本、图片、音频和视频任务。唯一测试入口默认只走 msg-center；显式启用 Telegram 后可依次覆盖两条完整消息链路。所有通道共用 [`scenarios.ts`](./scenarios.ts) 中的场景与判定规则。
 
-自动模式的真实链路为：
+## 消息链路
 
 ```text
-DV runner
-  → Zone Gateway
-  → msg-center.msg.post_send
-  → MessageHub
-  → Jarvis/OpenDAN
-  → AICC/Provider
-  → msg-center 会话与附件
-  → DV runner 轮询终态
+DV runner → Zone Gateway → msg-center → MessageHub → Jarvis/OpenDAN
+          → AICC/Provider → msg-center session → DV runner
+
+DV runner / GramJS user client → Telegram → Jarvis Bot
+  → msg-center Telegram tunnel → MessageHub → Jarvis/OpenDAN
+  → AICC/Provider → Telegram tunnel → Jarvis Bot reply → DV runner
 ```
 
-Telegram 模式由真实 owner 账号向 Jarvis bot 发送消息，覆盖完整 tunnel 入站和出站链路。
+GramJS `telegram` 包只属于本测试工具，不进入 BuckyOS、msg-center 或 Jarvis 的运行时依赖。
 
-## 运行模式
-
-### 1. Telegram tunnel 人工模式
-
-这是完整 tunnel 验证的推荐模式。Telegram Bot API 只能让 bot 发消息，不能模拟 owner 用户给 bot 发消息，因此 runner 校验 bot token 后逐步显示素材、指令和判定条件，由测试人员在真实 Telegram 对话中操作。
+## 唯一入口
 
 ```bash
 cd test/jarvis_media_dv
-export JARVIS_TELEGRAM_BOT_TOKEN='<telegram-bot-token>'
-pnpm test -- --transport telegram-manual --suite all
+pnpm install
+cp jarvis_media_dv.example.toml jarvis_media_dv.local.toml
+pnpm test
 ```
 
-也可以通过参数输入 token：
+正式发送消息前，runner 会先按优先级合并参数，并交互补齐可提前输入的必需值，然后展示最终环境清单，包括：
 
-```bash
-pnpm test -- \
-  --transport telegram-manual \
-  --telegram-bot-token '<telegram-bot-token>' \
-  --case edit_then_animate
-```
+- 即将使用的消息出入口及 Gateway/Bot，以及每项参数的来源；
+- BuckyOS 与 Telegram 登录参数的最终取值状态，敏感值只显示是否已经配置；
+- 每一个 Named Store ID、本地媒体路径及其就绪状态；
+- 期望覆盖的 Provider；
+- 场景、步骤、人工判定设置和报告目录。
 
-环境变量更安全；命令行参数可能被 shell 历史或进程列表记录。token 只用于运行时 `getMe` 校验，不写入报告。
+清单展示后进入 10 秒倒计时：输入 `c` 并回车可以取消，直接回车可立即开始，超时则自动开始。无人值守环境使用 `pnpm test -- --yes`：它同时跳过等待并禁止所有交互输入。此时缺少消息通道的登录/API 等基础参数会直接失败；缺少媒体素材只跳过依赖该素材的场景。Telegram 在登录过程中需要验证码或 2FA 时，也必须提前通过参数、配置或环境变量提供。`--dry-run` 不交互补参，只展示当前已收集的参数和步骤，不发送消息。
 
-### 2. MessageHub 自动模式
+消息通道选择本身不是必须参数，完全不配置时只启用 msg-center。普通模式只会交互询问已启用通道启动所必需的参数，例如 BuckyOS 登录信息，或显式启用 Telegram 后所需的 API 凭据和首次登录信息。图片、音频、视频等场景素材不是整套测试的必须参数，runner 不会为它们弹出输入提示；缺少素材时只把依赖它的场景记为 `skipped`，其它场景继续执行。
 
-自动模式直接向 Jarvis 的原生 DID 发送消息，仍然经过 Zone Gateway、认证、msg-center 和 MessageHub，只跳过外部 Telegram adapter。
-
-```bash
-cd test/jarvis_media_dv
-
-export BUCKYOS_TEST_GATEWAY_URL='https://your-zone.example.com'
-export BUCKYOS_TEST_USERNAME='devtest'
-export BUCKYOS_TEST_PASSWORD='<login-password>'
-
-export JARVIS_DV_IMAGE_PRIMARY_ID='cyfile:...'
-export JARVIS_DV_IMAGE_SECONDARY_ID='cyfile:...'
-export JARVIS_DV_IMAGE_OCR_ID='cyfile:...'
-export JARVIS_DV_AUDIO_SFX_ID='cyfile:...'
-export JARVIS_DV_AUDIO_SPEECH_ID='cyfile:...'
-export JARVIS_DV_VIDEO_FRESH_ID='cyfile:...'
-
-pnpm test -- --suite all --interactive-review
-```
-
-参数形式：
-
-```bash
-pnpm test -- \
-  --gateway-url 'https://your-zone.example.com' \
-  --username 'devtest' \
-  --password '<login-password>' \
-  --image-primary-id 'cyfile:...' \
-  --case image_edit \
-  --interactive-review
-```
-
-自动模式默认要求用户通过 `--username`/`--password` 或 `BUCKYOS_TEST_USERNAME`/`BUCKYOS_TEST_PASSWORD` 提供登录凭据。runner 通过 Zone Gateway 的 `control-panel.auth.login` 获取临时 session token，并从登录响应取得用户 ID；密码和 token 都不会写进日志或报告。环境变量比命令行参数更安全。
-
-调试认证链路时仍可通过 `--session-token` 或 `BUCKYOS_APPCLIENT_SESSION_TOKEN` 显式覆盖用户名/密码登录；此时还需通过 `--user-id`/`BUCKYOS_TEST_USER_ID` 或 `--user-did` 指明发送者。
-
-如 zone DID 无法从 `boot/config` 读取，可显式设置：
-
-```bash
-export JARVIS_DV_ZONE_DID='did:web:your-zone.example.com'
-# 或直接指定
-export JARVIS_DV_AGENT_DID='did:web:jarvis.your-zone.example.com'
-```
-
-## Provider API key
-
-OpenAI、Gemini、FAL 等 Provider key 应通过 BuckyOS/AICC 正常配置渠道安装到测试 Zone。DV runner 不接受并转发 Provider key，也不会把 key 放进消息或测试报告。
-
-需要脚本协助配置 tunnel 时，token 同样只通过参数或环境变量传入，例如：
-
-```bash
-export JARVIS_TELEGRAM_BOT_TOKEN='<telegram-bot-token>'
-export JARVIS_TELEGRAM_ACCOUNT_ID='<owner-telegram-id>'
-export BUCKYOS_APPCLIENT_SESSION_TOKEN='<session-token>'
-./src/configure_jarvis_tunnel.sh
-```
-
-## 测试素材
-
-仓库已提供一套原创测试素材，位于 [`assets/`](./assets/)。先将相应文件上传到测试 Zone 的 Named Store，再把完整对象 ID 配置到下列变量。为便于判断附件是否选错，各素材具有明显差异：
-
-| 变量 | 仓库文件 | 素材内容 |
-|---|---|---|
-| `JARVIS_DV_IMAGE_PRIMARY_ID` | `assets/image_primary.png` | 粉色花朵、岩石和绿叶 |
-| `JARVIS_DV_IMAGE_SECONDARY_ID` | `assets/image_secondary.png` | 与花朵明显不同的山地公路 |
-| `JARVIS_DV_IMAGE_OCR_ID` | `assets/image_ocr.png` | 唯一文字 `BUCKYOS-DV-4827` |
-| `JARVIS_DV_AUDIO_SFX_ID` | `assets/audio_sfx.wav` | 合成蜂鸣、敲击和环境底噪，没有人声 |
-| `JARVIS_DV_AUDIO_SPEECH_ID` | `assets/audio_speech.wav` | 清晰朗读“今天的测试编号是四八二七” |
-| `JARVIS_DV_VIDEO_FRESH_ID` | `assets/video_fresh.mp4` | 花朵随风运动的 CC0 H.264 视频 |
-
-自动模式使用完整类型化 Named Object ID，例如 `cyfile:...` 或 `chunk:...`。可以先通过 Telegram/MessageHub 上传素材，再从消息对象或日志取得对应 ID。测试不会接受只剩十六进制摘要的 ID。
-
-缺少某项素材时，依赖它的自动用例会标记为 `skipped`；Telegram 人工模式由操作者在对应步骤选择本地文件。
-
-## 用例选择
-
-```bash
-# 查看全部用例
-pnpm test -- --list
-
-# 只显示计划，不连接真实环境
-pnpm test -- --suite all --dry-run
-
-# 基础用例
-pnpm test -- --suite smoke --interactive-review
-
-# 跨消息关联用例
-pnpm test -- --suite linked --interactive-review
-
-# 文本、图片、音频、视频的 4×4 转换矩阵（16 个用例）
-pnpm test -- --suite matrix --interactive-review
-
-# 指定一个或多个用例
-pnpm test -- --case audio_sfx --case edit_then_animate --interactive-review
-```
-
-仓库统一入口也会自动发现该模块：
+仓库统一 DV 入口仍可发现并执行该套件：
 
 ```bash
 uv run test/run.py -p jarvis_media_dv
 ```
 
-统一入口无法附加 runner 参数，适合全部自动模式；需要选择 suite/case 时直接在本目录执行。
+## 配置优先级
 
-## 判定与退出码
+参数按命令行、本地 TOML、环境变量、交互输入的顺序解析。默认配置文件是 `jarvis_media_dv.local.toml`，也可以使用：
 
-每一步包含两层判定：
-
-1. 自动结构判定：是否收到回复、是否包含期望文字、是否返回正确 MIME 类型的 Named Object 附件、是否出现已知音频幻觉文本。
-2. 人工语义判定：图片是否选对、编辑结果是否符合指令、视频是否连续、回复是否对用户友好。
-
-建议真实验收始终使用 `--interactive-review`。非交互运行会把需要视觉或听觉判断的步骤标为 `review`。
-
-退出码：
-
-- `0`：无失败，且人工项已通过；使用 `--allow-review` 时允许遗留 review。
-- `1`：存在自动或人工失败。
-- `2`：没有失败，但仍有待人工确认项。
-
-报告写入：
-
-```text
-reports/jarvis_media_dv/<run_id>/summary.json
+```bash
+pnpm test -- --config /secure/path/jarvis-media.toml --yes
 ```
 
-可以通过 `JARVIS_DV_REPORT_DIR` 或 `--report-dir` 修改目录。报告保存指令、回复文本、附件引用、耗时和判定，不保存 session token 或 Telegram bot token。
+未配置消息通道时默认只执行 `msg-center`，不会询问 Telegram 参数。需要覆盖 Telegram 时可重复指定消息通道；Provider 参数同理：
 
-## 前置检查
+```bash
+pnpm test -- \
+  --transport msg-center \
+  --transport telegram \
+  --provider openai \
+  --provider fal \
+  --suite smoke
+```
 
-1. 当前分支已完整构建并安装到测试 Zone。
-2. AICC 已配置实际要验证的 Provider 和模型权限。
-3. 测试账号可通过用户名和密码登录，Jarvis、msg-center、AICC、task-manager 和 verify-hub 正常运行。
-4. 清理或同步过持久化 Jarvis behavior 后已重启 Jarvis。
-5. 每个 scenario 开始时 runner 会发送或提示发送 `/clean`，避免上一用例污染上下文。
+TOML 中的对应配置为：
 
-## 已知边界
+```toml
+[common]
+transports = ["msg-center"]
+suite = "all"
+yes = false
 
-- LLM 输出和生成媒体存在随机性，视觉、听觉和跨消息语义仍需要人工判断。
-- `--transport native` 验证 MessageHub 原生链路，不覆盖 Telegram adapter；完整 tunnel 验证使用 `telegram-manual`。
-- 长视频任务可能超过十分钟。用例按媒体类别设置等待上限，超时报告会保留最后观察到的结构状态。
-- Provider 原生视频续写通常只适用于该 Provider 自己生成且仍可恢复生成状态的视频；全新上传视频用例验证的是合理降级和用户说明。
+[environment]
+providers = ["openai", "gemini", "fal", "minimax", "claude"]
+```
+
+同时测试两条消息链路时，将 `transports` 改为 `["msg-center", "telegram"]`。
+
+Provider 列表是本轮期望覆盖目标，不锁定模型或篡改 AICC 路由；实际命中的 Provider 以 AICC 运行日志为准。环境变量可使用逗号分隔的 `JARVIS_DV_TRANSPORTS`、`JARVIS_DV_PROVIDERS`，以及 `JARVIS_DV_YES`。
+
+## msg-center
+
+runner 通过 Zone Gateway 的 `control-panel.auth.login` 获取临时 session token，再调用 msg-center。密码和 token 不写入报告。
+
+| 参数 | 环境变量 |
+|---|---|
+| Gateway | `BUCKYOS_TEST_GATEWAY_URL` |
+| 用户名 | `BUCKYOS_TEST_USERNAME` |
+| 密码 | `BUCKYOS_TEST_PASSWORD` |
+| Session override | `BUCKYOS_APPCLIENT_SESSION_TOKEN` |
+| 用户 ID | `BUCKYOS_TEST_USER_ID` |
+| 用户 DID | `JARVIS_DV_USER_DID` |
+| Zone DID | `JARVIS_DV_ZONE_DID` |
+| Jarvis DID | `JARVIS_DV_AGENT_DID` |
+
+附件必须使用完整类型化 Named Object ID，例如 `cyfile:...` 或 `chunk:...`。六类素材分别通过 `--image-primary-id`、`--image-secondary-id`、`--image-ocr-id`、`--audio-sfx-id`、`--audio-speech-id`、`--video-fresh-id` 配置；示例 TOML 列出了对应字段。
+
+## Telegram
+
+在 [my.telegram.org](https://my.telegram.org) 创建 Telegram application，取得 `api_id` 和 `api_hash`。测试需要 Telegram API 凭据、Jarvis Bot 用户名，以及首次登录所需的手机号、验证码和可能存在的 2FA 密码。
+
+| 参数 | 环境变量 |
+|---|---|
+| API ID | `TELEGRAM_API_ID` |
+| API hash | `TELEGRAM_API_HASH` |
+| 手机号 | `TELEGRAM_PHONE` |
+| 一次性登录码 | `TELEGRAM_CODE` |
+| 2FA 密码 | `TELEGRAM_PASSWORD` |
+| Jarvis Bot 用户名 | `JARVIS_TELEGRAM_BOT_USERNAME` |
+| StringSession | `TELEGRAM_SESSION` |
+| Session 文件 | `TELEGRAM_SESSION_FILE` |
+
+首次登录成功后，StringSession 默认写入 `.jarvis_media_dv.telegram.session`。Telegram 直接发送 `assets/` 下的本地文件，也可使用 `--image-primary-file`、`--audio-sfx-file` 等参数或示例 TOML 覆盖。
+
+API hash、2FA 密码和 StringSession 都是敏感信息，建议保存在权限受限的本地配置、session 文件或环境变量中。
+
+## 用例、报告与退出码
+
+- `smoke`：媒体理解、OCR、图片编辑、音效、ASR/TTS、图生视频；
+- `linked`：历史生成物、连续附件、引用纠错、视频续写；
+- `matrix`：文本、图片、音频、视频之间完整的 4×4 转换矩阵。
+
+完整说明见 [`TEST_CASES.md`](./TEST_CASES.md)，素材说明见 [`assets/README.md`](./assets/README.md)。每个场景从 `/clean` 开始。
+
+报告写入 `reports/jarvis_media_dv/<run_id>/summary.json`，每条结果包含实际消息 transport。单个 transport 初始化失败时会记录 `_environment` 失败并继续测试下一个 transport。
+
+- `0`：没有失败，且人工项已通过；使用 `--allow-review` 时允许遗留 review；
+- `1`：存在自动、人工或环境失败；
+- `2`：没有失败，但仍有待人工确认项。
+
+运行前应确保 BuckyOS 服务可经 Zone Gateway 访问、Telegram tunnel 已绑定、AICC 已配置真实 Provider、Telegram 测试账号已打开过 Jarvis Bot 私聊。Provider API key 只通过 BuckyOS/AICC 正常配置渠道安装，runner 不接收或转发 Provider key。
