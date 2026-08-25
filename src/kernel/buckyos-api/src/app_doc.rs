@@ -842,7 +842,11 @@ impl AppDoc {
                     "AppDoc package `{sub_pkg_name}` has invalid PackageId: {error}"
                 ))
             })?;
-            let unique_name = parsed.get_unique_name();
+            let unique_name = parsed.get_unique_name().map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "AppDoc package `{sub_pkg_name}` has invalid package name: {error}"
+                ))
+            })?;
             let unique_name = unique_name.strip_prefix("all.").unwrap_or(&unique_name);
             let is_root_package = unique_name == app_id.as_str();
             let is_sub_package = unique_name
