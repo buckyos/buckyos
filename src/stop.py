@@ -58,13 +58,11 @@ def kill_devtest_containers():
             print(f"{container_name} container killed")
 
 def kill_buckyos_containers():
-    if system == "Windows":
-        return
-
     result_list = subprocess.run(
         ["docker", "ps", "-a", "--format", "{{.Names}}"],
         capture_output=True,
         text=True,
+        **_windows_subprocess_kwargs(),
     )
     if result_list.returncode != 0:
         stderr = result_list.stderr.strip()
@@ -84,6 +82,7 @@ def kill_buckyos_containers():
         ["docker", "rm", "-f", *container_names],
         capture_output=True,
         text=True,
+        **_windows_subprocess_kwargs(),
     )
     if result_rm.returncode != 0:
         stderr = result_rm.stderr.strip()

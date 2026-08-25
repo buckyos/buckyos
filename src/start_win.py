@@ -55,8 +55,7 @@ def _print_help() -> int:
                 "",
                 "Notes:",
                 f"  Keepalive task {TASK_NAME} relaunches node_daemon every minute.",
-                "  stop.py kills processes but does not delete this task.",
-                f"  To stop persistently: schtasks /Delete /TN {TASK_NAME} /F",
+                "  Use stop_win.py (not stop.py) to delete the task before killing processes.",
             ]
         )
     )
