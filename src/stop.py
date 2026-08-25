@@ -99,8 +99,10 @@ def kill_buckyos_containers():
 
 def kill_process(name):
     if system == "Windows":
+        # /T also kills children such as leftover `docker pull` so the next
+        # start is not blocked on a daemon-side image lock.
         result = subprocess.run(
-            ["taskkill", "/F", "/IM", f"{name}{ext}"],
+            ["taskkill", "/F", "/T", "/IM", f"{name}{ext}"],
             capture_output=True,
             text=True,
             **_windows_subprocess_kwargs(),
