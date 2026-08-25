@@ -660,7 +660,7 @@ mod test {
 
         let mut docs = buckyos_api::test_config::gen_kernel_service_docs();
         docs.insert(
-            PackageId::unique_name_to_did("buckyos_filebrowser"),
+            PackageId::unique_name_to_did("buckyos_filebrowser").unwrap(),
             get_filebrowser_doc(),
         );
         let docs = docs
