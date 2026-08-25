@@ -837,6 +837,7 @@ async function runMsgCenter(
       username: options.username!,
       password: buckyos.hashPassword(options.username!, options.password!, nonce),
       appid: "control-panel",
+      target: { kind: "system", service_id: "control-panel" },
       login_nonce: nonce,
     }) as PasswordLoginResponse;
     sessionToken = typeof login.session_token === "string"
