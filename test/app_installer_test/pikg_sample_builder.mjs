@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { resolvePikgCommand } from '../../src/tools/buckyos-tool/pikg_launcher.mjs'
 
 const execFileAsync = promisify(execFile)
 const TEST_ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -47,10 +48,11 @@ export async function runCommand(command, args, options = {}) {
 }
 
 async function runPikgTool(args) {
-  const { stdout } = await runCommand(BUCKYOS_TOOL, [
-    '--non-interactive',
-    ...args,
-  ])
+  const { command, args: spawnArgs } = resolvePikgCommand(
+    ['--non-interactive', ...args],
+    BUCKYOS_TOOL,
+  )
+  const { stdout } = await runCommand(command, spawnArgs)
   let envelope
   try {
     envelope = JSON.parse(stdout)

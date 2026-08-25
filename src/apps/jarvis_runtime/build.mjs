@@ -8,16 +8,17 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePikgCommand } from "../../tools/buckyos-tool/pikg_launcher.mjs";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const dappMetaDir = join(rootDir, "dapp_meta");
 const dappDistDir = join(rootDir, "dapp_dist");
 const pikgName = "jarvis.buckyos.bns.did-0.7.0.pikg";
-const toolPath = join(rootDir, "..", "..", "tools", "buckyos-tool", "buckyos");
 const rootfsDir = join(rootDir, "..", "..", "rootfs");
 
 function runPikgTool(args) {
-  const result = spawnSync(toolPath, args, {
+  const { command, args: spawnArgs } = resolvePikgCommand(args);
+  const result = spawnSync(command, spawnArgs, {
     cwd: rootDir,
     stdio: "inherit",
   });

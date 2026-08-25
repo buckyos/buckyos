@@ -208,10 +208,40 @@ fn build_connection_string(
         .replace("$instance", instance_id);
 
     if cfg.backend == RdbBackend::Sqlite {
+        let resolved = normalize_sqlite_url(&resolved);
         ensure_sqlite_dir(&resolved)?;
+        return Ok(resolved);
     }
 
     Ok(resolved)
+}
+
+/// Re-emit a sqlite connection string as `sqlite:<path>` with forward slashes.
+///
+/// Callers reach sqlite through `AnyPool`, and `AnyConnectOptions` parses the
+/// string with a WHATWG URL parser. A native path pasted after `sqlite://`
+/// becomes an authority, so on Windows it either fails to parse (backslashes
+/// are forbidden host characters) or silently loses the drive colon —
+/// `sqlite://C:/db` resolves to the relative path `C/db`. Dropping the `//`
+/// makes the path opaque to the URL parser, which round-trips unchanged on both
+/// Windows and POSIX.
+fn normalize_sqlite_url(connection: &str) -> String {
+    let body = connection
+        .strip_prefix("sqlite://")
+        .or_else(|| connection.strip_prefix("sqlite:"))
+        .unwrap_or(connection);
+    let (path, params) = match body.split_once('?') {
+        Some((path, params)) => (path, Some(params)),
+        None => (body, None),
+    };
+    if path.is_empty() || path == ":memory:" {
+        return connection.to_string();
+    }
+    let path = path.replace('\\', "/");
+    match params {
+        Some(params) => format!("sqlite:{}?{}", path, params),
+        None => format!("sqlite:{}", path),
+    }
 }
 
 fn resolve_appdata_dir(appid: &str, owner_user_id: Option<&str>) -> Result<PathBuf> {
@@ -281,6 +311,35 @@ mod tests {
         assert_eq!(
             pick_schema(&cfg).as_deref(),
             Some("CREATE TABLE t(id BIGINT);")
+        );
+    }
+
+    #[test]
+    fn normalize_sqlite_url_keeps_windows_drive_letter() {
+        assert_eq!(
+            normalize_sqlite_url("sqlite://C:\\Users\\dev\\buckyos\\data\\main.db?mode=rwc"),
+            "sqlite:C:/Users/dev/buckyos/data/main.db?mode=rwc"
+        );
+    }
+
+    #[test]
+    fn normalize_sqlite_url_keeps_posix_path() {
+        assert_eq!(
+            normalize_sqlite_url("sqlite:///opt/buckyos/data/main.db?mode=rwc"),
+            "sqlite:/opt/buckyos/data/main.db?mode=rwc"
+        );
+        assert_eq!(
+            normalize_sqlite_url("sqlite:/opt/buckyos/data/main.db"),
+            "sqlite:/opt/buckyos/data/main.db"
+        );
+    }
+
+    #[test]
+    fn normalize_sqlite_url_leaves_in_memory_untouched() {
+        assert_eq!(normalize_sqlite_url("sqlite::memory:"), "sqlite::memory:");
+        assert_eq!(
+            normalize_sqlite_url("sqlite://?mode=memory"),
+            "sqlite://?mode=memory"
         );
     }
 

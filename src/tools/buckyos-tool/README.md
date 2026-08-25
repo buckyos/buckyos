@@ -19,9 +19,18 @@ cd src/tools/buckyos-tool
 ./buckyos command describe system status
 ```
 
+On Windows use `buckyos.cmd` instead; `buckyos` is a POSIX shell script and cannot be spawned there.
+
+```powershell
+cd src\tools\buckyos-tool
+.\buckyos.cmd --version
+.\buckyos.cmd command list
+```
+
 The launcher grants network access, read access to the tool, SDK, selected config/input/identity
 paths, and write access only to the selected config directory. It does not grant process execution
-or use Deno's `-A` permission.
+or use Deno's `-A` permission. `buckyos.cmd` derives the same permission set through
+`win_launcher.ts`; both entries run the same `main.ts` and Command Registry.
 
 `pikg` is the local-development exception. For these commands the launcher grants filesystem access
 but no network access; Docker builds additionally use only `docker image inspect` and

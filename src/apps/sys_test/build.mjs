@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolvePikgCommand } from "../../tools/buckyos-tool/pikg_launcher.mjs";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const distDir = join(rootDir, "dist");
@@ -19,12 +20,11 @@ const sdkTargetDir = join(distDir, "node_modules", "buckyos");
 const dappMetaDir = join(rootDir, "dapp_meta");
 const dappDistDir = join(rootDir, "dapp_dist");
 const pikgName = "buckyos-systest.buckyos.bns.did-0.5.1.pikg";
-const toolDir = join(rootDir, "..", "..", "tools", "buckyos-tool");
-const toolPath = join(toolDir, "buckyos");
 const rootfsDir = join(rootDir, "..", "..", "rootfs");
 
 function runPikgTool(args) {
-  const result = spawnSync(toolPath, args, {
+  const { command, args: spawnArgs } = resolvePikgCommand(args);
+  const result = spawnSync(command, spawnArgs, {
     cwd: rootDir,
     stdio: "inherit",
   });

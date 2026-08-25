@@ -21,7 +21,7 @@ const ENTRY_INIT: u8 = 1;
 const ENTRY_READY: u8 = 2;
 
 pub const DEFAULT_RINGBUFFER_PATH_ENV: &str = "BUCKYOS_KEVENT_RINGBUFFER_PATH";
-const DEFAULT_RINGBUFFER_PATH: &str = "/tmp/buckyos_kevent_ringbuffer_v2.shm";
+const RINGBUFFER_FILE_NAME: &str = "buckyos_kevent_ringbuffer_v2.shm";
 
 const MAX_RINGS: usize = 16;
 const RING_CAPACITY: usize = 512; // must be power of 2
@@ -774,7 +774,26 @@ fn activate_ring(region: &mut SharedRegion, ring_id: usize, pid: u32) {
 fn ringbuffer_path() -> PathBuf {
     std::env::var(DEFAULT_RINGBUFFER_PATH_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_RINGBUFFER_PATH))
+        .unwrap_or_else(|_| default_ringbuffer_path())
+}
+
+/// Every process on the node must land on the exact same file, otherwise the
+/// bus silently splits into disjoint halves.
+///
+/// `/tmp/...` is drive-relative on Windows, so the file it names depends on the
+/// drive of the launcher's working directory — a daemon started from `D:\repo`
+/// and the services it spawns from `C:\...\bin` end up on two different rings.
+/// `$BUCKYOS_ROOT` is absolute and is already propagated to every child.
+#[cfg(windows)]
+fn default_ringbuffer_path() -> PathBuf {
+    buckyos_kit::get_buckyos_root_dir()
+        .join("tmp")
+        .join(RINGBUFFER_FILE_NAME)
+}
+
+#[cfg(not(windows))]
+fn default_ringbuffer_path() -> PathBuf {
+    PathBuf::from("/tmp").join(RINGBUFFER_FILE_NAME)
 }
 
 fn initial_read_seq(head_seq: u64, primed_existing_rings: bool) -> u64 {
@@ -808,9 +827,20 @@ fn is_process_alive(pid: u32) -> bool {
     err == libc::EPERM
 }
 
+// A ring entry is only ever released by reclaiming it from a dead owner, so a
+// stub that always reports "alive" leaks one of the MAX_RINGS slots on every
+// crash or restart until no process can attach at all.
 #[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    true
+fn is_process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+
+    if pid == 0 {
+        return false;
+    }
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]));
+    system.process(pid).is_some()
 }
 
 // ---------------------------------------------------------------------------
