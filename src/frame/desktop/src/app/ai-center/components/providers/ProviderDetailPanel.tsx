@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Filter, MoreHorizontal, Power, RefreshCw, Save, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
 import { useAICCStore } from '../../hooks/use-aicc-store'
 import { StatusBadge } from '../shared/StatusBadge'
@@ -89,6 +89,10 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [confirmDisable, setConfirmDisable] = useState(false)
+  const [updatingEnabled, setUpdatingEnabled] = useState(false)
+  const [enabledError, setEnabledError] = useState<string | null>(null)
+  const [enabledFeedback, setEnabledFeedback] = useState<string | null>(null)
   const [showKeyDialog, setShowKeyDialog] = useState(false)
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [updatingKey, setUpdatingKey] = useState(false)
@@ -199,6 +203,24 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     }
   }
 
+  const handleSetSnEnabled = async (enabled: boolean) => {
+    setUpdatingEnabled(true)
+    setEnabledError(null)
+    setEnabledFeedback(null)
+    try {
+      await store.setSnProviderEnabled(provider, enabled)
+      setConfirmDisable(false)
+      setEnabledFeedback(enabled
+        ? t('aiCenter.providers.snEnabledSuccess', 'SN Provider enabled and AICC reloaded.')
+        : t('aiCenter.providers.snDisabledSuccess', 'SN Provider disabled and removed from routing.'))
+    } catch (error) {
+      console.error('aicc.setSnProviderEnabled failed', error)
+      setEnabledError(errorMessage(error, t('aiCenter.providers.snToggleFailed', 'Could not update SN Provider status.')))
+    } finally {
+      setUpdatingEnabled(false)
+    }
+  }
+
   const handleDelete = async () => {
     setDeleting(true)
     setDeleteError(null)
@@ -306,7 +328,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                         setActionsOpen(false)
                         void handleRefreshModels()
                       }}
-                      disabled={refreshingModels}
+                      disabled={refreshingModels || !config.enabled}
                     />
                     {!managedSn && <MenuAction
                       icon={<Trash2 size={16} />}
@@ -343,7 +365,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   setActionsOpen(false)
                   void handleRefreshModels()
                 }}
-                disabled={refreshingModels}
+                disabled={refreshingModels || !config.enabled}
               />
               {!managedSn && <MenuAction
                 icon={<Trash2 size={14} />}
@@ -392,8 +414,31 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       {activeSection === 'overview' && (
       <>
       {managedSn && (
-        <InlineNotice tone="success">
-          {t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')}
+        <InlineNotice tone={config.enabled ? 'success' : 'warning'}>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3">
+            <span>
+              {config.enabled
+                ? t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')
+                : t('aiCenter.providers.snDisabled', 'SN Provider is disabled and does not participate in model routing.')}
+            </span>
+            <button
+              type="button"
+              disabled={updatingEnabled}
+              onClick={() => {
+                if (config.enabled) setConfirmDisable(true)
+                else void handleSetSnEnabled(true)
+              }}
+              className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-60"
+              style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
+            >
+              <Power size={14} />
+              {updatingEnabled
+                ? t('common.saving', 'Saving')
+                : config.enabled
+                  ? t('aiCenter.providers.disableSn', 'Disable SN Provider')
+                  : t('aiCenter.providers.enableSn', 'Enable SN Provider')}
+            </button>
+          </div>
         </InlineNotice>
       )}
       <div className="md:hidden">
@@ -410,6 +455,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
         <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
+        {managedSn && <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />}
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
         {!managedSn && <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />}
@@ -494,7 +540,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         </div>
       </div>
 
-      {status.model_sync_status !== 'ok' && (
+      {config.enabled && status.model_sync_status !== 'ok' && (
         <InlineNotice tone="warning">
           <AlertTriangle size={16} style={{ color: 'var(--cp-warning)' }} />
           <span>{t('aiCenter.providers.syncFailed', 'Last inventory sync failed. Existing models remain usable, but refresh is recommended.')}</span>
@@ -507,6 +553,8 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         </InlineNotice>
       )}
       {refreshError && <InlineNotice tone="error">{refreshError}</InlineNotice>}
+      {enabledFeedback && <InlineNotice tone="success">{enabledFeedback}</InlineNotice>}
+      {enabledError && <InlineNotice tone="error">{enabledError}</InlineNotice>}
       </>
       )}
 
@@ -573,6 +621,19 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         onConfirm={() => { void handleDelete() }}
         onCancel={() => {
           if (!deleting) setConfirmDelete(false)
+        }}
+      />}
+      {managedSn && <ConfirmDialog
+        open={confirmDisable}
+        title={t('aiCenter.providers.disableSnTitle', 'Disable SN Provider')}
+        message={t('aiCenter.providers.disableSnConfirm', 'SN Provider will be removed from model routing until you enable it again.')}
+        confirmLabel={t('aiCenter.providers.disableSn', 'Disable SN Provider')}
+        confirmingLabel={t('aiCenter.providers.disablingSn', 'Disabling')}
+        confirming={updatingEnabled}
+        error={enabledError}
+        onConfirm={() => { void handleSetSnEnabled(false) }}
+        onCancel={() => {
+          if (!updatingEnabled) setConfirmDisable(false)
         }}
       />}
     </div>

@@ -271,6 +271,7 @@ function provider(
     config: {
       id,
       name,
+      enabled: true,
       provider_type: providerType,
       provider_instance_name: instanceName,
       provider_runtime_type: 'cloud_api',

@@ -3388,6 +3388,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_sn_ai_provider_settings_skips_disabled_provider() {
+        let settings = json!({
+            "sn-ai-provider": {
+                "enabled": false,
+                "instances": [
+                    {
+                        "provider_instance_name": "sn-ai-provider-default",
+                        "login_url": "https://sn.buckyos.ai/api/user/login_by_device_token",
+                        "user_name": "alice"
+                    }
+                ]
+            }
+        });
+
+        assert!(parse_sn_ai_provider_settings(&settings)
+            .expect("parse")
+            .is_none());
+    }
+
+    #[test]
     fn responses_endpoint_appends_responses_to_base_url() {
         let provider = SnAIProvider::new(test_instance_config()).expect("provider");
         assert_eq!(

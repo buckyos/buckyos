@@ -323,16 +323,17 @@ impl ControlPanelServer {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            let enabled = provider
+            let requested_enabled = provider
                 .get("status")
                 .and_then(Value::as_str)
-                .map(|value| value == "healthy" || value == "degraded")
-                .unwrap_or(false)
-                || has_new_api_key
-                || provider
-                    .get("credentialConfigured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                .map(|value| value == "healthy" || value == "degraded");
+            let enabled = requested_enabled.unwrap_or_else(|| {
+                has_new_api_key
+                    || provider
+                        .get("credentialConfigured")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+            });
 
             section.insert("enabled".to_string(), Value::Bool(enabled));
 
@@ -649,17 +650,65 @@ impl ControlPanelServer {
         })
     }
 
+    fn ai_sn_provider_card(settings: &Value) -> Option<Value> {
+        let section = settings.get("sn-ai-provider")?.as_object()?;
+        let enabled = section
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let instance = section
+            .get("instances")
+            .and_then(Value::as_array)
+            .and_then(|instances| instances.first())?;
+        let provider_id = instance
+            .get("provider_instance_name")
+            .or_else(|| instance.get("instance_id"))
+            .and_then(Value::as_str)?;
+        let endpoint = instance
+            .get("base_url")
+            .and_then(Value::as_str)
+            .unwrap_or("https://sn.buckyos.ai/api/v1/ai/");
+        let available_models = instance
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let default_model = instance
+            .get("default_model")
+            .and_then(Value::as_str)
+            .or_else(|| available_models.first().and_then(Value::as_str))
+            .unwrap_or_default();
+
+        Some(json!({
+            "id": provider_id,
+            "displayName": "SN Router",
+            "providerType": "SN Router",
+            "providerDriver": "sn-ai-provider",
+            "status": if enabled { "healthy" } else { "disabled" },
+            "endpoint": endpoint,
+            "authMode": "Zone SN session",
+            "credentialConfigured": true,
+            "availableModels": available_models,
+            "capabilities": ["Managed AI routing"],
+            "defaultModel": default_model,
+            "note": "System-managed AI provider supplied by this Zone SN."
+        }))
+    }
+
     pub(crate) fn ai_provider_cards(
         settings: &Value,
         overrides: &[Value],
         secret_doc: &Value,
     ) -> Vec<Value> {
-        let base_items = vec![
+        let mut base_items = vec![
             Self::ai_openai_provider_card(settings),
             Self::ai_google_provider_card(settings),
             Self::ai_claude_provider_card(settings, secret_doc),
             Self::ai_minimax_provider_card(settings, secret_doc),
         ];
+        if let Some(sn_provider) = Self::ai_sn_provider_card(settings) {
+            base_items.insert(0, sn_provider);
+        }
 
         let mut merged = Self::merge_provider_overrides(base_items, overrides);
         for item in merged.iter_mut() {
@@ -1673,5 +1722,55 @@ impl ControlPanelServer {
             RPCResult::Success(json!({ "ok": true, "policy": policy })),
             req.seq,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ControlPanelServer;
+    use serde_json::json;
+
+    fn sn_settings(enabled: bool) -> serde_json::Value {
+        json!({
+            "sn-ai-provider": {
+                "enabled": enabled,
+                "instances": [{
+                    "provider_instance_name": "sn-ai-provider-default",
+                    "base_url": "https://sn.example/api/v1/ai/",
+                    "models": ["gpt-5-mini"]
+                }]
+            }
+        })
+    }
+
+    #[test]
+    fn sn_provider_card_preserves_disabled_state() {
+        let card = ControlPanelServer::ai_sn_provider_card(&sn_settings(false)).unwrap();
+
+        assert_eq!(card["id"], "sn-ai-provider-default");
+        assert_eq!(card["providerDriver"], "sn-ai-provider");
+        assert_eq!(card["status"], "disabled");
+    }
+
+    #[test]
+    fn explicit_disabled_status_overrides_configured_credentials() {
+        let mut settings = sn_settings(true);
+        let provider = json!({
+            "id": "sn-ai-provider-default",
+            "status": "disabled",
+            "credentialConfigured": true
+        });
+
+        let (_, enabled, _, _, _) = ControlPanelServer::update_aicc_provider_instance(
+            &mut settings,
+            "sn-ai-provider-default",
+            &provider,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert!(!enabled);
+        assert_eq!(settings["sn-ai-provider"]["enabled"], false);
     }
 }

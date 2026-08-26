@@ -224,6 +224,7 @@ interface AiccDataProvider {
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
   updateProviderKey(provider: ProviderView, apiKey: string): Promise<void>
+  setSnProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void>
   setProviderWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   getUsageSummary(): UsageSummary
@@ -246,6 +247,7 @@ export interface AICCMgr {
   deleteProvider(id: string): Promise<void>
   refreshProviderModels(id: string): Promise<void>
   updateProviderKey(provider: ProviderView, apiKey: string): Promise<void>
+  setSnProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void>
   setProviderRoutingWeight(providerInstanceName: string, weight: number): Promise<void>
   validateConnection(draft: WizardDraft): Promise<ValidationResult>
   queryUsageEvents(params: UsageEventsQuery): Promise<UsageEventsPage>
@@ -392,6 +394,11 @@ export class AICCModelStore implements AICCMgr {
     await this.refresh()
   }
 
+  async setSnProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void> {
+    await this.provider.setSnProviderEnabled(provider, enabled)
+    await this.refresh()
+  }
+
   async setProviderRoutingWeight(providerInstanceName: string, weight: number): Promise<void> {
     await this.provider.setProviderWeight(providerInstanceName, weight)
     await this.refresh()
@@ -469,6 +476,10 @@ class MockAiccProvider implements AiccDataProvider {
     this.store.updateProviderKey(provider.config.id)
   }
 
+  async setSnProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void> {
+    this.store.setSnProviderEnabled(provider.config.id, enabled)
+  }
+
   async setProviderWeight(providerInstanceName: string, weight: number): Promise<void> {
     this.store.setProviderWeight(providerInstanceName, weight)
   }
@@ -525,7 +536,9 @@ class MockAiccProvider implements AiccDataProvider {
           : snapshot.routingView.logical_tree,
       },
       models: [
-        ...snapshot.providers.flatMap((provider) => provider.status.discovered_models),
+        ...snapshot.providers
+          .filter((provider) => provider.config.enabled)
+          .flatMap((provider) => provider.status.discovered_models),
         ...snapshot.localModels,
       ],
     }
@@ -560,8 +573,9 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     const dashboardRange = localTrailingDaysRange(30)
     const todayRange = localTodayRange()
     const monthRange = localCurrentMonthRange()
-    const [directory, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth, traceQuery] = await Promise.all([
+    const [directory, providerCards, usageByModel, usageByCapability, usageByApp, usageTrend, usageToday, usageThisMonth, traceQuery] = await Promise.all([
       this.call<RawModelDirectory>('models.list', {}),
+      this.queryProviderCards(),
       this.queryUsage({
         time_range: toRawTimeRange(dashboardRange),
         filters: {},
@@ -607,7 +621,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     })
     this.usageTrend = toUsageTrend(usageTrend)
     const rawProviders = Array.isArray(directory.providers) ? directory.providers : []
-    return toStoreSnapshot(directory, rawProviders, [], traceQuery.traces)
+    return toStoreSnapshot(directory, rawProviders, providerCards, [], traceQuery.traces)
   }
 
   async addProvider(draft: WizardDraft): Promise<void> {
@@ -656,6 +670,25 @@ class BuckyOSAiccProvider implements AiccDataProvider {
       throw new Error(asNonEmptyString(reload.reason, 'aicc.provider_reload_failed'))
     }
     await this.refreshProviderModels(provider.config.id)
+  }
+
+  async setSnProviderEnabled(provider: ProviderView, enabled: boolean): Promise<void> {
+    if (!isManagedSnProvider(provider)) {
+      throw new Error('sn_router_not_managed')
+    }
+    const result = await this.callControlPanel<{ ok?: unknown; reason?: unknown }>('ai.provider.set', {
+      provider: {
+        ...toAiProviderCard(provider),
+        status: enabled ? 'healthy' : 'disabled',
+      },
+    }, { requireSession: true })
+    if (result.ok !== true) {
+      throw new Error(asNonEmptyString(result.reason, 'aicc.sn_provider_toggle_failed'))
+    }
+    const reload = await this.callControlPanel<{ ok?: unknown; result?: { ok?: unknown }; reason?: unknown }>('ai.reload', {}, { requireSession: true })
+    if (reload.ok === false || reload.result?.ok === false) {
+      throw new Error(asNonEmptyString(reload.reason, 'aicc.provider_reload_failed'))
+    }
   }
 
   async setProviderWeight(providerInstanceName: string, weight: number): Promise<void> {
@@ -775,6 +808,18 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     } catch (error) {
       console.error('aicc.usage.query failed', error)
       return {}
+    }
+  }
+
+  private async queryProviderCards(): Promise<AiProviderCard[]> {
+    try {
+      const result = await this.callControlPanel<{ items?: unknown }>('ai.provider.list', {})
+      return Array.isArray(result.items)
+        ? result.items.filter(isAiProviderCard)
+        : []
+    } catch (error) {
+      console.error('control-panel.ai.provider.list failed', error)
+      return []
     }
   }
 
@@ -929,7 +974,9 @@ function toAiProviderCard(provider: ProviderView): AiProviderCard {
     id: config.provider_instance_name,
     displayName: config.name,
     providerType: config.provider_type,
-    status: status.auth_status === 'invalid'
+    status: !config.enabled
+      ? 'disabled'
+      : status.auth_status === 'invalid'
       ? 'needs_setup'
       : status.model_sync_status === 'failed' || status.auth_status === 'expired'
         ? 'degraded'
@@ -941,7 +988,14 @@ function toAiProviderCard(provider: ProviderView): AiProviderCard {
     capabilities: Array.from(new Set(status.discovered_models.flatMap((model) => model.api_types))),
     defaultModel,
     note: '',
+    providerDriver: config.provider_driver,
   }
+}
+
+function isAiProviderCard(value: unknown): value is AiProviderCard {
+  if (!isRecord(value)) return false
+  return typeof value.id === 'string'
+    && typeof value.status === 'string'
 }
 
 function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
@@ -1465,18 +1519,32 @@ function findLogicalNode(nodes: LogicalNode[], path: string): LogicalNode | unde
 function toStoreSnapshot(
   directory: RawModelDirectory,
   rawProviders: RawProviderInventory[],
+  providerCards: AiProviderCard[] = [],
   usageEvents: StoreSnapshot['usageEvents'] = [],
   routeTraces: RouteTrace[] = [],
 ): StoreSnapshot {
   const inventories = rawProviders.map(toProviderInventory)
+  const snCard = providerCards.find((card) =>
+    card.providerDriver?.toLowerCase() === 'sn-ai-provider'
+      || card.providerType.toLowerCase() === 'sn router',
+  )
+  const snEnabled = snCard?.status === 'healthy' || snCard?.status === 'degraded'
   const cloudProviders = inventories
     .filter((inventory) => inventory.provider_type !== 'local_inference')
-    .map(toProviderView)
+    .map((inventory) => toProviderView(
+      inventory,
+      inventory.provider_driver === 'sn-ai-provider' && snCard ? snEnabled : true,
+    ))
+  if (snCard && !cloudProviders.some((provider) => isManagedSnProvider(provider))) {
+    cloudProviders.unshift(toSnProviderView(snCard, snEnabled))
+  }
   const localModels = inventories
     .filter((inventory) => inventory.provider_type === 'local_inference')
     .flatMap(toLocalModels)
   const models = [
-    ...cloudProviders.flatMap((provider) => provider.status.discovered_models),
+    ...cloudProviders
+      .filter((provider) => provider.config.enabled)
+      .flatMap((provider) => provider.status.discovered_models),
     ...localModels,
   ]
   const routingView = toGlobalRoutingView(
@@ -1516,7 +1584,7 @@ function toProviderInventory(raw: RawProviderInventory): ProviderInventory {
   }
 }
 
-function toProviderView(inventory: ProviderInventory): ProviderView {
+function toProviderView(inventory: ProviderInventory, enabled = true): ProviderView {
   const providerId = inventory.provider_instance_name
   const providerType = inferProviderType(inventory.provider_driver, inventory.provider_instance_name)
   const models = inventory.models
@@ -1533,6 +1601,7 @@ function toProviderView(inventory: ProviderInventory): ProviderView {
     name: providerType === 'sn_router'
       ? 'SN Router'
       : inventory.name ?? providerDisplayName(providerType, inventory.provider_instance_name),
+    enabled,
     provider_type: providerType,
     provider_instance_name: inventory.provider_instance_name,
     provider_runtime_type: inventory.provider_type,
@@ -1564,6 +1633,18 @@ function toProviderView(inventory: ProviderInventory): ProviderView {
       pricing_mode: inferPricingMode(models),
     },
   }
+}
+
+function toSnProviderView(card: AiProviderCard, enabled: boolean): ProviderView {
+  return toProviderView({
+    provider_instance_name: card.id,
+    name: card.displayName,
+    provider_type: 'cloud_api',
+    provider_driver: 'sn-ai-provider',
+    provider_origin: 'system_config',
+    inventory_revision: 'disabled',
+    models: [],
+  }, enabled)
 }
 
 function toLocalModels(inventory: ProviderInventory): LocalModel[] {
@@ -1892,12 +1973,16 @@ function computeAIStatus(
   routingView: GlobalRoutingView,
 ): AIStatus {
   const models = [
-    ...providers.flatMap((provider) => provider.status.discovered_models),
+    ...providers
+      .filter((provider) => provider.config.enabled)
+      .flatMap((provider) => provider.status.discovered_models),
     ...localModels,
   ]
   const cloudProviderCount = providers.filter((provider) =>
-    provider.config.provider_runtime_type === 'cloud_api' ||
-    provider.config.provider_runtime_type === 'proxy_unknown',
+    provider.config.enabled && (
+      provider.config.provider_runtime_type === 'cloud_api' ||
+      provider.config.provider_runtime_type === 'proxy_unknown'
+    ),
   ).length
   const healthCounts: Record<ModelHealthStatus, number> = {
     available: models.filter((model) => model.health.status === 'available').length,
