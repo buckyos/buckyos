@@ -123,7 +123,7 @@ API hash、2FA 密码和 StringSession 都是敏感信息，建议保存在权�
 
 完整说明见 [`TEST_CASES.md`](./TEST_CASES.md)，素材说明见 [`assets/README.md`](./assets/README.md)。每个场景从 `/clean` 开始。
 
-报告写入 `reports/jarvis_media_dv/<run_id>/summary.json`，每条结果包含实际消息 transport。单个 transport 初始化失败时会记录 `_environment` 失败并继续测试下一个 transport。
+主报告写入 `reports/jarvis_media_dv/<run_id>/summary.md`，按 transport 和场景汇总结果。场景内与 Jarvis 的详细对话默认不在主报告中展开，每行提供“查看对话”链接，指向 `conversations/<transport>-<scenario>.md`。同目录保留 `summary.json` 作为机器可读数据。单个 transport 初始化失败时会记录 `_environment` 失败并继续测试下一个 transport。
 
 - `0`：没有失败，且人工项已通过；使用 `--allow-review` 时允许遗留 review；
 - `1`：存在自动、人工或环境失败；

@@ -1,7 +1,7 @@
 {
   "nodeModulesDir": "auto",
   "imports": {
-    "buckyos": "../../src/apps/sys_test/dist/node_modules/buckyos/dist/node.mjs",
+    "buckyos": "./node_modules/buckyos/dist/node.mjs",
     "telegram": "npm:telegram@2.26.22",
     "telegram/": "npm:telegram@2.26.22/"
   },

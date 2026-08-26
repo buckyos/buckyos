@@ -71,6 +71,17 @@ type SessionMessagePage = {
   next_cursor_record_id?: string;
 };
 
+class ReplyWaitError extends Error {
+  constructor(
+    message: string,
+    readonly items: SessionMessageItem[],
+    readonly checks: string[],
+  ) {
+    super(message);
+    this.name = "ReplyWaitError";
+  }
+}
+
 type StepStatus = "passed" | "failed" | "review" | "skipped" | "dispatched";
 
 type StepResult = {
@@ -337,7 +348,9 @@ async function parseArgs(args: string[]): Promise<CliOptions> {
   let commandLineProviders = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--config") {
+    if (arg === "--") {
+      continue;
+    } else if (arg === "--config") {
       index += 1;
     } else if (arg === "--transport") {
       if (!commandLineTransports) {
@@ -599,9 +612,13 @@ async function resolveZoneDid(systemConfig: RpcClient): Promise<string> {
     throw new Error(`boot/config response is invalid: ${JSON.stringify(raw)}`);
   }
   const boot = JSON.parse(raw.value) as JsonObject;
-  const zoneDid = boot.zone_name;
+  if (typeof boot.zone_document !== "string") {
+    throw new Error("boot/config does not contain a zone_document string");
+  }
+  const zoneDocument = JSON.parse(boot.zone_document) as JsonObject;
+  const zoneDid = zoneDocument.id;
   if (typeof zoneDid !== "string" || !zoneDid.startsWith("did:")) {
-    throw new Error("boot/config does not contain a valid zone_name DID");
+    throw new Error("boot/config zone_document does not contain a valid DID id");
   }
   return zoneDid;
 }
@@ -681,6 +698,33 @@ function replyRefs(items: SessionMessageItem[], jarvisDid: string): RefItem[] {
     .flatMap((item) => item.msg?.content?.refs ?? []);
 }
 
+function explicitFailureReply(
+  items: SessionMessageItem[],
+  jarvisDid: string,
+): string | undefined {
+  const prefixes = [
+    "任务失败：",
+    "任務失敗：",
+    "Task failed:",
+    "La tarea falló:",
+    "La tâche a échoué",
+    "Aufgabe fehlgeschlagen:",
+    "작업 실패:",
+    "タスクに失敗しました:",
+    "Ошибка задачи:",
+  ];
+  for (const item of items) {
+    if (item.direction !== "in" || item.from !== jarvisDid) continue;
+    const meta = item.msg?.meta;
+    if (isObject(meta) && meta.delivery_failure_fallback === true) {
+      return item.msg?.content?.content?.trim() || "Jarvis reply delivery failed";
+    }
+    const text = item.msg?.content?.content?.trim() ?? "";
+    if (prefixes.some((prefix) => text.startsWith(prefix))) return text;
+  }
+  return undefined;
+}
+
 function artifactMatches(label: string | undefined, prefix: string): boolean {
   const value = (label ?? "").toLowerCase();
   if (value.startsWith(prefix)) return true;
@@ -742,10 +786,13 @@ async function waitForReply(input: {
   let lastSignature = "";
   let lastChangeAt = Date.now();
   let lastFailures: string[] = [];
+  let lastItems: SessionMessageItem[] = [];
+  let lastChecks: string[] = [];
 
   while (Date.now() < deadline) {
     const all = await listSession(input.msgCenter, input.userDid, input.topic);
     const items = all.filter((item) => item.sort_key > input.afterSortKey);
+    lastItems = items;
     const texts = replyTexts(items, input.jarvisDid);
     const refs = replyRefs(items, input.jarvisDid);
     const signature = JSON.stringify({
@@ -760,6 +807,15 @@ async function waitForReply(input: {
 
     const evaluation = evaluateAutomatic(input.step, texts, refs);
     lastFailures = evaluation.failures;
+    lastChecks = evaluation.checks;
+    const explicitFailure = explicitFailureReply(items, input.jarvisDid);
+    if (explicitFailure && Date.now() - lastChangeAt >= input.settleMs) {
+      throw new ReplyWaitError(
+        `Jarvis reported failure: ${explicitFailure}`,
+        items,
+        evaluation.checks,
+      );
+    }
     if (evaluation.ready) {
       if (input.step.expect.artifact || Date.now() - lastChangeAt >= input.settleMs) {
         return { items, checks: evaluation.checks };
@@ -768,13 +824,24 @@ async function waitForReply(input: {
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
 
-  throw new Error(
+  throw new ReplyWaitError(
     `timed out after ${input.step.maxWaitMs ?? 180_000} ms: ${lastFailures.join("; ") || "no final reply"}`,
+    lastItems,
+    lastChecks,
   );
 }
 
 function maxSortKey(items: SessionMessageItem[]): number {
   return items.reduce((max, item) => Math.max(max, item.sort_key ?? 0), 0);
+}
+
+function cleanSessionId(items: SessionMessageItem[], jarvisDid: string): string {
+  const texts = replyTexts(items, jarvisDid);
+  for (const text of texts.toReversed()) {
+    const match = /new session `([^`]+)` created/.exec(text);
+    if (match?.[1]) return match[1];
+  }
+  throw new Error("/clean reply did not contain the new Jarvis session id");
 }
 
 async function postMessage(
@@ -861,12 +928,12 @@ async function runMsgCenter(
     `${options.gatewayUrl}/kapi/system_config`,
     sessionToken,
   ) as RpcClient;
+  report.gateway_url = options.gatewayUrl;
   const zoneDid = options.zoneDid ?? await resolveZoneDid(systemConfig);
   const userId = options.userId || loginUserId || options.username;
   if (!userId) throw new Error("cannot resolve logged-in user id");
   const userDid = options.userDid ?? (userId.startsWith("did:") ? userId : `did:bns:${userId}`);
   const jarvisDid = options.jarvisDid ?? deriveJarvisDid(zoneDid);
-  report.gateway_url = options.gatewayUrl;
   report.user_did = userDid;
   report.jarvis_did = jarvisDid;
 
@@ -898,15 +965,19 @@ async function runMsgCenter(
         console.warn(`[asset] project asset is missing: ${path}`);
         continue;
       }
-      const bytes = await Deno.readFile(path);
-      const objId = ndn.ChunkId.fromMix256Result(
-        bytes.byteLength,
-        ndn.sha256Bytes(bytes),
-      ).toString();
-      await ndmProxy.putChunk(objId, bytes);
-      options.assets[asset] = objId;
-      options.parameterSources[`msg:${asset}`] = `project asset:${path}`;
-      console.log(`[asset] uploaded ${asset}: ${path} -> ${objId}`);
+      try {
+        const bytes = await Deno.readFile(path);
+        const objId = ndn.ChunkId.fromMix256Result(
+          bytes.byteLength,
+          ndn.sha256Bytes(bytes),
+        ).toString();
+        await ndmProxy.putChunk(objId, bytes);
+        options.assets[asset] = objId;
+        options.parameterSources[`msg:${asset}`] = `project asset:${path}`;
+        console.log(`[asset] uploaded ${asset}: ${path} -> ${objId}`);
+      } catch (error) {
+        console.error(`[asset] failed to upload ${asset}: ${path}: ${String(error)}`);
+      }
     }
   }
 
@@ -933,21 +1004,24 @@ async function runMsgCenter(
       continue;
     }
 
-    const topic = `jarvis-dv:${report.run_id}:${scenario.id}`;
+    const scenarioResultStart = report.results.length;
+    try {
+    const cleanTopic = `jarvis-dv:${report.run_id}:${scenario.id}:clean`;
+    const commandReplyTopic = `dm:${jarvisDid}`;
     const sentMessageIds = new Map<string, string>();
     console.log(`\n[scenario] ${scenario.id} — ${scenario.title}`);
     const cleanTrace = `${report.run_id}:${scenario.id}:clean`;
-    const beforeClean = await listSession(msgCenter, userDid, topic);
+    const beforeClean = await listSession(msgCenter, userDid, commandReplyTopic);
     await postMessage(
       msgCenter,
-      makeMessage({ userDid, jarvisDid, topic, prompt: "/clean", traceId: cleanTrace }),
+      makeMessage({ userDid, jarvisDid, topic: cleanTopic, prompt: "/clean", traceId: cleanTrace }),
       cleanTrace,
     );
-    await waitForReply({
+    const cleanReply = await waitForReply({
       msgCenter,
       userDid,
       jarvisDid,
-      topic,
+      topic: commandReplyTopic,
       afterSortKey: maxSortKey(beforeClean),
       step: {
         id: "clean",
@@ -958,6 +1032,8 @@ async function runMsgCenter(
       },
       settleMs: 1_500,
     });
+    const topic = cleanSessionId(cleanReply.items, jarvisDid);
+    console.log(`[session] ${scenario.id}: ${topic}`);
 
     for (const step of scenario.steps) {
       const started = Date.now();
@@ -1043,6 +1119,7 @@ async function runMsgCenter(
         });
         console.log(`[${review.status}] ${scenario.id}/${step.id}`);
       } catch (error) {
+        const observedItems = error instanceof ReplyWaitError ? error.items : [];
         report.results.push({
           scenario_id: scenario.id,
           step_id: step.id,
@@ -1051,14 +1128,37 @@ async function runMsgCenter(
           elapsed_ms: Date.now() - started,
           prompt: step.prompt,
           attachment: step.attachment,
-          reply_texts: [],
-          reply_refs: [],
-          automatic_checks: [],
+          reply_texts: replyTexts(observedItems, jarvisDid),
+          reply_refs: replyRefs(observedItems, jarvisDid),
+          automatic_checks: error instanceof ReplyWaitError ? error.checks : [],
           review: step.review,
           error: String(error),
         });
         console.error(`[failed] ${scenario.id}/${step.id}: ${String(error)}`);
       }
+    }
+    } catch (error) {
+      const recordedStepIds = new Set(
+        report.results.slice(scenarioResultStart).map((result) => result.step_id),
+      );
+      for (const step of scenario.steps) {
+        if (recordedStepIds.has(step.id)) continue;
+        report.results.push({
+          scenario_id: scenario.id,
+          step_id: step.id,
+          status: "failed",
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+          prompt: step.prompt,
+          attachment: step.attachment,
+          reply_texts: [],
+          reply_refs: [],
+          automatic_checks: [],
+          review: step.review,
+          error: `scenario execution failed before step result: ${String(error)}`,
+        });
+      }
+      console.error(`[failed] ${scenario.id}: ${String(error)}`);
     }
   }
 }
@@ -1177,6 +1277,8 @@ async function runTelegram(
         continue;
       }
 
+      const scenarioResultStart = report.results.length;
+      try {
       const sentMessageIds = new Map<string, number>();
       console.log(`\n[scenario] ${scenario.id} — ${scenario.title}`);
       const cleanId = await telegram.send({ text: "/clean" });
@@ -1275,6 +1377,29 @@ async function runTelegram(
           });
           console.error(`[failed] ${scenario.id}/${step.id}: ${String(error)}`);
         }
+      }
+      } catch (error) {
+        const recordedStepIds = new Set(
+          report.results.slice(scenarioResultStart).map((result) => result.step_id),
+        );
+        for (const step of scenario.steps) {
+          if (recordedStepIds.has(step.id)) continue;
+          report.results.push({
+            scenario_id: scenario.id,
+            step_id: step.id,
+            status: "failed",
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+            prompt: step.prompt,
+            attachment: step.attachment,
+            reply_texts: [],
+            reply_refs: [],
+            automatic_checks: [],
+            review: step.review,
+            error: `scenario execution failed before step result: ${String(error)}`,
+          });
+        }
+        console.error(`[failed] ${scenario.id}: ${String(error)}`);
       }
     }
   } finally {
@@ -1509,13 +1634,185 @@ function summarize(report: RunReport): Record<StepStatus, number> {
   return totals;
 }
 
-async function writeReport(options: CliOptions, report: RunReport): Promise<string> {
-  report.finished_at = new Date().toISOString();
+const STEP_STATUSES: StepStatus[] = [
+  "passed",
+  "failed",
+  "review",
+  "skipped",
+  "dispatched",
+];
+
+function markdownTableCell(value: unknown): string {
+  return String(value ?? "")
+    .replaceAll("|", "\\|")
+    .replace(/\r?\n/g, "<br>");
+}
+
+function markdownCodeBlock(value: string, language = "text"): string {
+  const longestRun = [...value.matchAll(/`+/g)]
+    .reduce((longest, match) => Math.max(longest, match[0].length), 0);
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return `${fence}${language}\n${value}\n${fence}`;
+}
+
+function resultStatusSummary(results: StepResult[]): string {
+  return STEP_STATUSES
+    .map((status) => [status, results.filter((result) => result.status === status).length] as const)
+    .filter(([, count]) => count > 0)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(", ");
+}
+
+function reportFileSegment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_");
+}
+
+function groupedResults(report: RunReport): StepResult[][] {
+  const groups = new Map<string, StepResult[]>();
+  for (const result of report.results) {
+    const key = `${result.transport ?? "unknown"}\0${result.scenario_id}`;
+    const group = groups.get(key) ?? [];
+    group.push(result);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+function renderConversationMarkdown(report: RunReport, results: StepResult[]): string {
+  const first = results[0];
+  const transport = first.transport ?? "unknown";
+  const scenario = SCENARIOS.find((item) => item.id === first.scenario_id);
+  const lines = [
+    `# ${first.scenario_id} 对话详情`,
+    "",
+    `[返回测试报告](../summary.md)`,
+    "",
+    `- Transport: \`${transport}\``,
+    `- 场景: ${scenario?.title ?? first.scenario_id}`,
+    `- 运行 ID: \`${report.run_id}\``,
+    `- 结果: ${resultStatusSummary(results)}`,
+    "",
+  ];
+  for (const result of results) {
+    lines.push(
+      `## ${result.step_id} — ${result.status}`,
+      "",
+      `- 开始时间: \`${result.started_at}\``,
+      `- 耗时: ${result.elapsed_ms} ms`,
+    );
+    if (result.attachment) lines.push(`- 输入附件: \`${result.attachment}\``);
+    lines.push("", "### 用户", "", markdownCodeBlock(result.prompt || "<empty>"), "");
+    if (result.reply_texts.length > 0) {
+      for (const [index, reply] of result.reply_texts.entries()) {
+        lines.push(
+          `### Jarvis ${index + 1}`,
+          "",
+          markdownCodeBlock(reply || "<empty>"),
+          "",
+        );
+      }
+    } else {
+      lines.push("### Jarvis", "", "_无文本回复_", "");
+    }
+    if (result.reply_refs.length > 0) {
+      lines.push(
+        "### Jarvis 附件",
+        "",
+        markdownCodeBlock(JSON.stringify(result.reply_refs, null, 2), "json"),
+        "",
+      );
+    }
+    if (result.automatic_checks.length > 0) {
+      lines.push("### 自动检查", "");
+      for (const check of result.automatic_checks) lines.push(`- ${check}`);
+      lines.push("");
+    }
+    if (result.review.length > 0) {
+      lines.push("### 人工检查项", "");
+      for (const review of result.review) lines.push(`- ${review}`);
+      lines.push("");
+    }
+    if (result.notes) lines.push("### 备注", "", markdownCodeBlock(result.notes), "");
+    if (result.error) lines.push("### 错误", "", markdownCodeBlock(result.error), "");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function renderSummaryMarkdown(report: RunReport, groups: StepResult[][]): string {
+  const totals = report.totals ?? summarize(report);
+  const lines = [
+    "# Jarvis Media DV 测试报告",
+    "",
+    "## 运行信息",
+    "",
+    "| 字段 | 值 |",
+    "|---|---|",
+    `| Run ID | \`${markdownTableCell(report.run_id)}\` |`,
+    `| 开始时间 | \`${markdownTableCell(report.started_at)}\` |`,
+    `| 结束时间 | \`${markdownTableCell(report.finished_at)}\` |`,
+    `| Transport | ${markdownTableCell(report.transports.join(", "))} |`,
+    `| Suite | ${markdownTableCell(report.suite)} |`,
+    `| Gateway | ${markdownTableCell(report.gateway_url ?? "-")} |`,
+    `| User DID | ${markdownTableCell(report.user_did ?? "-")} |`,
+    `| Jarvis DID | ${markdownTableCell(report.jarvis_did ?? "-")} |`,
+    `| Telegram Bot | ${markdownTableCell(report.telegram_bot ?? "-")} |`,
+    `| 期望 Provider | ${markdownTableCell(report.expected_providers.join(", ") || "未限定")} |`,
+    "",
+    "## 汇总",
+    "",
+    "| Passed | Failed | Review | Skipped | Dispatched |",
+    "|---:|---:|---:|---:|---:|",
+    `| ${totals.passed} | ${totals.failed} | ${totals.review} | ${totals.skipped} | ${totals.dispatched} |`,
+    "",
+    "## 场景用例",
+    "",
+    "对话详情默认不在主报告中展开；点击每行的“查看对话”打开独立详情页。",
+    "",
+    "| Transport | 场景 | 结果 | 步骤数 | 耗时 | 对话详情 |",
+    "|---|---|---|---:|---:|---|",
+  ];
+  for (const results of groups) {
+    const first = results[0];
+    const transport = first.transport ?? "unknown";
+    const scenario = SCENARIOS.find((item) => item.id === first.scenario_id);
+    const title = scenario ? `${first.scenario_id} — ${scenario.title}` : first.scenario_id;
+    const elapsedMs = results.reduce((total, result) => total + result.elapsed_ms, 0);
+    const conversation = first.scenario_id === "_environment"
+      ? "-"
+      : `[查看对话](conversations/${reportFileSegment(transport)}-${reportFileSegment(first.scenario_id)}.md)`;
+    lines.push(
+      `| ${markdownTableCell(transport)} | ${markdownTableCell(title)} | ${markdownTableCell(resultStatusSummary(results))} | ${results.length} | ${elapsedMs} ms | ${conversation} |`,
+    );
+  }
+  lines.push("", "## 机器可读数据", "", "[summary.json](summary.json)", "");
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+async function writeReport(
+  options: CliOptions,
+  report: RunReport,
+  finished = true,
+): Promise<string> {
+  if (finished) report.finished_at = new Date().toISOString();
   report.totals = summarize(report);
   const dir = `${options.reportDir}/${report.run_id}`;
   await Deno.mkdir(dir, { recursive: true });
-  const path = `${dir}/summary.json`;
-  await Deno.writeTextFile(path, `${JSON.stringify(report, null, 2)}\n`);
+  await Deno.writeTextFile(`${dir}/summary.json`, `${JSON.stringify(report, null, 2)}\n`);
+  const groups = groupedResults(report);
+  const conversationsDir = `${dir}/conversations`;
+  await Deno.mkdir(conversationsDir, { recursive: true });
+  for (const results of groups) {
+    const first = results[0];
+    if (first.scenario_id === "_environment") continue;
+    const transport = first.transport ?? "unknown";
+    const fileName = `${reportFileSegment(transport)}-${reportFileSegment(first.scenario_id)}.md`;
+    await Deno.writeTextFile(
+      `${conversationsDir}/${fileName}`,
+      renderConversationMarkdown(report, results),
+    );
+  }
+  const path = `${dir}/summary.md`;
+  await Deno.writeTextFile(path, renderSummaryMarkdown(report, groups));
   return path;
 }
 
@@ -1558,8 +1855,28 @@ async function main(): Promise<void> {
     results: [],
   };
 
+  let checkpointWriting = false;
+  let activeTransport: Transport | undefined;
+  const checkpointId = setInterval(async () => {
+    if (checkpointWriting) return;
+    checkpointWriting = true;
+    try {
+      if (activeTransport) {
+        for (const result of report.results) {
+          result.transport ??= activeTransport;
+        }
+      }
+      await writeReport(options, report, false);
+    } catch (error) {
+      console.error(`[report] checkpoint failed: ${String(error)}`);
+    } finally {
+      checkpointWriting = false;
+    }
+  }, 30_000);
+
   try {
     for (const transport of options.transports) {
+      activeTransport = transport;
       const resultStart = report.results.length;
       console.log(`\n[transport] ${transport}`);
       try {
@@ -1569,6 +1886,32 @@ async function main(): Promise<void> {
           await runTelegram(options, scenarios, report);
         }
       } catch (error) {
+        const recordedSteps = new Set(
+          report.results.slice(resultStart).map((result) =>
+            `${result.scenario_id}\u0000${result.step_id}`
+          ),
+        );
+        for (const scenario of scenarios) {
+          for (const step of scenario.steps) {
+            const key = `${scenario.id}\u0000${step.id}`;
+            if (recordedSteps.has(key)) continue;
+            report.results.push({
+              transport,
+              scenario_id: scenario.id,
+              step_id: step.id,
+              status: "failed",
+              started_at: new Date().toISOString(),
+              elapsed_ms: 0,
+              prompt: step.prompt,
+              attachment: step.attachment,
+              reply_texts: [],
+              reply_refs: [],
+              automatic_checks: [],
+              review: step.review,
+              error: `transport initialization failed before scenario result: ${String(error)}`,
+            });
+          }
+        }
         report.results.push({
           transport,
           scenario_id: "_environment",
@@ -1588,9 +1931,14 @@ async function main(): Promise<void> {
         for (let index = resultStart; index < report.results.length; index += 1) {
           report.results[index].transport ??= transport;
         }
+        activeTransport = undefined;
       }
     }
   } finally {
+    clearInterval(checkpointId);
+    while (checkpointWriting) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const path = await writeReport(options, report);
     console.log(`\n[report] ${path}`);
   }
