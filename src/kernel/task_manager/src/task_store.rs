@@ -21,7 +21,6 @@ use std::sync::Once;
 
 static INSTALL_DRIVERS: Once = Once::new();
 static EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
-static AUDIT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn ensure_any_drivers_installed() {
     INSTALL_DRIVERS.call_once(install_default_drivers);
@@ -45,16 +44,6 @@ pub fn new_grant_id() -> String {
 fn new_event_id(now: u64) -> String {
     let seq = EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
     format!("e{:013}-{:06}-{:04x}", now, seq % 1_000_000, rand_suffix())
-}
-
-fn new_audit_id(now: u64) -> String {
-    let seq = AUDIT_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "a{:013}-{:06}-{}",
-        now,
-        seq % 1_000_000,
-        uuid::Uuid::new_v4().simple()
-    )
 }
 
 fn rand_suffix() -> u16 {
@@ -173,7 +162,7 @@ impl TaskStore {
             self.pool.execute(statement.as_str()).await?;
         }
         // beta2.2 no-compat strategy (doc §15.6): a dev/DV database still on
-        // the 1.x layout (integer task ids) is dropped and rebuilt as v8.
+        // the 1.x layout (integer task ids) is dropped and rebuilt as v7.
         self.rebuild_if_v1_layout().await?;
         Ok(())
     }
@@ -196,7 +185,7 @@ impl TaskStore {
         if !v1 {
             return Ok(());
         }
-        warn!("task_store: 1.x schema detected; rebuilding as TaskMgr 2.0 schema v8 (no-compat)");
+        warn!("task_store: 1.x schema detected; rebuilding as TaskMgr 2.0 schema v7 (no-compat)");
         for table in [
             "task_note",
             "task_event",
@@ -1518,136 +1507,6 @@ impl TaskStore {
             .collect()
     }
 
-    pub async fn append_audit_event(&self, req: AppendAuditEventReq) -> Result<AuditEvent> {
-        if req.actor.user_id.trim().is_empty()
-            || req.actor.app_id.trim().is_empty()
-            || req.action.trim().is_empty()
-            || req.resource.trim().is_empty()
-        {
-            return Err(RPCErrors::ParseRequestError(
-                "audit actor, action, and resource are required".to_string(),
-            ));
-        }
-        if !req.details.is_object() {
-            return Err(RPCErrors::ParseRequestError(
-                "audit details must be an object".to_string(),
-            ));
-        }
-        if req.details.to_string().len() > 16 * 1024 {
-            return Err(RPCErrors::ParseRequestError(
-                "audit details exceed 16 KiB".to_string(),
-            ));
-        }
-        let now = now_ms();
-        let event = AuditEvent {
-            audit_id: new_audit_id(now),
-            actor: req.actor,
-            action: req.action.trim().to_string(),
-            resource: req.resource.trim().to_string(),
-            trace_id: req.trace_id.filter(|value| !value.trim().is_empty()),
-            outcome: req.outcome,
-            error_code: req.error_code.filter(|value| !value.trim().is_empty()),
-            details: req.details,
-            redaction_version: req.redaction_version.max(1),
-            created_at: now,
-        };
-        let sql = self.render_sql(
-            "INSERT INTO audit_event (
-                audit_id, actor_user_id, actor_app_id, actor_instance_id,
-                action, resource, trace_id, outcome, error_code, details_json,
-                redaction_version, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        );
-        sqlx::query(&sql)
-            .bind(&event.audit_id)
-            .bind(&event.actor.user_id)
-            .bind(&event.actor.app_id)
-            .bind(event.actor.app_instance_id.clone())
-            .bind(&event.action)
-            .bind(&event.resource)
-            .bind(event.trace_id.clone())
-            .bind(event.outcome.to_string())
-            .bind(event.error_code.clone())
-            .bind(event.details.to_string())
-            .bind(event.redaction_version as i64)
-            .bind(event.created_at as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(event)
-    }
-
-    pub async fn list_audit_events(
-        &self,
-        req: &ListAuditEventsReq,
-    ) -> Result<(Vec<AuditEvent>, Option<String>)> {
-        let mut sql = String::from("SELECT * FROM audit_event");
-        let mut conditions: Vec<String> = Vec::new();
-        enum Param {
-            Text(String),
-            Int(i64),
-        }
-        let mut params: Vec<Param> = Vec::new();
-
-        for (column, value) in [
-            ("actor_user_id", req.actor_user_id.as_deref()),
-            ("actor_app_id", req.actor_app_id.as_deref()),
-            ("action", req.action.as_deref()),
-            ("resource", req.resource.as_deref()),
-            ("trace_id", req.trace_id.as_deref()),
-        ] {
-            if let Some(value) = value {
-                conditions.push(format!("{} = ?", column));
-                params.push(Param::Text(value.to_string()));
-            }
-        }
-        if let Some(after) = req.created_after {
-            conditions.push("created_at >= ?".into());
-            params.push(Param::Int(after as i64));
-        }
-        if let Some(before) = req.created_before {
-            conditions.push("created_at < ?".into());
-            params.push(Param::Int(before as i64));
-        }
-        if let Some(cursor) = req.cursor.as_deref() {
-            let (created_at, audit_id) = parse_cursor(cursor)?;
-            conditions.push("(created_at > ? OR (created_at = ? AND audit_id > ?))".into());
-            params.push(Param::Int(created_at));
-            params.push(Param::Int(created_at));
-            params.push(Param::Text(audit_id));
-        }
-        if !conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
-        }
-        let limit = req.limit.unwrap_or(100).clamp(1, 500) as i64;
-        sql.push_str(" ORDER BY created_at ASC, audit_id ASC LIMIT ");
-        sql.push_str(&(limit + 1).to_string());
-
-        let sql = self.render_sql(&sql);
-        let mut query = sqlx::query(&sql);
-        for param in params {
-            query = match param {
-                Param::Text(value) => query.bind(value),
-                Param::Int(value) => query.bind(value),
-            };
-        }
-        let rows = query.fetch_all(&self.pool).await.map_err(db_err)?;
-        let mut events: Vec<AuditEvent> = rows
-            .into_iter()
-            .map(|row| audit_event_from_row(row).map_err(db_err))
-            .collect::<Result<_>>()?;
-        let next_cursor = if events.len() as i64 > limit {
-            events.truncate(limit as usize);
-            events
-                .last()
-                .map(|event| make_cursor(event.created_at, &event.audit_id))
-        } else {
-            None
-        };
-        Ok((events, next_cursor))
-    }
-
     pub async fn add_task_note(&self, note: &TaskNote) -> Result<TaskNote> {
         let sql = self.render_sql(
             "INSERT INTO task_note (task_id, note_type, content, data, author_user_id, author_app_id, created_at, updated_at)
@@ -1952,38 +1811,6 @@ fn event_from_row(row: AnyRow) -> DbResult<TaskEvent> {
         event_type,
         actor,
         payload: parse_json_column(Some(payload_json)),
-        created_at: created_at.max(0) as u64,
-    })
-}
-
-fn audit_event_from_row(row: AnyRow) -> DbResult<AuditEvent> {
-    let audit_id: String = row.try_get("audit_id")?;
-    let actor_user_id: String = row.try_get("actor_user_id")?;
-    let actor_app_id: String = row.try_get("actor_app_id")?;
-    let actor_instance_id: Option<String> = row.try_get("actor_instance_id")?;
-    let action: String = row.try_get("action")?;
-    let resource: String = row.try_get("resource")?;
-    let trace_id: Option<String> = row.try_get("trace_id")?;
-    let outcome: String = row.try_get("outcome")?;
-    let error_code: Option<String> = row.try_get("error_code")?;
-    let details_json: String = row.try_get("details_json")?;
-    let redaction_version: i64 = row.try_get("redaction_version")?;
-    let created_at: i64 = row.try_get("created_at")?;
-
-    Ok(AuditEvent {
-        audit_id,
-        actor: ActorRef {
-            user_id: actor_user_id,
-            app_id: actor_app_id,
-            app_instance_id: actor_instance_id,
-        },
-        action,
-        resource,
-        trace_id,
-        outcome: AuditOutcome::from_str(&outcome).unwrap_or(AuditOutcome::Failed),
-        error_code,
-        details: serde_json::from_str(&details_json).unwrap_or_else(|_| json!({})),
-        redaction_version: redaction_version.max(1) as u32,
         created_at: created_at.max(0) as u64,
     })
 }

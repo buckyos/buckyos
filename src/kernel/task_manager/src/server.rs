@@ -901,25 +901,6 @@ impl TaskManagerService {
             )
             .await
     }
-
-    async fn append_control_audit(&self, request_ctx: &RequestContext, req: &RequestControlReq) {
-        if let Err(error) = self
-            .store
-            .append_audit_event(AppendAuditEventReq {
-                actor: request_ctx.actor_ref(),
-                action: format!("task.{}", req.action.to_string().to_lowercase()),
-                resource: format!("task:{}", req.task_id),
-                trace_id: None,
-                outcome: AuditOutcome::Succeeded,
-                error_code: None,
-                details: json!({ "recursive": req.recursive }),
-                redaction_version: 1,
-            })
-            .await
-        {
-            warn!("append task control audit failed: {}", error);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,7 +1211,6 @@ impl TaskManagerHandler for TaskManagerService {
                 )
                 .await?;
             self.publish_outcome(&outcome).await;
-            self.append_control_audit(&request_ctx, &req).await;
             return Ok(RequestControlResult::Task { task: outcome.task });
         }
 
@@ -1284,7 +1264,6 @@ impl TaskManagerHandler for TaskManagerService {
                 },
             }
         }
-        self.append_control_audit(&request_ctx, &req).await;
         Ok(RequestControlResult::Batch { result })
     }
 
@@ -1954,42 +1933,6 @@ impl TaskManagerHandler for TaskManagerService {
         })
     }
 
-    async fn handle_append_audit_event(
-        &self,
-        req: AppendAuditEventReq,
-        ctx: RPCContext,
-    ) -> Result<AuditEvent> {
-        let request_ctx = self.authenticate(&ctx).await?;
-        Self::require_zone_trusted(&request_ctx, "append_audit_event")?;
-        self.store.append_audit_event(req).await
-    }
-
-    async fn handle_list_audit_events(
-        &self,
-        mut req: ListAuditEventsReq,
-        ctx: RPCContext,
-    ) -> Result<AuditEventPage> {
-        let request_ctx = self.authenticate(&ctx).await?;
-        if !request_ctx.zone_trusted {
-            if req
-                .actor_user_id
-                .as_deref()
-                .is_some_and(|actor| actor != request_ctx.user_id)
-            {
-                return Err(task_mgr_error(
-                    TASK_ERR_PERMISSION_DENIED,
-                    "cross-user audit query requires a zone-trusted control surface",
-                ));
-            }
-            req.actor_user_id = Some(request_ctx.user_id);
-        }
-        let (events, next_cursor) = self.store.list_audit_events(&req).await?;
-        Ok(AuditEventPage {
-            events,
-            next_cursor,
-        })
-    }
-
     async fn handle_add_task_note(&self, req: AddTaskNoteReq, ctx: RPCContext) -> Result<TaskNote> {
         let request_ctx = self.authenticate(&ctx).await?;
         let content = req.content.trim();
@@ -2101,7 +2044,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     let store = TaskStore::open_from_service_spec()
         .await
         .map_err(RPCErrors::ReasonError)?;
-    info!("task-manager database initialized (schema v8)");
+    info!("task-manager database initialized (schema v7)");
 
     let kevent_client = get_buckyos_api_runtime()
         .map_err(|err| RPCErrors::ReasonError(format!("api runtime unavailable: {}", err)))?
@@ -3683,91 +3626,5 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert_eq!(page.tasks.len(), 1);
         assert_eq!(page.tasks[0].task_id, second.task_id);
         assert_ne!(page.tasks[0].task_id, first.task_id);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn audit_events_are_append_only_and_trimmed_to_the_authenticated_user() {
-        let (service, _tmp) = setup_service().await;
-        let trusted = service_ctx("ood1", CONTROL_PANEL_SERVICE_NAME);
-        for (user_id, trace_id) in [("alice", "trace-a"), ("bob", "trace-b")] {
-            service
-                .handle_append_audit_event(
-                    AppendAuditEventReq {
-                        actor: ActorRef::new(user_id, "system:control-panel"),
-                        action: "apps.install".to_string(),
-                        resource: format!("app:{}", user_id),
-                        trace_id: Some(trace_id.to_string()),
-                        outcome: AuditOutcome::Succeeded,
-                        error_code: None,
-                        details: json!({}),
-                        redaction_version: 1,
-                    },
-                    trusted.clone(),
-                )
-                .await
-                .unwrap();
-        }
-
-        let error = service
-            .handle_list_audit_events(
-                ListAuditEventsReq {
-                    actor_user_id: Some("bob".to_string()),
-                    limit: Some(10),
-                    ..Default::default()
-                },
-                user_ctx("alice", "app-a"),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(error, RPCErrors::NoPermission(_)));
-
-        let own = service
-            .handle_list_audit_events(
-                ListAuditEventsReq {
-                    limit: Some(10),
-                    ..Default::default()
-                },
-                user_ctx("alice", "app-a"),
-            )
-            .await
-            .unwrap();
-        assert_eq!(own.events.len(), 1);
-        assert_eq!(own.events[0].actor.user_id, "alice");
-
-        let traced = service
-            .handle_list_audit_events(
-                ListAuditEventsReq {
-                    trace_id: Some("trace-b".to_string()),
-                    limit: Some(10),
-                    ..Default::default()
-                },
-                trusted,
-            )
-            .await
-            .unwrap();
-        assert_eq!(traced.events.len(), 1);
-        assert_eq!(traced.events[0].actor.user_id, "bob");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn untrusted_callers_cannot_append_audit_events() {
-        let (service, _tmp) = setup_service().await;
-        let error = service
-            .handle_append_audit_event(
-                AppendAuditEventReq {
-                    actor: ActorRef::new("alice", "app:app-a@alice"),
-                    action: "task.cancel".to_string(),
-                    resource: "task:t-1".to_string(),
-                    trace_id: None,
-                    outcome: AuditOutcome::Succeeded,
-                    error_code: None,
-                    details: json!({}),
-                    redaction_version: 1,
-                },
-                user_ctx("alice", "app-a"),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(error, RPCErrors::NoPermission(_)));
     }
 }

@@ -30,7 +30,6 @@ import { createSystemModule } from '../modules/system.ts'
 import { createSystemConfigModule } from '../modules/system_config.ts'
 import { createPikgModule, type PikgModuleDependencies } from '../modules/pikg.ts'
 import { type AppModuleDependencies, createAppModule } from '../modules/app.ts'
-import { createAuditModule } from '../modules/audit.ts'
 import { createDiagnosticModule, type DiagnosticModuleDependencies } from '../modules/diagnostic.ts'
 import { createLogModule, type LogModuleDependencies } from '../modules/log.ts'
 import { createTaskModule } from '../modules/task.ts'
@@ -418,7 +417,6 @@ export function createRegistry(
   registry.register(createSystemConfigModule())
   registry.register(createAppModule(appDependencies))
   registry.register(createTaskModule())
-  registry.register(createAuditModule())
   registry.register(createLogModule(logDependencies))
   registry.register(createDiagnosticModule(diagnosticDependencies))
   return registry

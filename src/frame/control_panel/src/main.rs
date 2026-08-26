@@ -843,9 +843,6 @@ impl RPCHandler for ControlPanelServer {
             );
         }
 
-        let audit_method = req.method.clone();
-        let audit_params = req.params.clone();
-        let audit_trace_id = req.trace_id.clone();
         let result = match req.method.as_str() {
             // Core / UI bootstrap
             "main" | "ui.main" => self.handle_main(req).await,
@@ -931,7 +928,6 @@ impl RPCHandler for ControlPanelServer {
                 Self::require_rpc_principal(principal.as_ref())?;
                 self.handle_system_logs_download(req).await
             }
-            "audit.query" => self.handle_audit_query(req, principal.as_ref()).await,
             "task.retry" => self.handle_task_retry(req, principal.as_ref()).await,
             "diagnostic.collect" => {
                 self.handle_diagnostic_collect(req, principal.as_ref())
@@ -1042,16 +1038,6 @@ impl RPCHandler for ControlPanelServer {
 
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         };
-        if let Some(principal) = principal.as_ref() {
-            self.append_rpc_audit(
-                principal,
-                &audit_method,
-                &audit_params,
-                audit_trace_id,
-                result.is_ok(),
-            )
-            .await;
-        }
         result
     }
 }

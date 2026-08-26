@@ -93,14 +93,13 @@ must confirm this high-privilege fallback once per process. Non-interactive exec
 Identity lookup uses only the PRD IdentityRoots order. It never scans `~/.buckycli` or `~/buckycli`.
 Session and refresh tokens are never persisted by the tool.
 
-## Tasks, logs, audit, and diagnostics
+## Tasks, logs, and diagnostics
 
 ```bash
 ./buckyos task list --state running
 ./buckyos --timeout 10m task wait t-0123456789abcdef0123456789abcdef
 ./buckyos log query --service scheduler --level error
 ./buckyos log export --services scheduler --since 2026-08-25T00:00:00Z --path ./logs.zip
-./buckyos audit query --scope own
 ./buckyos diagnostic collect --services scheduler,node_daemon --no-wait
 ./buckyos diagnostic export diag-opaque --path ./diagnostic.zip
 ```

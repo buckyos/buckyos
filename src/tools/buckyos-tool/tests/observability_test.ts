@@ -6,7 +6,6 @@ import { ToolError } from '../core/errors.ts'
 import { CommandRegistry } from '../core/registry.ts'
 import type { RpcCallOptions, ServiceClientRegistry } from '../core/runtime.ts'
 import { waitForTask } from '../core/task.ts'
-import { createAuditModule } from '../modules/audit.ts'
 import { createDiagnosticModule } from '../modules/diagnostic.ts'
 import { createLogModule } from '../modules/log.ts'
 import { createTaskModule } from '../modules/task.ts'
@@ -18,10 +17,10 @@ interface RecordedCall {
   params: Record<string, unknown>
 }
 
-Deno.test('observability facade exposes all eleven frozen commands', () => {
+Deno.test('observability facade exposes all ten frozen commands', () => {
   const registry = createRegistry()
   assertEquals(
-    ['task', 'audit', 'log', 'diagnostic'].flatMap((module) =>
+    ['task', 'log', 'diagnostic'].flatMap((module) =>
       registry.modules().find((candidate) => candidate.name === module)!.commands.map((command) =>
         `${module}.${command.verb}`
       )
@@ -32,7 +31,6 @@ Deno.test('observability facade exposes all eleven frozen commands', () => {
       'task.wait',
       'task.cancel',
       'task.retry',
-      'audit.query',
       'log.query',
       'log.tail',
       'log.export',
@@ -188,39 +186,6 @@ Deno.test('task retry rejects nonterminal input and validates the replacement id
     service: 'control-panel',
     method: 'task.retry',
     params: { task_id: 't-1', idempotency_key: 'retry-key' },
-  })
-})
-
-Deno.test('audit query forwards actor, trace, time, and opaque cursor filters', async () => {
-  const calls: RecordedCall[] = []
-  const clients = clientsFor(calls, () => ({ events: [] }))
-  const registry = new CommandRegistry()
-  registry.register(createAuditModule())
-  const command = registry.get('audit', 'query')
-  const context = commandContext(command, clients)
-  const clientsWithPage = clientsFor(
-    calls,
-    () => ({ items: [{ audit_id: 'a-1' }], next_cursor: 'n' }),
-  )
-  context.clients = clientsWithPage
-  assertEquals(
-    await command.handler(context, {
-      scope: 'zone',
-      actor: 'alice',
-      trace: 'trace-1',
-      since: '1000',
-      cursor: 'c',
-      limit: 5,
-    }),
-    { items: [{ audit_id: 'a-1' }], next_cursor: 'n' },
-  )
-  assertEquals(calls[0].params, {
-    scope: 'zone',
-    actor: 'alice',
-    trace_id: 'trace-1',
-    created_after: 1000,
-    cursor: 'c',
-    limit: 5,
   })
 })
 
