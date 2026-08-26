@@ -124,6 +124,21 @@ Test Runner
 
 unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶然接受某参数，也不能替代官方支持声明。
 
+当前 AICC canonical API type 必须逐项进入 T1/T2 覆盖矩阵，不得用 namespace 或“其他 API”概括：
+
+| namespace | canonical api_type / method |
+|---|---|
+| LLM | `llm`；对应 `llm.chat`、`llm.completion` |
+| Embedding | `embedding.text`、`embedding.multimodal` |
+| Rerank | `rerank` |
+| Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
+| Vision | `vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` |
+| Audio | `audio.tts`、`audio.asr`、`audio.music`、`audio.enhance` |
+| Video | `video.txt2video`、`video.img2video`、`video.video2video`、`video.extend`、`video.upscale` |
+| Agent | `agent.computer_use` |
+
+Runner 必须从当前协议/schema 枚举 canonical API type，并与本清单和 case manifest 做双向 diff。新增、删除或改名的 canonical API type 如果没有同步更新需求清单、官方能力映射和测试用例，preflight 必须失败。该规则用于防止后续读者把未列出的能力解释为可省略项。
+
 ## 5. 总体分层
 
 | 层级 | 被测主链路 | 模型 | 核心目标 |
@@ -216,13 +231,13 @@ Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AI
 
 1. api_type 和 method。
 2. required capabilities 和 disabled capabilities。
-3. 文本、图片、音频、视频、结构化输出、tool call、上下文长度等任务特征。
+3. 任务特征：纯文本、代码、文档 chunk、图片、音频、视频、文本 embedding、多模态 embedding、rerank、JSON schema、tool call、web search、streaming、最小上下文长度和最大输出长度。
 4. Provider driver/instance allow 和 deny。
 5. `local_only`、隐私和数据边界要求。
 6. health、quota、budget 和余额状态。
 7. context/output token 上限。
 8. 模型和逻辑目录权重。
-9. `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` 等 profile。
+9. 当前调度 profile：`cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local`；新增 profile 必须自动进入枚举完整性检查和路由用例。
 10. `min_line`、`disable_line`、auto/manual mount。
 11. system routing config 和 request/session overlay。
 12. locked policy 及调用方不可覆盖项。
@@ -250,14 +265,14 @@ Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AI
 
 ### 7.6 历史路由软优先
 
-历史路由只能作为软偏好，不能越过 api_type、capability、privacy、health、quota、budget 等硬约束。
+历史路由只能作为软偏好，不能越过模型存在性、api_type、required capability、disabled capability、privacy、`local_only`、Provider allow/deny、health、quota、budget、context length、output length 和 locked policy 硬约束。
 
 至少覆盖：
 
 - 上一轮 exact model 和 instance 仍适用时优先复用。
 - 上一轮模型不支持新 api_type 或 capability 时重新选择。
 - 上一轮 instance 不健康、无 quota 或被 policy 拒绝时重新选择。
-- 可选择同 Provider 的其他模型或其他 instance。
+- 可选择同一 instance 的另一精确模型、同一 Provider driver 的另一 instance，或另一 Provider driver 的合格模型。
 - 历史偏好缺失时正常调度。
 - 不同 session 的历史偏好互不污染。
 
@@ -272,9 +287,11 @@ Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AI
 - target logical 和 target exact fallback。
 - 精确模型默认不 fallback。
 - fallback 不跨 api_type。
+- `embedding.text` 和 `embedding.multimodal` 默认 strict；指定 `embedding_space_id` 或已有向量索引时，禁止 fallback 到不同 embedding space、维度、距离度量或归一化约定的模型。
+- `rerank` 默认 strict；fallback 重跑不能把不同 reranker 的分数混排。
 - fallback loop 和最大深度。
 - 首选 Provider 429、5xx、连接失败、timeout 后的切换。
-- 400、认证、参数错误等不可重试错误停止。
+- 400 参数/schema 错误、401 认证错误、403 权限或内容策略拒绝、404 模型不存在、409 幂等冲突及明确标记为不可重试的 Provider 错误必须停止。
 - fallback 后 task、usage、trace 和 Provider 归因。
 - 多 instance 间 failover。
 
@@ -288,6 +305,8 @@ Mock Provider 至少支持：
 - 400、401、403、404、409、429 和 5xx。
 - 连接失败、短超时、长超时。
 - malformed response、错误 MIME、缺 usage。
+- embedding inline 向量、embedding artifact、维度错误、行数错误、item 顺序错误、`embedding_space_id` 不一致和非法数值。
+- rerank 正常排序、分数缺失、document ID 错配和结果数量错误。
 - Provider task failed/cancelled。
 - 同一 scenario 固定 usage、cost、latency 和输出对象。
 
@@ -324,13 +343,13 @@ T1 P0 必须零真实调用、零随机重试、100% 通过，并作为普通 CI
 - release 和 baseline revision。
 - provider driver 和 provider instance。
 - provider model ID 和 exact model。
-- 模型 active、preview、deprecated、removed 等状态。
+- 模型 `active`、`preview`、`deprecated`、`removed` 四种标准状态；Provider 出现其他状态值时必须原样记录，并在合入发布基线前映射到这四种状态之一或扩展标准枚举。
 - 官方文档 URL、检查时间和文档版本/证据摘要。
 - 官方 capability/endpoint。
 - 映射后的 canonical api_type 和 method。
 - 支持的输入、输出消息种类和组合。
 - streaming、异步 operation 和 usage 语义。
-- 格式、大小、时长、region 和账号等级限制。
+- 输入/输出格式、单项大小、总请求大小、批量 item 数、图片尺寸、音频时长、视频时长、上下文长度、输出长度、region、账号等级和 preview allowlist 限制。
 - 对应 case id 和覆盖状态。
 
 发布前流程必须执行：
@@ -371,20 +390,42 @@ T2 按模型官方能力覆盖：
 - 图片。
 - 视频。
 - 音频。
-- 文档，包括发布方明确支持的 PDF、Office、文本或其他格式。
+- 文档候选全集：TXT、Markdown、PDF、DOC、DOCX、XLS、XLSX、CSV、TSV、PPT、PPTX、HTML、XML、JSON、YAML、RTF、EPUB 和源代码文本；每个模型只执行发布方明确支持的格式，不支持的格式必须记录为 `not_applicable`。
 - 结构化数据、tool call 和 schema 输出。
+- embedding 输入，包括文本、代码、文档 chunk、图片和文本图片配对；输出包括 inline 向量和 artifact 向量数据。未来协议如新增音频、视频或新的跨模态 item，必须先扩展 canonical schema、本清单和对应 case，不能只依赖 Provider 透传。
+- rerank 输入，包括 query、内联 documents 和 resource documents；输出包括排序后的 document ID、原始 index 和 score。
 
 压缩包不属于 Provider 模型原生消息类型，由 T3 Jarvis 负责解包、组合处理和重新打包。
 
-典型组合包括但不限于：
+当前 canonical API type 的行为组合必须逐项覆盖：
 
-- 文本到文本、JSON、tool call。
-- 图片到描述、OCR、结构化结果。
-- 文本到图片、图片到图片。
-- 文本或图片到视频，视频到文本或视频。
-- 音频到文本、文本到音频、音频到音频。
-- 文档到摘要、问答、结构化提取。
-- 发布方声明支持的多输入、多输出和多附件组合。
+- `llm.chat`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
+- `llm.completion`：单 prompt、prefix/suffix 和适用的 completion options 到补全文本；不复用 `llm.chat` 的通过结果。
+- `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。
+- `embedding.multimodal`：文本、图片和文本图片配对到同一 embedding space 的向量。
+- `rerank`：query 与内联/resource documents 到有序 document ID、index 和 score。
+- `image.txt2img`：文本到图片。
+- `image.img2img`：单图或多图加文本到图片。
+- `image.inpaint`：原图、mask 和文本到图片。
+- `image.upscale`：图片到高分辨率图片。
+- `image.bg_remove`：图片到透明背景图片或前景 mask，按 method schema 判定。
+- `vision.ocr`：图片或文档页到文本及适用时的坐标。
+- `vision.caption`：图片到描述文本。
+- `vision.detect`：图片到类别、置信度和 bounding box。
+- `vision.segment`：图片到 mask、polygon 或 segmentation artifact。
+- `audio.tts`：文本到语音音频。
+- `audio.asr`：语音音频到文本、时间戳和 speaker 信息，后两项按官方能力判定。
+- `audio.music`：文本或参考音频到音乐音频。
+- `audio.enhance`：音频到降噪、分离、修复或增强后的音频，具体 operation 按官方能力判定。
+- `video.txt2video`：文本到视频。
+- `video.img2video`：图片加文本到视频。
+- `video.video2video`：视频加文本或控制参数到视频。
+- `video.extend`：可续作视频及其 Provider/source operation 状态到延长视频。
+- `video.upscale`：视频到高分辨率视频。
+- `agent.computer_use`：观察、动作、环境状态和会话状态组成的 session async 调用；只有正式启用时才执行真实环境用例，未启用仍必须有明确覆盖状态。
+- 每个上述 API 还要覆盖发布方声明支持的多输入、多输出和多附件形态；新增 canonical API 必须先更新本清单再进入发布基线。
+
+Embedding 结果不得通过“请求成功”判定。`embedding.text` 和 `embedding.multimodal` 必须验证 item 数量与顺序、向量维度、数值为有限值、normalize 约定、`embedding_space_id`、inline/artifact 阈值、artifact 的 `rows`/`dimensions`/space metadata，以及相同 space 内文本与图片向量可比较。小批量和大批量都必须覆盖；当前协议中 `items > 100` 或预估响应超过 1 MB 时必须验证 artifact 路径。真实模型结果不要求逐浮点一致，但同一输入重复调用的维度、space 和归一化语义必须稳定。
 
 ### 8.5 多 Provider instance 协议覆盖
 
@@ -393,7 +434,7 @@ T2 按模型官方能力覆盖：
 - 凭据和 endpoint 生效。
 - 模型 inventory 与官方及配置一致。
 - 相同模型在不同 instance 上均能通过 exact model 调用。
-- region、账号等级、模型白名单等差异被正确反映。
+- region、账号等级、preview allowlist、模型白名单、endpoint 和 API version 差异被正确反映。
 - 一个 instance 的认证、quota 或协议错误不污染其他 instance。
 - usage、cost、trace 和 Provider operation ID 按 instance 归因。
 
@@ -465,7 +506,7 @@ LLM Judge 必须使用版本化 rubric、记录 Judge 模型、Provider、输入
 
 runner 根据参数选择：
 
-- Telegram 或其他 message-tunnel。
+- Telegram，以及实现并启用时的 Email、Slack、Webhook、移动端/App 内通道、第三方 Agent 平台和 BuckyOS 应用间 message-tunnel；每新增一种 tunnel 都必须自动进入入口覆盖清单。
 - MessageHub 公共入口。
 - 通过 Gateway 直接调用 msg-center 入站接口。
 
@@ -488,6 +529,8 @@ runner 根据参数选择：
 - 音频识别、非语音音频判断、语音合成和增强。
 - 视频理解、生成、编辑和长任务回传。
 - 文档阅读、问答、数据提取和新文档生成。
+- 多文档索引与检索：文档 chunk -> `embedding.text` -> 向量检索 -> `rerank` -> 基于命中文档回答；如 Jarvis 当前未采用该链路，记录为 `not_applicable`，不能伪造内部调用。
+- 图文检索：文本和图片 -> `embedding.multimodal` -> 同 space 相似度检索 -> 返回命中图片和解释；只在 Jarvis 配置了该能力时执行。
 - 压缩包解包、内容处理、结果文档和重新打包。
 - 一次回复同时包含文本和一个或多个附件。
 
@@ -560,7 +603,7 @@ Jarvis 必须限制解压目标路径、文件数、单文件大小、总大小�
 - 快速连续发送素材 A、B 后明确选择其中一个。
 - 同一 session 历史路由软优先及硬约束导致的重新路由。
 
-“同 Provider 二次创作”必须验证 Provider/source task/operation 等续作所需状态被保存和恢复；不支持原生续作时必须合理降级并向用户明确说明。
+“同 Provider 二次创作”必须验证 `provider_task_ref`、source task ID、Provider operation ID、exact model、Provider instance、continuation options 和输入 artifact 引用被保存和恢复；不支持原生续作时必须合理降级并向用户明确说明。
 
 ### 9.7 消息与投递语义
 
@@ -713,7 +756,7 @@ run_id
 - 执行 T1 全量。
 - 按 Provider/instance 分片执行 T2。
 - 执行 T3 自动化 MessageHub/msg-center 代表场景。
-- Telegram 等需要人工或外部账号的场景可以独立安排。
+- Telegram owner 入站、需要真实外部账号的 Email/Slack 入站和需要人工视觉、听觉判断的场景可以独立安排。
 
 ### 12.3 发布验收
 
