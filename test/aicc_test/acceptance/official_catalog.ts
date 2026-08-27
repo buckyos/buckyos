@@ -173,7 +173,8 @@ export async function fetchOfficialCatalogs(input: {
 }): Promise<ProviderInventory[]> {
   const profiles = new Map(input.baseline.providers.map((profile) => [profile.provider_driver, profile]));
   const fetchedAt = new Date().toISOString();
-  return await Promise.all(input.drivers.map(async (driver) => {
+  const catalogs: ProviderInventory[] = [];
+  for (const driver of input.drivers) {
     const profile = profiles.get(driver);
     if (!profile) throw new Error(`missing provider baseline for ${driver}`);
     const instance = input.instanceNames[driver] || `${driver}-unresolved`;
@@ -183,7 +184,7 @@ export async function fetchOfficialCatalogs(input: {
       timeoutMs: input.timeoutMs,
       fetcher: input.fetcher,
     });
-    return {
+    catalogs.push({
       provider_driver: driver,
       provider_instance_name: instance,
       inventory_revision: `official-snapshot-${fetchedAt}`,
@@ -193,8 +194,9 @@ export async function fetchOfficialCatalogs(input: {
         api_types: [],
         logical_mounts: [],
       })),
-    };
-  }));
+    });
+  }
+  return catalogs;
 }
 
 export function bindOfficialCatalogInstances(
