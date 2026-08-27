@@ -311,16 +311,6 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                 <div className="relative w-full rounded-t-xl p-3 shadow-lg" style={{ background: 'var(--cp-surface)', borderTop: '1px solid var(--cp-border)' }}>
                   <div className="mx-auto mb-3 h-1 w-10 rounded-full" style={{ background: 'var(--cp-border)' }} />
                   <div className="flex flex-col gap-1 pb-[env(safe-area-inset-bottom)]">
-                    {!managedSn && <MenuAction
-                        icon={<ShieldCheck size={16} />}
-                        label={t('aiCenter.providers.updateKey', 'Update Key')}
-                        onClick={() => {
-                          setActionsOpen(false)
-                          setShowKeyDialog(true)
-                          setKeyError(null)
-                          setKeyFeedback(null)
-                        }}
-                      />}
                     <MenuAction
                       icon={<RefreshCw size={16} className={refreshingModels ? 'animate-spin' : ''} />}
                       label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
@@ -330,6 +320,28 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                       }}
                       disabled={refreshingModels || !config.enabled}
                     />
+                    <MenuAction
+                      icon={<Power size={16} />}
+                      label={config.enabled
+                        ? t('aiCenter.providers.disable', 'Disable Provider')
+                        : t('aiCenter.providers.enable', 'Enable Provider')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        if (config.enabled) setConfirmDisable(true)
+                        else void handleSetProviderEnabled(true)
+                      }}
+                      disabled={updatingEnabled}
+                    />
+                    {!managedSn && <MenuAction
+                      icon={<ShieldCheck size={16} />}
+                      label={t('aiCenter.providers.updateKey', 'Update Key')}
+                      onClick={() => {
+                        setActionsOpen(false)
+                        setShowKeyDialog(true)
+                        setKeyError(null)
+                        setKeyFeedback(null)
+                      }}
+                    />}
                     {!managedSn && <MenuAction
                       icon={<Trash2 size={16} />}
                       label={t('aiCenter.providers.delete', 'Delete')}
@@ -348,6 +360,27 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
               className="absolute right-0 top-10 z-10 flex w-48 flex-col rounded-lg p-1 shadow-lg"
               style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
             >
+              <MenuAction
+                icon={<RefreshCw size={14} className={refreshingModels ? 'animate-spin' : ''} />}
+                label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
+                onClick={() => {
+                  setActionsOpen(false)
+                  void handleRefreshModels()
+                }}
+                disabled={refreshingModels || !config.enabled}
+              />
+              <MenuAction
+                icon={<Power size={14} />}
+                label={config.enabled
+                  ? t('aiCenter.providers.disable', 'Disable Provider')
+                  : t('aiCenter.providers.enable', 'Enable Provider')}
+                onClick={() => {
+                  setActionsOpen(false)
+                  if (config.enabled) setConfirmDisable(true)
+                  else void handleSetProviderEnabled(true)
+                }}
+                disabled={updatingEnabled}
+              />
               {!managedSn && <MenuAction
                 icon={<ShieldCheck size={14} />}
                 label={t('aiCenter.providers.updateKey', 'Update Key')}
@@ -358,15 +391,6 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
                   setKeyFeedback(null)
                 }}
               />}
-              <MenuAction
-                icon={<RefreshCw size={14} className={refreshingModels ? 'animate-spin' : ''} />}
-                label={refreshingModels ? t('aiCenter.providers.refreshingModels', 'Refreshing Models') : t('aiCenter.providers.refreshModels', 'Refresh Models')}
-                onClick={() => {
-                  setActionsOpen(false)
-                  void handleRefreshModels()
-                }}
-                disabled={refreshingModels || !config.enabled}
-              />
               {!managedSn && <MenuAction
                 icon={<Trash2 size={14} />}
                 label={t('aiCenter.providers.delete', 'Delete')}
@@ -414,32 +438,13 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
       {activeSection === 'overview' && (
       <>
       <InlineNotice tone={config.enabled ? 'success' : 'warning'}>
-          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3">
-            <span>
-              {config.enabled
-                ? managedSn
-                  ? t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')
-                  : t('aiCenter.providers.enabledNotice', 'This Provider participates in model routing.')
-                : t('aiCenter.providers.disabledNotice', 'This Provider is disabled and does not participate in model routing.')}
-            </span>
-            <button
-              type="button"
-              disabled={updatingEnabled}
-              onClick={() => {
-                if (config.enabled) setConfirmDisable(true)
-                else void handleSetProviderEnabled(true)
-              }}
-              className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-60"
-              style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
-            >
-              <Power size={14} />
-              {updatingEnabled
-                ? t('common.saving', 'Saving')
-                : config.enabled
-                  ? t('aiCenter.providers.disable', 'Disable Provider')
-                  : t('aiCenter.providers.enable', 'Enable Provider')}
-            </button>
-          </div>
+        <span>
+          {config.enabled
+            ? managedSn
+              ? t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')
+              : t('aiCenter.providers.enabledNotice', 'This Provider participates in model routing.')
+            : t('aiCenter.providers.disabledNotice', 'This Provider is disabled and does not participate in model routing.')}
+        </span>
       </InlineNotice>
       <div className="md:hidden">
         <MetricCarousel metrics={providerMetrics} />
