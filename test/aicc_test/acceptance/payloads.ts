@@ -279,10 +279,6 @@ export function buildExactRequest(args: {
     inputJson.response_format = "object_id";
     inputJson.output = { resource_format: "named_object" };
   }
-  if (args.cell.method === "llm.completion") {
-    delete inputJson.messages;
-    inputJson.prompt = "Complete with the exact marker BUCKYOS-AICC-4827";
-  }
   return {
     capability: args.cell.api_type.split(".")[0],
     model: { alias: args.cell.exact_model },

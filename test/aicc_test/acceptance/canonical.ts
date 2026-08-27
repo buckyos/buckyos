@@ -1,7 +1,7 @@
 import type { ProviderBaseline } from "./types.ts";
 
 export const CANONICAL_API_METHODS = {
-  llm: ["llm.chat", "llm.completion"],
+  llm: ["llm.chat"],
   "embedding.text": ["embedding.text"],
   "embedding.multimodal": ["embedding.multimodal"],
   rerank: ["rerank"],

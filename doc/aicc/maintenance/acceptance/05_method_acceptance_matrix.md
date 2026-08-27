@@ -22,7 +22,6 @@
 | `chat.completions.create` | `exact_model`、content-block `messages`、tools、response_format、provider_options | `message: AiMessage`、`tool_calls`、`finish_reason`、usage、route trace | 传入逻辑模型名被拒、primary quota exhausted 不 fallback |
 | `helper.llm_chat` | 逻辑模型名 + messages | 等价于 `route.resolve` + `chat.completions.create` | 与两阶段行为一致性 |
 | `llm.chat`（legacy） | content-block messages、image/document/tool_use block、tools、response_format JSON schema、generation params | `text`/`message`、`tool_calls`、`finish_reason`、usage、route trace | tool schema 非法、JSON schema 不满足、context too long、feature unsupported |
-| `llm.completion`（legacy） | `prompt`、`suffix` | `text`、`finish_reason` | legacy wrapper 到 chat 失败、空 prompt |
 
 ### 1.2 Embedding / Rerank
 

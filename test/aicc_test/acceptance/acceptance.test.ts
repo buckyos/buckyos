@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { CANONICAL_API_TYPES } from "./canonical.ts";
+import { CANONICAL_API_TYPES, methodsForApiType } from "./canonical.ts";
 import { buildStaticManifest } from "./cases.ts";
 import {
   analyzeProviderMatrix,
@@ -45,6 +45,11 @@ test("shared TOML parser accepts finite decimal and exponent numbers", () => {
     whole: 8,
   });
   assert.throws(() => parseToml("cost = 1e999\n"), /non-finite TOML number/);
+});
+
+test("LLM acceptance exposes only the breaking-change chat method", async () => {
+  assert.deepEqual(methodsForApiType("llm"), ["llm.chat"]);
+  assert.doesNotMatch(JSON.stringify(await baseline()), /llm\.completion/);
 });
 
 async function baseline() {
