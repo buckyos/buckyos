@@ -196,3 +196,23 @@ export async function fetchOfficialCatalogs(input: {
     };
   }));
 }
+
+export function bindOfficialCatalogInstances(
+  catalogs: ProviderInventory[],
+  selectedInventories: ProviderInventory[],
+): ProviderInventory[] {
+  const instances = new Map(
+    selectedInventories.map((inventory) => [inventory.provider_driver, inventory.provider_instance_name]),
+  );
+  return catalogs.map((catalog) => {
+    const instance = instances.get(catalog.provider_driver) ?? catalog.provider_instance_name;
+    return {
+      ...catalog,
+      provider_instance_name: instance,
+      models: catalog.models.map((model) => ({
+        ...model,
+        exact_model: `${model.provider_model_id}@${instance}`,
+      })),
+    };
+  });
+}

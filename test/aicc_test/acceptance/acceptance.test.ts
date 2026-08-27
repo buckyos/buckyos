@@ -23,7 +23,8 @@ import { assertResponseShape, buildExactRequest } from "./payloads.ts";
 import { manifestCoverage } from "./run_t1_gateway.ts";
 import { applyProviderTokens, configuredProviderTokens } from "./provider_credentials.ts";
 import { filterPhysicalModels } from "./model_coverage.ts";
-import { fetchOfficialModelIds } from "./official_catalog.ts";
+import { bindOfficialCatalogInstances, fetchOfficialModelIds } from "./official_catalog.ts";
+import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
@@ -122,6 +123,135 @@ test("official catalog network failures do not expose query credentials", async 
       return true;
     },
   );
+});
+
+test("T2 stops each selected Provider inventory refresh after its first success", async () => {
+  const selected: ProviderInventory[] = ["openai", "claude"].map((driver) => ({
+    provider_driver: driver,
+    provider_instance_name: `${driver}-main`,
+    inventory_revision: `${driver}-before`,
+    models: [],
+  }));
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  let reads = 0;
+  const result = await refreshProviderInventoriesUntilSuccess({
+    aicc: {
+      call: async (method, params) => {
+        calls.push({ method, params });
+        return {
+          ok: true,
+          provider_instance_name: params.provider_instance_name,
+          inventory_revision: `${params.provider_instance_name}-refresh`,
+        };
+      },
+    },
+    selectedInventories: selected,
+    readInventories: async () => {
+      reads += 1;
+      return selected.map((inventory) => ({
+        ...inventory,
+        inventory_revision: `${inventory.provider_driver}-after`,
+      }));
+    },
+    maxAttempts: 3,
+    retryDelayMs: 0,
+  });
+  assert.equal(reads, 1);
+  assert.deepEqual(calls, selected.map((inventory) => ({
+    method: "provider.refresh_models",
+    params: { provider_instance_name: inventory.provider_instance_name },
+  })));
+  assert.deepEqual(
+    result.evidence.map((item) => item.after_inventory_revision),
+    ["openai-after", "claude-after"],
+  );
+});
+
+test("T2 stops before models.list when a Provider inventory refresh fails", async () => {
+  let refreshCalls = 0;
+  let reads = 0;
+  await assert.rejects(
+    refreshProviderInventoriesUntilSuccess({
+      aicc: {
+        call: async () => {
+          refreshCalls += 1;
+          return { ok: false };
+        },
+      },
+      selectedInventories: [{
+        provider_driver: "openai",
+        provider_instance_name: "openai-main",
+        models: [],
+      }],
+      readInventories: async () => {
+        reads += 1;
+        return [];
+      },
+      maxAttempts: 3,
+      retryDelayMs: 0,
+    }),
+    /provider inventory refresh failed/,
+  );
+  assert.equal(refreshCalls, 3);
+  assert.equal(reads, 0);
+});
+
+test("T2 inventory refresh backs off until the first success and then stops", async () => {
+  let refreshCalls = 0;
+  const delays: number[] = [];
+  const result = await refreshProviderInventoriesUntilSuccess({
+    aicc: {
+      call: async (_method, params) => {
+        refreshCalls += 1;
+        if (refreshCalls < 3) throw new Error("rate limited");
+        return {
+          ok: true,
+          provider_instance_name: params.provider_instance_name,
+          inventory_revision: "openai-success",
+        };
+      },
+    },
+    selectedInventories: [{
+      provider_driver: "openai",
+      provider_instance_name: "openai-main",
+      models: [],
+    }],
+    readInventories: async () => [{
+      provider_driver: "openai",
+      provider_instance_name: "openai-main",
+      inventory_revision: "openai-success",
+      models: [],
+    }],
+    maxAttempts: 5,
+    retryDelayMs: 100,
+    providerRetryDelayMs: { openai: 250 },
+    sleep: async (delayMs) => {
+      delays.push(delayMs);
+    },
+  });
+  assert.equal(refreshCalls, 3);
+  assert.deepEqual(delays, [250, 500]);
+  assert.equal(result.evidence[0].attempt_count, 3);
+});
+
+test("official catalogs bind to refreshed AICC Provider instances", () => {
+  const catalogs: ProviderInventory[] = [{
+    provider_driver: "openai",
+    provider_instance_name: "openai-catalog",
+    models: [{
+      exact_model: "gpt-5@openai-catalog",
+      provider_model_id: "gpt-5",
+      api_types: [],
+      logical_mounts: [],
+    }],
+  }];
+  const bound = bindOfficialCatalogInstances(catalogs, [{
+    provider_driver: "openai",
+    provider_instance_name: "openai-live",
+    models: [],
+  }]);
+  assert.equal(bound[0].provider_instance_name, "openai-live");
+  assert.equal(bound[0].models[0].exact_model, "gpt-5@openai-live");
 });
 
 test("official catalog is the inventory baseline and exposes AICC omissions", async () => {

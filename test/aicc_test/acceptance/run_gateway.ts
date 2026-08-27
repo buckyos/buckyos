@@ -51,7 +51,8 @@ import {
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
 import { validateArtifactBytes, validateNamedArtifact, type ArtifactAudit, type ReadableNamedData } from "./artifact_validation.ts";
 import { JudgeError, runJudge } from "./judge.ts";
-import { fetchOfficialCatalogs } from "./official_catalog.ts";
+import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
+import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 
 type Options = {
   configPath: string;
@@ -74,6 +75,8 @@ type Options = {
   providerLimitOverrides: Record<string, Partial<ProviderLimits>>;
   maxAttempts: number;
   retryDelayMs: number;
+  inventoryRefreshMaxAttempts: number;
+  inventoryRefreshRetryDelayMs: number;
   estimatedCostPerCallUsd: number;
   judgeEnabled: boolean;
   judgeModel: string;
@@ -312,6 +315,8 @@ async function parseOptions(args: string[]): Promise<Options> {
     providerLimitOverrides,
     maxAttempts: tomlNumber(config, "runner.max_attempts") ?? 2,
     retryDelayMs: tomlNumber(config, "runner.retry_delay_ms") ?? 1_000,
+    inventoryRefreshMaxAttempts: tomlNumber(config, "runner.inventory_refresh_max_attempts") ?? 3,
+    inventoryRefreshRetryDelayMs: tomlNumber(config, "runner.inventory_refresh_retry_delay_ms") ?? 2_000,
     estimatedCostPerCallUsd: tomlNumber(config, "runner.estimated_cost_per_call_usd") ?? 0.01,
     judgeEnabled: tomlBoolean(config, "judge.enabled") ?? true,
     judgeModel: tomlString(config, "judge.model") ?? "llm.plan.default",
@@ -410,6 +415,12 @@ async function parseOptions(args: string[]): Promise<Options> {
   if (!Number.isFinite(options.retryDelayMs) || options.retryDelayMs < 0) {
     throw new Error("retry_delay_ms must be non-negative");
   }
+  if (!Number.isInteger(options.inventoryRefreshMaxAttempts) || options.inventoryRefreshMaxAttempts < 1) {
+    throw new Error("inventory_refresh_max_attempts must be a positive integer");
+  }
+  if (!Number.isFinite(options.inventoryRefreshRetryDelayMs) || options.inventoryRefreshRetryDelayMs < 0) {
+    throw new Error("inventory_refresh_retry_delay_ms must be non-negative");
+  }
   if (!Number.isFinite(options.estimatedCostPerCallUsd) || options.estimatedCostPerCallUsd < 0) {
     throw new Error("estimated_cost_per_call_usd must be non-negative");
   }
@@ -450,12 +461,7 @@ async function waitForProviderInventories(input: {
 }): Promise<ProviderInventory[]> {
   const deadline = Date.now() + Math.min(input.timeoutMs, 60_000);
   let latest: ProviderInventory[] = [];
-  let lastReloadAt = 0;
   do {
-    if (Date.now() - lastReloadAt >= 2_000) {
-      await input.aicc.call("service.reload_settings", {});
-      lastReloadAt = Date.now();
-    }
     latest = normalizeInventories(await input.aicc.call("models.list", {}));
     const ready = input.expectedDrivers.every((driver) => latest.some((inventory) =>
       inventory.provider_driver === driver &&
@@ -726,6 +732,19 @@ async function main(): Promise<void> {
     false,
     uploadedFixtureIds,
   );
+  const selectedDrivers = options.providers.length > 0
+    ? options.providers
+    : baseline.providers.map((provider) => provider.provider_driver);
+  const officialCatalogs = await fetchOfficialCatalogs({
+    baseline,
+    drivers: selectedDrivers,
+    instanceNames: Object.fromEntries(selectedDrivers.map((driver) => [
+      driver,
+      options.providerInstances[driver] ?? `${driver}-catalog`,
+    ])),
+    tokens: options.officialCatalogTokens,
+    timeoutMs: Math.min(options.timeoutMs, 60_000),
+  });
   const initialRuntimeInstances = new Set(
     normalizeInventories(await session.aicc.call("models.list", {}))
       .map((inventory) => inventory.provider_instance_name),
@@ -737,6 +756,7 @@ async function main(): Promise<void> {
     runId,
     outputDir,
     baseline,
+    officialCatalogs,
     uploadedFixtureIds,
   });
   options.providerTokens = selectProviderTokens(options.providerTokens, options.providers);
@@ -847,9 +867,19 @@ async function executeAcceptance(input: {
   runId: string;
   outputDir: string;
   baseline: ProviderBaseline;
+  officialCatalogs: ProviderInventory[];
   uploadedFixtureIds: string[];
 }): Promise<{ report: AcceptanceReport; effectiveBaseline: Record<string, unknown> }> {
-  const { options, session, runStartedAt, runId, outputDir, baseline, uploadedFixtureIds } = input;
+  const {
+    options,
+    session,
+    runStartedAt,
+    runId,
+    outputDir,
+    baseline,
+    officialCatalogs,
+    uploadedFixtureIds,
+  } = input;
   const { ndm_proxy } = await import("buckyos");
   const ndm = ndm_proxy.createNdmProxyClient({
     endpoint: options.gatewayUrl,
@@ -870,7 +900,7 @@ async function executeAcceptance(input: {
     ? options.providers
     : baseline.providers.map((provider) => provider.provider_driver);
   const credentialDrivers = providerTokenDrivers(options.providerTokens);
-  const inventories = options.applyProviderCredentials && credentialDrivers.length > 0
+  const discoveryInventories = options.applyProviderCredentials && credentialDrivers.length > 0
     ? await waitForProviderInventories({
       aicc: session.aicc,
       expectedDrivers: credentialDrivers,
@@ -878,24 +908,31 @@ async function executeAcceptance(input: {
       timeoutMs: options.timeoutMs,
     })
     : normalizeInventories(await session.aicc.call("models.list", {}));
-  const selectedInventories = selectSingleProviderInstances({
-    inventories,
+  const selectedBeforeRefresh = selectSingleProviderInstances({
+    inventories: discoveryInventories,
     drivers: selectedDrivers,
     configured: options.providerInstances,
   });
-  const catalogInstanceNames = Object.fromEntries(selectedDrivers.map((driver) => [
-    driver,
-    options.providerInstances[driver] ??
-      selectedInventories.find((inventory) => inventory.provider_driver === driver)?.provider_instance_name ??
-      `${driver}-unresolved`,
-  ]));
-  const officialInventories = await fetchOfficialCatalogs({
-    baseline,
-    drivers: selectedDrivers,
-    instanceNames: catalogInstanceNames,
-    tokens: options.officialCatalogTokens,
-    timeoutMs: Math.min(options.timeoutMs, 60_000),
+  const refreshed = await refreshProviderInventoriesUntilSuccess({
+    aicc: session.aicc,
+    selectedInventories: selectedBeforeRefresh,
+    readInventories: async () => normalizeInventories(await session.aicc.call("models.list", {})),
+    maxAttempts: options.inventoryRefreshMaxAttempts,
+    retryDelayMs: options.inventoryRefreshRetryDelayMs,
+    providerRetryDelayMs: Object.fromEntries(selectedDrivers.map((driver) => [
+      driver,
+      options.providerLimitOverrides[driver]?.minIntervalMs ?? options.providerLimits.minIntervalMs,
+    ])),
   });
+  const selectedInventories = selectSingleProviderInstances({
+    inventories: refreshed.inventories,
+    drivers: selectedDrivers,
+    configured: Object.fromEntries(selectedBeforeRefresh.map((inventory) => [
+      inventory.provider_driver,
+      inventory.provider_instance_name,
+    ])),
+  });
+  const officialInventories = bindOfficialCatalogInstances(officialCatalogs, selectedInventories);
   const matrix = analyzeProviderMatrix({
     baseline,
     officialInventories,
@@ -1664,6 +1701,13 @@ async function executeAcceptance(input: {
     generated_at: now,
     source_baseline_revision: baseline.baseline_revision,
     official_catalog_fetched_at: officialInventories[0]?.inventory_revision?.replace("official-snapshot-", "") ?? null,
+    provider_inventory_refresh_policy: {
+      max_attempts: options.inventoryRefreshMaxAttempts,
+      retry_delay_ms: options.inventoryRefreshRetryDelayMs,
+      backoff: "exponential",
+      max_delay_ms: 30_000,
+    },
+    provider_inventory_refreshes: refreshed.evidence,
     official_provider_catalogs: officialInventories.map((inventory) => ({
       provider_driver: inventory.provider_driver,
       provider_instance_name: inventory.provider_instance_name,
