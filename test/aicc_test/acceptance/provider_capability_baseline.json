@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "baseline_revision": "2026-08-27.2",
+  "schema_version": 2,
+  "baseline_revision": "2026-08-27.3",
   "checked_at": "2026-08-27",
   "canonical_api_types": [
     "llm",
@@ -31,6 +31,11 @@
     {
       "provider_driver": "openai",
       "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://api.openai.com/v1/models",
+        "format": "openai",
+        "authentication": "bearer"
+      },
       "source_urls": [
         "https://developers.openai.com/api/docs/models",
         "https://developers.openai.com/api/docs/models/all"
@@ -49,6 +54,13 @@
         "preview_allowlist": "Preview and restricted models may require explicit account access; missing access remains a matrix result rather than removing the model."
       },
       "coverage_rules": [
+        {
+          "model_pattern": "*-latest",
+          "action": "exclude",
+          "reason": "logical_alias",
+          "source_urls": ["https://platform.openai.com/docs/api-reference/models"],
+          "evidence_summary": "Latest aliases can change their underlying physical model and are excluded from exact-model acceptance."
+        },
         {
           "model_pattern": "sora-2*",
           "action": "exclude",
@@ -183,6 +195,12 @@
     {
       "provider_driver": "claude",
       "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://api.anthropic.com/v1/models",
+        "format": "anthropic",
+        "authentication": "x-api-key",
+        "page_size": 1000
+      },
       "source_urls": ["https://platform.claude.com/docs/en/models/overview"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
@@ -231,6 +249,12 @@
     {
       "provider_driver": "google-gemini",
       "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models",
+        "format": "gemini",
+        "authentication": "query-key",
+        "page_size": 1000
+      },
       "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
@@ -429,6 +453,12 @@
     {
       "provider_driver": "fal",
       "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://api.fal.ai/v1/models",
+        "format": "fal",
+        "authentication": "fal-key",
+        "page_size": 100
+      },
       "source_urls": ["https://fal.ai/docs/model-api-reference"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
@@ -489,6 +519,11 @@
     {
       "provider_driver": "minimax",
       "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://api.minimax.io/v1/models",
+        "format": "openai",
+        "authentication": "bearer"
+      },
       "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
@@ -559,6 +594,11 @@
     {
       "provider_driver": "openrouter",
       "discovery": "runtime_catalog",
+      "official_catalog": {
+        "endpoint": "https://openrouter.ai/api/v1/models?output_modalities=all",
+        "format": "openai",
+        "authentication": "bearer"
+      },
       "source_urls": ["https://openrouter.ai/docs/api/api-reference/models/get-models"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
@@ -590,6 +630,11 @@
     {
       "provider_driver": "sn-ai-provider",
       "discovery": "internal_inventory",
+      "official_catalog": {
+        "endpoint": "https://sn.buckyos.ai/api/v1/ai/models",
+        "format": "sn",
+        "authentication": "bearer"
+      },
       "capability_source_provider": "openai",
       "source_urls": [
         "https://github.com/buckyos/buckyos",

@@ -119,6 +119,7 @@ export type ModelCoverageRule = {
 };
 
 export type ModelCoverageRecord = {
+  source?: "official_catalog" | "aicc_inventory";
   provider_driver: string;
   provider_instance: string;
   exact_model: string;
@@ -132,6 +133,13 @@ export type ModelCoverageRecord = {
   evidence_summary: string;
 };
 
+export type OfficialCatalogConfig = {
+  endpoint: string;
+  format: "openai" | "anthropic" | "gemini" | "fal" | "sn";
+  authentication: "bearer" | "x-api-key" | "query-key" | "fal-key" | "none";
+  page_size?: number;
+};
+
 export type ProviderBaseline = {
   schema_version: number;
   baseline_revision: string;
@@ -140,6 +148,7 @@ export type ProviderBaseline = {
   providers: Array<{
     provider_driver: string;
     discovery: "official_catalog" | "runtime_catalog" | "internal_inventory";
+    official_catalog: OfficialCatalogConfig;
     capability_source_provider?: string;
     source_urls: string[];
     protocol_evidence: {

@@ -23,6 +23,8 @@ import { assertResponseShape, buildExactRequest } from "./payloads.ts";
 import { manifestCoverage } from "./run_t1_gateway.ts";
 import { applyProviderTokens, configuredProviderTokens } from "./provider_credentials.ts";
 import { filterPhysicalModels } from "./model_coverage.ts";
+import { fetchOfficialModelIds } from "./official_catalog.ts";
+import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
@@ -57,6 +59,142 @@ async function baseline() {
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   ));
 }
+
+function matrixInputs(inventories: ProviderInventory[]) {
+  return { officialInventories: structuredClone(inventories), aiccInventories: inventories };
+}
+
+test("official catalog fetches paginated Provider inventory independently of AICC", async () => {
+  const profile = (await baseline()).providers.find((item) => item.provider_driver === "claude")!;
+  const requests: URL[] = [];
+  const ids = await fetchOfficialModelIds({
+    profile,
+    token: "catalog-test-token",
+    timeoutMs: 1_000,
+    fetcher: async (input, init) => {
+      const url = new URL(input.toString());
+      requests.push(url);
+      assert.equal(new Headers(init?.headers).get("x-api-key"), "catalog-test-token");
+      return new Response(JSON.stringify(requests.length === 1
+        ? { data: [{ id: "claude-opus-5" }], has_more: true, last_id: "page-1" }
+        : { data: [{ id: "claude-fable-5" }], has_more: false }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  assert.deepEqual(ids, ["claude-fable-5", "claude-opus-5"]);
+  assert.equal(requests[1].searchParams.get("after_id"), "page-1");
+});
+
+test("SN official catalog requires an independent bearer session token", async () => {
+  const profile = (await baseline()).providers.find((item) => item.provider_driver === "sn-ai-provider")!;
+  await assert.rejects(
+    fetchOfficialModelIds({ profile, timeoutMs: 1_000, fetcher: async () => new Response() }),
+    /official catalog credential is required/,
+  );
+  const ids = await fetchOfficialModelIds({
+    profile,
+    token: "sn-session-token",
+    timeoutMs: 1_000,
+    fetcher: async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer sn-session-token");
+      return new Response(JSON.stringify({ data: [{ id: "gpt-5" }] }), { status: 200 });
+    },
+  });
+  assert.deepEqual(ids, ["gpt-5"]);
+});
+
+test("official catalog network failures do not expose query credentials", async () => {
+  const profile = (await baseline()).providers.find((item) => item.provider_driver === "google-gemini")!;
+  await assert.rejects(
+    fetchOfficialModelIds({
+      profile,
+      token: "catalog-secret-value",
+      timeoutMs: 1_000,
+      fetcher: async (input) => {
+        throw new Error(`failed ${input.toString()}`);
+      },
+    }),
+    (error: unknown) => {
+      assert.doesNotMatch(String(error), /catalog-secret-value/);
+      assert.match(String(error), /network error/);
+      return true;
+    },
+  );
+});
+
+test("official catalog is the inventory baseline and exposes AICC omissions", async () => {
+  const instance = "openai-test-a";
+  const officialInventories: ProviderInventory[] = [{
+    provider_instance_name: instance,
+    provider_driver: "openai",
+    models: ["gpt-5", "gpt-6"].map((id) => ({
+      exact_model: `${id}@${instance}`,
+      provider_model_id: id,
+      api_types: [],
+      logical_mounts: [],
+    })),
+  }];
+  const aiccInventories: ProviderInventory[] = [{
+    provider_instance_name: instance,
+    provider_driver: "openai",
+    models: [{
+      exact_model: `gpt-5@${instance}`,
+      provider_model_id: "gpt-5",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    }],
+  }];
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    officialInventories,
+    aiccInventories,
+  });
+  assert.ok(result.mismatches.includes("official_supported_but_aicc_missing openai/gpt-6"));
+  assert.ok(result.cells.some((cell) => cell.provider_model_id === "gpt-5"));
+  assert.ok(result.cells.every((cell) => cell.provider_model_id !== "gpt-6"));
+});
+
+test("official catalog coverage rules remove logical aliases and deduplicate physical models", async () => {
+  const providerBaseline = structuredClone(await baseline());
+  const openai = providerBaseline.providers.find((item) => item.provider_driver === "openai")!;
+  openai.coverage_rules = [
+    ...(openai.coverage_rules ?? []),
+    {
+      model_pattern: "gpt-current",
+      action: "alias",
+      physical_model_id: "gpt-5",
+      reason: "logical_alias",
+      source_urls: ["https://platform.openai.com/docs/api-reference/models"],
+      evidence_summary: "Test alias for one physical model.",
+    },
+    {
+      model_pattern: "gpt-cheapest",
+      action: "exclude",
+      reason: "logical_alias",
+      source_urls: ["https://platform.openai.com/docs/api-reference/models"],
+      evidence_summary: "Test routing alias rather than a physical model.",
+    },
+  ];
+  const result = filterPhysicalModels({
+    baseline: providerBaseline,
+    source: "official_catalog",
+    inventories: [{
+      provider_instance_name: "openai-main",
+      provider_driver: "openai",
+      models: ["gpt-5", "gpt-current", "gpt-cheapest"].map((id) => ({
+        exact_model: `${id}@openai-main`,
+        provider_model_id: id,
+        api_types: [],
+        logical_mounts: [],
+      })),
+    }],
+  });
+  assert.deepEqual(result.inventories[0].models.map((model) => model.provider_model_id), ["gpt-5"]);
+  assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-current")?.reason, "duplicate_physical_model");
+  assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-cheapest")?.reason, "logical_alias");
+});
 
 test("preflight covers protocol, providers, and static cases", async () => {
   const result = await runPreflight();
@@ -527,7 +665,7 @@ test("manifest rejects duplicate case ids", () => {
 test("provider matrix expands exact model and method", async () => {
   const cells = buildProviderMatrix({
     baseline: await baseline(),
-    inventories: [{
+    ...matrixInputs([{
       provider_instance_name: "fal-test-a",
       provider_driver: "fal",
       models: [{
@@ -536,7 +674,7 @@ test("provider matrix expands exact model and method", async () => {
         api_types: ["image.upscale"],
         logical_mounts: ["image.upscale"],
       }],
-    }],
+    }]),
   });
   assert.equal(cells.length, 3);
   assert.equal(cells[0].exact_model, "fal-ai/esrgan@fal-test-a");
@@ -677,7 +815,7 @@ test("provider matrix fails on AICC capability over-advertising", async () => {
   const providerBaseline = await baseline();
   assert.throws(() => buildProviderMatrix({
     baseline: providerBaseline,
-    inventories: [{
+    ...matrixInputs([{
       provider_instance_name: "openai-test-a",
       provider_driver: "openai",
       models: [{
@@ -686,14 +824,14 @@ test("provider matrix fails on AICC capability over-advertising", async () => {
         api_types: ["llm", "rerank", "vision.ocr", "vision.caption"],
         logical_mounts: ["llm.openai.gpt-5"],
       }],
-    }],
+    }]),
   }), /official_not_supported_but_aicc_advertised/);
 });
 
 test("provider matrix exposes baseline mismatches for reporting", async () => {
   const result = analyzeProviderMatrix({
     baseline: await baseline(),
-    inventories: [{
+    ...matrixInputs([{
       provider_instance_name: "openai-test-a",
       provider_driver: "openai",
       models: [{
@@ -702,7 +840,7 @@ test("provider matrix exposes baseline mismatches for reporting", async () => {
         api_types: ["llm", "rerank", "vision.ocr", "vision.caption"],
         logical_mounts: [],
       }],
-    }],
+    }]),
   });
   assert.ok(result.mismatches.some((item) => item.includes("aicc_advertised")));
 });
@@ -745,7 +883,7 @@ test("physical model coverage excludes lifecycle and logical aliases while retai
 test("SN matrix uses its inventory and OpenAI capability evidence", async () => {
   const cells = buildProviderMatrix({
     baseline: await baseline(),
-    inventories: [{
+    ...matrixInputs([{
       provider_instance_name: "sn-default",
       provider_driver: "sn-ai-provider",
       models: [{
@@ -754,7 +892,7 @@ test("SN matrix uses its inventory and OpenAI capability evidence", async () => 
         api_types: ["llm", "vision.ocr", "vision.caption"],
         logical_mounts: [],
       }],
-    }],
+    }]),
   });
   assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), ["llm", "vision.caption", "vision.ocr"]);
   assert.ok(cells.every((cell) => cell.provider_driver === "sn-ai-provider"));
@@ -763,7 +901,7 @@ test("SN matrix uses its inventory and OpenAI capability evidence", async () => 
 test("Gemini Embedding 2 expands official multimodal combinations and one large artifact per API", async () => {
   const cells = buildProviderMatrix({
     baseline: await baseline(),
-    inventories: [{
+    ...matrixInputs([{
       provider_instance_name: "gemini-default",
       provider_driver: "google-gemini",
       models: [{
@@ -772,7 +910,7 @@ test("Gemini Embedding 2 expands official multimodal combinations and one large 
         api_types: ["embedding.text", "embedding.multimodal"],
         logical_mounts: [],
       }],
-    }],
+    }]),
   });
   const multimodal = cells.filter((cell) =>
     cell.api_type === "embedding.multimodal" && cell.variant === "default"

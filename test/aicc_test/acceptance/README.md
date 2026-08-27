@@ -1,5 +1,7 @@
 # AICC acceptance tests
 
+T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline.json` 配置的 Provider 官方目录接口。AICC `models.list` 仅作为被测输出参与双向 diff；官方目录抓取失败或为空时不会回退到 AICC inventory。目录请求默认复用本地 TOML 的 Provider 凭据，也可用 `official_catalog_credentials.<provider>.api_token`（或 `AICC_<PROVIDER>_CATALOG_TOKEN`）单独覆盖，凭据不会写入报告；SN 的目录凭据是 SN SSO session token，必须使用独立覆盖。`provider_credentials.apply_to_aicc_settings` 只控制 Provider API token 是否同时临时注入 AICC，不影响目录认证。
+
 这组测试对应 `doc/aicc/aicc_e2e_test_requirements.md`：
 
 - `preflight.ts`：严格校验 23 个 canonical API、静态 case、内置 Provider 基线和 fixture 完整性。

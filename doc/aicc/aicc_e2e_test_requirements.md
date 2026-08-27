@@ -142,6 +142,16 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 
 Runner 必须从当前协议/schema 枚举 canonical API type，并与本清单和 case manifest 做双向 diff。新增、删除或改名的 canonical API type 如果没有同步更新需求清单、官方能力映射和测试用例，preflight 必须失败。该规则用于防止后续读者把未列出的能力解释为可省略项。
 
+### 4.4 Provider 官方库存事实源
+
+T2 不得使用 AICC `models.list` 作为模型库存基准；`models.list` 是被测声明。Runner 必须在每轮运行时直接访问模型发布方提供的模型目录接口（例如官方 `/models` 或等价目录 API），使用该 Provider 的参数化凭据获取本轮官方库存，并保存脱敏后的目录 revision、模型 ID 和抓取时间作为报告证据。
+
+目录认证默认复用 Provider API token；允许用 `official_catalog_credentials.<provider>.api_token` 单独覆盖。SN 的官方目录使用 SN SSO session token，必须作为目录专用凭据提供，不得将其写入 AICC Provider settings。
+
+`provider_capability_baseline.json` 必须为每个 Provider 配置官方目录 endpoint、认证方式、响应格式和分页方式，并通过 `coverage_rules` 排除已退役模型、`latest`/默认/最便宜等逻辑别名，以及把版本名或别名映射到同一物理模型后去重。官方目录抓取失败、返回空列表、分页异常或缺少必要凭据时，T2 preflight 必须失败，不能回退到 AICC inventory 或硬编码默认模型。
+
+矩阵生成顺序固定为：官方目录抓取与过滤 -> 官方物理模型与 AICC `models.list` 双向 diff -> 对双方一致的基础物理模型及其 AICC metadata variants 展开能力用例。官方存在但 AICC 缺失、AICC 声明但官方目录不存在，均属于 inventory baseline mismatch，必须进入报告；不能因交集为空而将 Provider 整组静默跳过。
+
 ## 5. 总体分层
 
 | 层级 | 被测主链路 | 模型 | 核心目标 |

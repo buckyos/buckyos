@@ -19,6 +19,7 @@ function representativeRank(model: ProviderModel, physicalModelId: string): stri
 export function filterPhysicalModels(args: {
   baseline: ProviderBaseline;
   inventories: ProviderInventory[];
+  source?: ModelCoverageRecord["source"];
 }): { inventories: ProviderInventory[]; coverage: ModelCoverageRecord[] } {
   const profiles = new Map(args.baseline.providers.map((profile) => [profile.provider_driver, profile]));
   const coverage: ModelCoverageRecord[] = [];
@@ -49,6 +50,7 @@ export function filterPhysicalModels(args: {
         : model.provider_actual_model_id ?? model.provider_model_id;
       if (coverageRule?.action === "exclude") {
         coverage.push({
+          source: args.source,
           provider_driver: inventory.provider_driver,
           provider_instance: inventory.provider_instance_name,
           exact_model: model.exact_model,
@@ -64,6 +66,7 @@ export function filterPhysicalModels(args: {
       }
       if (capabilityRule?.status === "deprecated" || capabilityRule?.status === "removed") {
         coverage.push({
+          source: args.source,
           provider_driver: inventory.provider_driver,
           provider_instance: inventory.provider_instance_name,
           exact_model: model.exact_model,
@@ -101,6 +104,7 @@ export function filterPhysicalModels(args: {
       const representative = group[0];
       retained.push(representative.model);
       coverage.push({
+        source: args.source,
         provider_driver: inventory.provider_driver,
         provider_instance: inventory.provider_instance_name,
         exact_model: representative.model.exact_model,
@@ -113,6 +117,7 @@ export function filterPhysicalModels(args: {
       });
       for (const duplicate of group.slice(1)) {
         coverage.push({
+          source: args.source,
           provider_driver: inventory.provider_driver,
           provider_instance: inventory.provider_instance_name,
           exact_model: duplicate.model.exact_model,

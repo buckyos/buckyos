@@ -9,7 +9,7 @@ import {
   type ProviderInventory,
 } from "./types.ts";
 import { CANONICAL_API_TYPES, methodsForApiType } from "./canonical.ts";
-import { filterPhysicalModels } from "./model_coverage.ts";
+import { reconcileOfficialAndAiccInventories } from "./inventory_reconciliation.ts";
 
 const CASE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 export const DOCUMENT_FORMAT_CANDIDATES = [
@@ -91,7 +91,7 @@ export function validateCaseManifest(value: unknown): AcceptanceCase[] {
 
 export function validateProviderBaseline(value: unknown): ProviderBaseline {
   if (!isObject(value)) throw new Error("provider baseline must be an object");
-  if (value.schema_version !== 1) throw new Error("unsupported baseline schema_version");
+  if (value.schema_version !== 2) throw new Error("unsupported baseline schema_version");
   requireString(value.baseline_revision, "baseline_revision");
   requireString(value.checked_at, "checked_at");
   const canonical = requireStringArray(value.canonical_api_types, "canonical_api_types");
@@ -105,6 +105,20 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
     const driver = requireString(rawProvider.provider_driver, "provider_driver");
     if (drivers.has(driver)) throw new Error(`duplicate provider baseline ${driver}`);
     drivers.add(driver);
+    if (!isObject(rawProvider.official_catalog)) {
+      throw new Error(`${driver}.official_catalog must be an object`);
+    }
+    requireString(rawProvider.official_catalog.endpoint, `${driver}.official_catalog.endpoint`);
+    if (!["openai", "anthropic", "gemini", "fal", "sn"].includes(String(rawProvider.official_catalog.format))) {
+      throw new Error(`${driver}.official_catalog.format is invalid`);
+    }
+    if (!["bearer", "x-api-key", "query-key", "fal-key", "none"].includes(String(rawProvider.official_catalog.authentication))) {
+      throw new Error(`${driver}.official_catalog.authentication is invalid`);
+    }
+    if (rawProvider.official_catalog.page_size !== undefined &&
+      (!Number.isInteger(rawProvider.official_catalog.page_size) || Number(rawProvider.official_catalog.page_size) < 1)) {
+      throw new Error(`${driver}.official_catalog.page_size must be a positive integer`);
+    }
     requireStringArray(rawProvider.source_urls, `${driver}.source_urls`);
     if (!isObject(rawProvider.protocol_evidence)) {
       throw new Error(`${driver}.protocol_evidence must be an object`);
@@ -288,7 +302,8 @@ function defaultOutputCombinations(apiType: string, declared: string[]): string[
 
 export function analyzeProviderMatrix(args: {
   baseline: ProviderBaseline;
-  inventories: ProviderInventory[];
+  officialInventories: ProviderInventory[];
+  aiccInventories: ProviderInventory[];
   selectedDrivers?: string[];
 }): {
   cells: MatrixCell[];
@@ -305,8 +320,13 @@ export function analyzeProviderMatrix(args: {
   const cells: MatrixCell[] = [];
   const documentCoverage: DocumentFormatCoverageRecord[] = [];
   const errors: string[] = [];
-  const filtered = filterPhysicalModels({ baseline: args.baseline, inventories: args.inventories });
-  for (const inventory of filtered.inventories) {
+  const reconciled = reconcileOfficialAndAiccInventories({
+    baseline: args.baseline,
+    officialInventories: args.officialInventories,
+    aiccInventories: args.aiccInventories,
+  });
+  errors.push(...reconciled.mismatches);
+  for (const inventory of reconciled.inventories) {
     if (selected && !selected.has(inventory.provider_driver)) continue;
     const profile = profiles.get(inventory.provider_driver);
     if (!profile) {
@@ -423,12 +443,13 @@ export function analyzeProviderMatrix(args: {
       }
     }
   }
-  return { cells, mismatches: errors, coverage: filtered.coverage, documentCoverage };
+  return { cells, mismatches: errors, coverage: reconciled.coverage, documentCoverage };
 }
 
 export function buildProviderMatrix(args: {
   baseline: ProviderBaseline;
-  inventories: ProviderInventory[];
+  officialInventories: ProviderInventory[];
+  aiccInventories: ProviderInventory[];
   selectedDrivers?: string[];
 }): MatrixCell[] {
   const result = analyzeProviderMatrix(args);

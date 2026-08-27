@@ -51,6 +51,7 @@ import {
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
 import { validateArtifactBytes, validateNamedArtifact, type ArtifactAudit, type ReadableNamedData } from "./artifact_validation.ts";
 import { JudgeError, runJudge } from "./judge.ts";
+import { fetchOfficialCatalogs } from "./official_catalog.ts";
 
 type Options = {
   configPath: string;
@@ -79,6 +80,7 @@ type Options = {
   judgeRubricVersion: string;
   judgeMinScore: number;
   providerTokens: ProviderTokens;
+  officialCatalogTokens: Record<string, string | undefined>;
   applyProviderCredentials: boolean;
   allowCredentialMutationCli: boolean;
   shardIndex: number;
@@ -256,6 +258,21 @@ async function parseOptions(args: string[]): Promise<Options> {
   }
   const providerLimitOverrides: Record<string, Partial<ProviderLimits>> = {};
   const providerInstances: Record<string, string> = {};
+  const providerTokens = configuredProviderTokens(config, env);
+  const officialCatalogTokens: Record<string, string | undefined> = { ...providerTokens };
+  for (const driver of [
+    "openai",
+    "claude",
+    "google-gemini",
+    "fal",
+    "minimax",
+    "openrouter",
+    "sn-ai-provider",
+  ]) {
+    const configured = tomlString(config, `official_catalog_credentials.${driver}.api_token`);
+    const environment = env(`AICC_${driver.replaceAll("-", "_").toUpperCase()}_CATALOG_TOKEN`);
+    if (configured || environment) officialCatalogTokens[driver] = configured ?? environment;
+  }
   for (const [key, value] of Object.entries(config)) {
     const match = /^limits\.([^.]+)\.(max_concurrency|min_interval_ms)$/.exec(key);
     if (!match || typeof value !== "number") continue;
@@ -300,7 +317,8 @@ async function parseOptions(args: string[]): Promise<Options> {
     judgeModel: tomlString(config, "judge.model") ?? "llm.plan.default",
     judgeRubricVersion: tomlString(config, "judge.rubric_version") ?? "2026-08-27.1",
     judgeMinScore: tomlNumber(config, "judge.min_score") ?? 0.7,
-    providerTokens: configuredProviderTokens(config, env),
+    providerTokens,
+    officialCatalogTokens,
     applyProviderCredentials: tomlBoolean(config, "provider_credentials.apply_to_aicc_settings") ?? false,
     allowCredentialMutationCli: false,
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
@@ -405,9 +423,6 @@ async function parseOptions(args: string[]): Promise<Options> {
   }
   options.providers = [...new Set(options.providers)];
   const tokenDrivers = providerTokenDrivers(options.providerTokens);
-  if (tokenDrivers.length > 0 && !options.applyProviderCredentials) {
-    throw new Error("provider API tokens are configured but provider_credentials.apply_to_aicc_settings is false");
-  }
   if (options.applyProviderCredentials && tokenDrivers.length > 0 && !options.allowCredentialMutationCli) {
     throw new Error("applying Provider credentials requires --allow-credential-mutation");
   }
@@ -728,7 +743,7 @@ async function main(): Promise<void> {
   const tokenDrivers = providerTokenDrivers(options.providerTokens);
   let outcome: { report: AcceptanceReport; effectiveBaseline: Record<string, unknown> };
   let cleanupFailure: SettingsCleanupError<typeof outcome> | undefined;
-  if (tokenDrivers.length === 0) {
+  if (!options.applyProviderCredentials || tokenDrivers.length === 0) {
     outcome = await execute();
   } else {
     try {
@@ -781,7 +796,7 @@ async function main(): Promise<void> {
       });
     }
   }
-  if (tokenDrivers.length > 0) {
+  if (options.applyProviderCredentials && tokenDrivers.length > 0) {
     const extraRuntimeInstances = normalizeInventories(await session.aicc.call("models.list", {}))
       .map((inventory) => inventory.provider_instance_name)
       .filter((name) => !initialRuntimeInstances.has(name));
@@ -855,7 +870,7 @@ async function executeAcceptance(input: {
     ? options.providers
     : baseline.providers.map((provider) => provider.provider_driver);
   const credentialDrivers = providerTokenDrivers(options.providerTokens);
-  const inventories = credentialDrivers.length > 0
+  const inventories = options.applyProviderCredentials && credentialDrivers.length > 0
     ? await waitForProviderInventories({
       aicc: session.aicc,
       expectedDrivers: credentialDrivers,
@@ -868,9 +883,23 @@ async function executeAcceptance(input: {
     drivers: selectedDrivers,
     configured: options.providerInstances,
   });
+  const catalogInstanceNames = Object.fromEntries(selectedDrivers.map((driver) => [
+    driver,
+    options.providerInstances[driver] ??
+      selectedInventories.find((inventory) => inventory.provider_driver === driver)?.provider_instance_name ??
+      `${driver}-unresolved`,
+  ]));
+  const officialInventories = await fetchOfficialCatalogs({
+    baseline,
+    drivers: selectedDrivers,
+    instanceNames: catalogInstanceNames,
+    tokens: options.officialCatalogTokens,
+    timeoutMs: Math.min(options.timeoutMs, 60_000),
+  });
   const matrix = analyzeProviderMatrix({
     baseline,
-    inventories: selectedInventories,
+    officialInventories,
+    aiccInventories: selectedInventories,
     selectedDrivers,
   });
   const sortedCells = [...matrix.cells].sort((left, right) =>
@@ -957,7 +986,9 @@ async function executeAcceptance(input: {
         }],
       });
     } else if (!matrix.coverage.some((record) =>
-      record.provider_driver === driver && record.status === "included"
+      record.provider_driver === driver &&
+      record.status === "included" &&
+      record.source === "aicc_inventory"
     )) {
       cases.push({
         run_id: runId,
@@ -1632,6 +1663,13 @@ async function executeAcceptance(input: {
     schema_version: 1,
     generated_at: now,
     source_baseline_revision: baseline.baseline_revision,
+    official_catalog_fetched_at: officialInventories[0]?.inventory_revision?.replace("official-snapshot-", "") ?? null,
+    official_provider_catalogs: officialInventories.map((inventory) => ({
+      provider_driver: inventory.provider_driver,
+      provider_instance_name: inventory.provider_instance_name,
+      inventory_revision: inventory.inventory_revision ?? null,
+      models: inventory.models.map((model) => ({ provider_model_id: model.provider_model_id })),
+    })),
     selected_provider_instances: selectedInventories.map((inventory) => ({
       provider_driver: inventory.provider_driver,
       provider_instance_name: inventory.provider_instance_name,

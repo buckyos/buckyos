@@ -81,6 +81,11 @@ api_token = ""
 [provider_credentials.openrouter]
 api_token = ""
 
+# Optional per-catalog override. Required for SN because its /models endpoint
+# uses an SN SSO session token rather than an AICC Provider API token.
+[official_catalog_credentials.sn-ai-provider]
+api_token = ""
+
 [limits.openai]
 max_concurrency = 2
 min_interval_ms = 500

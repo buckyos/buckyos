@@ -4,6 +4,8 @@
 
 本文档是拆分后的自包含验收任务文档。实现或评审本任务时，以本文档和 README 中列出的依赖文档为准。
 
+T2 矩阵必须先直接抓取 Provider 官方模型目录，再按能力基线的 `coverage_rules` 过滤逻辑别名、退役项并合并重复物理模型。AICC `models.list` 是被测库存，只与官方目录做双向差异检查；不得作为矩阵的模型事实源。只有官方库存与 AICC 库存一致的基础物理模型及其 metadata variants 才进入真实调用矩阵，任一方向的库存缺失都生成 baseline mismatch。
+
 ## 1. Provider 协议覆盖
 
 | Provider | 输入格式 | 输出格式 | Streaming / 异步 | Mock 重点 |
