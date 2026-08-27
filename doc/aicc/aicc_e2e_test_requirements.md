@@ -131,7 +131,7 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 
 | namespace | canonical api_type / method |
 |---|---|
-| LLM | `llm`；对应 `llm.chat`、`llm.completion` |
+| LLM | `llm`；对应 `llm.chat` |
 | Embedding | `embedding.text`、`embedding.multimodal` |
 | Rerank | `rerank` |
 | Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
@@ -418,8 +418,9 @@ T2 按模型官方能力覆盖：
 
 当前 canonical API type 的行为组合必须逐项覆盖：
 
+`llm.chat` 是唯一的 AICC LLM 数据面接口。当前 breaking-change 版本不保留或测试旧式 `llm.completion` 兼容接口；Provider adapter 是否使用 Responses、Chat Completions 或其他厂商协议属于内部传输实现。
+
 - `llm.chat`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
-- `llm.completion`：单 prompt、prefix/suffix 和适用的 completion options 到补全文本；不复用 `llm.chat` 的通过结果。
 - `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。
 - `embedding.multimodal`：文本、图片和文本图片配对到同一 embedding space 的向量。
 - `rerank`：query 与内联/resource documents 到有序 document ID、index 和 score。
