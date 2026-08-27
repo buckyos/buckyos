@@ -16,11 +16,13 @@ pnpm run acceptance:t1 -- --config aicc_acceptance.local.toml --allow-config-mut
 pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml
 ```
 
-真实调用必须通过 `allow_real_model_calls = true` 或命令行 `--allow-real-model-calls` 显式开启，并受调用数、成本和 timeout 上限约束。需要安全审计计划时，`--no-real-model-calls` 可强制覆盖 TOML 中的开启值，仍读取真实 inventory、生成完整 skipped/N/A/基线差异与零成本报告。报告会将能力基线不一致单独标记为产品缺陷；测试不会修改 AICC/Jarvis 实现。
+真实调用必须通过 `allow_real_model_calls = true` 或命令行 `--allow-real-model-calls` 显式开启，并受调用数、成本和 timeout 上限约束。需要安全审计计划时，`--no-real-model-calls` 可强制覆盖 TOML 中的开启值，仍读取真实 inventory、生成完整 skipped/N/A/基线差异与零成本报告。报告会把能力基线不一致、路由/资源/安全断言失败和成功调用后的 usage/trace 归因失败写入结构化 `product_defects`，记录预期、实际结果和证据路径；测试不会修改 AICC/Jarvis 实现。
 
 Runner 会并行执行不同 case/session。`global_concurrency` 控制整轮并发，`provider_concurrency` 和 `provider_min_interval_ms` 是默认 Provider 限制；可通过 `[limits.<provider_driver>]` 单独覆盖。每次 retry 也重新经过同一 Provider 的并发和请求间隔门禁，不会绕过限流。
 
 每轮会生成独立的 `finance.json`、`finance.csv` 和 `finance.md`。账本按 case/attempt 记录 token、request unit、调用前估算和 AICC 返回的 USD cost，并按 Provider、instance、精确模型、API、case 汇总。Provider 未返回费用时会计入“未知费用的估算敞口”，不会记成零成本；并发调用在发出前会先预留预算。
+
+开启真实模型调用后，runner 会先输出 case、最大调用次数和预计成本，再进入 10 秒确认倒计时；输入 `c` 取消，直接回车立即开始，超时视为确认。已经获得人工授权的自动化运行可传 `--yes` 跳过倒计时。`--yes` 只是 runner 的非交互开关，不代表 CodeAgent 已获得运行 T2/T3 的人工授权。
 
 T1 会临时写入带 `run_id` 的 Mock Provider instance，并在 `finally` 中原样恢复整个 `services/aicc/settings`。为避免误改环境，配置文件的 `mock.allow_config_mutation` 与命令行 `--allow-config-mutation` 必须同时开启。AICC 与 Mock 不在同一主机时，`mock.base_url` 必须填写 AICC 服务进程可访问的地址，不能使用 runner 自己的 loopback。
 

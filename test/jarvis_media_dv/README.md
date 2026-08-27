@@ -32,7 +32,7 @@ pnpm test
 - 期望覆盖的 Provider；
 - 场景、步骤、人工判定设置和报告目录。
 
-清单展示后进入 10 秒倒计时：输入 `c` 并回车可以取消，直接回车可立即开始，超时则自动开始。无人值守环境使用 `pnpm test -- --yes`：它同时跳过等待并禁止所有交互输入。此时缺少消息通道的登录/API 等基础参数会直接失败；缺少媒体素材只跳过依赖该素材的场景。Telegram 在登录过程中需要验证码或 2FA 时，也必须提前通过参数、配置或环境变量提供。`--dry-run` 不交互补参，只展示当前已收集的参数和步骤，不发送消息。
+清单展示后进入 10 秒倒计时：输入 `c` 并回车可以取消，直接回车可立即开始，超时则自动开始。无人值守环境使用 `pnpm test -- --yes`：它同时跳过等待并禁止所有交互输入。`--yes` 不代表 CodeAgent 已获得运行 T2/T3 的人工授权。此时缺少消息通道的登录/API 等基础参数会直接失败；缺少媒体素材只跳过依赖该素材的场景。Telegram 在登录过程中需要验证码或 2FA 时，也必须提前通过参数、配置或环境变量提供。`--dry-run` 不交互补参，只展示当前已收集的参数和步骤，不发送消息。
 
 消息通道选择本身不是必须参数，完全不配置时只启用 msg-center。普通模式只会交互询问已启用通道启动所必需的参数，例如 BuckyOS 登录信息，或显式启用 Telegram 后所需的 API 凭据和首次登录信息。图片、音频、视频等场景素材不是整套测试的必须参数，runner 不会为它们弹出输入提示；缺少素材时只把依赖它的场景记为 `skipped`，其它场景继续执行。
 
@@ -80,7 +80,7 @@ Provider 列表是本轮期望覆盖目标，不锁定模型或篡改 AICC 路�
 
 带语义 rubric 的步骤默认通过 AICC 的 `llm.plan.default` 执行 LLM Judge，可用 `[judge].model`、`JARVIS_DV_JUDGE_MODEL` 或 `--judge-model` 参数化，也可用 `--no-judge` 关闭。Judge 返回的 task ID、结论和理由写入步骤报告；Judge 调用按 task ID 合并进财务总账，不会被误算成 Jarvis workflow Provider 覆盖。结构、消息类型、附件数量和 MIME 仍由确定性断言判定，Judge 不能放宽这些断言。
 
-msg-center 会在不同 Jarvis session 间并行执行场景，默认并发为 2，可用 `common.scenario_concurrency`、`JARVIS_DV_SCENARIO_CONCURRENCY` 或 `--scenario-concurrency` 调整；同一场景内的历史依赖步骤仍严格串行。Telegram 为避免外部测试账号风控保持串行。AICC/Provider 侧仍由其全局和单 Provider 限流策略约束实际模型请求。
+msg-center 会在不同 Jarvis session 间并行执行场景，默认并发为 2，可用 `common.scenario_concurrency`、`JARVIS_DV_SCENARIO_CONCURRENCY` 或 `--scenario-concurrency` 调整；同一场景内的历史依赖步骤仍严格串行。Telegram 为避免外部测试账号风控保持串行。T3 runner 不实现全局/Provider 并发和最小请求间隔门禁。
 
 ## msg-center
 
@@ -131,7 +131,7 @@ API hash、2FA 密码和 StringSession 都是敏感信息，建议保存在权�
 
 主报告写入 `reports/jarvis_media_dv/<run_id>/summary.md`，按 transport 和场景汇总结果。场景内与 Jarvis 的详细对话默认不在主报告中展开，每行提供“查看对话”链接，指向 `conversations/<transport>-<scenario>.md`。同目录保留 `summary.json` 作为机器可读数据。单个 transport 初始化失败时会记录 `_environment` 失败并继续测试下一个 transport。
 
-报告还会逐入口列出文本、图片、视频、音频、文档、压缩包和多附件的入站/出站覆盖状态。全量 suite 若没有声明某一覆盖单元会生成 `_entry_coverage` 失败；缺素材的 `skipped`、平台限制和待复核项不会被当成通过。财务报告同时列出 Jarvis workflow 与 Judge usage，按 caller/time window 和 Judge task ID 去重汇总，并调用 AICC `trace.query` 审计每个执行步骤的 `run_id:transport:scenario_id:step_id`。若 Jarvis/AICC 没有传播该 ID，报告会失败并明确标为产品缺陷，不会用时间邻近关系伪造逐步骤关联。
+报告还会逐入口列出文本、图片、视频、音频、文档、压缩包和多附件的入站/出站覆盖状态。全量 suite 若没有声明某一覆盖单元会生成 `_entry_coverage` 失败；缺素材的 `skipped`、平台限制和待复核项不会被当成通过。断言、附件或 usage 审计失败会写入结构化 `product_defects`，包含预期行为、实际行为和证据路径。财务报告同时列出 Jarvis workflow 与 Judge usage，按 caller/time window 和 Judge task ID 去重汇总，并调用 AICC `trace.query` 审计每个执行步骤的 `run_id:transport:scenario_id:step_id`。若 Jarvis/AICC 没有传播该 ID，报告会失败并明确标为产品缺陷，不会用时间邻近关系伪造逐步骤关联。
 
 - `0`：没有失败，且人工项已通过；使用 `--allow-review` 时允许遗留 review；
 - `1`：存在自动、人工或环境失败；

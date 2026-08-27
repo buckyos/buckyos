@@ -154,7 +154,7 @@ Runner 必须从当前协议/schema 枚举 canonical API type，并与本清单�
 
 分层边界固定如下：
 
-- 同一 Provider driver 的多 instance、不同凭据、不同 endpoint、不同模型集合及隔离行为只在 T1 使用 Mock Provider 覆盖；T2/T3 每个 Provider driver 每轮只选择一个参数化 instance。
+- 同一 Provider driver 的多 instance、不同凭据、不同 endpoint、不同模型集合及隔离行为只在 T1 使用 Mock Provider 覆盖；T2 每个 Provider driver 每轮只选择一个参数化 instance。T3 可参数化凭据和 instance 标识用于配置与审计，但不要求强制 Jarvis 最终路由到该 instance。
 - metadata `variants` 派生的物理模型变体在 T1 和 T2 覆盖。
 - `version_rules` 产生的逻辑目录只在 T1 覆盖，不进入 T2/T3 精确物理模型矩阵。
 - 跨租户、RBAC 和授权隔离等 BuckyOS 机制只在 T1 覆盖；T2/T3 不重复验证。
@@ -364,7 +364,7 @@ T1 P0 必须零真实调用、零随机重试、100% 通过，并作为普通 CI
 - 输入/输出格式、单项大小、总请求大小、批量 item 数、图片尺寸、音频时长、视频时长、上下文长度、输出长度、region、账号等级和 preview allowlist 限制。
 - 对应 case id 和覆盖状态。
 
-T2/T3 只覆盖有效物理模型。生成矩阵前必须：
+T2 只覆盖有效物理模型。生成矩阵前必须：
 
 - 排除已失效、已移除或在计划执行窗口前即将退役的模型，例如已经确认失效或即将失效的 Sora 2、GPT Image 1。
 - 排除 `latest`、默认、最便宜等指向其他模型的逻辑别名。
@@ -455,7 +455,7 @@ T2 每个 Provider driver 每轮只选择一个参数化 instance，并验证：
 - 该 instance 的 region、账号等级、preview allowlist、模型白名单、endpoint 和 API version 差异被正确反映。
 - usage、cost、trace 和 Provider operation ID 按 instance 归因。
 
-同一 Provider 的多个 instance、不同凭据和模型集合之间的选择与隔离不得在 T2/T3 重复展开，由 T1 Mock 场景负责。
+同一 Provider 的多个 instance、不同凭据和模型集合之间的选择与隔离不得在 T2/T3 重复展开，由 T1 Mock 场景负责。T3 不校验实际路由模型是否属于 T2 的过滤矩阵。
 
 ### 8.6 Provider 协议行为
 
@@ -529,7 +529,7 @@ runner 根据参数选择：
 - MessageHub 公共入口。
 - 通过 Gateway 直接调用 msg-center 入站接口。
 
-消息入口、Gateway、登录凭据和期望 Provider 列表必须参数化，不得硬编码到测试脚本。T3 每个 Provider driver 只使用一个参数化 instance。
+消息入口、Gateway、登录凭据和期望 Provider 列表必须参数化，不得硬编码到测试脚本。T3 的 Provider instance 参数用于凭据注入和审计，不构成对 Jarvis 最终路由 instance 的强制约束。
 
 每个启用入口必须覆盖：
 
@@ -705,15 +705,16 @@ Gateway、消息入口、登录信息、Provider API token 和选定 instance �
 
 - 在 `finally` 中按原始序列化内容恢复 settings。
 - 等待 system-config 与 AICC runtime settings 的异步传播收敛后再执行断言或清理校验。
-- 验证运行时 Provider inventory 也已恢复，不能只验证配置存储值。
+- T1/T2 必须验证运行时 Provider inventory 也已恢复，不能只验证配置存储值；T3 只要求原样恢复其临时修改的 settings。
 - 确保 API token、登录凭据和 session token 不进入控制台日志、报告或持久化 fixture。
 
 ### 10.5 并发与稳定性
 
 - 多 session 并发路由互不污染。
 - 不同 session、不同 case 应并发执行，避免无必要的全串行阻塞。
-- runner 必须同时提供全局并发上限、每个 Provider 的并发上限和每个 Provider 的最小请求间隔。
-- retry 必须重新经过相同的全局及 Provider 限流，不得绕过并发和请求间隔门禁。
+- T1/T2 runner 必须同时提供全局并发上限、每个 Provider 的并发上限和每个 Provider 的最小请求间隔。
+- T1/T2 retry 必须重新经过相同的全局及 Provider 限流，不得绕过并发和请求间隔门禁。
+- T3 只限制场景并发；不在 T3 runner 内重复实现全局/Provider 并发和最小请求间隔门禁。
 - 多 Provider instance 并发调用只在 T1 Mock 场景验证。
 - 并发 idempotency。
 - 异步任务并发完成。
@@ -782,7 +783,7 @@ run_id
 
 ## 12. 执行模式与门禁
 
-T2/T3 会访问真实 Provider、真实消息入口或修改运行环境。CodeAgent 为检查自身开发结果而运行 T2/T3 前，必须获得当次人工授权；已有测试代码、配置文件或历史授权不能自动视为本次执行许可。授权应明确允许的 Provider、入口、配置变更和费用上限。T1 Mock 在不产生真实费用且配置变更已显式允许时，可按普通 CI 门禁执行。
+T2/T3 会访问真实 Provider、真实消息入口或修改运行环境。CodeAgent 为检查自身开发结果而运行 T2/T3 前，必须获得当次人工授权；已有测试代码、配置文件、`--yes`、确认倒计时超时或历史授权不能自动视为本次执行许可。授权应明确允许的 Provider、入口、配置变更和费用上限。工程内 CodeAgent 按 `harness/SKILLS/aicc-e2e-test/SKILL.md` 执行该门禁；runner 的确认机制只防止人工误触，不替代 CodeAgent 授权。T1 Mock 在不产生真实费用且配置变更已显式允许时，可按普通 CI 门禁执行。
 
 ### 12.1 普通 CI
 

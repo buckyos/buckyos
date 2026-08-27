@@ -39,6 +39,7 @@ import {
   validateArtifactBytes,
   validateNamedArtifact,
 } from "../aicc_test/acceptance/artifact_validation.ts";
+import type { ProductDefect } from "../aicc_test/acceptance/types.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -132,7 +133,7 @@ const T3_JUDGE_RUBRIC_VERSION = "2026-08-27.1";
 type StepStatus = "passed" | "failed" | "review" | "skipped" | "dispatched" |
   "not_applicable" | "platform_limitation";
 
-type StepResult = {
+export type StepResult = {
   transport?: Transport;
   scenario_id: string;
   step_id: string;
@@ -272,6 +273,7 @@ type RunReport = {
     error?: string;
   };
   totals?: Record<StepStatus, number>;
+  product_defects?: ProductDefect[];
   targeted_retest_command?: string;
 };
 
@@ -2930,6 +2932,36 @@ function classifyFailure(result: StepResult): StepResult["failure_class"] {
   return "assertion_failed";
 }
 
+export function productDefects(results: StepResult[]): ProductDefect[] {
+  const productFailureClasses = new Set<NonNullable<StepResult["failure_class"]>>([
+    "attachment_failed",
+    "usage_failed",
+    "assertion_failed",
+  ]);
+  const defects: ProductDefect[] = [];
+  for (const result of results) {
+    const failureClass = result.failure_class;
+    if (result.status !== "failed" || !failureClass || !productFailureClasses.has(failureClass)) {
+      continue;
+    }
+    defects.push({
+      defect_id: `T3-${result.scenario_id}-${result.step_id}-${result.failure_class}`,
+      component: result.failure_class === "usage_failed" ? "AICC" : "Jarvis",
+      case_id: `${result.scenario_id}:${result.step_id}`,
+      expected: result.automatic_checks.length > 0
+        ? result.automatic_checks.join("; ")
+        : "the T3 scenario step completes and satisfies its automatic assertions",
+      observed: result.error ?? result.notes ?? "scenario assertion failed",
+      evidence_paths: [
+        "summary.json",
+        `conversations/${reportFileSegment(result.transport ?? "unknown")}-${reportFileSegment(result.scenario_id)}.md`,
+      ],
+      failure_class: failureClass,
+    });
+  }
+  return defects;
+}
+
 function reportFileSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "_");
 }
@@ -3113,6 +3145,22 @@ function renderSummaryMarkdown(report: RunReport, groups: StepResult[][]): strin
     );
     if (report.finance.error) lines.push("", `Error: ${report.finance.error}`);
   }
+  if (report.product_defects && report.product_defects.length > 0) {
+    lines.push("", "## Product defects", "");
+    for (const defect of report.product_defects) {
+      lines.push(
+        `### ${defect.defect_id}`,
+        "",
+        `- Component: ${defect.component}`,
+        `- Case: ${defect.case_id}`,
+        `- Failure class: ${defect.failure_class}`,
+        `- Expected: ${defect.expected}`,
+        `- Observed: ${defect.observed}`,
+        `- Evidence: ${defect.evidence_paths.join(", ")}`,
+        "",
+      );
+    }
+  }
   if (report.targeted_retest_command) {
     lines.push(
       "",
@@ -3137,6 +3185,7 @@ async function writeReport(
   if (finished) report.finished_at = new Date().toISOString();
   for (const result of report.results) result.failure_class ??= classifyFailure(result);
   report.totals = summarize(report);
+  report.product_defects = productDefects(report.results);
   const failedScenarios = [...new Set(
     report.results
       .filter((result) =>

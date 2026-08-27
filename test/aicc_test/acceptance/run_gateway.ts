@@ -62,6 +62,7 @@ type Options = {
   providers: string[];
   providerInstances: Record<string, string>;
   allowRealModelCalls: boolean;
+  assumeYes: boolean;
   maxRealCalls: number;
   maxCostUsd: number;
   timeoutMs: number;
@@ -281,6 +282,7 @@ async function parseOptions(args: string[]): Promise<Options> {
     providerInstances,
     allowRealModelCalls: tomlBoolean(config, "runner.allow_real_model_calls") ??
       boolEnv("AICC_ALLOW_REAL_MODEL_CALLS") ?? false,
+    assumeYes: false,
     maxRealCalls: tomlNumber(config, "runner.max_real_calls") ?? 500,
     maxCostUsd: tomlNumber(config, "runner.max_cost_usd") ?? 100,
     timeoutMs: tomlNumber(config, "runner.timeout_ms") ?? 900_000,
@@ -341,6 +343,7 @@ async function parseOptions(args: string[]): Promise<Options> {
     }
     else if (arg === "--allow-real-model-calls") options.allowRealModelCalls = true;
     else if (arg === "--no-real-model-calls") options.allowRealModelCalls = false;
+    else if (arg === "--yes") options.assumeYes = true;
     else if (arg === "--allow-credential-mutation") options.allowCredentialMutationCli = true;
     else if (arg === "--max-real-calls") options.maxRealCalls = Number(requiredArg(args, index++, arg));
     else if (arg === "--max-cost-usd") options.maxCostUsd = Number(requiredArg(args, index++, arg));
@@ -449,6 +452,53 @@ async function waitForProviderInventories(input: {
   throw new Error(
     `Provider inventories did not converge: expected=${input.expectedDrivers.map((driver) => `${driver}:${input.expectedInstances[driver] ?? "*"}`).join(",")} found=${latest.map((inventory) => `${inventory.provider_driver}:${inventory.provider_instance_name}`).join(",")}`,
   );
+}
+
+async function confirmRealModelCalls(assumeYes: boolean): Promise<boolean> {
+  if (assumeYes) {
+    console.log("[start] --yes skipped the 10 second confirmation wait");
+    return true;
+  }
+  console.log("[start] real Provider calls start in 10 seconds; enter c then Enter to cancel, or press Enter to start now");
+  let finish!: (start: boolean) => void;
+  let settled = false;
+  const decision = new Promise<boolean>((resolvePromise) => {
+    finish = (start) => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(start);
+    };
+  });
+  let remaining = 10;
+  console.log(`[start] ${remaining}s`);
+  const ticker = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) console.log(`[start] ${remaining}s`);
+  }, 1_000);
+  const timeout = setTimeout(() => finish(true), 10_000);
+  const controller = new AbortController();
+  let inputTask: Promise<void> | undefined;
+  if (Deno.stdin.isTerminal()) {
+    const decoder = new TextDecoder();
+    inputTask = Deno.stdin.readable.pipeTo(
+      new WritableStream<Uint8Array>({
+        write(chunk) {
+          const input = decoder.decode(chunk).trim().toLowerCase();
+          if (input === "c" || input === "cancel") finish(false);
+          else if (input === "") finish(true);
+        },
+      }),
+      { signal: controller.signal, preventCancel: true, preventClose: true },
+    ).catch((error) => {
+      if (!(error instanceof DOMException && error.name === "AbortError")) throw error;
+    });
+  }
+  const start = await decision;
+  clearInterval(ticker);
+  clearTimeout(timeout);
+  controller.abort();
+  await inputTask;
+  return start;
 }
 
 function taskValue(raw: unknown): Record<string, unknown> {
@@ -658,7 +708,7 @@ async function main(): Promise<void> {
     options.fixtures,
     options.gatewayUrl,
     session.sessionToken,
-    options.allowRealModelCalls,
+    false,
     uploadedFixtureIds,
   );
   const initialRuntimeInstances = new Set(
@@ -1018,10 +1068,26 @@ async function executeAcceptance(input: {
     throw new Error(`estimated cost ${estimatedCost} exceeds max_cost_usd ${options.maxCostUsd}`);
   }
 
+  let executeRealModelCalls = options.allowRealModelCalls;
+  if (executeRealModelCalls && plannedCalls > 0) {
+    executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
+    if (executeRealModelCalls) {
+      options.fixtures = await loadDefaultFixtures(
+        options.fixtures,
+        options.gatewayUrl,
+        session.sessionToken,
+        true,
+        uploadedFixtureIds,
+      );
+    } else {
+      console.log("[cancelled] real model calls were not started");
+    }
+  }
+
   let actualCalls = 0;
   const financialEntries: FinancialEntry[] = [];
   const costBudget = new CostBudget(options.maxCostUsd);
-  if (options.allowRealModelCalls) {
+  if (executeRealModelCalls) {
     const scheduler = new ProviderScheduler(
       options.globalConcurrency,
       options.providerLimits,
@@ -1232,7 +1298,7 @@ async function executeAcceptance(input: {
       return caseReport;
     }));
     cases.push(...executed);
-  } else if (!options.allowRealModelCalls) {
+  } else {
     for (const cell of executableCells) {
       cases.push({
         run_id: runId,
@@ -1251,12 +1317,14 @@ async function executeAcceptance(input: {
           started_at: new Date().toISOString(),
           elapsed_ms: 0,
           status: "skipped",
-          diagnostic: "real model calls require --allow-real-model-calls",
+          diagnostic: options.allowRealModelCalls
+            ? "real model calls cancelled before execution"
+            : "real model calls require --allow-real-model-calls",
         }],
       });
     }
   }
-  if (options.allowRealModelCalls) {
+  if (executeRealModelCalls) {
     const successful = cases.filter((item) => item.task_id && financialEntries.some((entry) =>
       entry.case_id === item.case_id && entry.status === "passed"
     ));
@@ -1358,7 +1426,7 @@ async function executeAcceptance(input: {
       }
     }
   }
-  if (options.allowRealModelCalls) {
+  if (executeRealModelCalls) {
     const judged = cases.filter((item) => item.judge?.task_id);
     if (judged.length > 0) {
       try {
@@ -1510,7 +1578,7 @@ async function executeAcceptance(input: {
     finished_at: now,
     commit: await commitId(),
     baseline_revision: baseline.baseline_revision,
-    allow_real_model_calls: options.allowRealModelCalls,
+    allow_real_model_calls: executeRealModelCalls,
     planned_real_calls: plannedCalls,
     actual_real_calls: actualCalls,
     estimated_cost_usd: estimatedCost,
@@ -1541,6 +1609,17 @@ async function executeAcceptance(input: {
         expected: "a successful Provider call has one durable usage event and a matching exact-model/provider route trace",
         observed: item.attempts.at(-1)?.diagnostic ?? "durable usage/route attribution mismatch",
         evidencePaths: [`cases/${item.case_id}.json`, "finance.json"],
+      })),
+      ...cases.filter((item) =>
+        item.status === "failed" &&
+        ["routing_failed", "resource_failed", "security_failed", "assertion_failed"]
+          .includes(item.attempts.at(-1)?.failure_class ?? "")
+      ).map((item) => defectFromFailure({
+        component: "AICC",
+        caseReport: item,
+        expected: "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+        observed: item.attempts.at(-1)?.diagnostic ?? "acceptance assertion failed",
+        evidencePaths: [`cases/${item.case_id}.json`],
       })),
     ],
     targeted_retest_command: targetedRetestCommand(cases, options.configPath, options.timeoutMs),

@@ -30,7 +30,11 @@ import {
   ASSET_LABEL,
   SCENARIOS,
 } from "../../jarvis_media_dv/scenarios.ts";
-import { buildEntryCoverage } from "../../jarvis_media_dv/jarvis_media_dv.ts";
+import {
+  buildEntryCoverage,
+  productDefects,
+  type StepResult,
+} from "../../jarvis_media_dv/jarvis_media_dv.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +146,36 @@ test("T3 entry audit proves six message kinds and multi-attachment in both direc
     "video",
   ]);
   assert.ok(coverage.every((item) => item.status === "covered"));
+});
+
+test("T3 report records product assertions with expected, observed, and evidence", () => {
+  const base: StepResult = {
+    transport: "msg-center",
+    scenario_id: "text-basic",
+    step_id: "reply",
+    status: "failed",
+    started_at: "2026-08-27T00:00:00.000Z",
+    elapsed_ms: 1,
+    prompt: "hello",
+    reply_texts: [],
+    reply_refs: [],
+    automatic_checks: ["Jarvis returns a non-empty reply"],
+    review: [],
+    failure_class: "assertion_failed",
+    error: "reply was empty",
+  };
+  const defects = productDefects([
+    base,
+    { ...base, step_id: "transport", failure_class: "message_transport_failed" },
+  ]);
+  assert.equal(defects.length, 1);
+  assert.equal(defects[0].component, "Jarvis");
+  assert.equal(defects[0].expected, "Jarvis returns a non-empty reply");
+  assert.equal(defects[0].observed, "reply was empty");
+  assert.deepEqual(defects[0].evidence_paths, [
+    "summary.json",
+    "conversations/msg-center-text-basic.md",
+  ]);
 });
 
 test("T1 mock settings append run-scoped instances without mutating backup", () => {
