@@ -27,14 +27,12 @@ use buckyos_api::{
     AiResponse, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest, AiccHandler,
     AiccRouteOverlay, AiccRouteTraceEvent, AiccUsageEvent, AiccVideoContinuationSource,
     CancelResponse, Capability, CommitResultReq, CreateTaskExecutor, CreateTaskReq, FailTaskReq,
-    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, ModelSpec, ReportProgressReq,
-    ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest,
-    RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient,
-    TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse, TypedTaskData,
-};
-#[cfg(test)]
-use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
-use log::{debug, error, info, warn};
+<<<<<<< HEAD
+    Feature, LlmChatInvokeRequest, LlmChatInvokeResponse, LlmResponseFormat, ModelSpec,
+    ReportProgressReq, ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt,
+    RouteResolveRequest, RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError,
+    TaskManagerClient, TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse,
+    TypedTaskData, AICC_SERVICE_SERVICE_NAME,
 use ndn_lib::{
     load_named_object_from_obj_str, ChunkHasher, ChunkId, FileObject, NamedObject, ObjId,
 };
@@ -2685,6 +2683,22 @@ fn append_provider_audit_to_summary(summary: &mut AiResponse, attempt: &RouteAtt
     }
 }
 
+fn ensure_summary_accounting(summary: &mut AiResponse, attempt: &RouteAttempt) {
+    if summary.usage.is_none() {
+        summary.usage = Some(buckyos_api::AiUsage::request_units(1));
+    }
+    if summary.cost.is_none() {
+        if let Some(pricing) = attempt.pricing_snapshot.as_ref() {
+            if let Some(amount) = pricing.estimated_cost {
+                summary.cost = Some(buckyos_api::AiCost {
+                    amount,
+                    currency: pricing.currency.clone(),
+                });
+            }
+        }
+    }
+}
+
 fn llm_chat_invoke_to_method_request(
     request: LlmChatInvokeRequest,
 ) -> std::result::Result<AiMethodRequest, RPCErrors> {
@@ -2705,23 +2719,20 @@ fn llm_chat_invoke_to_method_request(
     if payload.tool_specs.is_empty() {
         payload.tool_specs = request.tools;
     }
-    if let Some(input_json) = payload.input_json.as_mut() {
-        if !input_json.is_object() {
-            *input_json = json!({ "value": input_json.clone() });
+    let input_json = payload.input_json.get_or_insert_with(|| json!({}));
+    if !input_json.is_object() {
+        *input_json = json!({ "value": input_json.clone() });
+    }
+    if let Some(object) = input_json.as_object_mut() {
+        if let Some(resp_format) = request.response_format {
+            object.insert("response_format".to_string(), json!(resp_format));
         }
-        if let Some(object) = input_json.as_object_mut() {
-            if let Some(resp_format) = request.response_format {
-                object.insert("response_format".to_string(), json!(resp_format));
-            }
-            if let Some(temperature) = request.temperature {
-                object.insert("temperature".to_string(), json!(temperature));
-            }
-            if let Some(max_output_tokens) = request.max_output_tokens {
-                object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
-            }
+        if let Some(temperature) = request.temperature {
+            object.insert("temperature".to_string(), json!(temperature));
         }
-    } else {
-        payload.input_json = Some(json!({}));
+        if let Some(max_output_tokens) = request.max_output_tokens {
+            object.insert("max_output_tokens".to_string(), json!(max_output_tokens));
+        }
     }
     merge_provider_options(&mut payload, request.provider_options);
     let mut policy = buckyos_api::RoutePolicy::default();
@@ -4312,6 +4323,22 @@ impl AIComputeCenter {
         request: AiMethodRequest,
         rpc_ctx: RPCContext,
     ) -> std::result::Result<AiMethodResponse, RPCErrors> {
+        let response_format = request
+            .payload
+            .input_json
+            .as_ref()
+            .and_then(|input| input.get("response_format"))
+            .cloned()
+            .map(|value| {
+                serde_json::from_value::<LlmResponseFormat>(value).map_err(|error| {
+                    RPCErrors::ParseRequestError(format!("invalid llm response_format: {}", error))
+                })
+            })
+            .transpose()?
+            .or_else(|| match request.requirements.resp_format {
+                buckyos_api::RespFormat::Json => Some(LlmResponseFormat::json_object()),
+                buckyos_api::RespFormat::Text => None,
+            });
         let route = self
             .resolve_route_authenticated(
                 route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
@@ -4325,7 +4352,7 @@ impl AIComputeCenter {
                     exact_model: route.selected_exact_model,
                     messages: request.payload.messages.clone(),
                     tools: request.payload.tool_specs.clone(),
-                    response_format: Some(request.requirements.resp_format.clone()),
+                    response_format,
                     temperature: request
                         .payload
                         .options
@@ -4729,9 +4756,6 @@ impl AIComputeCenter {
                         ));
                     }
                 }
-                if let Some(extra) = summary.extra.as_mut() {
-                    redact_base64_fields(extra);
-                }
                 self.emit_task_final(event_sink, external_task_id.as_str(), &summary)
                     .await;
                 Ok(AiMethodResponse::new(
@@ -4979,6 +5003,7 @@ impl AIComputeCenter {
             match result {
                 Ok(mut start_result) => {
                     if let ProviderStartResult::Immediate(summary) = &mut start_result {
+                        ensure_summary_accounting(summary, attempt);
                         self.apply_billing_to_summary(
                             ctx,
                             self.registry
@@ -5101,6 +5126,40 @@ impl AIComputeCenter {
         for resource in req.payload.resources.iter() {
             self.validate_resource(resource)?;
         }
+        if let Some(input_json) = req.payload.input_json.as_ref() {
+            self.validate_resources_in_value(input_json)?;
+        }
+        Ok(())
+    }
+
+    fn validate_resources_in_value(&self, value: &Value) -> std::result::Result<(), RPCErrors> {
+        match value {
+            Value::Object(object) => {
+                if object
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| matches!(kind, "url" | "base64" | "named_object"))
+                {
+                    let resource =
+                        serde_json::from_value::<ResourceRef>(value.clone()).map_err(|error| {
+                            reason_error(
+                                "resource_invalid",
+                                format!("canonical resource is invalid: {}", error),
+                            )
+                        })?;
+                    return self.validate_resource(&resource);
+                }
+                for child in object.values() {
+                    self.validate_resources_in_value(child)?;
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    self.validate_resources_in_value(child)?;
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -5221,7 +5280,7 @@ impl AIComputeCenter {
         task_id: &str,
         summary: &AiResponse,
     ) {
-        let summary_value = redacted_summary_value(summary);
+        let summary_value = serde_json::to_value(summary).unwrap_or_else(|_| json!({}));
         let event = TaskEvent {
             task_id: task_id.to_string(),
             kind: TaskEventKind::Final,
@@ -5795,7 +5854,7 @@ pub(crate) async fn emit_background_provider_result(
                     kind: TaskEventKind::Final,
                     timestamp_ms: now_ms(),
                     data: Some(json!({
-                        "summary": redacted_summary_value(&summary),
+                        "summary": serde_json::to_value(&summary).unwrap_or_else(|_| json!({})),
                         "finish_reason": finish_reason,
                         "has_text": has_text,
                         "artifact_count": artifact_count

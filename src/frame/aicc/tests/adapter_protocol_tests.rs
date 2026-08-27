@@ -203,10 +203,15 @@ async fn adapter_openai_video_img2video_returns_downloaded_artifact() {
     assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
     match &artifacts[0].resource {
         ResourceRef::Base64 { data_base64, .. } => {
-            assert_eq!(data_base64, "[redacted_base64] len=16");
+            assert_eq!(data_base64, "b3BlbmFpLXZpZGVv");
         }
         other => panic!("unexpected video artifact: {:?}", other),
     }
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.request_units),
+        Some(1)
+    );
+    assert_eq!(summary.cost.as_ref().map(|cost| cost.amount), Some(0.4));
 }
 
 #[tokio::test]
@@ -291,10 +296,15 @@ async fn adapter_gemini_video_img2video_returns_downloaded_artifact() {
     assert_eq!(artifacts[0].mime.as_deref(), Some("video/mp4"));
     match &artifacts[0].resource {
         ResourceRef::Base64 { data_base64, .. } => {
-            assert_eq!(data_base64, "[redacted_base64] len=16");
+            assert_eq!(data_base64, "Z2VtaW5pLXZpZGVv");
         }
         other => panic!("unexpected video artifact: {:?}", other),
     }
+    assert_eq!(
+        summary.usage.as_ref().and_then(|usage| usage.request_units),
+        Some(1)
+    );
+    assert_eq!(summary.cost.as_ref().map(|cost| cost.amount), Some(0.5));
     assert_eq!(
         summary
             .extra

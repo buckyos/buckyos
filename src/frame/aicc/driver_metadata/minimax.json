@@ -8,17 +8,17 @@
   "models": [],
   "patterns": [
     {
-      "pattern": "MiniMax-*",
+      "pattern": "MiniMax-M2*",
       "api_types": ["llm"],
       "logical_mounts": ["llm.minimax", "llm.minimax.{model}"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
-        "json_schema": true,
+        "json_schema": false,
         "web_search": false,
         "vision": false,
-        "max_context_tokens": 100000,
-        "max_output_tokens": 8192
+        "max_context_tokens": 204800,
+        "max_output_tokens": 204800
       },
       "pricing": {
         "currency": "USD",

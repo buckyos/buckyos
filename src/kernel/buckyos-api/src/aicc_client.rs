@@ -129,6 +129,74 @@ pub enum RespFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmResponseFormatType {
+    Text,
+    Json,
+    JsonObject,
+    JsonSchema,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmJsonSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub schema: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmResponseFormat {
+    #[serde(rename = "type")]
+    pub format_type: LlmResponseFormatType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<LlmJsonSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+}
+
+impl LlmResponseFormat {
+    pub fn text() -> Self {
+        Self {
+            format_type: LlmResponseFormatType::Text,
+            json_schema: None,
+            name: None,
+            schema: None,
+            strict: None,
+        }
+    }
+
+    pub fn json_object() -> Self {
+        Self {
+            format_type: LlmResponseFormatType::JsonObject,
+            json_schema: None,
+            name: None,
+            schema: None,
+            strict: None,
+        }
+    }
+
+    pub fn json_schema(name: Option<String>, schema: Value, strict: Option<bool>) -> Self {
+        Self {
+            format_type: LlmResponseFormatType::JsonSchema,
+            json_schema: Some(LlmJsonSchema {
+                name,
+                schema,
+                strict,
+            }),
+            name: None,
+            schema: None,
+            strict: None,
+        }
+    }
+}
+
 fn is_default_resp_format(resp_format: &RespFormat) -> bool {
     matches!(resp_format, RespFormat::Text)
 }
@@ -1649,7 +1717,7 @@ pub struct LlmChatInvokeRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<AiToolSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<RespFormat>,
+    pub response_format: Option<LlmResponseFormat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -12,13 +12,13 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
+#[cfg(test)]
+use buckyos_api::Capability;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
     AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiToolSpec, AiUsage,
     Feature, ResourceRef,
 };
-#[cfg(test)]
-use buckyos_api::Capability;
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
@@ -3938,6 +3938,10 @@ impl GoogleGeminiProvider {
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
             usage: Some(AiUsage::request_units(1)),
+            cost: Some(AiCost {
+                amount: 0.5,
+                currency: "USD".to_string(),
+            }),
             provider_task_ref: Some(operation_name),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
@@ -4105,7 +4109,9 @@ impl Provider for GoogleGeminiProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "google gemini provider cancellation is unsupported",
+        ))
     }
 }
 

@@ -5,6 +5,7 @@ use buckyos_api::{
     AiContent, AiMessage, AiMethodRequest, AiRole, AiToolResultContent, AiToolSpec, ResourceRef,
 };
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 
 /// Tool result lowering dialect.
 ///
@@ -677,6 +678,76 @@ pub(crate) fn merge_options(
     Ok((ignored, extra_messages))
 }
 
+fn response_schema_from_value(value: &Value) -> Result<Value, ProviderError> {
+    let schema = value
+        .get("json_schema")
+        .and_then(|value| value.get("schema"))
+        .or_else(|| value.get("schema"))
+        .unwrap_or(value);
+    if !schema.is_object() {
+        return Err(ProviderError::fatal(
+            "response JSON schema must be an object",
+        ));
+    }
+    Ok(schema.clone())
+}
+
+fn merge_response_format(
+    target: &mut Map<String, Value>,
+    req: &AiMethodRequest,
+    dialect: ProtocolDialect,
+) -> Result<bool, ProviderError> {
+    let value = [
+        req.payload.input_json.as_ref(),
+        req.payload.options.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|source| {
+        source
+            .get("response_schema")
+            .map(|value| (value, true))
+            .or_else(|| source.get("response_format").map(|value| (value, false)))
+    });
+    let Some((value, is_schema)) = value else {
+        return Ok(false);
+    };
+    let format_type = if is_schema {
+        "json_schema"
+    } else {
+        value
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| value.as_str())
+            .unwrap_or_default()
+    };
+    if matches!(format_type, "" | "text") {
+        return Ok(false);
+    }
+    if matches!(dialect, ProtocolDialect::MiniMax) {
+        return Err(ProviderError::fatal(
+            "MiniMax Anthropic-compatible endpoint does not support structured response_format",
+        ));
+    }
+    if format_type != "json_schema" {
+        return Err(ProviderError::fatal(format!(
+            "Claude response_format '{}' requires an explicit JSON schema",
+            format_type
+        )));
+    }
+    let schema = response_schema_from_value(value)?;
+    target.insert(
+        "output_config".to_string(),
+        json!({
+            "format": {
+                "type": "json_schema",
+                "schema": schema,
+            }
+        }),
+    );
+    Ok(true)
+}
+
 fn build_fallback_content(req: &AiMethodRequest) -> Result<Option<String>, ProviderError> {
     let mut content = req
         .payload
@@ -882,7 +953,7 @@ fn lower_ai_message(
             }
         }
         AiRole::Assistant => {
-            let blocks = lower_assistant_blocks(&msg.content)?;
+            let blocks = lower_assistant_blocks(&msg.content, dialect)?;
             if !blocks.is_empty() {
                 messages.push(json!({ "role": "assistant", "content": blocks }));
             }
@@ -956,7 +1027,10 @@ fn lower_user_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderError>
     Ok(blocks)
 }
 
-fn lower_assistant_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderError> {
+fn lower_assistant_blocks(
+    content: &[AiContent],
+    dialect: ProtocolDialect,
+) -> Result<Vec<Value>, ProviderError> {
     let mut blocks = Vec::with_capacity(content.len());
     for block in content {
         match block {
@@ -1004,9 +1078,11 @@ fn lower_assistant_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderE
                 }
             }
             AiContent::ProviderState { provider, value } => {
-                // Restore native item only when the block was authored by
-                // this provider; other providers' opaque state is dropped.
-                if provider.eq_ignore_ascii_case("anthropic") {
+                let expected_provider = match dialect {
+                    ProtocolDialect::Claude => "anthropic",
+                    ProtocolDialect::MiniMax => "minimax",
+                };
+                if provider.eq_ignore_ascii_case(expected_provider) {
                     blocks.push(value.clone());
                 }
             }
@@ -1017,6 +1093,69 @@ fn lower_assistant_blocks(content: &[AiContent]) -> Result<Vec<Value>, ProviderE
         }
     }
     Ok(blocks)
+}
+
+pub(crate) fn parse_response_content(body: &Value, provider: &str) -> Vec<AiContent> {
+    let Some(items) = body.get("content").and_then(Value::as_array) else {
+        return vec![];
+    };
+    let mut content = Vec::with_capacity(items.len());
+    for item in items {
+        match item.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "text" => {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    content.push(AiContent::Text {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "tool_use" => {
+                let Some(call_id) = item.get("id").and_then(Value::as_str) else {
+                    content.push(AiContent::ProviderState {
+                        provider: provider.to_string(),
+                        value: item.clone(),
+                    });
+                    continue;
+                };
+                let Some(name) = item.get("name").and_then(Value::as_str) else {
+                    content.push(AiContent::ProviderState {
+                        provider: provider.to_string(),
+                        value: item.clone(),
+                    });
+                    continue;
+                };
+                let args = item
+                    .get("input")
+                    .and_then(Value::as_object)
+                    .map(|value| value.clone().into_iter().collect::<HashMap<_, _>>())
+                    .unwrap_or_default();
+                content.push(AiContent::ToolUse {
+                    call_id: call_id.to_string(),
+                    name: name.to_string(),
+                    args,
+                });
+            }
+            "thinking" => {
+                let provider_metadata = item
+                    .get("signature")
+                    .cloned()
+                    .map(|signature| json!({ "signature": signature }));
+                content.push(AiContent::Thinking {
+                    summary: None,
+                    text: item
+                        .get("thinking")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    provider_metadata,
+                });
+            }
+            _ => content.push(AiContent::ProviderState {
+                provider: provider.to_string(),
+                value: item.clone(),
+            }),
+        }
+    }
+    content
 }
 
 fn lower_tool_result_content_claude(
@@ -1206,6 +1345,10 @@ pub(crate) fn convert_complete_request_with_dialect(
         {
             message_array.extend(extra_messages);
         }
+    }
+
+    if merge_response_format(&mut request, req, dialect)? {
+        ignored.retain(|key| key != "response_schema" && key != "response_format");
     }
 
     merge_tool_calls(&mut request, req.payload.tool_specs.as_slice())?;
@@ -1649,5 +1792,76 @@ mod tests {
             "tools must not be set when web_search not required: {:?}",
             request.get("tools")
         );
+    }
+
+    #[test]
+    fn claude_maps_canonical_json_schema_to_output_config() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "json")];
+        req.payload.input_json = Some(json!({
+            "response_format": {
+                "type": "json_schema",
+                "name": "answer",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": { "answer": { "type": "string" } },
+                    "required": ["answer"]
+                }
+            }
+        }));
+        let (request, ignored) =
+            convert_complete_request(&req, "claude-sonnet-4-5", None).expect("convert");
+        let request = Value::Object(request);
+        assert_eq!(
+            request.pointer("/output_config/format/type"),
+            Some(&json!("json_schema"))
+        );
+        assert_eq!(
+            request.pointer("/output_config/format/schema/type"),
+            Some(&json!("object"))
+        );
+        assert!(!ignored.iter().any(|key| key == "response_format"));
+    }
+
+    #[test]
+    fn minimax_rejects_structured_output_before_http() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "json")];
+        req.payload.input_json = Some(json!({
+            "response_format": {
+                "type": "json_schema",
+                "schema": { "type": "object" }
+            }
+        }));
+        let error = convert_complete_request_with_dialect(
+            &req,
+            "MiniMax-M2.7",
+            ProtocolDialect::MiniMax,
+            None,
+        )
+        .expect_err("unsupported structured output must fail");
+        assert!(error.to_string().contains("does not support structured"));
+    }
+
+    #[test]
+    fn response_content_preserves_block_order_and_opaque_state() {
+        let content = parse_response_content(
+            &json!({
+                "content": [
+                    { "type": "thinking", "thinking": "reason", "signature": "sig" },
+                    { "type": "text", "text": "before" },
+                    { "type": "server_tool_use", "id": "srv-1" },
+                    { "type": "tool_use", "id": "call-1", "name": "echo", "input": { "x": 1 } },
+                    { "type": "text", "text": "after" }
+                ]
+            }),
+            "anthropic",
+        );
+        assert!(matches!(content[0], AiContent::Thinking { .. }));
+        assert!(matches!(content[1], AiContent::Text { .. }));
+        assert!(matches!(content[2], AiContent::ProviderState { .. }));
+        assert!(matches!(content[3], AiContent::ToolUse { .. }));
+        assert!(matches!(content[4], AiContent::Text { .. }));
     }
 }

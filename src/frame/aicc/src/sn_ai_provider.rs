@@ -1590,16 +1590,10 @@ impl SnAIProvider {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                if provider_items.is_empty() {
-                    if msg.text_content().trim().is_empty() && msg.tool_calls().is_empty() {
-                        continue;
-                    }
-                    return Err(ProviderError::fatal(
-                        "assistant history is missing Responses output items for provider `sn-ai-provider`",
-                    ));
+                if !provider_items.is_empty() {
+                    items.extend(provider_items);
+                    continue;
                 }
-                items.extend(provider_items);
-                continue;
             }
             let content_type = if role_str == "assistant" {
                 "output_text"
@@ -2288,7 +2282,9 @@ impl SnAIProvider {
         Ok(artifacts)
     }
 
-    fn embedding_inputs(req: &AiMethodRequest) -> Result<Value, ProviderError> {
+    fn embedding_inputs(
+        req: &AiMethodRequest,
+    ) -> Result<(Value, Vec<Option<String>>), ProviderError> {
         if let Some(items) = req
             .payload
             .input_json
@@ -2296,22 +2292,32 @@ impl SnAIProvider {
             .and_then(|value| value.get("items"))
             .and_then(Value::as_array)
         {
-            let texts = items
-                .iter()
-                .filter_map(|item| {
-                    item.get("text")
+            let mut texts = Vec::with_capacity(items.len());
+            let mut ids = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let text = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.as_str())
+                    .ok_or_else(|| {
+                        ProviderError::fatal(format!(
+                            "embedding.text item {} must contain text; resource items are unsupported by SN text embeddings",
+                            index
+                        ))
+                    })?;
+                texts.push(Value::String(text.to_string()));
+                ids.push(
+                    item.get("id")
                         .and_then(Value::as_str)
-                        .or_else(|| item.as_str())
-                        .map(str::to_string)
-                })
-                .map(Value::String)
-                .collect::<Vec<_>>();
+                        .map(ToString::to_string),
+                );
+            }
             if !texts.is_empty() {
-                return Ok(Value::Array(texts));
+                return Ok((Value::Array(texts), ids));
             }
         }
         if let Some(text) = req.payload.text.as_ref() {
-            return Ok(Value::String(text.clone()));
+            return Ok((Value::String(text.clone()), vec![None]));
         }
         let texts = req
             .payload
@@ -2322,7 +2328,8 @@ impl SnAIProvider {
             .map(Value::String)
             .collect::<Vec<_>>();
         if !texts.is_empty() {
-            return Ok(Value::Array(texts));
+            let ids = vec![None; texts.len()];
+            return Ok((Value::Array(texts), ids));
         }
         Err(ProviderError::fatal(
             "embedding.text requires payload.input_json.items or payload.text",
@@ -2335,12 +2342,28 @@ impl SnAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        let input_json = req.payload.input_json.as_ref();
+        if input_json.and_then(|value| value.get("chunking")).is_some() {
+            return Err(ProviderError::fatal(
+                "SN embedding endpoint does not support canonical chunking",
+            ));
+        }
+        if input_json
+            .and_then(|value| value.get("normalize"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            return Err(ProviderError::fatal(
+                "SN OpenAI-compatible embeddings cannot satisfy normalize=false",
+            ));
+        }
+        let (embedding_input, input_ids) = Self::embedding_inputs(req)?;
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        request_obj.insert("input".to_string(), Self::embedding_inputs(req)?);
+        request_obj.insert("input".to_string(), embedding_input);
         if let Some(dimensions) = req
             .payload
             .input_json
@@ -2364,16 +2387,84 @@ impl SnAIProvider {
             .pointer("/data/0/embedding")
             .and_then(Value::as_array)
             .map(Vec::len);
+        let embedding_space_id = input_json
+            .and_then(|value| value.get("embedding_space_id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "sn:{}:{}",
+                    provider_model,
+                    dimensions
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                )
+            });
+        let mut data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (index, item) in data.iter_mut().enumerate() {
+            if let (Some(id), Some(object)) = (
+                input_ids.get(index).and_then(|value| value.as_ref()),
+                item.as_object_mut(),
+            ) {
+                object.insert("id".to_string(), Value::String(id.clone()));
+            }
+        }
+        let prefer_artifact = data.len() > 100
+            || input_json
+                .and_then(|value| value.get("prefer_artifact"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            || input_json
+                .and_then(|value| value.get("output"))
+                .and_then(|value| value.get("resource_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "named_object");
+        let artifact = if prefer_artifact {
+            let bytes = serde_json::to_vec(&json!({
+                "embedding_space_id": embedding_space_id.clone(),
+                "data": data.clone(),
+            }))
+            .map_err(|error| {
+                ProviderError::fatal(format!("serialize embedding artifact failed: {}", error))
+            })?;
+            Some(AiArtifact {
+                name: "embeddings.json".to_string(),
+                resource: ResourceRef::Base64 {
+                    mime: "application/json".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                mime: Some("application/json".to_string()),
+                metadata: Some(json!({
+                    "rows": data.len(),
+                    "dimensions": dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+            })
+        } else {
+            None
+        };
         Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(
+                None,
+                vec![],
+                artifact.clone().into_iter().collect(),
+            ),
             finish_reason: Some("stop".to_string()),
             extra: Some(json!({
                 "embedding": {
-                    "data": body.get("data").cloned().unwrap_or_else(|| Value::Array(vec![])),
-                    "embedding_space_id": format!(
-                        "sn:{}:{}",
-                        provider_model,
-                        dimensions.map(|value| value.to_string()).unwrap_or_else(|| "unknown".to_string())
-                    ),
+                    "data": if prefer_artifact { Value::Array(vec![]) } else { Value::Array(data.clone()) },
+                    "embedding_space_id": embedding_space_id.clone(),
+                    "artifact": artifact.as_ref().map(|value| json!({
+                        "name": value.name.clone(),
+                        "mime": value.mime.clone(),
+                        "rows": data.len(),
+                        "dimensions": dimensions,
+                        "embedding_space_id": embedding_space_id.clone(),
+                    })),
                     "provider_io": {
                         "input": Value::Object(request_obj),
                         "output": body
@@ -2541,11 +2632,14 @@ impl SnAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let resource =
-            req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("audio.asr requires resources[0] audio input")
-            })?;
-        let (filename, mime, bytes) = self.resource_to_file_bytes(resource, "audio").await?;
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["audio"]))
+            .ok_or_else(|| ProviderError::fatal("audio.asr requires canonical audio input"))?;
+        let (filename, mime, bytes) = self.resource_to_file_bytes(&resource, "audio").await?;
         let mut fields = vec![
             ("model".to_string(), provider_model.to_string()),
             ("response_format".to_string(), "json".to_string()),
@@ -2593,9 +2687,13 @@ impl SnAIProvider {
     fn resource_from_input_json(req: &AiMethodRequest, keys: &[&str]) -> Option<ResourceRef> {
         let input = req.payload.input_json.as_ref()?;
         keys.iter().find_map(|key| {
-            input
-                .get(*key)
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
+            let value = input.get(*key)?;
+            serde_json::from_value(value.clone()).ok().or_else(|| {
+                value
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+            })
         })
     }
 
@@ -2772,11 +2870,17 @@ impl SnAIProvider {
         let requested_size = Self::video_size(req);
         let mut files = vec![];
         if method == ai_methods::VIDEO_IMG2VIDEO {
-            let resource = req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("video.img2video requires resources[0] image input")
-            })?;
+            let resource = req
+                .payload
+                .resources
+                .first()
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("video.img2video requires canonical image input")
+                })?;
             let (name, mime, bytes) = self
-                .resource_to_file_bytes(resource, "input_reference.png")
+                .resource_to_file_bytes(&resource, "input_reference.png")
                 .await?;
             let normalize_size = requested_size.clone();
             let (size, normalized_bytes) = tokio::task::spawn_blocking(move || {
@@ -2913,6 +3017,15 @@ impl SnAIProvider {
         };
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            usage: Some(AiUsage::request_units(1)),
+            cost: Some(buckyos_api::AiCost {
+                amount: if provider_model.contains("pro") {
+                    1.2
+                } else {
+                    0.4
+                },
+                currency: "USD".to_string(),
+            }),
             finish_reason: Some("stop".to_string()),
             provider_task_ref: Some(video_id.to_string()),
             extra: Some(json!({
@@ -2933,16 +3046,26 @@ impl SnAIProvider {
         req: &AiMethodRequest,
         with_mask: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let image = req.payload.resources.first().ok_or_else(|| {
-            ProviderError::fatal("image edit requires resources[0] source image input")
-        })?;
-        let (name, mime, bytes) = self.resource_to_file_bytes(image, "image.png").await?;
+        let image = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+            .ok_or_else(|| ProviderError::fatal("image edit requires canonical image input"))?;
+        let (name, mime, bytes) = self.resource_to_file_bytes(&image, "image.png").await?;
         let mut files = vec![("image".to_string(), name, mime, bytes)];
         if with_mask {
-            let mask = req.payload.resources.get(1).ok_or_else(|| {
-                ProviderError::fatal("image.inpaint requires resources[1] mask input")
-            })?;
-            let (name, mime, bytes) = self.resource_to_file_bytes(mask, "mask.png").await?;
+            let mask = req
+                .payload
+                .resources
+                .get(1)
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["mask"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("image.inpaint requires canonical mask input")
+                })?;
+            let (name, mime, bytes) = self.resource_to_file_bytes(&mask, "mask.png").await?;
             files.push(("mask".to_string(), name, mime, bytes));
         }
         let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
@@ -3237,7 +3360,9 @@ impl Provider for SnAIProvider {
         _ctx: InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "sn-ai-provider cancellation is unsupported",
+        ))
     }
 }
 

@@ -18,12 +18,12 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use base64::engine::general_purpose;
 use base64::Engine as _;
+#[cfg(test)]
+use buckyos_api::Capability;
 use buckyos_api::{
     ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
     AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiUsage, ResourceRef,
 };
-#[cfg(test)]
-use buckyos_api::Capability;
 use buckyos_kit::buckyos_get_unix_timestamp;
 use image::imageops::FilterType;
 use image::ImageFormat;
@@ -406,31 +406,20 @@ impl OpenAIProvider {
         &self,
         models: &[String],
         image_models: &[String],
+        embedding_models: &[String],
+        asr_models: &[String],
+        tts_models: &[String],
         revision: Option<String>,
     ) -> ProviderInventory {
-        let mut models = models.to_vec();
-        if self.provider_driver == DEFAULT_OPENAI_PROVIDER_DRIVER {
-            models.extend(parse_csv_list(DEFAULT_OPENAI_VIDEO_MODELS));
-            models = normalize_model_list(models);
-        }
-        let (embedding_models, asr_models, tts_models) = if self.provider_driver == "openrouter" {
-            (vec![], vec![], vec![])
-        } else {
-            (
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_EMBEDDING_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_ASR_MODELS)),
-                normalize_model_list(parse_csv_list(DEFAULT_OPENAI_TTS_MODELS)),
-            )
-        };
         Self::build_inventory(
             self.instance.provider_instance_name.as_str(),
             self.provider_type.clone(),
             self.provider_driver.as_str(),
-            models.as_slice(),
+            models,
             image_models,
-            embedding_models.as_slice(),
-            asr_models.as_slice(),
-            tts_models.as_slice(),
+            embedding_models,
+            asr_models,
+            tts_models,
             revision,
         )
     }
@@ -454,9 +443,14 @@ impl OpenAIProvider {
 
         let response = serde_json::from_value::<OpenAIModelsResponse>(body)
             .context("failed to parse openai models response")?;
-        let (llm_models, image_models) =
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
             normalize_remote_model_ids(response.data, self.provider_driver.as_str());
-        if llm_models.is_empty() && image_models.is_empty() {
+        if llm_models.is_empty()
+            && image_models.is_empty()
+            && embedding_models.is_empty()
+            && asr_models.is_empty()
+            && tts_models.is_empty()
+        {
             return Err(anyhow!(
                 "openai inventory refresh returned no supported models"
             ));
@@ -465,9 +459,15 @@ impl OpenAIProvider {
         Ok(self.build_inventory_from_models(
             llm_models.as_slice(),
             image_models.as_slice(),
+            embedding_models.as_slice(),
+            asr_models.as_slice(),
+            tts_models.as_slice(),
             Some(inventory_revision(
                 llm_models.as_slice(),
                 image_models.as_slice(),
+                embedding_models.as_slice(),
+                asr_models.as_slice(),
+                tts_models.as_slice(),
             )),
         ))
     }
@@ -942,19 +942,16 @@ impl OpenAIProvider {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                if provider_items.is_empty() {
-                    if msg.text_content().trim().is_empty() && msg.tool_calls().is_empty() {
-                        continue;
-                    }
-                    return Err(ProviderError::fatal(format!(
-                        "assistant history is missing Responses output items for provider `{}`",
-                        self.provider_driver
-                    )));
+                if !provider_items.is_empty() {
+                    items.extend(provider_items);
+                    continue;
                 }
-                items.extend(provider_items);
-                continue;
             }
-            let content_type = "input_text";
+            let content_type = if role_str == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
             let mut pending_text_parts: Vec<Value> = Vec::new();
 
             for block in &msg.content {
@@ -2704,6 +2701,13 @@ impl OpenAIProvider {
                 if let Ok(resource) = serde_json::from_value::<ResourceRef>(value.clone()) {
                     return Some(resource);
                 }
+                if let Some(resource) = value
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(|value| serde_json::from_value::<ResourceRef>(value.clone()).ok())
+                {
+                    return Some(resource);
+                }
             }
         }
         None
@@ -2916,7 +2920,9 @@ impl OpenAIProvider {
         Ok(ProviderStartResult::Immediate(summary))
     }
 
-    fn embedding_inputs(req: &AiMethodRequest) -> Result<Value, ProviderError> {
+    fn embedding_inputs(
+        req: &AiMethodRequest,
+    ) -> Result<(Value, Vec<Option<String>>), ProviderError> {
         if let Some(items) = req
             .payload
             .input_json
@@ -2925,22 +2931,33 @@ impl OpenAIProvider {
             .cloned()
         {
             if let Some(array) = items.as_array() {
-                let texts = array
-                    .iter()
-                    .filter_map(|item| {
-                        item.get("text")
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string())
-                            .or_else(|| item.as_str().map(|value| value.to_string()))
-                    })
-                    .collect::<Vec<_>>();
+                let mut texts = Vec::with_capacity(array.len());
+                let mut ids = Vec::with_capacity(array.len());
+                for (index, item) in array.iter().enumerate() {
+                    let text = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .or_else(|| item.as_str())
+                        .ok_or_else(|| {
+                            ProviderError::fatal(format!(
+                                "embedding.text item {} must contain text; resource items are unsupported by OpenAI text embeddings",
+                                index
+                            ))
+                        })?;
+                    texts.push(Value::String(text.to_string()));
+                    ids.push(
+                        item.get("id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string),
+                    );
+                }
                 if !texts.is_empty() {
-                    return Ok(Value::Array(texts.into_iter().map(Value::String).collect()));
+                    return Ok((Value::Array(texts), ids));
                 }
             }
         }
         if let Some(text) = req.payload.text.as_ref().map(String::as_str) {
-            return Ok(Value::String(text.to_string()));
+            return Ok((Value::String(text.to_string()), vec![None]));
         }
         let texts = req
             .payload
@@ -2951,7 +2968,8 @@ impl OpenAIProvider {
             .map(Value::String)
             .collect::<Vec<_>>();
         if !texts.is_empty() {
-            return Ok(Value::Array(texts));
+            let ids = vec![None; texts.len()];
+            return Ok((Value::Array(texts), ids));
         }
         Err(ProviderError::fatal(
             "embedding.text requires payload.input_json.items or payload.text",
@@ -2964,12 +2982,28 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        let input_json = req.payload.input_json.as_ref();
+        if input_json.and_then(|value| value.get("chunking")).is_some() {
+            return Err(ProviderError::fatal(
+                "OpenAI embedding endpoint does not support canonical chunking",
+            ));
+        }
+        if input_json
+            .and_then(|value| value.get("normalize"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            return Err(ProviderError::fatal(
+                "OpenAI embeddings are normalized and cannot satisfy normalize=false",
+            ));
+        }
+        let (embedding_input, input_ids) = Self::embedding_inputs(req)?;
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
             Value::String(provider_model.to_string()),
         );
-        request_obj.insert("input".to_string(), Self::embedding_inputs(req)?);
+        request_obj.insert("input".to_string(), embedding_input);
         if let Some(dimensions) = req
             .payload
             .input_json
@@ -2992,19 +3026,82 @@ impl OpenAIProvider {
             .pointer("/data/0/embedding")
             .and_then(|value| value.as_array())
             .map(|items| items.len());
-        let embedding_space_id = format!(
+        let computed_embedding_space_id = format!(
             "openai:{}:{}",
             provider_model,
             dimensions
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "unknown".to_string())
         );
+        let embedding_space_id = input_json
+            .and_then(|value| value.get("embedding_space_id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or(computed_embedding_space_id);
+        let mut data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (index, item) in data.iter_mut().enumerate() {
+            if let (Some(id), Some(object)) = (
+                input_ids.get(index).and_then(|value| value.as_ref()),
+                item.as_object_mut(),
+            ) {
+                object.insert("id".to_string(), Value::String(id.clone()));
+            }
+        }
+        let prefer_artifact = input_json
+            .and_then(|value| value.get("prefer_artifact"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || data.len() > 100
+            || input_json
+                .and_then(|value| value.get("output"))
+                .and_then(|value| value.get("resource_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "named_object")
+            || input_json
+                .and_then(|value| value.get("response_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| matches!(value, "object_id" | "named_object"));
+        let artifact = if prefer_artifact {
+            let artifact_body = json!({
+                "embedding_space_id": embedding_space_id.clone(),
+                "data": data.clone(),
+            });
+            let bytes = serde_json::to_vec(&artifact_body).map_err(|error| {
+                ProviderError::fatal(format!("serialize embedding artifact failed: {}", error))
+            })?;
+            Some(AiArtifact {
+                name: "embeddings.json".to_string(),
+                resource: ResourceRef::Base64 {
+                    mime: "application/json".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                mime: Some("application/json".to_string()),
+                metadata: Some(json!({
+                    "rows": data.len(),
+                    "dimensions": dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+            })
+        } else {
+            None
+        };
         let mut extra = Map::new();
         extra.insert(
             "embedding".to_string(),
             json!({
-                "data": body.get("data").cloned().unwrap_or_else(|| Value::Array(vec![])),
+                "data": if prefer_artifact { Value::Array(vec![]) } else { Value::Array(data.clone()) },
                 "embedding_space_id": embedding_space_id,
+                "artifact": artifact.as_ref().map(|value| json!({
+                    "name": value.name.clone(),
+                    "mime": value.mime.clone(),
+                    "rows": data.len(),
+                    "dimensions": dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
                 "provider_io": {
                     "input": Value::Object(request_obj.clone()),
                     "output": body.clone()
@@ -3013,6 +3110,7 @@ impl OpenAIProvider {
             }),
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifact.into_iter().collect()),
             finish_reason: Some("stop".to_string()),
             extra: Some(Value::Object(extra)),
             ..Default::default()
@@ -3090,6 +3188,24 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        let input_json = req.payload.input_json.as_ref();
+        for (pointer, name) in [
+            ("/language", "language"),
+            ("/voice/gender", "voice.gender"),
+            ("/voice/style", "voice.style"),
+            ("/voice/speaker_similarity", "voice.speaker_similarity"),
+            ("/output/sample_rate", "output.sample_rate"),
+        ] {
+            if input_json
+                .and_then(|value| value.pointer(pointer))
+                .is_some()
+            {
+                return Err(ProviderError::fatal(format!(
+                    "OpenAI TTS does not support canonical hard constraint {}",
+                    name
+                )));
+            }
+        }
         let text = req
             .payload
             .input_json
@@ -3118,7 +3234,14 @@ impl OpenAIProvider {
             .as_ref()
             .and_then(|value| value.pointer("/output/media_type"))
             .and_then(|value| value.as_str())
-            .map(|mime| if mime.contains("wav") { "wav" } else { "mp3" })
+            .map(|mime| match mime {
+                "audio/wav" => "wav",
+                "audio/opus" => "opus",
+                "audio/aac" => "aac",
+                "audio/flac" => "flac",
+                "audio/L16" | "audio/pcm" => "pcm",
+                _ => "mp3",
+            })
             .unwrap_or("mp3");
         let mut request_obj = Map::new();
         request_obj.insert(
@@ -3131,6 +3254,17 @@ impl OpenAIProvider {
             "response_format".to_string(),
             Value::String(response_format.to_string()),
         );
+        if let Some(speed) = input_json
+            .and_then(|value| value.get("speed"))
+            .and_then(Value::as_f64)
+        {
+            if !(0.25..=4.0).contains(&speed) {
+                return Err(ProviderError::fatal(
+                    "OpenAI TTS speed must be between 0.25 and 4.0",
+                ));
+            }
+            request_obj.insert("speed".to_string(), json!(speed));
+        }
         let url = format!("{}/audio/speech", self.base_url);
         let (status, bytes, content_type, latency_ms) = self
             .post_binary_json(ctx, url.as_str(), &request_obj)
@@ -3141,10 +3275,16 @@ impl OpenAIProvider {
         }
         let mime = if content_type.contains("audio") {
             content_type
-        } else if response_format == "wav" {
-            "audio/wav".to_string()
         } else {
-            "audio/mpeg".to_string()
+            match response_format {
+                "wav" => "audio/wav",
+                "opus" => "audio/opus",
+                "aac" => "audio/aac",
+                "flac" => "audio/flac",
+                "pcm" => "audio/pcm",
+                _ => "audio/mpeg",
+            }
+            .to_string()
         };
         let artifact = AiArtifact {
             name: "audio".to_string(),
@@ -3176,11 +3316,14 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let resource =
-            req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("audio.asr requires resources[0] audio input")
-            })?;
-        let (filename, mime, bytes) = self.resource_to_file_bytes(resource, "audio").await?;
+        let resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["audio"]))
+            .ok_or_else(|| ProviderError::fatal("audio.asr requires canonical audio input"))?;
+        let (filename, mime, bytes) = self.resource_to_file_bytes(&resource, "audio").await?;
         let mut fields = vec![
             ("model".to_string(), provider_model.to_string()),
             ("response_format".to_string(), "json".to_string()),
@@ -3334,11 +3477,17 @@ impl OpenAIProvider {
 
         let mut files = vec![];
         if method == ai_methods::VIDEO_IMG2VIDEO {
-            let resource = req.payload.resources.first().ok_or_else(|| {
-                ProviderError::fatal("video.img2video requires resources[0] image input")
-            })?;
+            let resource = req
+                .payload
+                .resources
+                .first()
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("video.img2video requires canonical image input")
+                })?;
             let (name, mime, bytes) = self
-                .resource_to_file_bytes(resource, "input_reference.png")
+                .resource_to_file_bytes(&resource, "input_reference.png")
                 .await?;
             let normalize_size = requested_size.clone();
             let (size, normalized_bytes) = tokio::task::spawn_blocking(move || {
@@ -3487,6 +3636,15 @@ impl OpenAIProvider {
         };
         Ok(AiResponse {
             message: AiResponse::message_from_parts(None, vec![], vec![artifact]),
+            usage: Some(AiUsage::request_units(1)),
+            cost: Some(AiCost {
+                amount: if provider_model.contains("pro") {
+                    1.2
+                } else {
+                    0.4
+                },
+                currency: "USD".to_string(),
+            }),
             finish_reason: Some("stop".to_string()),
             provider_task_ref: Some(video_id.to_string()),
             extra: Some(json!({
@@ -3507,19 +3665,29 @@ impl OpenAIProvider {
         req: &AiMethodRequest,
         with_mask: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let image_resource = req.payload.resources.first().ok_or_else(|| {
-            ProviderError::fatal("image edit requires resources[0] source image input")
-        })?;
+        let image_resource = req
+            .payload
+            .resources
+            .first()
+            .cloned()
+            .or_else(|| Self::resource_from_input_json(req, &["image", "images"]))
+            .ok_or_else(|| ProviderError::fatal("image edit requires canonical image input"))?;
         let (image_name, image_mime, image_bytes) = self
-            .resource_to_file_bytes(image_resource, "image.png")
+            .resource_to_file_bytes(&image_resource, "image.png")
             .await?;
         let mut files = vec![("image".to_string(), image_name, image_mime, image_bytes)];
         if with_mask {
-            let mask_resource = req.payload.resources.get(1).ok_or_else(|| {
-                ProviderError::fatal("image.inpaint requires resources[1] mask input")
-            })?;
+            let mask_resource = req
+                .payload
+                .resources
+                .get(1)
+                .cloned()
+                .or_else(|| Self::resource_from_input_json(req, &["mask"]))
+                .ok_or_else(|| {
+                    ProviderError::fatal("image.inpaint requires canonical mask input")
+                })?;
             let (mask_name, mask_mime, mask_bytes) = self
-                .resource_to_file_bytes(mask_resource, "mask.png")
+                .resource_to_file_bytes(&mask_resource, "mask.png")
                 .await?;
             files.push(("mask".to_string(), mask_name, mask_mime, mask_bytes));
         }
@@ -3728,7 +3896,9 @@ impl Provider for OpenAIProvider {
         _ctx: crate::aicc::InvokeCtx,
         _task_id: &str,
     ) -> std::result::Result<(), ProviderError> {
-        Ok(())
+        Err(ProviderError::fatal(
+            "openai provider cancellation is unsupported",
+        ))
     }
 }
 
@@ -3936,11 +4106,23 @@ fn is_supported_llm_model_name(model: &str) -> bool {
 fn normalize_remote_model_ids(
     entries: Vec<OpenAIModelEntry>,
     provider_driver: &str,
-) -> (Vec<String>, Vec<String>) {
+) -> (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+) {
     let mut llm_seen = HashSet::<String>::new();
     let mut image_seen = HashSet::<String>::new();
+    let mut embedding_seen = HashSet::<String>::new();
+    let mut asr_seen = HashSet::<String>::new();
+    let mut tts_seen = HashSet::<String>::new();
     let mut llm_models = Vec::new();
     let mut image_models = Vec::new();
+    let mut embedding_models = Vec::new();
+    let mut asr_models = Vec::new();
+    let mut tts_models = Vec::new();
 
     for entry in entries.into_iter() {
         let model = entry.id.trim();
@@ -3954,7 +4136,21 @@ fn normalize_remote_model_ids(
             }
             continue;
         }
-        if is_text2image_model_name(model) {
+        if key.contains("embedding") {
+            if embedding_seen.insert(key) {
+                embedding_models.push(model.to_string());
+            }
+        } else if key.contains("transcribe") || key == "whisper-1" {
+            if asr_seen.insert(key) {
+                asr_models.push(model.to_string());
+            }
+        } else if key.starts_with("tts-") || key.contains("-tts") {
+            if tts_seen.insert(key) {
+                tts_models.push(model.to_string());
+            }
+        } else if key.contains("realtime") || key.contains("audio") {
+            continue;
+        } else if is_text2image_model_name(model) {
             if image_seen.insert(key) {
                 image_models.push(model.to_string());
             }
@@ -3963,17 +4159,35 @@ fn normalize_remote_model_ids(
         }
     }
 
-    (llm_models, image_models)
+    (
+        llm_models,
+        image_models,
+        embedding_models,
+        asr_models,
+        tts_models,
+    )
 }
 
-fn inventory_revision(models: &[String], image_models: &[String]) -> String {
+fn inventory_revision(
+    models: &[String],
+    image_models: &[String],
+    embedding_models: &[String],
+    asr_models: &[String],
+    tts_models: &[String],
+) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     models.hash(&mut hasher);
     image_models.hash(&mut hasher);
+    embedding_models.hash(&mut hasher);
+    asr_models.hash(&mut hasher);
+    tts_models.hash(&mut hasher);
     format!(
-        "models-{}-{}-{:x}",
+        "models-{}-{}-{}-{}-{}-{:x}",
         models.len(),
         image_models.len(),
+        embedding_models.len(),
+        asr_models.len(),
+        tts_models.len(),
         hasher.finish()
     )
 }
@@ -4985,23 +5199,27 @@ data: [DONE]
 
     #[test]
     fn remote_inventory_keeps_sora_video_models() {
-        let (models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "sora-2".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "sora-2-pro".to_string(),
-                },
-            ],
-            "openai",
-        );
+        let (models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "sora-2".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "sora-2-pro".to_string(),
+                    },
+                ],
+                "openai",
+            );
         assert_eq!(models, vec!["sora-2", "sora-2-pro"]);
         assert!(image_models.is_empty());
+        assert!(embedding_models.is_empty());
+        assert!(asr_models.is_empty());
+        assert!(tts_models.is_empty());
     }
 
     #[test]
-    fn official_inventory_refresh_keeps_sora_fallback() {
+    fn official_inventory_refresh_does_not_invent_absent_sora_models() {
         let provider = OpenAIProvider::new(
             OpenAIInstanceConfig {
                 provider_instance_name: "openai-primary".to_string(),
@@ -5019,10 +5237,10 @@ data: [DONE]
                 "data": [{ "id": "gpt-5" }]
             }))
             .expect("inventory should resolve");
-        assert!(inventory.models.iter().any(|model| {
-            model.provider_model_id == "sora-2"
-                && model.api_types.contains(&ApiType::VideoImageToVideo)
-        }));
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "sora-2"));
     }
 
     #[test]
@@ -5267,81 +5485,98 @@ data: [DONE]
 
     #[test]
     fn remote_model_inventory_filters_supported_model_types() {
-        let (llm_models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "gpt-5.2".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "text-embedding-3-large".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-image-1".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-image-2".to_string(),
-                },
-            ],
-            "openai",
-        );
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "gpt-5.2".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "text-embedding-3-large".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-image-1".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-image-2".to_string(),
+                    },
+                ],
+                "openai",
+            );
 
         assert_eq!(llm_models, vec!["gpt-5.2".to_string()]);
         assert_eq!(
             image_models,
             vec!["gpt-image-1".to_string(), "gpt-image-2".to_string()]
         );
+        assert_eq!(embedding_models, vec!["text-embedding-3-large".to_string()]);
+        assert!(asr_models.is_empty());
+        assert!(tts_models.is_empty());
     }
 
     #[test]
-    fn remote_model_inventory_excludes_audio_realtime_modalities() {
-        // 这些都是 ASR / TTS / 实时音频 modality 的 gpt-* 命名族；它们已经在
-        // DEFAULT_OPENAI_{ASR,TTS}_MODELS 里登记，再当 LLM 收一遍会让
-        // build_inventory 产生重复 exact_model，触发 model_registry
-        // SessionConfigInvalid 把整个 refresh 卡死。
-        let (llm_models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "gpt-4o-mini-transcribe".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-transcribe".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-mini-tts".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-audio-preview".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-4o-realtime-preview".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "gpt-5".to_string(),
-                },
-            ],
-            "openai",
-        );
+    fn remote_model_inventory_classifies_audio_modalities() {
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "gpt-4o-mini-transcribe".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-transcribe".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-mini-tts".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "tts-1-hd".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-audio-preview".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-4o-realtime-preview".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-5".to_string(),
+                    },
+                ],
+                "openai",
+            );
 
         assert_eq!(llm_models, vec!["gpt-5".to_string()]);
         assert!(image_models.is_empty());
+        assert!(embedding_models.is_empty());
+        assert_eq!(
+            asr_models,
+            vec![
+                "gpt-4o-mini-transcribe".to_string(),
+                "gpt-4o-transcribe".to_string(),
+            ]
+        );
+        assert_eq!(
+            tts_models,
+            vec!["gpt-4o-mini-tts".to_string(), "tts-1-hd".to_string()]
+        );
     }
 
     #[test]
     fn openrouter_inventory_preserves_provider_native_model_ids() {
-        let (llm_models, image_models) = normalize_remote_model_ids(
-            vec![
-                OpenAIModelEntry {
-                    id: "openai/gpt-5.5".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "anthropic/claude-sonnet-4".to_string(),
-                },
-                OpenAIModelEntry {
-                    id: "tencent/hy3:free".to_string(),
-                },
-            ],
-            "openrouter",
-        );
+        let (llm_models, image_models, embedding_models, asr_models, tts_models) =
+            normalize_remote_model_ids(
+                vec![
+                    OpenAIModelEntry {
+                        id: "openai/gpt-5.5".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "anthropic/claude-sonnet-4".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "tencent/hy3:free".to_string(),
+                    },
+                ],
+                "openrouter",
+            );
 
         assert_eq!(
             llm_models,
@@ -5352,6 +5587,9 @@ data: [DONE]
             ]
         );
         assert!(image_models.is_empty());
+        assert!(embedding_models.is_empty());
+        assert!(asr_models.is_empty());
+        assert!(tts_models.is_empty());
     }
 
     #[test]
@@ -5632,14 +5870,16 @@ data: [DONE]
         )
         .expect("provider should be built");
 
-        let err = provider
+        let messages = provider
             .build_messages(&request)
-            .expect_err("foreign provider state must not be replayed");
-        assert!(err.to_string().contains("provider `openrouter`"));
+            .expect("canonical assistant content should lower without foreign state");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["content"][0]["text"], "hi");
+        assert_ne!(messages[0].get("id"), Some(&json!("msg_123")));
     }
 
     #[test]
-    fn responses_history_rejects_assistant_without_provider_output_items() {
+    fn responses_history_lowers_assistant_without_provider_output_items() {
         let request = AiMethodRequest::new(
             Capability::Llm,
             ModelSpec::new("llm.default".to_string(), None),
@@ -5667,12 +5907,13 @@ data: [DONE]
             "token",
         )
         .expect("provider should be built");
-        let err = provider
+        let messages = provider
             .build_messages(&request)
-            .expect_err("assistant history without provider items must fail");
-        assert!(err
-            .to_string()
-            .contains("missing Responses output items for provider `openai`"));
+            .expect("provider-neutral assistant history should lower");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[0]["content"][0]["type"], "output_text");
+        assert_eq!(messages[0]["content"][0]["text"], "hi");
     }
 
     #[test]
