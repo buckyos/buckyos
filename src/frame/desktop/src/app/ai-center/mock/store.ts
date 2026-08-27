@@ -257,10 +257,10 @@ export class MockDataStore {
     this.notify()
   }
 
-  setSnProviderEnabled(id: string, enabled: boolean): void {
+  setProviderEnabled(id: string, enabled: boolean): void {
     const provider = this.providers.get(id)
-    if (!provider || provider.config.provider_driver !== 'sn-ai-provider') {
-      throw new Error('sn_router_not_found')
+    if (!provider) {
+      throw new Error('provider_not_found')
     }
     this.providers.set(id, {
       ...provider,

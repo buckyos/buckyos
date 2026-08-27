@@ -286,6 +286,7 @@ impl ControlPanelServer {
             "openai",
             "google",
             "gemini",
+            "google_gemini",
             "claude",
             "anthropic",
             "minimax",
@@ -334,8 +335,20 @@ impl ControlPanelServer {
                         .and_then(Value::as_bool)
                         .unwrap_or(false)
             });
-
-            section.insert("enabled".to_string(), Value::Bool(enabled));
+            let section_was_enabled = section
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            if !section_was_enabled {
+                if let Some(instances) = section.get_mut("instances").and_then(Value::as_array_mut)
+                {
+                    for instance in instances {
+                        if let Some(instance) = instance.as_object_mut() {
+                            instance.insert("enabled".to_string(), Value::Bool(false));
+                        }
+                    }
+                }
+            }
 
             let api_key_present = {
                 let instances = section
@@ -351,6 +364,7 @@ impl ControlPanelServer {
                 let instance_obj = instance
                     .as_object_mut()
                     .expect("instance must be object after initialization");
+                instance_obj.insert("enabled".to_string(), Value::Bool(enabled));
 
                 if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
                     instance_obj.insert(
@@ -389,6 +403,16 @@ impl ControlPanelServer {
                     .map(|value| !value.trim().is_empty())
                     .unwrap_or(false)
             };
+
+            let any_instance_enabled = section
+                .get("instances")
+                .and_then(Value::as_array)
+                .is_some_and(|instances| {
+                    instances.iter().any(|instance| {
+                        instance.get("enabled").and_then(Value::as_bool) != Some(false)
+                    })
+                });
+            section.insert("enabled".to_string(), Value::Bool(any_instance_enabled));
 
             return Some((
                 (*section_name).to_string(),
@@ -695,6 +719,85 @@ impl ControlPanelServer {
         }))
     }
 
+    fn ai_configured_provider_cards(settings: &Value, secret_doc: &Value) -> Vec<Value> {
+        const SECTIONS: &[(&str, &str, &str)] = &[
+            ("openai", "openai", "OpenAI"),
+            ("google", "google-gemini", "Google"),
+            ("gemini", "google-gemini", "Google"),
+            ("google_gemini", "google-gemini", "Google"),
+            ("claude", "anthropic-claude", "Anthropic"),
+            ("anthropic", "anthropic-claude", "Anthropic"),
+            ("minimax", "minimax", "MiniMax"),
+            ("fal", "fal", "FAL"),
+            ("sn-ai-provider", "sn-ai-provider", "SN Router"),
+        ];
+
+        let mut cards = Vec::new();
+        for (section_name, driver, provider_type) in SECTIONS {
+            let Some(section) = settings.get(*section_name).and_then(Value::as_object) else {
+                continue;
+            };
+            let section_enabled = section
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let Some(instances) = section.get("instances").and_then(Value::as_array) else {
+                continue;
+            };
+            for instance in instances {
+                let Some(provider_id) = instance
+                    .get("provider_instance_name")
+                    .or_else(|| instance.get("instance_id"))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                let enabled = section_enabled
+                    && instance.get("enabled").and_then(Value::as_bool) != Some(false);
+                let api_token = instance
+                    .get("api_token")
+                    .or_else(|| instance.get("api_key"))
+                    .or_else(|| section.get("api_token"))
+                    .or_else(|| section.get("api_key"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let credential_configured = *section_name == "sn-ai-provider"
+                    || !api_token.trim().is_empty()
+                    || Self::provider_secret_configured(provider_id, secret_doc);
+                let available_models = instance
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let default_model = instance
+                    .get("default_model")
+                    .and_then(Value::as_str)
+                    .or_else(|| available_models.first().and_then(Value::as_str))
+                    .unwrap_or_default();
+                let provider_driver = instance
+                    .get("provider_driver")
+                    .and_then(Value::as_str)
+                    .unwrap_or(driver);
+                cards.push(json!({
+                    "id": provider_id,
+                    "displayName": provider_id,
+                    "providerType": provider_type,
+                    "providerDriver": provider_driver,
+                    "status": if enabled { "healthy" } else { "disabled" },
+                    "endpoint": instance.get("base_url").and_then(Value::as_str).unwrap_or_default(),
+                    "authMode": if *section_name == "sn-ai-provider" { "Zone SN session" } else { "API key" },
+                    "credentialConfigured": credential_configured,
+                    "maskedApiKey": Self::mask_secret(api_token),
+                    "availableModels": available_models,
+                    "capabilities": [],
+                    "defaultModel": default_model,
+                    "note": "Configured AICC provider instance."
+                }));
+            }
+        }
+        cards
+    }
+
     pub(crate) fn ai_provider_cards(
         settings: &Value,
         overrides: &[Value],
@@ -708,6 +811,34 @@ impl ControlPanelServer {
         ];
         if let Some(sn_provider) = Self::ai_sn_provider_card(settings) {
             base_items.insert(0, sn_provider);
+        }
+        for configured in Self::ai_configured_provider_cards(settings, secret_doc) {
+            let provider_id = configured
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if let Some(base) = base_items
+                .iter_mut()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(provider_id))
+            {
+                if let (Some(base), Some(configured)) =
+                    (base.as_object_mut(), configured.as_object())
+                {
+                    for key in [
+                        "status",
+                        "providerDriver",
+                        "credentialConfigured",
+                        "maskedApiKey",
+                        "availableModels",
+                    ] {
+                        if let Some(value) = configured.get(key) {
+                            base.insert(key.to_string(), value.clone());
+                        }
+                    }
+                }
+            } else {
+                base_items.push(configured);
+            }
         }
 
         let mut merged = Self::merge_provider_overrides(base_items, overrides);
@@ -1772,5 +1903,73 @@ mod tests {
 
         assert!(!enabled);
         assert_eq!(settings["sn-ai-provider"]["enabled"], false);
+        assert_eq!(settings["sn-ai-provider"]["instances"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn disabling_one_provider_instance_keeps_enabled_sibling_active() {
+        let mut settings = json!({
+            "openai": {
+                "enabled": true,
+                "instances": [
+                    { "provider_instance_name": "openai-primary", "enabled": true },
+                    { "provider_instance_name": "openai-backup", "enabled": true }
+                ]
+            }
+        });
+        let provider = json!({
+            "id": "openai-primary",
+            "status": "disabled",
+            "credentialConfigured": true
+        });
+
+        ControlPanelServer::update_aicc_provider_instance(
+            &mut settings,
+            "openai-primary",
+            &provider,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(settings["openai"]["instances"][0]["enabled"], false);
+        assert_eq!(settings["openai"]["instances"][1]["enabled"], true);
+
+        let cards =
+            ControlPanelServer::ai_configured_provider_cards(&settings, &json!({ "items": [] }));
+        assert_eq!(cards[0]["status"], "disabled");
+        assert_eq!(cards[1]["status"], "healthy");
+    }
+
+    #[test]
+    fn enabling_one_instance_in_disabled_section_keeps_siblings_disabled() {
+        let mut settings = json!({
+            "openai": {
+                "enabled": false,
+                "instances": [
+                    { "provider_instance_name": "openai-primary" },
+                    { "provider_instance_name": "openai-backup" }
+                ]
+            }
+        });
+        let provider = json!({
+            "id": "openai-primary",
+            "status": "healthy",
+            "credentialConfigured": true
+        });
+
+        ControlPanelServer::update_aicc_provider_instance(
+            &mut settings,
+            "openai-primary",
+            &provider,
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(settings["openai"]["enabled"], true);
+        assert_eq!(settings["openai"]["instances"][0]["enabled"], true);
+        assert_eq!(settings["openai"]["instances"][1]["enabled"], false);
     }
 }

@@ -203,19 +203,19 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
     }
   }
 
-  const handleSetSnEnabled = async (enabled: boolean) => {
+  const handleSetProviderEnabled = async (enabled: boolean) => {
     setUpdatingEnabled(true)
     setEnabledError(null)
     setEnabledFeedback(null)
     try {
-      await store.setSnProviderEnabled(provider, enabled)
+      await store.setProviderEnabled(provider, enabled)
       setConfirmDisable(false)
       setEnabledFeedback(enabled
-        ? t('aiCenter.providers.snEnabledSuccess', 'SN Provider enabled and AICC reloaded.')
-        : t('aiCenter.providers.snDisabledSuccess', 'SN Provider disabled and removed from routing.'))
+        ? t('aiCenter.providers.enabledSuccess', 'Provider enabled and AICC reloaded.')
+        : t('aiCenter.providers.disabledSuccess', 'Provider disabled and removed from routing.'))
     } catch (error) {
-      console.error('aicc.setSnProviderEnabled failed', error)
-      setEnabledError(errorMessage(error, t('aiCenter.providers.snToggleFailed', 'Could not update SN Provider status.')))
+      console.error('aicc.setProviderEnabled failed', error)
+      setEnabledError(errorMessage(error, t('aiCenter.providers.toggleFailed', 'Could not update Provider status.')))
     } finally {
       setUpdatingEnabled(false)
     }
@@ -413,20 +413,21 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
 
       {activeSection === 'overview' && (
       <>
-      {managedSn && (
-        <InlineNotice tone={config.enabled ? 'success' : 'warning'}>
+      <InlineNotice tone={config.enabled ? 'success' : 'warning'}>
           <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-3">
             <span>
               {config.enabled
-                ? t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')
-                : t('aiCenter.providers.snDisabled', 'SN Provider is disabled and does not participate in model routing.')}
+                ? managedSn
+                  ? t('aiCenter.providers.snManaged', 'SN Router is managed automatically from this Zone SN activation and configuration.')
+                  : t('aiCenter.providers.enabledNotice', 'This Provider participates in model routing.')
+                : t('aiCenter.providers.disabledNotice', 'This Provider is disabled and does not participate in model routing.')}
             </span>
             <button
               type="button"
               disabled={updatingEnabled}
               onClick={() => {
                 if (config.enabled) setConfirmDisable(true)
-                else void handleSetSnEnabled(true)
+                else void handleSetProviderEnabled(true)
               }}
               className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium disabled:opacity-60"
               style={{ background: 'var(--cp-surface)', color: 'var(--cp-text)', border: '1px solid var(--cp-border)' }}
@@ -435,12 +436,11 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
               {updatingEnabled
                 ? t('common.saving', 'Saving')
                 : config.enabled
-                  ? t('aiCenter.providers.disableSn', 'Disable SN Provider')
-                  : t('aiCenter.providers.enableSn', 'Enable SN Provider')}
+                  ? t('aiCenter.providers.disable', 'Disable Provider')
+                  : t('aiCenter.providers.enable', 'Enable Provider')}
             </button>
           </div>
-        </InlineNotice>
-      )}
+      </InlineNotice>
       <div className="md:hidden">
         <MetricCarousel metrics={providerMetrics} />
       </div>
@@ -455,7 +455,7 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
         style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
       >
         <Row label={t('aiCenter.providers.driver', 'Driver')} value={config.provider_driver} copyValue={config.provider_driver} />
-        {managedSn && <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />}
+        <Row label={t('aiCenter.providers.enabled', 'Enabled')} value={config.enabled ? t('common.on', 'On') : t('common.off', 'Off')} />
         <Row label={t('aiCenter.providers.routingWeight', 'Routing Weight')} value={`${formatWeight(routingWeight)} / ${routingWeightLabel}`} />
         <Row label={t('aiCenter.providers.runtimeType', 'Runtime Type')} value={config.provider_runtime_type} copyValue={config.provider_runtime_type} />
         {!managedSn && <Row label={t('aiCenter.providers.endpoint', 'Endpoint')} value={config.endpoint || t('aiCenter.providers.default', 'Default')} copyValue={config.endpoint} expandable />}
@@ -623,19 +623,19 @@ function ProviderDetailPanelBody({ provider, routingWeight, onDeleted, onBack }:
           if (!deleting) setConfirmDelete(false)
         }}
       />}
-      {managedSn && <ConfirmDialog
+      <ConfirmDialog
         open={confirmDisable}
-        title={t('aiCenter.providers.disableSnTitle', 'Disable SN Provider')}
-        message={t('aiCenter.providers.disableSnConfirm', 'SN Provider will be removed from model routing until you enable it again.')}
-        confirmLabel={t('aiCenter.providers.disableSn', 'Disable SN Provider')}
-        confirmingLabel={t('aiCenter.providers.disablingSn', 'Disabling')}
+        title={t('aiCenter.providers.disableTitle', 'Disable Provider')}
+        message={t('aiCenter.providers.disableConfirm', 'This Provider will be removed from model routing until you enable it again.')}
+        confirmLabel={t('aiCenter.providers.disable', 'Disable Provider')}
+        confirmingLabel={t('aiCenter.providers.disabling', 'Disabling')}
         confirming={updatingEnabled}
         error={enabledError}
-        onConfirm={() => { void handleSetSnEnabled(false) }}
+        onConfirm={() => { void handleSetProviderEnabled(false) }}
         onCancel={() => {
           if (!updatingEnabled) setConfirmDisable(false)
         }}
-      />}
+      />
     </div>
   )
 }
