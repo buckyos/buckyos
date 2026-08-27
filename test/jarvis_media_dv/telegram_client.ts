@@ -43,7 +43,9 @@ type GramClient = {
   getEntity: (entity: string) => Promise<unknown>;
   getMessages: (entity: unknown, options: Record<string, unknown>) => Promise<GramMessage[]>;
   sendMessage: (entity: unknown, options: Record<string, unknown>) => Promise<GramMessage>;
-  sendFile: (entity: unknown, options: Record<string, unknown>) => Promise<GramMessage>;
+  sendFile: (entity: unknown, options: Record<string, unknown>) => Promise<GramMessage | GramMessage[]>;
+  downloadMedia: (message: GramMessage, options?: Record<string, unknown>) => Promise<Uint8Array | string | undefined>;
+  deleteMessages: (entity: unknown, messageIds: number[], options?: Record<string, unknown>) => Promise<unknown>;
   disconnect: () => Promise<void>;
   session: { save: () => string };
 };
@@ -163,7 +165,7 @@ export class TelegramDvClient {
 
   async send(input: {
     text: string;
-    file?: string;
+    file?: string | string[];
     replyTo?: number;
   }): Promise<number> {
     const client = this.requireClient();
@@ -179,7 +181,9 @@ export class TelegramDvClient {
         message: input.text,
         ...replyTo,
       });
-    return messageId(sent);
+    const messages = Array.isArray(sent) ? sent : [sent];
+    if (messages.length === 0) throw new Error("Telegram returned no sent messages");
+    return Math.min(...messages.map(messageId));
   }
 
   async messagesAfter(afterId: number): Promise<TelegramObservedMessage[]> {
@@ -196,6 +200,22 @@ export class TelegramDvClient {
         text: (message.message ?? message.text ?? "").trim(),
         media: mediaRef(message),
       }));
+  }
+
+  async downloadMedia(messageIdValue: number): Promise<Uint8Array> {
+    const messages = await this.requireClient().getMessages(this.requireBot(), { ids: [messageIdValue] });
+    const message = messages.find((item) => messageId(item) === messageIdValue);
+    if (!message?.media) throw new Error(`Telegram message ${messageIdValue} has no downloadable media`);
+    const downloaded = await this.requireClient().downloadMedia(message, {});
+    if (typeof downloaded === "string") throw new Error("Telegram unexpectedly downloaded media to a filesystem path");
+    if (!downloaded || downloaded.byteLength === 0) throw new Error(`Telegram media ${messageIdValue} is empty`);
+    return new Uint8Array(downloaded);
+  }
+
+  async deleteMessages(messageIds: number[]): Promise<void> {
+    const unique = [...new Set(messageIds.filter((value) => Number.isSafeInteger(value) && value > 0))];
+    if (unique.length === 0) return;
+    await this.requireClient().deleteMessages(this.requireBot(), unique, { revoke: true });
   }
 
   private requireClient(): GramClient {

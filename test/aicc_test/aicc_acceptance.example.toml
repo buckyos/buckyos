@@ -1,0 +1,117 @@
+[gateway]
+url = "https://test.buckyos.io"
+
+[auth]
+app_id = "aicc-tests"
+username = "devtest"
+password = ""
+session_token = ""
+# Required only by t1.security.cross_tenant.
+other_tenant_session_token = ""
+
+[mock]
+base_url = "http://127.0.0.1:18080"
+# Optional local/operator endpoint for mock control when base_url is reachable only by AICC.
+control_url = "http://127.0.0.1:18080"
+port = 18080
+start_local = false
+allow_config_mutation = false
+
+[runner]
+providers = ["openai", "claude", "google-gemini", "fal", "minimax", "openrouter", "sn-ai-provider"]
+allow_real_model_calls = false
+max_real_calls = 500
+max_cost_usd = 100
+timeout_ms = 900000
+report_dir = "reports/acceptance"
+global_concurrency = 8
+provider_concurrency = 2
+provider_min_interval_ms = 250
+max_attempts = 2
+retry_delay_ms = 1000
+estimated_cost_per_call_usd = 0.01
+shard_index = 0
+shard_count = 1
+
+[judge]
+enabled = true
+model = "llm.plan.default"
+rubric_version = "2026-08-27.1"
+min_score = 0.7
+
+[instances.openai]
+name = ""
+
+[instances.claude]
+name = ""
+
+[instances.google-gemini]
+name = ""
+
+[instances.fal]
+name = ""
+
+[instances.minimax]
+name = ""
+
+[instances.openrouter]
+name = ""
+
+[instances.sn-ai-provider]
+name = ""
+
+[provider_credentials]
+apply_to_aicc_settings = false
+
+[provider_credentials.openai]
+api_token = ""
+
+[provider_credentials.claude]
+api_token = ""
+
+[provider_credentials.google-gemini]
+api_token = ""
+
+[provider_credentials.fal]
+api_token = ""
+
+[provider_credentials.minimax]
+api_token = ""
+
+[provider_credentials.openrouter]
+api_token = ""
+
+[limits.openai]
+max_concurrency = 2
+min_interval_ms = 500
+
+[limits.claude]
+max_concurrency = 2
+min_interval_ms = 500
+
+[limits.google-gemini]
+max_concurrency = 2
+min_interval_ms = 500
+
+[limits.fal]
+max_concurrency = 1
+min_interval_ms = 1000
+
+[limits.minimax]
+max_concurrency = 1
+min_interval_ms = 1000
+
+[limits.openrouter]
+max_concurrency = 2
+min_interval_ms = 500
+
+[limits.sn-ai-provider]
+max_concurrency = 2
+min_interval_ms = 500
+
+[fixtures]
+image = ""
+mask = ""
+audio = ""
+video = ""
+document = ""

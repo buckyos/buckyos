@@ -10,8 +10,13 @@
 | `audio_sfx.wav` | 合成蜂鸣、敲击和环境底噪，没有人声，用于非语音置信度测试 |
 | `audio_speech.wav` | 中文系统语音朗读“今天的测试编号是四八二七”，用于 ASR/TTS 串联测试 |
 | `video_fresh.mp4` | 花朵随风运动的 H.264 MP4，作为默认视频理解、转换和上传视频续写素材 |
+| `video_subtitle.vtt` | 包含事实码 `AICC-SUBTITLE-2468` 的 WebVTT，用于视频与字幕多附件绑定 |
+| `document_facts.md` | 包含固定事实码 `AICC-DOC-7319`、负责人和预算的 Markdown 文档 |
+| `archive_mixed.zip` | 包含固定事实码 `AICC-ZIP-8642`、中英文文档、CSV、图片和空目录的 ZIP |
 
-PNG 和无人声音效可运行 `python generate_assets.py` 确定性重建。`audio_speech.wav` 使用 Windows SAPI 的 Microsoft Huihui 中文语音生成，因为可理解的 ASR 输入不适合用简单波形合成。
+ZIP 安全边界场景还复用 `../aicc_test/fixtures/zip_*.zip` 中的确定性单文档、多文档、嵌套、空、损坏、加密标志、路径穿越、超文件数、高压缩比和超深目录 fixture；其大小与 SHA-256 由 AICC acceptance fixture manifest 校验。
+
+PNG、无人声音效、Markdown 和 ZIP 可运行 `python generate_assets.py` 确定性重建。`audio_speech.wav` 使用 Windows SAPI 的 Microsoft Huihui 中文语音生成，因为可理解的 ASR 输入不适合用简单波形合成。
 
 `video_fresh.mp4` 来源：[`MDN interactive examples / cc0-videos / flower.mp4`](https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4)，许可为 CC0 / Public Domain。它不由生成脚本重建，SHA-256 为 `0cd83d944a6ca7822b4a8306cecc60a36e859b041f6702c6a1ad9ead78924451`。
 

@@ -78,7 +78,13 @@ function parseValue(raw: string, lineNumber: number): TomlValue {
   }
   if (value === "true") return true;
   if (value === "false") return false;
-  if (/^[+-]?\d+$/.test(value)) return Number(value);
+  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      throw new Error(`non-finite TOML number at line ${lineNumber}`);
+    }
+    return parsed;
+  }
   if (value.startsWith("[") && value.endsWith("]")) {
     const body = value.slice(1, -1).trim();
     if (!body) return [];

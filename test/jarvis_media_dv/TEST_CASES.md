@@ -12,6 +12,9 @@
 | `audio_sfx` | 无人声音效，随后要求转写 | 音频描述与 ASR 可信度 | 有文本且不含已知幻觉句 | 判断为非语音，保持不确定性 |
 | `speech_roundtrip` | 清晰语音，随后合成上一句 | ASR → 历史引用 → TTS | 包含编号并返回 audio | 合成语音内容与转写一致 |
 | `image_to_video` | 图片 + 4 秒动画要求 | Veo/img2video、长任务、语言 | 返回 video Named Object | 视频选图正确、终态中文 |
+| `archive_process_and_repack` | 文档媒体混合 ZIP | 安全解包、事实提取、重新打包 | 固定事实码和 ZIP 附件 | 输出清单与内容可读 |
+| `archive_valid_shapes` | 单文档、多文档、嵌套 ZIP | 合法结构、中文路径、空目录和嵌套处理 | 固定事实码或清单 | 文件边界不串包 |
+| `archive_*_rejected` | 空、损坏、加密、路径穿越、超文件数、超解压量、超深 ZIP | 解压安全限制和明确拒绝 | 明确诊断且零结果附件 | 无越界写入或继续处理 |
 
 ## 跨消息关联（linked）
 
@@ -51,10 +54,23 @@
 | 用户上传视频被错误声称可原生续写 | `fresh_video_extension` |
 | 类型化对象 ID 被降成十六进制摘要 | 所有自动附件用例 |
 
+## 消息语义、可靠性与恢复
+
+| ID | 验证点 |
+|---|---|
+| `outbound_delivery_idempotency` | 同一轮最终只出现一个唯一的出站 `msg_id` / delivery record |
+| `group_message_semantics` | 参数化 group DID 内回复保持在原群会话；未配置 group DID 时明确 skipped |
+| `forwarded_message_source` | `MsgObject.source` 与当前发送者不混淆 |
+| `duplicate_inbound_idempotency` | 同一外部消息重复投递只产生一个存储输入和一个用户可见回复 |
+| `delivery_retry_final_state` | 当前环境没有逐消息出站故障注入时明确记录平台限制 |
+| `jarvis_restart_recovery` | 未授权重启时明确记录平台限制，不以 reload 冒充 restart |
+
+带语义检查项的实际执行步骤默认交给参数化 LLM Judge；结构、附件数量、MIME、唯一消息和固定事实码继续使用确定性断言。报告保存 Judge task ID、理由及成本，并要求 AICC route trace 使用 `run_id:transport:scenario_id:step_id` 关联 workflow 调用；缺失关联作为产品缺陷失败。
+
 ## 建议执行顺序
 
 1. 先运行 `smoke`，确认 Provider、附件回传和长任务链路可用。
 2. 运行 `matrix`，逐格确认 16 种输入输出组合及当前 Provider 覆盖能力。
-3. 再运行 `linked`，每个 scenario 使用独立会话并从 `/clean` 开始。
+3. 再运行 `linked`，每个 scenario 使用独立会话并从 `/clean` 开始。msg-center 默认并行两个独立会话，同一场景内部步骤保持串行。
 4. 默认通过 `msg-center` 收集结构报告；需要验证完整 tunnel 时，在同一入口中显式加入 `telegram`。
 5. 失败时保存本次 `summary.md`、链接的场景对话详情和 `summary.json`，同时收集相同时间段的 OpenDAN、AICC 和 msg-center 日志。

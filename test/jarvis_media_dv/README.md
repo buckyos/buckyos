@@ -67,6 +67,7 @@ TOML 中的对应配置为：
 [common]
 transports = ["msg-center"]
 suite = "all"
+scenario_concurrency = 2
 yes = false
 
 [environment]
@@ -76,6 +77,10 @@ providers = ["openai", "gemini", "fal", "minimax", "claude"]
 同时测试两条消息链路时，将 `transports` 改为 `["msg-center", "telegram"]`。
 
 Provider 列表是本轮期望覆盖目标，不锁定模型或篡改 AICC 路由；实际命中的 Provider 以 AICC 运行日志为准。环境变量可使用逗号分隔的 `JARVIS_DV_TRANSPORTS`、`JARVIS_DV_PROVIDERS`，以及 `JARVIS_DV_YES`。
+
+带语义 rubric 的步骤默认通过 AICC 的 `llm.plan.default` 执行 LLM Judge，可用 `[judge].model`、`JARVIS_DV_JUDGE_MODEL` 或 `--judge-model` 参数化，也可用 `--no-judge` 关闭。Judge 返回的 task ID、结论和理由写入步骤报告；Judge 调用按 task ID 合并进财务总账，不会被误算成 Jarvis workflow Provider 覆盖。结构、消息类型、附件数量和 MIME 仍由确定性断言判定，Judge 不能放宽这些断言。
+
+msg-center 会在不同 Jarvis session 间并行执行场景，默认并发为 2，可用 `common.scenario_concurrency`、`JARVIS_DV_SCENARIO_CONCURRENCY` 或 `--scenario-concurrency` 调整；同一场景内的历史依赖步骤仍严格串行。Telegram 为避免外部测试账号风控保持串行。AICC/Provider 侧仍由其全局和单 Provider 限流策略约束实际模型请求。
 
 ## msg-center
 
@@ -93,6 +98,7 @@ Gateway URL 没有默认值，是所有运行模式的必填参数。可通过 `
 | 用户 DID | `JARVIS_DV_USER_DID` |
 | Zone DID | `JARVIS_DV_ZONE_DID` |
 | Jarvis DID | `JARVIS_DV_AGENT_DID` |
+| 可选 Group DID | `JARVIS_DV_GROUP_DID` |
 
 msg-center 默认使用测试工程 `assets/` 中已提交的六类素材。runner 登录后会把当前场景需要的文件上传到 Named Object Store，并使用生成的 `chunk:` ID 发送附件。也可以通过 `--image-primary-id`、`--image-secondary-id`、`--image-ocr-id`、`--audio-sfx-id`、`--audio-speech-id`、`--video-fresh-id` 或示例 TOML 中的对应字段提供已有的完整类型化 Named Object ID（例如 `cyfile:...` 或 `chunk:...`）；显式 ID 优先于工程素材。
 
@@ -117,7 +123,7 @@ API hash、2FA 密码和 StringSession 都是敏感信息，建议保存在权�
 
 ## 用例、报告与退出码
 
-- `smoke`：媒体理解、OCR、图片编辑、音效、ASR/TTS、图生视频；
+- `smoke`：媒体理解、OCR、图片编辑、音效、ASR/TTS、图生视频，以及合法、空、损坏、加密、路径穿越、文件数、解压量和嵌套深度 ZIP；
 - `linked`：历史生成物、连续附件、引用纠错、视频续写；
 - `matrix`：文本、图片、音频、视频之间完整的 4×4 转换矩阵。
 
@@ -125,8 +131,10 @@ API hash、2FA 密码和 StringSession 都是敏感信息，建议保存在权�
 
 主报告写入 `reports/jarvis_media_dv/<run_id>/summary.md`，按 transport 和场景汇总结果。场景内与 Jarvis 的详细对话默认不在主报告中展开，每行提供“查看对话”链接，指向 `conversations/<transport>-<scenario>.md`。同目录保留 `summary.json` 作为机器可读数据。单个 transport 初始化失败时会记录 `_environment` 失败并继续测试下一个 transport。
 
+报告还会逐入口列出文本、图片、视频、音频、文档、压缩包和多附件的入站/出站覆盖状态。全量 suite 若没有声明某一覆盖单元会生成 `_entry_coverage` 失败；缺素材的 `skipped`、平台限制和待复核项不会被当成通过。财务报告同时列出 Jarvis workflow 与 Judge usage，按 caller/time window 和 Judge task ID 去重汇总，并调用 AICC `trace.query` 审计每个执行步骤的 `run_id:transport:scenario_id:step_id`。若 Jarvis/AICC 没有传播该 ID，报告会失败并明确标为产品缺陷，不会用时间邻近关系伪造逐步骤关联。
+
 - `0`：没有失败，且人工项已通过；使用 `--allow-review` 时允许遗留 review；
 - `1`：存在自动、人工或环境失败；
 - `2`：没有失败，但仍有待人工确认项。
 
-运行前应确保 BuckyOS 服务可经 Zone Gateway 访问、Telegram tunnel 已绑定、AICC 已配置真实 Provider、Telegram 测试账号已打开过 Jarvis Bot 私聊。Provider API key 只通过 BuckyOS/AICC 正常配置渠道安装，runner 不接收或转发 Provider key。
+运行前应确保 BuckyOS 服务可经 Zone Gateway 访问、Telegram tunnel 已绑定、AICC 已配置真实 Provider、Telegram 测试账号已打开过 Jarvis Bot 私聊。Provider token 可通过本地 TOML 的 `[provider_credentials.<driver>]` 参数化；只有配置与 `--allow-credential-mutation` 同时允许时才临时写入 AICC，并在 `finally` 恢复原设置。Minimax、OpenRouter 和 SN 可保留在覆盖清单中；没有账号或明确禁止执行时不发起真实调用。

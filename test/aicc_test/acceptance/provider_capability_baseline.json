@@ -1,0 +1,614 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "2026-08-27.2",
+  "checked_at": "2026-08-27",
+  "canonical_api_types": [
+    "llm",
+    "embedding.text",
+    "embedding.multimodal",
+    "rerank",
+    "image.txt2img",
+    "image.img2img",
+    "image.inpaint",
+    "image.upscale",
+    "image.bg_remove",
+    "vision.ocr",
+    "vision.caption",
+    "vision.detect",
+    "vision.segment",
+    "audio.tts",
+    "audio.asr",
+    "audio.music",
+    "audio.enhance",
+    "video.txt2video",
+    "video.img2video",
+    "video.video2video",
+    "video.extend",
+    "video.upscale",
+    "agent.computer_use"
+  ],
+  "providers": [
+    {
+      "provider_driver": "openai",
+      "discovery": "official_catalog",
+      "source_urls": [
+        "https://developers.openai.com/api/docs/models",
+        "https://developers.openai.com/api/docs/models/all"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-08-27",
+        "streaming_semantics": "Responses/chat models expose documented streaming events; applicability remains model and endpoint specific.",
+        "async_operation_semantics": "Video and background-capable endpoints use asynchronous operation/task semantics; ordinary inference may be synchronous or streamed.",
+        "usage_semantics": "Official responses expose model-specific token or request usage; T2 requires AICC durable usage and cost attribution.",
+        "input_output_formats": "Per-model official pages are authoritative for text, image, audio, video, file, structured-output, and tool formats.",
+        "item_request_batch_limits": "Limits vary by endpoint and model and must be taken from the matching official model/API page; unknown values are not inferred.",
+        "image_audio_video_limits": "Dimensions, file size, duration, and format limits vary by media endpoint and model; generated artifacts are validated against returned metadata.",
+        "context_output_limits": "Context and maximum output are per physical model and are published in the official model catalog.",
+        "region_restrictions": "Availability is subject to OpenAI supported-country and endpoint availability documentation.",
+        "account_tier_restrictions": "Rate limits, spend limits, and some model access depend on organization/project usage tier.",
+        "preview_allowlist": "Preview and restricted models may require explicit account access; missing access remains a matrix result rather than removing the model."
+      },
+      "coverage_rules": [
+        {
+          "model_pattern": "sora-2*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Excluded from new acceptance calls because the catalog marks Sora 2 as deprecated. Existing recorded results remain valid evidence."
+        },
+        {
+          "model_pattern": "gpt-image-1",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
+          "evidence_summary": "Explicit acceptance scope decision: do not start new calls for gpt-image-1 because it is expired or approaching retirement. Existing recorded results remain valid evidence."
+        }
+      ],
+      "rules": [
+        {
+          "model_pattern": "sora-2*",
+          "status": "deprecated",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "methods": ["video.txt2video", "video.img2video"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Sora 2 models are video generation models and are listed as deprecated."
+        },
+        {
+          "model_pattern": "gpt-image-*",
+          "status": "active",
+          "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+          "methods": ["image.txt2img", "image.img2img", "image.inpaint"],
+          "input_kinds": ["text", "image", "mask"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
+          "evidence_summary": "GPT Image supports image generation and editing, including masked edits."
+        },
+        {
+          "model_pattern": "dall-e-3",
+          "status": "deprecated",
+          "api_types": ["image.txt2img"],
+          "methods": ["image.txt2img"],
+          "input_kinds": ["text"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
+          "evidence_summary": "DALL-E 3 supports text-to-image generation."
+        },
+        {
+          "model_pattern": "dall-e-2",
+          "status": "deprecated",
+          "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+          "methods": ["image.txt2img", "image.img2img", "image.inpaint"],
+          "input_kinds": ["text", "image", "mask"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
+          "evidence_summary": "DALL-E 2 supports generations, edits, and variations."
+        },
+        {
+          "model_pattern": "text-embedding-*",
+          "status": "active",
+          "api_types": ["embedding.text"],
+          "methods": ["embedding.text"],
+          "input_kinds": ["text", "code", "document_chunk"],
+          "output_kinds": ["embedding"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/embeddings"],
+          "evidence_summary": "OpenAI text embedding models accept text and return vectors."
+        },
+        {
+          "model_pattern": "whisper-1",
+          "status": "active",
+          "api_types": ["audio.asr"],
+          "methods": ["audio.asr"],
+          "input_kinds": ["audio"],
+          "output_kinds": ["text"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/speech-to-text"],
+          "evidence_summary": "Whisper is a speech recognition model."
+        },
+        {
+          "model_pattern": "*transcribe*",
+          "status": "active",
+          "api_types": ["audio.asr"],
+          "methods": ["audio.asr"],
+          "input_kinds": ["audio"],
+          "output_kinds": ["text"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/speech-to-text"],
+          "evidence_summary": "Transcribe models convert audio to text."
+        },
+        {
+          "model_pattern": "tts-1*",
+          "status": "active",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/text-to-speech"],
+          "evidence_summary": "TTS models convert text to speech audio."
+        },
+        {
+          "model_pattern": "*-tts*",
+          "status": "active",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/text-to-speech"],
+          "evidence_summary": "OpenAI TTS models convert text to audio."
+        },
+        {
+          "model_pattern": "gpt-*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["llm.chat", "llm.completion", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/models", "https://developers.openai.com/api/docs/guides/file-inputs"],
+          "evidence_summary": "Current GPT models support text and image input with text output; file inputs accept PDF, Office, spreadsheet, text, JSON, YAML, HTML, XML, RTF, and code formats."
+        },
+        {
+          "model_pattern": "o*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["llm.chat", "llm.completion", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Reasoning models support text generation; current model pages determine image and tool availability."
+        }
+      ]
+    },
+    {
+      "provider_driver": "claude",
+      "discovery": "official_catalog",
+      "source_urls": ["https://platform.claude.com/docs/en/models/overview"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-08-27",
+        "streaming_semantics": "Messages API streaming and stop-reason behavior follow Anthropic's versioned API documentation.",
+        "async_operation_semantics": "Ordinary Messages inference is synchronous or streamed; batch or tool workflows use their separately documented lifecycle.",
+        "usage_semantics": "Messages responses report input/output token usage, with cache fields where applicable; AICC attribution is mandatory.",
+        "input_output_formats": "The model overview and Messages API define supported text, image, document, tool, and structured-output forms per model.",
+        "item_request_batch_limits": "Request, image, PDF, and batch limits vary by endpoint and are resolved from the official API limit pages.",
+        "image_audio_video_limits": "Claude baseline includes only officially documented input media; unsupported audio/video generation is not inferred.",
+        "context_output_limits": "Context windows and maximum output are physical-model properties from the official model overview.",
+        "region_restrictions": "Availability follows Anthropic supported-region and product access documentation.",
+        "account_tier_restrictions": "Usage tiers impose request/token rate and spend limits.",
+        "preview_allowlist": "Beta features require documented beta headers or account access and are not promoted to active capability without evidence."
+      },
+      "coverage_rules": [
+        {
+          "model_pattern": "claude-3-5-haiku-20241022*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
+          "evidence_summary": "Claude Haiku 3.5 was retired from the Claude API on February 19, 2026."
+        },
+        {
+          "model_pattern": "claude-3-7-sonnet-20250219*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
+          "evidence_summary": "Claude Sonnet 3.7 was retired from the Claude API on February 19, 2026."
+        }
+      ],
+      "rules": [
+        {
+          "model_pattern": "claude-*",
+          "status": "active",
+          "source_status": "official_models_api_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["llm.chat", "llm.completion", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "document_formats": ["txt", "md", "pdf", "csv"],
+          "source_urls": ["https://platform.claude.com/docs/en/models/overview", "https://platform.claude.com/docs/en/build-with-claude/pdf-support"],
+          "evidence_summary": "Claude supports PDF plus plain-text document blocks; binary Office documents must be converted before use."
+        }
+      ]
+    },
+    {
+      "provider_driver": "google-gemini",
+      "discovery": "official_catalog",
+      "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-08-27",
+        "streaming_semantics": "generateContent models use documented streaming where listed; live and media APIs have separate protocols.",
+        "async_operation_semantics": "Veo and other media generation APIs return long-running operations that must be polled to a terminal state.",
+        "usage_semantics": "Gemini responses expose usageMetadata; AICC must normalize and durably attribute it.",
+        "input_output_formats": "The official model catalog defines supported text, image, audio, video, PDF, structured-output, and tool modalities per model.",
+        "item_request_batch_limits": "File, request, batch, and embedding item limits are endpoint/model specific and must remain tied to official documentation.",
+        "image_audio_video_limits": "Image dimensions and audio/video duration limits vary by model and API; returned resources and operation metadata are validated.",
+        "context_output_limits": "Input token and output token limits are published per physical model in the catalog.",
+        "region_restrictions": "Model availability varies by Gemini API region and product surface.",
+        "account_tier_restrictions": "Free/paid usage tiers have distinct RPM, TPM, RPD, and concurrent batch limits.",
+        "preview_allowlist": "Preview/experimental models can have tier or allowlist restrictions and remain explicit matrix outcomes."
+      },
+      "coverage_rules": [
+        {
+          "model_pattern": "gemini-3.1-flash-image-preview",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
+          "evidence_summary": "The preview image model shut down on June 25, 2026; use gemini-3.1-flash-image."
+        },
+        {
+          "model_pattern": "gemini-3-pro-image-preview",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
+          "evidence_summary": "The preview image model shut down on June 25, 2026; use gemini-3-pro-image."
+        },
+        {
+          "model_pattern": "gemini-embedding-2-preview",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
+          "evidence_summary": "Gemini Embedding 2 preview reached its shutdown date on August 10, 2026; use gemini-embedding-2."
+        },
+        {
+          "model_pattern": "gemini-robotics-er-1.6-preview",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
+          "evidence_summary": "Gemini Robotics ER 1.6 is scheduled to shut down on August 31, 2026 and is within the acceptance retirement window."
+        },
+        {
+          "model_pattern": "nano-banana-*",
+          "action": "exclude",
+          "reason": "logical_alias",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "Nano Banana is a product-family name; the stable physical model IDs are gemini-3.1-flash-image and gemini-3-pro-image."
+        },
+        {
+          "model_pattern": "*-latest",
+          "action": "exclude",
+          "reason": "logical_alias",
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "Gemini latest names are hot-swapped aliases rather than stable physical model identifiers."
+        }
+      ],
+      "rules": [
+        {
+          "model_pattern": "gemini-embedding-2*",
+          "status": "active",
+          "source_status": "stable",
+          "api_types": ["embedding.text", "embedding.multimodal"],
+          "methods": ["embedding.text", "embedding.multimodal"],
+          "input_kinds": ["text", "image", "audio", "video", "document"],
+          "output_kinds": ["embedding"],
+          "document_formats": ["pdf"],
+          "api_io": {
+            "embedding.text": {
+              "input_combinations": [["text"]],
+              "output_combinations": [["embedding"]]
+            },
+            "embedding.multimodal": {
+              "input_combinations": [
+                ["text"],
+                ["image"],
+                ["audio"],
+                ["video"],
+                ["document"],
+                ["text", "image"]
+              ],
+              "output_combinations": [["embedding"]]
+            }
+          },
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models/gemini-embedding-2", "https://ai.google.dev/gemini-api/docs/embeddings"],
+          "evidence_summary": "Gemini Embedding 2 is stable and supports text, image, audio, video, and PDF inputs in one embedding space."
+        },
+        {
+          "model_pattern": "*embedding*",
+          "status": "active",
+          "api_types": ["embedding.text"],
+          "methods": ["embedding.text"],
+          "input_kinds": ["text", "code", "document_chunk"],
+          "output_kinds": ["embedding"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/embeddings"],
+          "evidence_summary": "Gemini embedding models return text embeddings."
+        },
+        {
+          "model_pattern": "*tts*",
+          "status": "preview",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/speech-generation"],
+          "evidence_summary": "Gemini TTS preview models generate speech audio from text."
+        },
+        {
+          "model_pattern": "lyria-*",
+          "status": "preview",
+          "api_types": ["audio.music"],
+          "methods": ["audio.music"],
+          "input_kinds": ["text", "audio"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/music-generation"],
+          "evidence_summary": "Lyria models generate music from prompts and supported references."
+        },
+        {
+          "model_pattern": "veo-3.1-*lite*",
+          "status": "preview",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "methods": ["video.txt2video", "video.img2video"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
+          "evidence_summary": "Veo Lite supports text and image conditioned video generation."
+        },
+        {
+          "model_pattern": "veo-3.1-*",
+          "status": "preview",
+          "api_types": ["video.txt2video", "video.img2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
+          "evidence_summary": "Veo 3.1 supports text/image generation and supported video extension operations."
+        },
+        {
+          "model_pattern": "veo-*",
+          "status": "preview",
+          "source_status": "official_catalog_preview_family",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "methods": ["video.txt2video", "video.img2video"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
+          "evidence_summary": "Veo models generate video from supported text and image inputs."
+        },
+        {
+          "model_pattern": "gemini-omni-*",
+          "status": "preview",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation and editing."
+        },
+        {
+          "model_pattern": "gemini-*image*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/image-generation"],
+          "evidence_summary": "Gemini image models support generation and editing."
+        },
+        {
+          "model_pattern": "*nano-banana*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/image-generation"],
+          "evidence_summary": "Nano Banana models support image generation and editing."
+        },
+        {
+          "model_pattern": "gemini-*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
+          "methods": ["llm.chat", "llm.completion", "vision.ocr", "vision.caption", "vision.detect", "vision.segment", "audio.asr"],
+          "input_kinds": ["text", "image", "audio", "video", "document"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "document_formats": ["txt", "md", "pdf", "csv", "html", "xml", "json", "rtf", "source"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models", "https://ai.google.dev/gemini-api/docs/document-processing", "https://ai.google.dev/api/generate-content"],
+          "evidence_summary": "Gemini multimodal models accept PDF document vision and documented text/code MIME types; non-PDF documents are extracted as text."
+        }
+      ]
+    },
+    {
+      "provider_driver": "fal",
+      "discovery": "official_catalog",
+      "source_urls": ["https://fal.ai/docs/model-api-reference"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-08-27",
+        "streaming_semantics": "fal model APIs use synchronous, queue, webhook, or streaming patterns as declared by the selected endpoint.",
+        "async_operation_semantics": "Queue submissions return request IDs and require status/result polling or webhook completion.",
+        "usage_semantics": "Billing and request usage are endpoint-specific; AICC durable usage/cost must remain attributable to the exact endpoint instance.",
+        "input_output_formats": "Each fal model page publishes its JSON schema, accepted resource formats, and output resource schema.",
+        "item_request_batch_limits": "Payload and batch constraints are model-schema specific and are not generalized across the catalog.",
+        "image_audio_video_limits": "Dimensions, duration, file size, and MIME restrictions come from each model's generated API schema.",
+        "context_output_limits": "Token limits apply only where the selected model schema documents text context/output.",
+        "region_restrictions": "Endpoint availability is taken from fal deployment documentation and the active account catalog.",
+        "account_tier_restrictions": "Concurrency, queue priority, and billing availability can depend on account configuration.",
+        "preview_allowlist": "Preview or private endpoints require catalog/account access and are reported as unavailable when not enabled."
+      },
+      "rules": [
+        {
+          "model_pattern": "fal-ai/esrgan",
+          "status": "active",
+          "api_types": ["image.upscale"],
+          "methods": ["image.upscale"],
+          "input_kinds": ["image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://fal.ai/models/fal-ai/esrgan/api"],
+          "evidence_summary": "Real-ESRGAN upscales image input."
+        },
+        {
+          "model_pattern": "fal-ai/imageutils/rembg",
+          "status": "active",
+          "api_types": ["image.bg_remove"],
+          "methods": ["image.bg_remove"],
+          "input_kinds": ["image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://fal.ai/models/fal-ai/imageutils/rembg/api"],
+          "evidence_summary": "Rembg removes image backgrounds."
+        },
+        {
+          "model_pattern": "fal-ai/deepfilternet3",
+          "status": "active",
+          "api_types": ["audio.enhance"],
+          "methods": ["audio.enhance"],
+          "input_kinds": ["audio"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://fal.ai/models/fal-ai/deepfilternet3/api"],
+          "evidence_summary": "DeepFilterNet enhances and denoises audio."
+        },
+        {
+          "model_pattern": "fal-ai/video-upscaler",
+          "status": "active",
+          "api_types": ["video.upscale"],
+          "methods": ["video.upscale"],
+          "input_kinds": ["video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://fal.ai/models/fal-ai/video-upscaler/api"],
+          "evidence_summary": "The fal video upscaler applies RealESRGAN to video frames."
+        }
+      ]
+    },
+    {
+      "provider_driver": "minimax",
+      "discovery": "official_catalog",
+      "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-08-27",
+        "streaming_semantics": "Text generation documents real-time streaming; media endpoint behavior remains model specific.",
+        "async_operation_semantics": "Video and media generation use documented task submission and polling semantics.",
+        "usage_semantics": "Token/request usage and billing fields are normalized only when returned by the documented endpoint.",
+        "input_output_formats": "Official model guides define language, speech, music, image, and video request/output schemas per model.",
+        "item_request_batch_limits": "Request and batch limits are endpoint specific and are not inferred when the official page is silent.",
+        "image_audio_video_limits": "The model catalog publishes media-specific resolution, duration, FPS, language, and format limits where applicable.",
+        "context_output_limits": "Physical language models publish context/output limits; for example the catalog records model-specific 200K/1M context and output limits.",
+        "region_restrictions": "Availability follows the MiniMax platform account region and endpoint documentation.",
+        "account_tier_restrictions": "Paid API and token-plan access can restrict models; missing credentials or entitlement is retained as a skipped matrix result.",
+        "preview_allowlist": "Preview and newly released models require explicit catalog/account availability."
+      },
+      "rules": [
+        {
+          "model_pattern": "MiniMax-M2*",
+          "status": "active",
+          "api_types": ["llm"],
+          "methods": ["llm.chat", "llm.completion"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "tool_call"],
+          "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
+          "evidence_summary": "MiniMax M2 models provide text generation, reasoning, streaming, and tool calling."
+        },
+        {
+          "model_pattern": "speech-*",
+          "status": "active",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://platform.minimax.io/docs/api-reference/api-overview"],
+          "evidence_summary": "MiniMax speech models provide text-to-speech."
+        },
+        {
+          "model_pattern": "image-*",
+          "status": "active",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://platform.minimax.io/docs/api-reference/api-overview"],
+          "evidence_summary": "MiniMax exposes text-to-image and image-to-image APIs."
+        },
+        {
+          "model_pattern": "*Hailuo*",
+          "status": "active",
+          "api_types": ["video.txt2video", "video.img2video"],
+          "methods": ["video.txt2video", "video.img2video"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
+          "evidence_summary": "MiniMax Hailuo models support text-to-video and model-specific image-to-video."
+        },
+        {
+          "model_pattern": "music-*",
+          "status": "active",
+          "api_types": ["audio.music"],
+          "methods": ["audio.music"],
+          "input_kinds": ["text", "audio"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://platform.minimax.io/docs/api-reference/api-overview"],
+          "evidence_summary": "MiniMax music models generate music from prompts and supported references."
+        }
+      ]
+    },
+    {
+      "provider_driver": "openrouter",
+      "discovery": "runtime_catalog",
+      "source_urls": ["https://openrouter.ai/docs/api/api-reference/models/get-models"],
+      "protocol_evidence": {
+        "documentation_version": "official documentation checked 2026-08-27",
+        "streaming_semantics": "OpenRouter exposes OpenAI-compatible streaming subject to the selected upstream model/provider.",
+        "async_operation_semantics": "Lifecycle behavior is inherited from the selected model endpoint; unsupported async behavior is not inferred.",
+        "usage_semantics": "Models API exposes pricing and requests expose normalized usage subject to upstream support.",
+        "input_output_formats": "Runtime Models API output_modalities, architecture, and supported_parameters are the per-model source of truth.",
+        "item_request_batch_limits": "Models API per_request_limits and upstream provider metadata are authoritative; null remains explicitly unknown.",
+        "image_audio_video_limits": "Media constraints are inherited from the selected upstream model/provider and must be present in runtime metadata or official upstream evidence.",
+        "context_output_limits": "Models API publishes context_length and top-provider limits per canonical physical model.",
+        "region_restrictions": "Provider routing and sovereign/private-provider choices can impose region restrictions.",
+        "account_tier_restrictions": "Workspace budget, credit, provider availability, and service tier can restrict execution.",
+        "preview_allowlist": "Private/preview models require account access and aliases are resolved before physical-model coverage."
+      },
+      "rules": [
+        {
+          "model_pattern": "*",
+          "status": "active",
+          "source_status": "openrouter_models_api_runtime_membership",
+          "api_types": ["llm"],
+          "methods": ["llm.chat", "llm.completion"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://openrouter.ai/docs/api/api-reference/models/get-models"],
+          "evidence_summary": "OpenRouter model capabilities must be refined from the live official model catalog before execution."
+        }
+      ]
+    },
+    {
+      "provider_driver": "sn-ai-provider",
+      "discovery": "internal_inventory",
+      "capability_source_provider": "openai",
+      "source_urls": [
+        "https://github.com/buckyos/buckyos",
+        "https://developers.openai.com/api/docs/models/all"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "BuckyOS inventory and OpenAI documentation checked 2026-08-27",
+        "streaming_semantics": "Only OpenAI-compatible models actually present in SN runtime inventory inherit their documented streaming semantics.",
+        "async_operation_semantics": "Async behavior is limited to the current SN inventory and AICC adapter implementation; no unsupported OpenAI models are synthesized.",
+        "usage_semantics": "SN usage, credit, and raw cost must be reported through AICC durable finance snapshots.",
+        "input_output_formats": "Capabilities are the intersection of current SN inventory and the matching OpenAI physical-model documentation.",
+        "item_request_batch_limits": "The stricter of SN gateway policy and the underlying OpenAI model/endpoint limits applies.",
+        "image_audio_video_limits": "Only media capabilities present in SN inventory are eligible; underlying OpenAI format and duration limits remain authoritative.",
+        "context_output_limits": "Limits are inherited from the exact OpenAI physical model and may be further restricted by SN policy.",
+        "region_restrictions": "SN availability is deployment specific and is determined by runtime inventory.",
+        "account_tier_restrictions": "SN entitlement, balance, and credit policy are runtime account constraints.",
+        "preview_allowlist": "Preview models are eligible only when explicitly present in SN inventory and allowed by account policy."
+      },
+      "rules": []
+    }
+  ]
+}
