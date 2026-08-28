@@ -182,7 +182,7 @@ async function loadDefaultFixtures(
   uploadNamedObjects: boolean,
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
-  const fixtureRevision = "26bfc2a87b449736cf82b0698340d17981440143";
+  const fixtureRevision = "d3aef519a1ab24fcdd5e1e54c6270465d0b28b48";
   const rawFixtureUrl = (path: string) =>
     `https://raw.githubusercontent.com/streetycat/buckyos/${fixtureRevision}/${path}`;
   const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string; url?: string }> = {
