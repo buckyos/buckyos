@@ -217,6 +217,18 @@ function inpaintPng(mask: boolean): Uint8Array {
   return result;
 }
 
+function uniqueNamedFixture(bytes: Uint8Array, mime: string): Uint8Array {
+  if (mime !== "video/mp4") return bytes;
+  const suffix = new Uint8Array(24);
+  new DataView(suffix.buffer).setUint32(0, suffix.length);
+  suffix.set(new TextEncoder().encode("free"), 4);
+  crypto.getRandomValues(suffix.subarray(8));
+  const result = new Uint8Array(bytes.length + suffix.length);
+  result.set(bytes);
+  result.set(suffix, bytes.length);
+  return result;
+}
+
 async function loadDefaultFixtures(
   fixtures: FixtureRefs,
   gatewayUrl: string,
@@ -254,12 +266,13 @@ async function loadDefaultFixtures(
     mime: string,
     configured?: ResourceFixture,
   ): Promise<ResourceFixture> => {
+    const namedBytes = uniqueNamedFixture(bytes, mime);
     const objId = ndn.ChunkId.fromMix256Result(
-      bytes.byteLength,
-      ndn.sha256Bytes(bytes),
+      namedBytes.byteLength,
+      ndn.sha256Bytes(namedBytes),
     ).toString();
     if (ndmProxy) {
-      await ndmProxy.putChunk(objId, bytes);
+      await ndmProxy.putChunk(objId, namedBytes);
       uploadedObjectIds.push(objId);
     }
     const result: Partial<Record<ResourceRef["kind"], ResourceRef>> = {
@@ -680,6 +693,11 @@ function retryable(error: unknown): boolean {
     "provider_start_failed",
     "aicc returned failed",
   ].some((marker) => message.includes(marker)) || /\b5\d\d\b/.test(message);
+}
+
+function credentialUnavailable(error: unknown): boolean {
+  const message = String(error).toLowerCase();
+  return message.includes("request not allowed");
 }
 
 function estimatedCellCost(cell: { estimated_cost_usd?: number }, fallback: number): number {
@@ -1558,7 +1576,8 @@ async function executeAcceptance(input: {
           });
           break;
         } catch (error) {
-          caseReport.status = "failed";
+          const unavailable = credentialUnavailable(error);
+          caseReport.status = unavailable ? "skipped" : "failed";
           if (reservation && !reservationSettled) {
             costBudget.settle(reservation);
             financialEntries.push({
@@ -1570,7 +1589,7 @@ async function executeAcceptance(input: {
               api_type: cell.api_type,
               method: cell.method,
               started_at: new Date(started).toISOString(),
-              status: "failed",
+              status: unavailable ? "skipped" : "failed",
               estimated_cost_usd: attemptEstimate,
               cost_status: "unknown",
             });
@@ -1579,12 +1598,15 @@ async function executeAcceptance(input: {
             attempt,
             started_at: new Date(started).toISOString(),
             elapsed_ms: Date.now() - started,
-            status: "failed",
-            failure_class: failureClass(error),
-            diagnostic: String(error),
+            status: unavailable ? "skipped" : "failed",
+            failure_class: unavailable ? undefined : failureClass(error),
+            diagnostic: unavailable
+              ? `configured credential cannot access this model: ${String(error)}`
+              : String(error),
             estimated_cost_usd: reservation ? attemptEstimate : 0,
             cost_status: reservation ? "unknown" : "not_called",
           });
+          if (unavailable) break;
           if (attempt >= options.maxAttempts || !retryable(error)) break;
           if (options.retryDelayMs > 0) {
             await new Promise((resolvePromise) => setTimeout(resolvePromise, options.retryDelayMs));
