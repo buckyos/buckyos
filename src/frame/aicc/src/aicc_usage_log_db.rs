@@ -548,7 +548,17 @@ FROM aicc_route_trace
 
         let mut sql = format!(
             r#"
-SELECT route_trace_json, created_at_ms
+SELECT
+    trace_id,
+    tenant_id,
+    caller_app_id,
+    task_id,
+    request_model,
+    selected_exact_model,
+    provider_instance_name,
+    api_type,
+    route_trace_json,
+    created_at_ms
 FROM aicc_route_trace
 {}
 "#,
@@ -894,9 +904,27 @@ fn decode_route_trace_row(row: &AnyRow) -> Result<Value, RPCErrors> {
         RPCErrors::ReasonError(format!("failed to parse route_trace_json: {}", err))
     })?;
     if let Some(object) = value.as_object_mut() {
-        object
-            .entry("created_at_ms")
-            .or_insert_with(|| Value::from(created_at_ms));
+        for field in [
+            "trace_id",
+            "tenant_id",
+            "caller_app_id",
+            "task_id",
+            "request_model",
+            "selected_exact_model",
+            "provider_instance_name",
+            "api_type",
+        ] {
+            let field_value: Option<String> = row.try_get(field).map_err(|err| {
+                RPCErrors::ReasonError(format!(
+                    "failed to decode aicc_route_trace.{}: {}",
+                    field, err
+                ))
+            })?;
+            if let Some(field_value) = field_value {
+                object.insert(field.to_string(), Value::from(field_value));
+            }
+        }
+        object.insert("created_at_ms".to_string(), Value::from(created_at_ms));
     }
     Ok(value)
 }
@@ -1378,6 +1406,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.traces.len(), 2);
+        assert_eq!(
+            resp.traces[0].get("trace_id").and_then(Value::as_str),
+            Some("trace-two")
+        );
+        assert_eq!(
+            resp.traces[0].get("task_id").and_then(Value::as_str),
+            Some("trace-one")
+        );
+        assert_eq!(
+            resp.traces[0]
+                .get("provider_instance_name")
+                .and_then(Value::as_str),
+            Some("test")
+        );
         assert_eq!(
             resp.traces[0].get("request_id").and_then(Value::as_str),
             Some("trace-two")
