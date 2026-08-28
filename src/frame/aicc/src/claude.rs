@@ -323,6 +323,21 @@ impl ClaudeProvider {
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
+                if status == reqwest::StatusCode::FORBIDDEN {
+                    let current = self
+                        .inventory
+                        .read()
+                        .map_err(|_| anyhow!("claude inventory lock poisoned"))?
+                        .clone();
+                    if !current.models.is_empty() {
+                        warn!(
+                            "aicc.claude.inventory.refresh_forbidden_keep_current provider_instance_name={} models={}",
+                            self.provider_instance_name,
+                            current.models.len()
+                        );
+                        return Ok(current);
+                    }
+                }
                 return Err(anyhow!(
                     "claude inventory refresh failed status={} body={}",
                     status,
