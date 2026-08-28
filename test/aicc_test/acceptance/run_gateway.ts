@@ -222,7 +222,6 @@ function uniqueNamedFixture(bytes: Uint8Array, mime: string): Uint8Array {
   const suffix = new Uint8Array(24);
   new DataView(suffix.buffer).setUint32(0, suffix.length);
   suffix.set(new TextEncoder().encode("free"), 4);
-  crypto.getRandomValues(suffix.subarray(8));
   const result = new Uint8Array(bytes.length + suffix.length);
   result.set(bytes);
   result.set(suffix, bytes.length);
@@ -266,20 +265,18 @@ async function loadDefaultFixtures(
     mime: string,
     configured?: ResourceFixture,
   ): Promise<ResourceFixture> => {
-    let namedObject: ResourceRef | undefined;
+    const namedBytes = uniqueNamedFixture(bytes, mime);
+    const objId = ndn.ChunkId.fromMix256Result(
+      namedBytes.byteLength,
+      ndn.sha256Bytes(namedBytes),
+    ).toString();
     if (ndmProxy) {
-      const namedBytes = uniqueNamedFixture(bytes, mime);
-      const objId = ndn.ChunkId.fromMix256Result(
-        namedBytes.byteLength,
-        ndn.sha256Bytes(namedBytes),
-      ).toString();
       await ndmProxy.putChunk(objId, namedBytes);
       uploadedObjectIds.push(objId);
-      namedObject = { kind: "named_object", obj_id: objId };
     }
     const result: Partial<Record<ResourceRef["kind"], ResourceRef>> = {
       base64: { kind: "base64", mime, data_base64: base64(bytes) },
-      ...(namedObject ? { named_object: namedObject } : {}),
+      named_object: { kind: "named_object", obj_id: objId },
     };
     if (configured) {
       if ("kind" in configured) result[configured.kind] = configured;
