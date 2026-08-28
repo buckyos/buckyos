@@ -697,8 +697,8 @@
       "id": "document-facts-md",
       "path": "../../jarvis_media_dv/assets/document_facts.md",
       "mime": "text/markdown",
-      "size": 96,
-      "sha256": "645501d10673b461d34881c62e2f16180e68f7e3d3190ceb38089eda62bda63f",
+      "size": 90,
+      "sha256": "238010bfc3a2fb618acdecbb70487ae46998506eba0d04e72291a62ed0b1af9a",
       "facts": [
         "AICC-DOC-7319"
       ],

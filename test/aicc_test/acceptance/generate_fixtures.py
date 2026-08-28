@@ -179,6 +179,8 @@ def manifest(paths: list[tuple[Path, str, list[str], list[str], str]]) -> None:
     fixtures = []
     for path, mime, facts, cases, source in paths:
         data = path.read_bytes()
+        if path.suffix not in {".bin", ".docx", ".epub", ".jpg", ".mp4", ".pdf", ".png", ".pptx", ".wav", ".xlsx", ".zip"}:
+            data = data.replace(b"\r\n", b"\n")
         fixtures.append({
             "id": path.name.replace("_", "-").replace(".", "-"),
             "path": (Path("../../jarvis_media_dv/assets") / path.name).as_posix()
