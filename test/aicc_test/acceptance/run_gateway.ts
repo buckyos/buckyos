@@ -1004,7 +1004,7 @@ async function executeAcceptance(input: {
     });
   }
   for (const driver of selectedDrivers) {
-    if (!inventories.some((inventory) => inventory.provider_driver === driver)) {
+    if (!selectedInventories.some((inventory) => inventory.provider_driver === driver)) {
       cases.push({
         run_id: runId,
         case_id: `t2.preflight.provider_missing.${driver}`,
@@ -1523,7 +1523,7 @@ async function executeAcceptance(input: {
           taskIds,
         });
         const traceByTask = new Map(traces.map((trace) => [trace.task_id, trace]));
-        const driverByInstance = new Map(inventories.map((inventory) => [
+        const driverByInstance = new Map(selectedInventories.map((inventory) => [
           inventory.provider_instance_name,
           inventory.provider_driver,
         ]));
