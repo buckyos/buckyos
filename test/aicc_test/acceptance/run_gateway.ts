@@ -291,9 +291,10 @@ async function loadDefaultFixtures(
     { path: string; mime: string },
   ]>) {
     const configured = loaded[kind];
-    const configuredPath = configured && "kind" in configured && configured.kind === "url" &&
-        typeof configured.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
-      ? configured.url
+    const configuredUrl = configured && "kind" in configured ? configured : configured?.url;
+    const configuredPath = configuredUrl?.kind === "url" &&
+        typeof configuredUrl.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configuredUrl.url)
+      ? configuredUrl.url
       : undefined;
     const bytes = kind === "inpaintImage"
       ? inpaintPng(false)
@@ -302,7 +303,7 @@ async function loadDefaultFixtures(
       : kind === "mask"
       ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
       : await Deno.readFile(configuredPath ?? fixture.path);
-    loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured);
+    loaded[kind] = await variants(bytes, fixture.mime, configured);
   }
   const documentFixtures: Record<string, { path: string; mime: string }> = {
     txt: { path: join(here, "../fixtures/facts.txt"), mime: "text/plain" },
@@ -871,9 +872,8 @@ async function main(): Promise<void> {
     appId: options.appId,
   });
   const uploadedFixtureIds: string[] = [];
-  const configuredFixtures = structuredClone(options.fixtures);
   options.fixtures = await loadDefaultFixtures(
-    configuredFixtures,
+    options.fixtures,
     runId,
     options.gatewayUrl,
     session.sessionToken,
@@ -1305,7 +1305,7 @@ async function executeAcceptance(input: {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     if (executeRealModelCalls) {
       options.fixtures = await loadDefaultFixtures(
-        configuredFixtures,
+        options.fixtures,
         runId,
         options.gatewayUrl,
         session.sessionToken,
