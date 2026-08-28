@@ -87,6 +87,7 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
 ];
 const OPENAI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const OPENAI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
+const RESOURCE_FETCH_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct OpenAIInstanceConfig {
@@ -2391,34 +2392,65 @@ impl OpenAIProvider {
                 Ok((fallback_name.to_string(), mime.clone(), bytes))
             }
             ResourceRef::Url { url, mime_hint } => {
-                let response = self.client.get(url).send().await.map_err(|err| {
-                    if err.is_timeout() || err.is_connect() {
-                        ProviderError::retryable(format!("failed to fetch resource url: {}", err))
-                    } else {
-                        ProviderError::fatal(format!("failed to fetch resource url: {}", err))
+                for attempt in 1..=RESOURCE_FETCH_ATTEMPTS {
+                    let response = match self.client.get(url).send().await {
+                        Ok(response) => response,
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(if err.is_timeout() || err.is_connect() {
+                                ProviderError::retryable(format!(
+                                    "failed to fetch resource url after {} attempts: {}",
+                                    attempt, err
+                                ))
+                            } else {
+                                ProviderError::fatal(format!(
+                                    "failed to fetch resource url after {} attempts: {}",
+                                    attempt, err
+                                ))
+                            });
+                        }
+                    };
+                    let status = response.status();
+                    if !status.is_success() {
+                        let error = Self::classify_api_error(
+                            status,
+                            format!("resource url returned status {}", status.as_u16()),
+                        );
+                        if error.is_retryable() && attempt < RESOURCE_FETCH_ATTEMPTS {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        return Err(error);
                     }
-                })?;
-                let status = response.status();
-                if !status.is_success() {
-                    return Err(Self::classify_api_error(
-                        status,
-                        format!("resource url returned status {}", status.as_u16()),
-                    ));
+                    let content_type = mime_hint
+                        .clone()
+                        .or_else(|| {
+                            response
+                                .headers()
+                                .get(CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(|value| value.to_string())
+                        })
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            return Ok((fallback_name.to_string(), content_type, bytes.to_vec()));
+                        }
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                        }
+                        Err(err) => {
+                            return Err(ProviderError::retryable(format!(
+                                "failed to read resource bytes after {} attempts: {}",
+                                attempt, err
+                            )));
+                        }
+                    }
                 }
-                let content_type = mime_hint
-                    .clone()
-                    .or_else(|| {
-                        response
-                            .headers()
-                            .get(CONTENT_TYPE)
-                            .and_then(|value| value.to_str().ok())
-                            .map(|value| value.to_string())
-                    })
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
-                let bytes = response.bytes().await.map_err(|err| {
-                    ProviderError::fatal(format!("failed to read resource bytes: {}", err))
-                })?;
-                Ok((fallback_name.to_string(), content_type, bytes.to_vec()))
+                unreachable!()
             }
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "openai provider cannot resolve named object resource {} without resolver bytes",
@@ -4483,6 +4515,8 @@ mod tests {
     use crate::aicc::ModelCatalog;
     use buckyos_api::{AiPayload, ModelSpec, Requirements};
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn build_llm_request(options: Option<Value>) -> AiMethodRequest {
         AiMethodRequest::new(
@@ -4499,6 +4533,50 @@ mod tests {
             ),
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn resource_url_retries_incomplete_response_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            for response in [
+                b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 10\r\nConnection: close\r\n\r\nbad".as_slice(),
+                b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 4\r\nConnection: close\r\n\r\ngood".as_slice(),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request).await.expect("read request");
+                stream.write_all(response).await.expect("write response");
+            }
+        });
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-resource-retry".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: 1_000,
+            },
+            "token",
+        )
+        .expect("provider");
+
+        let (_, mime, bytes) = provider
+            .resource_to_file_bytes(
+                &ResourceRef::Url {
+                    url: format!("http://{address}/audio.wav"),
+                    mime_hint: None,
+                },
+                "audio.wav",
+            )
+            .await
+            .expect("retry should recover");
+
+        assert_eq!(mime, "audio/wav");
+        assert_eq!(bytes, b"good");
+        server.await.expect("server task");
     }
 
     fn build_text2image_request(options: Option<Value>) -> AiMethodRequest {

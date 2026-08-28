@@ -1059,7 +1059,7 @@ impl GoogleGeminiProvider {
             .collect())
     }
 
-    fn build_contents(&self, req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
+    fn build_contents(req: &AiMethodRequest) -> Result<Vec<Value>, ProviderError> {
         let mut contents: Vec<Value> = vec![];
         let mut tool_calls = HashMap::new();
 
@@ -1092,19 +1092,6 @@ impl GoogleGeminiProvider {
                 content.push_str(text);
             }
 
-            let mut resource_lines = vec![];
-            for resource in req.payload.resources.iter() {
-                resource_lines.push(Self::resource_text(resource)?);
-            }
-
-            if !resource_lines.is_empty() {
-                if !content.is_empty() {
-                    content.push('\n');
-                    content.push('\n');
-                }
-                content.push_str(resource_lines.join("\n").as_str());
-            }
-
             if !content.trim().is_empty() {
                 contents.push(json!({
                     "role": "user",
@@ -1114,6 +1101,26 @@ impl GoogleGeminiProvider {
                         }
                     ]
                 }));
+            }
+        }
+
+        if !req.payload.resources.is_empty() {
+            let resource_parts = req
+                .payload
+                .resources
+                .iter()
+                .map(Self::content_resource_part)
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(parts) = contents.iter_mut().rev().find_map(|content| {
+                let content = content.as_object_mut()?;
+                if content.get("role").and_then(Value::as_str) != Some("user") {
+                    return None;
+                }
+                content.get_mut("parts")?.as_array_mut()
+            }) {
+                parts.extend(resource_parts);
+            } else {
+                contents.push(json!({ "role": "user", "parts": resource_parts }));
             }
         }
 
@@ -2792,7 +2799,7 @@ impl GoogleGeminiProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
-        let contents = self.build_contents(req)?;
+        let contents = Self::build_contents(req)?;
         let mut request_obj = Map::new();
         request_obj.insert("contents".to_string(), Value::Array(contents));
 
@@ -4960,6 +4967,27 @@ mod tests {
             ),
             None,
         )
+    }
+
+    #[test]
+    fn llm_contents_append_payload_resources_to_user_message() {
+        let mut request = build_llm_request(vec![], vec![]);
+        request.payload.resources.push(ResourceRef::Base64 {
+            mime: "audio/mpeg".to_string(),
+            data_base64: "YXVkaW8=".to_string(),
+        });
+
+        let contents = GoogleGeminiProvider::build_contents(&request)
+            .expect("LLM resources should lower to Gemini parts");
+
+        assert_eq!(
+            contents[0].pointer("/parts/1/inlineData/mimeType"),
+            Some(&json!("audio/mpeg"))
+        );
+        assert_eq!(
+            contents[0].pointer("/parts/1/inlineData/data"),
+            Some(&json!("YXVkaW8="))
+        );
     }
 
     #[test]

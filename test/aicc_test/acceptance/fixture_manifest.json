@@ -116,7 +116,7 @@
     {
       "id": "facts-xml",
       "path": "../fixtures/facts.xml",
-      "mime": "application/xml",
+      "mime": "text/xml",
       "size": 91,
       "sha256": "720613d46790f949573d9b7fdc065597eb637b07aedc35e49402ca99582e540a",
       "facts": [
@@ -229,8 +229,8 @@
       "id": "facts-xls",
       "path": "../fixtures/facts.xls",
       "mime": "application/vnd.ms-excel",
-      "size": 323,
-      "sha256": "0ccfa5911990bdc29a957ba57e3d01de23c6c8dd1df010c760bf71e7275ebee4",
+      "size": 5632,
+      "sha256": "9778ca90865fd17b03adfa42eeae9df12c13d807a2f51e272245b35ffc54080d",
       "facts": [
         "AICC-FIXTURE-7319"
       ],

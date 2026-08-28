@@ -43,6 +43,7 @@ const DEFAULT_SN_AI_PROVIDER_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_INVENTORY_REFRESH_INTERVAL_SECS: u64 = 300;
 const SN_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const SN_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
+const RESOURCE_FETCH_ATTEMPTS: usize = 3;
 const SN_LLM_OPTION_ALLOWLIST: &[&str] = &[
     "audio",
     "background",
@@ -1352,34 +1353,62 @@ impl SnAIProvider {
                 Ok((fallback_name.to_string(), mime.clone(), bytes))
             }
             ResourceRef::Url { url, mime_hint } => {
-                let response = self.client.get(url).send().await.map_err(|err| {
-                    if err.is_timeout() || err.is_connect() {
-                        ProviderError::retryable(format!("failed to fetch resource url: {err}"))
-                    } else {
-                        ProviderError::fatal(format!("failed to fetch resource url: {err}"))
+                for attempt in 1..=RESOURCE_FETCH_ATTEMPTS {
+                    let response = match self.client.get(url).send().await {
+                        Ok(response) => response,
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(if err.is_timeout() || err.is_connect() {
+                                ProviderError::retryable(format!(
+                                    "failed to fetch resource url after {attempt} attempts: {err}"
+                                ))
+                            } else {
+                                ProviderError::fatal(format!(
+                                    "failed to fetch resource url after {attempt} attempts: {err}"
+                                ))
+                            });
+                        }
+                    };
+                    let status = response.status();
+                    if !status.is_success() {
+                        let error = Self::classify_api_error(
+                            status,
+                            format!("resource url returned status {}", status.as_u16()),
+                        );
+                        if error.is_retryable() && attempt < RESOURCE_FETCH_ATTEMPTS {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                            continue;
+                        }
+                        return Err(error);
                     }
-                })?;
-                let status = response.status();
-                if !status.is_success() {
-                    return Err(Self::classify_api_error(
-                        status,
-                        format!("resource url returned status {}", status.as_u16()),
-                    ));
+                    let content_type = mime_hint
+                        .clone()
+                        .or_else(|| {
+                            response
+                                .headers()
+                                .get(CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    match response.bytes().await {
+                        Ok(bytes) => {
+                            return Ok((fallback_name.to_string(), content_type, bytes.to_vec()));
+                        }
+                        Err(_) if attempt < RESOURCE_FETCH_ATTEMPTS => {
+                            time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                        }
+                        Err(err) => {
+                            return Err(ProviderError::retryable(format!(
+                                "failed to read resource bytes after {attempt} attempts: {err}"
+                            )));
+                        }
+                    }
                 }
-                let content_type = mime_hint
-                    .clone()
-                    .or_else(|| {
-                        response
-                            .headers()
-                            .get(CONTENT_TYPE)
-                            .and_then(|value| value.to_str().ok())
-                            .map(str::to_string)
-                    })
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
-                let bytes = response.bytes().await.map_err(|err| {
-                    ProviderError::fatal(format!("failed to read resource bytes: {err}"))
-                })?;
-                Ok((fallback_name.to_string(), content_type, bytes.to_vec()))
+                unreachable!()
             }
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
                 "SN provider cannot resolve named object resource {obj_id} without resolver bytes"

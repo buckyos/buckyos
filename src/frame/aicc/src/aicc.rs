@@ -1578,6 +1578,7 @@ fn infer_mime_from_name(name: &str) -> Option<String> {
         "ogg" => Some("audio/ogg".to_string()),
         "mp4" => Some("video/mp4".to_string()),
         "json" => Some("application/json".to_string()),
+        "xml" => Some("text/xml".to_string()),
         "txt" => Some("text/plain".to_string()),
         _ => None,
     }
@@ -1607,6 +1608,9 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
     }
     if bytes.starts_with(b"%PDF-") {
         return "application/pdf".to_string();
+    }
+    if bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") {
+        return "application/vnd.ms-excel".to_string();
     }
     if bytes.starts_with(b"PK\x03\x04") {
         if bytes.windows(5).any(|value| value == b"word/") {
@@ -1645,7 +1649,7 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
             return "text/html".to_string();
         }
         if trimmed.starts_with("<?xml") || trimmed.starts_with('<') {
-            return "application/xml".to_string();
+            return "text/xml".to_string();
         }
         return "text/plain".to_string();
     }
@@ -6229,7 +6233,7 @@ mod tests {
         );
         assert_eq!(
             infer_mime_from_bytes(b"<?xml version=\"1.0\"?><Workbook/>"),
-            "application/xml"
+            "text/xml"
         );
         assert_eq!(
             infer_mime_from_bytes(b"<!doctype html><html><body>marker</body></html>"),
@@ -6238,6 +6242,10 @@ mod tests {
         assert_eq!(
             infer_mime_from_bytes(b"PK\x03\x04word/document.xml"),
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1Workbook"),
+            "application/vnd.ms-excel"
         );
     }
 

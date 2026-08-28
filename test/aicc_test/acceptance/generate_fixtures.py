@@ -61,15 +61,66 @@ def pdf() -> Path:
     return path
 
 
+def legacy_xls() -> bytes:
+    def record(kind: int, data: bytes = b"") -> bytes:
+        return struct.pack("<HH", kind, len(data)) + data
+
+    bof_globals = record(0x0809, struct.pack("<HHHHII", 0x0600, 0x0005, 0x0DBB, 0x07CC, 0x41, 0x06))
+    codepage = record(0x0042, struct.pack("<H", 1252))
+    sheet_name = b"Facts"
+    boundsheet_size = 4 + 2 + 2 + len(sheet_name)
+    globals_size = len(bof_globals) + len(codepage) + 4 + boundsheet_size + 4
+    boundsheet = record(0x0085, struct.pack("<IBBBB", globals_size, 0, 0, len(sheet_name), 0) + sheet_name)
+    workbook_globals = bof_globals + codepage + boundsheet + record(0x000A)
+
+    bof_sheet = record(0x0809, struct.pack("<HHHHII", 0x0600, 0x0010, 0x0DBB, 0x07CC, 0x41, 0x06))
+    dimensions = record(0x0200, struct.pack("<IIHHH", 0, 1, 0, 2, 0))
+    marker = MARKER.encode("latin-1")
+    label = record(0x0204, struct.pack("<HHHHB", 0, 0, 0, len(marker), 0) + marker)
+    number = record(0x0203, struct.pack("<HHHd", 0, 1, 0, 4827.0))
+    workbook = workbook_globals + bof_sheet + dimensions + label + number + record(0x000A)
+    workbook = workbook.ljust(4096, b"\x00")
+
+    free = 0xFFFFFFFF
+    end = 0xFFFFFFFE
+    fat_sector = 0xFFFFFFFD
+    fat = [free] * 128
+    for sector in range(7):
+        fat[sector] = sector + 1
+    fat[7] = end
+    fat[8] = end
+    fat[9] = fat_sector
+
+    def directory_entry(name: str, entry_type: int, child: int, start: int, size: int) -> bytes:
+        encoded = (name + "\x00").encode("utf-16le")
+        return (
+            encoded.ljust(64, b"\x00")
+            + struct.pack("<HBBIII", len(encoded), entry_type, 1, free, free, child)
+            + b"\x00" * 16
+            + struct.pack("<IQQIQ", 0, 0, 0, start, size)
+        )
+
+    directory = directory_entry("Root Entry", 5, 1, end, 0)
+    directory += directory_entry("Workbook", 2, free, 0, len(workbook))
+    directory = directory.ljust(512, b"\x00")
+
+    header = bytearray(512)
+    header[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<HHHH", header, 24, 0x003E, 3, 0xFFFE, 9)
+    struct.pack_into("<H", header, 32, 6)
+    struct.pack_into("<IIIIIIII", header, 40, 0, 1, 8, 0, 4096, end, 0, end)
+    struct.pack_into("<I", header, 72, 0)
+    struct.pack_into("<I", header, 76, 9)
+    for offset in range(80, 512, 4):
+        struct.pack_into("<I", header, offset, free)
+    return bytes(header) + workbook + directory + struct.pack("<128I", *fat)
+
+
 def office_documents() -> list[Path]:
     doc = ROOT / "facts.doc"
     doc.write_bytes(r"{\rtf1\ansi AICC-FIXTURE-7319 owner Lin budget 4827}".encode())
     xls = ROOT / "facts.xls"
-    xls.write_text(
-        f'<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Facts" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Table><Row><Cell><Data ss:Type="String">{MARKER}</Data></Cell><Cell><Data ss:Type="Number">4827</Data></Cell></Row></Table></Worksheet></Workbook>',
-        encoding="utf-8",
-        newline="",
-    )
+    xls.write_bytes(legacy_xls())
     ppt = ROOT / "facts.ppt"
     ppt.write_bytes(f"PowerPoint\n{MARKER}\nowner Lin\nbudget 4827\n".encode())
     docx = package("facts.docx", [
@@ -191,7 +242,7 @@ def manifest(paths: list[tuple[Path, str, list[str], list[str], str]]) -> None:
     fixtures = []
     for path, mime, facts, cases, source in paths:
         data = path.read_bytes()
-        if path.suffix not in {".bin", ".docx", ".epub", ".jpg", ".mp4", ".pdf", ".png", ".pptx", ".wav", ".xlsx", ".zip"}:
+        if path.suffix not in {".bin", ".docx", ".epub", ".jpg", ".mp4", ".pdf", ".png", ".pptx", ".wav", ".xls", ".xlsx", ".zip"}:
             data = data.replace(b"\r\n", b"\n")
         fixtures.append({
             "id": path.name.replace("_", "-").replace(".", "-"),
@@ -238,7 +289,7 @@ def main() -> None:
     mime_by_suffix = {
         ".txt": "text/plain", ".md": "text/markdown", ".html": "text/html", ".csv": "text/csv",
         ".tsv": "text/tab-separated-values", ".json": "application/json", ".yaml": "application/yaml",
-        ".xml": "application/xml", ".rtf": "application/rtf", ".py": "text/x-python", ".pdf": "application/pdf",
+        ".xml": "text/xml", ".rtf": "application/rtf", ".py": "text/x-python", ".pdf": "application/pdf",
         ".doc": "application/msword", ".xls": "application/vnd.ms-excel", ".ppt": "application/vnd.ms-powerpoint",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

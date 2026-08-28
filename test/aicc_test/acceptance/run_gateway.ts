@@ -297,7 +297,7 @@ async function loadDefaultFixtures(
     ppt: { path: join(here, "../fixtures/facts.ppt"), mime: "application/vnd.ms-powerpoint" },
     pptx: { path: join(here, "../fixtures/facts.pptx"), mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
     html: { path: join(here, "../fixtures/facts.html"), mime: "text/html" },
-    xml: { path: join(here, "../fixtures/facts.xml"), mime: "application/xml" },
+    xml: { path: join(here, "../fixtures/facts.xml"), mime: "text/xml" },
     json: { path: join(here, "../fixtures/facts.json"), mime: "application/json" },
     yaml: { path: join(here, "../fixtures/facts.yaml"), mime: "application/yaml" },
     rtf: { path: join(here, "../fixtures/facts.rtf"), mime: "application/rtf" },
