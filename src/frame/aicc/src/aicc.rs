@@ -4511,10 +4511,10 @@ impl AIComputeCenter {
                 error.to_string(),
             )
             .await;
-            return Ok(AiMethodResponse::new(
+            return Ok(failed_method_response(
                 external_task_id,
-                AiMethodStatus::Failed,
-                None,
+                code.as_str(),
+                error.to_string(),
                 event_ref,
             ));
         }
@@ -4529,10 +4529,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(AiMethodResponse::new(
+                return Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    "resource_invalid",
+                    error.to_string(),
                     event_ref,
                 ));
             }
@@ -4649,10 +4649,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                return Ok(AiMethodResponse::new(
+                return Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    code.as_str(),
+                    error.to_string(),
                     event_ref,
                 ));
             }
@@ -4768,10 +4768,10 @@ impl AIComputeCenter {
                             error.to_string(),
                         )
                         .await;
-                        return Ok(AiMethodResponse::new(
+                        return Ok(failed_method_response(
                             external_task_id,
-                            AiMethodStatus::Failed,
-                            None,
+                            code.as_str(),
+                            error.to_string(),
                             event_ref,
                         ));
                     }
@@ -4864,10 +4864,10 @@ impl AIComputeCenter {
                     error.to_string(),
                 )
                 .await;
-                Ok(AiMethodResponse::new(
+                Ok(failed_method_response(
                     external_task_id,
-                    AiMethodStatus::Failed,
-                    None,
+                    code.as_str(),
+                    error.to_string(),
                     event_ref,
                 ))
             }
@@ -6126,6 +6126,28 @@ fn extension_for_mime(mime: &str) -> &'static str {
 
 fn reason_error(code: &str, detail: impl Into<String>) -> RPCErrors {
     RPCErrors::ReasonError(format!("{}: {}", code, detail.into()))
+}
+
+fn failed_method_response(
+    task_id: String,
+    code: &str,
+    message: String,
+    event_ref: Option<String>,
+) -> AiMethodResponse {
+    AiMethodResponse::new(
+        task_id,
+        AiMethodStatus::Failed,
+        Some(AiResponse {
+            extra: Some(json!({
+                "error": {
+                    "code": code,
+                    "message": message,
+                }
+            })),
+            ..AiResponse::default()
+        }),
+        event_ref,
+    )
 }
 
 fn extract_error_code(error: &RPCErrors) -> String {
@@ -7698,6 +7720,15 @@ mod tests {
             .await
             .expect("complete should return failed response");
         assert_eq!(response.status, AiMethodStatus::Failed);
+        assert_eq!(
+            response
+                .result
+                .as_ref()
+                .and_then(|result| result.extra.as_ref())
+                .and_then(|extra| extra.pointer("/error/code"))
+                .and_then(Value::as_str),
+            Some("no_provider_available")
+        );
 
         let taskmgr = center.taskmgr.as_ref().expect("task manager").clone();
         let tasks = all_tasks(&taskmgr).await;

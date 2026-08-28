@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
 import {
   parseToml,
   tomlBoolean,
@@ -108,7 +109,7 @@ function compactFailure(value: unknown, depth = 0): Record<string, unknown> | un
     else if (typeof field === "number") summary[key] = field;
   }
   if (Object.keys(summary).length > 0) return summary;
-  for (const key of ["error", "result", "cause"] as const) {
+  for (const key of ["error", "result", "extra", "cause"] as const) {
     const nested = compactFailure(object[key], depth + 1);
     if (nested) return nested;
   }
@@ -162,6 +163,60 @@ function base64(bytes: Uint8Array): string {
 const TRANSPARENT_OCR_MASK_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAABFAAAACECAYAAAC3Z98WAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAJMSURBVHhe7cEBDQAAAMKg909tDwcEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHKsB5fwAAcDqUMkAAAAASUVORK5CYII=";
 
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Uint8Array): Uint8Array {
+  const typeBytes = new TextEncoder().encode(type);
+  const result = new Uint8Array(12 + data.length);
+  const view = new DataView(result.buffer);
+  view.setUint32(0, data.length);
+  result.set(typeBytes, 4);
+  result.set(data, 8);
+  view.setUint32(8 + data.length, crc32(result.subarray(4, 8 + data.length)));
+  return result;
+}
+
+function inpaintPng(mask: boolean): Uint8Array {
+  const size = 1024;
+  const raw = new Uint8Array((size * 4 + 1) * size);
+  for (let y = 0; y < size; y++) {
+    const row = y * (size * 4 + 1);
+    for (let x = 0; x < size; x++) {
+      const offset = row + 1 + x * 4;
+      const center = x >= 320 && x < 704 && y >= 320 && y < 704;
+      raw.set(
+        mask ? [0, 0, 0, center ? 0 : 255] : center ? [210, 210, 210, 255] : [70, 125, 180, 255],
+        offset,
+      );
+    }
+  }
+  const ihdr = new Uint8Array(13);
+  const header = new DataView(ihdr.buffer);
+  header.setUint32(0, size);
+  header.setUint32(4, size);
+  ihdr.set([8, 6, 0, 0, 0], 8);
+  const chunks = [
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", new Uint8Array()),
+  ];
+  const result = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
 async function loadDefaultFixtures(
   fixtures: FixtureRefs,
   gatewayUrl: string,
@@ -175,6 +230,8 @@ async function loadDefaultFixtures(
     audio: { path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"), mime: "audio/wav" },
     video: { path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"), mime: "video/mp4" },
     document: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
+    inpaintImage: { path: "", mime: "image/png" },
+    inpaintMask: { path: "", mime: "image/png" },
   };
   const loaded = { ...fixtures };
   const { ndm_proxy, ndn } = await import("buckyos");
@@ -224,7 +281,11 @@ async function loadDefaultFixtures(
         typeof configured.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
       ? configured.url
       : undefined;
-    const bytes = kind === "mask"
+    const bytes = kind === "inpaintImage"
+      ? inpaintPng(false)
+      : kind === "inpaintMask"
+      ? inpaintPng(true)
+      : kind === "mask"
       ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
       : await Deno.readFile(configuredPath ?? fixture.path);
     loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured);
@@ -613,6 +674,7 @@ function retryable(error: unknown): boolean {
     "network",
     "temporarily unavailable",
     "service unavailable",
+    "server had an error",
     "bad gateway",
     "gateway timeout",
     "provider_start_failed",

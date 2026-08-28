@@ -11,6 +11,8 @@ export type ResourceFixture = ResourceRef | Partial<Record<ResourceRepresentatio
 export type FixtureRefs = {
   image?: ResourceFixture;
   mask?: ResourceFixture;
+  inpaintImage?: ResourceFixture;
+  inpaintMask?: ResourceFixture;
   audio?: ResourceFixture;
   video?: ResourceFixture;
   document?: ResourceFixture;
@@ -20,7 +22,7 @@ type SingularFixtureKind = Exclude<keyof FixtureRefs, "documents">;
 
 export function requiredFixtureKinds(apiType: string): string[] {
   if (apiType === "image.img2img" || apiType.startsWith("vision.")) return ["image"];
-  if (apiType === "image.inpaint") return ["image", "mask"];
+  if (apiType === "image.inpaint") return ["inpaintImage", "inpaintMask"];
   if (apiType === "image.upscale" || apiType === "image.bg_remove") return ["image"];
   if (apiType === "embedding.multimodal") return ["image"];
   if (apiType === "audio.asr" || apiType === "audio.enhance") return ["audio"];
@@ -114,8 +116,8 @@ function io(
       return {
         input_json: { prompt: "Fill the masked region with green leaves" },
         resources: [
-          requireFixture(fixtures, "image", apiType, representation),
-          requireFixture(fixtures, "mask", apiType, representation),
+          requireFixture(fixtures, "inpaintImage", apiType, representation),
+          requireFixture(fixtures, "inpaintMask", apiType, representation),
         ],
       };
     case "image.upscale":
