@@ -217,11 +217,12 @@ function inpaintPng(mask: boolean): Uint8Array {
   return result;
 }
 
-function uniqueNamedFixture(bytes: Uint8Array, mime: string): Uint8Array {
+function uniqueNamedFixture(bytes: Uint8Array, mime: string, nonce: string): Uint8Array {
   if (mime !== "video/mp4") return bytes;
   const suffix = new Uint8Array(24);
   new DataView(suffix.buffer).setUint32(0, suffix.length);
   suffix.set(new TextEncoder().encode("free"), 4);
+  suffix.set(new TextEncoder().encode(nonce).subarray(0, 16), 8);
   const result = new Uint8Array(bytes.length + suffix.length);
   result.set(bytes);
   result.set(suffix, bytes.length);
@@ -230,6 +231,7 @@ function uniqueNamedFixture(bytes: Uint8Array, mime: string): Uint8Array {
 
 async function loadDefaultFixtures(
   fixtures: FixtureRefs,
+  fixtureNonce: string,
   gatewayUrl: string,
   sessionToken: string,
   uploadNamedObjects: boolean,
@@ -265,7 +267,7 @@ async function loadDefaultFixtures(
     mime: string,
     configured?: ResourceFixture,
   ): Promise<ResourceFixture> => {
-    const namedBytes = uniqueNamedFixture(bytes, mime);
+    const namedBytes = uniqueNamedFixture(bytes, mime, fixtureNonce);
     const objId = ndn.ChunkId.fromMix256Result(
       namedBytes.byteLength,
       ndn.sha256Bytes(namedBytes),
@@ -871,6 +873,7 @@ async function main(): Promise<void> {
   const uploadedFixtureIds: string[] = [];
   options.fixtures = await loadDefaultFixtures(
     options.fixtures,
+    runId,
     options.gatewayUrl,
     session.sessionToken,
     false,
@@ -1302,6 +1305,7 @@ async function executeAcceptance(input: {
     if (executeRealModelCalls) {
       options.fixtures = await loadDefaultFixtures(
         options.fixtures,
+        runId,
         options.gatewayUrl,
         session.sessionToken,
         true,
