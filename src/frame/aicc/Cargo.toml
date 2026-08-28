@@ -19,7 +19,7 @@ bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true } 
 buckyos-http-server = { workspace = true }
-reqwest = { workspace = true, features = ["native-tls"] }
+reqwest = { workspace = true, features = ["native-tls", "http2"] }
 image = { version = "0.25.5", default-features = false, features = ["jpeg", "png", "webp"] }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 name-lib = { workspace = true }
