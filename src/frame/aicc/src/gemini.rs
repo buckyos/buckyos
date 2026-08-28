@@ -2519,7 +2519,7 @@ impl GoogleGeminiProvider {
                     })
                     .unwrap_or_else(|| "application/octet-stream".to_string());
                 let bytes = response.bytes().await.map_err(|err| {
-                    ProviderError::fatal(format!(
+                    ProviderError::retryable(format!(
                         "failed to read interactions input resource: {err}"
                     ))
                 })?;
