@@ -1083,6 +1083,7 @@ async function executeAcceptance(input: {
   }
   const filteredRequestedCases = new Map<string, typeof matrix.coverage>();
   for (const caseId of requestedCases) {
+    if (sortedCells.some((cell) => cell.case_id === caseId)) continue;
     const matches = matrix.coverage.filter((record) => {
       const segment = record.provider_model_id.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
       return record.status === "filtered" && caseId.toLowerCase().includes(`.${segment}.`);

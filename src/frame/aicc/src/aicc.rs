@@ -1608,6 +1608,37 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
     if bytes.starts_with(b"%PDF-") {
         return "application/pdf".to_string();
     }
+    if bytes.starts_with(b"PK\x03\x04") {
+        if bytes.windows(5).any(|value| value == b"word/") {
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .to_string();
+        }
+        if bytes.windows(3).any(|value| value == b"xl/") {
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string();
+        }
+        if bytes.windows(4).any(|value| value == b"ppt/") {
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                .to_string();
+        }
+        if bytes.windows(20).any(|value| value == b"application/epub+zip") {
+            return "application/epub+zip".to_string();
+        }
+    }
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        let trimmed = text.trim_start();
+        if trimmed.starts_with("{\\rtf") {
+            return "application/rtf".to_string();
+        }
+        if (trimmed.starts_with('{') || trimmed.starts_with('['))
+            && serde_json::from_str::<Value>(trimmed).is_ok()
+        {
+            return "application/json".to_string();
+        }
+        if trimmed.starts_with("<?xml") || trimmed.starts_with('<') {
+            return "application/xml".to_string();
+        }
+        return "text/plain".to_string();
+    }
     "application/octet-stream".to_string()
 }
 
@@ -6179,6 +6210,22 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn named_resource_mime_inference_covers_text_and_office_documents() {
+        assert_eq!(
+            infer_mime_from_bytes(br"{\rtf1\ansi marker}"),
+            "application/rtf"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"<?xml version=\"1.0\"?><Workbook/>"),
+            "application/xml"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"PK\x03\x04word/document.xml"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+    }
 
     fn aicc_task_data(task: &Task) -> Option<AiccComputeTaskData> {
         let data = task
