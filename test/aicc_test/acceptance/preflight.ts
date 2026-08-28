@@ -23,6 +23,15 @@ export type PreflightResult = {
   provider_drivers: string[];
 };
 
+function canonicalCheckoutBytes(bytes: Buffer): Buffer {
+  const normalized: number[] = [];
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x0d && bytes[index + 1] === 0x0a) continue;
+    normalized.push(bytes[index]);
+  }
+  return Buffer.from(normalized);
+}
+
 export async function runPreflight(): Promise<PreflightResult> {
   const baselineRaw = JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
@@ -61,8 +70,11 @@ export async function runPreflight(): Promise<PreflightResult> {
       throw new Error(`fixture MIME is invalid: ${id}`);
     }
     const bytes = await readFile(resolve(here, String(fixture.path)));
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    if (bytes.byteLength !== fixture.size || digest !== fixture.sha256) {
+    const rawDigest = createHash("sha256").update(bytes).digest("hex");
+    const rawMatches = bytes.byteLength === fixture.size && rawDigest === fixture.sha256;
+    const canonicalBytes = rawMatches ? bytes : canonicalCheckoutBytes(bytes);
+    const digest = createHash("sha256").update(canonicalBytes).digest("hex");
+    if (!rawMatches && (canonicalBytes.byteLength !== fixture.size || digest !== fixture.sha256)) {
       throw new Error(`fixture integrity mismatch: ${id}`);
     }
   }

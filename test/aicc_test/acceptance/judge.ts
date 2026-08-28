@@ -19,7 +19,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function responseText(value: unknown, depth = 0): string[] {
+export function responseText(value: unknown, depth = 0): string[] {
   if (depth > 8 || value === null || value === undefined) return [];
   if (Array.isArray(value)) return value.flatMap((item) => responseText(item, depth + 1));
   const record = object(value);
@@ -28,9 +28,15 @@ function responseText(value: unknown, depth = 0): string[] {
   for (const key of ["text", "output_text"] as const) {
     if (typeof record[key] === "string") values.push(record[key]);
   }
-  if (typeof record.content === "string") values.push(record.content);
+  if (typeof record.content === "string") {
+    values.push(record.content);
+  } else {
+    values.push(...responseText(record.content, depth + 1));
+  }
   for (const [key, child] of Object.entries(record)) {
-    if (!["text", "output_text", "content"].includes(key)) values.push(...responseText(child, depth + 1));
+    if (!["text", "output_text", "content", "provider_io"].includes(key)) {
+      values.push(...responseText(child, depth + 1));
+    }
   }
   return [...new Set(values.filter(Boolean))];
 }
@@ -49,7 +55,9 @@ function outputResources(value: unknown, depth = 0): Array<Record<string, unknow
       source,
     });
   }
-  for (const child of Object.values(record)) resources.push(...outputResources(child, depth + 1));
+  for (const [key, child] of Object.entries(record)) {
+    if (key !== "provider_io") resources.push(...outputResources(child, depth + 1));
+  }
   return resources;
 }
 
@@ -113,7 +121,7 @@ export async function runJudge(input: {
     payload: {
       input_json: {
         messages: [{ role: "user", content }],
-        max_output_tokens: 256,
+        max_output_tokens: 1024,
         response_format: {
           type: "json_schema",
           name: "aicc_t2_judge_verdict",

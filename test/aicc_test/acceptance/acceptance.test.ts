@@ -28,6 +28,7 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
+import { responseText } from "./judge.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
 import {
   ASSET_LABEL,
@@ -48,6 +49,20 @@ test("shared TOML parser accepts finite decimal and exponent numbers", () => {
     whole: 8,
   });
   assert.throws(() => parseToml("cost = 1e999\n"), /non-finite TOML number/);
+});
+
+test("Judge text extraction ignores echoed Provider request bodies", () => {
+  const texts = responseText({
+    result: {
+      message: { content: [{ type: "text", text: '{"pass":true}' }] },
+      extra: {
+        provider_io: {
+          input: { messages: [{ content: "untrusted echoed judge prompt" }] },
+        },
+      },
+    },
+  });
+  assert.deepEqual(texts, ['{"pass":true}']);
 });
 
 test("LLM acceptance exposes only the breaking-change chat method", async () => {
@@ -259,7 +274,7 @@ test("official catalog is the inventory baseline and exposes AICC omissions", as
   const officialInventories: ProviderInventory[] = [{
     provider_instance_name: instance,
     provider_driver: "openai",
-    models: ["gpt-5", "gpt-6"].map((id) => ({
+    models: ["gpt-5.6-sol", "gpt-6"].map((id) => ({
       exact_model: `${id}@${instance}`,
       provider_model_id: id,
       api_types: [],
@@ -270,8 +285,8 @@ test("official catalog is the inventory baseline and exposes AICC omissions", as
     provider_instance_name: instance,
     provider_driver: "openai",
     models: [{
-      exact_model: `gpt-5@${instance}`,
-      provider_model_id: "gpt-5",
+      exact_model: `gpt-5.6-sol@${instance}`,
+      provider_model_id: "gpt-5.6-sol",
       api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
     }],
@@ -282,7 +297,7 @@ test("official catalog is the inventory baseline and exposes AICC omissions", as
     aiccInventories,
   });
   assert.ok(result.mismatches.includes("official_supported_but_aicc_missing openai/gpt-6"));
-  assert.ok(result.cells.some((cell) => cell.provider_model_id === "gpt-5"));
+  assert.ok(result.cells.some((cell) => cell.provider_model_id === "gpt-5.6-sol"));
   assert.ok(result.cells.every((cell) => cell.provider_model_id !== "gpt-6"));
 });
 
@@ -294,7 +309,7 @@ test("official catalog coverage rules remove logical aliases and deduplicate phy
     {
       model_pattern: "gpt-current",
       action: "alias",
-      physical_model_id: "gpt-5",
+      physical_model_id: "gpt-5.6-sol",
       reason: "logical_alias",
       source_urls: ["https://platform.openai.com/docs/api-reference/models"],
       evidence_summary: "Test alias for one physical model.",
@@ -313,7 +328,7 @@ test("official catalog coverage rules remove logical aliases and deduplicate phy
     inventories: [{
       provider_instance_name: "openai-main",
       provider_driver: "openai",
-      models: ["gpt-5", "gpt-current", "gpt-cheapest"].map((id) => ({
+    models: ["gpt-5.6-sol", "gpt-current", "gpt-cheapest"].map((id) => ({
         exact_model: `${id}@openai-main`,
         provider_model_id: id,
         api_types: [],
@@ -321,7 +336,7 @@ test("official catalog coverage rules remove logical aliases and deduplicate phy
       })),
     }],
   });
-  assert.deepEqual(result.inventories[0].models.map((model) => model.provider_model_id), ["gpt-5"]);
+  assert.deepEqual(result.inventories[0].models.map((model) => model.provider_model_id), ["gpt-5.6-sol"]);
   assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-current")?.reason, "duplicate_physical_model");
   assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-cheapest")?.reason, "logical_alias");
 });
@@ -949,10 +964,10 @@ test("provider matrix fails on AICC capability over-advertising", async () => {
       provider_instance_name: "openai-test-a",
       provider_driver: "openai",
       models: [{
-        exact_model: "gpt-5@openai-test-a",
-        provider_model_id: "gpt-5",
+        exact_model: "gpt-5.6-sol@openai-test-a",
+        provider_model_id: "gpt-5.6-sol",
         api_types: ["llm", "rerank", "vision.ocr", "vision.caption"],
-        logical_mounts: ["llm.openai.gpt-5"],
+        logical_mounts: ["llm.openai.gpt-5.6-sol"],
       }],
     }]),
   }), /official_not_supported_but_aicc_advertised/);
@@ -965,8 +980,8 @@ test("provider matrix exposes baseline mismatches for reporting", async () => {
       provider_instance_name: "openai-test-a",
       provider_driver: "openai",
       models: [{
-        exact_model: "gpt-5@openai-test-a",
-        provider_model_id: "gpt-5",
+        exact_model: "gpt-5.6-sol@openai-test-a",
+        provider_model_id: "gpt-5.6-sol",
         api_types: ["llm", "rerank", "vision.ocr", "vision.caption"],
         logical_mounts: [],
       }],
@@ -985,8 +1000,8 @@ test("physical model coverage excludes lifecycle and logical aliases while retai
         models: [
           { exact_model: "gpt-image-1@openai-default", provider_model_id: "gpt-image-1", api_types: ["image.txt2img"], logical_mounts: [] },
           { exact_model: "sora-2@openai-default", provider_model_id: "sora-2", api_types: ["video.txt2video"], logical_mounts: [] },
-          { exact_model: "gpt-5-mini@openai-default", provider_model_id: "gpt-5-mini", api_types: ["llm"], logical_mounts: [] },
-          { exact_model: "gpt-5-mini:reasoning-high@openai-default", provider_model_id: "gpt-5-mini:reasoning-high", provider_actual_model_id: "gpt-5-mini", api_types: ["llm"], logical_mounts: [] },
+          { exact_model: "gpt-5.6-sol@openai-default", provider_model_id: "gpt-5.6-sol", api_types: ["llm"], logical_mounts: [] },
+          { exact_model: "gpt-5.6-sol:reasoning-high@openai-default", provider_model_id: "gpt-5.6-sol:reasoning-high", provider_actual_model_id: "gpt-5.6-sol", api_types: ["llm"], logical_mounts: [] },
         ],
       },
       {
@@ -994,16 +1009,16 @@ test("physical model coverage excludes lifecycle and logical aliases while retai
         provider_driver: "google-gemini",
         models: [
           { exact_model: "gemini-flash-latest@gemini-default", provider_model_id: "gemini-flash-latest", api_types: ["llm"], logical_mounts: [] },
-          { exact_model: "gemini-2.5-flash@gemini-default", provider_model_id: "gemini-2.5-flash", api_types: ["llm"], logical_mounts: [] },
+          { exact_model: "gemini-3.7-flash@gemini-default", provider_model_id: "gemini-3.7-flash", api_types: ["llm"], logical_mounts: [] },
         ],
       },
     ],
   });
   assert.deepEqual(result.inventories[0].models.map((model) => model.provider_model_id), [
-    "gpt-5-mini:reasoning-high",
-    "gpt-5-mini",
+    "gpt-5.6-sol:reasoning-high",
+    "gpt-5.6-sol",
   ]);
-  assert.deepEqual(result.inventories[1].models.map((model) => model.provider_model_id), ["gemini-2.5-flash"]);
+  assert.deepEqual(result.inventories[1].models.map((model) => model.provider_model_id), ["gemini-3.7-flash"]);
   assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-image-1")?.reason, "deprecated_or_retiring");
   assert.equal(result.coverage.find((item) => item.provider_model_id === "sora-2")?.reason, "deprecated_or_retiring");
   assert.equal(result.coverage.find((item) => item.provider_model_id === "gemini-flash-latest")?.reason, "logical_alias");
@@ -1017,8 +1032,8 @@ test("SN matrix uses its inventory and OpenAI capability evidence", async () => 
       provider_instance_name: "sn-default",
       provider_driver: "sn-ai-provider",
       models: [{
-        exact_model: "gpt-5-mini@sn-default",
-        provider_model_id: "gpt-5-mini",
+        exact_model: "gpt-5.6-sol@sn-default",
+        provider_model_id: "gpt-5.6-sol",
         api_types: ["llm", "vision.ocr", "vision.caption"],
         logical_mounts: [],
       }],

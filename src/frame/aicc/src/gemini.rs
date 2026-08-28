@@ -1587,6 +1587,51 @@ impl GoogleGeminiProvider {
             .expect("generationConfig should be an object")
     }
 
+    fn merge_tool_choice(
+        target: &mut Map<String, Value>,
+        value: &Value,
+    ) -> Result<(), ProviderError> {
+        let (mode, allowed_name) = if let Some(choice) = value.as_str() {
+            let mode = match choice {
+                "auto" => "AUTO",
+                "required" | "any" => "ANY",
+                "none" => "NONE",
+                _ => {
+                    return Err(ProviderError::fatal(format!(
+                        "tool_choice '{}' is unsupported",
+                        choice
+                    )))
+                }
+            };
+            (mode, None)
+        } else {
+            let choice = value
+                .as_object()
+                .ok_or_else(|| ProviderError::fatal("tool_choice must be a string or object"))?;
+            let name = choice
+                .get("function")
+                .and_then(Value::as_object)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .or_else(|| choice.get("name").and_then(Value::as_str))
+                .filter(|name| !name.trim().is_empty())
+                .ok_or_else(|| ProviderError::fatal("tool_choice function name is required"))?;
+            ("ANY", Some(name.trim().to_string()))
+        };
+        let mut config = json!({ "mode": mode });
+        if let Some(name) = allowed_name {
+            config
+                .as_object_mut()
+                .expect("function calling config should be an object")
+                .insert("allowedFunctionNames".to_string(), json!([name]));
+        }
+        target.insert(
+            "toolConfig".to_string(),
+            json!({ "functionCallingConfig": config }),
+        );
+        Ok(())
+    }
+
     fn merge_llm_options(
         target: &mut Map<String, Value>,
         options: &Value,
@@ -1674,6 +1719,7 @@ impl GoogleGeminiProvider {
                         );
                     }
                 }
+                "tool_choice" => Self::merge_tool_choice(target, value)?,
                 _ => {
                     ignored.push(key.clone());
                 }
@@ -5353,6 +5399,23 @@ mod tests {
             Some(&json!(0))
         );
         assert_eq!(ignored, vec!["protocol".to_string()]);
+    }
+
+    #[test]
+    fn required_tool_choice_forces_gemini_function_calling() {
+        let mut target = Map::new();
+        let ignored = GoogleGeminiProvider::merge_llm_options(
+            &mut target,
+            &json!({ "tool_choice": "required" }),
+            false,
+        )
+        .expect("required tool choice should merge");
+
+        assert!(ignored.is_empty());
+        assert_eq!(
+            Value::Object(target).pointer("/toolConfig/functionCallingConfig/mode"),
+            Some(&json!("ANY"))
+        );
     }
 
     #[test]

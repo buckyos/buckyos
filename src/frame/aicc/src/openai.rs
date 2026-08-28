@@ -4142,7 +4142,9 @@ fn normalize_remote_model_ids(
             }
             continue;
         }
-        if key.contains("embedding") {
+        if key.starts_with("gpt-live-") || key.starts_with("gpt-realtime-") {
+            continue;
+        } else if key.contains("embedding") {
             if embedding_seen.insert(key) {
                 embedding_models.push(model.to_string());
             }
@@ -5629,6 +5631,12 @@ data: [DONE]
                     },
                     OpenAIModelEntry {
                         id: "gpt-4o-realtime-preview".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-live-transcribe".to_string(),
+                    },
+                    OpenAIModelEntry {
+                        id: "gpt-realtime-mini".to_string(),
                     },
                     OpenAIModelEntry {
                         id: "gpt-5".to_string(),

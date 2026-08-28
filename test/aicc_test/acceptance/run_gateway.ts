@@ -167,8 +167,8 @@ async function loadDefaultFixtures(
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
   const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string }> = {
-    image: { path: join(here, "../../../src/frame/desktop/src/assets/hero.png"), mime: "image/png" },
-    mask: { path: join(here, "../../../src/frame/desktop/src/assets/hero.png"), mime: "image/png" },
+    image: { path: join(here, "../../jarvis_media_dv/assets/image_ocr.png"), mime: "image/png" },
+    mask: { path: join(here, "../../jarvis_media_dv/assets/image_ocr.png"), mime: "image/png" },
     audio: { path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"), mime: "audio/wav" },
     video: { path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"), mime: "video/mp4" },
     document: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
@@ -1380,6 +1380,7 @@ async function executeAcceptance(input: {
           });
           break;
         } catch (error) {
+          caseReport.status = "failed";
           if (reservation && !reservationSettled) {
             costBudget.settle(reservation);
             financialEntries.push({
