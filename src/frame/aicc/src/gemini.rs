@@ -2480,8 +2480,9 @@ impl GoogleGeminiProvider {
                 "mime_type": mime,
                 "data": data_base64
             })),
-            ResourceRef::Url { url, .. } => Ok(json!({
-                "type": "document",
+            ResourceRef::Url { url, mime_hint } => Ok(json!({
+                "type": media_type,
+                "mime_type": mime_hint.as_deref().unwrap_or("application/octet-stream"),
                 "uri": url
             })),
             ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
@@ -5374,6 +5375,18 @@ mod tests {
                 "type": "video",
                 "mime_type": "video/mp4",
                 "data": "dmlkZW8="
+            })
+        );
+        let resource = ResourceRef::Url {
+            url: "https://example.com/input.mp4".to_string(),
+            mime_hint: Some("video/mp4".to_string()),
+        };
+        assert_eq!(
+            GoogleGeminiProvider::interactions_resource_part(&resource, "video").unwrap(),
+            json!({
+                "type": "video",
+                "mime_type": "video/mp4",
+                "uri": "https://example.com/input.mp4"
             })
         );
     }
