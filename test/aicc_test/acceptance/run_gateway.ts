@@ -541,6 +541,17 @@ function taskValue(raw: unknown): Record<string, unknown> {
     : envelope;
 }
 
+function auditTaskId(task: Record<string, unknown>, fallback: string): string {
+  for (const snapshot of [task.result, task.progress, task.input]) {
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) continue;
+    const request = (snapshot as Record<string, unknown>).request;
+    if (!request || typeof request !== "object" || Array.isArray(request)) continue;
+    const externalTaskId = (request as Record<string, unknown>).external_task_id;
+    if (typeof externalTaskId === "string" && externalTaskId.trim()) return externalTaskId;
+  }
+  return fallback;
+}
+
 async function waitForTask(
   taskManager: RpcClient,
   response: AiMethodResponse,
@@ -566,7 +577,8 @@ async function waitForTask(
         );
       }
       return {
-        task_id: response.task_id,
+        task_id: auditTaskId(task, response.task_id),
+        task_manager_id: response.task_id,
         status: "succeeded",
         result: task.result?.result?.output,
         event_ref: response.event_ref,
@@ -1170,10 +1182,18 @@ async function executeAcceptance(input: {
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
     : [];
-  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length;
+  const continuationPrerequisiteCells = [...new Map(
+    executableCells
+      .filter((cell) => cell.api_type === "video.extend")
+      .map((cell) => [cell.exact_model, cell]),
+  ).values()];
+  const plannedCalls = plannedCases * options.maxAttempts + judgedCells.length + continuationPrerequisiteCells.length;
   const estimatedCost = executableCells.reduce(
     (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd) * options.maxAttempts,
-    0,
+    continuationPrerequisiteCells.reduce(
+      (sum, cell) => sum + estimatedCellCost(cell, options.estimatedCostPerCallUsd),
+      0,
+    ),
   ) + judgedCells.length * options.estimatedCostPerCallUsd;
   console.log(`[plan] run_id=${runId}`);
   console.log(`[plan] providers=${selectedDrivers.join(",")}`);
@@ -1215,12 +1235,90 @@ async function executeAcceptance(input: {
   let actualCalls = 0;
   const financialEntries: FinancialEntry[] = [];
   const costBudget = new CostBudget(options.maxCostUsd);
+  const prerequisiteArtifactIds: string[] = [];
   if (executeRealModelCalls) {
     const scheduler = new ProviderScheduler(
       options.globalConcurrency,
       options.providerLimits,
       options.providerLimitOverrides,
     );
+    const continuationPrerequisites = new Map<string, Promise<ResourceRef>>();
+    const continuationResource = (cell: typeof executableCells[number]): Promise<ResourceRef> => {
+      const existing = continuationPrerequisites.get(cell.exact_model);
+      if (existing) return existing;
+      const pending = scheduler.execute(cell.provider_driver, async () => {
+        if (actualCalls >= options.maxRealCalls) {
+          throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before video.extend prerequisite`);
+        }
+        const estimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
+        const reservation = costBudget.reserve(estimate);
+        const started = Date.now();
+        actualCalls += 1;
+        try {
+          const prerequisiteRequest = structuredClone(preparedRequests.get(cell.case_id)!);
+          const payload = prerequisiteRequest.payload as Record<string, unknown>;
+          payload.input_json = {
+            prompt: "A paper plane moving across a desk, continuous steady motion",
+            duration_seconds: 4,
+          };
+          payload.resources = [];
+          prerequisiteRequest.idempotency_key = `${runId}:continuation:${cell.exact_model}`;
+          const initial = await session.aicc.call("video.txt2video", prerequisiteRequest) as AiMethodResponse;
+          const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
+          const artifacts = await validateTerminalArtifacts({
+            terminal,
+            ndm,
+            gatewayUrl: options.gatewayUrl,
+            sessionToken: session.sessionToken,
+          });
+          prerequisiteArtifactIds.push(...artifacts.ids);
+          const source = artifactSources(terminal).find((candidate) =>
+            typeof candidate.obj_id === "string" || typeof candidate.url === "string" ||
+            typeof candidate.data_base64 === "string"
+          );
+          if (!source) throw new Error("video.extend prerequisite produced no reusable video artifact");
+          const finance = extractFinance(terminal);
+          costBudget.settle(reservation, finance.actualCostUsd);
+          financialEntries.push({
+            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            attempt: 1,
+            provider_driver: cell.provider_driver,
+            provider_instance: cell.provider_instance,
+            exact_model: cell.exact_model,
+            api_type: "video.txt2video",
+            method: "video.txt2video",
+            started_at: new Date(started).toISOString(),
+            status: "passed",
+            usage: finance.usage,
+            estimated_cost_usd: estimate,
+            actual_cost_usd: finance.actualCostUsd,
+            raw_cost_usd: finance.rawCostUsd,
+            credit_applied_usd: finance.creditAppliedUsd,
+            cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
+          });
+          const { _content_type: _, ...resource } = source;
+          return resource as ResourceRef;
+        } catch (error) {
+          costBudget.settle(reservation);
+          financialEntries.push({
+            case_id: `t2.prerequisite.video_continuation.${cell.exact_model}`,
+            attempt: 1,
+            provider_driver: cell.provider_driver,
+            provider_instance: cell.provider_instance,
+            exact_model: cell.exact_model,
+            api_type: "video.txt2video",
+            method: "video.txt2video",
+            started_at: new Date(started).toISOString(),
+            status: "failed",
+            estimated_cost_usd: estimate,
+            cost_status: "unknown",
+          });
+          throw error;
+        }
+      });
+      continuationPrerequisites.set(cell.exact_model, pending);
+      return pending;
+    };
     const executed = await Promise.all(executableCells.map(async (cell) => {
       const caseReport: CaseReport = {
         run_id: runId,
@@ -1236,13 +1334,18 @@ async function executeAcceptance(input: {
         artifact_ids: [],
         attempts: [],
       };
-      const request = preparedRequests.get(cell.case_id)!;
+      let request = preparedRequests.get(cell.case_id)!;
       for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
         const started = Date.now();
         const attemptEstimate = estimatedCellCost(cell, options.estimatedCostPerCallUsd);
         let reservation: CostReservation | undefined;
         let reservationSettled = false;
         try {
+          if (cell.api_type === "video.extend") {
+            const generatedVideo = await continuationResource(cell);
+            request = structuredClone(request);
+            (request.payload as Record<string, unknown>).resources = [generatedVideo];
+          }
           const initial = await scheduler.execute(cell.provider_driver, async () => {
             if (actualCalls >= options.maxRealCalls) {
               throw new Error(`max_real_calls ${options.maxRealCalls} exhausted`);
@@ -1282,7 +1385,7 @@ async function executeAcceptance(input: {
             cost_status: finance.actualCostUsd === undefined ? "unknown" : "actual",
           });
           caseReport.status = "passed";
-          caseReport.task_id = initial.task_id;
+          caseReport.task_id = (terminal as AiMethodResponse).task_id;
           caseReport.usage = finance.usage;
           caseReport.cost_usd = finance.actualCostUsd;
           const rubric = semanticRubric(cell);
@@ -1650,7 +1753,10 @@ async function executeAcceptance(input: {
   }
   const cleanupDetails: string[] = [];
   const cleanupResidual: string[] = [];
-  const generatedArtifactIds = [...new Set(cases.flatMap((item) => item.artifact_ids))]
+  const generatedArtifactIds = [...new Set([
+    ...prerequisiteArtifactIds,
+    ...cases.flatMap((item) => item.artifact_ids),
+  ])]
     .filter((objId) => !uploadedFixtureIds.includes(objId));
   const removeNamed = async (objId: string): Promise<void> => {
     if (/^(?:mix256|chunk):/i.test(objId)) await ndm.removeChunk({ chunk_id: objId });
