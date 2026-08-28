@@ -50,7 +50,7 @@ import {
 } from "./provider_credentials.ts";
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
 import { validateArtifactBytes, validateNamedArtifact, type ArtifactAudit, type ReadableNamedData } from "./artifact_validation.ts";
-import { JudgeError, runJudge } from "./judge.ts";
+import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 
@@ -631,28 +631,6 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "video.upscale") return ["The output preserves the supplied video content at improved resolution or visual quality."];
   if (apiType === "agent.computer_use") return ["The result reports the title visible in the supplied test environment and does not invent an action result."];
   return [];
-}
-
-export function selectJudgeModel(configuredModel: string, inventories: ProviderInventory[]): string {
-  if (configuredModel !== "llm.plan.default") return configuredModel;
-  const candidates = inventories.flatMap((inventory) => inventory.models
-    .filter((model) => model.api_types.includes("llm") && !model.provider_actual_model_id)
-    .map((model) => ({
-      exactModel: model.exact_model,
-      driver: inventory.provider_driver,
-      id: model.provider_model_id,
-    })));
-  const rank = (candidate: (typeof candidates)[number]): number => {
-    if (candidate.driver === "google-gemini" && candidate.id === "gemini-3.7-flash") return 0;
-    if (candidate.driver === "google-gemini" && candidate.id === "gemini-3-flash-preview") return 1;
-    if (candidate.driver === "openai" && candidate.id === "gpt-5.6-sol") return 2;
-    if (candidate.driver === "google-gemini") return 3;
-    if (candidate.driver === "openai") return 4;
-    if (candidate.driver === "claude") return 5;
-    return 6;
-  };
-  candidates.sort((left, right) => rank(left) - rank(right) || left.exactModel.localeCompare(right.exactModel));
-  return candidates[0]?.exactModel ?? configuredModel;
 }
 
 function selectWithinRunBudget(

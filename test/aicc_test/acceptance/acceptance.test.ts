@@ -28,8 +28,7 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
-import { outputResources, responseText } from "./judge.ts";
-import { selectJudgeModel } from "./run_gateway.ts";
+import { outputResources, responseText, selectJudgeModel } from "./judge.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
 import {
   ASSET_LABEL,

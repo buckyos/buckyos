@@ -1,4 +1,5 @@
 import type { RpcClient } from "./gateway.ts";
+import type { ProviderInventory } from "./types.ts";
 
 type AiMethodResponse = {
   task_id: string;
@@ -67,6 +68,28 @@ function judgeResource(
     type: typeof mime === "string" && mime.startsWith("image/") ? "image" : "document",
     source: normalizedSource,
   };
+}
+
+export function selectJudgeModel(configuredModel: string, inventories: ProviderInventory[]): string {
+  if (configuredModel !== "llm.plan.default") return configuredModel;
+  const candidates = inventories.flatMap((inventory) => inventory.models
+    .filter((model) => model.api_types.includes("llm") && !model.provider_actual_model_id)
+    .map((model) => ({
+      exactModel: model.exact_model,
+      driver: inventory.provider_driver,
+      id: model.provider_model_id,
+    })));
+  const rank = (candidate: (typeof candidates)[number]): number => {
+    if (candidate.driver === "google-gemini" && candidate.id === "gemini-3.7-flash") return 0;
+    if (candidate.driver === "google-gemini" && candidate.id === "gemini-3-flash-preview") return 1;
+    if (candidate.driver === "openai" && candidate.id === "gpt-5.6-sol") return 2;
+    if (candidate.driver === "google-gemini") return 3;
+    if (candidate.driver === "openai") return 4;
+    if (candidate.driver === "claude") return 5;
+    return 6;
+  };
+  candidates.sort((left, right) => rank(left) - rank(right) || left.exactModel.localeCompare(right.exactModel));
+  return candidates[0]?.exactModel ?? configuredModel;
 }
 
 export function outputResources(value: unknown, depth = 0): Array<Record<string, unknown>> {
