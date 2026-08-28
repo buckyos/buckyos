@@ -161,7 +161,7 @@ function io(
     case "video.extend":
     case "video.upscale":
       return {
-        input_json: apiType === "video.extend" ? { duration_seconds: 4 } : {},
+        input_json: apiType === "video.extend" ? { duration_seconds: 7 } : {},
         resources: [requireFixture(fixtures, "video", apiType, representation)],
       };
     case "agent.computer_use":

@@ -1008,6 +1008,31 @@ test("T2 LLM output variants build and assert JSON schema and tool-call contract
   }));
 });
 
+test("T2 Veo extension requests the protocol-fixed seven second duration", () => {
+  const request = buildExactRequest({
+    cell: {
+      case_id: "veo-extend",
+      provider_driver: "google-gemini",
+      provider_instance: "gemini-main",
+      exact_model: "veo-3.1-generate-preview@gemini-main",
+      provider_model_id: "veo-3.1-generate-preview",
+      api_type: "video.extend",
+      method: "video.extend",
+      baseline_status: "active",
+      input_kinds: ["video"],
+      output_kinds: ["video"],
+      source_urls: [],
+      resource_representation: "base64",
+    },
+    runId: "run",
+    fixtures: { video: { kind: "base64", mime: "video/mp4", data_base64: "AA==" } },
+  });
+  assert.equal(
+    ((request.payload as Record<string, unknown>).input_json as Record<string, unknown>).duration_seconds,
+    7,
+  );
+});
+
 test("provider matrix fails on AICC capability over-advertising", async () => {
   const providerBaseline = await baseline();
   assert.throws(() => buildProviderMatrix({
