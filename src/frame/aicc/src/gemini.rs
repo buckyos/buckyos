@@ -1507,6 +1507,54 @@ impl GoogleGeminiProvider {
         }
     }
 
+    fn api_error_message(body: &Value, fallback: &str) -> String {
+        let status = body
+            .pointer("/error/status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let message = body
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or(fallback);
+        let mut diagnostics = Vec::new();
+        for detail in body
+            .pointer("/error/details")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(delay) = detail.get("retryDelay").and_then(Value::as_str) {
+                diagnostics.push(format!("retry_after={delay}"));
+            }
+            for violation in detail
+                .get("violations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(quota_id) = violation.get("quotaId").and_then(Value::as_str) {
+                    diagnostics.push(format!("quota_id={quota_id}"));
+                }
+                if let Some(metric) = violation.get("quotaMetric").and_then(Value::as_str) {
+                    diagnostics.push(format!("quota_metric={metric}"));
+                }
+                if let Some(value) = violation.get("quotaValue") {
+                    diagnostics.push(format!("quota_value={value}"));
+                }
+            }
+        }
+        diagnostics.sort();
+        diagnostics.dedup();
+        if diagnostics.is_empty() {
+            format!("google gemini api error [{status}]: {message}")
+        } else {
+            format!(
+                "google gemini api error [{status}]: {message} ({})",
+                diagnostics.join(", ")
+            )
+        }
+    }
+
     fn extract_text2image_prompt(req: &AiMethodRequest) -> Option<String> {
         if let Some(prompt) = req
             .payload
@@ -3474,11 +3522,13 @@ impl GoogleGeminiProvider {
             .post_generate_content(provider_model, &request_obj)
             .await?;
         if !status.is_success() {
-            let message = body
-                .pointer("/error/message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("google gemini vision returned non-success status");
-            return Err(Self::classify_api_error(status, message.to_string()));
+            return Err(Self::classify_api_error(
+                status,
+                Self::api_error_message(
+                    &body,
+                    "google gemini vision returned non-success status",
+                ),
+            ));
         }
         let text = Self::extract_text_content(&body);
         let parsed = text
@@ -5485,6 +5535,33 @@ mod tests {
             Some(&json!(0))
         );
         assert_eq!(ignored, vec!["protocol".to_string()]);
+    }
+
+    #[test]
+    fn quota_error_message_preserves_retry_and_metric_diagnostics() {
+        let body = json!({
+            "error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "quota exhausted",
+                "details": [
+                    { "retryDelay": "37s" },
+                    {
+                        "violations": [{
+                            "quotaId": "GenerateRequestsPerDayPerProjectPerModel",
+                            "quotaMetric": "generativelanguage.googleapis.com/generate_requests_per_model_per_day",
+                            "quotaValue": "100"
+                        }]
+                    }
+                ]
+            }
+        });
+
+        let message = GoogleGeminiProvider::api_error_message(&body, "fallback");
+        assert!(message.contains("RESOURCE_EXHAUSTED"));
+        assert!(message.contains("retry_after=37s"));
+        assert!(message.contains("GenerateRequestsPerDayPerProjectPerModel"));
+        assert!(message.contains("generate_requests_per_model_per_day"));
+        assert!(message.contains("quota_value=\"100\""));
     }
 
     #[test]
