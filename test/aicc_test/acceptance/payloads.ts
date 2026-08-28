@@ -423,11 +423,16 @@ export function assertResponseShape(
     const artifacts = content.filter((item) => item && typeof item === "object" &&
       ["image", "document"].includes(String((item as Record<string, unknown>).type)));
     if (artifacts.length === 0) throw new Error(`expected ${expectedPrefix} artifact output`);
-    const hasMime = artifacts.some((item) => {
+    const materialized = Array.isArray(extra.materialized_artifacts)
+      ? extra.materialized_artifacts.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const hasMime = artifacts.some((item, index) => {
       const source = (item as Record<string, unknown>).source;
       if (!source || typeof source !== "object") return false;
       const resource = source as Record<string, unknown>;
-      const mime = resource.mime_hint ?? resource.mime;
+      const materializedMime = materialized.find((entry) => entry.content_index === index)?.mime;
+      const mime = resource.mime_hint ?? resource.mime ?? materializedMime;
       const addressable = typeof resource.url === "string" || typeof resource.obj_id === "string" ||
         typeof resource.data_base64 === "string";
       return addressable && typeof mime === "string" && mime.startsWith(expectedPrefix);

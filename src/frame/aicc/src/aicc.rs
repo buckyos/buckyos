@@ -14,7 +14,7 @@ use crate::model_types::{
     LatencyClass, LogicalModelDefinition, ModelAttributes, ModelCandidate, ModelCapabilities,
     ModelHealth, ModelMetadata, ModelPricing, PolicyConfig, PricingMode, PrivacyClass,
     ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
-    RequestedModelType, RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy,
+    RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy,
     RoutePricingSnapshot, RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
@@ -3290,7 +3290,24 @@ impl AIComputeCenter {
             "audio/ogg",
             "video/mp4",
             "application/json",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/xml",
+            "application/yaml",
+            "application/rtf",
             "text/plain",
+            "text/csv",
+            "text/tab-separated-values",
+            "text/markdown",
+            "text/html",
+            "text/xml",
+            "text/yaml",
+            "text/rtf",
         ]
         .into_iter()
         .map(|item| item.to_string())
@@ -3408,9 +3425,6 @@ impl AIComputeCenter {
         let Ok(trace) = decision.route_trace.lock() else {
             return;
         };
-        if trace.requested_model_type != RequestedModelType::Logical {
-            return;
-        }
         let Ok(trace) = serde_json::to_value(&*trace) else {
             return;
         };
