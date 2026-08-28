@@ -2405,12 +2405,15 @@ impl OpenAIProvider {
                         format!("resource url returned status {}", status.as_u16()),
                     ));
                 }
-                let content_type = response
-                    .headers()
-                    .get(CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .map(|value| value.to_string())
-                    .or_else(|| mime_hint.clone())
+                let content_type = mime_hint
+                    .clone()
+                    .or_else(|| {
+                        response
+                            .headers()
+                            .get(CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .map(|value| value.to_string())
+                    })
                     .unwrap_or_else(|| "application/octet-stream".to_string());
                 let bytes = response.bytes().await.map_err(|err| {
                     ProviderError::fatal(format!("failed to read resource bytes: {}", err))
