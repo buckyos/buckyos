@@ -623,8 +623,12 @@ pub(crate) fn merge_options(
 
     let mut ignored = vec![];
     let mut extra_messages = vec![];
+    let provider_options = options_map.get("provider_options").cloned();
 
     for (key, value) in options_map.iter() {
+        if key == "provider_options" {
+            continue;
+        }
         if key == "model" || key == "messages" {
             continue;
         }
@@ -673,6 +677,15 @@ pub(crate) fn merge_options(
             continue;
         }
         target.insert(key.clone(), value.clone());
+    }
+
+    if let Some(provider_options) = provider_options {
+        if !provider_options.is_object() {
+            return Err(ProviderError::fatal("provider_options must be an object"));
+        }
+        let (provider_ignored, provider_messages) = merge_options(target, &provider_options)?;
+        ignored.extend(provider_ignored);
+        extra_messages.extend(provider_messages);
     }
 
     Ok((ignored, extra_messages))
@@ -1593,6 +1606,25 @@ mod tests {
         merge_options(&mut target, &options).expect("merge options should work");
 
         assert_eq!(target.get("stop_sequences"), Some(&json!(["END", "STOP"])));
+    }
+
+    #[test]
+    fn merge_options_flattens_metadata_provider_options() {
+        let mut target = Map::new();
+        merge_options(
+            &mut target,
+            &json!({
+                "provider_options": {
+                    "thinking": { "type": "enabled", "budget_tokens": 4096 }
+                }
+            }),
+        )
+        .expect("provider options should merge");
+
+        assert_eq!(
+            Value::Object(target).pointer("/thinking/budget_tokens"),
+            Some(&json!(4096))
+        );
     }
 
     #[test]

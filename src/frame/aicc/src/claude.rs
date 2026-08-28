@@ -109,6 +109,7 @@ impl ClaudeProvider {
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent("Mozilla/5.0 (compatible; BuckyOS-AICC/0.7)")
             .http1_only()
+            .use_native_tls()
             .build()
             .context("failed to build reqwest client for claude provider")?;
 

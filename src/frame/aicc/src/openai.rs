@@ -5363,6 +5363,46 @@ data: [DONE]
         assert_eq!(luna.pricing.input_token, Some(0.0000002));
         assert!(sol.attributes.quality_score > terra.attributes.quality_score);
         assert!(terra.attributes.quality_score > luna.attributes.quality_score);
+        let sol_high = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-sol:reasoning-high")
+            .expect("GPT-5.6 Sol reasoning-high variant should exist");
+        assert_eq!(
+            sol_high.provider_actual_model_id.as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            sol_high.provider_options,
+            Some(json!({ "reasoning": { "effort": "high" } }))
+        );
+        assert_model_mount(
+            &inventory,
+            "gpt-5.6-sol:reasoning-high",
+            "llm.gpt-pro.reasoning-high",
+            true,
+        );
+        let terra_low = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-terra:reasoning-low")
+            .expect("GPT-5.6 Terra reasoning-low variant should exist");
+        assert_eq!(
+            terra_low.provider_options,
+            Some(json!({ "reasoning": { "effort": "low" } }))
+        );
+        assert_model_mount(
+            &inventory,
+            "gpt-5.6-terra:reasoning-low",
+            "llm.gpt-mini.reasoning-low",
+            true,
+        );
+        assert_model_mount(
+            &inventory,
+            "gpt-5.6-luna:reasoning-high",
+            "llm.gpt-nano.reasoning-high",
+            true,
+        );
         assert_model_mount(&inventory, "gpt-5.4", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.code", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.gpt-standard", false);
