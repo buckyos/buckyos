@@ -1,28 +1,28 @@
 use crate::aicc::{
-    emit_background_provider_result, provider_type_from_settings, redacted_json_log,
     AIComputeCenter, Provider, ProviderError, ProviderInstance, ProviderRefreshTask,
-    ProviderStartResult, ResolvedRequest, TaskEventSink,
+    ProviderStartResult, ResolvedRequest, TaskEventSink, emit_background_provider_result,
+    provider_type_from_settings, redacted_json_log,
 };
-use crate::metadata_resolver::{resolve_driver_inventory, DriverModelResolveRequest};
+use crate::metadata_resolver::{DriverModelResolveRequest, resolve_driver_inventory};
 use crate::model_types::{
     ApiType, CostEstimateInput, CostEstimateOutput, PricingMode, ProviderInventory, ProviderOrigin,
     ProviderType, ProviderTypeTrustedSource, QuotaState,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use base64::engine::general_purpose;
 use base64::Engine as _;
+use base64::engine::general_purpose;
 #[cfg(test)]
 use buckyos_api::Capability;
 use buckyos_api::{
-    ai_methods, features, value_to_object_map, AiArtifact, AiContent, AiCost, AiMessage,
-    AiMethodRequest, AiResponse, AiRole, AiToolCall, AiToolResultContent, AiToolSpec, AiUsage,
-    Feature, ResourceRef,
+    AiArtifact, AiContent, AiCost, AiMessage, AiMethodRequest, AiResponse, AiRole, AiToolCall,
+    AiToolResultContent, AiToolSpec, AiUsage, Feature, ResourceRef, ai_methods, features,
+    value_to_object_map,
 };
 use log::{info, warn};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -1600,7 +1600,7 @@ impl GoogleGeminiProvider {
                     return Err(ProviderError::fatal(format!(
                         "tool_choice '{}' is unsupported",
                         choice
-                    )))
+                    )));
                 }
             };
             (mode, None)
@@ -1852,32 +1852,33 @@ impl GoogleGeminiProvider {
         let raw = value
             .as_str()
             .ok_or_else(|| ProviderError::fatal("google gemini image size must be a string"))?;
-        let normalized =
-            match raw.trim().to_ascii_uppercase().as_str() {
-                "512" => "512",
-                "1K" => "1K",
-                "2K" => "2K",
-                "4K" => "4K",
-                _ => {
-                    let dimensions = raw.trim().to_ascii_lowercase().split_once('x').and_then(
-                        |(width, height)| {
+        let normalized = match raw.trim().to_ascii_uppercase().as_str() {
+            "512" => "512",
+            "1K" => "1K",
+            "2K" => "2K",
+            "4K" => "4K",
+            _ => {
+                let dimensions =
+                    raw.trim()
+                        .to_ascii_lowercase()
+                        .split_once('x')
+                        .and_then(|(width, height)| {
                             Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
-                        },
-                    );
-                    match dimensions.map(|(width, height)| width.max(height)) {
-                        Some(512) => "512",
-                        Some(1024) => "1K",
-                        Some(2048) => "2K",
-                        Some(4096) => "4K",
-                        _ => {
-                            return Err(ProviderError::fatal(format!(
+                        });
+                match dimensions.map(|(width, height)| width.max(height)) {
+                    Some(512) => "512",
+                    Some(1024) => "1K",
+                    Some(2048) => "2K",
+                    Some(4096) => "4K",
+                    _ => {
+                        return Err(ProviderError::fatal(format!(
                             "google gemini image size must use a 512, 1K, 2K or 4K edge, got {}",
                             raw
-                        )))
-                        }
+                        )));
                     }
                 }
-            };
+            }
+        };
         Ok(Value::String(normalized.to_string()))
     }
 
@@ -2470,7 +2471,8 @@ impl GoogleGeminiProvider {
         }
     }
 
-    fn interactions_resource_part(
+    async fn interactions_resource_part(
+        &self,
         resource: &ResourceRef,
         media_type: &str,
     ) -> Result<Value, ProviderError> {
@@ -2480,6 +2482,53 @@ impl GoogleGeminiProvider {
                 "mime_type": mime,
                 "data": data_base64
             })),
+            ResourceRef::Url { url, mime_hint }
+                if url.starts_with("http://") || url.starts_with("https://") =>
+            {
+                let response = self.client.get(url).send().await.map_err(|err| {
+                    if err.is_timeout() || err.is_connect() {
+                        ProviderError::retryable(format!(
+                            "failed to fetch interactions input resource: {err}"
+                        ))
+                    } else {
+                        ProviderError::fatal(format!(
+                            "failed to fetch interactions input resource: {err}"
+                        ))
+                    }
+                })?;
+                let status = response.status();
+                if !status.is_success() {
+                    let message = format!(
+                        "interactions input resource returned HTTP {}",
+                        status.as_u16()
+                    );
+                    return Err(if status.is_server_error() {
+                        ProviderError::retryable(message)
+                    } else {
+                        ProviderError::fatal(message)
+                    });
+                }
+                let mime = mime_hint
+                    .clone()
+                    .or_else(|| {
+                        response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                let bytes = response.bytes().await.map_err(|err| {
+                    ProviderError::fatal(format!(
+                        "failed to read interactions input resource: {err}"
+                    ))
+                })?;
+                Ok(json!({
+                    "type": media_type,
+                    "mime_type": mime,
+                    "data": general_purpose::STANDARD.encode(bytes)
+                }))
+            }
             ResourceRef::Url { url, mime_hint } => Ok(json!({
                 "type": media_type,
                 "mime_type": mime_hint.as_deref().unwrap_or("application/octet-stream"),
@@ -2618,7 +2667,7 @@ impl GoogleGeminiProvider {
                     return Err(ProviderError::fatal(format!(
                         "google gemini audio output does not support {}",
                         media_type
-                    )))
+                    )));
                 }
             };
             audio.insert("mimeType".to_string(), Value::String(mime_type.to_string()));
@@ -3705,7 +3754,8 @@ impl GoogleGeminiProvider {
                 "image"
             };
             let content = vec![
-                Self::interactions_resource_part(&resource, media_type)?,
+                self.interactions_resource_part(&resource, media_type)
+                    .await?,
                 json!({ "type": "text", "text": prompt }),
             ];
             if method == ai_methods::VIDEO_VIDEO2VIDEO {
@@ -3725,7 +3775,7 @@ impl GoogleGeminiProvider {
                 return Err(ProviderError::fatal(format!(
                     "google gemini interactions protocol does not support {}",
                     method
-                )))
+                )));
             }
         };
         let mut response_format = json!({ "type": "video" });
@@ -5006,9 +5056,11 @@ mod tests {
             request.pointer("/generationConfig/responseJsonSchema"),
             Some(&schema)
         );
-        assert!(request
-            .pointer("/generationConfig/responseSchema")
-            .is_none());
+        assert!(
+            request
+                .pointer("/generationConfig/responseSchema")
+                .is_none()
+        );
         assert_eq!(
             request.pointer("/generationConfig/responseMimeType"),
             Some(&json!("application/json"))
@@ -5160,16 +5212,20 @@ mod tests {
 
         assert_eq!(&contents[0], body.pointer("/candidates/0/content").unwrap());
         assert!(contents[0].pointer("/parts/0/functionCall/id").is_none());
-        assert!(contents[1]
-            .pointer("/parts/0/functionResponse/id")
-            .is_none());
+        assert!(
+            contents[1]
+                .pointer("/parts/0/functionResponse/id")
+                .is_none()
+        );
         assert_eq!(
             contents[1].pointer("/parts/0/functionResponse/name"),
             Some(&json!("get_weather"))
         );
-        assert!(!serde_json::to_string(&contents)
-            .unwrap()
-            .contains("gemini-no-id"));
+        assert!(
+            !serde_json::to_string(&contents)
+                .unwrap()
+                .contains("gemini-no-id")
+        );
     }
 
     #[test]
@@ -5305,14 +5361,16 @@ mod tests {
                 .and_then(Value::as_str),
             Some("predict_long_running")
         );
-        assert!(veo
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "video.img2video"));
-        assert!(veo
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "video.extend"));
+        assert!(
+            veo.logical_mounts
+                .iter()
+                .any(|mount| mount == "video.img2video")
+        );
+        assert!(
+            veo.logical_mounts
+                .iter()
+                .any(|mount| mount == "video.extend")
+        );
 
         let omni = inventory
             .models
@@ -5363,14 +5421,26 @@ mod tests {
         assert!(!lite.api_types.contains(&ApiType::VideoExtend));
     }
 
-    #[test]
-    fn interactions_video_input_uses_video_content_part() {
+    #[tokio::test]
+    async fn interactions_video_input_uses_video_content_part() {
+        let config = build_gemini_instances(&GeminiSettings {
+            enabled: true,
+            api_token: "token".to_string(),
+            alias_map: HashMap::new(),
+            instances: vec![],
+        })
+        .expect("instances")
+        .remove(0);
+        let provider = GoogleGeminiProvider::new(config, "token".to_string()).expect("provider");
         let resource = ResourceRef::Base64 {
             mime: "video/mp4".to_string(),
             data_base64: "dmlkZW8=".to_string(),
         };
         assert_eq!(
-            GoogleGeminiProvider::interactions_resource_part(&resource, "video").unwrap(),
+            provider
+                .interactions_resource_part(&resource, "video")
+                .await
+                .unwrap(),
             json!({
                 "type": "video",
                 "mime_type": "video/mp4",
@@ -5378,15 +5448,18 @@ mod tests {
             })
         );
         let resource = ResourceRef::Url {
-            url: "https://example.com/input.mp4".to_string(),
+            url: "gs://example/input.mp4".to_string(),
             mime_hint: Some("video/mp4".to_string()),
         };
         assert_eq!(
-            GoogleGeminiProvider::interactions_resource_part(&resource, "video").unwrap(),
+            provider
+                .interactions_resource_part(&resource, "video")
+                .await
+                .unwrap(),
             json!({
                 "type": "video",
                 "mime_type": "video/mp4",
-                "uri": "https://example.com/input.mp4"
+                "uri": "gs://example/input.mp4"
             })
         );
     }
@@ -5474,10 +5547,12 @@ mod tests {
             .unwrap();
         assert_eq!(model.capabilities.max_output_tokens, Some(65_536));
         assert!(model.api_types.contains(&ApiType::AudioAsr));
-        assert!(model
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "audio.asr"));
+        assert!(
+            model
+                .logical_mounts
+                .iter()
+                .any(|mount| mount == "audio.asr")
+        );
     }
 
     #[test]
@@ -5595,22 +5670,30 @@ mod tests {
             &[],
             Some("test".to_string()),
         );
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "gemini-2.5-flash-image"));
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "lyria-3-clip-preview"));
-        assert!(inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id == "lyria-3-pro-preview"));
-        assert!(!inventory
-            .models
-            .iter()
-            .any(|model| model.provider_model_id.starts_with("imagen-")));
+        assert!(
+            inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == "gemini-2.5-flash-image")
+        );
+        assert!(
+            inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == "lyria-3-clip-preview")
+        );
+        assert!(
+            inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == "lyria-3-pro-preview")
+        );
+        assert!(
+            !inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id.starts_with("imagen-"))
+        );
     }
 
     #[test]
@@ -6054,13 +6137,17 @@ mod tests {
 
         let registry = center.model_registry().read().expect("model registry lock");
         let flash_items = registry.default_items_for_path("llm.gemini-flash");
-        assert!(flash_items
-            .values()
-            .any(|item| { item.target == "gemini-2.5-flash@google-gemini-default" }));
+        assert!(
+            flash_items
+                .values()
+                .any(|item| { item.target == "gemini-2.5-flash@google-gemini-default" })
+        );
         let pro_items = registry.default_items_for_path("llm.gemini-pro");
-        assert!(pro_items
-            .values()
-            .any(|item| item.target == "gemini-2.5-pro@google-gemini-default"));
+        assert!(
+            pro_items
+                .values()
+                .any(|item| item.target == "gemini-2.5-pro@google-gemini-default")
+        );
         let inventories = center.registry().inventories();
         let inventory = inventories
             .iter()
@@ -6085,14 +6172,18 @@ mod tests {
             .find(|model| model.provider_model_id == "gemini-3.1-pro-preview")
             .expect("Gemini 3 metadata");
         assert!(gemini_3.capabilities.web_search);
-        assert!(gemini_3
-            .capabilities
-            .unsupported_feature_combinations
-            .is_empty());
+        assert!(
+            gemini_3
+                .capabilities
+                .unsupported_feature_combinations
+                .is_empty()
+        );
         let image_items = registry.default_items_for_path("image.txt2img.gemini");
-        assert!(image_items
-            .values()
-            .any(|item| { item.target == "gemini-2.5-flash-image-preview@google-gemini-default" }));
+        assert!(
+            image_items.values().any(|item| {
+                item.target == "gemini-2.5-flash-image-preview@google-gemini-default"
+            })
+        );
         let split_model_items = registry.default_items_for_path("image.img2img.gemini-2");
         assert!(split_model_items.is_empty());
     }
