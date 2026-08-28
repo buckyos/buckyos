@@ -691,7 +691,7 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   const apiType = cell.api_type;
   if (apiType === "image.txt2img") return ["The image visibly contains a blue square and the number 4827."];
   if (apiType === "image.img2img") return ["The output preserves the source composition and applies warm evening light."];
-  if (apiType === "image.inpaint") return ["The masked region is filled with plausible green leaves without corrupting the rest of the image."];
+  if (apiType === "image.inpaint") return ["The central masked region contains plausible green leaves while the area outside remains predominantly the source's uniform medium-blue background."];
   if (apiType === "image.upscale") return ["The output preserves the source content and has visibly improved or increased resolution."];
   if (apiType === "image.bg_remove") return ["The foreground is preserved and the background is removed or transparent."];
   if (apiType === "vision.ocr") return ["The recognized text contains the visible acceptance marker 4827."];
