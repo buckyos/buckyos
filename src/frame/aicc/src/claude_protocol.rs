@@ -1332,7 +1332,7 @@ pub(crate) fn convert_complete_request_with_dialect(
     let (system, messages) = build_messages(req, dialect)?;
 
     let mut request = Map::new();
-    request.insert("model".to_string(), Value::String(model));
+    request.insert("model".to_string(), Value::String(model.clone()));
     request.insert("messages".to_string(), Value::Array(messages));
     if let Some(system) = system {
         request.insert("system".to_string(), Value::String(system));
@@ -1377,7 +1377,39 @@ pub(crate) fn convert_complete_request_with_dialect(
         );
     }
 
+    if matches!(dialect, ProtocolDialect::Claude) {
+        normalize_adaptive_thinking(&model, &mut request);
+    }
+
     Ok((request, ignored))
+}
+
+fn normalize_adaptive_thinking(model: &str, request: &mut Map<String, Value>) {
+    let mut segments = model.strip_prefix("claude-").unwrap_or(model).split('-');
+    let _family = segments.next();
+    if segments.next() != Some("5") {
+        return;
+    }
+    if request
+        .get("thinking")
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str)
+        != Some("enabled")
+    {
+        return;
+    }
+    request.insert("thinking".to_string(), json!({ "type": "adaptive" }));
+    let output_config = request
+        .entry("output_config".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !output_config.is_object() {
+        *output_config = Value::Object(Map::new());
+    }
+    output_config
+        .as_object_mut()
+        .expect("output_config should be an object")
+        .entry("effort".to_string())
+        .or_insert_with(|| Value::String("medium".to_string()));
 }
 
 #[cfg(test)]
@@ -1625,6 +1657,47 @@ mod tests {
             Value::Object(target).pointer("/thinking/budget_tokens"),
             Some(&json!(4096))
         );
+    }
+
+    #[test]
+    fn claude_5_reasoning_variant_uses_adaptive_thinking() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
+        req.payload.options = Some(json!({
+            "provider_options": {
+                "thinking": { "type": "enabled", "budget_tokens": 4096 }
+            }
+        }));
+
+        let (request, _) = convert_complete_request(&req, "claude-opus-5", None).unwrap();
+        let request = Value::Object(request);
+        assert_eq!(request.pointer("/thinking/type"), Some(&json!("adaptive")));
+        assert_eq!(request.pointer("/thinking/budget_tokens"), None);
+        assert_eq!(
+            request.pointer("/output_config/effort"),
+            Some(&json!("medium"))
+        );
+    }
+
+    #[test]
+    fn claude_4_5_reasoning_variant_keeps_budget_thinking() {
+        let mut req = base_request();
+        req.payload.messages = vec![AiMessage::text(AiRole::User, "hello")];
+        req.payload.options = Some(json!({
+            "provider_options": {
+                "thinking": { "type": "enabled", "budget_tokens": 4096 }
+            }
+        }));
+
+        let (request, _) =
+            convert_complete_request(&req, "claude-haiku-4-5-20251001", None).unwrap();
+        let request = Value::Object(request);
+        assert_eq!(request.pointer("/thinking/type"), Some(&json!("enabled")));
+        assert_eq!(
+            request.pointer("/thinking/budget_tokens"),
+            Some(&json!(4096))
+        );
+        assert_eq!(request.pointer("/output_config/effort"), None);
     }
 
     #[test]

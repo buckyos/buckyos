@@ -616,6 +616,7 @@ function retryable(error: unknown): boolean {
     "bad gateway",
     "gateway timeout",
     "provider_start_failed",
+    "aicc returned failed",
   ].some((marker) => message.includes(marker)) || /\b5\d\d\b/.test(message);
 }
 
@@ -1398,10 +1399,10 @@ async function executeAcceptance(input: {
             const judgeEstimate = options.estimatedCostPerCallUsd;
             let judgeReservation: CostReservation | undefined;
             let judgeSettled = false;
+            const judgeProviderInstance = judgeModel.includes("@")
+              ? judgeModel.slice(judgeModel.lastIndexOf("@") + 1)
+              : undefined;
             try {
-              const judgeProviderInstance = judgeModel.includes("@")
-                ? judgeModel.slice(judgeModel.lastIndexOf("@") + 1)
-                : undefined;
               const preferDifferentProvider = judgeProviderInstance !== cell.provider_instance;
               const verdict = await runJudge({
                 aicc: session.aicc,

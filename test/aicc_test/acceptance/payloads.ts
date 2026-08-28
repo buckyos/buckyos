@@ -130,14 +130,24 @@ function io(
       };
     case "vision.ocr":
       return {
-        input_json: { prompt: "Return the visible marker." },
+        input_json: {
+          prompt: "Read the full BuckyOS marker exactly. It ends in four digits; distinguish the digit 8 from the letter B.",
+        },
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "vision.caption":
+      return {
+        input_json: { prompt: "Accurately describe all prominent text and graphic elements in the supplied marker image." },
+        resources: [requireFixture(fixtures, "image", apiType, representation)],
+      };
     case "vision.detect":
+      return {
+        input_json: { prompt: "Return structured detections for visible objects and text regions, with descriptive labels and bounding boxes." },
+        resources: [requireFixture(fixtures, "image", apiType, representation)],
+      };
     case "vision.segment":
       return {
-        input_json: { prompt: `Execute ${apiType} on the supplied image.` },
+        input_json: { prompt: "Return structured segmentation regions for every visible foreground text or graphic region." },
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "audio.tts":
