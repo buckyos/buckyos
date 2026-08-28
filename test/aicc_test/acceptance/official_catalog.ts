@@ -7,6 +7,46 @@ import type {
 type CatalogProfile = ProviderBaseline["providers"][number];
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+function curlConfigValue(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+}
+
+async function fetchAnthropicCatalogWithCurl(url: URL, init: RequestInit): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const config = [
+    "silent",
+    "show-error",
+    `url = "${curlConfigValue(url.toString())}"`,
+    `request = "${curlConfigValue(init.method ?? "GET")}"`,
+    ...[...headers.entries()].map(([name, value]) =>
+      `header = "${curlConfigValue(`${name}: ${value}`)}"`
+    ),
+    'write-out = "\\n%{http_code}"',
+    "",
+  ].join("\n");
+  const child = new Deno.Command("curl", {
+    args: ["--config", "-"],
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode(config));
+  await writer.close();
+  const output = await child.output();
+  if (!output.success) throw new Error("Anthropic catalog curl transport failed");
+  const text = new TextDecoder().decode(output.stdout);
+  const separator = text.lastIndexOf("\n");
+  const status = Number(text.slice(separator + 1));
+  if (separator < 0 || !Number.isInteger(status)) {
+    throw new Error("Anthropic catalog curl transport returned invalid status");
+  }
+  return new Response(text.slice(0, separator), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -124,10 +164,12 @@ export async function fetchOfficialModelIds(input: {
     const request = configureRequest(input.profile, token, cursor);
     let response: Response;
     try {
-      response = await fetcher(request.url, {
-        ...request.init,
-        signal: AbortSignal.timeout(input.timeoutMs),
-      });
+      response = input.profile.official_catalog.format === "anthropic" && !input.fetcher
+        ? await fetchAnthropicCatalogWithCurl(request.url, request.init)
+        : await fetcher(request.url, {
+          ...request.init,
+          signal: AbortSignal.timeout(input.timeoutMs),
+        });
     } catch {
       throw new Error(`official catalog request failed for ${input.profile.provider_driver}: network error`);
     }
