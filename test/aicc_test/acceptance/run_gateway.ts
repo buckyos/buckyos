@@ -628,6 +628,48 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   return [];
 }
 
+function selectWithinRunBudget(
+  cells: MatrixCell[],
+  options: Pick<Options, "maxAttempts" | "maxRealCalls" | "maxCostUsd" | "estimatedCostPerCallUsd" | "judgeEnabled">,
+): MatrixCell[] {
+  const groups = new Map<string, MatrixCell[]>();
+  for (const cell of cells) {
+    const key = `${cell.provider_driver}\0${cell.api_type}\0${cell.method}`;
+    const group = groups.get(key) ?? [];
+    group.push(cell);
+    groups.set(key, group);
+  }
+  const queues = [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, group]) => group);
+  const selected: MatrixCell[] = [];
+  let calls = 0;
+  let cost = 0;
+  while (queues.length > 0) {
+    let admitted = false;
+    for (let index = 0; index < queues.length;) {
+      const cell = queues[index].shift();
+      if (!cell) {
+        queues.splice(index, 1);
+        continue;
+      }
+      const judgeCalls = options.judgeEnabled && semanticRubric(cell).length > 0 ? 1 : 0;
+      const nextCalls = options.maxAttempts + judgeCalls;
+      const nextCost = estimatedCellCost(cell, options.estimatedCostPerCallUsd) * options.maxAttempts +
+        judgeCalls * options.estimatedCostPerCallUsd;
+      if (calls + nextCalls <= options.maxRealCalls && cost + nextCost <= options.maxCostUsd) {
+        selected.push(cell);
+        calls += nextCalls;
+        cost += nextCost;
+        admitted = true;
+      }
+      index += 1;
+    }
+    if (!admitted) break;
+  }
+  return selected;
+}
+
 function artifactSources(value: unknown, depth = 0): Array<Record<string, unknown>> {
   if (depth > 8 || value === null || value === undefined) return [];
   if (Array.isArray(value)) return value.flatMap((item) => artifactSources(item, depth + 1));
@@ -943,9 +985,13 @@ async function executeAcceptance(input: {
     left.case_id.localeCompare(right.case_id)
   );
   const requestedCases = new Set(options.caseIds);
-  const selectedCells = requestedCases.size > 0
+  let selectedCells = requestedCases.size > 0
     ? sortedCells.filter((cell) => requestedCases.has(cell.case_id))
     : sortedCells.filter((_, index) => index % options.shardCount === options.shardIndex);
+  const unsampledCellCount = selectedCells.length;
+  if (requestedCases.size === 0) {
+    selectedCells = selectWithinRunBudget(selectedCells, options);
+  }
   const filteredRequestedCases = new Map<string, typeof matrix.coverage>();
   for (const caseId of requestedCases) {
     const matches = matrix.coverage.filter((record) => {
@@ -1121,6 +1167,9 @@ async function executeAcceptance(input: {
   console.log(`[plan] run_id=${runId}`);
   console.log(`[plan] providers=${selectedDrivers.join(",")}`);
   console.log(`[plan] shard=${options.shardIndex + 1}/${options.shardCount} full_matrix_cases=${matrix.cells.length}`);
+  if (selectedCells.length < unsampledCellCount) {
+    console.log(`[plan] budget_sample selected=${selectedCells.length} eligible=${unsampledCellCount}`);
+  }
   if (requestedCases.size > 0) console.log(`[plan] targeted_cases=${selectedCells.length}`);
   console.log(`[plan] cases=${plannedCases} max_attempts=${options.maxAttempts} max_possible_calls=${plannedCalls} max_calls=${options.maxRealCalls}`);
   console.log(`[plan] concurrency global=${options.globalConcurrency} provider_default=${options.providerLimits.maxConcurrency} interval_default_ms=${options.providerLimits.minIntervalMs}`);
