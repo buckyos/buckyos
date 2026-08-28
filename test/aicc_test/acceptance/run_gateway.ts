@@ -1301,6 +1301,7 @@ async function executeAcceptance(input: {
                 testedProviderInstance: cell.provider_instance,
                 preferDifferentProvider,
                 threshold: options.judgeMinScore,
+                testedRequest: request,
                 terminalResponse: terminal,
                 timeoutMs: Math.min(options.timeoutMs, 180_000),
                 invoke: async (request) => await scheduler.execute("judge", async () => {

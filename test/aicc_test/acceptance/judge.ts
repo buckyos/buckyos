@@ -41,24 +41,41 @@ export function responseText(value: unknown, depth = 0): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
-function outputResources(value: unknown, depth = 0): Array<Record<string, unknown>> {
+function judgeResource(
+  sourceValue: unknown,
+  fallbackMime?: unknown,
+): Record<string, unknown> | undefined {
+  const source = object(sourceValue);
+  if (!source) return undefined;
+  const hasReference = typeof source.obj_id === "string" || typeof source.url === "string" ||
+    typeof source.data_base64 === "string";
+  if (!hasReference) return undefined;
+  const mime = source.mime_hint ?? source.mime ?? fallbackMime;
+  const normalizedSource = typeof mime === "string" && !source.mime_hint && !source.mime
+    ? { ...source, mime_hint: mime }
+    : source;
+  return {
+    type: typeof mime === "string" && mime.startsWith("image/") ? "image" : "document",
+    source: normalizedSource,
+  };
+}
+
+export function outputResources(value: unknown, depth = 0): Array<Record<string, unknown>> {
   if (depth > 8 || value === null || value === undefined) return [];
   if (Array.isArray(value)) return value.flatMap((item) => outputResources(item, depth + 1));
   const record = object(value);
   if (!record) return [];
-  const source = object(record.source);
   const resources: Array<Record<string, unknown>> = [];
-  if (source && (typeof source.obj_id === "string" || typeof source.url === "string" || typeof source.data_base64 === "string")) {
-    const mime = source.mime_hint ?? source.mime;
-    resources.push({
-      type: typeof mime === "string" && mime.startsWith("image/") ? "image" : "document",
-      source,
-    });
-  }
+  const direct = judgeResource(record);
+  const source = judgeResource(record.source, record.mime);
+  const artifact = judgeResource(record.resource, record.mime);
+  for (const resource of [direct, source, artifact]) if (resource) resources.push(resource);
   for (const [key, child] of Object.entries(record)) {
-    if (key !== "provider_io") resources.push(...outputResources(child, depth + 1));
+    if (!["provider_io", "source", "resource"].includes(key)) {
+      resources.push(...outputResources(child, depth + 1));
+    }
   }
-  return resources;
+  return [...new Map(resources.map((resource) => [JSON.stringify(resource), resource])).values()];
 }
 
 async function terminal(taskManager: RpcClient, initial: AiMethodResponse, timeoutMs: number): Promise<unknown> {
@@ -93,6 +110,7 @@ export async function runJudge(input: {
   testedProviderInstance: string;
   preferDifferentProvider: boolean;
   threshold: number;
+  testedRequest: unknown;
   terminalResponse: unknown;
   timeoutMs: number;
   invoke: (request: Record<string, unknown>) => Promise<AiMethodResponse>;
@@ -105,12 +123,13 @@ export async function runJudge(input: {
   inputSummary: string;
 }> {
   const texts = responseText(input.terminalResponse).join("\n").slice(0, 4_000);
-  const resources = outputResources(input.terminalResponse).slice(0, 4);
-  const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; output_resources=${resources.length}`;
+  const sourceResources = outputResources(input.testedRequest).slice(0, 4);
+  const outputResourcesForJudge = outputResources(input.terminalResponse).slice(0, 4);
+  const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; input_resources=${sourceResources.length}; output_resources=${outputResourcesForJudge.length}`;
   const content: Array<Record<string, unknown>> = [{
     type: "text",
-    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Evaluate only the supplied output against every rubric item. Return JSON only. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}`,
-  }, ...resources];
+    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
+  }, ...sourceResources, ...outputResourcesForJudge];
   const request: Record<string, unknown> = {
     capability: "llm",
     model: { alias: input.model },
@@ -156,9 +175,12 @@ export async function runJudge(input: {
     throw new JudgeError(`Judge returned invalid JSON: ${String(error)}`);
   }
   const record = object(verdict);
+  const reason = record && ["reason", "reasoning", "details", "explanation", "rationale"]
+    .map((key) => record[key])
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
   if (!record || typeof record.pass !== "boolean" || typeof record.score !== "number" ||
     !Number.isFinite(record.score) || record.score < 0 || record.score > 1 ||
-    typeof record.reason !== "string" || (record.score < input.threshold && record.pass)) {
+    (record.score < input.threshold && record.pass)) {
     throw new JudgeError(`Judge verdict has invalid schema: ${JSON.stringify(verdict)}`);
   }
   return {
@@ -166,7 +188,7 @@ export async function runJudge(input: {
     terminalResponse: result,
     passed: record.pass && record.score >= input.threshold,
     score: record.score,
-    reason: record.reason,
+    reason: reason ?? `Judge returned pass=${record.pass} score=${record.score}`,
     inputSummary,
   };
 }

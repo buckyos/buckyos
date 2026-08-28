@@ -28,7 +28,7 @@ import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
-import { responseText } from "./judge.ts";
+import { outputResources, responseText } from "./judge.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
 import {
   ASSET_LABEL,
@@ -63,6 +63,23 @@ test("Judge text extraction ignores echoed Provider request bodies", () => {
     },
   });
   assert.deepEqual(texts, ['{"pass":true}']);
+});
+
+test("Judge resource extraction includes request resources and output artifacts", () => {
+  assert.deepEqual(outputResources({
+    payload: {
+      resources: [{ kind: "base64", mime: "image/png", data_base64: "aW1hZ2U=" }],
+    },
+    result: {
+      artifacts: [{ mime: "audio/mpeg", resource: { kind: "named_object", obj_id: "chunk:test" } }],
+    },
+  }), [{
+    type: "image",
+    source: { kind: "base64", mime: "image/png", data_base64: "aW1hZ2U=" },
+  }, {
+    type: "document",
+    source: { kind: "named_object", obj_id: "chunk:test", mime_hint: "audio/mpeg" },
+  }]);
 });
 
 test("LLM acceptance exposes only the breaking-change chat method", async () => {
