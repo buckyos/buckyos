@@ -76,6 +76,13 @@
           "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
         },
         {
+          "model_pattern": "gpt-5:*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Variants of pre-5.6 GPT generations are outside current acceptance calls."
+        },
+        {
           "model_pattern": "gpt-5-*",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
