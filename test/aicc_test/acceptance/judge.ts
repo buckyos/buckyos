@@ -34,7 +34,7 @@ export function responseText(value: unknown, depth = 0): string[] {
     values.push(...responseText(record.content, depth + 1));
   }
   for (const [key, child] of Object.entries(record)) {
-    if (!["text", "output_text", "content", "provider_io"].includes(key)) {
+    if (!["text", "output_text", "content", "provider_io", "extra"].includes(key)) {
       values.push(...responseText(child, depth + 1));
     }
   }
@@ -129,11 +129,15 @@ export async function runJudge(input: {
   const content: Array<Record<string, unknown>> = [{
     type: "text",
     text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
-  }, ...sourceResources, ...outputResourcesForJudge];
+  }];
+  const resources = [...sourceResources, ...outputResourcesForJudge]
+    .map((resource) => resource.source)
+    .filter((source): source is Record<string, unknown> => Boolean(source));
   const request: Record<string, unknown> = {
     capability: "llm",
     model: { alias: input.model },
     requirements: { must_features: ["json_output"], resp_format: "json" },
+    disable: { web_search: true },
     ...(input.preferDifferentProvider
       ? { policy: { blocked_provider_instances: [input.testedProviderInstance] } }
       : {}),
@@ -157,7 +161,7 @@ export async function runJudge(input: {
           },
         },
       },
-      resources: [],
+      resources,
       tool_specs: [],
       options: { session_id: `${input.runId}:${input.caseId}:judge`, rootid: input.runId },
     },
