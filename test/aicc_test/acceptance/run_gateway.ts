@@ -871,8 +871,9 @@ async function main(): Promise<void> {
     appId: options.appId,
   });
   const uploadedFixtureIds: string[] = [];
+  const configuredFixtures = structuredClone(options.fixtures);
   options.fixtures = await loadDefaultFixtures(
-    options.fixtures,
+    configuredFixtures,
     runId,
     options.gatewayUrl,
     session.sessionToken,
@@ -1304,7 +1305,7 @@ async function executeAcceptance(input: {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     if (executeRealModelCalls) {
       options.fixtures = await loadDefaultFixtures(
-        options.fixtures,
+        configuredFixtures,
         runId,
         options.gatewayUrl,
         session.sessionToken,
