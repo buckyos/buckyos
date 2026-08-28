@@ -163,17 +163,25 @@ export async function fetchOfficialModelIds(input: {
   let cursor: string | undefined;
   for (let page = 0; page < 100; page += 1) {
     const request = configureRequest(input.profile, token, cursor);
-    let response: Response;
-    try {
-      response = input.profile.official_catalog.format === "anthropic" && !input.fetcher
-        ? await fetchAnthropicCatalogWithCurl(request.url, request.init)
-        : await fetcher(request.url, {
-          ...request.init,
-          signal: AbortSignal.timeout(input.timeoutMs),
-        });
-    } catch {
-      throw new Error(`official catalog request failed for ${input.profile.provider_driver}: network error`);
+    let response: Response | undefined;
+    const maxAttempts = input.fetcher ? 1 : 5;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        response = input.profile.official_catalog.format === "anthropic" && !input.fetcher
+          ? await fetchAnthropicCatalogWithCurl(request.url, request.init)
+          : await fetcher(request.url, {
+            ...request.init,
+            signal: AbortSignal.timeout(input.timeoutMs),
+          });
+      } catch {
+        if (attempt === maxAttempts) {
+          throw new Error(`official catalog request failed for ${input.profile.provider_driver}: network error`);
+        }
+      }
+      if (response && (response.ok || ![403, 429].includes(response.status) && response.status < 500)) break;
+      if (attempt < maxAttempts) await new Promise((resolve) => setTimeout(resolve, attempt * 500));
     }
+    if (!response) throw new Error(`official catalog request failed for ${input.profile.provider_driver}: network error`);
     if (!response.ok) {
       throw new Error(
         `official catalog request failed for ${input.profile.provider_driver}: HTTP ${response.status}`,
