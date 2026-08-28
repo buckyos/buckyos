@@ -279,6 +279,7 @@ export function buildExactRequest(args: {
     inputJson.response_format = "object_id";
     inputJson.output = { resource_format: "named_object" };
   }
+  if (toolSpecs.length > 0) inputJson.tool_specs = toolSpecs;
   return {
     capability: args.cell.api_type.split(".")[0],
     model: { alias: args.cell.exact_model },
@@ -287,7 +288,6 @@ export function buildExactRequest(args: {
     payload: {
       input_json: inputJson,
       resources,
-      tool_specs: toolSpecs,
       options: {
         session_id: `${args.runId}:${args.cell.case_id}`,
         rootid: args.runId,

@@ -941,7 +941,11 @@ test("T2 LLM output variants build and assert JSON schema and tool-call contract
   }));
   const toolCell = { ...base, output_kinds: ["tool_call"] };
   const toolRequest = buildExactRequest({ cell: toolCell, runId: "run", fixtures: {} });
-  assert.equal(((toolRequest.payload as Record<string, unknown>).tool_specs as unknown[]).length, 1);
+  assert.equal(
+    ((((toolRequest.payload as Record<string, unknown>).input_json as Record<string, unknown>)
+      .tool_specs) as unknown[]).length,
+    1,
+  );
   assert.doesNotThrow(() => assertResponseShape(toolCell, {
     task_id: "task",
     status: "succeeded",
