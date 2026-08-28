@@ -194,6 +194,22 @@
       "source": "deterministic:generate_fixtures.py"
     },
     {
+      "id": "facts-doc",
+      "path": "../fixtures/facts.doc",
+      "mime": "application/msword",
+      "size": 52,
+      "sha256": "9716afae0bd84aa66ca049a8e5ad67f2f9b4f6de89b40960960f1b1d6e976572",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
       "id": "facts-docx",
       "path": "../fixtures/facts.docx",
       "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -210,11 +226,43 @@
       "source": "deterministic:generate_fixtures.py"
     },
     {
+      "id": "facts-xls",
+      "path": "../fixtures/facts.xls",
+      "mime": "application/vnd.ms-excel",
+      "size": 323,
+      "sha256": "0ccfa5911990bdc29a957ba57e3d01de23c6c8dd1df010c760bf71e7275ebee4",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
       "id": "facts-xlsx",
       "path": "../fixtures/facts.xlsx",
       "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "size": 1453,
       "sha256": "5bc0af1961f2afd61818c9bd1a4c3e6789fd78c303771ff20b2e253ff1eddbe5",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-ppt",
+      "path": "../fixtures/facts.ppt",
+      "mime": "application/vnd.ms-powerpoint",
+      "size": 51,
+      "sha256": "0faa5ad194f443348162973d45ea9df68638333de20bc74ef752412e3cea0887",
       "facts": [
         "AICC-FIXTURE-7319"
       ],
@@ -281,6 +329,38 @@
       "sha256": "6f8f6a523797389e5890789f740e9c6e0f46b43290cf7b0dc9e903b25d8b36d6",
       "facts": [
         "mask"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "inpaint-image-png",
+      "path": "../fixtures/inpaint_image.png",
+      "mime": "image/png",
+      "size": 6882,
+      "sha256": "667b0888cee6c55487923c22e1b1b00602355966b5f91be8504147fbfe32a019",
+      "facts": [
+        "inpaint_image"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "inpaint-mask-png",
+      "path": "../fixtures/inpaint_mask.png",
+      "mime": "image/png",
+      "size": 7301,
+      "sha256": "2228745f694f664a94b048044a4ad71716989b5ac6be594d0d2db52ba8788859",
+      "facts": [
+        "inpaint_mask"
       ],
       "cases": [
         "T1.resource",
@@ -617,8 +697,8 @@
       "id": "document-facts-md",
       "path": "../../jarvis_media_dv/assets/document_facts.md",
       "mime": "text/markdown",
-      "size": 90,
-      "sha256": "238010bfc3a2fb618acdecbb70487ae46998506eba0d04e72291a62ed0b1af9a",
+      "size": 96,
+      "sha256": "645501d10673b461d34881c62e2f16180e68f7e3d3190ceb38089eda62bda63f",
       "facts": [
         "AICC-DOC-7319"
       ],

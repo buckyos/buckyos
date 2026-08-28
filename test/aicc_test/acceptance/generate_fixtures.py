@@ -62,6 +62,16 @@ def pdf() -> Path:
 
 
 def office_documents() -> list[Path]:
+    doc = ROOT / "facts.doc"
+    doc.write_bytes(r"{\rtf1\ansi AICC-FIXTURE-7319 owner Lin budget 4827}".encode())
+    xls = ROOT / "facts.xls"
+    xls.write_text(
+        f'<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Facts" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Table><Row><Cell><Data ss:Type="String">{MARKER}</Data></Cell><Cell><Data ss:Type="Number">4827</Data></Cell></Row></Table></Worksheet></Workbook>',
+        encoding="utf-8",
+        newline="",
+    )
+    ppt = ROOT / "facts.ppt"
+    ppt.write_bytes(f"PowerPoint\n{MARKER}\nowner Lin\nbudget 4827\n".encode())
     docx = package("facts.docx", [
         ("[Content_Types].xml", b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>', False),
         ("_rels/.rels", b'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>', False),
@@ -87,7 +97,7 @@ def office_documents() -> list[Path]:
         ("OEBPS/content.opf", b'<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">aicc-fixture</dc:identifier><dc:title>AICC fixture</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>', False),
         ("OEBPS/chapter.xhtml", f'<html xmlns="http://www.w3.org/1999/xhtml"><body><p>{MARKER}</p></body></html>'.encode(), False),
     ])
-    return [docx, xlsx, pptx, epub]
+    return [doc, docx, xls, xlsx, ppt, pptx, epub]
 
 
 def png(name: str, width: int, height: int, color_type: int, rows: bytes) -> Path:
@@ -103,6 +113,18 @@ def png(name: str, width: int, height: int, color_type: int, rows: bytes) -> Pat
 def media() -> list[Path]:
     transparent = png("transparent.png", 2, 1, 6, b"\x00\xff\x00\x00\x00\x00\x00\xff\xff")
     mask = png("mask.png", 2, 1, 0, b"\x00\x00\xff")
+    size = 1024
+    inpaint_image_rows = bytearray()
+    inpaint_mask_rows = bytearray()
+    for y in range(size):
+        inpaint_image_rows.append(0)
+        inpaint_mask_rows.append(0)
+        for x in range(size):
+            center = 320 <= x < 704 and 320 <= y < 704
+            inpaint_image_rows.extend((210, 210, 210, 255) if center else (70, 125, 180, 255))
+            inpaint_mask_rows.extend((0, 0, 0, 0 if center else 255))
+    inpaint_image = png("inpaint_image.png", size, size, 6, bytes(inpaint_image_rows))
+    inpaint_mask = png("inpaint_mask.png", size, size, 6, bytes(inpaint_mask_rows))
     jpeg_data = base64.b64decode("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==")
     jpeg = ROOT / "marker.jpg"
     jpeg.write_bytes(jpeg_data)
@@ -117,7 +139,7 @@ def media() -> list[Path]:
             frames.extend(struct.pack("<hh", sample, sample))
         output.writeframes(frames)
     subtitle = write_text("marker.srt", f"1\n00:00:00,000 --> 00:00:02,000\n{MARKER}\n")
-    return [transparent, mask, jpeg, wav, subtitle]
+    return [transparent, mask, inpaint_image, inpaint_mask, jpeg, wav, subtitle]
 
 
 def archives() -> list[Path]:
@@ -203,6 +225,7 @@ def main() -> None:
         ".txt": "text/plain", ".md": "text/markdown", ".html": "text/html", ".csv": "text/csv",
         ".tsv": "text/tab-separated-values", ".json": "application/json", ".yaml": "application/yaml",
         ".xml": "application/xml", ".rtf": "application/rtf", ".py": "text/x-python", ".pdf": "application/pdf",
+        ".doc": "application/msword", ".xls": "application/vnd.ms-excel", ".ppt": "application/vnd.ms-powerpoint",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
