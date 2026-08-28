@@ -370,6 +370,22 @@
       "source": "deterministic:generate_fixtures.py"
     },
     {
+      "id": "background-remove-png",
+      "path": "../fixtures/background_remove.png",
+      "mime": "image/png",
+      "size": 3160,
+      "sha256": "6b368068c44eaecbbde4c4cebbc624657efe202329bf6511c4e4cc346d9ef4e1",
+      "facts": [
+        "background_remove"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
       "id": "marker-jpg",
       "path": "../fixtures/marker.jpg",
       "mime": "image/jpeg",

@@ -10,6 +10,7 @@ export type ResourceFixture = ResourceRef | Partial<Record<ResourceRepresentatio
 
 export type FixtureRefs = {
   image?: ResourceFixture;
+  bgRemoveImage?: ResourceFixture;
   ocrImage?: ResourceFixture;
   mask?: ResourceFixture;
   inpaintImage?: ResourceFixture;
@@ -25,7 +26,8 @@ export function requiredFixtureKinds(apiType: string): string[] {
   if (apiType === "vision.ocr") return ["ocrImage"];
   if (apiType === "image.img2img" || apiType.startsWith("vision.")) return ["image"];
   if (apiType === "image.inpaint") return ["inpaintImage", "inpaintMask"];
-  if (apiType === "image.upscale" || apiType === "image.bg_remove") return ["image"];
+  if (apiType === "image.upscale") return ["image"];
+  if (apiType === "image.bg_remove") return ["bgRemoveImage"];
   if (apiType === "embedding.multimodal") return ["image"];
   if (apiType === "audio.asr" || apiType === "audio.enhance") return ["audio"];
   if (apiType === "video.img2video") return ["image"];
@@ -132,7 +134,7 @@ function io(
     case "image.bg_remove":
       return {
         input_json: {},
-        resources: [requireFixture(fixtures, "image", apiType, representation)],
+        resources: [requireFixture(fixtures, "bgRemoveImage", apiType, representation)],
       };
     case "vision.ocr":
       return {

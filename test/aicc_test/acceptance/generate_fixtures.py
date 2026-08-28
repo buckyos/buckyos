@@ -125,6 +125,18 @@ def media() -> list[Path]:
             inpaint_mask_rows.extend((0, 0, 0, 0 if center else 255))
     inpaint_image = png("inpaint_image.png", size, size, 6, bytes(inpaint_image_rows))
     inpaint_mask = png("inpaint_mask.png", size, size, 6, bytes(inpaint_mask_rows))
+    bg_remove_rows = bytearray()
+    for y in range(512):
+        bg_remove_rows.append(0)
+        for x in range(512):
+            if 128 <= x < 384 and 128 <= y < 384:
+                pixel = (20, 70, 190, 255)
+                if 224 <= x < 288 or 224 <= y < 288:
+                    pixel = (20, 210, 220, 255)
+            else:
+                pixel = (255, 255, 255, 255)
+            bg_remove_rows.extend(pixel)
+    bg_remove_image = png("background_remove.png", 512, 512, 6, bytes(bg_remove_rows))
     jpeg_data = base64.b64decode("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==")
     jpeg = ROOT / "marker.jpg"
     jpeg.write_bytes(jpeg_data)
@@ -139,7 +151,7 @@ def media() -> list[Path]:
             frames.extend(struct.pack("<hh", sample, sample))
         output.writeframes(frames)
     subtitle = write_text("marker.srt", f"1\n00:00:00,000 --> 00:00:02,000\n{MARKER}\n")
-    return [transparent, mask, inpaint_image, inpaint_mask, jpeg, wav, subtitle]
+    return [transparent, mask, inpaint_image, inpaint_mask, bg_remove_image, jpeg, wav, subtitle]
 
 
 def archives() -> list[Path]:
