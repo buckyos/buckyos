@@ -219,10 +219,15 @@ async function loadDefaultFixtures(
     Exclude<keyof FixtureRefs, "documents">,
     { path: string; mime: string },
   ]>) {
+    const configured = loaded[kind];
+    const configuredPath = configured && "kind" in configured && configured.kind === "url" &&
+        typeof configured.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
+      ? configured.url
+      : undefined;
     const bytes = kind === "mask"
       ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
-      : await Deno.readFile(fixture.path);
-    loaded[kind] = await variants(bytes, fixture.mime, loaded[kind]);
+      : await Deno.readFile(configuredPath ?? fixture.path);
+    loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured);
   }
   const documentFixtures: Record<string, { path: string; mime: string }> = {
     txt: { path: join(here, "../fixtures/facts.txt"), mime: "text/plain" },
