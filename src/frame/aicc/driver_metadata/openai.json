@@ -250,6 +250,158 @@
       "estimated_latency_ms": 800
     },
     {
+      "pattern": "gpt-5.6",
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-sol",
+        "llm.openai.{model}",
+        "rerank",
+        "rerank.openai",
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "output_token": 0.00002,
+        "cache_input_token": 0.0000004,
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "normal",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5.6-sol*",
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-sol",
+        "llm.openai.{model}",
+        "rerank",
+        "rerank.openai",
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "output_token": 0.00002,
+        "cache_input_token": 0.0000004,
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 1.0,
+      "latency_class": "normal",
+      "cost_class": "high"
+    },
+    {
+      "pattern": "gpt-5.6-terra*",
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-terra",
+        "llm.openai.{model}",
+        "rerank",
+        "rerank.openai",
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "output_token": 0.000012,
+        "cache_input_token": 0.0000002,
+        "estimated_cost": 0.005
+      },
+      "estimated_latency_ms": 1000,
+      "quality_score": 0.95,
+      "latency_class": "normal",
+      "cost_class": "medium"
+    },
+    {
+      "pattern": "gpt-5.6-luna*",
+      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.gpt-luna",
+        "llm.openai.{model}",
+        "rerank",
+        "rerank.openai",
+        "rerank.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.0000002,
+        "output_token": 0.0000012,
+        "cache_input_token": 0.00000002,
+        "estimated_cost": 0.001
+      },
+      "estimated_latency_ms": 800,
+      "quality_score": 0.9,
+      "latency_class": "fast",
+      "cost_class": "low"
+    },
+    {
       "pattern": "gpt-*",
       "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
@@ -353,7 +505,7 @@
       "family": "gpt",
       "tier": "standard",
       "model_pattern": "gpt-*",
-      "exclude_tier_tokens": ["pro", "mini", "nano", "nono"],
+      "exclude_tier_tokens": ["pro", "mini", "nano", "nono", "terra", "luna"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],
@@ -410,7 +562,7 @@
       "family": "gpt",
       "tier": "mini",
       "model_pattern": "gpt-*",
-      "tier_tokens": ["mini"],
+      "tier_tokens": ["mini", "terra"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],
@@ -437,7 +589,7 @@
       "family": "gpt",
       "tier": "nano",
       "model_pattern": "gpt-*",
-      "tier_tokens": ["nano", "nono"],
+      "tier_tokens": ["nano", "nono", "luna"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],

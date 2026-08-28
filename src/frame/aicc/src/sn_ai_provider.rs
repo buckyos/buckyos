@@ -3822,7 +3822,7 @@ mod tests {
         });
 
         assert_eq!(known.estimated_cost_usd, 3.0);
-        assert_eq!(unknown.estimated_cost_usd, 0.01);
+        assert_eq!(unknown.estimated_cost_usd, 0.024);
         assert!(provider
             .estimate_cost_for_usage(
                 "unknown",

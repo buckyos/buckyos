@@ -1856,12 +1856,10 @@ fn compare_gpt_rank(left: &DriverModelRank, right: &DriverModelRank) -> std::cmp
 
 fn remove_driver_auto_mounts(mounts: &mut Vec<String>, rule: &DriverVersionRule) {
     mounts.retain(|mount| {
-        !rule.auto_mounts.iter().any(|auto_mount| {
-            mount == auto_mount
-                || mount
-                    .strip_prefix(auto_mount.as_str())
-                    .is_some_and(|tail| tail.starts_with('.'))
-        })
+        !rule
+            .auto_mounts
+            .iter()
+            .any(|auto_mount| mount == auto_mount)
     });
 }
 

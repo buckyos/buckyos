@@ -565,7 +565,13 @@ impl OpenAIProvider {
     }
 
     fn price_per_1m_tokens(model: &str) -> (f64, f64) {
-        if model.starts_with("gpt-5.4-pro") {
+        if model.starts_with("gpt-5.6-terra") {
+            (2.0, 12.0)
+        } else if model.starts_with("gpt-5.6-luna") {
+            (0.20, 1.20)
+        } else if model.starts_with("gpt-5.6-sol") || model == "gpt-5.6" {
+            (4.0, 20.0)
+        } else if model.starts_with("gpt-5.4-pro") {
             (30.0, 180.0)
         } else if model.starts_with("gpt-5.4-mini") {
             (0.75, 4.50)
@@ -4570,6 +4576,19 @@ mod tests {
             OpenAIProvider::price_per_1m_tokens("gpt-5.4-pro"),
             (30.0, 180.0)
         );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.6-sol"),
+            (4.0, 20.0)
+        );
+        assert_eq!(OpenAIProvider::price_per_1m_tokens("gpt-5.6"), (4.0, 20.0));
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.6-terra"),
+            (2.0, 12.0)
+        );
+        assert_eq!(
+            OpenAIProvider::price_per_1m_tokens("gpt-5.6-luna"),
+            (0.20, 1.20)
+        );
     }
 
     #[test]
@@ -5274,6 +5293,10 @@ data: [DONE]
         let models = vec![
             "gpt-5.4".to_string(),
             "gpt-5.5".to_string(),
+            "gpt-5.6".to_string(),
+            "gpt-5.6-sol".to_string(),
+            "gpt-5.6-terra".to_string(),
+            "gpt-5.6-luna".to_string(),
             "gpt-5.4-pro".to_string(),
             "gpt-5.5-pro".to_string(),
             "gpt-5-mini".to_string(),
@@ -5298,7 +5321,7 @@ data: [DONE]
 
         assert_model_mount(&inventory, "gpt-5.5", "llm", false);
         assert_model_mount(&inventory, "gpt-5.5", "llm.code", false);
-        assert_model_mount(&inventory, "gpt-5.5", "llm.gpt-standard", true);
+        assert_model_mount(&inventory, "gpt-5.5", "llm.gpt-standard", false);
         assert_model_mount(&inventory, "gpt-5.5", "llm.openai.gpt-5-5", true);
         assert!(
             inventory
@@ -5310,6 +5333,36 @@ data: [DONE]
                 .vision
         );
         assert_model_mount(&inventory, "gpt-5.5", "llm.gpt", false);
+        assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-sol", true);
+        assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-standard", false);
+        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-sol", true);
+        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-standard", true);
+        assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-terra", true);
+        assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-mini", true);
+        assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-standard", false);
+        assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-luna", true);
+        assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-nano", true);
+        assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-standard", false);
+        let sol = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-sol")
+            .expect("GPT-5.6 Sol should exist");
+        assert_eq!(sol.capabilities.max_context_tokens, Some(1_050_000));
+        assert_eq!(sol.capabilities.max_output_tokens, Some(128_000));
+        assert_eq!(sol.pricing.input_token, Some(0.000004));
+        let terra = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-terra")
+            .expect("GPT-5.6 Terra should exist");
+        assert_eq!(terra.pricing.input_token, Some(0.000002));
+        let luna = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.6-luna")
+            .expect("GPT-5.6 Luna should exist");
+        assert_eq!(luna.pricing.input_token, Some(0.0000002));
         assert_model_mount(&inventory, "gpt-5.4", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.code", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.gpt-standard", false);
@@ -5325,7 +5378,7 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm.code", false);
         assert_model_mount(&inventory, "gpt-5.4-mini", "llm.summarize", false);
-        assert_model_mount(&inventory, "gpt-5.4-mini", "llm.gpt-mini", true);
+        assert_model_mount(&inventory, "gpt-5.4-mini", "llm.gpt-mini", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.summarize", false);
         assert_model_mount(&inventory, "gpt-5.4-mini-2026-03-17", "llm", false);
@@ -5344,7 +5397,7 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.4-mini-2026-03-17", "llm.gpt", false);
         assert_model_mount(&inventory, "gpt-5.4-nano", "llm.swift", false);
         assert_model_mount(&inventory, "gpt-5.4-nano", "llm", false);
-        assert_model_mount(&inventory, "gpt-5.4-nano", "llm.gpt-nano", true);
+        assert_model_mount(&inventory, "gpt-5.4-nano", "llm.gpt-nano", false);
         assert_model_mount(&inventory, "gpt-5-nano", "llm.swift", false);
         assert_model_mount(&inventory, "o1-2024-12-17", "llm.gpt", true);
         assert_model_mount(&inventory, "o1-2024-12-17", "llm", false);
