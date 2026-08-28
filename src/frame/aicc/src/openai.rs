@@ -78,6 +78,7 @@ const OPENAI_IMAGE_INPUT_ALLOWLIST: &[&str] = &[
 ];
 const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "background",
+    "input_fidelity",
     "n",
     "output_compression",
     "output_format",
@@ -3800,6 +3801,9 @@ impl OpenAIProvider {
             if let Some(map) = source.as_object() {
                 for (key, value) in map {
                     if key == "prompt" || key == "model" {
+                        continue;
+                    }
+                    if key == "input_fidelity" && provider_model.starts_with("gpt-image-2") {
                         continue;
                     }
                     if OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST.contains(&key.as_str()) {

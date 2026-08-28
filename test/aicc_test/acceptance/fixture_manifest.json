@@ -373,8 +373,8 @@
       "id": "background-remove-png",
       "path": "../fixtures/background_remove.png",
       "mime": "image/png",
-      "size": 3160,
-      "sha256": "6b368068c44eaecbbde4c4cebbc624657efe202329bf6511c4e4cc346d9ef4e1",
+      "size": 3281,
+      "sha256": "6ba8605364b472ba1c26138ce39c3ac79b8c3f4dff60acfb68a741ee945c9d3a",
       "facts": [
         "background_remove"
       ],

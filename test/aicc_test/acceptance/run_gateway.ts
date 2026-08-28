@@ -696,9 +696,9 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   const apiType = cell.api_type;
   if (apiType === "image.txt2img") return ["The image visibly contains a blue square and the number 4827."];
   if (apiType === "image.img2img") return ["The output preserves the source composition and applies warm evening light."];
-  if (apiType === "image.inpaint") return ["The edited image contains plausible green leaves centered in the masked region, keeps the simple square-canvas composition, and does not replace it with an unrelated scene. Minor color changes outside the mask are acceptable."];
+  if (apiType === "image.inpaint") return ["The edited image contains plausible green leaves in the intended central masked region and remains a simple square-canvas composition rather than an unrelated scene. The mask is model guidance, so surrounding colors need not match pixel-for-pixel."];
   if (apiType === "image.upscale") return ["The output preserves the source content and has visibly improved or increased resolution."];
-  if (apiType === "image.bg_remove") return ["The central blue square with its cyan cross is the only foreground subject and should remain. The uniform white surrounding background should be removed or transparent."];
+  if (apiType === "image.bg_remove") return ["The red apple with its brown stem and green leaf remains the foreground subject, while the uniform white surrounding background is removed or transparent."];
   if (apiType === "vision.ocr") return ["The recognized text contains the visible acceptance marker 4827."];
   if (apiType === "vision.caption") return ["The caption accurately describes the supplied marker image."];
   if (apiType === "vision.detect") return ["The structured detection result identifies visible objects in the supplied image."];

@@ -120,6 +120,8 @@ function io(
       return {
         input_json: {
           prompt: "A solid medium-blue square canvas with a compact cluster of realistic green leaves strictly inside the central rectangular masked region. Preserve the uniform medium-blue area outside the mask unchanged, with no glow, gradient, shadow, or extra objects.",
+          input_fidelity: "high",
+          quality: "high",
         },
         resources: [
           requireFixture(fixtures, "inpaintImage", apiType, representation),

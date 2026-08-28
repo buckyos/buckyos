@@ -180,12 +180,16 @@ def media() -> list[Path]:
     for y in range(512):
         bg_remove_rows.append(0)
         for x in range(512):
-            if 128 <= x < 384 and 128 <= y < 384:
-                pixel = (20, 70, 190, 255)
-                if 224 <= x < 288 or 224 <= y < 288:
-                    pixel = (20, 210, 220, 255)
-            else:
-                pixel = (255, 255, 255, 255)
+            apple = ((x - 256) / 125) ** 2 + ((y - 286) / 145) ** 2 <= 1
+            leaf = ((x - 326) / 58) ** 2 + ((y - 126) / 30) ** 2 <= 1
+            stem = 242 <= x < 270 and 105 <= y < 170
+            pixel = (218, 38, 45, 255) if apple else (255, 255, 255, 255)
+            if apple and ((x - 218) / 24) ** 2 + ((y - 225) / 38) ** 2 <= 1:
+                pixel = (255, 120, 110, 255)
+            if stem:
+                pixel = (105, 62, 30, 255)
+            if leaf:
+                pixel = (45, 145, 55, 255)
             bg_remove_rows.extend(pixel)
     bg_remove_image = png("background_remove.png", 512, 512, 6, bytes(bg_remove_rows))
     jpeg_data = base64.b64decode("/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABD/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/EH//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==")

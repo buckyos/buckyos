@@ -160,7 +160,7 @@ export async function runJudge(input: {
   const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; input_resources=${sourceResources.length}; output_resources=${outputResourcesForJudge.length}`;
   const content: Array<Record<string, unknown>> = [{
     type: "text",
-    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
+    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
   }];
   const resources = [...sourceResources, ...outputResourcesForJudge]
     .map((resource) => resource.source)
@@ -176,7 +176,7 @@ export async function runJudge(input: {
     payload: {
       input_json: {
         messages: [{ role: "user", content }],
-        max_output_tokens: 1024,
+        max_output_tokens: 2048,
         response_format: {
           type: "json_schema",
           name: "aicc_t2_judge_verdict",
@@ -186,7 +186,7 @@ export async function runJudge(input: {
             properties: {
               pass: { type: "boolean" },
               score: { type: "number", minimum: 0, maximum: 1 },
-              reason: { type: "string" },
+              reason: { type: "string", maxLength: 240 },
             },
             required: ["pass", "score", "reason"],
             additionalProperties: false,
