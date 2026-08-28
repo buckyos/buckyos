@@ -3560,6 +3560,8 @@ impl AIComputeCenter {
                         json!({
                             "exact_model": model.exact_model,
                             "provider_model_id": model.provider_model_id,
+                            "provider_actual_model_id": model.provider_actual_model_id,
+                            "provider_options": model.provider_options,
                             "model_driver": model.model_driver,
                             "api_types": model.api_types,
                             "logical_mounts": model.logical_mounts,
@@ -7234,6 +7236,23 @@ mod tests {
         assert!(definitions
             .iter()
             .any(|definition| definition["path"] == json!("audio.asr")));
+    }
+
+    #[test]
+    fn models_list_preserves_provider_variant_routing_metadata() {
+        let registry = Registry::default();
+        let instance = mock_instance("openai-main", "openai");
+        let mut provider = MockProvider::new(instance, cost(0.001, 100), vec![]);
+        provider.inventory.models[0].provider_actual_model_id = Some("gpt-5.6-sol".to_string());
+        provider.inventory.models[0].provider_options =
+            Some(json!({"reasoning": {"effort": "high"}}));
+        registry.add_provider(Arc::new(provider));
+        let center = AIComputeCenter::new(registry, ModelCatalog::default());
+
+        let directory = center.dump_model_directory().unwrap();
+        let model = &directory["providers"][0]["models"][0];
+        assert_eq!(model["provider_actual_model_id"], json!("gpt-5.6-sol"));
+        assert_eq!(model["provider_options"]["reasoning"]["effort"], json!("high"));
     }
 
     #[test]

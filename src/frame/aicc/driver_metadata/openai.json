@@ -251,14 +251,11 @@
     },
     {
       "pattern": "gpt-5.6",
-      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-pro",
         "llm.openai.{model}",
-        "rerank",
-        "rerank.openai",
-        "rerank.{model}",
         "vision.ocr",
         "vision.ocr.{driver}",
         "vision.ocr.{model}",
@@ -289,14 +286,11 @@
     },
     {
       "pattern": "gpt-5.6-sol*",
-      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-pro",
         "llm.openai.{model}",
-        "rerank",
-        "rerank.openai",
-        "rerank.{model}",
         "vision.ocr",
         "vision.ocr.{driver}",
         "vision.ocr.{model}",
@@ -327,14 +321,11 @@
     },
     {
       "pattern": "gpt-5.6-terra*",
-      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-mini",
         "llm.openai.{model}",
-        "rerank",
-        "rerank.openai",
-        "rerank.{model}",
         "vision.ocr",
         "vision.ocr.{driver}",
         "vision.ocr.{model}",
@@ -365,14 +356,11 @@
     },
     {
       "pattern": "gpt-5.6-luna*",
-      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-nano",
         "llm.openai.{model}",
-        "rerank",
-        "rerank.openai",
-        "rerank.{model}",
         "vision.ocr",
         "vision.ocr.{driver}",
         "vision.ocr.{model}",
@@ -403,13 +391,10 @@
     },
     {
       "pattern": "gpt-*",
-      "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.openai.{model}",
-        "rerank",
-        "rerank.openai",
-        "rerank.{model}",
         "vision.ocr",
         "vision.ocr.{driver}",
         "vision.ocr.{model}",
@@ -491,11 +476,25 @@
   "variants": [
     {
       "name": "reasoning.low",
+      "model_pattern": "gpt-5*",
       "mount_suffix": "reasoning-low",
       "provider_options": { "reasoning": { "effort": "low" } }
     },
     {
       "name": "reasoning.high",
+      "model_pattern": "gpt-5*",
+      "mount_suffix": "reasoning-high",
+      "provider_options": { "reasoning": { "effort": "high" } }
+    },
+    {
+      "name": "reasoning.low.o-series",
+      "model_pattern": "o*",
+      "mount_suffix": "reasoning-low",
+      "provider_options": { "reasoning": { "effort": "low" } }
+    },
+    {
+      "name": "reasoning.high.o-series",
+      "model_pattern": "o*",
       "mount_suffix": "reasoning-high",
       "provider_options": { "reasoning": { "effort": "high" } }
     }

@@ -183,12 +183,42 @@
           "model_pattern": "o*",
           "status": "active",
           "source_status": "official_catalog_runtime_membership",
-          "api_types": ["llm", "vision.ocr", "vision.caption"],
-          "methods": ["llm.chat", "vision.ocr", "vision.caption"],
-          "input_kinds": ["text", "image"],
+          "api_types": ["llm"],
+          "methods": ["llm.chat"],
+          "input_kinds": ["text"],
           "output_kinds": ["text", "json", "tool_call"],
           "source_urls": ["https://developers.openai.com/api/docs/models/all"],
           "evidence_summary": "Reasoning models support text generation; current model pages determine image and tool availability."
+        },
+        {
+          "model_pattern": "babbage-*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Legacy base models are not part of the AICC inference protocol surface."
+        },
+        {
+          "model_pattern": "davinci-*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Legacy base models are not part of the AICC inference protocol surface."
+        },
+        {
+          "model_pattern": "computer-use-preview*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The preview computer-use endpoint is outside the current AICC adapter surface."
         }
       ]
     },
@@ -447,6 +477,16 @@
           "document_formats": ["txt", "md", "pdf", "csv", "html", "xml", "json", "rtf", "source"],
           "source_urls": ["https://ai.google.dev/gemini-api/docs/models", "https://ai.google.dev/gemini-api/docs/document-processing", "https://ai.google.dev/api/generate-content"],
           "evidence_summary": "Gemini multimodal models accept PDF document vision and documented text/code MIME types; non-PDF documents are extracted as text."
+        },
+        {
+          "model_pattern": "*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
+          "evidence_summary": "Catalog entries outside the Gemini API families implemented by AICC are not callable through this adapter."
         }
       ]
     },
@@ -513,6 +553,16 @@
           "output_kinds": ["video"],
           "source_urls": ["https://fal.ai/models/fal-ai/video-upscaler/api"],
           "evidence_summary": "The fal video upscaler applies RealESRGAN to video frames."
+        },
+        {
+          "model_pattern": "*",
+          "status": "removed",
+          "api_types": [],
+          "methods": [],
+          "input_kinds": [],
+          "output_kinds": [],
+          "source_urls": ["https://fal.ai/docs/model-api-reference"],
+          "evidence_summary": "FAL catalog endpoints without an AICC canonical adapter mapping are outside the tested protocol surface."
         }
       ]
     },

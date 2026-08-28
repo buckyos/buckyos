@@ -757,7 +757,7 @@ pub(crate) fn validate_driver_metadata_document(
     validate_driver_model_rule(&document.defaults, "defaults")?;
 
     let mut variant_names = HashSet::new();
-    let mut variant_suffixes = HashSet::new();
+    let mut variant_scopes = HashSet::new();
     for (index, variant) in document.variants.iter().enumerate() {
         validate_trimmed_value(
             variant.name.as_str(),
@@ -773,8 +773,19 @@ pub(crate) fn validate_driver_metadata_document(
         if !is_valid_variant_suffix(suffix) || suffix.trim() != suffix || suffix.is_empty() {
             return Err(format!("variants[{}].mount_suffix is invalid", index));
         }
-        if !variant_suffixes.insert(suffix.to_ascii_lowercase()) {
-            return Err(format!("duplicate variant mount_suffix '{}'", suffix));
+        let scope = (
+            suffix.to_ascii_lowercase(),
+            variant
+                .model_pattern
+                .as_deref()
+                .unwrap_or("*")
+                .to_ascii_lowercase(),
+        );
+        if !variant_scopes.insert(scope) {
+            return Err(format!(
+                "duplicate variant mount_suffix '{}' for the same model pattern",
+                suffix
+            ));
         }
         if !variant.provider_options.is_null() && !variant.provider_options.is_object() {
             return Err(format!(
