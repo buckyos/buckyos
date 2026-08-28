@@ -29,7 +29,8 @@ use tokio::time;
 
 const DEFAULT_CLAUDE_BASE_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_CLAUDE_TIMEOUT_MS: u64 = 60_000;
-const DEFAULT_CLAUDE_MODELS: &str = "claude-3-7-sonnet-20250219,claude-3-5-haiku-20241022";
+const DEFAULT_CLAUDE_MODELS: &str =
+    "claude-sonnet-5,claude-opus-5,claude-haiku-4-5-20251001,claude-fable-5";
 const DEFAULT_CLAUDE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const CLAUDE_MODELS_PAGE_LIMIT: u32 = 1000;
@@ -1634,7 +1635,7 @@ mod tests {
         assert_eq!(instances[0].provider_driver, "claude");
         assert_eq!(
             instances[0].default_model.as_deref(),
-            Some("claude-3-7-sonnet-20250219")
+            Some("claude-sonnet-5")
         );
     }
 

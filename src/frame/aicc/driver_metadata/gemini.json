@@ -106,6 +106,30 @@
   ],
   "patterns": [
     {
+      "pattern": "gemini-omni-*",
+      "provider_options": { "protocol": "interactions" },
+      "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
+      "logical_mounts": [
+        "video.txt2video",
+        "video.txt2video.google",
+        "video.txt2video.gemini",
+        "video.txt2video.{model}",
+        "video.img2video",
+        "video.img2video.google",
+        "video.img2video.gemini",
+        "video.img2video.{model}",
+        "video.video2video",
+        "video.video2video.google",
+        "video.video2video.gemini",
+        "video.video2video.{model}"
+      ],
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.5
+      },
+      "estimated_latency_ms": 120000
+    },
+    {
       "pattern": "gemini-embedding-2*",
       "api_types": ["embedding.text", "embedding.multimodal"],
       "logical_mounts": [
