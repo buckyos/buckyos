@@ -79,6 +79,7 @@ function configureRequest(
     url.searchParams.set("limit", pageSize);
     if (cursor) url.searchParams.set("after_id", cursor);
     headers.set("anthropic-version", "2023-06-01");
+    headers.set("user-agent", "aicc-acceptance/1.0");
   } else if (catalog.format === "gemini") {
     url.searchParams.set("pageSize", pageSize);
     if (cursor) url.searchParams.set("pageToken", cursor);
