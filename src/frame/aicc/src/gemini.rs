@@ -3157,26 +3157,32 @@ impl GoogleGeminiProvider {
                 .as_ref()
                 .map(|value| json!({ "outputDimensionality": value }))
         };
-        let mut request_obj = Map::new();
+        let mut request_objects = Vec::new();
         let action;
         if texts.len() > 1 {
             let model = format!("models/{}", provider_model.trim_start_matches("models/"));
-            let requests = texts
-                .iter()
-                .map(|text| {
-                    let mut request = json!({
-                        "model": model,
-                        "content": { "parts": [{ "text": text }] }
-                    });
-                    if let Some(config) = build_config() {
-                        request["embedContentConfig"] = config;
-                    }
-                    request
-                })
-                .collect::<Vec<_>>();
-            request_obj.insert("requests".to_string(), Value::Array(requests));
+            for batch in texts.chunks(100) {
+                let requests = batch
+                    .iter()
+                    .map(|text| {
+                        let mut request = json!({
+                            "model": model,
+                            "content": { "parts": [{ "text": text }] }
+                        });
+                        if let Some(config) = build_config() {
+                            request["embedContentConfig"] = config;
+                        }
+                        request
+                    })
+                    .collect::<Vec<_>>();
+                request_objects.push(Map::from_iter([(
+                    "requests".to_string(),
+                    Value::Array(requests),
+                )]));
+            }
             action = "batchEmbedContents";
         } else {
+            let mut request_obj = Map::new();
             let mut parts = Vec::new();
             if let Some(text) = texts.first() {
                 parts.push(json!({ "text": text }));
@@ -3188,29 +3194,42 @@ impl GoogleGeminiProvider {
             if let Some(config) = build_config() {
                 request_obj.insert("embedContentConfig".to_string(), config);
             }
+            request_objects.push(request_obj);
             action = "embedContent";
         }
-        let (status, body, latency_ms) = self
-            .post_model_action(provider_model, action, &request_obj)
-            .await?;
-        if !status.is_success() {
-            let message = body
-                .pointer("/error/message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("google gemini embedding returned non-success status");
-            return Err(Self::classify_api_error(status, message.to_string()));
+        let mut embeddings = Vec::new();
+        let mut response_bodies = Vec::new();
+        let mut latency_ms = 0u64;
+        let mut prompt_tokens = 0u64;
+        for request_obj in request_objects.iter() {
+            let (status, body, request_latency_ms) = self
+                .post_model_action(provider_model, action, request_obj)
+                .await?;
+            if !status.is_success() {
+                let message = body
+                    .pointer("/error/message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("google gemini embedding returned non-success status");
+                return Err(Self::classify_api_error(status, message.to_string()));
+            }
+            latency_ms = latency_ms.saturating_add(request_latency_ms);
+            prompt_tokens = prompt_tokens.saturating_add(
+                body.pointer("/usageMetadata/promptTokenCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+            if action == "batchEmbedContents" {
+                embeddings.extend(
+                    body.get("embeddings")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            } else if let Some(embedding) = body.get("embedding") {
+                embeddings.push(embedding.clone());
+            }
+            response_bodies.push(body);
         }
-        let embeddings = if action == "batchEmbedContents" {
-            body.get("embeddings")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            body.get("embedding")
-                .cloned()
-                .into_iter()
-                .collect::<Vec<_>>()
-        };
         if embeddings.is_empty() {
             return Err(ProviderError::fatal(
                 "google gemini embedding response is missing embedding values",
@@ -3234,24 +3253,32 @@ impl GoogleGeminiProvider {
                 })
             })
             .collect::<Vec<_>>();
-        let usage = body
-            .pointer("/usageMetadata/promptTokenCount")
-            .and_then(Value::as_u64)
-            .map(|input_tokens| AiUsage {
-                input_tokens: Some(input_tokens),
+        let usage = (prompt_tokens > 0)
+            .then(|| AiUsage {
+                input_tokens: Some(prompt_tokens),
                 output_tokens: Some(0),
-                total_tokens: Some(input_tokens),
+                total_tokens: Some(prompt_tokens),
                 request_units: None,
             })
-            .unwrap_or_else(|| AiUsage::request_units(1));
+            .unwrap_or_else(|| AiUsage::request_units(request_objects.len() as u64));
         let cost = self.estimate_cost_for_usage(provider_model, &usage);
+        let provider_input = if request_objects.len() == 1 {
+            Value::Object(request_objects[0].clone())
+        } else {
+            Value::Array(request_objects.into_iter().map(Value::Object).collect())
+        };
+        let provider_output = if response_bodies.len() == 1 {
+            response_bodies.remove(0)
+        } else {
+            Value::Array(response_bodies)
+        };
         let mut extra = Map::new();
         extra.insert(
             "embedding".to_string(),
             json!({
                 "data": data,
                 "embedding_space_id": embedding_space_id,
-                "provider_io": { "input": request_obj, "output": body },
+                "provider_io": { "input": provider_input, "output": provider_output },
                 "latency_ms": latency_ms
             }),
         );

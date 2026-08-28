@@ -167,8 +167,8 @@ async function loadDefaultFixtures(
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
   const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string }> = {
-    image: { path: join(here, "../fixtures/marker.jpg"), mime: "image/jpeg" },
-    mask: { path: join(here, "../fixtures/mask.png"), mime: "image/png" },
+    image: { path: join(here, "../../../src/frame/desktop/src/assets/hero.png"), mime: "image/png" },
+    mask: { path: join(here, "../../../src/frame/desktop/src/assets/hero.png"), mime: "image/png" },
     audio: { path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"), mime: "audio/wav" },
     video: { path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"), mime: "video/mp4" },
     document: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },

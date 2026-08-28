@@ -14,8 +14,8 @@ use crate::model_types::{
     LatencyClass, LogicalModelDefinition, ModelAttributes, ModelCandidate, ModelCapabilities,
     ModelHealth, ModelMetadata, ModelPricing, PolicyConfig, PricingMode, PrivacyClass,
     ProviderInventory, ProviderOrigin, ProviderType, ProviderTypeTrustedSource, QuotaState,
-    RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy,
-    RoutePricingSnapshot, RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
+    RequiredModelFeatures, RouteError, RouteErrorCode, RoutePolicy, RoutePricingSnapshot,
+    RouteTrace, UserFacingProviderOrigin, UserFacingRouteSummary,
 };
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -1604,6 +1604,9 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
     }
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
         return "video/mp4".to_string();
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return "application/pdf".to_string();
     }
     "application/octet-stream".to_string()
 }
@@ -3308,6 +3311,7 @@ impl AIComputeCenter {
             "text/xml",
             "text/yaml",
             "text/rtf",
+            "text/x-python",
         ]
         .into_iter()
         .map(|item| item.to_string())
@@ -7266,7 +7270,10 @@ mod tests {
         let directory = center.dump_model_directory().unwrap();
         let model = &directory["providers"][0]["models"][0];
         assert_eq!(model["provider_actual_model_id"], json!("gpt-5.6-sol"));
-        assert_eq!(model["provider_options"]["reasoning"]["effort"], json!("high"));
+        assert_eq!(
+            model["provider_options"]["reasoning"]["effort"],
+            json!("high")
+        );
     }
 
     #[test]
