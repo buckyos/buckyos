@@ -29,6 +29,7 @@ import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
 import { outputResources, responseText } from "./judge.ts";
+import { selectJudgeModel } from "./run_gateway.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
 import {
   ASSET_LABEL,
@@ -41,6 +42,36 @@ import {
 } from "../../jarvis_media_dv/jarvis_media_dv.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+test("judge model selection prefers current exact Gemini and honors overrides", () => {
+  const inventories: ProviderInventory[] = [
+    {
+      provider_driver: "openai",
+      provider_instance_name: "openai-main",
+      models: [{
+        exact_model: "gpt-5.6-sol@openai-main",
+        provider_model_id: "gpt-5.6-sol",
+        api_types: ["llm"],
+        logical_mounts: [],
+      }],
+    },
+    {
+      provider_driver: "google-gemini",
+      provider_instance_name: "google-gemini-main",
+      models: [{
+        exact_model: "gemini-3.7-flash@google-gemini-main",
+        provider_model_id: "gemini-3.7-flash",
+        api_types: ["llm"],
+        logical_mounts: [],
+      }],
+    },
+  ];
+  assert.equal(
+    selectJudgeModel("llm.plan.default", inventories),
+    "gemini-3.7-flash@google-gemini-main",
+  );
+  assert.equal(selectJudgeModel("custom@judge", inventories), "custom@judge");
+});
 
 test("shared TOML parser accepts finite decimal and exponent numbers", () => {
   assert.deepEqual(parseToml("cost = 0.01\nsmall = -2.5e-3\nwhole = 8\n"), {

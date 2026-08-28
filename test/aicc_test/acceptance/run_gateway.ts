@@ -633,6 +633,28 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   return [];
 }
 
+export function selectJudgeModel(configuredModel: string, inventories: ProviderInventory[]): string {
+  if (configuredModel !== "llm.plan.default") return configuredModel;
+  const candidates = inventories.flatMap((inventory) => inventory.models
+    .filter((model) => model.api_types.includes("llm") && !model.provider_actual_model_id)
+    .map((model) => ({
+      exactModel: model.exact_model,
+      driver: inventory.provider_driver,
+      id: model.provider_model_id,
+    })));
+  const rank = (candidate: (typeof candidates)[number]): number => {
+    if (candidate.driver === "google-gemini" && candidate.id === "gemini-3.7-flash") return 0;
+    if (candidate.driver === "google-gemini" && candidate.id === "gemini-3-flash-preview") return 1;
+    if (candidate.driver === "openai" && candidate.id === "gpt-5.6-sol") return 2;
+    if (candidate.driver === "google-gemini") return 3;
+    if (candidate.driver === "openai") return 4;
+    if (candidate.driver === "claude") return 5;
+    return 6;
+  };
+  candidates.sort((left, right) => rank(left) - rank(right) || left.exactModel.localeCompare(right.exactModel));
+  return candidates[0]?.exactModel ?? configuredModel;
+}
+
 function selectWithinRunBudget(
   cells: MatrixCell[],
   options: Pick<Options, "maxAttempts" | "maxRealCalls" | "maxCostUsd" | "estimatedCostPerCallUsd" | "judgeEnabled">,
@@ -979,6 +1001,7 @@ async function executeAcceptance(input: {
       inventory.provider_instance_name,
     ])),
   });
+  const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
   const officialInventories = bindOfficialCatalogInstances(officialCatalogs, selectedInventories);
   const matrix = analyzeProviderMatrix({
     baseline,
@@ -1182,7 +1205,7 @@ async function executeAcceptance(input: {
     console.log(`[plan] provider_limit ${provider}: concurrency=${limits.maxConcurrency ?? options.providerLimits.maxConcurrency} interval_ms=${limits.minIntervalMs ?? options.providerLimits.minIntervalMs}`);
   }
   console.log(`[plan] estimated_cost_usd=${estimatedCost.toFixed(4)} max_cost_usd=${options.maxCostUsd.toFixed(4)}`);
-  console.log(`[plan] judge enabled=${options.judgeEnabled} model=${options.judgeModel} semantic_cases=${options.judgeEnabled ? judgedCells.length : executableCells.filter((cell) => semanticRubric(cell).length > 0).length}`);
+  console.log(`[plan] judge enabled=${options.judgeEnabled} model=${judgeModel} semantic_cases=${options.judgeEnabled ? judgedCells.length : executableCells.filter((cell) => semanticRubric(cell).length > 0).length}`);
   if (options.allowRealModelCalls && plannedCalls > options.maxRealCalls) {
     throw new Error(`planned calls ${plannedCalls} exceed max_real_calls ${options.maxRealCalls}`);
   }
@@ -1290,14 +1313,14 @@ async function executeAcceptance(input: {
             let judgeReservation: CostReservation | undefined;
             let judgeSettled = false;
             try {
-              const preferDifferentProvider = selectedInventories.some((inventory) =>
-                inventory.provider_instance_name !== cell.provider_instance &&
-                inventory.models.some((model) => model.api_types.includes("llm"))
-              );
+              const judgeProviderInstance = judgeModel.includes("@")
+                ? judgeModel.slice(judgeModel.lastIndexOf("@") + 1)
+                : undefined;
+              const preferDifferentProvider = judgeProviderInstance !== cell.provider_instance;
               const verdict = await runJudge({
                 aicc: session.aicc,
                 taskManager: session.taskManager,
-                model: options.judgeModel,
+                model: judgeModel,
                 runId,
                 caseId: cell.case_id,
                 rubricVersion: options.judgeRubricVersion,
@@ -1323,8 +1346,8 @@ async function executeAcceptance(input: {
                 case_id: `${cell.case_id}.judge`,
                 attempt: 1,
                 provider_driver: "judge",
-                provider_instance: options.judgeModel,
-                exact_model: options.judgeModel,
+                provider_instance: judgeProviderInstance ?? judgeModel,
+                exact_model: judgeModel,
                 api_type: "llm",
                 method: "llm.chat",
                 started_at: new Date(judgeStarted).toISOString(),
@@ -1338,7 +1361,7 @@ async function executeAcceptance(input: {
               });
               caseReport.judge = {
                 rubric_version: options.judgeRubricVersion,
-                configured_model: options.judgeModel,
+                configured_model: judgeModel,
                 task_id: verdict.taskId,
                 input_summary: verdict.inputSummary,
                 score: verdict.score,
@@ -1354,8 +1377,8 @@ async function executeAcceptance(input: {
                   case_id: `${cell.case_id}.judge`,
                   attempt: 1,
                   provider_driver: "judge",
-                  provider_instance: options.judgeModel,
-                  exact_model: options.judgeModel,
+                  provider_instance: judgeProviderInstance ?? judgeModel,
+                  exact_model: judgeModel,
                   api_type: "llm",
                   method: "llm.chat",
                   started_at: new Date(judgeStarted).toISOString(),

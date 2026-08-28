@@ -3471,21 +3471,21 @@ mod tests {
             .inventory()
             .models
             .iter()
-            .find(|model| model.provider_model_id == "gpt-image-1")
+            .find(|model| model.provider_model_id == "gpt-image-2")
             .expect("metadata image model")
             .clone();
         assert!(image.supports_api_type(&ApiType::ImageTextToImage));
         assert!(image.supports_api_type(&ApiType::ImageToImage));
         assert!(image.supports_api_type(&ApiType::ImageInpaint));
         assert!(!image.supports_api_type(&ApiType::Llm));
-        let video = provider
+        assert!(!provider
             .inventory()
             .models
             .into_iter()
-            .find(|model| model.provider_model_id == "sora-2")
-            .expect("metadata video model");
-        assert!(video.supports_api_type(&ApiType::VideoTextToVideo));
-        assert!(video.supports_api_type(&ApiType::VideoImageToVideo));
+            .any(|model| model.api_types.iter().any(|api_type| matches!(
+                api_type,
+                ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+            ))));
     }
 
     #[test]

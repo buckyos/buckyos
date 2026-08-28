@@ -30,7 +30,7 @@ use tokio::time;
 const DEFAULT_MINIMAX_BASE_URL: &str = "https://api.minimaxi.com/anthropic/v1";
 const DEFAULT_MINIMAX_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_MINIMAX_MODELS: &str =
-    "MiniMax-M2.7,MiniMax-M2.7-highspeed,MiniMax-M2.5,MiniMax-M2.5-highspeed,MiniMax-M2.1,MiniMax-M2.1-highspeed,MiniMax-M2";
+    "MiniMax-M2.7,MiniMax-M2.7-highspeed,MiniMax-M2.5,MiniMax-M2.5-highspeed,M2-her";
 
 #[derive(Debug, Clone)]
 pub struct MiniMaxInstanceConfig {

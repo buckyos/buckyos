@@ -43,12 +43,13 @@ use tokio::time;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_OPENAI_MODELS: &str = "gpt-5,gpt-5-mini,gpt-5-nano,gpt-5-pro";
-const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1,dall-e-3,dall-e-2";
-const DEFAULT_OPENAI_EMBEDDING_MODELS: &str = "text-embedding-3-large,text-embedding-3-small";
-const DEFAULT_OPENAI_ASR_MODELS: &str = "gpt-4o-mini-transcribe,whisper-1";
-const DEFAULT_OPENAI_TTS_MODELS: &str = "gpt-4o-mini-tts,tts-1";
-const DEFAULT_OPENAI_VIDEO_MODELS: &str = "sora-2,sora-2-pro";
+const DEFAULT_OPENAI_MODELS: &str = "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,o1,o1-pro,o3,o3-deep-research,o3-mini,o3-pro,o4-mini,o4-mini-deep-research";
+const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1-mini,gpt-image-1.5,gpt-image-2";
+const DEFAULT_OPENAI_EMBEDDING_MODELS: &str =
+    "text-embedding-3-large,text-embedding-3-small,text-embedding-ada-002";
+const DEFAULT_OPENAI_ASR_MODELS: &str = "gpt-transcribe,whisper-1";
+const DEFAULT_OPENAI_TTS_MODELS: &str = "tts-1,tts-1-hd";
+const DEFAULT_OPENAI_VIDEO_MODELS: &str = "";
 const DEFAULT_OPENAI_PROVIDER_DRIVER: &str = "openai";
 const DEFAULT_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const OPENAI_TOOL_TYPE_WEB_SEARCH: &str = "web_search_preview";
@@ -5192,8 +5193,8 @@ data: [DONE]
         let gpt = inventory
             .models
             .iter()
-            .find(|model| model.exact_model == "gpt-5@openai-primary")
-            .expect("default inventory should include gpt-5");
+            .find(|model| model.exact_model == "gpt-5.6-sol@openai-primary")
+            .expect("default inventory should include gpt-5.6-sol");
         assert!(gpt.api_types.contains(&ApiType::VisionOcr));
         assert!(gpt.api_types.contains(&ApiType::VisionCaption));
         assert!(gpt.logical_mounts.iter().any(|mount| mount == "vision.ocr"));
@@ -5204,18 +5205,14 @@ data: [DONE]
         assert!(inventory
             .models
             .iter()
-            .any(|model| model.exact_model == "gpt-image-1@openai-primary"));
-        let sora = inventory
+            .any(|model| model.exact_model == "gpt-image-2@openai-primary"));
+        assert!(!inventory
             .models
             .iter()
-            .find(|model| model.provider_model_id == "sora-2")
-            .expect("default inventory should include sora-2");
-        assert!(sora.api_types.contains(&ApiType::VideoTextToVideo));
-        assert!(sora.api_types.contains(&ApiType::VideoImageToVideo));
-        assert!(sora
-            .logical_mounts
-            .iter()
-            .any(|mount| mount == "video.img2video"));
+            .any(|model| model.api_types.iter().any(|api_type| matches!(
+                api_type,
+                ApiType::VideoTextToVideo | ApiType::VideoImageToVideo
+            ))));
     }
 
     #[test]

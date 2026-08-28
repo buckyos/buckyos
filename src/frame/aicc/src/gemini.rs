@@ -32,13 +32,13 @@ use tokio::time;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GEMINI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_GEMINI_MODELS: &str = "gemini-2.5-flash,gemini-2.5-pro";
-const DEFAULT_GEMINI_IMAGE_MODELS: &str =
-    "gemini-2.0-flash-exp-image-generation,gemini-2.5-flash-image-preview";
-const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001";
-const DEFAULT_GEMINI_TTS_MODELS: &str = "gemini-2.5-flash-preview-tts";
+const DEFAULT_GEMINI_MODELS: &str =
+    "gemini-3-flash-preview,gemini-3.7-flash,gemini-robotics-er-2-preview";
+const DEFAULT_GEMINI_IMAGE_MODELS: &str = "gemini-3-pro-image";
+const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001,gemini-embedding-2";
+const DEFAULT_GEMINI_TTS_MODELS: &str = "";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
-const DEFAULT_GEMINI_VIDEO_MODELS: &str = "gemini-omni-flash-preview,veo-3.1-generate-preview";
+const DEFAULT_GEMINI_VIDEO_MODELS: &str = "gemini-omni-1.1-flash,gemini-omni-flash-preview,veo-3.1-fast-generate-preview,veo-3.1-generate-preview,veo-3.1-lite-generate-preview";
 
 const DEFAULT_GEMINI_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);

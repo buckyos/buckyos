@@ -7,41 +7,7 @@
   "required_features": [],
   "models": [
     {
-      "id": "sora-2",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": [
-        "video.txt2video",
-        "video.txt2video.{driver}",
-        "video.txt2video.{model}",
-        "video.img2video",
-        "video.img2video.{driver}",
-        "video.img2video.{model}"
-      ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.4
-      },
-      "estimated_latency_ms": 120000
-    },
-    {
-      "id": "sora-2-pro",
-      "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": [
-        "video.txt2video",
-        "video.txt2video.{driver}",
-        "video.txt2video.{model}",
-        "video.img2video",
-        "video.img2video.{driver}",
-        "video.img2video.{model}"
-      ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 1.2
-      },
-      "estimated_latency_ms": 180000
-    },
-    {
-      "id": "gpt-image-1",
+      "id": "gpt-image-1-mini",
       "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
       "logical_mounts": [
         "image.txt2img.{driver}",
@@ -62,24 +28,40 @@
       "quality_score": 0.9
     },
     {
-      "id": "dall-e-3",
-      "api_types": ["image.txt2img"],
-      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.04
-      },
-      "estimated_latency_ms": 5000
+      "id": "gpt-image-1.5",
+      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+      "logical_mounts": [
+        "image.txt2img.{driver}",
+        "image.txt2img.gpt_image",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}",
+        "image.inpaint",
+        "image.inpaint.{driver}",
+        "image.inpaint.{model}"
+      ],
+      "pricing": { "currency": "USD", "estimated_cost": 0.04 },
+      "estimated_latency_ms": 5000,
+      "quality_score": 0.95
     },
     {
-      "id": "dall-e-2",
-      "api_types": ["image.txt2img"],
-      "logical_mounts": ["image.txt2img.{driver}", "image.txt2img.dalle", "image.txt2img.{model}"],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.02
-      },
-      "estimated_latency_ms": 5000
+      "id": "gpt-image-2",
+      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
+      "logical_mounts": [
+        "image.txt2img.{driver}",
+        "image.txt2img.gpt_image",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}",
+        "image.inpaint",
+        "image.inpaint.{driver}",
+        "image.inpaint.{model}"
+      ],
+      "pricing": { "currency": "USD", "estimated_cost": 0.04 },
+      "estimated_latency_ms": 5000,
+      "quality_score": 1.0
     },
     {
       "id": "text-embedding-3-large",
@@ -102,6 +84,13 @@
       "estimated_latency_ms": 800
     },
     {
+      "id": "text-embedding-ada-002",
+      "api_types": ["embedding.text"],
+      "logical_mounts": ["embedding.text", "embedding.text.{driver}", "embedding.text.{model}"],
+      "pricing": { "currency": "USD", "estimated_cost": 0.0001 },
+      "estimated_latency_ms": 800
+    },
+    {
       "id": "whisper-1",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
@@ -112,7 +101,7 @@
       "estimated_latency_ms": 5000
     },
     {
-      "id": "gpt-4o-mini-transcribe",
+      "id": "gpt-transcribe",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr", "audio.asr.{driver}", "audio.asr.{model}"],
       "pricing": {
@@ -138,16 +127,6 @@
       "pricing": {
         "currency": "USD",
         "estimated_cost": 0.03
-      },
-      "estimated_latency_ms": 3000
-    },
-    {
-      "id": "gpt-4o-mini-tts",
-      "api_types": ["audio.tts"],
-      "logical_mounts": ["audio.tts", "audio.tts.{driver}", "audio.tts.{model}"],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.015
       },
       "estimated_latency_ms": 3000
     }
