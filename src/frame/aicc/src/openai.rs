@@ -1056,19 +1056,6 @@ impl OpenAIProvider {
                 content.push_str(text);
             }
 
-            let mut resource_lines = vec![];
-            for resource in req.payload.resources.iter() {
-                resource_lines.push(Self::resource_text(resource)?);
-            }
-
-            if !resource_lines.is_empty() {
-                if !content.is_empty() {
-                    content.push('\n');
-                    content.push('\n');
-                }
-                content.push_str(resource_lines.join("\n").as_str());
-            }
-
             if !content.trim().is_empty() {
                 items.push(json!({
                     "role": "user",
@@ -1077,6 +1064,19 @@ impl OpenAIProvider {
                     ],
                 }));
             }
+        }
+
+        if !req.payload.resources.is_empty() {
+            let content = req
+                .payload
+                .resources
+                .iter()
+                .map(Self::responses_resource_part)
+                .collect::<Result<Vec<_>, _>>()?;
+            items.push(json!({
+                "role": "user",
+                "content": content,
+            }));
         }
 
         if items.is_empty() {
@@ -1102,6 +1102,55 @@ impl OpenAIProvider {
                 "type": "input_text",
                 "text": format!("named_object: {}", obj_id),
             })),
+        }
+    }
+
+    fn responses_resource_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        let mime = match source {
+            ResourceRef::Url { mime_hint, .. } => mime_hint.as_deref(),
+            ResourceRef::Base64 { mime, .. } => Some(mime.as_str()),
+            ResourceRef::NamedObject { .. } => None,
+        };
+        if mime.is_some_and(|value| value.starts_with("image/")) {
+            return Self::responses_image_part(source);
+        }
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_file",
+                "file_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
+                "type": "input_file",
+                "filename": format!("input.{}", Self::document_extension(mime)),
+                "file_data": format!("data:{};base64,{}", mime, data_base64),
+            })),
+            ResourceRef::NamedObject { obj_id } => Ok(json!({
+                "type": "input_text",
+                "text": format!("named_object: {}", obj_id),
+            })),
+        }
+    }
+
+    fn document_extension(mime: &str) -> &'static str {
+        match mime.split(';').next().unwrap_or(mime).trim() {
+            "text/plain" => "txt",
+            "text/markdown" => "md",
+            "application/pdf" => "pdf",
+            "application/msword" => "doc",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+            "application/vnd.ms-excel" => "xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+            "text/csv" => "csv",
+            "text/tab-separated-values" => "tsv",
+            "application/vnd.ms-powerpoint" => "ppt",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => "pptx",
+            "text/html" => "html",
+            "application/xml" | "text/xml" => "xml",
+            "application/json" => "json",
+            "application/yaml" | "text/yaml" => "yaml",
+            "application/rtf" | "text/rtf" => "rtf",
+            "text/x-python" => "py",
+            _ => "bin",
         }
     }
 
@@ -5856,6 +5905,49 @@ data: [DONE]
                 .pointer("/content/1/image_url")
                 .and_then(|v| v.as_str()),
             Some("data:image/png;base64,aGVsbG8=")
+        );
+    }
+
+    #[test]
+    fn responses_build_messages_appends_canonical_document_resources() {
+        let request = AiMethodRequest::new(
+            Capability::Llm,
+            ModelSpec::new("llm.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                None,
+                vec![AiMessage::text(AiRole::User, "read the document")],
+                vec![],
+                vec![ResourceRef::Base64 {
+                    mime: "application/pdf".to_string(),
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+                None,
+                None,
+            ),
+            None,
+        );
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-primary".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider should be built");
+
+        let messages = provider.build_messages(&request).expect("messages");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].pointer("/content/0/type"), Some(&json!("input_file")));
+        assert_eq!(messages[1].pointer("/content/0/filename"), Some(&json!("input.pdf")));
+        assert_eq!(
+            messages[1].pointer("/content/0/file_data"),
+            Some(&json!("data:application/pdf;base64,aGVsbG8="))
         );
     }
 

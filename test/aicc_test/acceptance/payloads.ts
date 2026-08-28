@@ -151,7 +151,7 @@ function io(
       };
     case "vision.segment":
       return {
-        input_json: { prompt: "Return structured segmentation regions for every visible foreground text or graphic region." },
+        input_json: { prompt: "Segment the prominent pink flower, yellow flower center, green stem, and green leaves. Return a non-empty JSON array with one labeled region per visible subject and normalized polygon or bounding-box coordinates." },
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "audio.tts":
@@ -163,7 +163,12 @@ function io(
         resources: [requireFixture(fixtures, "audio", apiType, representation)],
       };
     case "audio.music":
-      return { input_json: { prompt: "A four-second calm instrumental test tone" }, resources: [] };
+      return {
+        input_json: {
+          prompt: "A four-second calm ambient instrumental test tone, very slow and quiet, with no vocals, no speech, no samples, no percussion, and no dance beat",
+        },
+        resources: [],
+      };
     case "video.txt2video":
       return { input_json: { prompt: "A paper plane moving across a desk", duration_seconds: 4 }, resources: [] };
     case "video.img2video":

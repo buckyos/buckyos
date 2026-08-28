@@ -1,7 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deflateSync } from "node:zlib";
 import {
   parseToml,
   tomlBoolean,
@@ -163,60 +162,6 @@ function base64(bytes: Uint8Array): string {
 const TRANSPARENT_OCR_MASK_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAABFAAAACECAYAAAC3Z98WAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAJMSURBVHhe7cEBDQAAAMKg909tDwcEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHKsB5fwAAcDqUMkAAAAASUVORK5CYII=";
 
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
-  for (const byte of bytes) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function pngChunk(type: string, data: Uint8Array): Uint8Array {
-  const typeBytes = new TextEncoder().encode(type);
-  const result = new Uint8Array(12 + data.length);
-  const view = new DataView(result.buffer);
-  view.setUint32(0, data.length);
-  result.set(typeBytes, 4);
-  result.set(data, 8);
-  view.setUint32(8 + data.length, crc32(result.subarray(4, 8 + data.length)));
-  return result;
-}
-
-function inpaintPng(mask: boolean): Uint8Array {
-  const size = 1024;
-  const raw = new Uint8Array((size * 4 + 1) * size);
-  for (let y = 0; y < size; y++) {
-    const row = y * (size * 4 + 1);
-    for (let x = 0; x < size; x++) {
-      const offset = row + 1 + x * 4;
-      const center = x >= 320 && x < 704 && y >= 320 && y < 704;
-      raw.set(
-        mask ? [0, 0, 0, center ? 0 : 255] : center ? [210, 210, 210, 255] : [70, 125, 180, 255],
-        offset,
-      );
-    }
-  }
-  const ihdr = new Uint8Array(13);
-  const header = new DataView(ihdr.buffer);
-  header.setUint32(0, size);
-  header.setUint32(4, size);
-  ihdr.set([8, 6, 0, 0, 0], 8);
-  const chunks = [
-    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", deflateSync(raw)),
-    pngChunk("IEND", new Uint8Array()),
-  ];
-  const result = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
-
 function uniqueNamedFixture(bytes: Uint8Array, mime: string, nonce: string): Uint8Array {
   if (mime !== "video/mp4") return bytes;
   const suffix = new Uint8Array(24);
@@ -237,7 +182,7 @@ async function loadDefaultFixtures(
   uploadNamedObjects: boolean,
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
-  const fixtureRevision = "515c0f750c87b8f928ab91d543511ea499a70700";
+  const fixtureRevision = "3b89992944bc5524814fcb7373224e8ac0b5223d";
   const rawFixtureUrl = (path: string) =>
     `https://raw.githubusercontent.com/streetycat/buckyos/${fixtureRevision}/${path}`;
   const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string; url?: string }> = {
@@ -267,8 +212,16 @@ async function loadDefaultFixtures(
       mime: "application/pdf",
       url: rawFixtureUrl("test/aicc_test/fixtures/facts.pdf"),
     },
-    inpaintImage: { path: "", mime: "image/png" },
-    inpaintMask: { path: "", mime: "image/png" },
+    inpaintImage: {
+      path: join(here, "../fixtures/inpaint_image.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/aicc_test/fixtures/inpaint_image.png"),
+    },
+    inpaintMask: {
+      path: join(here, "../fixtures/inpaint_mask.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/aicc_test/fixtures/inpaint_mask.png"),
+    },
   };
   const loaded = { ...fixtures };
   const { ndm_proxy, ndn } = await import("buckyos");
@@ -321,11 +274,7 @@ async function loadDefaultFixtures(
         typeof configured.url === "string" && !/^[a-z][a-z0-9+.-]*:/i.test(configured.url)
       ? configured.url
       : undefined;
-    const bytes = kind === "inpaintImage"
-      ? inpaintPng(false)
-      : kind === "inpaintMask"
-      ? inpaintPng(true)
-      : kind === "mask"
+    const bytes = kind === "mask"
       ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
       : await Deno.readFile(configuredPath ?? fixture.path);
     loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured, fixture.url);
@@ -334,10 +283,13 @@ async function loadDefaultFixtures(
     txt: { path: join(here, "../fixtures/facts.txt"), mime: "text/plain" },
     md: { path: join(here, "../fixtures/facts.md"), mime: "text/markdown" },
     pdf: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
+    doc: { path: join(here, "../fixtures/facts.doc"), mime: "application/msword" },
     docx: { path: join(here, "../fixtures/facts.docx"), mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+    xls: { path: join(here, "../fixtures/facts.xls"), mime: "application/vnd.ms-excel" },
     xlsx: { path: join(here, "../fixtures/facts.xlsx"), mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
     csv: { path: join(here, "../fixtures/facts.csv"), mime: "text/csv" },
     tsv: { path: join(here, "../fixtures/facts.tsv"), mime: "text/tab-separated-values" },
+    ppt: { path: join(here, "../fixtures/facts.ppt"), mime: "application/vnd.ms-powerpoint" },
     pptx: { path: join(here, "../fixtures/facts.pptx"), mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
     html: { path: join(here, "../fixtures/facts.html"), mime: "text/html" },
     xml: { path: join(here, "../fixtures/facts.xml"), mime: "application/xml" },
@@ -748,7 +700,7 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "vision.segment") return ["The segmentation result corresponds to visible regions in the supplied image."];
   if (apiType === "audio.tts") return ["The speech clearly says BuckyOS test number four eight two seven."];
   if (apiType === "audio.asr") return ["The transcript faithfully represents the supplied speech audio."];
-  if (apiType === "audio.music") return ["The output is a short calm instrumental passage rather than speech or silence."];
+  if (apiType === "audio.music") return ["The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat."];
   if (apiType === "audio.enhance") return ["The output preserves the source audio while reducing noise or improving clarity."];
   if (apiType === "video.txt2video") return ["The video shows a paper plane moving across a desk."];
   if (apiType === "video.img2video") return ["The video preserves the supplied image content and adds subtle motion with a slow camera push."];
