@@ -254,7 +254,7 @@
       "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
-        "llm.gpt-sol",
+        "llm.gpt-pro",
         "llm.openai.{model}",
         "rerank",
         "rerank.openai",
@@ -292,7 +292,7 @@
       "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
-        "llm.gpt-sol",
+        "llm.gpt-pro",
         "llm.openai.{model}",
         "rerank",
         "rerank.openai",
@@ -330,7 +330,7 @@
       "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
-        "llm.gpt-terra",
+        "llm.gpt-mini",
         "llm.openai.{model}",
         "rerank",
         "rerank.openai",
@@ -368,7 +368,7 @@
       "api_types": ["llm", "rerank", "vision.ocr", "vision.caption"],
       "logical_mounts": [
         "llm.{driver}",
-        "llm.gpt-luna",
+        "llm.gpt-nano",
         "llm.openai.{model}",
         "rerank",
         "rerank.openai",
@@ -505,7 +505,8 @@
       "family": "gpt",
       "tier": "standard",
       "model_pattern": "gpt-*",
-      "exclude_tier_tokens": ["pro", "mini", "nano", "nono", "terra", "luna"],
+      "exclude_tier_tokens": ["pro", "mini", "nano", "nono", "sol", "terra", "luna"],
+      "exclude_patterns": ["gpt-5.6"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],
@@ -535,7 +536,8 @@
       "family": "gpt",
       "tier": "pro",
       "model_pattern": "gpt-*",
-      "tier_tokens": ["pro"],
+      "tier_tokens": ["pro", "sol"],
+      "tier_patterns": ["gpt-5.6"],
       "version_rank": { "prefix": "gpt" },
       "stability": {
         "unstable_tokens": ["preview", "experimental", "beta"],

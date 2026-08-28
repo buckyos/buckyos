@@ -107,7 +107,7 @@ impl ClaudeProvider {
 
         let client = Client::builder()
             .timeout(Duration::from_millis(timeout_ms))
-            .user_agent("buckyos-aicc/0.7")
+            .user_agent("Mozilla/5.0 (compatible; BuckyOS-AICC/0.7)")
             .build()
             .context("failed to build reqwest client for claude provider")?;
 

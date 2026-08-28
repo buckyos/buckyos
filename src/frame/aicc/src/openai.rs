@@ -5321,7 +5321,7 @@ data: [DONE]
 
         assert_model_mount(&inventory, "gpt-5.5", "llm", false);
         assert_model_mount(&inventory, "gpt-5.5", "llm.code", false);
-        assert_model_mount(&inventory, "gpt-5.5", "llm.gpt-standard", false);
+        assert_model_mount(&inventory, "gpt-5.5", "llm.gpt-standard", true);
         assert_model_mount(&inventory, "gpt-5.5", "llm.openai.gpt-5-5", true);
         assert!(
             inventory
@@ -5333,14 +5333,12 @@ data: [DONE]
                 .vision
         );
         assert_model_mount(&inventory, "gpt-5.5", "llm.gpt", false);
-        assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-sol", true);
+        assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-pro", false);
         assert_model_mount(&inventory, "gpt-5.6", "llm.gpt-standard", false);
-        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-sol", true);
-        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-standard", true);
-        assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-terra", true);
+        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-pro", true);
+        assert_model_mount(&inventory, "gpt-5.6-sol", "llm.gpt-standard", false);
         assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-mini", true);
         assert_model_mount(&inventory, "gpt-5.6-terra", "llm.gpt-standard", false);
-        assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-luna", true);
         assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-nano", true);
         assert_model_mount(&inventory, "gpt-5.6-luna", "llm.gpt-standard", false);
         let sol = inventory
@@ -5363,6 +5361,8 @@ data: [DONE]
             .find(|model| model.provider_model_id == "gpt-5.6-luna")
             .expect("GPT-5.6 Luna should exist");
         assert_eq!(luna.pricing.input_token, Some(0.0000002));
+        assert!(sol.attributes.quality_score > terra.attributes.quality_score);
+        assert!(terra.attributes.quality_score > luna.attributes.quality_score);
         assert_model_mount(&inventory, "gpt-5.4", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.code", false);
         assert_model_mount(&inventory, "gpt-5.4", "llm.gpt-standard", false);
@@ -5371,7 +5371,7 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.reason", false);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm", false);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.code", false);
-        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.gpt-pro", true);
+        assert_model_mount(&inventory, "gpt-5.5-pro", "llm.gpt-pro", false);
         assert_model_mount(&inventory, "gpt-5.5-pro", "llm.openai.gpt-5-5-pro", true);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.plan", false);
         assert_model_mount(&inventory, "gpt-5.4-pro", "llm.reason", false);

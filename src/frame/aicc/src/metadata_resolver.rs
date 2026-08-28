@@ -187,7 +187,11 @@ pub struct DriverVersionRule {
     #[serde(default)]
     pub tier_tokens: Vec<String>,
     #[serde(default)]
+    pub tier_patterns: Vec<String>,
+    #[serde(default)]
     pub exclude_tier_tokens: Vec<String>,
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
     #[serde(default)]
     pub version_rank: DriverVersionRankRule,
     #[serde(default)]
@@ -806,8 +810,16 @@ pub(crate) fn validate_driver_metadata_document(
             format!("version_rules[{}].tier_tokens", index).as_str(),
         )?;
         validate_string_list(
+            rule.tier_patterns.as_slice(),
+            format!("version_rules[{}].tier_patterns", index).as_str(),
+        )?;
+        validate_string_list(
             rule.exclude_tier_tokens.as_slice(),
             format!("version_rules[{}].exclude_tier_tokens", index).as_str(),
+        )?;
+        validate_string_list(
+            rule.exclude_patterns.as_slice(),
+            format!("version_rules[{}].exclude_patterns", index).as_str(),
         )?;
         validate_string_list(
             rule.auto_mounts.as_slice(),
@@ -1748,12 +1760,18 @@ fn rank_model_for_version_rule(
         .filter(|token| !token.is_empty())
         .map(|token| token.to_string())
         .collect::<HashSet<_>>();
-    if !rule.tier_tokens.is_empty()
-        && !rule
-            .tier_tokens
-            .iter()
-            .map(|token| token.to_ascii_lowercase())
-            .any(|token| tokens.contains(token.as_str()))
+    let tier_token_matches = rule
+        .tier_tokens
+        .iter()
+        .map(|token| token.to_ascii_lowercase())
+        .any(|token| tokens.contains(token.as_str()));
+    let tier_pattern_matches = rule
+        .tier_patterns
+        .iter()
+        .any(|pattern| wildcard_matches(pattern, normalized.as_str()));
+    if (!rule.tier_tokens.is_empty() || !rule.tier_patterns.is_empty())
+        && !tier_token_matches
+        && !tier_pattern_matches
     {
         return None;
     }
@@ -1762,6 +1780,13 @@ fn rank_model_for_version_rule(
         .iter()
         .map(|token| token.to_ascii_lowercase())
         .any(|token| tokens.contains(token.as_str()))
+    {
+        return None;
+    }
+    if rule
+        .exclude_patterns
+        .iter()
+        .any(|pattern| wildcard_matches(pattern, normalized.as_str()))
     {
         return None;
     }
