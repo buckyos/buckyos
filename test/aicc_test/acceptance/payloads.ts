@@ -10,6 +10,7 @@ export type ResourceFixture = ResourceRef | Partial<Record<ResourceRepresentatio
 
 export type FixtureRefs = {
   image?: ResourceFixture;
+  ocrImage?: ResourceFixture;
   mask?: ResourceFixture;
   inpaintImage?: ResourceFixture;
   inpaintMask?: ResourceFixture;
@@ -21,6 +22,7 @@ export type FixtureRefs = {
 type SingularFixtureKind = Exclude<keyof FixtureRefs, "documents">;
 
 export function requiredFixtureKinds(apiType: string): string[] {
+  if (apiType === "vision.ocr") return ["ocrImage"];
   if (apiType === "image.img2img" || apiType.startsWith("vision.")) return ["image"];
   if (apiType === "image.inpaint") return ["inpaintImage", "inpaintMask"];
   if (apiType === "image.upscale" || apiType === "image.bg_remove") return ["image"];
@@ -135,7 +137,7 @@ function io(
         input_json: {
           prompt: "Read the full BuckyOS marker exactly. It ends in four digits; distinguish the digit 8 from the letter B.",
         },
-        resources: [requireFixture(fixtures, "image", apiType, representation)],
+        resources: [requireFixture(fixtures, "ocrImage", apiType, representation)],
       };
     case "vision.caption":
       return {

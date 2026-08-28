@@ -237,12 +237,36 @@ async function loadDefaultFixtures(
   uploadNamedObjects: boolean,
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
-  const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string }> = {
-    image: { path: join(here, "../../jarvis_media_dv/assets/image_ocr.png"), mime: "image/png" },
-    mask: { path: join(here, "../fixtures/mask.png"), mime: "image/png" },
-    audio: { path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"), mime: "audio/wav" },
-    video: { path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"), mime: "video/mp4" },
-    document: { path: join(here, "../fixtures/facts.pdf"), mime: "application/pdf" },
+  const fixtureRevision = "515c0f750c87b8f928ab91d543511ea499a70700";
+  const rawFixtureUrl = (path: string) =>
+    `https://raw.githubusercontent.com/streetycat/buckyos/${fixtureRevision}/${path}`;
+  const defaults: Record<Exclude<keyof FixtureRefs, "documents">, { path: string; mime: string; url?: string }> = {
+    image: {
+      path: join(here, "../../jarvis_media_dv/assets/image_primary.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/image_primary.png"),
+    },
+    ocrImage: {
+      path: join(here, "../../jarvis_media_dv/assets/image_ocr.png"),
+      mime: "image/png",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/image_ocr.png"),
+    },
+    mask: { path: join(here, "../fixtures/mask.png"), mime: "image/png", url: rawFixtureUrl("test/aicc_test/fixtures/mask.png") },
+    audio: {
+      path: join(here, "../../jarvis_media_dv/assets/audio_speech.wav"),
+      mime: "audio/wav",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/audio_speech.wav"),
+    },
+    video: {
+      path: join(here, "../../jarvis_media_dv/assets/video_fresh.mp4"),
+      mime: "video/mp4",
+      url: rawFixtureUrl("test/jarvis_media_dv/assets/video_fresh.mp4"),
+    },
+    document: {
+      path: join(here, "../fixtures/facts.pdf"),
+      mime: "application/pdf",
+      url: rawFixtureUrl("test/aicc_test/fixtures/facts.pdf"),
+    },
     inpaintImage: { path: "", mime: "image/png" },
     inpaintMask: { path: "", mime: "image/png" },
   };
@@ -266,6 +290,7 @@ async function loadDefaultFixtures(
     bytes: Uint8Array,
     mime: string,
     configured?: ResourceFixture,
+    defaultUrl?: string,
   ): Promise<ResourceFixture> => {
     const namedBytes = uniqueNamedFixture(bytes, mime, fixtureNonce);
     const objId = ndn.ChunkId.fromMix256Result(
@@ -280,6 +305,7 @@ async function loadDefaultFixtures(
       base64: { kind: "base64", mime, data_base64: base64(bytes) },
       named_object: { kind: "named_object", obj_id: objId },
     };
+    if (defaultUrl) result.url = { kind: "url", url: defaultUrl, mime_hint: mime };
     if (configured) {
       if ("kind" in configured) result[configured.kind] = configured;
       else Object.assign(result, configured);
@@ -302,7 +328,7 @@ async function loadDefaultFixtures(
       : kind === "mask"
       ? decodeBase64(TRANSPARENT_OCR_MASK_BASE64)
       : await Deno.readFile(configuredPath ?? fixture.path);
-    loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured);
+    loaded[kind] = await variants(bytes, fixture.mime, configuredPath ? undefined : configured, fixture.url);
   }
   const documentFixtures: Record<string, { path: string; mime: string }> = {
     txt: { path: join(here, "../fixtures/facts.txt"), mime: "text/plain" },
@@ -327,6 +353,7 @@ async function loadDefaultFixtures(
       await Deno.readFile(fixture.path),
       fixture.mime,
       loaded.documents[format],
+      rawFixtureUrl(`test/aicc_test/fixtures/${fixture.path.split(/[\\/]/).at(-1)}`),
     );
   }
   return loaded;
