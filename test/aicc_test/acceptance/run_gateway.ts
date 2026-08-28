@@ -266,18 +266,20 @@ async function loadDefaultFixtures(
     mime: string,
     configured?: ResourceFixture,
   ): Promise<ResourceFixture> => {
-    const namedBytes = uniqueNamedFixture(bytes, mime);
-    const objId = ndn.ChunkId.fromMix256Result(
-      namedBytes.byteLength,
-      ndn.sha256Bytes(namedBytes),
-    ).toString();
+    let namedObject: ResourceRef | undefined;
     if (ndmProxy) {
+      const namedBytes = uniqueNamedFixture(bytes, mime);
+      const objId = ndn.ChunkId.fromMix256Result(
+        namedBytes.byteLength,
+        ndn.sha256Bytes(namedBytes),
+      ).toString();
       await ndmProxy.putChunk(objId, namedBytes);
       uploadedObjectIds.push(objId);
+      namedObject = { kind: "named_object", obj_id: objId };
     }
     const result: Partial<Record<ResourceRef["kind"], ResourceRef>> = {
       base64: { kind: "base64", mime, data_base64: base64(bytes) },
-      named_object: { kind: "named_object", obj_id: objId },
+      ...(namedObject ? { named_object: namedObject } : {}),
     };
     if (configured) {
       if ("kind" in configured) result[configured.kind] = configured;
