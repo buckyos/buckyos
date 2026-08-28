@@ -3253,6 +3253,45 @@ impl GoogleGeminiProvider {
                 })
             })
             .collect::<Vec<_>>();
+        let input_json = req.payload.input_json.as_ref();
+        let prefer_artifact = input_json
+            .and_then(|value| value.get("prefer_artifact"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || data.len() > 100
+            || input_json
+                .and_then(|value| value.get("output"))
+                .and_then(|value| value.get("resource_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "named_object")
+            || input_json
+                .and_then(|value| value.get("response_format"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| matches!(value, "object_id" | "named_object"));
+        let artifact = if prefer_artifact {
+            let artifact_body = json!({
+                "embedding_space_id": embedding_space_id.clone(),
+                "data": data.clone(),
+            });
+            let bytes = serde_json::to_vec(&artifact_body).map_err(|error| {
+                ProviderError::fatal(format!("serialize embedding artifact failed: {}", error))
+            })?;
+            Some(AiArtifact {
+                name: "embeddings.json".to_string(),
+                resource: ResourceRef::Base64 {
+                    mime: "application/json".to_string(),
+                    data_base64: general_purpose::STANDARD.encode(bytes),
+                },
+                mime: Some("application/json".to_string()),
+                metadata: Some(json!({
+                    "rows": data.len(),
+                    "dimensions": output_dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
+            })
+        } else {
+            None
+        };
         let usage = (prompt_tokens > 0)
             .then(|| AiUsage {
                 input_tokens: Some(prompt_tokens),
@@ -3276,13 +3315,21 @@ impl GoogleGeminiProvider {
         extra.insert(
             "embedding".to_string(),
             json!({
-                "data": data,
-                "embedding_space_id": embedding_space_id,
+                "data": if prefer_artifact { Value::Array(vec![]) } else { Value::Array(data.clone()) },
+                "embedding_space_id": embedding_space_id.clone(),
+                "artifact": artifact.as_ref().map(|value| json!({
+                    "name": value.name.clone(),
+                    "mime": value.mime.clone(),
+                    "rows": data.len(),
+                    "dimensions": output_dimensions,
+                    "embedding_space_id": embedding_space_id.clone(),
+                })),
                 "provider_io": { "input": provider_input, "output": provider_output },
                 "latency_ms": latency_ms
             }),
         );
         Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(None, vec![], artifact.into_iter().collect()),
             usage: Some(usage),
             cost,
             finish_reason: Some("stop".to_string()),
