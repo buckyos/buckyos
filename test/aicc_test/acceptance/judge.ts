@@ -50,10 +50,19 @@ function judgeResource(
   const hasReference = typeof source.obj_id === "string" || typeof source.url === "string" ||
     typeof source.data_base64 === "string";
   if (!hasReference) return undefined;
+  const kind = typeof source.kind === "string"
+    ? source.kind
+    : typeof source.obj_id === "string"
+    ? "named_object"
+    : typeof source.data_base64 === "string"
+    ? "base64"
+    : "url";
   const mime = source.mime_hint ?? source.mime ?? fallbackMime;
-  const normalizedSource = typeof mime === "string" && !source.mime_hint && !source.mime
-    ? { ...source, mime_hint: mime }
-    : source;
+  const normalizedSource = {
+    ...source,
+    kind,
+    ...(typeof mime === "string" && !source.mime_hint && !source.mime ? { mime_hint: mime } : {}),
+  };
   return {
     type: typeof mime === "string" && mime.startsWith("image/") ? "image" : "document",
     source: normalizedSource,

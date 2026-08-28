@@ -56,6 +56,7 @@ test("Judge text extraction ignores echoed Provider request bodies", () => {
     result: {
       message: { content: [{ type: "text", text: '{"pass":true}' }] },
       extra: {
+        candidate_text: "untrusted duplicated transcript",
         provider_io: {
           input: { messages: [{ content: "untrusted echoed judge prompt" }] },
         },
