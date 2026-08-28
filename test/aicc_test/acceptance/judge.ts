@@ -144,6 +144,7 @@ export async function runJudge(input: {
   threshold: number;
   testedRequest: unknown;
   terminalResponse: unknown;
+  observations?: unknown;
   timeoutMs: number;
   invoke: (request: Record<string, unknown>) => Promise<AiMethodResponse>;
 }): Promise<{
@@ -157,10 +158,11 @@ export async function runJudge(input: {
   const texts = responseText(input.terminalResponse).join("\n").slice(0, 4_000);
   const sourceResources = outputResources(input.testedRequest).slice(0, 4);
   const outputResourcesForJudge = outputResources(input.terminalResponse).slice(0, 4);
+  const observations = input.observations === undefined ? "<none>" : JSON.stringify(input.observations);
   const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; input_resources=${sourceResources.length}; output_resources=${outputResourcesForJudge.length}`;
   const content: Array<Record<string, unknown>> = [{
     type: "text",
-    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
+    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nArtifact audit observations:\n${observations}\nFor PNG output, alpha_min below 255 or transparent_pixels above zero is authoritative evidence of transparency even if the viewer renders it on white.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
   }];
   const resources = [...sourceResources, ...outputResourcesForJudge]
     .map((resource) => resource.source)

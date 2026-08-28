@@ -1490,6 +1490,10 @@ async function executeAcceptance(input: {
                 threshold: options.judgeMinScore,
                 testedRequest: request,
                 terminalResponse: terminal,
+                observations: artifacts.audits.map((audit) => ({
+                  label: audit.label,
+                  metadata: audit.metadata,
+                })),
                 timeoutMs: Math.min(options.timeoutMs, 180_000),
                 invoke: async (request) => await scheduler.execute("judge", async () => {
                   if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);

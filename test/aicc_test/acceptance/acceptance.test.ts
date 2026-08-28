@@ -1197,6 +1197,10 @@ test("artifact validation records media metadata", async () => {
   const pngAudit = await validateArtifactBytes(png, { id: "inline", label: "image/png" });
   assert.equal(typeof pngAudit.metadata?.width, "number");
   assert.equal(typeof pngAudit.metadata?.height, "number");
+  const transparent = new Uint8Array(await readFile(join(here, "../fixtures/transparent.png")));
+  const transparentAudit = await validateArtifactBytes(transparent, { id: "inline", label: "image/png" });
+  assert.equal(transparentAudit.metadata?.alpha_min, 0);
+  assert.equal(transparentAudit.metadata?.transparent_pixels, 1);
   const wav = new Uint8Array(await readFile(join(here, "../../jarvis_media_dv/assets/audio_speech.wav")));
   const wavAudit = await validateArtifactBytes(wav, { id: "inline", label: "audio/wav" });
   assert.equal(typeof wavAudit.metadata?.sample_rate_hz, "number");

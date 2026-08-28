@@ -3803,7 +3803,10 @@ impl OpenAIProvider {
                     if key == "prompt" || key == "model" {
                         continue;
                     }
-                    if key == "input_fidelity" && provider_model.starts_with("gpt-image-2") {
+                    if key == "input_fidelity"
+                        && (provider_model.starts_with("gpt-image-2")
+                            || provider_model.starts_with("gpt-image-1-mini"))
+                    {
                         continue;
                     }
                     if OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST.contains(&key.as_str()) {
