@@ -1626,6 +1626,10 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
     }
     if let Ok(text) = std::str::from_utf8(bytes) {
         let trimmed = text.trim_start();
+        let lowercase = trimmed
+            .get(..trimmed.len().min(256))
+            .unwrap_or(trimmed)
+            .to_ascii_lowercase();
         if trimmed.starts_with("{\\rtf") {
             return "application/rtf".to_string();
         }
@@ -1633,6 +1637,12 @@ fn infer_mime_from_bytes(bytes: &[u8]) -> String {
             && serde_json::from_str::<Value>(trimmed).is_ok()
         {
             return "application/json".to_string();
+        }
+        if lowercase.starts_with("<!doctype html")
+            || lowercase.starts_with("<html")
+            || lowercase.contains("<html")
+        {
+            return "text/html".to_string();
         }
         if trimmed.starts_with("<?xml") || trimmed.starts_with('<') {
             return "application/xml".to_string();
@@ -6220,6 +6230,10 @@ mod tests {
         assert_eq!(
             infer_mime_from_bytes(b"<?xml version=\"1.0\"?><Workbook/>"),
             "application/xml"
+        );
+        assert_eq!(
+            infer_mime_from_bytes(b"<!doctype html><html><body>marker</body></html>"),
+            "text/html"
         );
         assert_eq!(
             infer_mime_from_bytes(b"PK\x03\x04word/document.xml"),
