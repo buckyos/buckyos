@@ -93,11 +93,11 @@ max_concurrency = 2
 min_interval_ms = 500
 
 [limits.claude]
-max_concurrency = 2
+max_concurrency = 1
 min_interval_ms = 500
 
 [limits.google-gemini]
-max_concurrency = 2
+max_concurrency = 1
 min_interval_ms = 500
 
 [limits.fal]
