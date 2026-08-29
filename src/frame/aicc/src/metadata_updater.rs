@@ -2204,7 +2204,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_source_change_advances_generation_once() {
+    fn metadata_source_change_updates_source_and_advances_generation() {
         let _guard = GENERATION_TEST_LOCK.lock().unwrap();
         let settings = serde_json::json!({
             "driver_metadata_update": {
@@ -2213,16 +2213,30 @@ mod tests {
                 "interval_secs": 3600
             }
         });
+        let generation_before_configure = DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
         configure_remote_metadata_source(&settings).unwrap();
         let configured_generation = DRIVER_METADATA_GENERATION.load(Ordering::Acquire);
+        assert!(configured_generation > generation_before_configure);
+        let configured_source = CONFIGURED_SOURCE_KEY.get().unwrap().read().unwrap().clone();
+        assert_eq!(
+            configured_source,
+            Some(
+                DriverMetadataUpdateSettings::from_aicc_settings(&settings)
+                    .unwrap()
+                    .unwrap()
+                    .source_key()
+                    .unwrap()
+            )
+        );
 
         configure_remote_metadata_source(&settings).unwrap();
         assert_eq!(
-            DRIVER_METADATA_GENERATION.load(Ordering::Acquire),
-            configured_generation
+            CONFIGURED_SOURCE_KEY.get().unwrap().read().unwrap().clone(),
+            configured_source
         );
 
         configure_remote_metadata_source(&serde_json::json!({})).unwrap();
+        assert_eq!(*CONFIGURED_SOURCE_KEY.get().unwrap().read().unwrap(), None);
         assert!(DRIVER_METADATA_GENERATION.load(Ordering::Acquire) > configured_generation);
     }
 
