@@ -407,11 +407,11 @@ entry/object 标识，不能返回 `ok=true, valid=false` 让 Agent 忽略失败
 
 本模块不调用 BuckyOS service。实现由以下本地组件组成：
 
-- `src/tools/buckyos-tool/modules/pikg.ts`：五个命令、开发态 schema、Docker 本地导出、事务性快照和
+- `buckyos-websdk/cli/modules/pikg.ts`：PIKG 命令、开发态 schema、Docker 本地导出、事务性快照和
   ownership/clean 边界；
-- `src/tools/buckyos-tool/modules/pikg_protocol.ts`：五个命令共用的 App namespace、PackageMeta、对象图、
+- `buckyos-websdk/cli/modules/pikg_protocol.ts`：PIKG 命令共用的 App namespace、PackageMeta、对象图、
   content index 和离线 verifier；Object ID/Chunk ID 直接使用 WebSDK `ndn` 的规范实现；
-- `src/tools/buckyos-tool/modules/pikg_archive.ts`：确定性 tar.gz、PIKG ZIP/ZIP64 流式写入和严格读取；
+- `buckyos-websdk/cli/modules/pikg_archive.ts`：确定性 tar.gz、PIKG ZIP/ZIP64 流式写入和严格读取；
 - `src/frame/control_panel/src/pikg.rs`：Installer 侧的 PIKG reader/verifier 与安全限制。
 
 TypeScript 侧没有“构造时宽松、读取时跳过”的第二套路径：`build`、`pack` 和 `info` 都经过同一个

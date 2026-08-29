@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolvePikgCommand } from "../../tools/buckyos-tool/pikg_launcher.mjs";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 const distDir = join(rootDir, "dist");
@@ -19,12 +18,21 @@ const sdkDistDir = join(sdkPackageDir, "dist");
 const sdkTargetDir = join(distDir, "node_modules", "buckyos");
 const dappMetaDir = join(rootDir, "dapp_meta");
 const dappDistDir = join(rootDir, "dapp_dist");
+const toolPackageRoot = process.env.BUCKYOS_SDK_TOOL_PACKAGE_ROOT;
+if (!toolPackageRoot) {
+  throw new Error(
+    "BUCKYOS_SDK_TOOL_PACKAGE_ROOT must reference the extracted immutable SDK/Tool artifact",
+  );
+}
+const toolLauncher = join(toolPackageRoot, "cli", "launcher.mjs");
 const pikgName = "buckyos-systest.buckyos.bns.did-0.5.1.pikg";
 const rootfsDir = join(rootDir, "..", "..", "rootfs");
 
 function runPikgTool(args) {
-  const { command, args: spawnArgs } = resolvePikgCommand(args);
-  const result = spawnSync(command, spawnArgs, {
+  if (!existsSync(toolLauncher)) {
+    throw new Error(`missing SDK Tool package launcher: ${toolLauncher}`);
+  }
+  const result = spawnSync(process.execPath, [toolLauncher, ...args], {
     cwd: rootDir,
     stdio: "inherit",
   });

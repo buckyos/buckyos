@@ -97,6 +97,16 @@ test/**/Cargo.lock
 test/**/target/
 src/rootfs/bin/workflow/workflow
 *.codex
-src/deno.lock
-src/kernel/node_active/pnpm-lock.yaml
-src/apps/sys_test/pnpm-lock.yaml
+
+# SDK/Tool consumers are release inputs and must keep immutable dependency locks.
+!src/deno.lock
+!test/deno.lock
+!src/kernel/node_active/pnpm-lock.yaml
+!src/apps/sys_test/pnpm-lock.yaml
+!src/frame/desktop/pnpm-lock.yaml
+!test/app_installer_test/pnpm-lock.yaml
+!test/aicc_test/pnpm-lock.yaml
+!test/kevent_kmsg/dv/pnpm-lock.yaml
+!test/kevent_kmsg/restart/pnpm-lock.yaml
+!test/kevent_kmsg/task_mgr/pnpm-lock.yaml
+!test/workflow_test/pnpm-lock.yaml

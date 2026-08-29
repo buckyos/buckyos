@@ -17,6 +17,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v6
+    - name: Verify immutable SDK/Tool pins
+      run: python3 src/tools/check_sdk_tool_pins.py
     - name: Setup pnpm
       uses: pnpm/action-setup@v4
       with:

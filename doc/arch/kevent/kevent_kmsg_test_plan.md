@@ -190,7 +190,7 @@ uv run test/run.py -p kevent_kmsg/peer_vm
     "test": "deno run --allow-net --allow-read --allow-write --allow-env --unsafely-ignore-certificate-errors kevent_kmsg_dv.ts"
   },
   "dependencies": {
-    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
+    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#a8a0693d2919e766d64fe52aed5052385aef4e13"
   }
 }
 ```

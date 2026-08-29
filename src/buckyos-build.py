@@ -243,6 +243,39 @@ def main() -> int:
     print("!!! buckyos depend on cyfs-gateway, MAKE SURE YOU HAVE BUILD IT FIRST!", flush=True)
     env = _build_env(sys.argv[1:])
 
+    sdk_tool_artifact = env.get("BUCKYOS_SDK_TOOL_ARTIFACT")
+    release_manifest = env.get("BUCKYOS_SDK_TOOL_RELEASE_MANIFEST")
+    deno_binary = env.get("BUCKYOS_SDK_TOOL_DENO")
+    sbom = env.get("BUCKYOS_SDK_TOOL_SBOM")
+    if not sdk_tool_artifact or not release_manifest or not deno_binary or not sbom:
+        print(
+            "BUCKYOS_SDK_TOOL_ARTIFACT, BUCKYOS_SDK_TOOL_RELEASE_MANIFEST, "
+            "BUCKYOS_SDK_TOOL_DENO, and BUCKYOS_SDK_TOOL_SBOM are required "
+            "immutable BuckyOS build inputs."
+        )
+        return 2
+    prepare = [
+        sys.executable,
+        str(Path(__file__).parent / "tools" / "build_sdk_tool_distribution.py"),
+        "--artifact",
+        sdk_tool_artifact,
+        "--release-manifest",
+        release_manifest,
+        "--deno",
+        deno_binary,
+        "--sbom",
+        sbom,
+    ]
+    if os.name == "nt":
+        prepare.append("--windows")
+    result = subprocess.run(prepare, env=env).returncode
+    if result != 0:
+        print(f"SDK/Tool distribution build failed with return code {result}")
+        return result
+    env["BUCKYOS_SDK_TOOL_PACKAGE_ROOT"] = str(
+        Path(__file__).parent / "rootfs" / "libexec" / "buckyos-tool"
+    )
+
     result = _run_command("buckyos-build", sys.argv[1:], env=env)
     if result != 0:
         print(f"buckyos-build failed with return code {result}")

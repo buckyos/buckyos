@@ -4,15 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { resolvePikgCommand } from '../../src/tools/buckyos-tool/pikg_launcher.mjs'
 
 const execFileAsync = promisify(execFile)
 const TEST_ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 export const PIKG_SAMPLES_ROOT = path.join(TEST_ROOT, 'pikg_samples')
 export const BUCKYOS_TOOL = path.resolve(
-  process.env.BUCKYOS_TEST_TOOL_PATH ??
-    path.join(TEST_ROOT, '../../src/tools/buckyos-tool/buckyos'),
+  process.env.BUCKYOS_TEST_TOOL_PATH ?? path.join(TEST_ROOT, 'node_modules/buckyos/cli/launcher.mjs'),
 )
 
 export function dockerTarget() {
@@ -48,11 +46,11 @@ export async function runCommand(command, args, options = {}) {
 }
 
 async function runPikgTool(args) {
-  const { command, args: spawnArgs } = resolvePikgCommand(
-    ['--non-interactive', ...args],
+  const { stdout } = await runCommand(process.execPath, [
     BUCKYOS_TOOL,
-  )
-  const { stdout } = await runCommand(command, spawnArgs)
+    '--non-interactive',
+    ...args,
+  ])
   let envelope
   try {
     envelope = JSON.parse(stdout)

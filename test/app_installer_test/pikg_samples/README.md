@@ -12,8 +12,8 @@
 普通 path 类型样例可以直接构建：
 
 ```bash
-../../../src/tools/buckyos-tool/buckyos pikg build static-web/dapp_meta
-../../../src/tools/buckyos-tool/buckyos pikg pack static-web/dapp_dist
+npx buckyos pikg build static-web/dapp_meta
+npx buckyos pikg pack static-web/dapp_dist
 ```
 
 统一现场构造并离线校验全部样例：

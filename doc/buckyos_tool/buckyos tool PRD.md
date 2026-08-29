@@ -1,5 +1,9 @@
 # BuckyOS Tool PRD
 
+Distribution and immutable system packaging are specified in [distribution.md](distribution.md).
+The Rust CLI retirement gate and command coverage are tracked in
+[buckycli-coverage.md](buckycli-coverage.md).
+
 > 状态：Draft v0.5
 > 目标版本：Beta 2.2 以后
 > 命令名称：`buckyos`
@@ -398,14 +402,21 @@ token 自带的 appid/app instance、principal 和 RBAC 做授权。
 - `--yes` 只表示接受本地确认，不能替代 sudo；
 - sudo token 不得作为普通身份长期写入 profile。
 
-## 6. TS/Deno 框架架构
+## 6. TS 双 Host 框架架构
 
 ### 6.1 建议源码布局
 
 ```text
-src/tools/buckyos-tool/
+buckyos-websdk/cli/
 ├── main.ts
 ├── deno.json
+├── launcher.mjs
+├── system_bootstrap.ts
+├── system_launcher.ts
+├── runtime/
+│   ├── host.ts
+│   ├── host_node.ts
+│   └── host_deno.ts
 ├── core/
 │   ├── argv.ts
 │   ├── registry.ts
