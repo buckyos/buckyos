@@ -59,7 +59,7 @@ def main():
     users()
 
 def boot_config():
-    stdout = buckycli(["--get", "boot/config"])
+    stdout = buckyos_cli(["get", "boot/config"])
     json_data = extract_json_from_output(stdout)
     # print(json_data)
     # print(f"@context    {json_data['@context']}")
@@ -75,7 +75,7 @@ def boot_config():
 
 
 def devices():
-    stdout = buckycli(["--list", "devices"])
+    stdout = buckyos_cli(["list", "devices"])
     # json_data = extract_json_from_output(result.stdout)
     # 将stdout按行分割成数组并去掉第一行
     # 分割并过滤掉第一行和空行
@@ -87,9 +87,9 @@ def devices():
     # device下层的固定key: doc, info
     for device in devices:
         print(f"current device: {device}")
-        doc = buckycli(["--get", f"devices/{device}/doc"])
+        doc = buckyos_cli(["get", f"devices/{device}/doc"])
         assert doc != "", "doc error"
-        info = buckycli(["--get", f"devices/{device}/info"])
+        info = buckyos_cli(["get", f"devices/{device}/info"])
         json_data = extract_json_from_output(info)
         # print(json_data)
         assert json_data['@context'] == "https://www.w3.org/ns/did/v1", "@context error"
@@ -106,13 +106,13 @@ def devices():
         # print(stdout)
         # items = [line for line in stdout.split('\n')[1:] if line.strip()]
         # for item in items:
-        #     stdout = buckycli(["--get", f"devices/{device}/{item}"])
+        #     stdout = buckyos_cli(["get", f"devices/{device}/{item}"])
         #     # print(f"{"devices/{device}/{item}"}:")
         #     print(stdout)
         #     print("-------------------")
 
 def nodes():
-    stdout = buckycli(["--list", "nodes"])
+    stdout = buckyos_cli(["list", "nodes"])
     nodes = [line for line in stdout.split('\n')[1:] if line.strip()]
     print("")
     print("-------------------")
@@ -120,7 +120,7 @@ def nodes():
     # node下层的固定key: config, gateway_config
     for node in nodes:
         print(f"current node: {node}")
-        config = buckycli(["--get", f"nodes/{node}/config"])
+        config = buckyos_cli(["get", f"nodes/{node}/config"])
         config_json = extract_json_from_output(config)
         # print(f"config: {config}")
         assert 'apps' in config_json, "apps error"
@@ -132,7 +132,7 @@ def nodes():
         assert 'scheduler' in config_json['kernel'], "scheduler error"
         assert 'verify-hub' in config_json['kernel'], "verify-hub error"
 
-        gateway_config = buckycli(["--get", f"nodes/{node}/gateway_config"])
+        gateway_config = buckyos_cli(["get", f"nodes/{node}/gateway_config"])
         gateway_config_json = extract_json_from_output(gateway_config)
         # print(f"gateway_config: {gateway_config_json}")
         assert 'dispatcher' in gateway_config_json, "dispatcher error"
@@ -149,12 +149,12 @@ def services():
     print("")
     print("-------------------")
     print("-------------------")
-    gateway_settings = buckycli(["--get", f"services/gateway/settings"])
+    gateway_settings = buckyos_cli(["get", f"services/gateway/settings"])
     gateway_settings_json = extract_json_from_output(gateway_settings)
     assert 'shortcuts' in gateway_settings_json, "shortcuts error"
 
-    repo_service_config = buckycli(["--get", f"services/repo-service/config"])
-    repo_service_settings = buckycli(["--get", f"services/repo-service/settings"])
+    repo_service_config = buckyos_cli(["get", f"services/repo-service/config"])
+    repo_service_settings = buckyos_cli(["get", f"services/repo-service/settings"])
 
     repo_service_config_json = extract_json_from_output(repo_service_config)
     assert 'name' in repo_service_config_json, "name error"
@@ -167,7 +167,7 @@ def services():
     repo_service_settings_json = extract_json_from_output(repo_service_settings)
     assert 'remote_source' in repo_service_settings_json, "remote_source error"
 
-    scheduler_config = buckycli(["--get", f"services/scheduler/config"])
+    scheduler_config = buckyos_cli(["get", f"services/scheduler/config"])
     scheduler_config_json = extract_json_from_output(scheduler_config)
     assert 'name' in scheduler_config_json, "name error"
     assert 'pkg_id' in scheduler_config_json, "pkg_id error"
@@ -177,7 +177,7 @@ def services():
     assert scheduler_config_json['service_type'] == "kernel", "service_type error"
 
 
-    verify_hub_config = buckycli(["--get", f"services/verify-hub/config"])
+    verify_hub_config = buckyos_cli(["get", f"services/verify-hub/config"])
     verify_hub_config_json = extract_json_from_output(verify_hub_config)
     assert 'name' in verify_hub_config_json, "name error"
     assert 'pkg_id' in verify_hub_config_json, "pkg_id error"
@@ -186,28 +186,28 @@ def services():
     assert 'vendor_did' in verify_hub_config_json, "vendor_did error"
     assert verify_hub_config_json['service_type'] == "kernel", "service_type error" 
 
-    verify_hub_settings = buckycli(["--get", f"services/verify-hub/settings"])
+    verify_hub_settings = buckyos_cli(["get", f"services/verify-hub/settings"])
     #verify_hub_settings_json = extract_json_from_output(verify_hub_settings)
     # for service in services:
     #     print(f"service: {service}")
-    #     stdout = buckycli(["--get", f"services/{service}/config"])
+    #     stdout = buckyos_cli(["get", f"services/{service}/config"])
     #     print(stdout)
-    #     setting = buckycli(["--get", f"services/{service}/settings"])
+    #     setting = buckyos_cli(["get", f"services/{service}/settings"])
     #     print(setting)
         # items = [line for line in stdout.split('\n')[1:] if line.strip()]
         # for item in items:
-        #     stdout = buckycli(["--get", f"services/{service}/{item}"])
+        #     stdout = buckyos_cli(["get", f"services/{service}/{item}"])
         #     print(stdout)
         #     print("-------------------")
 
 def system():
-    stdout = buckycli(["--list", "system"])
+    stdout = buckyos_cli(["list", "system"])
     keys = [line for line in stdout.split('\n')[1:] if line.strip()]
     # system/rbac: [base_policy, model, policy]
     print("")
     print("-------------------")
     print("-------------------")
-    base_policy = buckycli(["--get", f"system/rbac/base_policy"])
+    base_policy = buckyos_cli(["get", f"system/rbac/base_policy"])
     base_policy_rules = []
     base_policy_group_rules =[]
     for line in base_policy.split('\n'):
@@ -219,11 +219,11 @@ def system():
             base_policy_group_rules.append(line)
     test_permission_rules(base_policy_rules, base_policy_group_rules)
 
-    model = buckycli(["--get", f"system/rbac/model"])
+    model = buckyos_cli(["get", f"system/rbac/model"])
     result = isToml(model)
     assert result == True, "system/rbac/model is not toml"
 
-    policy = buckycli(["--get", f"system/rbac/policy"])
+    policy = buckyos_cli(["get", f"system/rbac/policy"])
     policy_rules = []
     policy_group_rules =[]
     for line in policy.split('\n'):
@@ -235,21 +235,21 @@ def system():
             policy_group_rules.append(line)
     test_permission_rules(policy_rules, policy_group_rules)
 
-    system_pkgs = buckycli(["--get", f"system/system_pkgs"])
+    system_pkgs = buckyos_cli(["get", f"system/system_pkgs"])
     
 
     return
 
     for key in keys:
-        stdout = buckycli(["--list", f"system/{key}"])
+        stdout = buckyos_cli(["list", f"system/{key}"])
         items = [line for line in stdout.split('\n')[1:] if line.strip()]
         for item in items:
-            stdout = buckycli(["--get", f"system/{key}/{item}"])
+            stdout = buckyos_cli(["get", f"system/{key}/{item}"])
             # print(stdout)
             # print("-------------------")
 
 def users():
-    stdout = buckycli(["--list", "users"])
+    stdout = buckyos_cli(["list", "users"])
     users = [line for line in stdout.split('\n')[1:] if line.strip()]
     print("")
     print("-------------------")
@@ -257,21 +257,21 @@ def users():
     for user in users:
         print(f"user: {user}")
         if user == "root":
-            settings = buckycli(["--get", f"users/root/settings"])
+            settings = buckyos_cli(["get", f"users/root/settings"])
             print(f"setting: {settings}")
             print("-------------------")
             continue
-        apps = buckycli(["--list", f"users/{user}/apps"])
-        doc = buckycli(["--get", f"users/{user}/doc"])
-        settings = buckycli(["--get", f"users/{user}/settings"])
+        apps = buckyos_cli(["list", f"users/{user}/apps"])
+        doc = buckyos_cli(["get", f"users/{user}/doc"])
+        settings = buckyos_cli(["get", f"users/{user}/settings"])
         print(f"apps: {apps}")
         print(f"doc: {doc}")
         print(f"setting: {settings}")
         print("-------------------")
 
 
-def buckycli(cmd: list[str]):
-    base = ["/opt/buckyos/bin/buckycli/buckycli", "sys_config"]
+def buckyos_cli(cmd: list[str]):
+    base = ["/opt/buckyos/bin/buckyos", "--output", "json", "system-config"]
     cmd = base + cmd
     env_vars = os.environ.copy()
     env_vars['BUCKY_LOG'] = 'off'
@@ -284,8 +284,17 @@ def buckycli(cmd: list[str]):
     if result.returncode!= 0:
         print(f"(stderr):\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
-    # print(f"run `buckycli sys_config --list devices` OK, stdout: {result.returncode}")
-    return result.stdout
+    envelope = json.loads(result.stdout)
+    if not envelope.get("ok"):
+        print(f"command failed: {envelope}", file=sys.stderr)
+        sys.exit(1)
+    data = envelope["data"]
+    if cmd[len(base)] == "get":
+        return data["text"]
+    if cmd[len(base)] == "list":
+        return "items:\n" + "\n".join(data["items"])
+    # print(f"run `buckyos system-config list devices` OK, stdout: {result.returncode}")
+    return json.dumps(data)
 
 def isToml(content: str):
     try:

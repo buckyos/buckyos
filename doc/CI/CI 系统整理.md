@@ -87,7 +87,7 @@ Windows / OSX 平台通过BuckyOS Desktop Service分发
 
 平台: Windows,OSX, Android
 
-### Buckycli (buckyos-devkit?)
+### BuckyOS Tool
 
 面向开发者的开发环境构建？这个需要设计
 

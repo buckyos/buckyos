@@ -1178,8 +1178,6 @@ def generate_nsis_script(
                 hook_rel=post_hook.relative_to(comp_payload).as_posix().replace("/", "\\"),
                 step="postinstall",
             )
-            if comp.key == "buckycli":
-                lines.append('  SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000')
         
         # Save each component's install directory to registry for uninstall
         lines.append(f'  WriteRegStr HKCU "Software\\BuckyOS" "InstDir_{comp.key}" "${var_name}"')

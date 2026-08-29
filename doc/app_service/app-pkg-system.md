@@ -34,7 +34,7 @@ exec(pkg_dir.join("start.sh"))
 
 如果简单的在一个严格模式的env里安装版本
 - 将一个目录初始化成严格模式的env
-- 在该目录调用 buckycli install_pkg $local_pkg_path ,将一个已经下载好的的包安装到该目录
+- 由 installer 拥有的 PackageEnv API 将已下载的包安装到该目录
 - install_pkg有3种模式： 
 本地目录模式 / 本地包模式 
 url模式
@@ -42,21 +42,21 @@ url模式
 
 创建一个pkg:
 在一个目录中放置一个meta文件即可，构造后基于该meta文件可以得到未签名，但已经包含了压缩包chunkid的正确的pkg meta
-将这个.json文件和压缩包放在一起，已经可以使用buckycli工具将其安装到任意env
+将这个.json文件和压缩包放在一起，即可由 installer 的 PackageEnv API 安装到任意 env。
 
 发布pkg
 1. 对pkg meta签名
 2. 将pkg meta发布到一个 源的meta-db里去
 
 随后install_pkg就可以基于该源的查询结果来完成可信的remote pkg安装工作
-对于”pkg"的最新版本查询这种操作，buckycli可选择相信‘源服务器'返回的结果，也可以先将源的meta-db下载到本地，再基于一个确定的本地db进行查询。（减少`源服务器`所需要支持的查询网络接口)
+对于”pkg"的最新版本查询，PackageEnv 可选择相信‘源服务器'返回的结果，也可以先将源的 meta-db 下载到本地，再基于一个确定的本地 db 进行查询。（减少`源服务器`所需要支持的查询网络接口)
 
 
 
 ## 自动升级的基本逻辑
 1. 检查循环不断检查“目标版本是否安装”
 2. 当检查依赖的meta-db升级后，原有的版本不再是最新版本，因此会导致条件1触发
-3. 触发后会执行安装，逻辑类似buckycli install
+3. 触发后会通过 PackageEnv 执行安装
 4. 安装后的启动方法有两种
 - 系统重启，导致所有pkg重新load,自然就加载到了新版本
 - 安装检查通过后，进入“状态检查“，模块自己实现的状态检查脚本能发现”当前版本没执行“而调用start,并在start种先杀死了旧版本
@@ -417,7 +417,6 @@ async fn load_strictly(&self, pkg_id_str: &str) -> PkgResult<MediaInfo> {
     
 
         
-
 
 
 

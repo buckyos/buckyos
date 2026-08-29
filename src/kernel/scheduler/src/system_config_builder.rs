@@ -639,20 +639,6 @@ impl SystemConfigBuilder {
                 "nightly-apple-aarch64.node_daemon".to_string(),
                 "no".to_string(),
             ),
-            ("nightly-linux-amd64.buckycli".to_string(), "no".to_string()),
-            (
-                "nightly-linux-aarch64.buckycli".to_string(),
-                "no".to_string(),
-            ),
-            (
-                "nightly-windows-amd64.buckycli".to_string(),
-                "no".to_string(),
-            ),
-            ("nightly-apple-amd64.buckycli".to_string(), "no".to_string()),
-            (
-                "nightly-apple-aarch64.buckycli".to_string(),
-                "no".to_string(),
-            ),
         ]);
         self.insert_json("services/repo-service/pkg_list", &pkg_list)?;
         Ok(self)

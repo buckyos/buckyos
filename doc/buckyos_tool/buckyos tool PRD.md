@@ -789,7 +789,7 @@ Apply 还必须验证 operation 未过期、revision 和目标当前状态，避
 - mock 单测和至少一个真实 DV 用例；
 - 模块文档状态更新。
 
-### Phase 4：淘汰 buckycli
+### Phase 4：淘汰 buckycli（已完成）
 
 - 建立旧线上功能到新命令的覆盖矩阵；
 - 包安装入口切换到 `buckyos`；

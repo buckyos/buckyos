@@ -30,9 +30,6 @@ modules:
   repo_service:
     type: rust
     name: repo_service
-  buckycli:
-    type: rust
-    name: buckycli
   node_active:
     type: web
     name: node_active
@@ -91,7 +88,6 @@ apps:
       #control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       repo_service: bin/repo-service/
-      buckycli: bin/buckycli/
       node_active: bin/node-active/
       aicc: bin/aicc/
       msg_center: bin/msg-center/
@@ -137,15 +133,6 @@ apps:
     - logs/
     - etc/                # 系统配置 (删除前自动执行身份备份)
 
-  buckycli:
-    name: buckycli
-    rootfs: rootfs/bin/buckycli/
-    default_target_rootfs: "~/buckycli/"
-    modules:
-      buckycli: buckycli
-    data_paths: []
-    clean_paths: []
-
 rust_env:
   OPENSSL_STATIC: '1'
 
@@ -172,12 +159,6 @@ publish:
         default_selected: true
         src: BuckyOS.app # PUBLISH_DIR/$appname/BuckyOS.app
         default_target: "/Applications/BuckyOS.app"
-      buckycli:
-        name: BuckyOS CLI
-        type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/
-        optional: true
-        default_selected: true
-        default_target: "/usr/local/bin/"
       buckyos:
         name: BuckyOS Desktop Service
         type: app #基于本文件定义的app src rootfs is PUBLISH_DIR/$appname/
@@ -197,12 +178,6 @@ publish:
         default_selected: true
         src: buckyosapp.exe # PUBLISH_DIR/$appname/buckyosapp.exe
         default_target: "C:\\BuckyOS\\BuckyOSApp" #window下运行用户选择安装位置
-      buckycli:
-        name: BuckyOS CLI
-        type: app
-        optional: true
-        default_selected: true
-        default_target: "%USERPROFILE%\\buckycli\\" #window下运行用户选择安装位置
       buckyos:
         name: BuckyOS Desktop Service
         type: app

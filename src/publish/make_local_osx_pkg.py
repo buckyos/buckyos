@@ -11,7 +11,7 @@ It reads:
 - `apps.buckyos.*` for local install/update/uninstall on a directory.
 - `publish.macos_pkg.apps.*` for macOS distribution package components.
 
-Before make pkg,make sure already build the latest buckyos-app, buckycli and buckyos.
+Before making a pkg, make sure the latest BuckyOSApp and buckyos service have been built.
 - uv run ./src/buckyos-build.py && uv run buckyos-install --all --target-rootfs=/opt/buckyosci/buckyos && cd src && deno task make_config release --rootfs /opt/buckyosci/buckyos
 - copy BuckyOS.app to /opt/buckyosci/BuckyOSApp/BuckyOS.app
 """
@@ -431,7 +431,7 @@ def _write_distribution_xml(
     lines.append(f"  <title>{_xml_escape(title)}</title>")
     lines.append('  <options customize="always" />')
     # Docker availability is checked by buckyos_preinstall, so BuckyOSApp-only
-    # or buckycli-only installs are not blocked by a global Distribution check.
+    # installs are not blocked by a global Distribution check.
 
     # Optional HTML screens (if present in resources).
     for tag, filename in (("welcome", "welcome.html"), ("license", "license.html"), ("conclusion", "conclusion.html")):

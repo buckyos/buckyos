@@ -90,7 +90,7 @@ uv run ./src/publish/make_local_rpm.py build-pkg amd64 0.5.1+build260115 \
 
 - 清理并重建 `BUCKYOS_BUILD_ROOT`
 - 按 `publish.*_pkg.apps.*.deps` 构建外部 `buckyos_project` 依赖，并安装到对应组件 staging 目录
-- 构建并安装 `buckycli`、`buckyos`
+- 构建并安装 `buckyos`（其中包含系统 Tool `bin/buckyos`）
 - 在 `src/` 目录执行 `deno task make_config release --rootfs <staged_rootfs>`
 - 按约定在 BuckyOS 同层目录查找并构建桌面端项目：
   `../cyfs-gateway`、`../BuckyOSApp`

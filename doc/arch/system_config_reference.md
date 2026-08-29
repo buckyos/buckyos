@@ -124,7 +124,7 @@ verify-hub 的私钥不在 `services/verify-hub/settings`，而在 `security/ver
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
 | `services/repo-service/settings` | `RepoServiceSettings`，包含 `remote_source` 和 `enable_dev_mode`。 | scheduler 初始化 | repo-service 读取远端 repo source 和开发模式。 |
-| `services/repo-service/pkg_list` | 平台包更新状态表。初始化时 node-daemon、buckycli 相关包状态为 `"no"`。 | scheduler 初始化 | repo-service / 包管理流程使用。 |
+| `services/repo-service/pkg_list` | 平台包更新状态表。初始化时 node-daemon 相关包状态为 `"no"`。 | scheduler 初始化 | repo-service / 包管理流程使用。 |
 
 ### control-panel
 
@@ -168,7 +168,7 @@ AI provider 的运行时主配置仍是 `services/aicc/settings`；`services/con
 | `system/scheduler/install_plan_executions/<execution_key>` | `InstallPlanExecutionRecord`，保存 claim、commit point、registry/spec revision、错误和幂等结果。 | scheduler | submit/status/cancel/retry、重启恢复和 CAS 冲突处理。 |
 | `system/system_pkgs` | 系统包信息。当前初始化为空对象。 | scheduler 初始化 | 包管理保留路径。 |
 | `security/verify-hub/key` | verify-hub 私钥 PEM。 | scheduler 初始化 | verify-hub 启动时读取，用于 token 签发。敏感数据。 |
-| `system/rbac/policy` | Casbin policy 文本。包含初始策略、用户角色、节点角色、服务/app/kernel 分组等。 | scheduler 初始化和重建；control-panel 用户流程会追加用户分组；buckycli 旧流程会追加 app 分组 | system-config RBAC、verify-hub / 权限判断。 |
+| `system/rbac/policy` | Casbin policy 文本。包含初始策略、用户角色、节点角色、服务/app/kernel 分组等。 | scheduler 初始化和重建；control-panel 用户流程会追加用户分组 | system-config RBAC、verify-hub / 权限判断。 |
 | `system/scheduler/snapshot` | scheduler 内部 `NodeScheduler` 状态快照。 | scheduler | scheduler 重启后恢复调度状态。 |
 
 `system/rbac/policy` 是动态派生 key。scheduler 会根据当前用户、设备、service spec、app spec 重新生成动态 tail，因此不应把手工追加内容当作长期稳定来源。

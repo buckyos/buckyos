@@ -104,16 +104,16 @@ class PackageCommonTests(unittest.TestCase):
     def test_source_path_for_windows_exe_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "root"
-            source_root_override = Path(td) / "stage" / "buckycli"
-            exe = source_root_override / "buckycli.exe"
+            source_root_override = Path(td) / "stage" / "tool"
+            exe = source_root_override / "tool.exe"
             exe.parent.mkdir(parents=True)
             exe.write_bytes(b"exe")
 
             self.assertEqual(
                 common.source_path_for(
                     source_rootfs=root,
-                    rel="buckycli",
-                    item_source_paths={"buckycli": str(source_root_override / "buckycli")},
+                    rel="tool",
+                    item_source_paths={"tool": str(source_root_override / "tool")},
                     source_root_override=source_root_override,
                     windows=True,
                 ),
@@ -123,18 +123,18 @@ class PackageCommonTests(unittest.TestCase):
     def test_source_path_for_does_not_add_exe_on_non_windows(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "root"
-            exe = root / "buckycli.exe"
+            exe = root / "tool.exe"
             exe.parent.mkdir(parents=True)
             exe.write_bytes(b"exe")
 
             self.assertEqual(
                 common.source_path_for(
                     source_rootfs=root,
-                    rel="buckycli",
+                    rel="tool",
                     item_source_paths={},
                     windows=False,
                 ),
-                root / "buckycli",
+                root / "tool",
             )
 
     def test_unexpected_payload_paths(self) -> None:

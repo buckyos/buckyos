@@ -86,7 +86,7 @@ Verify Hub 的 `login_by_jwt` 会验证断言的签名、过期时间、`sub`、
 
 | RuntimeType | 典型进程 | 登录材料来源 | 使用者要注意 |
 | --- | --- | --- | --- |
-| `AppClient` | buckycli、桌面外部客户端、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | 客户端通常没有本机 node-gateway，必须能找到 zone host/boot config |
+| `AppClient` | BuckyOS Tool、桌面外部客户端、Deno/TS client | `BUCKYOS_APPCLIENT_SESSION_TOKEN`，或本地 user config + user private key | 客户端通常没有本机 node-gateway，必须能找到 zone host/boot config |
 | `AppService` | 用户安装的 app service | `BUCKYOS_APP_DID/APP_ID/APP_INSTANCE_ID/OWNER_USER_ID/DATA_DIR/APP_TOKEN` | 固定身份变量必须完整且互相一致；不要用 app-service 自己的 token 冒充页面用户 |
 | `FrameService` | frame 系统服务 | 设备配置和 `<SERVICE>_SESSION_TOKEN` | `login()` 后会加载 RBAC 和 trust keys |
 | `KernelService` | scheduler、task-manager 等 kernel service | `<APP>_SESSION_TOKEN`、`BUCKYOS_THIS_DEVICE` 等启动环境 | 使用所在 DeviceId 作为主体；通常由 node-daemon/boot 流程准备；不会自动读设备私钥 |

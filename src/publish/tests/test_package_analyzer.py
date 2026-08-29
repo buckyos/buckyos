@@ -42,7 +42,7 @@ class PackageAnalyzerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             direct = root / "buckyos-linux-amd64-0.6.0+build260529.deb"
-            nested = root / "payload" / "buckycli.exe"
+            nested = root / "payload" / "tool.exe"
             direct.write_bytes(b"deb")
             nested.parent.mkdir()
             nested.write_bytes(b"exe")
@@ -272,10 +272,10 @@ class PackageAnalyzerTests(unittest.TestCase):
 
             def fake_run_capture(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
                 out_dir = Path(cmd[cmd.index("-C") + 1])
-                comp_dir = out_dir / "buckycli.pkg"
+                comp_dir = out_dir / "tool.pkg"
                 comp_dir.mkdir()
                 (comp_dir / "PackageInfo").write_text(
-                    '<pkg-info identifier="ai.buckyos.buckycli" version="0.6.0"/>',
+                    '<pkg-info identifier="ai.buckyos.tool" version="0.6.0"/>',
                     encoding="utf-8",
                 )
                 (comp_dir / "Scripts").write_bytes(scripts_archive)

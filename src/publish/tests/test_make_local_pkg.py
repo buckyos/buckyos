@@ -304,7 +304,6 @@ class MakeLocalPkgManifestTests(unittest.TestCase):
             calls[0],
             [
                 "buckyos-build",
-                "--app=buckycli",
                 "--app=buckyos",
                 "--target=x86_64-unknown-linux-gnu",
                 f"--timings-dir={root / 'timings' / 'linux' / 'amd64' / 'buckyos'}",

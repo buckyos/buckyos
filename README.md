@@ -81,9 +81,9 @@ uv run ./buckyos-install.py --all
 
 Keep the `buckyos-install.py --all` step for a first source installation or when you need a full refresh of the installed rootfs data/config/module layout. For normal development after BuckyOS has already been installed, `uv run ./buckyos-build.py` is the usual "compile and update installed rootfs" command.
 
-If BuckyOS is already running, `buckyos-build.py` may try to overwrite running binaries such as `bin/node-daemon/node_daemon`. Stop the local runtime before updating installed artifacts. During the current transition period, `src/stop.py` only kills known process names and does not disable host service managers or keepalive launchers, so a service-managed `node_daemon` may be restarted automatically. The replacement path is `buckycli node stop` / `buckycli node restart`, but this command family is still being validated.
+If BuckyOS is already running, `buckyos-build.py` may try to overwrite running binaries such as `bin/node-daemon/node_daemon`. Stop the local runtime before updating installed artifacts. `src/stop.py` only kills known process names and does not disable host service managers or keepalive launchers, so a service-managed `node_daemon` may be restarted automatically. Stop the host-managed service through the platform installer or service manager before updating it.
 
-Be especially careful when developing on a machine that also has the BuckyOS Desktop edition installed. A source development rootfs and a Desktop-managed BuckyOS runtime can compete for the same root, service registration, ports, and running processes. The newer `buckycli node ...` commands are intended to detect and handle the common conflicts, but the safer workflow is to keep source development and BuckyOS Desktop testing in separate environments. For example, run the Desktop edition in a dedicated VM and keep the host machine for source development.
+Be especially careful when developing on a machine that also has the BuckyOS Desktop edition installed. A source development rootfs and a Desktop-managed BuckyOS runtime can compete for the same root, service registration, ports, and running processes. Keep source development and BuckyOS Desktop testing in separate environments. For example, run the Desktop edition in a dedicated VM and keep the host machine for source development.
 
 ### Step 3. Start buckyos
 

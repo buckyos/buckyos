@@ -43,19 +43,8 @@ jobs:
               run: tar -xvf rootfs.tar
             - name: check rootfs
               run: ls -l ./src/rootfs
-            - name: Download Tools
-              uses: actions/download-artifact@v4
-              with:
-                name: buckyos-tools-macos-aarch64-${{inputs.version}}-${{ inputs.build_time }}
-                github-token: ${{ secrets.GITHUB_TOKEN }}
-                run-id: ${{inputs.run_id}}
-                path: tools
-            - name: Prepare Tools
-              run: chmod +x ./tools/*
             - name: prepare pkg
               run: python3 scripts/make_pkg.py --channel=nightly --version=${{inputs.version}} --builddate=${{inputs.build_time}} --no-build
-              env:
-                BUCKYCLI_PATH: ${{github.workspace}}/tools/buckycli
               working-directory: ./src
             - name: build pkg
               uses: joncrain/munkipkg-action@v1.5

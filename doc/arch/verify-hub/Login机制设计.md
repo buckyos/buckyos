@@ -67,7 +67,7 @@ BuckyOS 是 NetworkOS，典型分布式系统。系统在安全与可用性之�
 * **Scheduler**：boot 阶段调度器；完成初始调度与首次 system-config 写入；构造 stream URL 并携带 target service id。
 * **Gateway / node-gateway**：zone 外请求入口；处理 rtcp（可视为强制 client 证书的 TLS）；根据 did-doc/owner/group 做入口层防护与鉴权衔接；最终业务鉴权由目标服务或 api-runtime 完成。
 * **Service**：业务服务实例；启动时通过 bootstrap JWT 换票；运行期 refresh。
-* **User 客户端（Web/buckycli）**：通过账号密码登录；持有 refresh token 维持登录态。
+* **User 客户端（Web/BuckyOS Tool）**：通过账号密码登录；持有 refresh token 维持登录态。
 
 ---
 
@@ -346,7 +346,7 @@ sequenceDiagram
 
 ### 11.3 User 登录（BY_PASSWD）
 
-* 用户通过交互式客户端（Web/buckycli）调用 `login_by_passwd`
+* 用户通过交互式客户端（Web/BuckyOS Tool）调用 `login_by_passwd`
 * verify-hub 返回 token-pair
 * refresh token 用于维持登录态（7 天）
 
@@ -476,4 +476,3 @@ g, su_alice, sudo
 2. **system-config 写权限收口**：当前未实现；需在稳定态限制 device-key 的写能力。
 
 ---
-

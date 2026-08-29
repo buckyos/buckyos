@@ -52,13 +52,12 @@
 // - 证明用户数据完整性。当前版本只能给出“未发现明显风险 / 未检查 / 风险未知”等本机信号。
 //
 // 典型消费者：
-// - `buckycli node check/start/stop/restart`
 // - BuckyOS Desktop 安装器、卸载器、升级器
 // - BuckyOS Desktop / tray 的本机服务管理入口
 // - recovery system / diagnostic gateway 的本机动作入口
 //
 // 推荐入口：
-// - Host OS 侧入口：native helper / buckycli / desktop helper 直接调用 node_control 实现。
+// - Host OS 侧入口：native helper / installer / desktop helper 直接调用 node_control 实现。
 // - BuckyOS 运行中增强入口：`/kapi/node-daemon` 下的 `node.*` 方法。
 // - 最小诊断入口：`/diag/v1/node/*` 只暴露只读子集或 last status，不依赖完整 BuckyOS。
 //
@@ -643,22 +642,11 @@
 // - Rollback
 //
 // =============================================================================
-// 10. buckycli 映射
+// 10. Host 生命周期入口
 // =============================================================================
 //
-// 推荐命令：
-// - buckycli node check --level standard --json
-// - buckycli node start
-// - buckycli node ensure-running --mode activation
-// - buckycli node stop --mode graceful --json
-// - buckycli node stop --mode graceful-then-force --timeout 30 --json
-// - buckycli node stop --mode kill-all --dev --json
-// - buckycli node restart --wait healthy --json
-//
-// 旧脚本兼容：
-// - `src/check.py` => buckycli node check --level standard
-// - `src/start.py` => buckycli node ensure-running --mode activation --update
-// - `src/stop.py`  => buckycli node stop --mode kill-all --dev
+// 生产环境由 installer / updater / service manager 调用 host lifecycle API。
+// 源码开发环境仍使用 `src/check.py`、`src/start.py` 和 `src/stop.py`。
 //
 // =============================================================================
 // 11. 仍需确认的问题

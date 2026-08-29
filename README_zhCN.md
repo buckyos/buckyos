@@ -82,9 +82,9 @@ uv run ./buckyos-install.py --all
 
 首次源码安装，或需要完整刷新已安装 rootfs 的数据、配置和模块布局时，请保留 `buckyos-install.py --all` 这一步。BuckyOS 已安装后的日常开发中，`uv run ./buckyos-build.py` 通常就是“编译并更新已安装 rootfs”的常用命令。
 
-如果 BuckyOS 已经在运行，`buckyos-build.py` 可能会尝试覆盖正在运行的二进制，例如 `bin/node-daemon/node_daemon`。更新已安装产物前应先停止本机 runtime。当前过渡期里，`src/stop.py` 只是按已知进程名 kill，不会停用 host service manager 或 keepalive launcher，因此被服务管理的 `node_daemon` 可能会自动拉起。后续替代路径是 `buckycli node stop` / `buckycli node restart`，但这组命令仍在验证中。
+如果 BuckyOS 已经在运行，`buckyos-build.py` 可能会尝试覆盖正在运行的二进制，例如 `bin/node-daemon/node_daemon`。更新已安装产物前应先停止本机 runtime。`src/stop.py` 只是按已知进程名 kill，不会停用 host service manager 或 keepalive launcher，因此被服务管理的 `node_daemon` 可能会自动拉起。更新 host 托管的服务前，应先通过对应平台的安装器或服务管理器停止它。
 
-如果开发机器上同时安装了 BuckyOS Desktop 版本，需要特别小心。源码开发 rootfs 和 Desktop 管理的 BuckyOS runtime 可能争用同一个 rootfs、服务注册、端口和运行进程。新的 `buckycli node ...` 命令设计上会识别并处理常见冲突，但更稳妥的工作方式是把源码开发环境和 BuckyOS Desktop 测试环境分开。例如把 Desktop 版本跑在独立 VM 中，把宿主机留给源码开发。
+如果开发机器上同时安装了 BuckyOS Desktop 版本，需要特别小心。源码开发 rootfs 和 Desktop 管理的 BuckyOS runtime 可能争用同一个 rootfs、服务注册、端口和运行进程。应把源码开发环境和 BuckyOS Desktop 测试环境分开。例如把 Desktop 版本跑在独立 VM 中，把宿主机留给源码开发。
 
 ### Step 3. 启动 buckyos
 

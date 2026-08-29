@@ -18,7 +18,7 @@
 | `src/kernel/sys_config_service/src/zone_did_resolver.rs` | Zone 内 DID resolver，挂在 system-config service 上，提供 HTTP DID 查询入口 |
 | `src/kernel/scheduler/src/system_config_builder.rs` | 首次 boot 时生成 `boot/config`、默认用户 doc、默认 agent doc、默认 device doc |
 | `src/kernel/node_active/active_lib.ts` | 激活时生成设备 key，并构造 `did:dev:<device_public_key.x>` |
-| `src/tools/buckycli/src/did.rs` | 创建 OwnerConfig、DeviceConfig、ZoneBootConfig 的开发工具入口 |
+| `src/make_config.ts` | 开发环境的 Owner、Device 和 Zone 身份配置构造入口 |
 | `src/rootfs/local/did_docs/*.doc.json` | 构建时缓存的内置 AppDoc / DID doc |
 | `doc/arch/gateway/zone-boot-config与zone-gateway.md` | DNS TXT `BOOT` / `PKX` / `DEV` 与 ZoneBootConfig 的详细设计 |
 | `doc/arch/02_boot_and_activation.md` | activation -> ZoneBootConfig -> `boot/config` -> trust keys 的启动主链路 |
@@ -61,7 +61,7 @@ did:web -> 兼容现有 Web host / DNS / .well-known 发现
 
 `OwnerConfig` 是顶层 owner 的 DID Document。当前构造入口包括：
 
-- `src/tools/buckycli/src/did.rs` 的 `OwnerConfig::new(...)`
+- `src/make_config.ts` 的身份配置构造流程
 - `src/kernel/scheduler/src/system_config_builder.rs` 的 `add_user_doc(...)`
 
 最小设计视图：
@@ -804,4 +804,3 @@ did:bns:bob在 OwnerConfig中配置 face url (cyfs:///$objid) 和 binded zone: d
 
 通过 https://bob.zhicong.me/.well-known/doc.json 也能得到一个非上链的profile(UserInfo),可以定义更多的实时信息
 如果通过 http://bob.zhicong.me/.well-known/doc.json 访问，这个就必须是一个JWT（有必要的签名），密钥用的是 key@zone
-

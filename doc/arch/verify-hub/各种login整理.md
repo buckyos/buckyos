@@ -105,7 +105,7 @@ Service使用的login流程
   - verify-hub public key
 
 
-## User (Web/buckycli)
+## User (Web/BuckyOS Tool)
 
 LOGIN_TYPE : BY_PASSWOAR 
 SUDO_LOGIN_TYPE : BY_JWT
@@ -164,7 +164,7 @@ kid（Key ID）：签名密钥标识（放在 JWT header 里，告诉验证方�
   - 先做 token 验签/过期检查
   - RBAC enforce：先用普通 `userid` 尝试，失败再用 `su_xxx`（或反之，按你文档的期望）
   - 防止 sudo token 被当作普通 session token 滥用（明确 token_use / iss / kid 规则）
-- 给出最小可验证用例（buckycli 或 test crate）：普通用户访问被拒 + sudo 放行
+- 给出最小可验证用例（BuckyOS Tool 或 test crate）：普通用户访问被拒 + sudo 放行
 
 2) **Review web-sdk 的登录/鉴权链路（与 verify-hub 协议对齐）**
 - 盘点 web-sdk 实际调用的 verify-hub RPC 方法（`login_by_password` / `login_by_jwt` / `verify_token`），确认没有走废弃/不存在的 `login`
@@ -198,4 +198,3 @@ kid（Key ID）：签名密钥标识（放在 JWT header 里，告诉验证方�
   - runtime 的 trust key refresh 逻辑按 `runtime_type` 控制：service 类 runtime 不能引入 device key（或必须显式 allowlist）
   - 服务端 enforce/verify 层明确校验 `iss/token_use/aud`（至少对 session_token 要求 `iss=verify-hub` + `token_use=session`）
 - 输出：按 runtime_type 的鉴权矩阵（允许哪些 kid/iss/token_use），以及对应实现点
-

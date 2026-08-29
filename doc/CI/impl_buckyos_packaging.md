@@ -120,7 +120,6 @@ version                 可选；不传时从 node_daemon --version 获取
 - `apps.buckyos.modules`
 - `apps.buckyos.data_paths`
 - `apps.buckyos.clean_paths`
-- `apps.buckycli.*`
 
 这些字段既描述构建/安装项目，也描述安装包的文件覆盖语义。为了避免同一份文件清单在两个配置文件中重复维护，理想实现继续使用 `src/bucky_project.yaml` 作为安装包产品定义来源，不新增完整的 `buckyos_package.yaml`。
 
@@ -162,7 +161,8 @@ apps:
     default_target_rootfs: "${BUCKYOS_ROOT}"
     modules:
       node_daemon: bin/node-daemon/
-      buckycli: bin/buckycli/
+      buckyos-tool-bin: bin/buckyos
+      buckyos-tool: libexec/buckyos-tool/
       # 其余 modules 按现有 src/bucky_project.yaml 的 modules 列表维护。
     data_paths:
       - etc/node_gateway_info.json
@@ -176,15 +176,6 @@ apps:
       - local/
       - logs/
       - etc/
-
-  buckycli:
-    name: buckycli
-    rootfs: rootfs/bin/buckycli/
-    default_target_rootfs: "~/buckycli/"
-    modules:
-      buckycli: buckycli
-    data_paths: []
-    clean_paths: []
 
 publish:
   macos_pkg:
@@ -206,12 +197,6 @@ publish:
           cyfs-gateway:
             type: buckyos_project
             source: "../../cyfs-gateway/src"
-      buckycli:
-        name: buckycli
-        type: app
-        optional: true
-        default_selected: true
-        default_target: "/usr/local/bin/"
 
   win_pkg:
     apps:
@@ -233,13 +218,6 @@ publish:
           cyfs-gateway:
             type: buckyos_project
             source: "../../cyfs-gateway/src"
-      buckycli:
-        name: buckycli
-        type: app
-        optional: true
-        default_selected: true
-        default_target: "%USERPROFILE%\\buckycli\\"
-
   linux_pkg:
     apps:
       buckyos:
@@ -262,8 +240,8 @@ publish:
 - `apps.buckyos.clean_paths` 是卸载时必须删除的运行缓存、临时数据或可再生状态路径。
 - `publish.macos_pkg.apps`、`publish.win_pkg.apps` 和 `publish.linux_pkg.apps` 描述各平台安装包组件和 payload 入口。
 - Linux deb/rpm 共用 `publish.linux_pkg.apps`。Linux 没有交互式组件选择，`optional` 和 `default_selected` 只用于配置结构一致性和校验，不驱动安装行为。
-- Linux 固定生成一个系统包，安装 `publish.linux_pkg.apps` 中声明的适用 app；当前为 `buckyos` service，`buckycli` 通过 `apps.buckyos.modules.buckycli` 随 service payload 进入 `/opt/buckyos/`。
-- Windows/macOS 中三个组件均为可选且默认选中；静默安装忽略组件选择，默认安装全部适用组件。
+- Linux 固定生成一个系统包，安装 `publish.linux_pkg.apps` 中声明的 `buckyos` service；系统 Tool 作为 `apps.buckyos.modules` 的一部分进入 `/opt/buckyos/`。
+- Windows/macOS 中两个组件均为可选且默认选中；静默安装忽略组件选择，默认安装全部适用组件。
 - `publish.*_pkg.apps.*.deps` 描述仅在打包阶段参与 staging 准备或 manifest 合并的上游项目来源，不直接等同于 `apps.*.modules` 的 `overwrite` module 规则。
 - `deps.*.source` MUST 按当前 `bucky_project.yaml` 所在目录解析。当前 BuckyOS 仓库的 `src/bucky_project.yaml` 中，同层仓库 `cyfs-gateway/src` 应写为 `../../cyfs-gateway/src`。
 - `deps` 的 key MUST 作为 `type: buckyos_project` 依赖项目中的 app 名使用。例如 `deps.cyfs-gateway` 表示在依赖项目中安装和合并 `apps.cyfs-gateway`。
@@ -284,7 +262,7 @@ publish:
 - `publish.*_pkg.apps.*.deps.*.source` 必须是非空字符串，按 `bucky_project.yaml` 所在目录解析后，必须能找到依赖项目的 `bucky_project.yaml`、`bucky_project.yml` 或 `bucky_project.json`。
 - 打包脚本不能再隐式扫描未声明的兄弟目录。
 - `publish.win_pkg.apps`、`publish.macos_pkg.apps` 和 `publish.linux_pkg.apps` 中组件字段合法。
-- Windows/macOS 当前完整桌面包配置 SHOULD 声明 `BuckyOSApp`、`buckyos`、`buckycli` 三个组件，但平台脚本不按固定组件个数做失败校验；脚本只校验已声明组件的字段合法性。
+- Windows/macOS 当前完整桌面包配置 SHOULD 声明 `BuckyOSApp` 和 `buckyos` 两个组件，但平台脚本不按固定组件个数做失败校验；脚本只校验已声明组件的字段合法性。
 - Linux 打包时必须读取 `publish.linux_pkg.apps`，且不得包含 `BuckyOSApp`。
 - `type` 只能是 `app` 或 `bundle`。
 - `optional` 和 `default_selected` 必须能解析为 bool。
@@ -310,8 +288,6 @@ staging 目录是平台脚本的主输入。
     storage/
     local/
     logs/
-  buckycli/
-    buckycli
 ```
 
 实际读取规则：
@@ -332,7 +308,7 @@ staging 中未被 `apps.*`、`publish.*.apps.*` 或 `publish.*.apps.*.deps.*` �
 | `bundle` | 外源组件，不属于 buckyos module | 必须声明 `src`，source root 为 `<staging>/<component>/` | 必须声明 `default_target` |
 | `app` | buckyos module 组件 | 不声明 `src`，source 从 `apps.{component}.rootfs` 读取 | 可选 `default_target`；缺省使用 `apps.{component}.default_target_rootfs` |
 
-`bundle` 用于 `BuckyOSApp` 这类已经由其他仓库构建好的外部产物。`app` 用于 `buckyos`、`buckycli` 等由 `bucky_project.yaml` 中 `apps` 节定义的组件。
+`bundle` 用于 `BuckyOSApp` 这类已经由其他仓库构建好的外部产物。`app` 用于 `buckyos` 这类由 `bucky_project.yaml` 中 `apps` 节定义的组件。
 
 `buckyos_project` 依赖不是用户可见组件类型，不出现在 `publish.*_pkg.apps` 的组件列表中。它只通过 `deps` 参与 prepare 和 manifest 合并：
 
@@ -406,8 +382,8 @@ manifest SHOULD 至少包含：
   "schema_version": 1,
   "project_path": "src/bucky_project.yaml",
   "platforms": {
-    "windows": { "component_keys": ["BuckyOSApp", "buckyos", "buckycli"] },
-    "macos": { "component_keys": ["BuckyOSApp", "buckyos", "buckycli"] },
+    "windows": { "component_keys": ["BuckyOSApp", "buckyos"] },
+    "macos": { "component_keys": ["BuckyOSApp", "buckyos"] },
     "linux": { "component_keys": ["buckyos"] }
   },
   "install_projects": {
@@ -509,7 +485,7 @@ macOS 组件 hook 命名：
 
 其中：
 
-- `component` 使用 `publish.{platform}.apps` 的 key，例如 `BuckyOSApp`、`buckyos`、`buckycli`。
+- `component` 使用 `publish.{platform}.apps` 的 key，例如 `BuckyOSApp`、`buckyos`。
 - Windows `step` 支持 `preinstall`、`postinstall`、`preuninstall`。
 - macOS/Linux `step` 支持 `preinstall`、`postinstall`。
 - macOS 只支持无扩展名脚本，例如 `buckyos_preinstall`；不支持 `.sh`、`.ps1` 等扩展形式。
@@ -699,7 +675,7 @@ Windows NSIS 静默安装 MUST 显式 `SetErrorLevel`。macOS 和 Linux 如果�
 Windows：
 
 - NSIS 图形安装器展示组件选择页。
-- `BuckyOSApp`、`buckyos`、`buckycli` 三个组件可任意组合，默认全选。
+- `BuckyOSApp` 和 `buckyos` 两个组件可任意组合，默认全选。
 - 用户可以选择安装路径。
 - 如果安装了 `BuckyOSApp`，完成页提供启动选项。
 - 如果安装了 `buckyos`，安装器注册并启动 `buckyos` service。
@@ -708,7 +684,7 @@ macOS：
 
 - `productbuild` 生成 Distribution pkg。
 - 图形安装器展示组件选择页。
-- `BuckyOSApp`、`buckyos`、`buckycli` 三个组件可任意组合，默认全选。
+- `BuckyOSApp` 和 `buckyos` 两个组件可任意组合，默认全选。
 - 安装路径固定。
 - 安装完成后不自动启动 `BuckyOSApp`；用户从 macOS Apps/Launchpad、Finder、Spotlight 或命令行自行启动。
 - 如果安装了 `buckyos`，安装器注册并启动 `buckyos` LaunchDaemon。
@@ -716,7 +692,7 @@ macOS：
 Linux：
 
 - 用户通过包管理器安装 deb/rpm。
-- Linux 固定安装 `buckyos` service 和 `buckycli`。
+- Linux 固定安装 `buckyos` service，系统 Tool 随 service 分发。
 - Linux 不包含 `BuckyOSApp`。
 - post-install 注册、enable 并启动 `buckyos` systemd service。
 
@@ -761,7 +737,7 @@ macOS：
 
 - 标准 pkg 不提供 BuckyOS 卸载入口。
 - 不打包 `{component}_uninstall` 或通用 `uninstall` pkg script。
-- 提供独立文档 `notepads/uninstall_for_macos.md`，说明手工停止 `buckyos` LaunchDaemon、旧进程和相关 Docker 容器，删除程序文件、`clean_paths`、`BuckyOSApp` 和 `buckycli` 最终安装位置。
+- 提供独立文档 `notepads/uninstall_for_macos.md`，说明手工停止 `buckyos` LaunchDaemon、旧进程和相关 Docker 容器，删除程序文件、`clean_paths` 和 `BuckyOSApp` 最终安装位置。
 - 文档默认保留 `apps.buckyos.data_paths`；只有用户明确执行删除数据步骤时才删除。
 
 Linux：
@@ -837,7 +813,7 @@ sudo dnf install ./buckyos-linux-{arch}-{version}.rpm
 - `node_daemon_loader.vbs` 是单文件隐藏启动器：检查 `node_daemon.exe` 是否已运行，未运行时以隐藏窗口启动 `node_daemon.exe --enable_active`。
 - 需要兼容清理旧版本 Windows service `buckyos`。
 
-`buckycli` 是系统级命令行工具，Windows exe 默认安装到当前用户的 `~/buckycli/`（配置中写作 `%USERPROFILE%\buckycli\`），安装后由 `buckycli_postinstall.ps1` 把该目录写入当前用户 PATH，卸载前由 `buckycli_preuninstall.ps1` 从 PATH 删除；身份和配置目录不由安装器创建或迁移，运行时由命令参数显式指定，或默认使用调用者自己的配置目录。
+`buckyos` 系统 Tool 位于 `%BUCKYOS_ROOT%\\bin\\buckyos.exe`，作为 buckyos service payload 的一部分由同一安装交易更新和回滚，不单独修改用户 PATH。
 
 Windows 不需要写普通图形安装日志。静默安装日志 MUST 写到：
 
@@ -865,8 +841,7 @@ Windows 不需要写普通图形安装日志。静默安装日志 MUST 写到：
 - `buckyos` postinstall 安装 LaunchDaemon `buckyos.service` 并启动。
 - `BuckyOSApp` 固定安装到 `/Applications/BuckyOS.app`，使它符合 pkg、未来 App Store 安装和 dmg drag-install 的共同用户预期，并能在 macOS Apps/Launchpad、Finder 和 Spotlight 中被发现。
 - `BuckyOSApp` 的用户身份和配置文件不写入 app bundle，也不写入 `/opt/buckyos`；非 App Store/pkg 形态默认使用用户域配置目录，例如 `~/Library/Application Support/BuckyOSApp/`。未来 App Store/sandbox 形态可迁移到 app container 或 app group。
-- `buckycli` 是系统级命令行工具，macOS pkg MUST 直接安装到 `/usr/local/bin/buckycli`，不通过 postinstall 复制到用户目录，也不修改用户 shell profile。
-- `buckycli` 的身份和配置目录不由安装器创建或迁移；运行时由命令参数显式指定，或默认使用调用者自己的 `~/.buckycli`。
+- `buckyos` 系统 Tool 位于 `$BUCKYOS_ROOT/bin/buckyos`，作为 buckyos service payload 的一部分由同一安装交易更新和回滚，不单独安装到 `/usr/local/bin`。
 - 不提供 pkg 卸载入口，也不提供随 pkg 自动执行的卸载脚本。
 - 提供独立 `uninstall_for_macos` 文档；文档默认保留用户数据，并把删除用户数据作为明确的可选步骤。
 
