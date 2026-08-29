@@ -1,6 +1,6 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 3,
+  "schema_version": 4,
   "schema_revision": 0,
   "provider_driver": "claude",
   "revision_seq": 1,

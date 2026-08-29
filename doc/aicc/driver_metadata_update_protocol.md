@@ -83,7 +83,7 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
     {
       "provider_driver": "openai",
       "path": "v1/providers/openai-18.json",
-      "schema_version": 3,
+      "schema_version": 4,
       "revision_seq": 18,
       "obj_id": "<FileObject ObjId>"
     }
@@ -108,7 +108,7 @@ PathObject 的签名、host、path 和 `exp` 由 NDN SDK 验证，AICC 不另设
 ```json
 {
   "format": "buckyos.aicc.provider-driver-metadata",
-  "schema_version": 3,
+  "schema_version": 4,
   "schema_revision": 0,
   "provider_driver": "openai",
   "revision_seq": 18,

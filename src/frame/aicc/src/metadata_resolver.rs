@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-const DRIVER_METADATA_SCHEMA_VERSION: u32 = 3;
+const DRIVER_METADATA_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Default)]
 pub struct DriverModelResolveRequest {
@@ -64,8 +64,6 @@ pub struct DriverMetadataDocument {
     pub models: Vec<DriverModelRule>,
     #[serde(default)]
     pub patterns: Vec<DriverModelRule>,
-    #[serde(default)]
-    pub capability_overrides: Vec<DriverCapabilityOverride>,
     #[serde(default)]
     pub defaults: DriverModelRule,
     #[serde(default)]
@@ -155,24 +153,6 @@ pub struct DriverModelRule {
     pub latency_class: Option<LatencyClass>,
     #[serde(default)]
     pub cost_class: Option<CostClass>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DriverCapabilityOverride {
-    pub pattern: String,
-    #[serde(default)]
-    pub api_types: Vec<ApiType>,
-    #[serde(default)]
-    pub add_api_types: Vec<ApiType>,
-    #[serde(default)]
-    pub add_logical_mounts: Vec<String>,
-    #[serde(default)]
-    pub remove_api_types: Vec<ApiType>,
-    #[serde(default)]
-    pub remove_logical_mounts: Vec<String>,
-    #[serde(default)]
-    pub capabilities: DriverCapabilitiesPatch,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -515,15 +495,6 @@ fn resolve_driver_model(
             cost_class = next;
         }
     }
-    apply_capability_overrides(
-        provider_model_id,
-        provider_driver,
-        &origin,
-        &mut api_types,
-        &mut logical_mounts,
-        &mut capabilities,
-        sources,
-    );
     if logical_mounts.is_empty() && !driver_rule_found {
         logical_mounts = provider_fallback_mounts(request.fallback_logical_mounts.as_slice());
     }
@@ -703,52 +674,6 @@ pub(crate) fn validate_driver_metadata_document(
             return Err(format!("duplicate model pattern '{}'", pattern));
         }
         validate_driver_model_rule(rule, format!("patterns[{}]", index).as_str())?;
-    }
-
-    for (index, rule) in document.capability_overrides.iter().enumerate() {
-        let location = format!("capability_overrides[{}]", index);
-        validate_trimmed_value(rule.pattern.as_str(), &format!("{}.pattern", location))?;
-        if !rule.capabilities.has_any()
-            && rule.add_api_types.is_empty()
-            && rule.add_logical_mounts.is_empty()
-            && rule.remove_api_types.is_empty()
-            && rule.remove_logical_mounts.is_empty()
-        {
-            return Err(format!("{} must add or patch metadata", location));
-        }
-        let mut api_types = HashSet::new();
-        for api_type in &rule.api_types {
-            if !api_types.insert(api_type) {
-                return Err(format!("{}.api_types contains duplicate value", location));
-            }
-        }
-        let mut added_api_types = HashSet::new();
-        for api_type in &rule.add_api_types {
-            if !added_api_types.insert(api_type) {
-                return Err(format!(
-                    "{}.add_api_types contains duplicate value",
-                    location
-                ));
-            }
-        }
-        let mut removed_api_types = HashSet::new();
-        for api_type in &rule.remove_api_types {
-            if !removed_api_types.insert(api_type) {
-                return Err(format!(
-                    "{}.remove_api_types contains duplicate value",
-                    location
-                ));
-            }
-        }
-        validate_string_list(
-            rule.add_logical_mounts.as_slice(),
-            format!("{}.add_logical_mounts", location).as_str(),
-        )?;
-        validate_string_list(
-            rule.remove_logical_mounts.as_slice(),
-            format!("{}.remove_logical_mounts", location).as_str(),
-        )?;
-        validate_capabilities_patch(&rule.capabilities, location.as_str())?;
     }
 
     if document.defaults.id.is_some() || document.defaults.pattern.is_some() {
@@ -1199,56 +1124,6 @@ fn find_pattern_rule<'a>(
         }
     }
     None
-}
-
-fn apply_capability_overrides(
-    provider_model_id: &str,
-    provider_driver: &str,
-    origin: &DriverOriginIdentity,
-    api_types: &mut Vec<ApiType>,
-    logical_mounts: &mut Vec<String>,
-    capabilities: &mut ModelCapabilities,
-    sources: &[DriverMetadataSource],
-) {
-    for source in sources {
-        if source.document.schema_version != DRIVER_METADATA_SCHEMA_VERSION {
-            continue;
-        }
-        for rule in &source.document.capability_overrides {
-            if !wildcard_matches(rule.pattern.as_str(), provider_model_id) {
-                continue;
-            }
-            if !rule.api_types.is_empty()
-                && !rule
-                    .api_types
-                    .iter()
-                    .any(|required| api_types.contains(required))
-            {
-                continue;
-            }
-            for api_type in &rule.remove_api_types {
-                api_types.retain(|current| current != api_type);
-            }
-            for mount in &rule.remove_logical_mounts {
-                let mount =
-                    expand_mount_template(mount, provider_driver, provider_model_id, origin);
-                logical_mounts.retain(|current| current != &mount);
-            }
-            for api_type in &rule.add_api_types {
-                if !api_types.contains(api_type) {
-                    api_types.push(api_type.clone());
-                }
-            }
-            for mount in &rule.add_logical_mounts {
-                let mount =
-                    expand_mount_template(mount, provider_driver, provider_model_id, origin);
-                if !logical_mounts.contains(&mount) {
-                    logical_mounts.push(mount);
-                }
-            }
-            apply_capabilities_patch(capabilities, &rule.capabilities);
-        }
-    }
 }
 
 fn find_default_rule(sources: &[DriverMetadataSource]) -> Option<&DriverModelRule> {
@@ -1979,99 +1854,6 @@ mod tests {
     }
 
     #[test]
-    fn capability_overrides_apply_by_model_pattern_and_api_type() {
-        let source = DriverMetadataSource::new(
-            "test".to_string(),
-            DriverMetadataDocument {
-                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
-                capability_overrides: vec![DriverCapabilityOverride {
-                    pattern: "gemini-2.*".to_string(),
-                    api_types: vec![ApiType::Llm],
-                    add_api_types: vec![ApiType::AudioAsr],
-                    add_logical_mounts: vec![
-                        "audio.asr".to_string(),
-                        "audio.asr.{model}".to_string(),
-                    ],
-                    remove_api_types: Vec::new(),
-                    remove_logical_mounts: Vec::new(),
-                    capabilities: DriverCapabilitiesPatch {
-                        unsupported_feature_combinations: Some(vec![vec![
-                            "tool_calling".to_string(),
-                            "web_search".to_string(),
-                        ]]),
-                        ..Default::default()
-                    },
-                }],
-                ..Default::default()
-            },
-        );
-        let mut llm = ModelCapabilities::default();
-        let origin = DriverOriginIdentity {
-            driver: "google-gemini".to_string(),
-            model: "gemini-2.5-flash".to_string(),
-        };
-        let mut llm_api_types = vec![ApiType::Llm];
-        let mut llm_mounts = Vec::new();
-        apply_capability_overrides(
-            "gemini-2.5-flash",
-            "google-gemini",
-            &origin,
-            &mut llm_api_types,
-            &mut llm_mounts,
-            &mut llm,
-            &[source.clone()],
-        );
-        assert!(!llm.supports_feature_combination(&["tool_calling", "web_search"]));
-        assert!(llm_api_types.contains(&ApiType::AudioAsr));
-        assert_eq!(llm_mounts, vec!["audio.asr", "audio.asr.gemini-2-5-flash"]);
-
-        let mut image = ModelCapabilities::default();
-        let mut image_api_types = vec![ApiType::ImageTextToImage];
-        let mut image_mounts = Vec::new();
-        apply_capability_overrides(
-            "gemini-2.5-flash-image-preview",
-            "google-gemini",
-            &origin,
-            &mut image_api_types,
-            &mut image_mounts,
-            &mut image,
-            &[source],
-        );
-        assert!(image.supports_feature_combination(&["tool_calling", "web_search"]));
-        assert!(!image_api_types.contains(&ApiType::AudioAsr));
-        assert!(image_mounts.is_empty());
-
-        let removal_source = DriverMetadataSource::new(
-            "cloud".to_string(),
-            DriverMetadataDocument {
-                schema_version: DRIVER_METADATA_SCHEMA_VERSION,
-                capability_overrides: vec![DriverCapabilityOverride {
-                    pattern: "gemini-2.5-flash".to_string(),
-                    api_types: vec![ApiType::AudioAsr],
-                    remove_api_types: vec![ApiType::AudioAsr],
-                    remove_logical_mounts: vec![
-                        "audio.asr".to_string(),
-                        "audio.asr.{model}".to_string(),
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        apply_capability_overrides(
-            "gemini-2.5-flash",
-            "google-gemini",
-            &origin,
-            &mut llm_api_types,
-            &mut llm_mounts,
-            &mut llm,
-            &[removal_source],
-        );
-        assert!(!llm_api_types.contains(&ApiType::AudioAsr));
-        assert!(llm_mounts.is_empty());
-    }
-
-    #[test]
     fn override_metadata_rejects_schema_and_provider_identity_mismatch() {
         let valid = serde_json::json!({
             "format": "buckyos.aicc.provider-driver-metadata",
@@ -2087,6 +1869,14 @@ mod tests {
             "version_rules": []
         });
         assert!(parse_and_validate_driver_metadata(&valid.to_string(), Some("openai")).is_ok());
+
+        let mut removed_capability_overrides = valid.clone();
+        removed_capability_overrides["capability_overrides"] = serde_json::json!([]);
+        assert!(parse_and_validate_driver_metadata(
+            &removed_capability_overrides.to_string(),
+            Some("openai")
+        )
+        .is_err());
 
         let mut wrong_schema = valid.clone();
         wrong_schema["schema_version"] = serde_json::json!(1);
@@ -2669,6 +2459,7 @@ mod tests {
             DriverModelResolveRequest::new("gemini-2.5-flash", vec![]),
             DriverModelResolveRequest::new("gemini-2.5-flash-lite", vec![]),
             DriverModelResolveRequest::new("gemini-2.5-deepthink", vec![]),
+            DriverModelResolveRequest::new("gemini-3.7-flash", vec![]),
         ];
         let inventory = resolve_driver_inventory(
             "gemini-test",
@@ -2703,6 +2494,28 @@ mod tests {
         for model in inventory.models.iter() {
             assert!(!model.logical_mounts.iter().any(|mount| mount == "llm"));
         }
+        let gemini_25_flash = by_id("gemini-2.5-flash");
+        assert!(gemini_25_flash.api_types.contains(&ApiType::AudioAsr));
+        assert!(gemini_25_flash
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "audio.asr"));
+        assert_eq!(gemini_25_flash.capabilities.max_output_tokens, Some(65_536));
+        assert!(!gemini_25_flash
+            .capabilities
+            .supports_feature_combination(&["tool_calling", "web_search"]));
+        let gemini_25_deepthink = by_id("gemini-2.5-deepthink");
+        assert!(!gemini_25_deepthink.api_types.contains(&ApiType::AudioAsr));
+        assert_eq!(
+            gemini_25_deepthink.capabilities.max_output_tokens,
+            Some(65_536)
+        );
+        let gemini_37_flash = by_id("gemini-3.7-flash");
+        assert!(gemini_37_flash.api_types.contains(&ApiType::AudioAsr));
+        assert_eq!(gemini_37_flash.capabilities.max_output_tokens, Some(8_192));
+        assert!(gemini_37_flash
+            .capabilities
+            .supports_feature_combination(&["tool_calling", "web_search"]));
     }
 
     #[test]
