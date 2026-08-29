@@ -9,9 +9,7 @@ const execFileAsync = promisify(execFile)
 const TEST_ROOT = path.dirname(fileURLToPath(import.meta.url))
 
 export const PIKG_SAMPLES_ROOT = path.join(TEST_ROOT, 'pikg_samples')
-export const BUCKYOS_TOOL = path.resolve(
-  process.env.BUCKYOS_TEST_TOOL_PATH ?? path.join(TEST_ROOT, 'node_modules/buckyos/cli/launcher.mjs'),
-)
+const NPX = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 
 export function dockerTarget() {
   switch (process.arch) {
@@ -46,8 +44,8 @@ export async function runCommand(command, args, options = {}) {
 }
 
 async function runPikgTool(args) {
-  const { stdout } = await runCommand(process.execPath, [
-    BUCKYOS_TOOL,
+  const { stdout } = await runCommand(NPX, [
+    'buckyos',
     '--non-interactive',
     ...args,
   ])

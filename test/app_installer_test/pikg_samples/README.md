@@ -1,6 +1,6 @@
 # PIKG test samples
 
-这里保存的是 `buckyos-tool pikg` 使用的标准构建工程，不提交 `dapp_dist/` 或
+这里保存的是 `npx buckyos pikg` 使用的标准构建工程，不提交 `dapp_dist/` 或
 `.pikg` 构建结果：
 
 - `static-web/`：平台无关的静态网页包（`pkg_list.web`）。
@@ -25,5 +25,5 @@ pnpm run generate:pikg-samples
 
 生成结果默认写入系统临时目录的 `buckyos-pikg-samples/`，也可通过
 `BUCKYOS_PIKG_OUTPUT_DIR` 指定目录。Docker 样例会先从 `docker/image/Dockerfile`
-构建本地镜像，再交给 `buckyos-tool pikg build/pack/info`；该流程不依赖运行中的
+构建本地镜像，再交给 `npx buckyos pikg build/pack/info`；该流程不依赖运行中的
 BuckyOS、Control Panel、身份或网络服务。

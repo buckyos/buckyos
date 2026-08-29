@@ -272,10 +272,6 @@ def main() -> int:
     if result != 0:
         print(f"SDK/Tool distribution build failed with return code {result}")
         return result
-    env["BUCKYOS_SDK_TOOL_PACKAGE_ROOT"] = str(
-        Path(__file__).parent / "rootfs" / "libexec" / "buckyos-tool"
-    )
-
     result = _run_command("buckyos-build", sys.argv[1:], env=env)
     if result != 0:
         print(f"buckyos-build failed with return code {result}")

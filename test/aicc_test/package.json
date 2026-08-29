@@ -11,6 +11,6 @@
     "test": "pnpm run smoke"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#main"
+    "buckyos": "latest"
   }
 }

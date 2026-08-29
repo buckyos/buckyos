@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#main"
+    "buckyos": "latest"
   },
   "scripts": {
     "build:web": "pnpm install && pnpm update buckyos && pnpm --filter ./web run build",

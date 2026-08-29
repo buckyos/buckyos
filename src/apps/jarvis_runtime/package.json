@@ -2,6 +2,9 @@
   "name": "jarvis_runtime",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "buckyos": "latest"
+  },
   "scripts": {
     "build": "node build.mjs"
   }

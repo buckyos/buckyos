@@ -12,12 +12,12 @@
 > - `resolver/cache/*` 夹具写入使用 Verify Hub 的 System(control-panel) sudo session；
 >   boot LoginAssertion 不再作为运行期 system-config 通用写凭证。设置 Zone URL 与管理员
 >   密码后，static-web 还验证真实 App SSO、精确 AppInstance/owner claims 和跨 owner refresh 拒绝。
-> - fixture 的 pkg 名由 `buckyos-tool pikg` 按 App DID 派生的 raw-hostname
+> - fixture 的 pkg 名由 `npx buckyos pikg` 按 App DID 派生的 raw-hostname
 >   AppId namespace 生成（如 `all.web.<app_id>`）。不属于该 AppId namespace 的名字会在 Inspect
 >   阶段以 `APP_PACKAGE_NAMESPACE_MISMATCH` 拒绝。
 
 > **PIKG 样例更新（2026-08-22）**：测试现场复制 `pikg_samples/` 中的标准工程，
-> 使用 `buckyos-tool pikg build/pack/info` 构造并校验 `.pikg`，再放入本机受控
+> 使用 `npx buckyos pikg build/pack/info` 构造并校验 `.pikg`，再放入本机受控
 > NDM staging。测试
 > 先向 zone resolver 数据面（`resolver/cache/{did}/app/{state|doc}`，root 权限）
 > 种入解析证据，再走 `apps.inspect(staging_handle)` → `apps.submit` →
@@ -30,12 +30,12 @@
 
 # app_installer_test
 
-独立工程示例，直接通过 `package.json` 里的 GitHub 依赖安装 `buckyos`：
+独立工程示例，直接通过 `package.json` 从 npm 安装最新的 `buckyos`：
 
 ```json
 {
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#main"
+    "buckyos": "latest"
   }
 }
 ```
@@ -61,7 +61,7 @@ pnpm run generate:pikg-samples
 ```
 
 `pikg_samples/` 只保存 static web、script host、agent 和 Docker 的标准构建工程，
-不保存 `dapp_dist/` 或 `.pikg`。生成器调用仓库中的 `buckyos-tool pikg`
+不保存 `dapp_dist/` 或 `.pikg`。生成器调用依赖中的 `npx buckyos pikg`
 完成 build、pack、info，产物默认写入系统临时目录
 `buckyos-pikg-samples/`；可通过 `BUCKYOS_PIKG_OUTPUT_DIR` 改到其它目录。
 
@@ -78,7 +78,6 @@ BUCKYOS_TEST_DOCKER_BASE_IMAGE=busybox:1.36.1
 BUCKYOS_TEST_SKIP_STATIC=0
 BUCKYOS_TEST_SKIP_AGENT=0
 BUCKYOS_TEST_SKIP_DOCKER=0
-BUCKYOS_TEST_TOOL_PATH=/path/to/buckyos-tool/buckyos
 BUCKYOS_PIKG_OUTPUT_DIR=/tmp/buckyos-pikg-samples
 BUCKYOS_ROOT=/opt/buckyos
 BUCKYOS_TEST_INSTALL_EVIDENCE_TIMEOUT_MS=120000
@@ -95,13 +94,13 @@ import { buckyos, RuntimeType, parseSessionTokenClaims } from 'buckyos/node'
 
 注意：
 
-当前只有在 GitHub 上的 `buckyos/buckyos-websdk` 已经包含 `./node` 条件导出和 AppClient 实现时，这个示例才能直接跑通。
-如果仓库还没推送到包含这些改动的提交，`pnpm install` 虽然会成功，但 `pnpm run demo` 会因为找不到 `buckyos/node` 而失败。
+npm 上发布的 `buckyos` 必须包含 `./node` 条件导出和 AppClient 实现，否则
+`pnpm run demo` 会因为找不到 `buckyos/node` 而失败。
 
 `pnpm test` 默认会按以下顺序执行：
 
 1. 把 `pikg_samples/` 中的构建工程复制到临时目录，并写入本次测试的 App ID/version
-2. 调用 `buckyos-tool pikg build/pack/info` 现场构造并校验 `.pikg`
+2. 调用 `npx buckyos pikg build/pack/info` 现场构造并校验 `.pikg`
 3. 通过 NodeGateway 的 `/ndm/proxy/v1` 上传并 finalize，再调用
    `apps.inspect` 和 `apps.submit`
 4. 等待安装完成并验证 system_config / task-manager / runtime 中的结果；static web
@@ -132,6 +131,6 @@ BUCKYOS_TEST_UNINSTALL_AFTER_INSTALL=1 pnpm test
 - 卸载断言以 `Spec.state=deleted`、运行证据消失和 registry allocation 保留为准；PackageEnv 的严格目录/friendly alias 可作为缓存继续存在。
 - agent runtime case 会验证安装记录与 inactive AppSpec 落地，且没有 Agent service instance；设置 `BUCKYOS_TEST_SKIP_AGENT=1` 时跳过。
 - docker case 按容器是否已运行来判断安装成功。
-- docker case 会先在本地 `docker build`，再由 `buckyos-tool pikg build` 固定镜像 ID 并导出 payload。
+- docker case 会先在本地 `docker build`，再由 `npx buckyos pikg build` 固定镜像 ID 并导出 payload。
 - 如果当前机器没有可用的 Docker daemon，只有 docker case 会被跳过；三个 case 也可分别用独立的 skip 开关跳过。
 - 当前默认不会自动卸载已安装 app，也不会清理对应 docker image，方便安装后观察实际落地状态。
