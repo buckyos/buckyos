@@ -27,6 +27,7 @@ function runPikgTool(args, { allowRead = [] } = {}) {
   const result = spawnSync(npx, toolArgs, {
     cwd: rootDir,
     stdio: "inherit",
+    shell: true,
   });
   if (result.error) {
     throw result.error;
