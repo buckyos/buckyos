@@ -340,6 +340,7 @@ publish:
 
 - `overwrite` 内容直接进入平台 payload 的真实目标路径。
 - `preserve_existing` 内容 MUST 进入安装包内的 defaults 区，安装脚本只在真实目标不存在时复制。
+- 当一个 `overwrite` 项位于较宽的 `preserve_existing` 目录之下时，精确声明的 `overwrite` 项仍进入真实目标路径；该目录内其余内容仍只能进入 defaults 区。
 - defaults 区推荐名称为 `.buckyos_installer_defaults`。
 - `overwrite` 覆盖失败 MUST 导致安装失败。
 - `preserve_existing` 目标已存在时跳过，不算失败。

@@ -733,7 +733,8 @@ def verify_pkg(
     - Distribution choices exist for all publish.macos_pkg.apps components
     - optional:false => required=true and enabled=false
     - Per-component scripts are attached iff templates exist in publish/macos_pkg/scripts/
-    - buckyos payload contains data_paths under .buckyos_installer_defaults and not at real paths
+    - buckyos payload contains data_paths under .buckyos_installer_defaults;
+      only overlapping explicit modules may appear below their real paths
     - Mach-O binaries inside payload are runnable on this host (avoid Rosetta surprise)
     """
     components = (
@@ -838,19 +839,34 @@ def verify_pkg(
             )
             payload_files = set(_pkg_payload_files(buckyos_pkg_dir))
 
-            def normalize_payload_path(p: str) -> str:
-                # pkgutil lists paths without leading '/', relative to install-location (/)
-                return p.lstrip("./").lstrip("/")
+            normalized_payload_files = [common.normalize_payload_path(path) for path in payload_files]
 
             for rel in layout.data_paths:
-                rel_s = rel.strip().lstrip("/").rstrip("/")
+                rel_s = common.normalize_item_relpath(rel)
                 real_prefix = f"opt/buckyos/{rel_s}"
                 defaults_prefix = f"opt/buckyos/{BUCKYOS_DEFAULTS_SUBDIR}/{rel_s}"
 
-                real_present = any(normalize_payload_path(p).startswith(real_prefix) for p in payload_files)
-                defaults_present = any(normalize_payload_path(p).startswith(defaults_prefix) for p in payload_files)
-                if real_present:
-                    failures.append(f"data_paths '{rel}' should NOT be in payload at '{real_prefix}' (would overwrite)")
+                unexpected_real_paths = common.unexpected_data_payload_paths(
+                    normalized_payload_files,
+                    target_root="opt/buckyos",
+                    data_path=rel,
+                    module_paths=layout.module_paths,
+                )
+                defaults_present = any(
+                    common.payload_path_matches_prefix(path, defaults_prefix)
+                    for path in normalized_payload_files
+                )
+                if unexpected_real_paths:
+                    shown = ", ".join(unexpected_real_paths[:20])
+                    suffix = (
+                        f" ... and {len(unexpected_real_paths) - 20} more"
+                        if len(unexpected_real_paths) > 20
+                        else ""
+                    )
+                    failures.append(
+                        f"data_paths '{rel}' contains non-module paths in payload "
+                        f"at '{real_prefix}': {shown}{suffix}"
+                    )
                 if not defaults_present:
                     failures.append(f"data_paths '{rel}' missing from defaults payload at '{defaults_prefix}'")
 

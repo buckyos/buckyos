@@ -161,6 +161,22 @@ class PackageCommonTests(unittest.TestCase):
             ],
         )
 
+    def test_unexpected_data_payload_paths_allows_explicit_modules(self) -> None:
+        unexpected = common.unexpected_data_payload_paths(
+            [
+                "./opt/buckyos/data",
+                "./opt/buckyos/data/cache",
+                "./opt/buckyos/data/cache/bootstrap.pikg",
+                "./opt/buckyos/data/user.db",
+                "./opt/buckyos/database/unrelated.db",
+            ],
+            target_root="/opt/buckyos",
+            data_path="data/",
+            module_paths=["data/cache/bootstrap.pikg"],
+        )
+
+        self.assertEqual(unexpected, ["opt/buckyos/data/user.db"])
+
 
 if __name__ == "__main__":
     unittest.main()

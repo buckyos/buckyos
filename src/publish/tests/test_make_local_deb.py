@@ -78,6 +78,54 @@ publish:
         self.assertEqual(hook.name, "buckyos_preinstall")
         self.assertEqual(hook.parent.name, "deb_pkg")
 
+    def test_verify_payload_contract_allows_modules_below_data_paths(self) -> None:
+        layout = debpkg.AppLayout(
+            source_rootfs=Path("/stage/buckyos"),
+            target_rootfs=Path("/opt/buckyos"),
+            module_paths=[
+                "data/cache/bootstrap.pikg",
+                "local/did_docs/bootstrap.json",
+            ],
+            data_paths=["data/", "local/"],
+            clean_paths=[],
+            module_source_paths={},
+            data_source_paths={},
+        )
+        payload_paths = [
+            "/opt",
+            "/opt/buckyos",
+            "/opt/buckyos/data",
+            "/opt/buckyos/data/cache",
+            "/opt/buckyos/data/cache/bootstrap.pikg",
+            "/opt/buckyos/local",
+            "/opt/buckyos/local/did_docs",
+            "/opt/buckyos/local/did_docs/bootstrap.json",
+            "/opt/buckyos/.buckyos_installer_defaults",
+            "/opt/buckyos/.buckyos_installer_defaults/data",
+            "/opt/buckyos/.buckyos_installer_defaults/data/readme.md",
+            "/opt/buckyos/.buckyos_installer_defaults/local",
+            "/opt/buckyos/.buckyos_installer_defaults/local/readme.md",
+        ]
+
+        failures: list[str] = []
+        debpkg._verify_linux_payload_contract(
+            payload_paths=payload_paths,
+            layout=layout,
+            failures=failures,
+            package_kind="deb",
+            include_systemd_service=False,
+        )
+        self.assertEqual(failures, [])
+
+        debpkg._verify_linux_payload_contract(
+            payload_paths=payload_paths + ["/opt/buckyos/data/user.db"],
+            layout=layout,
+            failures=failures,
+            package_kind="deb",
+            include_systemd_service=False,
+        )
+        self.assertTrue(any("data/user.db" in failure for failure in failures))
+
     def test_render_control_command_writes_final_debian_control_files(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

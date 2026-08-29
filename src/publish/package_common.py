@@ -208,6 +208,50 @@ def unexpected_payload_paths(
     return sorted(set(unexpected))
 
 
+def unexpected_data_payload_paths(
+    payload_paths: Iterable[str],
+    *,
+    target_root: str,
+    data_path: str,
+    module_paths: Iterable[str],
+) -> list[str]:
+    """Return real data-path payload entries not covered by explicit modules.
+
+    A module may intentionally live below a broader persistent ``data_path``.
+    Its payload file (or directory tree) and the directory entries leading to it
+    are valid overwrite payload. Other entries below the data path must remain
+    in the installer defaults area.
+    """
+    normalized_root = normalize_payload_path(target_root)
+    normalized_data_path = normalize_item_relpath(data_path, windows=True)
+    data_prefix = normalize_payload_path(f"{normalized_root}/{normalized_data_path}")
+    if not data_prefix:
+        return []
+
+    module_prefixes: list[str] = []
+    for module_path in module_paths:
+        normalized_module_path = normalize_item_relpath(module_path, windows=True)
+        if not normalized_module_path:
+            continue
+        module_prefix = normalize_payload_path(f"{normalized_root}/{normalized_module_path}")
+        if payload_path_matches_prefix(module_prefix, data_prefix):
+            module_prefixes.append(module_prefix)
+
+    unexpected: list[str] = []
+    for payload_path in payload_paths:
+        normalized = normalize_payload_path(payload_path)
+        if not normalized or not payload_path_matches_prefix(normalized, data_prefix):
+            continue
+        if any(
+            payload_path_matches_prefix(normalized, module_prefix)
+            or payload_path_matches_prefix(module_prefix, normalized)
+            for module_prefix in module_prefixes
+        ):
+            continue
+        unexpected.append(normalized)
+    return sorted(set(unexpected))
+
+
 def discover_component_hook(
     *,
     scripts_dirs: Iterable[Path],
