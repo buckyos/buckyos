@@ -55,7 +55,13 @@ def load_manifest(path: Path) -> dict:
     return value
 
 
-def verify_artifacts(tarball: Path, deno: Path, sbom: Path, release: dict) -> None:
+def verify_artifacts(
+    tarball: Path,
+    deno: Path,
+    sbom: Path,
+    release: dict,
+    declared_deno_version: str | None = None,
+) -> None:
     tarball_sha256 = digest(tarball)
     if tarball_sha256 != release["npm_tarball_sha256"]:
         raise ValueError("npm tarball SHA-256 differs from the release manifest")
@@ -68,10 +74,13 @@ def verify_artifacts(tarball: Path, deno: Path, sbom: Path, release: dict) -> No
         raise ValueError("Deno binary SHA-256 differs from the release manifest")
     if digest(sbom) != release["sbom_sha256"]:
         raise ValueError("SBOM SHA-256 differs from the release manifest")
-    output = subprocess.run(
-        [str(deno), "--version"], check=True, capture_output=True, text=True
-    ).stdout.splitlines()
-    observed = output[0].split()[1] if output else ""
+    if declared_deno_version is None:
+        output = subprocess.run(
+            [str(deno), "--version"], check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+        observed = output[0].split()[1] if output else ""
+    else:
+        observed = declared_deno_version
     if observed != release["deno_version"]:
         raise ValueError(
             f"Deno version differs from the release manifest: {observed}"
@@ -164,7 +173,7 @@ def build(args: argparse.Namespace) -> None:
     deno = args.deno.resolve(strict=True)
     sbom = args.sbom.resolve(strict=True)
     release = load_manifest(args.release_manifest.resolve(strict=True))
-    verify_artifacts(tarball, deno, sbom, release)
+    verify_artifacts(tarball, deno, sbom, release, args.deno_version)
     rootfs = args.rootfs.resolve()
     rootfs.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="buckyos-tool-distribution-") as temporary:
@@ -241,6 +250,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--release-manifest", type=Path, required=True)
     parser.add_argument("--deno", type=Path, required=True)
+    parser.add_argument(
+        "--deno-version",
+        help="declared target Deno version; skips executing a cross-architecture binary",
+    )
     parser.add_argument("--sbom", type=Path, required=True)
     parser.add_argument(
         "--rootfs",
