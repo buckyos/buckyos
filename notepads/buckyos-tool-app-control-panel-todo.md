@@ -2,7 +2,7 @@
 
 > 状态：待实施  
 > 基线日期：2026-08-22  
-> 产品需求真相源：`doc/buckyos_tool/modules/app.md`  
+> 产品需求真相源：[`buckyos-websdk/doc/modules/app.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/app.md)<br>
 > 现有 Installer 设计清单：`notepads/app-installer-base-interface-todo.md`、
 > `notepads/app-installer-v0.5-implementation-todo.md`
 
@@ -41,7 +41,8 @@ CLI 通过解析内部 Task JSON、system-config key 或 `app_instance_id` 拼�
 - [ ] typed plan/status/update-availability 的服务协议已经冻结，不要求 CLI 读取内部 Task 数据。
 - [ ] 协议同步到 `buckyos-api` 共享类型、`doc/App 安装协议.md` 和
   `doc/control_panel/Control_Panel_Service.md`。
-- [ ] `doc/buckyos_tool/modules/app.md` 中的动态 readiness/warning、Plan 可携带性、
+- [ ] [`buckyos-websdk/doc/modules/app.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/app.md)
+  中的动态 readiness/warning、Plan 可携带性、
   CLI 名称归一化和 Task retry 语义已与上述共享契约对齐。
 
 ### Gate B：可以实现 `app fetch/install/upgrade/status`

@@ -145,7 +145,8 @@ get_zone_service_url(service):
 典型的系统服务调用写法在大量服务里复用（例如 repo-service / smb-service）：
 - repo-service：`src/frame/repo_service/src/main.rs`
 - smb-service：`src/frame/smb_service/src/main.rs`
-- 系统 Tool：由 SDK artifact 提供，分发入口见 `doc/buckyos_tool/distribution.md`
+- 系统 Tool：由 SDK artifact 提供，分发入口见
+  [`buckyos-websdk/doc/distribution.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/distribution.md)
 
 runtime 提供的“标准拼装”是：`get_zone_service_krpc_client()`（`src/kernel/buckyos-api/src/runtime.rs`）。
 

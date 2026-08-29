@@ -4,7 +4,8 @@
 > 基线日期：2026-08-29  
 > 涉及仓库：`buckyos-websdk`、`buckyos`  
 > 目标用户：BuckyOS 系统管理员、App 开发者  
-> 相关需求：`doc/buckyos_tool/buckyos tool PRD.md`、`doc/buckyos_tool/modules/pikg.md`
+> 相关需求：[`buckyos-websdk/doc/buckyos tool PRD.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/buckyos%20tool%20PRD.md)、
+> [`buckyos-websdk/doc/modules/pikg.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md)
 
 ## 0. 已确认设计决策
 
@@ -609,7 +610,9 @@ Tool 是 SDK 的官方命令行前端。线上 handler 应是 typed SDK client �
 - SDK Tool 可能比测试 Zone 新；capability handshake 未落地前不能把底层 RPC 404 当作正式
   兼容策略。
 - PIKG 开发辅助不能重新演化成通用构建系统。任何 `doctor`、`env-*` 或 `test` 新命令都要先
-  更新 `doc/buckyos_tool/modules/pikg.md`，冻结副作用、进程、网络和文件权限。
+  更新
+  [`buckyos-websdk/doc/modules/pikg.md`](https://github.com/buckyos/buckyos-websdk/blob/main/doc/modules/pikg.md)，
+  冻结副作用、进程、网络和文件权限。
 - BuckyOS 内部构建与 App 开发使用同一 npm package 后，release graph 必须避免循环：SDK/Tool
   先产生不可变 artifact，BuckyOS 再 pin artifact；不得让 SDK release 反向依赖未发布的
   BuckyOS build。
