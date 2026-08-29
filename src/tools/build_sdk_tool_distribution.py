@@ -113,15 +113,16 @@ def extract_npm_tarball(tarball: Path, destination: Path) -> None:
 
 def package_file_manifest(package_root: Path) -> list[dict]:
     output = []
-    for path in sorted(package_root.rglob("*")):
-        if path.is_file():
-            output.append(
-                {
-                    "path": path.relative_to(package_root).as_posix(),
-                    "size": path.stat().st_size,
-                    "sha256": digest(path),
-                }
-            )
+    files = [path for path in package_root.rglob("*") if path.is_file()]
+    files.sort(key=lambda path: path.relative_to(package_root).as_posix())
+    for path in files:
+        output.append(
+            {
+                "path": path.relative_to(package_root).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": digest(path),
+            }
+        )
     return output
 
 
