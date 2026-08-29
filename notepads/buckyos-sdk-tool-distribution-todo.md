@@ -478,14 +478,14 @@ Tool 是 SDK 的官方命令行前端。线上 handler 应是 typed SDK client �
 
 ## 8. P1：buckyos 主仓库迁移
 
-### 8.1 消费固定 npm/同源 artifact
+### 8.1 BuckyOS 内部始终消费最新 SDK
 
 - [ ] `src/apps/sys_test`、`src/kernel/node_active`、`src/frame/desktop`、tests 和 Deno import maps
-  从 GitHub `main`、raw URL、本地 `sys_test/node_modules` 切换到固定 SDK release。
+  统一跟随 GitHub `main`，不再引用固定 SDK commit 或本地 `sys_test/node_modules`。
 - [ ] BuckyOS build 的 PIKG 构造通过安装依赖后的 `node_modules/.bin/buckyos` 或明确 package
   launcher 执行，不再 import `../../tools/buckyos-tool/pikg_launcher.mjs`。
-- [ ] lockfile 固定 SDK/Tool tarball integrity；CI 不允许同一 build 中不同子项目解析到不同
-  buckyos-websdk commit。
+- [ ] BuckyOS 内部 package 和 test 不提交 lockfile；构建时主动更新 `buckyos`。只有第三方 App
+  项目通过 lockfile 固定 SDK/Tool 版本。
 - [ ] harness/Jarvis skill、测试文档和示例统一使用新入口。
 
 ### 8.2 删除重复源码与旧入口

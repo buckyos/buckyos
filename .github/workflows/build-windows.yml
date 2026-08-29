@@ -35,8 +35,6 @@ jobs:
     - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
-    - name: Verify immutable SDK/Tool pins
-      run: python src/tools/check_sdk_tool_pins.py
     - name: cargo test
       working-directory: ./src
       if: ${{inputs.enable_tests == true}}

@@ -35,7 +35,7 @@
 ```json
 {
   "dependencies": {
-    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#a8a0693d2919e766d64fe52aed5052385aef4e13"
+    "buckyos": "github:buckyos/buckyos-websdk#main"
   }
 }
 ```

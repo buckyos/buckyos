@@ -1,7 +1,0 @@
-{
-  "version": "5",
-  "remote": {
-    "https://raw.githubusercontent.com/buckyos/buckyos-websdk/a8a0693d2919e766d64fe52aed5052385aef4e13/dist/ndn_types-ca94286b.mjs": "fcf92ff8c4a88ff498e2149f248168927071a8fa9b706e5c5f55053cb8017d87",
-    "https://raw.githubusercontent.com/buckyos/buckyos-websdk/a8a0693d2919e766d64fe52aed5052385aef4e13/dist/provision.mjs": "77b4b3cbebbdb559805e46783568c095d4ffbf11c77e94345b2b3834736a2554"
-  }
-}

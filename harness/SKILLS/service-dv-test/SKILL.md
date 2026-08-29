@@ -70,7 +70,7 @@ test/<service>_test/
     "test": "node --experimental-strip-types <service>_dv.ts"
   },
   "dependencies": {
-    "buckyos": "github:buckyos/buckyos-websdk#a8a0693d2919e766d64fe52aed5052385aef4e13"
+    "buckyos": "github:buckyos/buckyos-websdk#main"
   }
 }
 ```

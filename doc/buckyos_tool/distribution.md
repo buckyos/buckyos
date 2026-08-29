@@ -1,8 +1,9 @@
 # BuckyOS SDK / Tool distribution
 
-`buckyos-websdk` is the only source repository for the TypeScript Tool. The npm package and the
-BuckyOS system image must consume the same immutable `buckyos-<version>.tgz`; a BuckyOS build must
-not check out a moving SDK branch.
+`buckyos-websdk` is the only source repository for the TypeScript Tool. BuckyOS source consumers
+track its latest `main` branch and do not commit dependency lockfiles. A system-image build resolves
+that source once and stages one verified `buckyos-<version>.tgz`; only third-party App projects pin
+the SDK through their package-manager lockfile.
 
 ## Developer distribution
 

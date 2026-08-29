@@ -1,9 +1,0 @@
-{
-  "version": "5",
-  "remote": {
-    "https://raw.githubusercontent.com/buckyos/buckyos-websdk/a8a0693d2919e766d64fe52aed5052385aef4e13/dist/ndm_proxy-a719bc58.mjs": "59db1666df8cc2c4464f4d039e5837a9e16ad906855b7486e10cb1eeb567769f",
-    "https://raw.githubusercontent.com/buckyos/buckyos-websdk/a8a0693d2919e766d64fe52aed5052385aef4e13/dist/ndn_types-ca94286b.mjs": "fcf92ff8c4a88ff498e2149f248168927071a8fa9b706e5c5f55053cb8017d87",
-    "https://raw.githubusercontent.com/buckyos/buckyos-websdk/a8a0693d2919e766d64fe52aed5052385aef4e13/dist/node.mjs": "8e92e180c3f59602e219a26c6ea0a74835a226bef2714470be9369a95013a14b",
-    "https://raw.githubusercontent.com/buckyos/buckyos-websdk/a8a0693d2919e766d64fe52aed5052385aef4e13/dist/tus_client-f1532e14.mjs": "f245808bc3b11087d2b6e98f3f87a18a789d61b94ac2dc77fd66830cb4afa367"
-  }
-}

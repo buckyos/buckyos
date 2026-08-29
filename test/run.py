@@ -64,15 +64,19 @@ def detect_runner(path: Path) -> RunnerSpec | None:
         package_json = load_package_json(package_json_path)
         scripts = package_json.get("scripts") or {}
         if "test" in scripts:
-            install_cmd = ["pnpm", "install"]
-            if (path / "pnpm-lock.yaml").exists():
-                install_cmd.append("--frozen-lockfile")
-            test_cmd = ["pnpm", "test"]
+            setup_commands = ["pnpm install"]
+            dependencies = {
+                **(package_json.get("dependencies") or {}),
+                **(package_json.get("devDependencies") or {}),
+            }
+            if "buckyos" in dependencies:
+                setup_commands.append("pnpm update buckyos")
+            setup_commands.append("pnpm test")
             return RunnerSpec(
                 module_name=path.name,
                 path=path,
                 kind="node",
-                command=["bash", "-lc", f"{' '.join(install_cmd)} && {' '.join(test_cmd)}"],
+                command=["bash", "-lc", " && ".join(setup_commands)],
                 cwd=path,
             )
 
