@@ -118,11 +118,15 @@ def legacy_xls() -> bytes:
 
 def office_documents() -> list[Path]:
     doc = ROOT / "facts.doc"
-    doc.write_bytes(r"{\rtf1\ansi AICC-FIXTURE-7319 owner Lin budget 4827}".encode())
+    doc_data = doc.read_bytes()
+    if not doc_data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") or "WordDocument".encode("utf-16le") not in doc_data:
+        raise ValueError("facts.doc must be a genuine OLE Word binary fixture")
     xls = ROOT / "facts.xls"
     xls.write_bytes(legacy_xls())
     ppt = ROOT / "facts.ppt"
-    ppt.write_bytes(f"PowerPoint\n{MARKER}\nowner Lin\nbudget 4827\n".encode())
+    ppt_data = ppt.read_bytes()
+    if not ppt_data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1") or "PowerPoint Document".encode("utf-16le") not in ppt_data:
+        raise ValueError("facts.ppt must be a genuine OLE PowerPoint binary fixture")
     docx = package("facts.docx", [
         ("[Content_Types].xml", b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>', False),
         ("_rels/.rels", b'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>', False),
@@ -303,7 +307,13 @@ def main() -> None:
     }
     for path in documents + media_paths + archive_paths + [zero, mismatch]:
         facts = [MARKER] if path.name.startswith("facts") or path.suffix in {".srt"} else [path.stem]
-        records.append((path, mime_by_suffix[path.suffix], facts, ["T1.resource", "T2.format", "T3.attachment"], "deterministic:generate_fixtures.py"))
+        source = "deterministic:generate_fixtures.py"
+        if path.name == "facts.doc":
+            facts = ["I am a test document", "This is page 1"]
+            source = "Apache POI SampleDoc.doc test fixture"
+        elif path.name == "facts.ppt":
+            source = "prebuilt:Microsoft PowerPoint 97 binary fixture"
+        records.append((path, mime_by_suffix[path.suffix], facts, ["T1.resource", "T2.format", "T3.attachment"], source))
     for name, mime, facts in [
         ("image_primary.png", "image/png", ["pink flower"]),
         ("image_secondary.png", "image/png", ["mountain road"]),

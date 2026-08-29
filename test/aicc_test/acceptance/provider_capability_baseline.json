@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-27.3",
-  "checked_at": "2026-08-27",
+  "baseline_revision": "2026-08-29.1",
+  "checked_at": "2026-08-29",
   "canonical_api_types": [
     "llm",
     "embedding.text",
@@ -54,76 +54,6 @@
         "preview_allowlist": "Preview and restricted models may require explicit account access; missing access remains a matrix result rather than removing the model."
       },
       "coverage_rules": [
-        {
-          "model_pattern": "gpt-3*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "GPT-3 generation models are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-4*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "GPT-4 generation models are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5:*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Variants of pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5-*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5.1*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5.2*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5.3*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5.4*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
-        {
-          "model_pattern": "gpt-5.5*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
-          "evidence_summary": "Pre-5.6 GPT generations are outside current acceptance calls."
-        },
         {
           "model_pattern": "*-latest:*",
           "action": "exclude",
@@ -352,18 +282,25 @@
       },
       "coverage_rules": [
         {
-          "model_pattern": "claude-opus-4-*",
+          "model_pattern": "claude-opus-4-20250514*",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
           "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
-          "evidence_summary": "T2 keeps the current Opus family representative and excludes older catalog generations."
+          "evidence_summary": "Claude Opus 4 was retired from the Claude API on June 15, 2026."
         },
         {
-          "model_pattern": "claude-sonnet-4-*",
+          "model_pattern": "claude-opus-4-1-20250805*",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
           "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
-          "evidence_summary": "T2 keeps the current Sonnet family representative and excludes older catalog generations."
+          "evidence_summary": "Claude Opus 4.1 was retired from the Claude API on August 5, 2026."
+        },
+        {
+          "model_pattern": "claude-sonnet-4-20250514*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://platform.claude.com/docs/en/about-claude/model-deprecations"],
+          "evidence_summary": "Claude Sonnet 4 was retired from the Claude API on June 15, 2026."
         },
         {
           "model_pattern": "claude-3-5-haiku-20241022*",
@@ -419,34 +356,6 @@
         "preview_allowlist": "Preview/experimental models can have tier or allowlist restrictions and remain explicit matrix outcomes."
       },
       "coverage_rules": [
-        {
-          "model_pattern": "gemini-3.6-*",
-          "action": "exclude",
-          "reason": "not_physical_model",
-          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
-          "evidence_summary": "The catalog entry is not currently exposed through generateContent for this account."
-        },
-        {
-          "model_pattern": "gemini-2.5-*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
-          "evidence_summary": "AICC inventory convergence keeps the newest available Gemini generation."
-        },
-        {
-          "model_pattern": "gemini-3.1-*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
-          "evidence_summary": "AICC inventory convergence keeps the newest available Gemini generation."
-        },
-        {
-          "model_pattern": "gemini-3.5-*",
-          "action": "exclude",
-          "reason": "deprecated_or_retiring",
-          "source_urls": ["https://ai.google.dev/gemini-api/docs/deprecations"],
-          "evidence_summary": "AICC inventory convergence keeps the newest available Gemini generation."
-        },
         {
           "model_pattern": "gemini-robotics-er-2-streaming-preview",
           "action": "exclude",
@@ -642,16 +551,6 @@
           "document_formats": ["txt", "md", "pdf", "csv", "html", "xml", "json", "rtf", "source"],
           "source_urls": ["https://ai.google.dev/gemini-api/docs/models", "https://ai.google.dev/gemini-api/docs/document-processing", "https://ai.google.dev/api/generate-content"],
           "evidence_summary": "Gemini multimodal models accept PDF document vision and documented text/code MIME types; non-PDF documents are extracted as text."
-        },
-        {
-          "model_pattern": "*",
-          "status": "removed",
-          "api_types": [],
-          "methods": [],
-          "input_kinds": [],
-          "output_kinds": [],
-          "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
-          "evidence_summary": "Catalog entries outside the Gemini API families implemented by AICC are not callable through this adapter."
         }
       ]
     },
@@ -718,16 +617,6 @@
           "output_kinds": ["video"],
           "source_urls": ["https://fal.ai/models/fal-ai/video-upscaler/api"],
           "evidence_summary": "The fal video upscaler applies RealESRGAN to video frames."
-        },
-        {
-          "model_pattern": "*",
-          "status": "removed",
-          "api_types": [],
-          "methods": [],
-          "input_kinds": [],
-          "output_kinds": [],
-          "source_urls": ["https://fal.ai/docs/model-api-reference"],
-          "evidence_summary": "FAL catalog endpoints without an AICC canonical adapter mapping are outside the tested protocol surface."
         }
       ]
     },
@@ -750,7 +639,7 @@
         "image_audio_video_limits": "The model catalog publishes media-specific resolution, duration, FPS, language, and format limits where applicable.",
         "context_output_limits": "Physical language models publish context/output limits; for example the catalog records model-specific 200K/1M context and output limits.",
         "region_restrictions": "Availability follows the MiniMax platform account region and endpoint documentation.",
-        "account_tier_restrictions": "Paid API and token-plan access can restrict models; missing credentials or entitlement is retained as a skipped matrix result.",
+        "account_tier_restrictions": "Paid API and token-plan access can restrict models; missing configured credentials are handled by preflight, while runtime entitlement errors are reported as provider_restricted matrix results.",
         "preview_allowlist": "Preview and newly released models require explicit catalog/account availability."
       },
       "rules": [

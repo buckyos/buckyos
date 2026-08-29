@@ -70,6 +70,33 @@ function judgeResource(
   };
 }
 
+export function parseJudgeVerdict(text: string, threshold: number): {
+  passed: boolean;
+  score: number;
+  reason: string;
+} {
+  let verdict: unknown;
+  try {
+    verdict = JSON.parse(text.trim());
+  } catch (error) {
+    throw new JudgeError(`Judge returned invalid JSON: ${String(error)}`);
+  }
+  const record = object(verdict);
+  const keys = record ? Object.keys(record).sort() : [];
+  if (!record || keys.join(",") !== "pass,reason,score" ||
+    typeof record.pass !== "boolean" || typeof record.score !== "number" ||
+    !Number.isFinite(record.score) || record.score < 0 || record.score > 1 ||
+    typeof record.reason !== "string" || record.reason.trim().length === 0 ||
+    record.reason.length > 240 || (record.score < threshold && record.pass)) {
+    throw new JudgeError(`Judge verdict has invalid schema: ${JSON.stringify(verdict)}`);
+  }
+  return {
+    passed: record.pass && record.score >= threshold,
+    score: record.score,
+    reason: record.reason,
+  };
+}
+
 export function selectJudgeModel(configuredModel: string, inventories: ProviderInventory[]): string {
   if (configuredModel !== "llm.plan.default") return configuredModel;
   const candidates = inventories.flatMap((inventory) => inventory.models
@@ -162,7 +189,7 @@ export async function runJudge(input: {
   const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; input_resources=${sourceResources.length}; output_resources=${outputResourcesForJudge.length}`;
   const content: Array<Record<string, unknown>> = [{
     type: "text",
-    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nArtifact audit observations:\n${observations}\nFor PNG output, alpha_min below 255 or transparent_pixels above zero is authoritative evidence of transparency even if the viewer renders it on white.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
+    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nArtifact audit observations:\n${observations}\nFor background-removal PNG output, transparent_ratio >= 0.1 and opaque_ratio >= 0.01 are deterministic evidence that both removed background and retained foreground regions exist; also inspect subject integrity.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
   }];
   const resources = [...sourceResources, ...outputResourcesForJudge]
     .map((resource) => resource.source)
@@ -204,29 +231,13 @@ export async function runJudge(input: {
   const initial = await input.invoke(request);
   const result = await terminal(input.taskManager, initial, input.timeoutMs);
   const text = responseText(result).join("\n");
-  const match = /\{[\s\S]*\}/.exec(text);
-  if (!match) throw new JudgeError(`Judge returned no JSON object: ${text.slice(0, 500)}`);
-  let verdict: unknown;
-  try {
-    verdict = JSON.parse(match[0]);
-  } catch (error) {
-    throw new JudgeError(`Judge returned invalid JSON: ${String(error)}`);
-  }
-  const record = object(verdict);
-  const reason = record && ["reason", "reasoning", "details", "explanation", "rationale"]
-    .map((key) => record[key])
-    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
-  if (!record || typeof record.pass !== "boolean" || typeof record.score !== "number" ||
-    !Number.isFinite(record.score) || record.score < 0 || record.score > 1 ||
-    (record.score < input.threshold && record.pass)) {
-    throw new JudgeError(`Judge verdict has invalid schema: ${JSON.stringify(verdict)}`);
-  }
+  const verdict = parseJudgeVerdict(text, input.threshold);
   return {
     taskId: initial.task_id,
     terminalResponse: result,
-    passed: record.pass && record.score >= input.threshold,
-    score: record.score,
-    reason: reason ?? `Judge returned pass=${record.pass} score=${record.score}`,
+    passed: verdict.passed,
+    score: verdict.score,
+    reason: verdict.reason,
     inputSummary,
   };
 }

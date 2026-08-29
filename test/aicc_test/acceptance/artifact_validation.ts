@@ -116,7 +116,9 @@ async function pngMetadata(bytes: Uint8Array, view: DataView): Promise<Record<st
   const stride = width * bytesPerPixel;
   let source = 0;
   let alphaMin = 255;
+  let alphaMax = 0;
   let transparentPixels = 0;
+  let opaquePixels = 0;
   let previous = new Uint8Array(stride);
   const paeth = (left: number, up: number, upperLeft: number): number => {
     const estimate = left + up - upperLeft;
@@ -144,11 +146,35 @@ async function pngMetadata(bytes: Uint8Array, view: DataView): Promise<Record<st
     }
     for (let alpha = bytesPerPixel - 1; alpha < stride; alpha += bytesPerPixel) {
       alphaMin = Math.min(alphaMin, current[alpha]);
-      if (current[alpha] === 0) transparentPixels += 1;
+      alphaMax = Math.max(alphaMax, current[alpha]);
+      if (current[alpha] < 255) transparentPixels += 1;
+      if (current[alpha] === 255) opaquePixels += 1;
     }
     previous = current;
   }
-  return { ...metadata, alpha_min: alphaMin, transparent_pixels: transparentPixels };
+  const pixelCount = width * height;
+  return {
+    ...metadata,
+    alpha_min: alphaMin,
+    alpha_max: alphaMax,
+    transparent_pixels: transparentPixels,
+    opaque_pixels: opaquePixels,
+    transparent_ratio: transparentPixels / pixelCount,
+    opaque_ratio: opaquePixels / pixelCount,
+  };
+}
+
+export function assertBackgroundRemovalTransparency(audits: ArtifactAudit[]): void {
+  const metadata = audits.find((audit) => audit.metadata?.format === "png")?.metadata;
+  const transparentRatio = Number(metadata?.transparent_ratio);
+  const opaqueRatio = Number(metadata?.opaque_ratio);
+  if (!Number.isFinite(transparentRatio) || !Number.isFinite(opaqueRatio) ||
+    transparentRatio < 0.1 || opaqueRatio < 0.01) {
+    throw new Error(
+      `background removal requires meaningful transparent and retained foreground regions; ` +
+      `transparent_ratio=${String(metadata?.transparent_ratio)} opaque_ratio=${String(metadata?.opaque_ratio)}`,
+    );
+  }
 }
 
 async function artifactMetadata(bytes: Uint8Array, label = ""): Promise<Record<string, number | string> | undefined> {

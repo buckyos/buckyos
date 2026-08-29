@@ -18,7 +18,7 @@ import {
   type ResourceRef,
 } from "./payloads.ts";
 import { runPreflight } from "./preflight.ts";
-import { defectFromFailure, writeReport } from "./report.ts";
+import { defectFromFailure, isProviderRestricted, writeReport } from "./report.ts";
 import type {
   AcceptanceReport,
   CaseReport,
@@ -49,7 +49,13 @@ import {
   type ProviderTokens,
 } from "./provider_credentials.ts";
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
-import { validateArtifactBytes, validateNamedArtifact, type ArtifactAudit, type ReadableNamedData } from "./artifact_validation.ts";
+import {
+  assertBackgroundRemovalTransparency,
+  validateArtifactBytes,
+  validateNamedArtifact,
+  type ArtifactAudit,
+  type ReadableNamedData,
+} from "./artifact_validation.ts";
 import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
@@ -680,11 +686,6 @@ function retryable(error: unknown): boolean {
   ].some((marker) => message.includes(marker)) || /\b5\d\d\b/.test(message);
 }
 
-function credentialUnavailable(error: unknown): boolean {
-  const message = String(error).toLowerCase();
-  return message.includes("request not allowed");
-}
-
 function estimatedCellCost(cell: { estimated_cost_usd?: number }, fallback: number): number {
   return typeof cell.estimated_cost_usd === "number" &&
       Number.isFinite(cell.estimated_cost_usd) && cell.estimated_cost_usd >= 0
@@ -714,48 +715,6 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "video.upscale") return ["The output preserves the supplied video content at improved resolution or visual quality."];
   if (apiType === "agent.computer_use") return ["The result reports the title visible in the supplied test environment and does not invent an action result."];
   return [];
-}
-
-function selectWithinRunBudget(
-  cells: MatrixCell[],
-  options: Pick<Options, "maxAttempts" | "maxRealCalls" | "maxCostUsd" | "estimatedCostPerCallUsd" | "judgeEnabled">,
-): MatrixCell[] {
-  const groups = new Map<string, MatrixCell[]>();
-  for (const cell of cells) {
-    const key = `${cell.provider_driver}\0${cell.api_type}\0${cell.method}`;
-    const group = groups.get(key) ?? [];
-    group.push(cell);
-    groups.set(key, group);
-  }
-  const queues = [...groups.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, group]) => group);
-  const selected: MatrixCell[] = [];
-  let calls = 0;
-  let cost = 0;
-  while (queues.length > 0) {
-    let admitted = false;
-    for (let index = 0; index < queues.length;) {
-      const cell = queues[index].shift();
-      if (!cell) {
-        queues.splice(index, 1);
-        continue;
-      }
-      const judgeCalls = options.judgeEnabled && semanticRubric(cell).length > 0 ? 1 : 0;
-      const nextCalls = options.maxAttempts + judgeCalls;
-      const nextCost = estimatedCellCost(cell, options.estimatedCostPerCallUsd) * options.maxAttempts +
-        judgeCalls * options.estimatedCostPerCallUsd;
-      if (calls + nextCalls <= options.maxRealCalls && cost + nextCost <= options.maxCostUsd) {
-        selected.push(cell);
-        calls += nextCalls;
-        cost += nextCost;
-        admitted = true;
-      }
-      index += 1;
-    }
-    if (!admitted) break;
-  }
-  return selected;
 }
 
 function artifactSources(value: unknown, depth = 0): Array<Record<string, unknown>> {
@@ -990,7 +949,9 @@ async function main(): Promise<void> {
   );
   if (cleanupFailure) Deno.exitCode = 1;
   if (outcome.report.cases.some((item) => item.status === "failed")) Deno.exitCode = 1;
-  else if (outcome.report.cases.some((item) => item.status === "skipped" || item.status === "review")) Deno.exitCode = 2;
+  else if (outcome.report.cases.some((item) =>
+    item.status === "provider_restricted" || item.status === "skipped" || item.status === "review"
+  )) Deno.exitCode = 2;
 }
 
 async function executeAcceptance(input: {
@@ -1079,13 +1040,9 @@ async function executeAcceptance(input: {
     left.case_id.localeCompare(right.case_id)
   );
   const requestedCases = new Set(options.caseIds);
-  let selectedCells = requestedCases.size > 0
+  const selectedCells = requestedCases.size > 0
     ? sortedCells.filter((cell) => requestedCases.has(cell.case_id))
     : sortedCells.filter((_, index) => index % options.shardCount === options.shardIndex);
-  const unsampledCellCount = selectedCells.length;
-  if (requestedCases.size === 0) {
-    selectedCells = selectWithinRunBudget(selectedCells, options);
-  }
   const filteredRequestedCases = new Map<string, typeof matrix.coverage>();
   for (const caseId of requestedCases) {
     if (sortedCells.some((cell) => cell.case_id === caseId)) continue;
@@ -1270,9 +1227,6 @@ async function executeAcceptance(input: {
   console.log(`[plan] run_id=${runId}`);
   console.log(`[plan] providers=${selectedDrivers.join(",")}`);
   console.log(`[plan] shard=${options.shardIndex + 1}/${options.shardCount} full_matrix_cases=${matrix.cells.length}`);
-  if (selectedCells.length < unsampledCellCount) {
-    console.log(`[plan] budget_sample selected=${selectedCells.length} eligible=${unsampledCellCount}`);
-  }
   if (requestedCases.size > 0) console.log(`[plan] targeted_cases=${selectedCells.length}`);
   console.log(`[plan] cases=${plannedCases} max_attempts=${options.maxAttempts} max_possible_calls=${plannedCalls} max_calls=${options.maxRealCalls}`);
   console.log(`[plan] concurrency global=${options.globalConcurrency} provider_default=${options.providerLimits.maxConcurrency} interval_default_ms=${options.providerLimits.minIntervalMs}`);
@@ -1435,6 +1389,9 @@ async function executeAcceptance(input: {
             gatewayUrl: options.gatewayUrl,
             sessionToken: session.sessionToken,
           });
+          if (cell.api_type === "image.bg_remove") {
+            assertBackgroundRemovalTransparency(artifacts.audits);
+          }
           caseReport.artifact_ids = artifacts.ids;
           caseReport.artifact_audits = artifacts.audits;
           const finance = extractFinance(terminal);
@@ -1572,8 +1529,9 @@ async function executeAcceptance(input: {
           });
           break;
         } catch (error) {
-          const unavailable = credentialUnavailable(error);
-          caseReport.status = unavailable ? "skipped" : "failed";
+          const providerRestricted = isProviderRestricted(error);
+          const errorStatus = providerRestricted ? "provider_restricted" : "failed";
+          caseReport.status = errorStatus;
           if (reservation && !reservationSettled) {
             costBudget.settle(reservation);
             financialEntries.push({
@@ -1585,7 +1543,7 @@ async function executeAcceptance(input: {
               api_type: cell.api_type,
               method: cell.method,
               started_at: new Date(started).toISOString(),
-              status: unavailable ? "skipped" : "failed",
+              status: errorStatus,
               estimated_cost_usd: attemptEstimate,
               cost_status: "unknown",
             });
@@ -1594,16 +1552,15 @@ async function executeAcceptance(input: {
             attempt,
             started_at: new Date(started).toISOString(),
             elapsed_ms: Date.now() - started,
-            status: unavailable ? "skipped" : "failed",
-            failure_class: unavailable ? undefined : failureClass(error),
-            diagnostic: unavailable
-              ? `configured credential cannot access this model: ${String(error)}`
+            status: errorStatus,
+            failure_class: providerRestricted ? "platform_limitation" : failureClass(error),
+            diagnostic: providerRestricted
+              ? `Provider restriction: ${String(error)}`
               : String(error),
             estimated_cost_usd: reservation ? attemptEstimate : 0,
             cost_status: reservation ? "unknown" : "not_called",
           });
-          if (unavailable) break;
-          if (attempt >= options.maxAttempts || !retryable(error)) break;
+          if (providerRestricted || attempt >= options.maxAttempts || !retryable(error)) break;
           if (options.retryDelayMs > 0) {
             await new Promise((resolvePromise) => setTimeout(resolvePromise, options.retryDelayMs));
           }

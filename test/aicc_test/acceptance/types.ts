@@ -1,6 +1,7 @@
 export const RESULT_STATUSES = [
   "passed",
   "failed",
+  "provider_restricted",
   "skipped",
   "not_applicable",
   "review",

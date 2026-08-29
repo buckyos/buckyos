@@ -12,7 +12,7 @@ import {
   validateProviderBaseline,
 } from "./manifest.ts";
 import { runPreflight } from "./preflight.ts";
-import { assertNoSecrets, caseTotals, redact } from "./report.ts";
+import { assertNoSecrets, caseTotals, isProviderRestricted, redact } from "./report.ts";
 import { buildMockSettings, configValue } from "./mock_settings.ts";
 import { withAiccSettingsOverride, withMockSettings } from "./settings_transaction.ts";
 import { ProviderScheduler } from "./scheduler.ts";
@@ -27,8 +27,12 @@ import { bindOfficialCatalogInstances, fetchOfficialModelIds } from "./official_
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
-import { validateArtifactBytes, validateNamedArtifact } from "./artifact_validation.ts";
-import { outputResources, responseText, selectJudgeModel } from "./judge.ts";
+import {
+  assertBackgroundRemovalTransparency,
+  validateArtifactBytes,
+  validateNamedArtifact,
+} from "./artifact_validation.ts";
+import { outputResources, parseJudgeVerdict, responseText, selectJudgeModel } from "./judge.ts";
 import { parseToml } from "../../jarvis_media_dv/config.ts";
 import {
   ASSET_LABEL,
@@ -70,6 +74,18 @@ test("judge model selection prefers current exact Gemini and honors overrides", 
     "gemini-3.7-flash@google-gemini-main",
   );
   assert.equal(selectJudgeModel("custom@judge", inventories), "custom@judge");
+});
+
+test("Judge verdict parser enforces the requested strict schema", () => {
+  assert.deepEqual(parseJudgeVerdict('{"pass":true,"score":0.9,"reason":"meets rubric"}', 0.8), {
+    passed: true,
+    score: 0.9,
+    reason: "meets rubric",
+  });
+  assert.throws(() => parseJudgeVerdict('{"pass":true,"score":0.9,"reasoning":"ok"}', 0.8));
+  assert.throws(() => parseJudgeVerdict('{"pass":true,"score":0.9,"reason":"ok","extra":1}', 0.8));
+  assert.throws(() => parseJudgeVerdict(`{"pass":true,"score":0.9,"reason":"${"x".repeat(241)}"}`, 0.8));
+  assert.throws(() => parseJudgeVerdict('prefix {"pass":true,"score":0.9,"reason":"ok"}', 0.8));
 });
 
 test("shared TOML parser accepts finite decimal and exponent numbers", () => {
@@ -1008,6 +1024,21 @@ test("T2 LLM output variants build and assert JSON schema and tool-call contract
   }));
 });
 
+test("active official model families are not excluded by lifecycle filters", async () => {
+  const providerBaseline = await baseline();
+  const rules = (driver: string) => providerBaseline.providers
+    .find((provider) => provider.provider_driver === driver)?.coverage_rules ?? [];
+  assert.equal(rules("openai").some((rule) => rule.model_pattern === "gpt-5.5*"), false);
+  assert.equal(rules("claude").some((rule) => rule.model_pattern === "claude-opus-4-*"), false);
+  assert.equal(rules("google-gemini").some((rule) =>
+    ["gemini-2.5-*", "gemini-3.1-*", "gemini-3.5-*", "gemini-3.6-*"].includes(rule.model_pattern)
+  ), false);
+  for (const driver of ["google-gemini", "fal"]) {
+    assert.equal(providerBaseline.providers.find((provider) => provider.provider_driver === driver)
+      ?.rules.some((rule) => rule.model_pattern === "*" && rule.status === "removed"), false);
+  }
+});
+
 test("T2 Veo extension requests the protocol-fixed seven second duration", () => {
   const request = buildExactRequest({
     cell: {
@@ -1162,16 +1193,24 @@ test("report redaction removes secrets and totals statuses", () => {
     nested: { authorization: "[REDACTED]" },
   });
   assert.doesNotThrow(() => assertNoSecrets(safe));
-  assert.equal(caseTotals([{
+  const base = {
     run_id: "run",
-    case_id: "case",
     layer: "T1",
-    status: "passed",
     method: "llm.chat",
     outbound_message_ids: [],
     artifact_ids: [],
     attempts: [],
-  }]).passed, 1);
+  } as const;
+  const totals = caseTotals([
+    { ...base, case_id: "passed", status: "passed" },
+    { ...base, case_id: "restricted", status: "provider_restricted" },
+  ]);
+  assert.equal(totals.passed, 1);
+  assert.equal(totals.provider_restricted, 1);
+  assert.equal(totals.failed, 0);
+  assert.equal(totals.skipped, 0);
+  assert.equal(isProviderRestricted(new Error("request not allowed for this model")), true);
+  assert.equal(isProviderRestricted(new Error("provider request failed")), false);
 });
 
 test("named artifact validation reads and verifies ZIP entries", async () => {
@@ -1192,6 +1231,19 @@ test("named artifact validation reads and verifies ZIP entries", async () => {
   assert.ok((audit.archive_entries?.length ?? 0) > 0);
 });
 
+test("legacy DOC and PPT fixtures are genuine OLE Office binaries", async () => {
+  for (const [name, stream] of [
+    ["facts.doc", "WordDocument"],
+    ["facts.ppt", "PowerPoint Document"],
+  ] as const) {
+    const bytes = await readFile(join(here, "../fixtures", name));
+    assert.deepEqual([...bytes.subarray(0, 8)], [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    assert.ok(bytes.includes(Buffer.from(stream, "utf16le")), `${name} is missing ${stream} OLE stream`);
+  }
+  assert.ok((await readFile(join(here, "../fixtures/facts.doc"))).includes("I am a test document"));
+  assert.ok((await readFile(join(here, "../fixtures/facts.ppt"))).includes("AICC-FIXTURE-7319"));
+});
+
 test("artifact validation records media metadata", async () => {
   const png = new Uint8Array(await readFile(join(here, "../fixtures/mask.png")));
   const pngAudit = await validateArtifactBytes(png, { id: "inline", label: "image/png" });
@@ -1200,7 +1252,24 @@ test("artifact validation records media metadata", async () => {
   const transparent = new Uint8Array(await readFile(join(here, "../fixtures/transparent.png")));
   const transparentAudit = await validateArtifactBytes(transparent, { id: "inline", label: "image/png" });
   assert.equal(transparentAudit.metadata?.alpha_min, 0);
+  assert.equal(transparentAudit.metadata?.alpha_max, 255);
   assert.equal(transparentAudit.metadata?.transparent_pixels, 1);
+  assert.equal(transparentAudit.metadata?.opaque_pixels, 1);
+  assert.equal(transparentAudit.metadata?.transparent_ratio, 0.5);
+  assert.equal(transparentAudit.metadata?.opaque_ratio, 0.5);
+  assert.doesNotThrow(() => assertBackgroundRemovalTransparency([transparentAudit]));
+  assert.throws(() => assertBackgroundRemovalTransparency([{
+    ...transparentAudit,
+    metadata: {
+      format: "png",
+      width: 100,
+      height: 100,
+      transparent_pixels: 1,
+      opaque_pixels: 9999,
+      transparent_ratio: 0.0001,
+      opaque_ratio: 0.9999,
+    },
+  }]));
   const wav = new Uint8Array(await readFile(join(here, "../../jarvis_media_dv/assets/audio_speech.wav")));
   const wavAudit = await validateArtifactBytes(wav, { id: "inline", label: "audio/wav" });
   assert.equal(typeof wavAudit.metadata?.sample_rate_hz, "number");

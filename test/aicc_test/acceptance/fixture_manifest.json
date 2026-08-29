@@ -197,17 +197,18 @@
       "id": "facts-doc",
       "path": "../fixtures/facts.doc",
       "mime": "application/msword",
-      "size": 52,
-      "sha256": "9716afae0bd84aa66ca049a8e5ad67f2f9b4f6de89b40960960f1b1d6e976572",
+      "size": 27136,
+      "sha256": "717585c0a88f20862c86220163dd03da87cd743970354c6b29add32725f2e833",
       "facts": [
-        "AICC-FIXTURE-7319"
+        "I am a test document",
+        "This is page 1"
       ],
       "cases": [
         "T1.resource",
         "T2.format",
         "T3.attachment"
       ],
-      "source": "deterministic:generate_fixtures.py"
+      "source": "Apache POI SampleDoc.doc test fixture"
     },
     {
       "id": "facts-docx",
@@ -261,8 +262,8 @@
       "id": "facts-ppt",
       "path": "../fixtures/facts.ppt",
       "mime": "application/vnd.ms-powerpoint",
-      "size": 51,
-      "sha256": "0faa5ad194f443348162973d45ea9df68638333de20bc74ef752412e3cea0887",
+      "size": 85504,
+      "sha256": "2ae3c48fe828d9534cbdd052e0982d92ee3901d6f486974a2533fd38158576e3",
       "facts": [
         "AICC-FIXTURE-7319"
       ],
@@ -271,7 +272,7 @@
         "T2.format",
         "T3.attachment"
       ],
-      "source": "deterministic:generate_fixtures.py"
+      "source": "prebuilt:Microsoft PowerPoint 97 binary fixture"
     },
     {
       "id": "facts-pptx",

@@ -207,6 +207,7 @@ Manifest 解析失败、case id 重复或必要字段缺失时，runner 必须�
 
 - `passed`：全部强制断言通过。
 - `failed`：协议、路由、结构、语义或清理要求失败。
+- `provider_restricted`：请求已到达 Provider，但因账号等级、区域、模型白名单、preview allowlist 或 Provider 服务策略而被拒绝；必须保留脱敏证据，且不能计为通过。
 - `skipped`：环境或凭据缺失；发布强覆盖模式下是否允许由门禁决定。
 - `not_applicable`：官方明确不支持该组合。
 - `review`：结构通过，但仍需人工确认非确定性内容。
@@ -778,7 +779,7 @@ run_id
 
 - 总体、分层、Provider、instance、model、api_type、入口和消息种类统计。
 - baseline revision 和当前版本/commit。
-- planned、passed、failed、skipped、not_applicable、review 数量。
+- planned、passed、failed、provider_restricted、skipped、not_applicable、review 数量。
 - 每次 attempt、耗时、错误码、failure class 和脱敏诊断。
 - T1 路由分支/组合覆盖率。
 - T2 官方能力与 AICC 能力差异。
