@@ -14,10 +14,17 @@ const dappMetaDir = join(rootDir, "dapp_meta");
 const dappDistDir = join(rootDir, "dapp_dist");
 const pikgName = "jarvis.buckyos.bns.did-0.7.0.pikg";
 const rootfsDir = join(rootDir, "..", "..", "rootfs");
+const jarvisSourceDir = join(rootfsDir, "bin", "buckyos_jarvis");
 
-function runPikgTool(args) {
+function runPikgTool(args, { allowRead = [] } = {}) {
   const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-  const result = spawnSync(npx, ["buckyos", ...args], {
+  const toolArgs = ["buckyos"];
+  for (const path of allowRead) {
+    toolArgs.push("--allow-read", path);
+  }
+  toolArgs.push(...args);
+
+  const result = spawnSync(npx, toolArgs, {
     cwd: rootDir,
     stdio: "inherit",
   });
@@ -25,7 +32,7 @@ function runPikgTool(args) {
     throw result.error;
   }
   if (result.status !== 0) {
-    throw new Error(`buckyos ${args.join(" ")} failed with ${result.status}`);
+    throw new Error(`${toolArgs.join(" ")} failed with ${result.status}`);
   }
 }
 
@@ -52,7 +59,9 @@ function installGeneratedFile(source, target) {
   }
 }
 
-runPikgTool(["pikg", "build", dappMetaDir]);
+runPikgTool(["pikg", "build", dappMetaDir], {
+  allowRead: [jarvisSourceDir],
+});
 runPikgTool(["pikg", "pack", dappDistDir]);
 const builtPikg = join(dappDistDir, pikgName);
 runPikgTool(["pikg", "info", builtPikg]);
