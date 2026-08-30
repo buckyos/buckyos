@@ -10,6 +10,29 @@ import make_local_win_installer as winpkg  # noqa: E402
 
 
 class WindowsPackagerTests(unittest.TestCase):
+    def test_windows_cmd_fallback_keeps_cmd_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / "src"
+            dst = root / "dst"
+            src.mkdir()
+            (src / "buckyos.cmd").write_bytes(b"@echo off")
+
+            layout = winpkg.AppLayout(
+                source_rootfs=src,
+                target_rootfs=Path("C:/BuckyOS"),
+                module_paths=["buckyos"],
+                data_paths=[],
+                clean_paths=[],
+                module_source_paths={"buckyos": str(src / "buckyos")},
+                data_source_paths={},
+            )
+
+            winpkg._stage_buckyos_app_root(src_root=src, dst_root=dst, layout=layout)
+
+            self.assertTrue((dst / "buckyos.cmd").is_file())
+            self.assertFalse((dst / "buckyos").exists())
+
     def test_windows_exe_fallback_keeps_exe_filename(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

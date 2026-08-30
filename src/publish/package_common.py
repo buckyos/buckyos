@@ -142,34 +142,31 @@ def source_path_for(
     source_root_override: Path | None = None,
     windows: bool = False,
 ) -> Path:
-    def with_windows_exe(path: Path) -> Path | None:
-        if not windows or path.suffix:
-            return None
-        return path.with_name(path.name + ".exe")
-
-    def existing_or_windows_exe(path: Path) -> Path | None:
+    def existing_or_windows_launcher(path: Path) -> Path | None:
         if path.exists():
             return path
-        exe_path = with_windows_exe(path)
-        if exe_path is not None and exe_path.exists():
-            return exe_path
+        if windows and not path.suffix:
+            for suffix in (".ps1", ".cmd", ".exe"):
+                launcher_path = path.with_name(path.name + suffix)
+                if launcher_path.exists():
+                    return launcher_path
         return None
 
     override_rel = normalize_item_relpath(rel, windows=windows)
     if source_root_override is not None:
         candidate = source_root_override / override_rel
-        existing = existing_or_windows_exe(candidate)
+        existing = existing_or_windows_launcher(candidate)
         if existing is not None:
             return existing
     configured = item_source_paths.get(rel)
     if configured:
         configured_path = Path(configured).resolve()
-        existing = existing_or_windows_exe(configured_path)
+        existing = existing_or_windows_launcher(configured_path)
         if existing is not None:
             return existing
         return configured_path
     fallback = source_rootfs / override_rel
-    existing = existing_or_windows_exe(fallback)
+    existing = existing_or_windows_launcher(fallback)
     if existing is not None:
         return existing
     return fallback

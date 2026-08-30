@@ -101,12 +101,16 @@ class PackageCommonTests(unittest.TestCase):
                 mapped.resolve(),
             )
 
-    def test_source_path_for_windows_exe_fallback(self) -> None:
+    def test_source_path_for_windows_launcher_fallback_order(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "root"
             source_root_override = Path(td) / "stage" / "tool"
+            ps1 = source_root_override / "tool.ps1"
+            cmd = source_root_override / "tool.cmd"
             exe = source_root_override / "tool.exe"
             exe.parent.mkdir(parents=True)
+            ps1.write_bytes(b"ps1")
+            cmd.write_bytes(b"cmd")
             exe.write_bytes(b"exe")
 
             self.assertEqual(
@@ -117,7 +121,7 @@ class PackageCommonTests(unittest.TestCase):
                     source_root_override=source_root_override,
                     windows=True,
                 ),
-                exe,
+                ps1,
             )
 
     def test_source_path_for_does_not_add_exe_on_non_windows(self) -> None:
