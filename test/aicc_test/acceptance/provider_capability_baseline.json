@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-30.5",
+  "baseline_revision": "2026-08-30.6",
   "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
@@ -109,6 +109,160 @@
           "reason": "not_physical_model",
           "source_urls": ["https://developers.openai.com/api/docs/models/all"],
           "evidence_summary": "Moderation is not a canonical AICC API type."
+        },
+        {
+          "model_pattern": "gpt-3.5-turbo*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks the GPT-3.5 Turbo family as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4 as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4-0314",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-4"],
+          "evidence_summary": "The GPT-4 model page no longer lists this retired snapshot as an active model."
+        },
+        {
+          "model_pattern": "gpt-4-0613",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-4"],
+          "evidence_summary": "The official GPT-4 model page marks this snapshot as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4-turbo*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4 Turbo and GPT-4 Turbo Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4.5-preview*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4.5 Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4.1-nano*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4.1 nano as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4o-2024-05-13",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-4o"],
+          "evidence_summary": "The official GPT-4o model page marks this snapshot as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4o-search-preview*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4o Search Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-4o-mini-search-preview*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-4o Mini Search Preview as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5-codex",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5-Codex as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.1-codex*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks all GPT-5.1-Codex tiers as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.2-codex*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.2-Codex as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5 Chat as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.1-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.1 Chat as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.2-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.2 Chat as deprecated."
+        },
+        {
+          "model_pattern": "gpt-5.3-chat*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks GPT-5.3 Chat as deprecated."
+        },
+        {
+          "model_pattern": "o1*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks the o1 family as deprecated."
+        },
+        {
+          "model_pattern": "o3-mini*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks o3-mini as deprecated."
+        },
+        {
+          "model_pattern": "o3-deep-research*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks o3-deep-research as deprecated."
+        },
+        {
+          "model_pattern": "o4-mini*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "The official model catalog marks o4-mini and o4-mini-deep-research as deprecated."
+        },
+        {
+          "model_pattern": "chatgpt-*",
+          "action": "exclude",
+          "reason": "deprecated_or_retiring",
+          "source_urls": ["https://developers.openai.com/api/docs/models/all"],
+          "evidence_summary": "Deprecated ChatGPT aliases are not accepted as current physical API models."
         }
       ],
       "rules": [

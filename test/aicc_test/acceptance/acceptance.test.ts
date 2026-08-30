@@ -1147,6 +1147,9 @@ test("physical model coverage excludes lifecycle and logical aliases while retai
         models: [
           { exact_model: "gpt-image-1@openai-default", provider_model_id: "gpt-image-1", api_types: ["image.txt2img"], logical_mounts: [] },
           { exact_model: "sora-2@openai-default", provider_model_id: "sora-2", api_types: ["video.txt2video"], logical_mounts: [] },
+          { exact_model: "gpt-3.5-turbo@openai-default", provider_model_id: "gpt-3.5-turbo", api_types: ["llm"], logical_mounts: [] },
+          { exact_model: "gpt-5.1-codex-mini@openai-default", provider_model_id: "gpt-5.1-codex-mini", api_types: ["llm"], logical_mounts: [] },
+          { exact_model: "o4-mini@openai-default", provider_model_id: "o4-mini", api_types: ["llm"], logical_mounts: [] },
           { exact_model: "gpt-5.6-sol@openai-default", provider_model_id: "gpt-5.6-sol", api_types: ["llm"], logical_mounts: [] },
           { exact_model: "gpt-5.6-sol:reasoning-high@openai-default", provider_model_id: "gpt-5.6-sol:reasoning-high", provider_actual_model_id: "gpt-5.6-sol", api_types: ["llm"], logical_mounts: [] },
         ],
@@ -1168,6 +1171,9 @@ test("physical model coverage excludes lifecycle and logical aliases while retai
   assert.deepEqual(result.inventories[1].models.map((model) => model.provider_model_id), ["gemini-3.7-flash"]);
   assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-image-1")?.reason, "deprecated_or_retiring");
   assert.equal(result.coverage.find((item) => item.provider_model_id === "sora-2")?.reason, "deprecated_or_retiring");
+  assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-3.5-turbo")?.reason, "deprecated_or_retiring");
+  assert.equal(result.coverage.find((item) => item.provider_model_id === "gpt-5.1-codex-mini")?.reason, "deprecated_or_retiring");
+  assert.equal(result.coverage.find((item) => item.provider_model_id === "o4-mini")?.reason, "deprecated_or_retiring");
   assert.equal(result.coverage.find((item) => item.provider_model_id === "gemini-flash-latest")?.reason, "logical_alias");
   assert.equal(result.coverage.find((item) => item.provider_model_id.includes("reasoning-high"))?.status, "included");
 });

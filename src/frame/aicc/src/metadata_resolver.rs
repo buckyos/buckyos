@@ -2599,4 +2599,38 @@ mod tests {
         );
         assert!(inventory.models.is_empty());
     }
+
+    #[test]
+    fn pattern_exclude_drops_deprecated_openai_model_families() {
+        for model in [
+            "gpt-3.5-turbo",
+            "gpt-4",
+            "gpt-4-turbo",
+            "gpt-4.1-nano",
+            "gpt-4o-search-preview",
+            "gpt-5.1-codex-mini",
+            "o1-pro",
+            "o3-mini",
+            "o3-deep-research",
+            "o4-mini",
+        ] {
+            let inventory = resolve_driver_inventory(
+                "openai-test",
+                ProviderType::CloudApi,
+                "openai",
+                &[DriverModelResolveRequest::new(model, vec![])],
+                None,
+            );
+            assert!(inventory.models.is_empty(), "{model} should be excluded");
+        }
+
+        let inventory = resolve_driver_inventory(
+            "openai-test",
+            ProviderType::CloudApi,
+            "openai",
+            &[DriverModelResolveRequest::new("gpt-4.1", vec![])],
+            None,
+        );
+        assert_eq!(inventory.models.len(), 1);
+    }
 }

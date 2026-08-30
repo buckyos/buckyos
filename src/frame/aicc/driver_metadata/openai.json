@@ -3,7 +3,7 @@
   "schema_version": 4,
   "schema_revision": 1,
   "provider_driver": "openai",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -146,6 +146,94 @@
     },
     {
       "pattern": "*realtime*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-3.5-turbo*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4-0314",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4-0613",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4-turbo*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4.5-preview*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4.1-nano*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4o-2024-05-13",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4o-search-preview*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-4o-mini-search-preview*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5-codex",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.1-codex*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.2-codex*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.1-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.2-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "gpt-5.3-chat*",
+      "exclude": true
+    },
+    {
+      "pattern": "o1*",
+      "exclude": true
+    },
+    {
+      "pattern": "o3-mini*",
+      "exclude": true
+    },
+    {
+      "pattern": "o3-deep-research*",
+      "exclude": true
+    },
+    {
+      "pattern": "o4-mini*",
+      "exclude": true
+    },
+    {
+      "pattern": "chatgpt-*",
       "exclude": true
     },
     {
@@ -425,25 +513,6 @@
       "quality_score": 0.9,
       "latency_class": "normal",
       "cost_class": "medium"
-    },
-    {
-      "pattern": "chatgpt-*",
-      "api_types": ["llm"],
-      "logical_mounts": ["llm.{driver}", "llm.openai.{model}"],
-      "capabilities": {
-        "streaming": true,
-        "tool_call": true,
-        "json_schema": true,
-        "web_search": true,
-        "vision": true,
-        "max_context_tokens": 128000,
-        "max_output_tokens": 8192
-      },
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.01
-      },
-      "estimated_latency_ms": 1200
     },
     {
       "pattern": "o*",

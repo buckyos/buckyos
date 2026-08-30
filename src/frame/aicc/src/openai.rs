@@ -5935,14 +5935,10 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.4-nano", "llm", false);
         assert_model_mount(&inventory, "gpt-5.4-nano", "llm.gpt-nano", false);
         assert_model_mount(&inventory, "gpt-5-nano", "llm.swift", false);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm.gpt", true);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm", false);
-        assert_model_mount(
-            &inventory,
-            "o1-2024-12-17",
-            "llm.openai.o1-2024-12-17",
-            true,
-        );
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "o1-2024-12-17"));
     }
 
     #[test]
@@ -6067,9 +6063,10 @@ data: [DONE]
         assert_model_mount(&inventory, "gpt-5.4-mini-2026-03-17", "llm.gpt", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.summarize", false);
         assert_model_mount(&inventory, "gpt-5-mini", "llm.remote-mini-old", false);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm.gpt", true);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm", false);
-        assert_model_mount(&inventory, "o1-2024-12-17", "llm.remote-o1", false);
+        assert!(!inventory
+            .models
+            .iter()
+            .any(|model| model.provider_model_id == "o1-2024-12-17"));
     }
 
     #[test]
