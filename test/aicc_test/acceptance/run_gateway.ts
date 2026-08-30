@@ -59,6 +59,10 @@ import {
 import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
 import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
+import {
+  startNdnFixtureService,
+  type NdnFixtureService,
+} from "./ndn_fixture_service.ts";
 
 type Options = {
   configPath: string;
@@ -95,6 +99,10 @@ type Options = {
   shardIndex: number;
   shardCount: number;
   caseIds: string[];
+  ndnGatewayBinary: string;
+  ndnNamedStoreConfigPath: string;
+  ndnGatewayControlUrl: string;
+  ndnSystemRoot: string;
 };
 
 type AiMethodResponse = {
@@ -186,6 +194,7 @@ async function loadDefaultFixtures(
   gatewayUrl: string,
   sessionToken: string,
   uploadNamedObjects: boolean,
+  publicNdnBaseUrl: string | undefined,
   uploadedObjectIds: string[],
 ): Promise<FixtureRefs> {
   const fixtureRevision = "d3aef519a1ab24fcdd5e1e54c6270465d0b28b48";
@@ -265,11 +274,31 @@ async function loadDefaultFixtures(
       await ndmProxy.putChunk(objId, namedBytes);
       uploadedObjectIds.push(objId);
     }
+    const publicUrl = ndmProxy && publicNdnBaseUrl
+      ? `${publicNdnBaseUrl}/${objId}`
+      : defaultUrl;
+    if (publicUrl && ndmProxy) {
+      const response = await fetch(publicUrl);
+      if (!response.ok) {
+        throw new Error(
+          `public NDN fixture download failed with HTTP ${response.status}: ${objId}`,
+        );
+      }
+      const downloaded = new Uint8Array(await response.arrayBuffer());
+      if (
+        downloaded.length !== namedBytes.length ||
+        !downloaded.every((value, index) => value === namedBytes[index])
+      ) {
+        throw new Error(`public NDN fixture content mismatch: ${objId}`);
+      }
+    }
     const result: Partial<Record<ResourceRef["kind"], ResourceRef>> = {
       base64: { kind: "base64", mime, data_base64: base64(bytes) },
       named_object: { kind: "named_object", obj_id: objId },
     };
-    if (defaultUrl) result.url = { kind: "url", url: defaultUrl, mime_hint: mime };
+    if (publicUrl) {
+      result.url = { kind: "url", url: publicUrl, mime_hint: mime };
+    }
     if (configured) {
       if ("kind" in configured) result[configured.kind] = configured;
       else Object.assign(result, configured);
@@ -404,6 +433,14 @@ async function parseOptions(args: string[]): Promise<Options> {
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
     shardCount: tomlNumber(config, "runner.shard_count") ?? 1,
     caseIds: [],
+    ndnGatewayBinary: tomlString(config, "fixtures.ndn_gateway_binary") ??
+      env("AICC_NDN_GATEWAY_BINARY") ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
+    ndnNamedStoreConfigPath: tomlString(config, "fixtures.ndn_named_store_config") ??
+      env("AICC_NDN_NAMED_STORE_CONFIG") ?? "/opt/buckyos/storage/named_store.json",
+    ndnGatewayControlUrl: tomlString(config, "fixtures.ndn_gateway_control_url") ??
+      env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
+    ndnSystemRoot: tomlString(config, "fixtures.ndn_system_root") ??
+      env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
     fixtures: {
       image: resource("image", tomlString(config, "fixtures.image"), "image/png"),
       mask: resource("mask", tomlString(config, "fixtures.mask"), "image/png"),
@@ -821,6 +858,7 @@ async function main(): Promise<void> {
     options.gatewayUrl,
     session.sessionToken,
     false,
+    undefined,
     uploadedFixtureIds,
   );
   const selectedDrivers = options.providers.length > 0
@@ -1242,16 +1280,29 @@ async function executeAcceptance(input: {
     throw new Error(`estimated cost ${estimatedCost} exceeds max_cost_usd ${options.maxCostUsd}`);
   }
 
+  let ndnFixtureService: NdnFixtureService | undefined;
+  await using ndnFixtureCleanup = {
+    [Symbol.asyncDispose]: async () => await ndnFixtureService?.stop(),
+  };
   let executeRealModelCalls = options.allowRealModelCalls;
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     if (executeRealModelCalls) {
+      ndnFixtureService = await startNdnFixtureService({
+        gatewayUrl: options.gatewayUrl,
+        runId,
+        gatewayBinary: options.ndnGatewayBinary,
+        namedStoreConfigPath: options.ndnNamedStoreConfigPath,
+        gatewayControlUrl: options.ndnGatewayControlUrl,
+        systemRoot: options.ndnSystemRoot,
+      });
       options.fixtures = await loadDefaultFixtures(
         configuredFixtures,
         runId,
         options.gatewayUrl,
         session.sessionToken,
         true,
+        ndnFixtureService.publicBaseUrl,
         uploadedFixtureIds,
       );
     } else {

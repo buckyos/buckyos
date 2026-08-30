@@ -25,6 +25,7 @@ import { applyProviderTokens, configuredProviderTokens } from "./provider_creden
 import { filterPhysicalModels } from "./model_coverage.ts";
 import { bindOfficialCatalogInstances, fetchOfficialModelIds } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
+import { buildNdnGatewayConfig, gatewayRouterArgs } from "./ndn_fixture_service.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import {
@@ -45,6 +46,41 @@ import {
 } from "../../jarvis_media_dv/jarvis_media_dv.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+test("T2 fixture NDN service is isolated and routed only for the run lifetime", () => {
+  const config = buildNdnGatewayConfig({
+    controlPort: 13452,
+    dataPort: 34080,
+    routePrefix: "/aicc-test-ndn-run-1",
+    namedStoreConfigPath: "/opt/buckyos/storage/named_store.json",
+  }) as {
+    stacks: Record<string, { bind: string }>;
+    servers: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(config.stacks.__control_server__.bind, "127.0.0.1:13452");
+  assert.equal(config.stacks.aicc_ndn_http.bind, "127.0.0.1:34080");
+  assert.deepEqual(config.servers.aicc_ndn, {
+    type: "cyfs-dir",
+    named_store_config_path: "/opt/buckyos/storage/named_store.json",
+    url_prefix: "/aicc-test-ndn-run-1",
+  });
+  assert.deepEqual(gatewayRouterArgs({
+    action: "add_router",
+    routePrefix: "/aicc-test-ndn-run-1",
+    dataPort: 34080,
+    gatewayControlUrl: "http://127.0.0.1:13451",
+  }), [
+    "add_router",
+    "--id",
+    "server:node_gateway",
+    "--uri",
+    "/aicc-test-ndn-run-1",
+    "--target",
+    "http://127.0.0.1:34080",
+    "--server",
+    "http://127.0.0.1:13451",
+  ]);
+});
 
 test("judge model selection prefers current exact Gemini and honors overrides", () => {
   const inventories: ProviderInventory[] = [
