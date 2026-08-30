@@ -63,7 +63,7 @@ class PackageFileManifestTests(unittest.TestCase):
             ["LICENSE", "README.md", "cli/main.ts"],
         )
 
-    def test_build_does_not_modify_committed_launchers(self) -> None:
+    def _test_build_does_not_modify_committed_launchers(self, *, windows: bool) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             temporary_root = Path(temporary)
             package_root = temporary_root / "package"
@@ -108,7 +108,7 @@ class PackageFileManifestTests(unittest.TestCase):
             }
             release_manifest = temporary_root / "release.json"
             release_manifest.write_text(json.dumps(release), encoding="utf-8")
-            deno = temporary_root / "deno.exe"
+            deno = temporary_root / ("deno.exe" if windows else "deno")
             deno.write_bytes(b"deno")
             sbom = temporary_root / "sbom.json"
             sbom.write_text("{}", encoding="utf-8")
@@ -128,7 +128,7 @@ class PackageFileManifestTests(unittest.TestCase):
                 release_manifest=release_manifest,
                 deno_version="2.9.6",
                 rootfs=rootfs,
-                windows=True,
+                windows=windows,
             )
             with mock.patch.object(MODULE, "verify_artifacts"):
                 MODULE.build(args)
@@ -136,6 +136,17 @@ class PackageFileManifestTests(unittest.TestCase):
             self.assertEqual(posix_launcher.read_bytes(), b"committed posix launcher")
             self.assertEqual(windows_launcher.read_bytes(), b"committed windows launcher")
             self.assertTrue((rootfs / "libexec" / "buckyos-tool" / "distribution.json").is_file())
+            runtime_name = "deno.exe" if windows else "deno"
+            runtime_path = rootfs / "libexec" / "buckyos-tool" / "runtime" / runtime_name
+            self.assertTrue(runtime_path.is_file())
+            if not windows:
+                self.assertTrue(runtime_path.stat().st_mode & 0o100)
+
+    def test_windows_build_does_not_modify_committed_launchers(self) -> None:
+        self._test_build_does_not_modify_committed_launchers(windows=True)
+
+    def test_posix_build_does_not_modify_committed_launchers(self) -> None:
+        self._test_build_does_not_modify_committed_launchers(windows=False)
 
 
 if __name__ == "__main__":
