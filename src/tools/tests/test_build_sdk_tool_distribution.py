@@ -58,6 +58,22 @@ class PackageFileManifestTests(unittest.TestCase):
             ["LICENSE", "README.md", "cli/main.ts"],
         )
 
+    def test_generated_launchers_match_committed_rootfs_files(self) -> None:
+        committed_bin_dir = SCRIPT_PATH.parents[1] / "rootfs" / "bin"
+        with tempfile.TemporaryDirectory() as temporary:
+            generated_bin_dir = Path(temporary) / "bin"
+
+            MODULE.write_launchers(generated_bin_dir, windows=True)
+
+            self.assertEqual(
+                (generated_bin_dir / "buckyos").read_bytes(),
+                (committed_bin_dir / "buckyos").read_bytes(),
+            )
+            self.assertEqual(
+                (generated_bin_dir / "buckyos.cmd").read_bytes(),
+                (committed_bin_dir / "buckyos.cmd").read_bytes(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
