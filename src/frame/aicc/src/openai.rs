@@ -5694,15 +5694,28 @@ data: [DONE]
             .expect("default inventory should include gpt-5.6-sol");
         assert!(gpt.api_types.contains(&ApiType::VisionOcr));
         assert!(gpt.api_types.contains(&ApiType::VisionCaption));
+        assert!(gpt.api_types.contains(&ApiType::ImageTextToImage));
+        assert!(gpt.api_types.contains(&ApiType::ImageToImage));
+        assert!(gpt.capabilities.image_generation);
         assert!(gpt.logical_mounts.iter().any(|mount| mount == "vision.ocr"));
         assert!(gpt
             .logical_mounts
             .iter()
             .any(|mount| mount == "vision.caption"));
-        assert!(inventory
+        assert!(gpt
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "image.txt2img.gpt-5-6-sol"));
+        assert!(gpt
+            .logical_mounts
+            .iter()
+            .any(|mount| mount == "image.img2img.gpt-5-6-sol"));
+        let gpt_image = inventory
             .models
             .iter()
-            .any(|model| model.exact_model == "gpt-image-2@openai-primary"));
+            .find(|model| model.exact_model == "gpt-image-2@openai-primary")
+            .expect("default inventory should include gpt-image-2");
+        assert!(!gpt_image.capabilities.image_generation);
         assert!(!inventory
             .models
             .iter()
@@ -6835,6 +6848,8 @@ data: [DONE]
         for body in [
             json!({"output": [{"type": "image_generation_call", "status": "completed", "result": "not-base64"}]}),
             json!({"output": [{"type": "image_generation_call", "status": "in_progress", "result": "iVBORw0KGgo="}]}),
+            json!({"output": [{"type": "image_generation_call", "status": "failed", "error": {"message": "generation failed"}}]}),
+            json!({"output": [{"type": "message", "status": "completed", "content": [{"type": "refusal", "refusal": "request refused"}]}]}),
             json!({"output": [{"type": "message", "status": "completed"}]}),
         ] {
             assert!(OpenAIProvider::parse_responses_image_artifacts(&body).is_err());

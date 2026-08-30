@@ -617,7 +617,8 @@ mod tests {
     use crate::model_types::{
         CostClass, FallbackRule, LogicalModelDefinition, ModelAttributes, ModelCapabilities,
         ModelDisable, ModelHealth, ModelItem, ModelMetadata, ModelPricing, ModelRequirement,
-        MountMode, OverlayMergeMode, ProviderInventory, QuotaState, RoutePolicy,
+        MountMode, OverlayMergeMode, ProviderInventory, QuotaState, RequiredModelFeatures,
+        RoutePolicy,
     };
 
     fn metadata(
@@ -678,12 +679,16 @@ mod tests {
                 version: None,
                 inventory_revision: Some("r1".to_string()),
                 driver_metadata_generation: 0,
-                models: vec![metadata(
-                    "openai_primary",
-                    "gpt-5.2",
-                    "llm.gpt5",
-                    ProviderType::CloudApi,
-                )],
+                models: vec![{
+                    let mut model = metadata(
+                        "openai_primary",
+                        "gpt-5.2",
+                        "llm.gpt5",
+                        ProviderType::CloudApi,
+                    );
+                    model.capabilities.image_generation = true;
+                    model
+                }],
             })
             .unwrap();
         registry
@@ -825,6 +830,28 @@ mod tests {
             .filtered_candidates
             .iter()
             .any(|item| item.reason == "provider_weight_zero"));
+    }
+
+    #[test]
+    fn required_image_generation_filters_models_without_the_tool() {
+        let registry = registry();
+        let config = session_config();
+        let router = ModelRouter::new(&registry, &config);
+        let policy = RoutePolicy {
+            required_features: RequiredModelFeatures {
+                image_generation: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let resolved = router.resolve(request("llm.plan", policy)).unwrap();
+
+        assert_eq!(resolved.candidates.len(), 1);
+        assert_eq!(resolved.candidates[0].exact_model, "gpt-5.2@openai_primary");
+        assert!(resolved.trace.filtered_candidates.iter().any(|item| {
+            item.exact_model == "claude-sonnet@anthropic" && item.reason == "feature_unsupported"
+        }));
     }
 
     #[test]
