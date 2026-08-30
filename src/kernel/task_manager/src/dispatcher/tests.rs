@@ -187,6 +187,7 @@ fn dispatch_req(key: &str) -> DispatchTaskReq {
         on_behalf_of: None,
         workflow_ref: None,
         parent_task_id: None,
+        storage_domain: None,
     }
 }
 
@@ -287,6 +288,7 @@ async fn dispatch_idempotent_replay_returns_same_task() {
         .unwrap();
     assert_eq!(first.dispatch_id, replay.dispatch_id);
     assert_eq!(first.task_id, replay.task_id);
+    assert_eq!(first.task.storage_domain, StorageDomain::System);
 
     // Same key + different input is a conflict.
     let mut conflicting = dispatch_req("dup");
@@ -297,6 +299,24 @@ async fn dispatch_idempotent_replay_returns_same_task() {
         .await
         .unwrap_err();
     assert!(err.to_string().contains(DISPATCH_ERR_IDEMPOTENCY_CONFLICT));
+
+    let mut different_domain = dispatch_req("dup");
+    different_domain.storage_domain = Some(StorageDomain::User);
+    let err = env
+        .dispatcher
+        .handle_dispatch_task(different_domain, user_ctx("alice", "app-a"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains(DISPATCH_ERR_IDEMPOTENCY_CONFLICT));
+
+    let mut user_dispatch = dispatch_req("dup-user");
+    user_dispatch.storage_domain = Some(StorageDomain::User);
+    let user_task = env
+        .dispatcher
+        .handle_dispatch_task(user_dispatch, user_ctx("alice", "app-a"))
+        .await
+        .unwrap();
+    assert_eq!(user_task.task.storage_domain, StorageDomain::User);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -723,6 +743,8 @@ async fn creating_task_saga_recovers_after_crash() {
             on_behalf_of: "alice".into(),
             zone_trusted_caller: false,
             workflow_ref: None,
+            parent_task_id: None,
+            storage_domain: Some(StorageDomain::User),
             input_digest: compute_input_digest(&json!({"work": "crashed"})),
             created_at: now,
             expires_at: None,
@@ -743,11 +765,44 @@ async fn creating_task_saga_recovers_after_crash() {
         .await
         .unwrap();
 
+    // Simulate the narrower crash window where Task Core committed but the
+    // CreatingTask record did not yet capture task_id.
+    let precreated = env
+        .task_core
+        .trusted_create_promised_task(
+            CreatePromisedTaskReq {
+                name: RAW_TASK_SCHEMA_ID.into(),
+                schema_id: RAW_TASK_SCHEMA_ID.into(),
+                schema_version: Some(1),
+                input: json!({"work": "crashed"}),
+                creator: ActorRef::new("alice", "app-a"),
+                expected_input_digest: Some(compute_input_digest(&json!({"work": "crashed"}))),
+                origin_ref: Some(TaskOriginRef {
+                    kind: TASK_DISPATCHER_SERVICE_NAME.into(),
+                    id: "dsp-crash".into(),
+                }),
+                parent_id: None,
+                child_control_policy: None,
+                policy_preset: None,
+                permission_boundary: false,
+                storage_domain: Some(StorageDomain::User),
+                idempotency_key: "dsp:dsp-crash".into(),
+                wait_reason: Some(TaskWaitReason::with_code(
+                    TaskWaitReasonKind::Dispatch,
+                    "dispatch_pending",
+                )),
+                message: None,
+            },
+            &ActorRef::new("system", "system:task-dispatcher"),
+        )
+        .await
+        .unwrap();
+
     // Recovery completes the saga: task created with the derived idempotency
     // key, record queued, then delivered.
     env.caller.push_offer_accepted("inst-1", "res-1");
     env.caller.push_activated();
-    env.dispatcher.evaluate_once(false).await;
+    env.dispatcher.startup_recovery().await;
 
     let record = env
         .dispatcher
@@ -758,12 +813,15 @@ async fn creating_task_saga_recovers_after_crash() {
         .unwrap();
     assert_eq!(record.status, DispatchStatus::Accepted);
     let task_id = record.task_id.clone().unwrap();
+    assert_eq!(task_id, precreated.task_id);
     let task = env
         .task_core
         .trusted_get_task(&task_id)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(task.storage_domain, StorageDomain::User);
+    assert_ne!(task.outcome, Some(TaskOutcome::Failed));
     assert_eq!(task.idempotency_key, "dsp:dsp-crash");
     assert_eq!(task.creator.user_id, "alice");
 

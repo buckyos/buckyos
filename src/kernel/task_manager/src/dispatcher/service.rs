@@ -353,10 +353,11 @@ impl TaskDispatcherService {
                         kind: TASK_DISPATCHER_SERVICE_NAME.to_string(),
                         id: record.dispatch_id.clone(),
                     }),
-                    parent_id: None,
+                    parent_id: record.auth.parent_task_id.clone(),
                     child_control_policy: None,
                     policy_preset: None,
                     permission_boundary: false,
+                    storage_domain: record.auth.storage_domain,
                     // Deterministically derived from the dispatch id so
                     // replays after a crash find the same task.
                     idempotency_key: format!("dsp:{}", record.dispatch_id),
@@ -461,7 +462,34 @@ impl TaskDispatcherService {
 
     pub async fn startup_recovery(&self) {
         info!("dispatcher.startup_recovery");
+        // First finish any CreatingTask saga whose Task Core insert committed
+        // before the dispatcher record captured its task_id. Otherwise that
+        // live task would look orphaned during StorageDomain recovery.
         self.evaluate_once(true).await;
+        let live_task_ids = match self.db.list_task_ids().await {
+            Ok(task_ids) => task_ids,
+            Err(err) => {
+                warn!(
+                    "dispatcher: durable state is unreadable; treating restored User task bindings as lost: {}",
+                    err
+                );
+                Default::default()
+            }
+        };
+        match self
+            .task_core
+            .recover_lost_user_tasks_by_origin(TASK_DISPATCHER_SERVICE_NAME, &live_task_ids)
+            .await
+        {
+            Ok(count) if count > 0 => {
+                warn!(
+                    "dispatcher: failed {} restored User tasks with runner_lost",
+                    count
+                )
+            }
+            Ok(_) => {}
+            Err(err) => warn!("dispatcher: User task restore recovery failed: {}", err),
+        }
     }
 
     async fn resume_creating_tasks(&self) -> Result<()> {
@@ -1246,7 +1274,10 @@ impl TaskDispatcherHandler for TaskDispatcherService {
             .await?
         {
             let existing_digest = compute_input_digest(&req.input);
-            if existing.auth.input_digest != existing_digest || existing.schema_id != req.schema_id
+            if existing.auth.input_digest != existing_digest
+                || existing.schema_id != req.schema_id
+                || existing.auth.parent_task_id != req.parent_task_id
+                || existing.auth.storage_domain != req.storage_domain
             {
                 return Err(dispatch_err(
                     DISPATCH_ERR_IDEMPOTENCY_CONFLICT,
@@ -1357,6 +1388,8 @@ impl TaskDispatcherHandler for TaskDispatcherService {
                 on_behalf_of,
                 zone_trusted_caller: request_ctx.zone_trusted,
                 workflow_ref: req.workflow_ref.clone(),
+                parent_task_id: req.parent_task_id.clone(),
+                storage_domain: req.storage_domain,
                 input_digest: compute_input_digest(&req.input),
                 created_at: now,
                 expires_at: req.expires_at,

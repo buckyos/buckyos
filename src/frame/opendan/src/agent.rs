@@ -2286,6 +2286,7 @@ impl AIAgent {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(buckyos_api::StorageDomain::System),
                 idempotency_key: format!("ws-task-{}", session_id),
                 retry_of: None,
                 supersedes: None,
@@ -3445,6 +3446,7 @@ runner_id = "agent"
                 schema_id: task.schema_id.clone(),
                 schema_version: task.schema_version,
                 creator: task.creator.clone(),
+                storage_domain: task.storage_domain,
                 executor_kind: task.executor.kind(),
                 phase: task.phase,
                 wait_reason: task.wait_reason.clone(),
@@ -3490,6 +3492,9 @@ runner_id = "agent"
                 input: req.input.clone(),
                 input_digest: buckyos_api::compute_task_input_digest(&req.input),
                 creator: ActorRef::new("user", "opendan"),
+                storage_domain: req
+                    .storage_domain
+                    .unwrap_or(buckyos_api::StorageDomain::System),
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 retry_of: None,
@@ -3768,6 +3773,7 @@ runner_id = "agent"
             input: data,
             input_digest: String::new(),
             creator: ActorRef::new("user", "opendan"),
+            storage_domain: buckyos_api::StorageDomain::System,
             idempotency_key: id.to_string(),
             origin_ref: None,
             retry_of: None,

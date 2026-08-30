@@ -146,6 +146,7 @@ impl TaskDispatch {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(buckyos_api::StorageDomain::System),
                 idempotency_key: format!("opendan-tool-{}", uuid::Uuid::new_v4().simple()),
                 retry_of: None,
                 supersedes: None,

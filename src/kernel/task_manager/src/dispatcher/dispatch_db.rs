@@ -258,6 +258,16 @@ impl DispatchDb {
         row.map(record_from_row).transpose().map_err(db_err)
     }
 
+    pub async fn list_task_ids(&self) -> Result<std::collections::HashSet<TaskId>> {
+        let rows = sqlx::query("SELECT task_id FROM dispatch_record WHERE task_id IS NOT NULL")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
+        rows.into_iter()
+            .map(|row| row.try_get::<String, _>("task_id").map_err(db_err))
+            .collect()
+    }
+
     /// Guarded status/state transition. `expected_status` implements the
     /// dispatcher's own CAS: recovery and the evaluation loop can race, only
     /// one transition wins.
@@ -885,6 +895,8 @@ fn record_from_row(row: AnyRow) -> std::result::Result<DispatchRecord, sqlx::Err
             on_behalf_of: String::new(),
             zone_trusted_caller: false,
             workflow_ref: None,
+            parent_task_id: None,
+            storage_domain: None,
             input_digest: String::new(),
             created_at: 0,
             expires_at: None,

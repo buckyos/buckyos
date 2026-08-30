@@ -66,6 +66,7 @@ fn schedule_task_prompt_text_extracts_source_and_failure() {
         }),
         input_digest: String::new(),
         creator: buckyos_api::ActorRef::new("alice", "buckyos_jarvis"),
+        storage_domain: buckyos_api::StorageDomain::System,
         idempotency_key: "sch-1".to_string(),
         origin_ref: None,
         retry_of: None,

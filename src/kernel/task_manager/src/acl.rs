@@ -357,6 +357,7 @@ pub fn summarize_task(task: &Task) -> TaskSummary {
             app_id: task.creator.app_id.clone(),
             app_instance_id: None,
         },
+        storage_domain: task.storage_domain,
         executor_kind: task.executor.kind(),
         phase: task.phase,
         wait_reason: task.wait_reason.clone(),

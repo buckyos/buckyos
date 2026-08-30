@@ -886,6 +886,8 @@ mod tests {
                 on_behalf_of: "alice".to_string(),
                 zone_trusted_caller: false,
                 workflow_ref: None,
+                parent_task_id: None,
+                storage_domain: Some(buckyos_api::StorageDomain::System),
                 input_digest: "digest".to_string(),
                 created_at: 1,
                 expires_at: None,

@@ -2,7 +2,7 @@ use crate::redaction::{redact_text, REDACTION_VERSION};
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    get_buckyos_api_runtime, ActorRef, CreateDelegatedTaskReq, TaskPhase,
+    get_buckyos_api_runtime, ActorRef, CreateDelegatedTaskReq, StorageDomain, TaskPhase,
     DIAGNOSTIC_COLLECT_TASK_SCHEMA_ID,
 };
 use buckyos_http_server::*;
@@ -120,6 +120,7 @@ impl ControlPanelServer {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(StorageDomain::System),
                 idempotency_key,
                 retry_of: None,
                 supersedes: None,

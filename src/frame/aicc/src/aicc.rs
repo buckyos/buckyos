@@ -1022,6 +1022,7 @@ impl AIComputeCenter {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: None,
                 idempotency_key: format!("aicc:{external_task_id}"),
                 retry_of: None,
                 supersedes: None,
@@ -6092,9 +6093,9 @@ mod tests {
     use buckyos_api::{
         AckControlReq, AddTaskNoteReq, AiPayload, AiTaskOptions, CommitResultReq, CreateTaskReq,
         GetTaskReq, ListTaskNotesReq, ListTasksReq, ModelSpec, ReportProgressReq, ReportStartedReq,
-        RequestControlReq, RequestControlResult, Requirements, Task, TaskControlRequest,
-        TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote, TaskOutcome,
-        TaskSummaryPage, TypedTaskData,
+        RequestControlReq, RequestControlResult, Requirements, StorageDomain, Task,
+        TaskControlRequest, TaskExecutor, TaskManagerClient, TaskManagerHandler, TaskNote,
+        TaskOutcome, TaskSummaryPage, TypedTaskData,
     };
     use serde_json::json;
     use std::collections::{HashMap, VecDeque};
@@ -6208,6 +6209,7 @@ mod tests {
                 input: req.input.clone(),
                 input_digest: buckyos_api::compute_task_input_digest(&req.input),
                 creator: buckyos_api::ActorRef::new("tester", "aicc"),
+                storage_domain: req.storage_domain.unwrap_or(StorageDomain::System),
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 retry_of: None,
@@ -6274,6 +6276,7 @@ mod tests {
                     schema_id: task.schema_id.clone(),
                     schema_version: task.schema_version,
                     creator: task.creator.clone(),
+                    storage_domain: task.storage_domain,
                     executor_kind: task.executor.kind(),
                     phase: task.phase,
                     wait_reason: task.wait_reason.clone(),
@@ -7406,6 +7409,7 @@ mod tests {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(StorageDomain::System),
                 idempotency_key: "behavior-parent".to_string(),
                 retry_of: None,
                 supersedes: None,

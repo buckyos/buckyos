@@ -1429,6 +1429,7 @@ impl InstallTaskStore for TaskMgrInstallStore {
                 child_control_policy: None,
                 policy_preset: None,
                 permission_boundary: false,
+                storage_domain: Some(buckyos_api::StorageDomain::System),
                 idempotency_key: idempotency_key.to_string(),
                 retry_of: retry_of.map(ToOwned::to_owned),
                 supersedes: None,

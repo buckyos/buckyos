@@ -32,17 +32,24 @@ pub const TASK_MANAGER_SERVICE_PORT: u16 = 3380;
 /// (when it calls `get_rdb_instance`).
 pub const TASK_MANAGER_RDB_INSTANCE_ID: &str = "task-mgr-main";
 
-/// Version of the Task Core durable schema. v7 is the TaskMgr 2.0 model:
+/// Version of the Task Core durable schema. v8 adds immutable StorageDomain
+/// routing and schema-level defaults to the TaskMgr 2.0 model:
 /// opaque string task ids, immutable input, one-shot result, composite
 /// phase, executor binding with runner epoch, ACL grants and durable events.
-pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 7;
+pub const TASK_MANAGER_RDB_SCHEMA_VERSION: u64 = 8;
 
 /// Sqlite DDL for the Task Core database. `CREATE TABLE IF NOT EXISTS` so the
 /// bootstrap is safe to re-run on every process start. Boolean-like columns
 /// are INTEGER 0/1 so both sqlx-any backends decode them identically.
 pub const TASK_MANAGER_RDB_SCHEMA_SQLITE: &str = r#"
+CREATE TABLE IF NOT EXISTS task_store_meta (
+    meta_key TEXT PRIMARY KEY,
+    meta_value INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS task (
     task_id                   TEXT PRIMARY KEY,
+    storage_domain            TEXT NOT NULL,
     schema_id                 TEXT NOT NULL,
     schema_version            INTEGER NOT NULL,
     name                      TEXT NOT NULL,
@@ -148,6 +155,7 @@ CREATE TABLE IF NOT EXISTS task_schema (
     presentation_schema_json TEXT,
     executor_kinds_json      TEXT NOT NULL,
     user_creatable           INTEGER NOT NULL DEFAULT 0,
+    default_storage_domain   TEXT NOT NULL,
     publisher_app_id         TEXT NOT NULL,
     enabled                  INTEGER NOT NULL DEFAULT 1,
     created_at               INTEGER NOT NULL,
@@ -170,8 +178,14 @@ CREATE INDEX IF NOT EXISTS idx_task_note_task_created ON task_note(task_id, crea
 
 /// Postgres DDL: same logical schema as the sqlite variant.
 pub const TASK_MANAGER_RDB_SCHEMA_POSTGRES: &str = r#"
+CREATE TABLE IF NOT EXISTS task_store_meta (
+    meta_key TEXT PRIMARY KEY,
+    meta_value BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS task (
     task_id                   TEXT PRIMARY KEY,
+    storage_domain            TEXT NOT NULL,
     schema_id                 TEXT NOT NULL,
     schema_version            BIGINT NOT NULL,
     name                      TEXT NOT NULL,
@@ -277,6 +291,7 @@ CREATE TABLE IF NOT EXISTS task_schema (
     presentation_schema_json TEXT,
     executor_kinds_json      TEXT NOT NULL,
     user_creatable           BIGINT NOT NULL DEFAULT 0,
+    default_storage_domain   TEXT NOT NULL,
     publisher_app_id         TEXT NOT NULL,
     enabled                  BIGINT NOT NULL DEFAULT 1,
     created_at               BIGINT NOT NULL,
@@ -344,6 +359,34 @@ pub fn generate_task_manager_service_doc() -> AppDoc {
 pub type TaskId = String;
 pub type TaskNoteId = i64;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StorageDomain {
+    #[default]
+    User,
+    System,
+}
+
+impl fmt::Display for StorageDomain {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for StorageDomain {
+    type Err = RPCErrors;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "User" => Ok(Self::User),
+            "System" => Ok(Self::System),
+            _ => Err(RPCErrors::ParseRequestError(format!(
+                "invalid storage domain: {}",
+                value
+            ))),
+        }
+    }
+}
+
 /// Default policy preset applied when a create request does not name one.
 pub const TASK_POLICY_PRESET_COLLABORATIVE_TREE_V1: &str = "collaborative-tree/v1";
 
@@ -373,6 +416,7 @@ pub const TASK_ERR_INPUT_SCHEMA_MISMATCH: &str = "input_schema_mismatch";
 pub const TASK_ERR_RESULT_SCHEMA_MISMATCH: &str = "result_schema_mismatch";
 pub const TASK_ERR_IDEMPOTENCY_CONFLICT: &str = "idempotency_conflict";
 pub const TASK_ERR_SCHEMA_NOT_FOUND: &str = "task_schema_not_found";
+pub const TASK_ERR_STORAGE_DOMAIN_CONFLICT: &str = "storage_domain_conflict";
 
 const TASK_ERR_CODES: &[&str] = &[
     TASK_ERR_NOT_FOUND,
@@ -387,6 +431,7 @@ const TASK_ERR_CODES: &[&str] = &[
     TASK_ERR_RESULT_SCHEMA_MISMATCH,
     TASK_ERR_IDEMPOTENCY_CONFLICT,
     TASK_ERR_SCHEMA_NOT_FOUND,
+    TASK_ERR_STORAGE_DOMAIN_CONFLICT,
 ];
 
 /// Build an RPC error carrying a stable TaskMgr error code. The code travels
@@ -917,6 +962,7 @@ pub struct TaskSchemaDefinition {
     pub presentation_schema: Option<Value>,
     pub allowed_executor_kinds: Vec<TaskExecutorKind>,
     pub user_creatable: bool,
+    pub default_storage_domain: StorageDomain,
     pub publisher_app_id: String,
     pub enabled: bool,
     #[serde(default)]
@@ -1138,6 +1184,7 @@ pub fn builtin_task_schemas() -> Vec<TaskSchemaDefinition> {
                 TaskExecutorKind::HumanSet,
             ],
             user_creatable: false,
+            default_storage_domain: StorageDomain::System,
             publisher_app_id: TASK_MANAGER_SERVICE_NAME.to_string(),
             enabled: true,
             created_at: 0,
@@ -1164,6 +1211,7 @@ pub fn builtin_task_schemas() -> Vec<TaskSchemaDefinition> {
             presentation_schema: None,
             allowed_executor_kinds: vec![TaskExecutorKind::HumanSet],
             user_creatable: false,
+            default_storage_domain: StorageDomain::System,
             publisher_app_id: TASK_MANAGER_SERVICE_NAME.to_string(),
             enabled: true,
             created_at: 0,
@@ -1178,6 +1226,11 @@ pub fn builtin_task_schemas() -> Vec<TaskSchemaDefinition> {
             presentation_schema: None,
             allowed_executor_kinds: executor_kinds.to_vec(),
             user_creatable: false,
+            default_storage_domain: if *schema_id == DOWNLOAD_TASK_SCHEMA_ID {
+                StorageDomain::User
+            } else {
+                StorageDomain::System
+            },
             publisher_app_id: publisher_app_id.to_string(),
             enabled: true,
             created_at: 0,
@@ -1208,6 +1261,7 @@ pub struct Task {
 
     // Immutable creation facts
     pub creator: ActorRef,
+    pub storage_domain: StorageDomain,
     pub idempotency_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_ref: Option<TaskOriginRef>,
@@ -1274,6 +1328,7 @@ pub struct TaskSummary {
     pub schema_id: String,
     pub schema_version: u32,
     pub creator: ActorRef,
+    pub storage_domain: StorageDomain,
     pub executor_kind: TaskExecutorKind,
     pub phase: TaskPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1447,6 +1502,8 @@ pub struct CreateTaskReq {
     pub policy_preset: Option<String>,
     #[serde(default)]
     pub permission_boundary: bool,
+    #[serde(default)]
+    pub storage_domain: Option<StorageDomain>,
     pub idempotency_key: String,
     #[serde(default)]
     pub retry_of: Option<TaskId>,
@@ -1482,6 +1539,8 @@ pub struct CreateDelegatedTaskReq {
     pub policy_preset: Option<String>,
     #[serde(default)]
     pub permission_boundary: bool,
+    #[serde(default)]
+    pub storage_domain: Option<StorageDomain>,
     pub idempotency_key: String,
     #[serde(default)]
     pub retry_of: Option<TaskId>,
@@ -1514,6 +1573,8 @@ pub struct ListTasksReq {
     pub root_id: Option<TaskId>,
     #[serde(default)]
     pub executor_kind: Option<TaskExecutorKind>,
+    #[serde(default)]
+    pub storage_domain: Option<StorageDomain>,
     /// Filter to tasks bound to this App runner (executor app id). Lets a
     /// runner's recovery sweep scan only its own tasks server-side instead
     /// of pulling the zone's whole task list.
@@ -1754,6 +1815,8 @@ pub struct CreatePromisedTaskReq {
     pub policy_preset: Option<String>,
     #[serde(default)]
     pub permission_boundary: bool,
+    #[serde(default)]
+    pub storage_domain: Option<StorageDomain>,
     pub idempotency_key: String,
     #[serde(default)]
     pub wait_reason: Option<TaskWaitReason>,

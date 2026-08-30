@@ -18,6 +18,7 @@ use sqlx::{Any, AnyPool, Executor, Row, Transaction};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
+use tokio::sync::Mutex;
 
 static INSTALL_DRIVERS: Once = Once::new();
 static EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -80,6 +81,7 @@ pub struct CreateTaskArgs {
     pub schema_version: u32,
     pub input: Value,
     pub creator: ActorRef,
+    pub storage_domain: StorageDomain,
     pub idempotency_key: String,
     pub origin_ref: Option<TaskOriginRef>,
     pub parent_id: Option<TaskId>,
@@ -98,6 +100,9 @@ pub struct CreateTaskArgs {
 pub struct TaskStore {
     pool: AnyPool,
     backend: RdbBackend,
+    domain: StorageDomain,
+    system: Option<Box<TaskStore>>,
+    create_lock: Mutex<()>,
 }
 
 pub type DbResult<T> = std::result::Result<T, sqlx::Error>;
@@ -107,6 +112,15 @@ impl TaskStore {
         connection: &str,
         backend: RdbBackend,
         schema: Option<&str>,
+    ) -> std::result::Result<Self, String> {
+        Self::open_shard(connection, backend, schema, StorageDomain::User).await
+    }
+
+    async fn open_shard(
+        connection: &str,
+        backend: RdbBackend,
+        schema: Option<&str>,
+        domain: StorageDomain,
     ) -> std::result::Result<Self, String> {
         ensure_any_drivers_installed();
         let mut opts = AnyPoolOptions::new().max_connections(8);
@@ -125,7 +139,13 @@ impl TaskStore {
             .connect(connection)
             .await
             .map_err(|err| format!("open task-manager db at {}: {}", connection, err))?;
-        let store = TaskStore { pool, backend };
+        let store = TaskStore {
+            pool,
+            backend,
+            domain,
+            system: None,
+            create_lock: Mutex::new(()),
+        };
         store
             .apply_schema(schema)
             .await
@@ -133,8 +153,139 @@ impl TaskStore {
         Ok(store)
     }
 
+    pub async fn open_partitioned(
+        user_connection: &str,
+        user_backend: RdbBackend,
+        user_schema: Option<&str>,
+        system_connection: &str,
+        system_backend: RdbBackend,
+        system_schema: Option<&str>,
+    ) -> std::result::Result<Self, String> {
+        let user_physical_version =
+            Self::probe_physical_schema_version(user_connection, user_backend).await?;
+        let system_physical_version =
+            Self::probe_physical_schema_version(system_connection, system_backend).await?;
+        if let (Some(user), Some(system)) = (user_physical_version, system_physical_version) {
+            if user != system {
+                return Err(format!(
+                    "task-manager physical schema version mismatch: User={}, System={}",
+                    user, system
+                ));
+            }
+        }
+
+        let mut user = Self::open_shard(
+            user_connection,
+            user_backend,
+            user_schema,
+            StorageDomain::User,
+        )
+        .await?;
+        let system = Self::open_shard(
+            system_connection,
+            system_backend,
+            system_schema,
+            StorageDomain::System,
+        )
+        .await?;
+        user.system = Some(Box::new(system));
+        Ok(user)
+    }
+
+    async fn probe_physical_schema_version(
+        connection: &str,
+        backend: RdbBackend,
+    ) -> std::result::Result<Option<u64>, String> {
+        ensure_any_drivers_installed();
+        let pool = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect(connection)
+            .await
+            .map_err(|err| format!("probe task-manager db at {}: {}", connection, err))?;
+        let result = async {
+            let has_meta = match backend {
+                RdbBackend::Sqlite => sqlx::query(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_store_meta'",
+                )
+                .fetch_optional(&pool)
+                .await,
+                RdbBackend::Postgres => sqlx::query(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'task_store_meta'",
+                )
+                .fetch_optional(&pool)
+                .await,
+            }
+            .map_err(|err| format!("probe task_store_meta: {}", err))?
+            .is_some();
+            let metadata_version = if has_meta {
+                sqlx::query(
+                    "SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'",
+                )
+                .fetch_optional(&pool)
+                .await
+                .map_err(|err| format!("probe task store schema version: {}", err))?
+                .map(|row| row.try_get::<i64, _>("meta_value"))
+                .transpose()
+                .map_err(|err| format!("decode task store schema version: {}", err))?
+                .map(|version| version.max(0) as u64)
+            } else {
+                None
+            };
+
+            let has_task = match backend {
+                RdbBackend::Sqlite => sqlx::query(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task'",
+                )
+                .fetch_optional(&pool)
+                .await,
+                RdbBackend::Postgres => sqlx::query(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'task'",
+                )
+                .fetch_optional(&pool)
+                .await,
+            }
+            .map_err(|err| format!("probe task table: {}", err))?
+            .is_some();
+            if !has_task {
+                return Ok(metadata_version);
+            }
+
+            let has_storage_domain = match backend {
+                RdbBackend::Sqlite => sqlx::query(
+                    "SELECT 1 FROM pragma_table_info('task') WHERE name = 'storage_domain'",
+                )
+                .fetch_optional(&pool)
+                .await,
+                RdbBackend::Postgres => sqlx::query(
+                    "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'task' AND column_name = 'storage_domain'",
+                )
+                .fetch_optional(&pool)
+                .await,
+            }
+            .map_err(|err| format!("probe task storage_domain column: {}", err))?
+            .is_some();
+            let layout_version = if has_storage_domain {
+                TASK_MANAGER_RDB_SCHEMA_VERSION
+            } else {
+                TASK_MANAGER_RDB_SCHEMA_VERSION - 1
+            };
+            if let Some(metadata_version) = metadata_version {
+                if metadata_version != layout_version {
+                    return Err(format!(
+                        "task store metadata schema version {} conflicts with layout version {}",
+                        metadata_version, layout_version
+                    ));
+                }
+            }
+            Ok(Some(metadata_version.unwrap_or(layout_version)))
+        }
+        .await;
+        pool.close().await;
+        result
+    }
+
     pub async fn open_from_service_spec() -> std::result::Result<Self, String> {
-        let instance = get_rdb_instance_in(
+        let user = get_rdb_instance_in(
             TASK_MANAGER_SERVICE_NAME,
             None,
             TASK_MANAGER_RDB_INSTANCE_ID,
@@ -142,11 +293,29 @@ impl TaskStore {
         )
         .await
         .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;
-        info!("task_store.open {}", instance.connection);
-        Self::open(
-            &instance.connection,
-            instance.backend,
-            instance.schema.as_deref(),
+        let system = get_rdb_instance_in(
+            TASK_MANAGER_SERVICE_NAME,
+            None,
+            TASK_MANAGER_RDB_INSTANCE_ID,
+            RdbPartition::Local,
+        )
+        .await
+        .map_err(|err| format!("resolve task-manager local rdb instance failed: {}", err))?;
+        if user.version != system.version || user.version != TASK_MANAGER_RDB_SCHEMA_VERSION {
+            return Err(format!(
+                "task-manager storage-domain schema version mismatch: user={}, system={}, expected={}",
+                user.version, system.version, TASK_MANAGER_RDB_SCHEMA_VERSION
+            ));
+        }
+        info!("task_store.open User {}", user.connection);
+        info!("task_store.open System {}", system.connection);
+        Self::open_partitioned(
+            &user.connection,
+            user.backend,
+            user.schema.as_deref(),
+            &system.connection,
+            system.backend,
+            system.schema.as_deref(),
         )
         .await
     }
@@ -162,31 +331,58 @@ impl TaskStore {
         for statement in split_sql_statements(ddl) {
             self.pool.execute(statement.as_str()).await?;
         }
-        // beta2.2 no-compat strategy (doc §15.6): a dev/DV database still on
-        // the 1.x layout (integer task ids) is dropped and rebuilt as v7.
-        self.rebuild_if_v1_layout().await?;
+        // beta2.2 no-compat strategy (doc §15.7): a dev/DV database still on
+        // a pre-StorageDomain layout is dropped and rebuilt as v8.
+        self.rebuild_if_legacy_layout().await?;
+        self.ensure_schema_version().await?;
         Ok(())
     }
 
-    async fn rebuild_if_v1_layout(&self) -> DbResult<()> {
-        let v1 = match self.backend {
+    async fn ensure_schema_version(&self) -> DbResult<()> {
+        let sql = self
+            .render_sql("SELECT meta_value FROM task_store_meta WHERE meta_key = 'schema_version'");
+        let row = sqlx::query(&sql).fetch_optional(&self.pool).await?;
+        if let Some(row) = row {
+            let actual: i64 = row.try_get("meta_value")?;
+            if actual != TASK_MANAGER_RDB_SCHEMA_VERSION as i64 {
+                return Err(sqlx::Error::Protocol(format!(
+                    "{} store schema version {} does not match expected {}",
+                    self.domain, actual, TASK_MANAGER_RDB_SCHEMA_VERSION
+                )));
+            }
+            return Ok(());
+        }
+        let sql = self.render_sql(
+            "INSERT INTO task_store_meta (meta_key, meta_value) VALUES ('schema_version', ?)",
+        );
+        sqlx::query(&sql)
+            .bind(TASK_MANAGER_RDB_SCHEMA_VERSION as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn rebuild_if_legacy_layout(&self) -> DbResult<()> {
+        let legacy = match self.backend {
             RdbBackend::Sqlite => {
-                sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = 'task_type'")
+                sqlx::query("SELECT 1 FROM pragma_table_info('task') WHERE name = 'storage_domain'")
                     .fetch_optional(&self.pool)
                     .await?
-                    .is_some()
+                    .is_none()
             }
             RdbBackend::Postgres => sqlx::query(
-                "SELECT 1 FROM information_schema.columns WHERE table_name = 'task' AND column_name = 'task_type'",
+                "SELECT 1 FROM information_schema.columns WHERE table_name = 'task' AND column_name = 'storage_domain'",
             )
             .fetch_optional(&self.pool)
             .await?
-            .is_some(),
+            .is_none(),
         };
-        if !v1 {
+        if !legacy {
             return Ok(());
         }
-        warn!("task_store: 1.x schema detected; rebuilding as TaskMgr 2.0 schema v7 (no-compat)");
+        warn!(
+            "task_store: pre-v8 schema detected; rebuilding as TaskMgr 2.0 schema v8 (no-compat)"
+        );
         for table in [
             "task_note",
             "task_event",
@@ -194,6 +390,7 @@ impl TaskStore {
             "task_assignee",
             "task_schema",
             "task",
+            "task_store_meta",
         ] {
             let sql = format!("DROP TABLE IF EXISTS {}", table);
             self.pool.execute(sql.as_str()).await?;
@@ -215,8 +412,50 @@ impl TaskStore {
         }
     }
 
+    fn decode_task(&self, row: AnyRow) -> Result<Task> {
+        let task = task_from_row(row).map_err(db_err)?;
+        if task.storage_domain != self.domain {
+            return Err(RPCErrors::ReasonError(format!(
+                "task {} declares domain {} inside {} store",
+                task.task_id, task.storage_domain, self.domain
+            )));
+        }
+        Ok(task)
+    }
+
     pub fn pool(&self) -> &AnyPool {
         &self.pool
+    }
+
+    pub fn domain(&self) -> StorageDomain {
+        self.domain
+    }
+
+    fn shard(&self, domain: StorageDomain) -> Result<&TaskStore> {
+        if self.domain == domain {
+            return Ok(self);
+        }
+        if domain == StorageDomain::System {
+            if let Some(system) = self.system.as_deref() {
+                return Ok(system);
+            }
+        }
+        Err(RPCErrors::ReasonError(format!(
+            "{} task store is not configured",
+            domain
+        )))
+    }
+
+    async fn shard_for_task(&self, task_id: &str) -> Result<Option<&TaskStore>> {
+        if self.get_task_local(task_id).await?.is_some() {
+            return Ok(Some(self));
+        }
+        if let Some(system) = self.system.as_deref() {
+            if system.get_task_local(task_id).await?.is_some() {
+                return Ok(Some(system));
+            }
+        }
+        Ok(None)
     }
 
     // -----------------------------------------------------------------
@@ -224,6 +463,16 @@ impl TaskStore {
     // -----------------------------------------------------------------
 
     pub async fn get_task(&self, task_id: &str) -> Result<Option<Task>> {
+        if let Some(task) = self.get_task_local(task_id).await? {
+            return Ok(Some(task));
+        }
+        if let Some(system) = self.system.as_deref() {
+            return system.get_task_local(task_id).await;
+        }
+        Ok(None)
+    }
+
+    async fn get_task_local(&self, task_id: &str) -> Result<Option<Task>> {
         let sql = self.render_sql("SELECT * FROM task WHERE task_id = ?");
         let row = sqlx::query(&sql)
             .bind(task_id)
@@ -233,19 +482,27 @@ impl TaskStore {
         let Some(row) = row else {
             return Ok(None);
         };
-        let mut task = task_from_row(row).map_err(db_err)?;
+        let mut task = self.decode_task(row)?;
         self.attach_assignees(&mut task).await?;
         Ok(Some(task))
     }
 
     async fn attach_assignees(&self, task: &mut Task) -> Result<()> {
         if task.executor.kind() == TaskExecutorKind::HumanSet {
-            task.assignees = Some(self.active_assignees(&task.task_id).await?);
+            task.assignees = Some(self.active_assignees_local(&task.task_id).await?);
         }
         Ok(())
     }
 
     pub async fn active_assignees(&self, task_id: &str) -> Result<Vec<String>> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard.active_assignees_local(task_id).await
+    }
+
+    async fn active_assignees_local(&self, task_id: &str) -> Result<Vec<String>> {
         let sql = self.render_sql(
             "SELECT user_id FROM task_assignee WHERE task_id = ? AND revoked_at IS NULL ORDER BY user_id",
         );
@@ -262,6 +519,17 @@ impl TaskStore {
     /// Parent chain from the task itself up to the root:
     /// `[(task_id, parent_id, permission_boundary), ...]`.
     pub async fn get_task_chain(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<(TaskId, Option<TaskId>, bool)>> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard.get_task_chain_local(task_id).await
+    }
+
+    async fn get_task_chain_local(
         &self,
         task_id: &str,
     ) -> Result<Vec<(TaskId, Option<TaskId>, bool)>> {
@@ -292,6 +560,17 @@ impl TaskStore {
 
     /// Active explicit grants attached to any of `task_ids`.
     pub async fn active_grants_for(&self, task_ids: &[TaskId]) -> Result<Vec<TaskAclGrant>> {
+        let Some(first) = task_ids.first() else {
+            return Ok(Vec::new());
+        };
+        let shard = self
+            .shard_for_task(first)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, first))?;
+        shard.active_grants_for_local(task_ids).await
+    }
+
+    async fn active_grants_for_local(&self, task_ids: &[TaskId]) -> Result<Vec<TaskAclGrant>> {
         let mut grants = Vec::new();
         for task_id in task_ids {
             let sql = self.render_sql(
@@ -310,6 +589,14 @@ impl TaskStore {
     }
 
     pub async fn all_grants_for_task(&self, task_id: &str) -> Result<Vec<TaskAclGrant>> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard.all_grants_for_task_local(task_id).await
+    }
+
+    async fn all_grants_for_task_local(&self, task_id: &str) -> Result<Vec<TaskAclGrant>> {
         let sql =
             self.render_sql("SELECT * FROM task_acl_grant WHERE task_id = ? ORDER BY created_at");
         let rows = sqlx::query(&sql)
@@ -326,6 +613,22 @@ impl TaskStore {
     /// assignee) of any task in the tree? Powers the preset's tree-wide
     /// MetaOnly read row without scanning the tree in Rust.
     pub async fn is_tree_participant(
+        &self,
+        root_id: &str,
+        user_id: &str,
+        actor_app_id: &str,
+        executor_app_id: &str,
+    ) -> Result<bool> {
+        let shard = self
+            .shard_for_task(root_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, root_id))?;
+        shard
+            .is_tree_participant_local(root_id, user_id, actor_app_id, executor_app_id)
+            .await
+    }
+
+    async fn is_tree_participant_local(
         &self,
         root_id: &str,
         user_id: &str,
@@ -359,6 +662,87 @@ impl TaskStore {
     }
 
     pub async fn list_tasks(&self, req: &ListTasksReq) -> Result<(Vec<Task>, Option<String>)> {
+        let Some(system) = self.system.as_deref() else {
+            if req
+                .storage_domain
+                .is_some_and(|domain| domain != self.domain)
+            {
+                return Ok((Vec::new(), None));
+            }
+            let mut local_req = req.clone();
+            local_req.storage_domain = None;
+            return self.list_tasks_local(&local_req).await;
+        };
+        let limit = req.limit.unwrap_or(100).clamp(1, 500) as usize;
+        let (user_cursor, system_cursor) = parse_partitioned_cursor(req.cursor.as_deref())?;
+
+        if let Some(domain) = req.storage_domain {
+            let shard = self.shard(domain)?;
+            let mut local_req = req.clone();
+            local_req.cursor = match domain {
+                StorageDomain::User => user_cursor,
+                StorageDomain::System => system_cursor,
+            };
+            local_req.storage_domain = None;
+            let (tasks, next) = shard.list_tasks_local(&local_req).await?;
+            let composite = match domain {
+                StorageDomain::User => make_partitioned_cursor(next, None),
+                StorageDomain::System => make_partitioned_cursor(None, next),
+            };
+            return Ok((tasks, composite));
+        }
+
+        let mut user_req = req.clone();
+        user_req.cursor = user_cursor.clone();
+        user_req.storage_domain = None;
+        user_req.limit = Some(limit as u32);
+        let mut system_req = req.clone();
+        system_req.cursor = system_cursor.clone();
+        system_req.storage_domain = None;
+        system_req.limit = Some(limit as u32);
+        let (user_tasks, user_more) = self.list_tasks_local(&user_req).await?;
+        let (system_tasks, system_more) = system.list_tasks_local(&system_req).await?;
+
+        let mut user_index = 0usize;
+        let mut system_index = 0usize;
+        let mut tasks = Vec::with_capacity(limit);
+        let mut next_user_cursor = user_cursor;
+        let mut next_system_cursor = system_cursor;
+        while tasks.len() < limit
+            && (user_index < user_tasks.len() || system_index < system_tasks.len())
+        {
+            let take_user = match (user_tasks.get(user_index), system_tasks.get(system_index)) {
+                (Some(user), Some(system)) => {
+                    (user.created_at, user.task_id.as_str())
+                        <= (system.created_at, system.task_id.as_str())
+                }
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let task = if take_user {
+                let task = user_tasks[user_index].clone();
+                user_index += 1;
+                next_user_cursor = Some(make_cursor(task.created_at, &task.task_id));
+                task
+            } else {
+                let task = system_tasks[system_index].clone();
+                system_index += 1;
+                next_system_cursor = Some(make_cursor(task.created_at, &task.task_id));
+                task
+            };
+            tasks.push(task);
+        }
+        let has_more = user_index < user_tasks.len()
+            || system_index < system_tasks.len()
+            || user_more.is_some()
+            || system_more.is_some();
+        let next_cursor = has_more
+            .then(|| make_partitioned_cursor(next_user_cursor, next_system_cursor))
+            .flatten();
+        Ok((tasks, next_cursor))
+    }
+
+    async fn list_tasks_local(&self, req: &ListTasksReq) -> Result<(Vec<Task>, Option<String>)> {
         let mut sql = String::from("SELECT * FROM task");
         let mut conditions: Vec<String> = Vec::new();
         enum Param {
@@ -441,7 +825,7 @@ impl TaskStore {
         let rows = query.fetch_all(&self.pool).await.map_err(db_err)?;
         let mut tasks: Vec<Task> = rows
             .into_iter()
-            .map(|row| task_from_row(row).map_err(db_err))
+            .map(|row| self.decode_task(row))
             .collect::<Result<_>>()?;
         let next_cursor = if tasks.len() as i64 > limit {
             tasks.truncate(limit as usize);
@@ -461,6 +845,10 @@ impl TaskStore {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<(Vec<Task>, Option<String>)> {
+        let shard = self
+            .shard_for_task(root_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, root_id))?;
         let req = ListTasksReq {
             root_id: Some(root_id.to_string()),
             include_archived: true,
@@ -468,10 +856,23 @@ impl TaskStore {
             limit: Some(limit),
             ..Default::default()
         };
-        self.list_tasks(&req).await
+        shard.list_tasks_local(&req).await
     }
 
     pub async fn list_children(
+        &self,
+        parent_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<Task>, Option<String>)> {
+        let shard = self
+            .shard_for_task(parent_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, parent_id))?;
+        shard.list_children_local(parent_id, cursor, limit).await
+    }
+
+    async fn list_children_local(
         &self,
         parent_id: &str,
         cursor: Option<&str>,
@@ -501,7 +902,7 @@ impl TaskStore {
         let rows = query.fetch_all(&self.pool).await.map_err(db_err)?;
         let mut tasks: Vec<Task> = rows
             .into_iter()
-            .map(|row| task_from_row(row).map_err(db_err))
+            .map(|row| self.decode_task(row))
             .collect::<Result<_>>()?;
         let next_cursor = if tasks.len() as i64 > limit {
             tasks.truncate(limit as usize);
@@ -544,6 +945,26 @@ impl TaskStore {
         creator_app_id: &str,
         idempotency_key: &str,
     ) -> Result<Option<Task>> {
+        if let Some(task) = self
+            .find_by_idempotency_local(creator_user_id, creator_app_id, idempotency_key)
+            .await?
+        {
+            return Ok(Some(task));
+        }
+        if let Some(system) = self.system.as_deref() {
+            return system
+                .find_by_idempotency_local(creator_user_id, creator_app_id, idempotency_key)
+                .await;
+        }
+        Ok(None)
+    }
+
+    async fn find_by_idempotency_local(
+        &self,
+        creator_user_id: &str,
+        creator_app_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<Task>> {
         let sql = self.render_sql(
             "SELECT * FROM task WHERE creator_user_id = ? AND creator_app_id = ? AND idempotency_key = ?",
         );
@@ -556,7 +977,7 @@ impl TaskStore {
             .map_err(db_err)?;
         match row {
             Some(row) => {
-                let mut task = task_from_row(row).map_err(db_err)?;
+                let mut task = self.decode_task(row)?;
                 self.attach_assignees(&mut task).await?;
                 Ok(Some(task))
             }
@@ -565,6 +986,16 @@ impl TaskStore {
     }
 
     pub async fn find_by_origin(&self, kind: &str, id: &str) -> Result<Option<Task>> {
+        if let Some(task) = self.find_by_origin_local(kind, id).await? {
+            return Ok(Some(task));
+        }
+        if let Some(system) = self.system.as_deref() {
+            return system.find_by_origin_local(kind, id).await;
+        }
+        Ok(None)
+    }
+
+    async fn find_by_origin_local(&self, kind: &str, id: &str) -> Result<Option<Task>> {
         let sql = self.render_sql("SELECT * FROM task WHERE origin_kind = ? AND origin_id = ?");
         let row = sqlx::query(&sql)
             .bind(kind)
@@ -573,9 +1004,26 @@ impl TaskStore {
             .await
             .map_err(db_err)?;
         match row {
-            Some(row) => Ok(Some(task_from_row(row).map_err(db_err)?)),
+            Some(row) => Ok(Some(self.decode_task(row)?)),
             None => Ok(None),
         }
+    }
+
+    pub async fn list_nonterminal_by_origin(
+        &self,
+        domain: StorageDomain,
+        origin_kind: &str,
+    ) -> Result<Vec<Task>> {
+        let shard = self.shard(domain)?;
+        let sql = shard.render_sql(
+            "SELECT * FROM task WHERE origin_kind = ? AND phase <> 'Terminal' ORDER BY created_at ASC, task_id ASC",
+        );
+        let rows = sqlx::query(&sql)
+            .bind(origin_kind)
+            .fetch_all(&shard.pool)
+            .await
+            .map_err(db_err)?;
+        rows.into_iter().map(|row| shard.decode_task(row)).collect()
     }
 
     // -----------------------------------------------------------------
@@ -586,8 +1034,41 @@ impl TaskStore {
     /// return the original task after verifying the immutable request digest
     /// still matches; mismatches fail with `idempotency_conflict`.
     pub async fn create_task(&self, args: CreateTaskArgs) -> Result<MutationOutcome> {
+        // A single TaskMgr instance owns both pools. Serialize the cross-pool
+        // existence checks with the selected INSERT so task_id and scoped
+        // idempotency remain globally unique across Storage Domains.
+        let _create_guard = self.create_lock.lock().await;
         if let Some(existing) = self
             .find_by_idempotency(
+                &args.creator.user_id,
+                &args.creator.app_id,
+                &args.idempotency_key,
+            )
+            .await?
+        {
+            return self.replay_created(existing, &args);
+        }
+        if let Some(task_id) = args.task_id.as_deref() {
+            if let Some(existing) = self.get_task(task_id).await? {
+                return self.replay_created(existing, &args);
+            }
+        }
+        let shard = self.shard(args.storage_domain)?;
+        shard.create_task_local(args).await
+    }
+
+    async fn create_task_local(&self, args: CreateTaskArgs) -> Result<MutationOutcome> {
+        if args.storage_domain != self.domain {
+            return Err(task_mgr_error(
+                TASK_ERR_STORAGE_DOMAIN_CONFLICT,
+                format!(
+                    "task domain {} does not match store {}",
+                    args.storage_domain, self.domain
+                ),
+            ));
+        }
+        if let Some(existing) = self
+            .find_by_idempotency_local(
                 &args.creator.user_id,
                 &args.creator.app_id,
                 &args.idempotency_key,
@@ -601,9 +1082,18 @@ impl TaskStore {
         let task_id = args.task_id.clone().unwrap_or_else(new_task_id);
         let (root_id, parent_root) = match args.parent_id.as_deref() {
             Some(parent_id) => {
-                let parent = self.get_task(parent_id).await?.ok_or_else(|| {
+                let parent = self.get_task_local(parent_id).await?.ok_or_else(|| {
                     task_mgr_error(TASK_ERR_NOT_FOUND, format!("parent task {}", parent_id))
                 })?;
+                if parent.storage_domain != args.storage_domain {
+                    return Err(task_mgr_error(
+                        TASK_ERR_STORAGE_DOMAIN_CONFLICT,
+                        format!(
+                            "parent {} is in {}, requested {}",
+                            parent_id, parent.storage_domain, args.storage_domain
+                        ),
+                    ));
+                }
                 (parent.root_id.clone(), Some(parent))
             }
             None => (task_id.clone(), None),
@@ -635,16 +1125,17 @@ impl TaskStore {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let sql = self.render_sql(
             "INSERT INTO task (
-                task_id, schema_id, schema_version, name, input_json, input_digest,
+                task_id, storage_domain, schema_id, schema_version, name, input_json, input_digest,
                 creator_user_id, creator_app_id, creator_instance_id, idempotency_key,
                 origin_kind, origin_id, parent_id, root_id, child_control_policy_json,
                 retry_of, supersedes, executor_kind, runner_target_id, runner_instance_id,
                 runner_app_id, runner_epoch, phase, wait_reason_json, control_profile_json,
                 message, policy_preset, permission_boundary, revision, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         );
         let insert = sqlx::query(&sql)
             .bind(&task_id)
+            .bind(args.storage_domain.to_string())
             .bind(&args.schema_id)
             .bind(args.schema_version as i64)
             .bind(&args.name)
@@ -688,7 +1179,7 @@ impl TaskStore {
                 // Concurrent create with the same idempotency key (or origin
                 // ref): re-read and replay-check.
                 if let Some(existing) = self
-                    .find_by_idempotency(
+                    .find_by_idempotency_local(
                         &args.creator.user_id,
                         &args.creator.app_id,
                         &args.idempotency_key,
@@ -698,7 +1189,9 @@ impl TaskStore {
                     return self.replay_created(existing, &args);
                 }
                 if let Some(origin) = args.origin_ref.as_ref() {
-                    if let Some(existing) = self.find_by_origin(&origin.kind, &origin.id).await? {
+                    if let Some(existing) =
+                        self.find_by_origin_local(&origin.kind, &origin.id).await?
+                    {
                         return self.replay_created(existing, &args);
                     }
                 }
@@ -735,13 +1228,14 @@ impl TaskStore {
                     "phase": args.phase.to_string(),
                     "executor_kind": executor_kind.to_string(),
                     "parent_id": args.parent_id,
+                    "storage_domain": args.storage_domain,
                 }),
                 now,
             )
             .await?;
         tx.commit().await.map_err(db_err)?;
 
-        let task = self.get_task(&task_id).await?.ok_or_else(|| {
+        let task = self.get_task_local(&task_id).await?.ok_or_else(|| {
             RPCErrors::ReasonError("created task vanished before readback".to_string())
         })?;
         info!(
@@ -760,6 +1254,7 @@ impl TaskStore {
     fn replay_created(&self, existing: Task, args: &CreateTaskArgs) -> Result<MutationOutcome> {
         let same = existing.schema_id == args.schema_id
             && existing.schema_version == args.schema_version
+            && existing.storage_domain == args.storage_domain
             && existing.input_digest == compute_task_input_digest(&args.input)
             && existing.parent_id == args.parent_id
             && existing.executor.kind() == args.executor.kind()
@@ -811,6 +1306,34 @@ impl TaskStore {
     where
         F: FnOnce(&mut Task) -> Result<()>,
     {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard
+            .mutate_task_local(
+                task_id,
+                actor,
+                event_type,
+                event_payload,
+                expected_revision,
+                mutate,
+            )
+            .await
+    }
+
+    async fn mutate_task_local<F>(
+        &self,
+        task_id: &str,
+        actor: Option<&ActorRef>,
+        event_type: TaskEventType,
+        event_payload: Value,
+        expected_revision: Option<u64>,
+        mutate: F,
+    ) -> Result<MutationOutcome>
+    where
+        F: FnOnce(&mut Task) -> Result<()>,
+    {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let sql = self.render_sql("SELECT * FROM task WHERE task_id = ?");
         let row = sqlx::query(&sql)
@@ -821,7 +1344,7 @@ impl TaskStore {
         let Some(row) = row else {
             return Err(task_mgr_error(TASK_ERR_NOT_FOUND, task_id));
         };
-        let mut task = task_from_row(row).map_err(db_err)?;
+        let mut task = self.decode_task(row)?;
         if task.executor.kind() == TaskExecutorKind::HumanSet {
             let sql = self.render_sql(
                 "SELECT user_id FROM task_assignee WHERE task_id = ? AND revoked_at IS NULL ORDER BY user_id",
@@ -1004,6 +1527,23 @@ impl TaskStore {
         remove: &[String],
         expected_revision: u64,
     ) -> Result<MutationOutcome> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard
+            .update_assignees_local(task_id, actor, add, remove, expected_revision)
+            .await
+    }
+
+    async fn update_assignees_local(
+        &self,
+        task_id: &str,
+        actor: &ActorRef,
+        add: &[String],
+        remove: &[String],
+        expected_revision: u64,
+    ) -> Result<MutationOutcome> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let sql = self.render_sql("SELECT * FROM task WHERE task_id = ?");
         let row = sqlx::query(&sql)
@@ -1014,7 +1554,7 @@ impl TaskStore {
         let Some(row) = row else {
             return Err(task_mgr_error(TASK_ERR_NOT_FOUND, task_id));
         };
-        let mut task = task_from_row(row).map_err(db_err)?;
+        let mut task = self.decode_task(row)?;
         if task.executor.kind() != TaskExecutorKind::HumanSet {
             return Err(task_mgr_error(
                 TASK_ERR_INVALID_PHASE,
@@ -1146,6 +1686,22 @@ impl TaskStore {
         spec: &TaskAclGrantSpec,
         expected_revision: u64,
     ) -> Result<(MutationOutcome, TaskAclGrant)> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard
+            .insert_grant_local(task_id, actor, spec, expected_revision)
+            .await
+    }
+
+    async fn insert_grant_local(
+        &self,
+        task_id: &str,
+        actor: &ActorRef,
+        spec: &TaskAclGrantSpec,
+        expected_revision: u64,
+    ) -> Result<(MutationOutcome, TaskAclGrant)> {
         let grant_id = new_grant_id();
         let now = now_ms();
         let grant = TaskAclGrant {
@@ -1175,7 +1731,7 @@ impl TaskStore {
         let Some(row) = row else {
             return Err(task_mgr_error(TASK_ERR_NOT_FOUND, task_id));
         };
-        let mut task = task_from_row(row).map_err(db_err)?;
+        let mut task = self.decode_task(row)?;
         if task.revision != expected_revision {
             return Err(task_mgr_error(
                 TASK_ERR_REVISION_CONFLICT,
@@ -1251,6 +1807,22 @@ impl TaskStore {
         grant_id: &str,
         expected_revision: u64,
     ) -> Result<MutationOutcome> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard
+            .revoke_grant_local(task_id, actor, grant_id, expected_revision)
+            .await
+    }
+
+    async fn revoke_grant_local(
+        &self,
+        task_id: &str,
+        actor: &ActorRef,
+        grant_id: &str,
+        expected_revision: u64,
+    ) -> Result<MutationOutcome> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let sql = self.render_sql("SELECT * FROM task WHERE task_id = ?");
         let row = sqlx::query(&sql)
@@ -1261,7 +1833,7 @@ impl TaskStore {
         let Some(row) = row else {
             return Err(task_mgr_error(TASK_ERR_NOT_FOUND, task_id));
         };
-        let mut task = task_from_row(row).map_err(db_err)?;
+        let mut task = self.decode_task(row)?;
         if task.revision != expected_revision {
             return Err(task_mgr_error(
                 TASK_ERR_REVISION_CONFLICT,
@@ -1345,6 +1917,7 @@ impl TaskStore {
                 && existing.output_schema == def.output_schema
                 && existing.presentation_schema == def.presentation_schema
                 && existing.allowed_executor_kinds == def.allowed_executor_kinds
+                && existing.default_storage_domain == def.default_storage_domain
                 && existing.publisher_app_id == def.publisher_app_id;
             if !same {
                 return Err(task_mgr_error(
@@ -1358,8 +1931,8 @@ impl TaskStore {
             return Ok(existing);
         }
         let sql = self.render_sql(
-            "INSERT INTO task_schema (schema_id, schema_version, input_schema_json, output_schema_json, presentation_schema_json, executor_kinds_json, user_creatable, publisher_app_id, enabled, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO task_schema (schema_id, schema_version, input_schema_json, output_schema_json, presentation_schema_json, executor_kinds_json, user_creatable, default_storage_domain, publisher_app_id, enabled, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         );
         sqlx::query(&sql)
             .bind(&def.schema_id)
@@ -1369,6 +1942,7 @@ impl TaskStore {
             .bind(def.presentation_schema.as_ref().map(|p| p.to_string()))
             .bind(serde_json::to_string(&def.allowed_executor_kinds).unwrap_or_default())
             .bind(if def.user_creatable { 1i64 } else { 0i64 })
+            .bind(def.default_storage_domain.to_string())
             .bind(&def.publisher_app_id)
             .bind(if def.enabled { 1i64 } else { 0i64 })
             .bind(now as i64)
@@ -1475,6 +2049,30 @@ impl TaskStore {
         after_event_id: Option<&str>,
         limit: u32,
     ) -> Result<Vec<TaskEvent>> {
+        let key = task_id.or(root_id).ok_or_else(|| {
+            RPCErrors::ParseRequestError("exactly one of task_id / root_id is required".to_string())
+        })?;
+        if task_id.is_some() == root_id.is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "exactly one of task_id / root_id is required".to_string(),
+            ));
+        }
+        let shard = self
+            .shard_for_task(key)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, key))?;
+        shard
+            .list_events_local(task_id, root_id, after_event_id, limit)
+            .await
+    }
+
+    async fn list_events_local(
+        &self,
+        task_id: Option<&str>,
+        root_id: Option<&str>,
+        after_event_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<TaskEvent>> {
         let mut sql = String::from("SELECT * FROM task_event WHERE ");
         let key_value = match (task_id, root_id) {
             (Some(task_id), None) => {
@@ -1509,6 +2107,14 @@ impl TaskStore {
     }
 
     pub async fn add_task_note(&self, note: &TaskNote) -> Result<TaskNote> {
+        let shard = self
+            .shard_for_task(&note.task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, &note.task_id))?;
+        shard.add_task_note_local(note).await
+    }
+
+    async fn add_task_note_local(&self, note: &TaskNote) -> Result<TaskNote> {
         let sql = self.render_sql(
             "INSERT INTO task_note (task_id, note_type, content, data, author_user_id, author_app_id, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
@@ -1532,6 +2138,14 @@ impl TaskStore {
     }
 
     pub async fn list_task_notes(&self, task_id: &str) -> Result<Vec<TaskNote>> {
+        let shard = self
+            .shard_for_task(task_id)
+            .await?
+            .ok_or_else(|| task_mgr_error(TASK_ERR_NOT_FOUND, task_id))?;
+        shard.list_task_notes_local(task_id).await
+    }
+
+    async fn list_task_notes_local(&self, task_id: &str) -> Result<Vec<TaskNote>> {
         let sql = self.render_sql(
             "SELECT * FROM task_note WHERE task_id = ? ORDER BY created_at ASC, id ASC",
         );
@@ -1556,8 +2170,20 @@ fn parse_json_column(value: Option<String>) -> Value {
         .unwrap_or(Value::Null)
 }
 
+fn storage_domain_from_db(value: &str) -> DbResult<StorageDomain> {
+    match value {
+        "User" => Ok(StorageDomain::User),
+        "System" => Ok(StorageDomain::System),
+        _ => Err(sqlx::Error::Decode(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid storage domain in database: {}", value),
+        )))),
+    }
+}
+
 pub fn task_from_row(row: AnyRow) -> DbResult<Task> {
     let task_id: String = row.try_get("task_id")?;
+    let storage_domain: String = row.try_get("storage_domain")?;
     let schema_id: String = row.try_get("schema_id")?;
     let schema_version: i64 = row.try_get("schema_version")?;
     let name: String = row.try_get("name")?;
@@ -1639,6 +2265,7 @@ pub fn task_from_row(row: AnyRow) -> DbResult<Task> {
             app_id: creator_app_id,
             app_instance_id: creator_instance_id,
         },
+        storage_domain: storage_domain_from_db(&storage_domain)?,
         idempotency_key,
         origin_ref,
         retry_of,
@@ -1763,6 +2390,7 @@ fn schema_from_row(row: AnyRow) -> DbResult<TaskSchemaDefinition> {
     let presentation_schema_json: Option<String> = row.try_get("presentation_schema_json")?;
     let executor_kinds_json: String = row.try_get("executor_kinds_json")?;
     let user_creatable: i64 = row.try_get("user_creatable")?;
+    let default_storage_domain: String = row.try_get("default_storage_domain")?;
     let publisher_app_id: String = row.try_get("publisher_app_id")?;
     let enabled: i64 = row.try_get("enabled")?;
     let created_at: i64 = row.try_get("created_at")?;
@@ -1775,6 +2403,7 @@ fn schema_from_row(row: AnyRow) -> DbResult<TaskSchemaDefinition> {
         presentation_schema: presentation_schema_json.and_then(|s| serde_json::from_str(&s).ok()),
         allowed_executor_kinds: serde_json::from_str(&executor_kinds_json).unwrap_or_default(),
         user_creatable: user_creatable != 0,
+        default_storage_domain: storage_domain_from_db(&default_storage_domain)?,
         publisher_app_id,
         enabled: enabled != 0,
         created_at: created_at.max(0) as u64,
@@ -1858,6 +2487,40 @@ fn parse_cursor(cursor: &str) -> Result<(i64, String)> {
         .parse::<i64>()
         .map_err(|_| RPCErrors::ParseRequestError(format!("invalid cursor: {}", cursor)))?;
     Ok((created_at, task_id.to_string()))
+}
+
+fn make_partitioned_cursor(
+    user_cursor: Option<String>,
+    system_cursor: Option<String>,
+) -> Option<String> {
+    if user_cursor.is_none() && system_cursor.is_none() {
+        return None;
+    }
+    Some(format!(
+        "v1|{}|{}",
+        user_cursor.unwrap_or_default(),
+        system_cursor.unwrap_or_default()
+    ))
+}
+
+fn parse_partitioned_cursor(cursor: Option<&str>) -> Result<(Option<String>, Option<String>)> {
+    let Some(cursor) = cursor else {
+        return Ok((None, None));
+    };
+    if !cursor.starts_with("v1|") {
+        return Err(RPCErrors::ParseRequestError(format!(
+            "invalid partitioned cursor: {}",
+            cursor
+        )));
+    }
+    let mut parts = cursor.splitn(3, '|');
+    let _version = parts.next();
+    let user = parts.next().unwrap_or_default();
+    let system = parts.next().unwrap_or_default();
+    Ok((
+        (!user.is_empty()).then(|| user.to_string()),
+        (!system.is_empty()).then(|| system.to_string()),
+    ))
 }
 
 pub(crate) fn rewrite_placeholders_to_dollar(sql: &str) -> String {

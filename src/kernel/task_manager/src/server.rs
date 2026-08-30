@@ -24,6 +24,7 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::*;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Recursive control requests refuse to walk unbounded trees (doc §15.8).
@@ -306,6 +307,41 @@ impl TaskManagerService {
         Ok(schema)
     }
 
+    async fn resolve_storage_domain(
+        &self,
+        requested: Option<StorageDomain>,
+        parent_id: Option<&str>,
+        schema: &TaskSchemaDefinition,
+        creator: &ActorRef,
+    ) -> Result<StorageDomain> {
+        if let Some(parent_id) = parent_id {
+            let parent = self.load_task(parent_id).await?;
+            if let Some(requested) = requested {
+                if requested != parent.storage_domain {
+                    return Err(task_mgr_error(
+                        TASK_ERR_STORAGE_DOMAIN_CONFLICT,
+                        format!(
+                            "parent {} is in {}, requested {}",
+                            parent_id, parent.storage_domain, requested
+                        ),
+                    ));
+                }
+            }
+            return Ok(parent.storage_domain);
+        }
+        if let Some(requested) = requested {
+            return Ok(requested);
+        }
+        if !schema.schema_id.trim().is_empty() {
+            return Ok(schema.default_storage_domain);
+        }
+        Ok(if creator.app_id.starts_with("system:") {
+            StorageDomain::System
+        } else {
+            StorageDomain::User
+        })
+    }
+
     fn verify_app_runner_write(
         request_ctx: &RequestContext,
         task: &Task,
@@ -548,6 +584,14 @@ impl TaskManagerService {
                 TaskExecutorKind::Unbound,
             )
             .await?;
+        let storage_domain = self
+            .resolve_storage_domain(
+                req.storage_domain,
+                req.parent_id.as_deref(),
+                &schema,
+                &req.creator,
+            )
+            .await?;
         let wait_reason = req
             .wait_reason
             .clone()
@@ -562,6 +606,7 @@ impl TaskManagerService {
                 schema_version: schema.schema_version,
                 input: req.input.clone(),
                 creator: req.creator.clone(),
+                storage_domain,
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: req.origin_ref.clone(),
                 parent_id: req.parent_id.clone(),
@@ -858,6 +903,55 @@ impl TaskManagerService {
         self.store.get_schema(schema_id, schema_version).await
     }
 
+    pub(crate) async fn recover_lost_user_tasks_by_origin(
+        &self,
+        origin_kind: &str,
+        live_task_ids: &HashSet<TaskId>,
+    ) -> Result<usize> {
+        let tasks = self
+            .store
+            .list_nonterminal_by_origin(StorageDomain::User, origin_kind)
+            .await?;
+        let actor = ActorRef::new("system", format!("system:{}", TASK_MANAGER_SERVICE_NAME));
+        let mut recovered = 0usize;
+        for task in tasks {
+            if live_task_ids.contains(&task.task_id) {
+                continue;
+            }
+            let completed_by = actor.clone();
+            let outcome = self
+                .store
+                .mutate_task(
+                    &task.task_id,
+                    Some(&actor),
+                    TaskEventType::TaskFailed,
+                    json!({"code": "runner_lost", "path": "storage_domain_recovery"}),
+                    Some(task.revision),
+                    move |current| {
+                        if current.phase.is_terminal() {
+                            return Ok(());
+                        }
+                        let now = now_ms();
+                        current.phase = TaskPhase::Terminal;
+                        current.outcome = Some(TaskOutcome::Failed);
+                        current.error = Some(TaskError::new(
+                            "runner_lost",
+                            "dispatcher state or runner binding was lost during restore",
+                        ));
+                        current.pending_control = None;
+                        current.wait_reason = None;
+                        current.completed_by = Some(completed_by);
+                        current.completed_at = Some(now);
+                        Ok(())
+                    },
+                )
+                .await?;
+            self.publish_outcome(&outcome).await;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
     /// CAS-close a task without runner involvement. Guarantee level is
     /// interrupt: no side-effect rollback promise.
     async fn cancel_direct(
@@ -961,6 +1055,15 @@ impl TaskManagerHandler for TaskManagerService {
                 executor.kind(),
             )
             .await?;
+        let creator = request_ctx.actor_ref();
+        let storage_domain = self
+            .resolve_storage_domain(
+                req.storage_domain,
+                req.parent_id.as_deref(),
+                &schema,
+                &creator,
+            )
+            .await?;
 
         if let Some(parent_id) = req.parent_id.as_deref() {
             let (_parent, permission) = self.load_visible(&request_ctx, parent_id).await?;
@@ -980,7 +1083,8 @@ impl TaskManagerHandler for TaskManagerService {
                 schema_id: schema.schema_id.clone(),
                 schema_version: schema.schema_version,
                 input: req.input.clone(),
-                creator: request_ctx.actor_ref(),
+                creator,
+                storage_domain,
                 idempotency_key: req.idempotency_key.clone(),
                 origin_ref: None,
                 parent_id: req.parent_id.clone(),
@@ -1040,6 +1144,14 @@ impl TaskManagerHandler for TaskManagerService {
                 TaskExecutorKind::App,
             )
             .await?;
+        let storage_domain = self
+            .resolve_storage_domain(
+                req.storage_domain,
+                req.parent_id.as_deref(),
+                &schema,
+                &req.creator,
+            )
+            .await?;
         let outcome = self
             .store
             .create_task(CreateTaskArgs {
@@ -1049,6 +1161,7 @@ impl TaskManagerHandler for TaskManagerService {
                 schema_version: schema.schema_version,
                 input: req.input,
                 creator: req.creator,
+                storage_domain,
                 idempotency_key: req.idempotency_key,
                 origin_ref: None,
                 parent_id: req.parent_id,
@@ -2044,7 +2157,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     let store = TaskStore::open_from_service_spec()
         .await
         .map_err(RPCErrors::ReasonError)?;
-    info!("task-manager database initialized (schema v7)");
+    info!("task-manager databases initialized (schema v8, User + System)");
 
     let kevent_client = get_buckyos_api_runtime()
         .map_err(|err| RPCErrors::ReasonError(format!("api runtime unavailable: {}", err)))?
@@ -2058,6 +2171,7 @@ pub async fn start_task_manager_service() -> Result<()> {
     );
     handler.ensure_builtin_schemas().await?;
     let service_for_dispatcher = handler.clone();
+    let service_for_dispatcher_failure = handler.clone();
     let server = TaskManagerHttpServer::new(handler);
 
     info!("start task manager 2.0 service...");
@@ -2089,6 +2203,15 @@ pub async fn start_task_manager_service() -> Result<()> {
             }
         }
         Err(err) => {
+            if let Err(recovery_err) = service_for_dispatcher_failure
+                .recover_lost_user_tasks_by_origin(TASK_DISPATCHER_SERVICE_NAME, &HashSet::new())
+                .await
+            {
+                warn!(
+                    "could not converge restored User tasks after dispatcher startup failure: {}",
+                    recovery_err
+                );
+            }
             warn!(
                 "task dispatch center not started (task manager keeps running): {:?}",
                 err
@@ -2205,11 +2328,20 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
     pub(crate) async fn setup_service() -> (TaskManagerService, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
-        let db_path = temp_dir.path().join("test.db");
-        let conn = format!("sqlite://{}?mode=rwc", db_path.to_str().unwrap());
-        let store = TaskStore::open(&conn, RdbBackend::Sqlite, None)
-            .await
-            .unwrap();
+        let user_db_path = temp_dir.path().join("user.db");
+        let system_db_path = temp_dir.path().join("system.db");
+        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
+        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
+        let store = TaskStore::open_partitioned(
+            &user_conn,
+            RdbBackend::Sqlite,
+            None,
+            &system_conn,
+            RdbBackend::Sqlite,
+            None,
+        )
+        .await
+        .unwrap();
         let verifier = StaticKeyVerifier {
             key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
         };
@@ -2270,6 +2402,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             child_control_policy: None,
             policy_preset: None,
             permission_boundary: false,
+            storage_domain: None,
             idempotency_key: key.to_string(),
             retry_of: None,
             supersedes: None,
@@ -2329,6 +2462,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     child_control_policy: None,
                     policy_preset: None,
                     permission_boundary: false,
+                    storage_domain: None,
                     idempotency_key: "wf-run-r1".into(),
                     retry_of: None,
                     supersedes: None,
@@ -2361,6 +2495,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             child_control_policy: None,
             policy_preset: None,
             permission_boundary: false,
+            storage_domain: Some(StorageDomain::System),
             idempotency_key: "alice-install-demo".to_string(),
             retry_of: None,
             supersedes: None,
@@ -2439,6 +2574,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             child_control_policy: None,
             policy_preset: None,
             permission_boundary: false,
+            storage_domain: Some(StorageDomain::System),
             idempotency_key: "direct-cancel".to_string(),
             retry_of: None,
             supersedes: None,
@@ -3162,6 +3298,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                         presentation_schema: None,
                         allowed_executor_kinds: vec![TaskExecutorKind::App],
                         user_creatable: true,
+                        default_storage_domain: StorageDomain::User,
                         publisher_app_id: "app-a".into(),
                         enabled: true,
                         created_at: 0,
@@ -3258,6 +3395,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             child_control_policy: None,
             policy_preset: None,
             permission_boundary: false,
+            storage_domain: None,
             idempotency_key: "dsp:dsp-1".into(),
             wait_reason: None,
             message: None,
@@ -3626,5 +3764,245 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert_eq!(page.tasks.len(), 1);
         assert_eq!(page.tasks[0].task_id, second.task_id);
         assert_ne!(page.tasks[0].task_id, first.task_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn storage_domain_is_frozen_inherited_and_cross_domain_parent_is_rejected() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+
+        let mut root_req = raw_create_req("user-root", "domain-root");
+        root_req.storage_domain = Some(StorageDomain::User);
+        let root = service
+            .handle_create_task(root_req.clone(), ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(root.storage_domain, StorageDomain::User);
+
+        let mut schema_default_req = raw_create_req("download", "domain-schema-default");
+        schema_default_req.schema_id = DOWNLOAD_TASK_SCHEMA_ID.to_string();
+        let schema_default = service
+            .handle_create_task(schema_default_req, ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(schema_default.storage_domain, StorageDomain::User);
+
+        let mut child_req = raw_create_req("child", "domain-child");
+        child_req.parent_id = Some(root.task_id.clone());
+        let child = service
+            .handle_create_task(child_req, ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(child.storage_domain, StorageDomain::User);
+
+        let mut conflict = raw_create_req("bad-child", "domain-bad-child");
+        conflict.parent_id = Some(root.task_id.clone());
+        conflict.storage_domain = Some(StorageDomain::System);
+        let err = service
+            .handle_create_task(conflict, ctx.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_STORAGE_DOMAIN_CONFLICT)
+        );
+
+        root_req.storage_domain = Some(StorageDomain::System);
+        let err = service.handle_create_task(root_req, ctx).await.unwrap_err();
+        assert_eq!(
+            task_mgr_error_code(&err),
+            Some(TASK_ERR_IDEMPOTENCY_CONFLICT)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_tasks_merges_and_filters_storage_domains_with_composite_cursor() {
+        let (service, _tmp) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let mut user_req = raw_create_req("user", "domain-list-user");
+        user_req.storage_domain = Some(StorageDomain::User);
+        let user = service
+            .handle_create_task(user_req, ctx.clone())
+            .await
+            .unwrap();
+        let system = service
+            .handle_create_task(raw_create_req("system", "domain-list-system"), ctx.clone())
+            .await
+            .unwrap();
+        assert_eq!(system.storage_domain, StorageDomain::System);
+
+        let system_page = service
+            .handle_list_tasks(
+                ListTasksReq {
+                    storage_domain: Some(StorageDomain::System),
+                    include_archived: true,
+                    ..Default::default()
+                },
+                ctx.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(system_page.tasks.len(), 1);
+        assert_eq!(system_page.tasks[0].task_id, system.task_id);
+
+        let mut cursor = None;
+        let mut task_ids = Vec::new();
+        loop {
+            let page = service
+                .handle_list_tasks(
+                    ListTasksReq {
+                        include_archived: true,
+                        cursor: cursor.clone(),
+                        limit: Some(1),
+                        ..Default::default()
+                    },
+                    ctx.clone(),
+                )
+                .await
+                .unwrap();
+            task_ids.extend(page.tasks.into_iter().map(|task| task.task_id));
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            assert!(next.starts_with("v1|"));
+            cursor = Some(next);
+        }
+        task_ids.sort();
+        let mut expected = vec![user.task_id, system.task_id];
+        expected.sort();
+        assert_eq!(task_ids, expected);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deleting_local_store_preserves_user_tasks_and_drops_system_tasks() {
+        let (service, temp_dir) = setup_service().await;
+        let ctx = user_ctx("alice", "app-a");
+        let mut user_req = raw_create_req("durable", "domain-durable");
+        user_req.storage_domain = Some(StorageDomain::User);
+        let user = service
+            .handle_create_task(user_req, ctx.clone())
+            .await
+            .unwrap();
+        let system = service
+            .handle_create_task(raw_create_req("local", "domain-local"), ctx)
+            .await
+            .unwrap();
+        drop(service);
+
+        let user_db_path = temp_dir.path().join("user.db");
+        let system_db_path = temp_dir.path().join("system.db");
+        std::fs::remove_file(&system_db_path).unwrap();
+        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
+        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
+        let store = TaskStore::open_partitioned(
+            &user_conn,
+            RdbBackend::Sqlite,
+            None,
+            &system_conn,
+            RdbBackend::Sqlite,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(store.get_task(&user.task_id).await.unwrap().is_some());
+        assert!(store.get_task(&system.task_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn partition_schema_version_mismatch_stops_open() {
+        let (service, temp_dir) = setup_service().await;
+        drop(service);
+        let user_db_path = temp_dir.path().join("user.db");
+        let system_db_path = temp_dir.path().join("system.db");
+        let user_conn = format!("sqlite://{}?mode=rwc", user_db_path.to_str().unwrap());
+        let system_conn = format!("sqlite://{}?mode=rwc", system_db_path.to_str().unwrap());
+        let pool = sqlx::any::AnyPoolOptions::new()
+            .connect(&system_conn)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE task RENAME TO task_v8")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE task_store_meta")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE task (task_id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let err = TaskStore::open_partitioned(
+            &user_conn,
+            RdbBackend::Sqlite,
+            None,
+            &system_conn,
+            RdbBackend::Sqlite,
+            None,
+        )
+        .await
+        .err()
+        .expect("mismatched System store version must fail startup");
+        assert!(err.contains("User=8, System=7"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restored_user_dispatch_task_without_dispatch_record_fails_runner_lost() {
+        let (service, _tmp) = setup_service().await;
+        let actor = ActorRef::new("task-dispatcher", "system:task-dispatcher");
+        let task = service
+            .trusted_create_promised_task(
+                CreatePromisedTaskReq {
+                    name: "restored".into(),
+                    schema_id: RAW_TASK_SCHEMA_ID.into(),
+                    schema_version: None,
+                    input: json!({"restored": true}),
+                    creator: ActorRef::new("alice", "app:app-a@alice"),
+                    expected_input_digest: None,
+                    origin_ref: Some(TaskOriginRef {
+                        kind: TASK_DISPATCHER_SERVICE_NAME.into(),
+                        id: "lost-dispatch".into(),
+                    }),
+                    parent_id: None,
+                    child_control_policy: None,
+                    policy_preset: None,
+                    permission_boundary: false,
+                    storage_domain: Some(StorageDomain::User),
+                    idempotency_key: "lost-dispatch".into(),
+                    wait_reason: None,
+                    message: None,
+                },
+                &actor,
+            )
+            .await
+            .unwrap();
+
+        let recovered = service
+            .recover_lost_user_tasks_by_origin(TASK_DISPATCHER_SERVICE_NAME, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(recovered, 1);
+        let failed = service
+            .trusted_get_task(&task.task_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.phase, TaskPhase::Terminal);
+        assert_eq!(failed.outcome, Some(TaskOutcome::Failed));
+        assert_eq!(
+            failed.error.as_ref().map(|error| error.code.as_str()),
+            Some("runner_lost")
+        );
+        let events = service
+            .store()
+            .list_events(Some(&task.task_id), None, None, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            events.last().map(|event| event.event_type),
+            Some(TaskEventType::TaskFailed)
+        );
     }
 }
