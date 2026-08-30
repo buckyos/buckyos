@@ -7,11 +7,15 @@
 export interface SoftwareInfo {
   version: string
   buildVersion: string
-  releaseChannel: 'stable' | 'beta' | 'dev'
+  releaseChannel: 'stable' | 'beta' | 'dev' | 'unknown'
+  target: string
+  installedTime: string | null
   lastUpdateTime: string | null
   updateAvailable: boolean
   latestVersion: string | null
   autoUpdate: boolean
+  loading: boolean
+  loadError: string | null
 }
 
 export interface DeviceInfo {

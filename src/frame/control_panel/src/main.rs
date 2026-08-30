@@ -907,6 +907,7 @@ impl RPCHandler for ControlPanelServer {
             // System dashboard
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             "system.overview" => self.handle_system_overview(req).await,
+            "system.buckyos_info.get" => self.handle_buckyos_info_get(req).await,
             "system.status" => self.handle_system_status(req).await,
             "system.metrics" => self.handle_system_metrics(req).await,
             "network.overview" | "system.network" => self.handle_network_overview(req).await,

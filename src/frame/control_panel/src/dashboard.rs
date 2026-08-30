@@ -3,7 +3,7 @@ use crate::{
     METRICS_DISK_REFRESH_INTERVAL_SECS, NETWORK_TIMELINE_LIMIT,
 };
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
-use buckyos_api::get_buckyos_api_runtime;
+use buckyos_api::{get_buckyos_api_runtime, BuckyOSInfo, BUCKYOS_INFO_KEY};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -363,6 +363,26 @@ impl ControlPanelServer {
         });
 
         Ok(RPCResponse::new(RPCResult::Success(overview), req.seq))
+    }
+
+    pub(crate) async fn handle_buckyos_info_get(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let stored = client.get(BUCKYOS_INFO_KEY).await.map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to load BuckyOSInfo: {error}"))
+        })?;
+        let info: BuckyOSInfo = serde_json::from_str(&stored.value).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to parse BuckyOSInfo: {error}"))
+        })?;
+        info.validate().map_err(RPCErrors::ReasonError)?;
+        let response = serde_json::to_value(info).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to serialize BuckyOSInfo: {error}"))
+        })?;
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
     }
 
     pub(crate) async fn handle_system_status(

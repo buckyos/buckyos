@@ -1,4 +1,6 @@
-import type { SettingsStoreSnapshot, FontSize } from './types'
+import { fetchBuckyOSInfo, type BuckyOSInfo } from '../../../api/settings'
+import { isMockRuntime } from '../../../runtime'
+import type { SettingsStoreSnapshot, FontSize, SoftwareInfo } from './types'
 import { getEmptySeed, getPopulatedSeed } from './seed'
 
 function getScenarioFromURL(): 'empty' | 'populated' {
@@ -6,14 +8,77 @@ function getScenarioFromURL(): 'empty' | 'populated' {
   return params.get('scenario') === 'empty' ? 'empty' : 'populated'
 }
 
+function normalizeReleaseChannel(channel: string): SoftwareInfo['releaseChannel'] {
+  switch (channel.trim().toLowerCase()) {
+    case 'stable':
+      return 'stable'
+    case 'beta':
+      return 'beta'
+    case 'dev':
+    case 'nightly':
+      return 'dev'
+    default:
+      return 'unknown'
+  }
+}
+
+function unixTimestampToISO(timestamp: number): string | null {
+  const date = new Date(timestamp * 1000)
+  return Number.isFinite(timestamp) && timestamp > 0 && !Number.isNaN(date.getTime())
+    ? date.toISOString()
+    : null
+}
+
+function softwareInfoFromBuckyOSInfo(info: BuckyOSInfo): SoftwareInfo {
+  return {
+    version: info.version,
+    buildVersion: info.build_version?.trim() || '—',
+    releaseChannel: normalizeReleaseChannel(info.release_channel),
+    target: info.target,
+    installedTime: unixTimestampToISO(info.installed_at),
+    lastUpdateTime: unixTimestampToISO(info.updated_at),
+    updateAvailable: false,
+    latestVersion: null,
+    autoUpdate: false,
+    loading: false,
+    loadError: null,
+  }
+}
+
+function unloadedSoftwareInfo(): SoftwareInfo {
+  return {
+    version: '—',
+    buildVersion: '—',
+    releaseChannel: 'unknown',
+    target: '—',
+    installedTime: null,
+    lastUpdateTime: null,
+    updateAvailable: false,
+    latestVersion: null,
+    autoUpdate: false,
+    loading: false,
+    loadError: null,
+  }
+}
+
 export class SettingsMockStore {
   private data: SettingsStoreSnapshot
   private snapshot: SettingsStoreSnapshot
   private listeners: Set<() => void> = new Set()
+  private loadingBuckyOSInfo = false
 
   constructor() {
     const scenario = getScenarioFromURL()
     this.data = scenario === 'empty' ? getEmptySeed() : getPopulatedSeed()
+    if (!isMockRuntime()) {
+      this.data = {
+        ...this.data,
+        general: {
+          ...this.data.general,
+          software: unloadedSoftwareInfo(),
+        },
+      }
+    }
     this.snapshot = { ...this.data }
   }
 
@@ -29,6 +94,53 @@ export class SettingsMockStore {
   private notify() {
     this.snapshot = { ...this.data }
     this.listeners.forEach((fn) => fn())
+  }
+
+  async reloadBuckyOSInfo() {
+    if (isMockRuntime() || this.loadingBuckyOSInfo) return
+
+    this.loadingBuckyOSInfo = true
+    this.setSoftwareInfo({
+      ...this.data.general.software,
+      loading: true,
+      loadError: null,
+    })
+
+    try {
+      const { data, error } = await fetchBuckyOSInfo()
+      if (data) {
+        this.setSoftwareInfo(softwareInfoFromBuckyOSInfo(data))
+        return
+      }
+      const message = error instanceof Error
+        ? error.message
+        : 'BuckyOS information is unavailable.'
+      this.setSoftwareInfo({
+        ...unloadedSoftwareInfo(),
+        loadError: message,
+      })
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'BuckyOS information is unavailable.'
+      this.setSoftwareInfo({
+        ...unloadedSoftwareInfo(),
+        loadError: message,
+      })
+    } finally {
+      this.loadingBuckyOSInfo = false
+    }
+  }
+
+  private setSoftwareInfo(software: SoftwareInfo) {
+    this.data = {
+      ...this.data,
+      general: {
+        ...this.data.general,
+        software,
+      },
+    }
+    this.notify()
   }
 
   // ---- Appearance mutations ----
@@ -84,6 +196,9 @@ export class SettingsMockStore {
       buckyos_version: software.version,
       build: software.buildVersion,
       channel: software.releaseChannel,
+      target: software.target,
+      installed_at: software.installedTime,
+      updated_at: software.lastUpdateTime,
       os: `${device.osType} ${device.osVersion}`,
       cpu: device.cpuModel,
       memory: device.totalMemory,

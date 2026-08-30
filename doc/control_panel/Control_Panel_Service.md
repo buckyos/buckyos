@@ -207,7 +207,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 * **Zone**：`zone.overview` / `zone.config` — 聚合 `start_config.json` / `node_identity.json` / `did.json`，输出 zone/device/SN/DNS 自检与文件清单。
 * **Gateway**：`gateway.overview` / `gateway.config` / `gateway.file.get` — 解析 `cyfs_gateway.json` / `boot_gateway.yaml` / `node_gateway.json` 等（白名单文件，单文件 ≤2MB），输出 stacks / routes / tlsDomains。
 * **Container**：`container.overview` / `container.action`（start/stop/restart，带缓存与刷新锁）。
-* **Dashboard / System**：`dashboard` / `system.overview` / `system.status` / `system.metrics` / `network.overview`。
+* **Dashboard / System**：`dashboard` / `system.overview` / `system.buckyos_info.get` / `system.status` / `system.metrics` / `network.overview`。其中 `system.buckyos_info.get` 只读返回 SystemConfig `system/buckyos_info` 的 typed `BuckyOSInfo`，供 Settings 展示版本、构建、发布通道、安装及更新时间。
 * **System Logs**：`system.logs.list` / `query` / `tail` / `download`（凭 token 经 `GET /kapi/control-panel/logs/download/{token}` 下载）。
 * **AICC Settings**：`ai.overview` / `ai.provider.*` / `ai.model.*` / `ai.policy.*` / `ai.diagnostics.list` / `ai.reload` 等，管理 AI 接入与路由策略。
 
