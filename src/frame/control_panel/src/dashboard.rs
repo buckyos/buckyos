@@ -1,11 +1,16 @@
 use crate::{
-    bytes_to_gb, ControlPanelServer, MetricsTimelinePoint, SystemMetricsSnapshot,
+    bytes_to_gb, ControlPanelServer, MetricsTimelinePoint, RpcAuthPrincipal, SystemMetricsSnapshot,
     METRICS_DISK_REFRESH_INTERVAL_SECS, NETWORK_TIMELINE_LIMIT,
 };
-use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
-use buckyos_api::{get_buckyos_api_runtime, BuckyOSInfo, BUCKYOS_INFO_KEY};
+use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
+use buckyos_api::{
+    get_buckyos_api_runtime, BuckyOSInfo, SystemConfigClient, BUCKYOS_DEV_CONFIG_KEY,
+    BUCKYOS_INFO_KEY,
+};
+use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use chrono::Utc;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use sysinfo::{Disks, Networks, System};
@@ -380,6 +385,90 @@ impl ControlPanelServer {
         info.validate().map_err(RPCErrors::ReasonError)?;
         let response = serde_json::to_value(info).map_err(|error| {
             RPCErrors::ReasonError(format!("failed to serialize BuckyOSInfo: {error}"))
+        })?;
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    pub(crate) async fn handle_dev_mode_get(
+        &self,
+        req: RPCRequest,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let runtime = get_buckyos_api_runtime()?;
+        let client = runtime.get_system_config_client().await?;
+        let config = client
+            .get_buckyos_dev_config()
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let response = serde_json::to_value(config).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to serialize BuckyOSDevConfig: {error}"))
+        })?;
+
+        Ok(RPCResponse::new(RPCResult::Success(response), req.seq))
+    }
+
+    pub(crate) async fn handle_dev_mode_set(
+        &self,
+        req: RPCRequest,
+        principal: Option<&RpcAuthPrincipal>,
+    ) -> Result<RPCResponse, RPCErrors> {
+        let principal = Self::require_rpc_principal(principal)?;
+        if !principal.is_user_session || !principal.is_control_panel_session {
+            return Err(RPCErrors::NoPermission(
+                "developer mode changes require a user-authenticated Control Panel session"
+                    .to_string(),
+            ));
+        }
+
+        let enabled = Self::param_bool(&req, "enabled").ok_or_else(|| {
+            RPCErrors::ParseRequestError("missing boolean parameter enabled".to_string())
+        })?;
+        let token = req
+            .token
+            .as_deref()
+            .ok_or_else(|| RPCErrors::InvalidToken("missing caller session token".to_string()))?;
+        let parsed_token = RPCSessionToken::from_string(token)?;
+        if !parsed_token.sudo {
+            return Err(RPCErrors::NoPermission(
+                "sudo permission is required to change developer mode".to_string(),
+            ));
+        }
+
+        let runtime = get_buckyos_api_runtime()?;
+        let system_config_url = runtime.get_system_config_url();
+        let client = SystemConfigClient::new(Some(system_config_url.as_str()), Some(token));
+        let stored = client
+            .get(BUCKYOS_DEV_CONFIG_KEY)
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let mut config = serde_json::from_str::<buckyos_api::BuckyOSDevConfig>(&stored.value)
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!("failed to parse BuckyOSDevConfig: {error}"))
+            })?;
+        config
+            .set_enabled(
+                enabled,
+                principal.username.as_str(),
+                buckyos_get_unix_timestamp(),
+            )
+            .map_err(RPCErrors::ReasonError)?;
+        let encoded = serde_json::to_string(&config).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to serialize BuckyOSDevConfig: {error}"))
+        })?;
+        let mut actions = HashMap::new();
+        actions.insert(
+            BUCKYOS_DEV_CONFIG_KEY.to_string(),
+            KVAction::Update(encoded),
+        );
+        client
+            .exec_tx(
+                actions,
+                Some((BUCKYOS_DEV_CONFIG_KEY.to_string(), stored.version)),
+            )
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
+        let response = serde_json::to_value(config).map_err(|error| {
+            RPCErrors::ReasonError(format!("failed to serialize BuckyOSDevConfig: {error}"))
         })?;
 
         Ok(RPCResponse::new(RPCResult::Success(response), req.seq))

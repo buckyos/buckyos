@@ -900,13 +900,13 @@ V1 以可见性为主：
 
 ### 12.1 模块定位
 
-Developer Mode 是系统底层状态与配置的“只读可观测层 + 调试工具入口”。
+Developer Mode 是系统底层状态与配置的“可观测层 + 受 sudo 保护的调试工具入口”。
 
 目标不是让普通用户修改系统，而是让开发者、高级用户和工程支持快速获取内部信息。
 
 ### 12.2 核心策略
 
-1. 默认只读
+1. 默认关闭；Mode Switch 写入必须取得 sudo 授权
 2. 高风险写入能力默认关闭
 3. 关键内部信息可见
 4. 调试信息可导出
@@ -930,8 +930,25 @@ Developer Mode
 展示开发者模式开关：
 
 - V1 默认为 OFF
-- 当前版本不允许普通用户打开写入模式
-- 界面明确说明：当前为只读模式
+- 读取不要求 sudo；打开和关闭都要求面向 `system-config` 的 sudo token
+- 展示最近一次启用时间和启用者
+
+数据存储在 SystemConfig `system/buckyos_dev_config`，由 scheduler 首次 booting 时初始化：
+
+```json
+{
+  "schema_version": 1,
+  "enabled": false,
+  "enabled_at": null,
+  "enabled_by": null
+}
+```
+
+- `enabled_at` 是最近一次从关闭切换为启用的 Unix 时间；关闭时保留。
+- `enabled_by` 是完成最近一次启用操作的认证用户名；关闭时保留。
+- 后续开发阶段可信 DID 等配置继续扩展在 `BuckyOSDevConfig` 中，并随结构变更升级 `schema_version`。
+- control-panel 提供 `system.dev_mode.get` 和 `system.dev_mode.set`；后者显式校验 sudo，并使用调用者 token 写 SystemConfig。SystemConfig 服务也会统一拒绝所有非 bootstrap、非 sudo 的该 key 运行期写操作。
+- Rust 调用方可以使用 `BuckyOSRuntime::is_buckyos_dev_mode_enabled()` 快速查询状态；已有 client 时也可直接调用 `SystemConfigClient` 的同名方法。
 
 #### 12.4.2 System Diagnostics
 
@@ -1012,7 +1029,8 @@ V1 可允许页面存在但内容为空或仅保留入口。
 
 ### 12.5 验收标准
 
-- 用户能看到开发者模式当前为只读。
+- 用户能看到开发者模式当前状态、最近启用时间和启用者。
+- 非 sudo 写入必须被拒绝；管理员取得 sudo 后可以打开或关闭。
 - 用户能查看 SystemConfig 和 Gateway 配置的非敏感内容。
 - 用户能触发日志打包下载。
 - 页面可展示系统诊断结果。
@@ -1033,6 +1051,7 @@ V1 对 Settings 内能力按可写性分层：
    - 外观配置
    - Session 命名与克隆
    - 更新相关入口
+   - Developer Mode 开关（sudo）
 
 3. **暂不开放可写**
    - 高风险系统配置写入
@@ -1134,7 +1153,7 @@ V1 对 Settings 内能力按可写性分层：
 
 ### 16.3 Developer Mode 的进一步开放
 
-- 内部构建可开启写入能力
+- 扩展开发阶段可信 DID 等 `BuckyOSDevConfig` 配置
 - API 调试能力完整化
 - 更丰富的诊断脚本与修复建议
 

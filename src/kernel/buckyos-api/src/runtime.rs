@@ -2011,6 +2011,15 @@ impl BuckyOSRuntime {
         Ok(client.clone())
     }
 
+    /// Returns whether the Zone-wide BuckyOS developer mode is currently enabled.
+    pub async fn is_buckyos_dev_mode_enabled(&self) -> Result<bool> {
+        self.get_system_config_client()
+            .await?
+            .is_buckyos_dev_mode_enabled()
+            .await
+            .map_err(|error| RPCErrors::ReasonError(error.to_string()))
+    }
+
     /// Returns a short-session client bound to the runtime session token that is
     /// valid at the time this method is called.
     ///

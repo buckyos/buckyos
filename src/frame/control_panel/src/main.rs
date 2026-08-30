@@ -908,6 +908,8 @@ impl RPCHandler for ControlPanelServer {
             "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
             "system.overview" => self.handle_system_overview(req).await,
             "system.buckyos_info.get" => self.handle_buckyos_info_get(req).await,
+            "system.dev_mode.get" => self.handle_dev_mode_get(req).await,
+            "system.dev_mode.set" => self.handle_dev_mode_set(req, principal.as_ref()).await,
             "system.status" => self.handle_system_status(req).await,
             "system.metrics" => self.handle_system_metrics(req).await,
             "network.overview" | "system.network" => self.handle_network_overview(req).await,

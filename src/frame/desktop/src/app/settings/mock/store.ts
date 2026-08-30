@@ -1,6 +1,17 @@
-import { fetchBuckyOSInfo, type BuckyOSInfo } from '../../../api/settings'
+import {
+  fetchBuckyOSDevConfig,
+  fetchBuckyOSInfo,
+  setBuckyOSDevMode,
+  type BuckyOSDevConfig,
+  type BuckyOSInfo,
+} from '../../../api/settings'
 import { isMockRuntime } from '../../../runtime'
-import type { SettingsStoreSnapshot, FontSize, SoftwareInfo } from './types'
+import type {
+  DeveloperInfo,
+  SettingsStoreSnapshot,
+  FontSize,
+  SoftwareInfo,
+} from './types'
 import { getEmptySeed, getPopulatedSeed } from './seed'
 
 function getScenarioFromURL(): 'empty' | 'populated' {
@@ -61,11 +72,27 @@ function unloadedSoftwareInfo(): SoftwareInfo {
   }
 }
 
+function developerStateFromConfig(
+  current: DeveloperInfo,
+  config: BuckyOSDevConfig,
+): DeveloperInfo {
+  return {
+    ...current,
+    modeEnabled: config.enabled,
+    enabledAt: config.enabled_at ? unixTimestampToISO(config.enabled_at) : null,
+    enabledBy: config.enabled_by?.trim() || null,
+    loading: false,
+    saving: false,
+    loadError: null,
+  }
+}
+
 export class SettingsMockStore {
   private data: SettingsStoreSnapshot
   private snapshot: SettingsStoreSnapshot
   private listeners: Set<() => void> = new Set()
   private loadingBuckyOSInfo = false
+  private loadingBuckyOSDevConfig = false
 
   constructor() {
     const scenario = getScenarioFromURL()
@@ -76,6 +103,15 @@ export class SettingsMockStore {
         general: {
           ...this.data.general,
           software: unloadedSoftwareInfo(),
+        },
+        developer: {
+          ...this.data.developer,
+          modeEnabled: false,
+          enabledAt: null,
+          enabledBy: null,
+          loading: false,
+          saving: false,
+          loadError: null,
         },
       }
     }
@@ -184,7 +220,90 @@ export class SettingsMockStore {
   // ---- Developer Mode ----
 
   toggleDeveloperMode() {
-    this.data.developer.modeEnabled = !this.data.developer.modeEnabled
+    if (isMockRuntime()) {
+      this.setDeveloperInfo({
+        ...this.data.developer,
+        modeEnabled: !this.data.developer.modeEnabled,
+      })
+    }
+  }
+
+  async reloadBuckyOSDevConfig() {
+    if (isMockRuntime() || this.loadingBuckyOSDevConfig) return
+
+    this.loadingBuckyOSDevConfig = true
+    this.setDeveloperInfo({
+      ...this.data.developer,
+      loading: true,
+      loadError: null,
+    })
+
+    try {
+      const { data, error } = await fetchBuckyOSDevConfig()
+      if (data) {
+        this.setDeveloperInfo(developerStateFromConfig(this.data.developer, data))
+        return
+      }
+      this.setDeveloperLoadError(error)
+    } catch (error) {
+      this.setDeveloperLoadError(error)
+    } finally {
+      this.loadingBuckyOSDevConfig = false
+    }
+  }
+
+  async setDeveloperMode(enabled: boolean, sudoToken: string): Promise<boolean> {
+    if (isMockRuntime()) {
+      this.toggleDeveloperMode()
+      return true
+    }
+    if (this.data.developer.saving) return false
+
+    this.setDeveloperInfo({
+      ...this.data.developer,
+      saving: true,
+      loadError: null,
+    })
+    try {
+      const { data, error } = await setBuckyOSDevMode(enabled, {
+        sessionToken: sudoToken,
+      })
+      if (data) {
+        this.setDeveloperInfo(developerStateFromConfig(this.data.developer, data))
+        return true
+      }
+      this.setDeveloperLoadError(error)
+      return false
+    } catch (error) {
+      this.setDeveloperLoadError(error)
+      return false
+    } finally {
+      if (this.data.developer.saving) {
+        this.setDeveloperInfo({
+          ...this.data.developer,
+          saving: false,
+        })
+      }
+    }
+  }
+
+  private setDeveloperLoadError(error: unknown) {
+    const message = error instanceof Error
+      ? error.message
+      : 'Developer mode configuration is unavailable.'
+    this.setDeveloperInfo({
+      ...this.data.developer,
+      loading: false,
+      saving: false,
+      loadError: message,
+    })
+  }
+
+  private setDeveloperInfo(developer: DeveloperInfo) {
+    this.data = {
+      ...this.data,
+      developer,
+    }
     this.notify()
   }
 

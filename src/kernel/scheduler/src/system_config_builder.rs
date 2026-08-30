@@ -8,13 +8,14 @@ use buckyos_api::{
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
-    AppInstanceId, AppRegistry, BuckyOSInfo, GatewaySettings, GatewayShortcut, KernelServiceSpec,
-    NodeConfig, NodeState, ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteConfig,
-    ServiceInfo, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceProtocol,
-    ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile,
-    UserProfile, UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig,
-    AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, BUCKYOS_INFO_KEY, OPENDAN_SERVICE_UNIQUE_ID,
-    SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID, ZONE_OWNER_USER_ID_KEY,
+    AppInstanceId, AppRegistry, BuckyOSDevConfig, BuckyOSInfo, GatewaySettings, GatewayShortcut,
+    KernelServiceSpec, NodeConfig, NodeState, ServiceEndpointConfig, ServiceExposeConfig,
+    ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings,
+    UserPrivateProfile, UserProfile, UserSettings, UserState, UserTunnelBinding, UserType,
+    ZoneConfig, AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, BUCKYOS_DEV_CONFIG_KEY,
+    BUCKYOS_INFO_KEY, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
@@ -443,6 +444,7 @@ impl SystemConfigBuilder {
         );
         buckyos_info.validate().map_err(anyhow::Error::msg)?;
         self.insert_json(BUCKYOS_INFO_KEY, &buckyos_info)?;
+        self.insert_json(BUCKYOS_DEV_CONFIG_KEY, &BuckyOSDevConfig::default())?;
         self.insert_json("system/system_pkgs", &json!({}))?;
         self.insert_json_if_absent(APP_REGISTRY_KEY, &AppRegistry::default())?;
         Ok(self)

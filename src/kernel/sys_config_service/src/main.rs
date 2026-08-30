@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 use ::kRPC::*;
 use buckyos_api::{
     build_current_rbac_config, validate_verify_hub_token_claims, SystemServiceId, TokenUse,
-    ZoneConfig, SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
+    ZoneConfig, BUCKYOS_DEV_CONFIG_KEY, SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
 };
 use buckyos_http_server::*;
 use buckyos_http_server::{
@@ -198,6 +198,40 @@ fn validate_system_config_bootstrap_assertion(
 
 fn request_key(params: &Value) -> Option<&str> {
     params.get("key").and_then(Value::as_str)
+}
+
+fn request_writes_buckyos_dev_config(method: &str, params: &Value) -> bool {
+    match method {
+        "sys_config_create"
+        | "sys_config_set"
+        | "sys_config_set_by_json_path"
+        | "sys_config_delete"
+        | "sys_config_append" => request_key(params)
+            .map(strip_config_key_prefix)
+            .is_some_and(|key| key == BUCKYOS_DEV_CONFIG_KEY),
+        "sys_config_exec_tx" => params
+            .get("actions")
+            .and_then(Value::as_object)
+            .is_some_and(|actions| {
+                actions
+                    .keys()
+                    .any(|key| strip_config_key_prefix(key) == BUCKYOS_DEV_CONFIG_KEY)
+            }),
+        _ => false,
+    }
+}
+
+fn require_sudo_for_protected_write(
+    method: &str,
+    params: &Value,
+    token: &RPCSessionToken,
+) -> Result<()> {
+    if request_writes_buckyos_dev_config(method, params) && !token.sudo {
+        return Err(RPCErrors::NoPermission(
+            "sudo permission is required to write system/buckyos_dev_config".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn bootstrap_request_allowed_after_boot(
@@ -1038,6 +1072,7 @@ impl SystemConfigServer {
             let rpc_session_token = verify_trusted_jwt(session_token.as_str()).await?;
             if validate_verify_hub_token_claims(&rpc_session_token, TokenUse::Session).is_ok() {
                 BOOTSTRAP_CONFIG_MODE.store(false, Ordering::Release);
+                require_sudo_for_protected_write(method.as_str(), &param, &rpc_session_token)?;
             } else {
                 authorize_bootstrap_request(method.as_str(), &param, &rpc_session_token).await?;
             }
@@ -1504,6 +1539,37 @@ mod test {
             require_session_identity(&valid).unwrap(),
             ("alice", "system:control-panel".to_string())
         );
+    }
+
+    #[test]
+    fn buckyos_dev_config_runtime_writes_require_sudo() {
+        let mut token = test_session_token(Some("alice"), Some("control-panel"));
+        let direct_write = json!({
+            "key": BUCKYOS_DEV_CONFIG_KEY,
+            "value": "{}",
+        });
+        assert!(require_sudo_for_protected_write("sys_config_get", &direct_write, &token).is_ok());
+        assert!(require_sudo_for_protected_write("sys_config_set", &direct_write, &token).is_err());
+        assert!(require_sudo_for_protected_write(
+            "sys_config_set",
+            &json!({"key": "system/other", "value": "{}"}),
+            &token,
+        )
+        .is_ok());
+
+        let tx_write = json!({
+            "actions": {
+                "obj://config/system/buckyos_dev_config": {
+                    "action": "update",
+                    "value": "{}",
+                }
+            }
+        });
+        assert!(require_sudo_for_protected_write("sys_config_exec_tx", &tx_write, &token).is_err());
+
+        token.sudo = true;
+        assert!(require_sudo_for_protected_write("sys_config_set", &direct_write, &token).is_ok());
+        assert!(require_sudo_for_protected_write("sys_config_exec_tx", &tx_write, &token).is_ok());
     }
 
     #[test]

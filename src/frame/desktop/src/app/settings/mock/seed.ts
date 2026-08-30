@@ -260,7 +260,11 @@ const privacyInfo: PrivacyInfo = {
 
 const developerInfo: DeveloperInfo = {
   modeEnabled: true,
-  readOnly: true,
+  enabledAt: '2026-03-25T10:00:00Z',
+  enabledBy: 'leo',
+  loading: false,
+  saving: false,
+  loadError: null,
   diagnostics: [
     { name: 'System Services', status: 'pass', message: 'All 12 services running', detail: 'gateway, auth, storage, message-hub, ai-router, scheduler, dns-manager, cert-manager, sn-proxy, file-service, app-manager, monitor' },
     { name: 'Network Connectivity', status: 'pass', message: 'SN relay active, latency 42ms' },

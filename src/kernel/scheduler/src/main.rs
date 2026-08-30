@@ -431,6 +431,18 @@ mod test {
         assert_eq!(buckyos_info.release_channel, get_channel().to_string());
         assert_eq!(buckyos_info.target, get_target());
         assert_eq!(buckyos_info.installed_at, buckyos_info.updated_at);
+        let buckyos_dev_config: BuckyOSDevConfig = serde_json::from_str(
+            init_map
+                .get(BUCKYOS_DEV_CONFIG_KEY)
+                .expect("BuckyOSDevConfig should be initialized"),
+        )
+        .expect("BuckyOSDevConfig should be valid JSON");
+        buckyos_dev_config
+            .validate()
+            .expect("boot BuckyOSDevConfig should be valid");
+        assert!(!buckyos_dev_config.enabled);
+        assert_eq!(buckyos_dev_config.enabled_at, None);
+        assert_eq!(buckyos_dev_config.enabled_by, None);
         assert!(init_map.contains_key("security/verify-hub/key"));
         assert!(!init_map.contains_key("system/verify-hub/key"));
         assert!(!init_map.contains_key(&format!("devices/{}/doc", TEST_DEVICE_NAME)));

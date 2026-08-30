@@ -284,6 +284,29 @@ mod tests {
         assert!(rbac::enforce("ood1", "system:scheduler", resource, "write", None).await);
     }
 
+    #[tokio::test]
+    async fn buckyos_dev_config_write_requires_admin_sudo() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, admin\ng, su_alice, su_admin"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let resource = "obj://config/system/buckyos_dev_config";
+        assert!(rbac::enforce("alice", "system:control-panel", resource, "read", None).await);
+        assert!(!rbac::enforce("alice", "system:control-panel", resource, "write", None).await);
+        assert!(
+            rbac::enforce(
+                "alice",
+                "system:control-panel",
+                resource,
+                "write",
+                Some(rbac::SudoMode::Sudo("su_alice".to_string())),
+            )
+            .await
+        );
+    }
+
     #[test]
     fn overlap_rbac_policy_appends_tail_to_default() {
         let policy = overlap_rbac_policy(

@@ -30,6 +30,7 @@ function PageRouter({ page, appProps }: { page: SettingsPage; appProps: AppConte
 export function SettingsAppPanel(props: AppContentLoaderProps) {
   useEffect(() => {
     void globalSettingsStore.reloadBuckyOSInfo()
+    void globalSettingsStore.reloadBuckyOSDevConfig()
   }, [])
 
   return (

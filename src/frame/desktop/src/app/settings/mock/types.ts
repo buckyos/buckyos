@@ -214,7 +214,11 @@ export interface CLICommand {
 
 export interface DeveloperInfo {
   modeEnabled: boolean
-  readOnly: boolean
+  enabledAt: string | null
+  enabledBy: string | null
+  loading: boolean
+  saving: boolean
+  loadError: string | null
   diagnostics: DiagnosticItem[]
   configTree: ConfigNode[]
   cliHelpers: CLICommand[]
