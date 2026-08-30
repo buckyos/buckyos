@@ -2384,12 +2384,17 @@ mod tests {
 
     #[test]
     fn openai_variants_expand_after_current_mount_selection() {
-        let request = DriverModelResolveRequest::new("gpt-5.5", vec![ApiType::Llm]);
+        let requests = [
+            DriverModelResolveRequest::new("gpt-5.5", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("gpt-5.2-pro", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("gpt-5.4-pro", vec![ApiType::Llm]),
+            DriverModelResolveRequest::new("gpt-5.5-pro", vec![ApiType::Llm]),
+        ];
         let inventory = resolve_driver_inventory(
             "openai-test",
             ProviderType::CloudApi,
             "openai",
-            &[request],
+            &requests,
             None,
         );
         let variant = inventory
@@ -2403,6 +2408,31 @@ mod tests {
             .logical_mounts
             .iter()
             .any(|mount| mount == "llm.gpt-standard.reasoning-high"));
+        for id in ["gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro"] {
+            assert!(inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == format!("{id}:reasoning-high")));
+            assert!(!inventory
+                .models
+                .iter()
+                .any(|model| model.provider_model_id == format!("{id}:reasoning-low")));
+        }
+        for id in ["gpt-5.2-pro", "gpt-5.4-pro"] {
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .expect("pro model");
+            assert!(!model.capabilities.json_schema);
+        }
+        let gpt_55_pro = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-5.5-pro")
+            .expect("GPT-5.5 Pro model");
+        assert!(!gpt_55_pro.capabilities.streaming);
+        assert!(gpt_55_pro.capabilities.json_schema);
     }
 
     #[test]

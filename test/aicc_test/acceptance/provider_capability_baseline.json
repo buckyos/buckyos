@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-30.6",
+  "baseline_revision": "2026-08-30.7",
   "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
@@ -355,6 +355,30 @@
           "output_kinds": ["audio"],
           "source_urls": ["https://developers.openai.com/api/docs/guides/text-to-speech"],
           "evidence_summary": "OpenAI TTS models convert text to audio."
+        },
+        {
+          "model_pattern": "gpt-5.2-pro*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "tool_call", "image"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.2-pro", "https://developers.openai.com/api/docs/guides/file-inputs"],
+          "evidence_summary": "GPT-5.2 Pro supports text, image, files, tools, and the Responses image generation tool, but its official model page marks Structured Outputs unsupported."
+        },
+        {
+          "model_pattern": "gpt-5.4-pro*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "tool_call", "image"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.4-pro", "https://developers.openai.com/api/docs/guides/file-inputs"],
+          "evidence_summary": "GPT-5.4 Pro supports text, image, files, tools, and the Responses image generation tool, but its official model page marks Structured Outputs unsupported."
         },
         {
           "model_pattern": "gpt-5*",
