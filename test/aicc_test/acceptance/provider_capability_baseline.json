@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-30.4",
+  "baseline_revision": "2026-08-30.5",
   "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
@@ -659,9 +659,18 @@
         "endpoint": "https://api.fal.ai/v1/models",
         "format": "fal",
         "authentication": "fal-key",
-        "page_size": 100
+        "page_size": 100,
+        "endpoint_ids": [
+          "fal-ai/esrgan",
+          "fal-ai/imageutils/rembg",
+          "fal-ai/deepfilternet3",
+          "fal-ai/video-upscaler"
+        ]
       },
-      "source_urls": ["https://fal.ai/docs/model-api-reference"],
+      "source_urls": [
+        "https://fal.ai/docs/platform-apis/v1/models",
+        "https://fal.ai/docs/model-api-reference"
+      ],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-08-27",
         "streaming_semantics": "fal model APIs use synchronous, queue, webhook, or streaming patterns as declared by the selected endpoint.",

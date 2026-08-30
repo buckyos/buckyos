@@ -185,6 +185,45 @@ test("SN official catalog requires an independent bearer session token", async (
   assert.deepEqual(ids, ["gpt-5"]);
 });
 
+test("Fal official catalog verifies the parameterized endpoint protocol scope", async () => {
+  const profile = (await baseline()).providers.find((item) => item.provider_driver === "fal")!;
+  const expected = profile.official_catalog.endpoint_ids!;
+  const ids = await fetchOfficialModelIds({
+    profile,
+    token: "fal-catalog-token",
+    timeoutMs: 1_000,
+    fetcher: async (input, init) => {
+      const url = new URL(input.toString());
+      assert.deepEqual(url.searchParams.getAll("endpoint_id"), expected);
+      assert.equal(url.searchParams.get("status"), "active");
+      assert.equal(url.searchParams.get("limit"), String(expected.length));
+      assert.equal(new Headers(init?.headers).get("authorization"), "Key fal-catalog-token");
+      return new Response(JSON.stringify({
+        models: expected.map((endpoint_id) => ({ endpoint_id })),
+        has_more: false,
+        next_cursor: null,
+      }), { status: 200 });
+    },
+  });
+  assert.deepEqual(ids, [...expected].sort((left, right) => left.localeCompare(right)));
+});
+
+test("Fal scoped catalog fails closed when an endpoint is no longer active", async () => {
+  const profile = (await baseline()).providers.find((item) => item.provider_driver === "fal")!;
+  await assert.rejects(
+    fetchOfficialModelIds({
+      profile,
+      token: "fal-catalog-token",
+      timeoutMs: 1_000,
+      fetcher: async () => new Response(JSON.stringify({
+        models: profile.official_catalog.endpoint_ids!.slice(1).map((endpoint_id) => ({ endpoint_id })),
+        has_more: false,
+      }), { status: 200 }),
+    }),
+    /official catalog scope mismatch.*missing=fal-ai\/esrgan/,
+  );
+});
+
 test("official catalog network failures do not expose query credentials", async () => {
   const profile = (await baseline()).providers.find((item) => item.provider_driver === "google-gemini")!;
   await assert.rejects(

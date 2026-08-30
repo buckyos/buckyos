@@ -139,6 +139,7 @@ export type OfficialCatalogConfig = {
   format: "openai" | "anthropic" | "gemini" | "fal" | "sn";
   authentication: "bearer" | "x-api-key" | "query-key" | "fal-key" | "none";
   page_size?: number;
+  endpoint_ids?: string[];
 };
 
 export type ProviderBaseline = {

@@ -84,7 +84,12 @@ function configureRequest(
     url.searchParams.set("pageSize", pageSize);
     if (cursor) url.searchParams.set("pageToken", cursor);
   } else if (catalog.format === "fal") {
-    url.searchParams.set("limit", pageSize);
+    const endpointIds = catalog.endpoint_ids ?? [];
+    url.searchParams.set("limit", String(endpointIds.length || pageSize));
+    url.searchParams.set("status", "active");
+    for (const endpointId of endpointIds) {
+      url.searchParams.append("endpoint_id", endpointId);
+    }
     if (cursor) url.searchParams.set("cursor", cursor);
   }
   if (catalog.authentication === "bearer") headers.set("authorization", `Bearer ${token}`);
@@ -210,6 +215,18 @@ export async function fetchOfficialModelIds(input: {
   }
   if (ids.size === 0) {
     throw new Error(`official catalog returned no models for ${input.profile.provider_driver}`);
+  }
+  const endpointIds = input.profile.official_catalog.endpoint_ids ?? [];
+  if (endpointIds.length > 0) {
+    const expected = new Set(endpointIds.map((id) => id.toLowerCase()));
+    const missing = [...expected].filter((id) => !ids.has(id));
+    const unexpected = [...ids.keys()].filter((id) => !expected.has(id));
+    if (missing.length > 0 || unexpected.length > 0) {
+      throw new Error(
+        `official catalog scope mismatch for ${input.profile.provider_driver}: ` +
+          `missing=${missing.join(",") || "none"} unexpected=${unexpected.join(",") || "none"}`,
+      );
+    }
   }
   return [...ids.values()].sort((left, right) => left.localeCompare(right));
 }
