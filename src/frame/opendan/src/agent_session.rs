@@ -4438,16 +4438,7 @@ impl AgentSession {
                 // pre-inference write would have missed it.
                 self.persist_snapshot(&snapshot).await;
 
-                // Owner key for the dispatched task — fall back to the
-                // session's owner / agent name so multi-tenant deployments
-                // can scope correctly.
-                let owner_for_task = if !self.owner.trim().is_empty() {
-                    self.owner.clone()
-                } else {
-                    self.agent_name.clone()
-                };
-                let dispatcher =
-                    TaskDispatch::from_runtime(self.runtime.task_mgr.clone(), owner_for_task);
+                let dispatcher = TaskDispatch::from_runtime(self.runtime.task_mgr.clone());
                 // §4.7.2 — same runtime-injected `from_user_did` rule
                 // applies to async tools as to sync ones: the tool worker
                 // must see the real user DID, not whatever the LLM stuffed

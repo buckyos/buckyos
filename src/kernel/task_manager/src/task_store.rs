@@ -108,14 +108,6 @@ pub struct TaskStore {
 pub type DbResult<T> = std::result::Result<T, sqlx::Error>;
 
 impl TaskStore {
-    pub async fn open(
-        connection: &str,
-        backend: RdbBackend,
-        schema: Option<&str>,
-    ) -> std::result::Result<Self, String> {
-        Self::open_shard(connection, backend, schema, StorageDomain::User).await
-    }
-
     async fn open_shard(
         connection: &str,
         backend: RdbBackend,
@@ -421,14 +413,6 @@ impl TaskStore {
             )));
         }
         Ok(task)
-    }
-
-    pub fn pool(&self) -> &AnyPool {
-        &self.pool
-    }
-
-    pub fn domain(&self) -> StorageDomain {
-        self.domain
     }
 
     fn shard(&self, domain: StorageDomain) -> Result<&TaskStore> {
@@ -983,16 +967,6 @@ impl TaskStore {
             }
             None => Ok(None),
         }
-    }
-
-    pub async fn find_by_origin(&self, kind: &str, id: &str) -> Result<Option<Task>> {
-        if let Some(task) = self.find_by_origin_local(kind, id).await? {
-            return Ok(Some(task));
-        }
-        if let Some(system) = self.system.as_deref() {
-            return system.find_by_origin_local(kind, id).await;
-        }
-        Ok(None)
     }
 
     async fn find_by_origin_local(&self, kind: &str, id: &str) -> Result<Option<Task>> {

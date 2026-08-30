@@ -123,7 +123,8 @@ impl TaskManagerService {
         }
     }
 
-    pub fn store(&self) -> Arc<TaskStore> {
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> Arc<TaskStore> {
         self.store.clone()
     }
 

@@ -78,14 +78,6 @@ pub struct Principal {
 }
 
 impl Principal {
-    pub fn actor_ref(&self) -> ActorRef {
-        ActorRef {
-            user_id: self.user_id.clone(),
-            app_id: self.app_id.clone(),
-            app_instance_id: None,
-        }
-    }
-
     fn sudo_mode(&self) -> Option<rbac::SudoMode> {
         self.sudo
             .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(&self.user_id)))

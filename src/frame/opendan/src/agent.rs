@@ -3143,7 +3143,6 @@ mod tests {
         TaskManagerHandler, TaskNote, TaskOutcome, TaskPhase, TaskSummary, TaskSummaryPage,
     };
     use kRPC::{RPCContext, RPCErrors};
-    use std::ops::Range;
     use std::sync::atomic::{AtomicI64, Ordering};
 
     #[test]
@@ -3732,20 +3731,6 @@ runner_id = "agent"
                 .filter(|note| note.task_id == req.task_id)
                 .cloned()
                 .collect())
-        }
-    }
-
-    fn merge_json_test(dst: &mut serde_json::Value, patch: &serde_json::Value) {
-        match (dst, patch) {
-            (serde_json::Value::Object(dst), serde_json::Value::Object(patch)) => {
-                for (key, value) in patch {
-                    merge_json_test(
-                        dst.entry(key.clone()).or_insert(serde_json::Value::Null),
-                        value,
-                    );
-                }
-            }
-            (dst, patch) => *dst = patch.clone(),
         }
     }
 

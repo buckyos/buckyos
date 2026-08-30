@@ -374,13 +374,13 @@ impl ProductionInstallDriver {
 
         let mut resolved = self.resolver.resolve_app(&app_did, policy).await?;
         // candidate 绑定：did/owner 硬约束（owner 冒充在这里拒绝）。
-        let binding = bind_candidate_document(&app_did, &resolved.snapshot, &candidate_value)?;
+        let candidate_obj_id =
+            bind_candidate_document(&app_did, &resolved.snapshot, &candidate_value)?;
 
         let resolved_app_doc = if matches!(policy, buckyos_api::InstallPolicy::LocalDeveloper) {
             resolved.snapshot.evidence =
                 Some(buckyos_api::DidEvidenceLevel::LocalDeveloperAuthority);
-            resolved.snapshot.local_authority_app_doc_object_id =
-                Some(binding.candidate_obj_id.clone());
+            resolved.snapshot.local_authority_app_doc_object_id = Some(candidate_obj_id.clone());
             Some(candidate_value.clone())
         } else {
             resolved
@@ -395,7 +395,7 @@ impl ProductionInstallDriver {
                 pikg_digest: Some(inspection.pikg_digest.clone()),
                 staging_path: Some(canonical.to_string_lossy().to_string()),
                 staging_handle: Some(staging_handle.to_string()),
-                app_doc_object_id: Some(binding.candidate_obj_id),
+                app_doc_object_id: Some(candidate_obj_id),
                 source_url: None,
             }),
             resolution: resolved.snapshot,
@@ -449,7 +449,7 @@ impl ProductionInstallDriver {
                     Self::invalid_request(format!("candidate app document did invalid: {err}"))
                 })?;
                 let resolved = self.resolver.resolve_app(&app_did, policy).await?;
-                let binding =
+                let candidate_obj_id =
                     bind_candidate_document(&app_did, &resolved.snapshot, &candidate_value)?;
                 let resolved_app_doc = resolved
                     .document_value
@@ -461,7 +461,7 @@ impl ProductionInstallDriver {
                         pikg_digest: None,
                         staging_path: None,
                         staging_handle: None,
-                        app_doc_object_id: Some(binding.candidate_obj_id),
+                        app_doc_object_id: Some(candidate_obj_id),
                         source_url: None,
                     }),
                     resolution: resolved.snapshot,

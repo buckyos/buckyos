@@ -29,10 +29,6 @@ pub enum ScheduleStatus {
 }
 
 impl ScheduleStatus {
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, ScheduleStatus::Canceled)
-    }
-
     pub fn from_str_loose(value: &str) -> Option<Self> {
         match value {
             "Running" => Some(Self::Running),
@@ -415,6 +411,7 @@ pub struct ScheduleTaskMirrorClient {
 }
 
 impl ScheduleTaskMirrorClient {
+    #[cfg(test)]
     pub fn new(client: Arc<TaskManagerClient>, app_id: impl Into<String>) -> Self {
         Self {
             client: Some(client),

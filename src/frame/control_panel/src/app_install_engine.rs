@@ -91,8 +91,6 @@ pub struct InstallTaskView {
     pub phase: TaskPhase,
     pub outcome: Option<TaskOutcome>,
     pub wait_reason: Option<TaskWaitReason>,
-    pub revision: u64,
-    pub runner_epoch: u64,
     pub display: Option<AppInstallDisplayProgress>,
     pub updated_at: u64,
 }
@@ -308,8 +306,6 @@ impl InstallEngine {
             phase: TaskPhase::Accepted,
             outcome: None,
             wait_reason: None,
-            revision: 0,
-            runner_epoch: 0,
             display: None,
             updated_at: buckyos_get_unix_timestamp(),
         };
@@ -1393,8 +1389,6 @@ impl TaskMgrInstallStore {
             phase: task.phase,
             outcome: task.outcome,
             wait_reason: task.wait_reason,
-            revision: task.revision,
-            runner_epoch: task.runner_epoch,
             display,
             updated_at: task.updated_at,
         })

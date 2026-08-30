@@ -43,16 +43,6 @@ pub trait ContentLocator: Send + Sync {
     }
 }
 
-/// 一切都缺失的 locator（离线且无本地缓存的最坏情况，或 fake 基线）。
-pub struct NoLocalContentLocator;
-
-#[async_trait]
-impl ContentLocator for NoLocalContentLocator {
-    async fn locate(&self, _content_id: &str) -> ContentLocation {
-        ContentLocation::Missing
-    }
-}
-
 // ---------------------------------------------------------------------------
 // planner 输入
 // ---------------------------------------------------------------------------

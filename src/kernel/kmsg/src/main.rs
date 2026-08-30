@@ -1,5 +1,3 @@
-mod sled_msg_queue;
-
 use buckyos_api::msg_queue::KMSG_SERVICE_MAIN_PORT;
 use buckyos_api::*;
 use buckyos_kit::init_logging;
@@ -7,8 +5,8 @@ use buckyos_kit::init_logging;
 use std::sync::Arc;
 
 use buckyos_http_server::*;
+use kmsg::sled_msg_queue::SledMsgQueueServer;
 use log::error;
-use sled_msg_queue::SledMsgQueueServer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

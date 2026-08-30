@@ -1,17 +1,16 @@
 use buckyos_api::{
-    app_availability_audit_key, app_availability_policy_key, get_buckyos_api_runtime,
-    parse_app_instance_id, user_app_spec_key, AgentSpec, AppAvailabilityPolicy, AppDataDisposition,
-    AppDeletionManifest, AppDoc, AppId, AppInstanceId, AppLifecycleAction, AppLifecycleTaskResult,
-    AppServiceSpec, AppStartTaskData, AppStartTaskRequest, AppType, AppUninstallTaskData,
-    AppUninstallTaskRequest, AppUninstallTaskResult, AppUpdateAvailability,
-    AppUpdateBatchItemOutcome, AppUpdateBatchItemResult, AppUpdateBatchProgress,
-    AppUpdateBatchRequestItem, AppUpdateBatchTaskData, AppUpdateBatchTaskRequest,
-    AppUpdateBatchTaskResult, AppUpdateState, AvailabilityEffect, InstallPolicy, RepoClient,
-    RestartStrategy, ServiceInstanceReportInfo, ServiceInstanceState, ServiceState, SubPkgDesc,
-    SystemConfigClient, SystemConfigError, TaskManagerClient, TaskOutcome, TaskPhase,
-    APP_AVAILABILITY_SCHEMA_VERSION, APP_INSTALL_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID,
-    APP_START_TASK_SCHEMA_ID, APP_UNINSTALL_TASK_SCHEMA_ID, APP_UPDATE_BATCH_TASK_SCHEMA_ID,
-    APP_UPDATE_TASK_SCHEMA_ID,
+    app_availability_audit_key, app_availability_policy_key, get_buckyos_api_runtime, AgentSpec,
+    AppAvailabilityPolicy, AppDataDisposition, AppDeletionManifest, AppDoc, AppId, AppInstanceId,
+    AppLifecycleAction, AppLifecycleTaskResult, AppServiceSpec, AppStartTaskData,
+    AppStartTaskRequest, AppType, AppUninstallTaskData, AppUninstallTaskRequest,
+    AppUninstallTaskResult, AppUpdateAvailability, AppUpdateBatchItemOutcome,
+    AppUpdateBatchItemResult, AppUpdateBatchProgress, AppUpdateBatchRequestItem,
+    AppUpdateBatchTaskData, AppUpdateBatchTaskRequest, AppUpdateBatchTaskResult, AppUpdateState,
+    AvailabilityEffect, InstallPolicy, RepoClient, RestartStrategy, ServiceInstanceReportInfo,
+    ServiceInstanceState, ServiceState, SubPkgDesc, SystemConfigClient, SystemConfigError,
+    TaskManagerClient, TaskOutcome, TaskPhase, APP_AVAILABILITY_SCHEMA_VERSION,
+    APP_INSTALL_SCHEMA_VERSION, APP_INSTALL_TASK_SCHEMA_ID, APP_START_TASK_SCHEMA_ID,
+    APP_UNINSTALL_TASK_SCHEMA_ID, APP_UPDATE_BATCH_TASK_SCHEMA_ID, APP_UPDATE_TASK_SCHEMA_ID,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use flate2::write::GzEncoder;
@@ -257,10 +256,6 @@ impl AppInstaller {
             && spec.expected_instance_count > 0
             && spec.state != ServiceState::Stopped
             && spec.state != ServiceState::Deleted
-    }
-
-    fn spec_storage_path(spec: &AppServiceSpec) -> String {
-        user_app_spec_key(&spec.owner_user_id, spec.app_id())
     }
 
     fn service_spec_id(spec: &AppServiceSpec) -> String {
@@ -1186,70 +1181,6 @@ impl AppInstaller {
                 }
             }
         });
-    }
-
-    /// 查询应用 spec。
-    /// 流程：从 system_config 读取 users/{uid}/apps/{app}/spec 或 users/{uid}/agents/{app}/spec。
-    pub async fn get_app_service_spec(
-        &self,
-        app_id: &str,
-        user_id: Option<&str>,
-    ) -> Result<AppServiceSpec, RPCErrors> {
-        let (_, spec) = self.get_single_matching_spec(app_id, user_id).await?;
-        Ok(spec)
-    }
-
-    pub async fn get_app_service_spec_by_instance(
-        &self,
-        app_instance_id: &str,
-    ) -> Result<AppServiceSpec, RPCErrors> {
-        let (app_id, owner_user_id) = parse_app_instance_id(app_instance_id)?;
-        let spec = self
-            .get_app_service_spec(app_id.as_str(), Some(&owner_user_id))
-            .await?;
-        if spec.app_instance_id().to_string() != app_instance_id {
-            return Err(RPCErrors::ReasonError(format!(
-                "installed app spec does not match `{app_instance_id}`"
-            )));
-        }
-        Ok(spec)
-    }
-
-    /// 查询应用实例状态（ServiceInstanceReportInfo）。
-    /// 流程：从 services/{spec}/instances/{node} 或 nodes/{node}/config 聚合实例上报信息。
-    pub async fn get_app_service_instance_config(
-        &self,
-        app_id: &str,
-        user_id: Option<&str>,
-    ) -> Result<ServiceInstanceReportInfo, RPCErrors> {
-        let client = self.system_config_client().await?;
-        let spec = self.get_app_service_spec(app_id, user_id).await?;
-        let service_spec_id = Self::service_spec_id(&spec);
-        let instances_key = format!("services/{service_spec_id}/instances");
-        let node_ids = Self::list_children(&client, &instances_key).await?;
-
-        let mut latest: Option<ServiceInstanceReportInfo> = None;
-        for node_id in node_ids {
-            let key = format!("{instances_key}/{node_id}");
-            if let Some(instance) =
-                Self::get_optional_json::<ServiceInstanceReportInfo>(&client, &key).await?
-            {
-                let replace = latest
-                    .as_ref()
-                    .map(|current| instance.last_update_time >= current.last_update_time)
-                    .unwrap_or(true);
-                if replace {
-                    latest = Some(instance);
-                }
-            }
-        }
-
-        latest.ok_or_else(|| {
-            RPCErrors::ReasonError(format!(
-                "No instance report found for app `{}` (spec `{}`)",
-                app_id, service_spec_id
-            ))
-        })
     }
 
     fn scan_publish_sources(

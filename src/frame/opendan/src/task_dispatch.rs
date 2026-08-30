@@ -55,38 +55,24 @@ pub const TASK_TYPE_OPENDAN_TOOL: &str = "opendan.async_tool";
 /// Versioned task schema id for async tool tasks (2.0).
 pub const OPENDAN_TOOL_SCHEMA_ID: &str = "opendan.async_tool/v1";
 
-/// Default app id we tag dispatched tasks with. Real deployments will
-/// override this via [`TaskDispatch::with_app_id`] so multi-app installs
-/// can route tasks correctly.
-const DEFAULT_APP_ID: &str = "opendan";
-
 /// OpenDAN-specific TaskManager surface. Production instances acquire a
 /// short-session client from the runtime for each operation; fixed clients
 /// are reserved for tests or explicit token management.
 #[derive(Clone)]
 pub struct TaskDispatch {
     client: Option<Arc<TaskManagerClient>>,
-    user_id: String,
-    app_id: String,
 }
 
 impl TaskDispatch {
-    pub fn new(client: Arc<TaskManagerClient>, user_id: impl Into<String>) -> Self {
+    pub fn new(client: Arc<TaskManagerClient>) -> Self {
         Self {
             client: Some(client),
-            user_id: user_id.into(),
-            app_id: DEFAULT_APP_ID.to_string(),
         }
     }
 
-    pub fn from_runtime(
-        client_override: Option<Arc<TaskManagerClient>>,
-        user_id: impl Into<String>,
-    ) -> Self {
+    pub fn from_runtime(client_override: Option<Arc<TaskManagerClient>>) -> Self {
         Self {
             client: client_override,
-            user_id: user_id.into(),
-            app_id: DEFAULT_APP_ID.to_string(),
         }
     }
 
@@ -100,11 +86,6 @@ impl TaskDispatch {
             .await
             .map(Arc::new)
             .map_err(|err| anyhow!(err.to_string()))
-    }
-
-    pub fn with_app_id(mut self, app_id: impl Into<String>) -> Self {
-        self.app_id = app_id.into();
-        self
     }
 
     /// Create a task representing an async tool dispatch. Returns the
@@ -237,10 +218,5 @@ mod tests {
     #[test]
     fn task_type_tag_is_stable() {
         assert_eq!(TASK_TYPE_OPENDAN_TOOL, "opendan.async_tool");
-    }
-
-    #[test]
-    fn default_app_id_is_opendan() {
-        assert_eq!(DEFAULT_APP_ID, "opendan");
     }
 }

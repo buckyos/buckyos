@@ -153,7 +153,8 @@ impl TaskDispatcherService {
         }
     }
 
-    pub fn db(&self) -> Arc<DispatchDb> {
+    #[cfg(test)]
+    pub(crate) fn db(&self) -> Arc<DispatchDb> {
         self.db.clone()
     }
 

@@ -6,10 +6,12 @@
 //! 这里不复制第二套验签，只做协议状态映射与硬约束复查。
 
 use async_trait::async_trait;
+#[cfg(test)]
+use buckyos_api::AppDoc;
 use buckyos_api::{
-    AppDoc, AppDocType, DidCacheStatus, DidEvidenceLevel, DidResolutionSnapshot,
-    DidVerificationStatus, DocumentStatus, InstallError, InstallErrorCode, InstallPolicy,
-    InstallStage, InstallUserAction, OBJ_TYPE_APP_DOC,
+    AppDocType, DidCacheStatus, DidEvidenceLevel, DidResolutionSnapshot, DidVerificationStatus,
+    DocumentStatus, InstallError, InstallErrorCode, InstallPolicy, InstallStage, InstallUserAction,
+    OBJ_TYPE_APP_DOC,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::warn;
@@ -150,25 +152,6 @@ pub struct ResolvedApp {
     pub document_value: Option<Value>,
 }
 
-impl ResolvedApp {
-    pub fn document(&self) -> Result<Option<AppDoc>, InstallError> {
-        match self.document_value.as_ref() {
-            None => Ok(None),
-            Some(value) => {
-                let doc: AppDoc = serde_json::from_value(value.clone()).map_err(|err| {
-                    InstallError::new(
-                        InstallStage::Resolve,
-                        InstallErrorCode::VerificationFailed,
-                        false,
-                        format!("resolved app document schema invalid: {err}"),
-                    )
-                })?;
-                Ok(Some(doc))
-            }
-        }
-    }
-}
-
 /// 内部 resolver 抽象：生产实现包 name-client；单元测试使用 fake，
 /// 不初始化全局真实 resolver（P2.2）。
 #[async_trait]
@@ -237,33 +220,18 @@ pub fn enforce_resolution_invariants(
     Ok(())
 }
 
-/// 终止状态立即产生不可重试错误；清除/屏蔽正候选由调用方（引擎）负责。
-pub fn reject_terminal_status(
-    app_did: &DID,
-    snapshot: &DidResolutionSnapshot,
-) -> Result<(), InstallError> {
-    if snapshot.document_status.is_terminal() {
-        return Err(InstallError::from_document_status(
-            InstallStage::Resolve,
-            snapshot.document_status,
-            app_did,
-        ));
-    }
-    Ok(())
-}
-
 /// candidate body（来自 pikg/URL/ObjectId）与权威解析结果的绑定检查。
 ///
 /// - `document.did == app_did` 永远强制；
 /// - candidate 自声明 owner 只用于一致性检查：expected_owner 已知且不一致
 ///   必须拒绝并记录高风险（实现规则 4）；
-/// - 权威给出 body 时，candidate 是否等于该 body 只影响"能否把 candidate
-///   当作当前发布文档"，不影响 candidate 作为内容载体（内容按 digest 复用）。
+/// - 返回 candidate 的 canonical Object ID；它是否为当前发布文档由调用方
+///   根据权威解析结果决定，不影响 candidate 作为内容载体复用。
 pub fn bind_candidate_document(
     app_did: &DID,
     snapshot: &DidResolutionSnapshot,
     candidate_value: &Value,
-) -> Result<CandidateBinding, InstallError> {
+) -> Result<ObjId, InstallError> {
     let candidate_did = candidate_value
         .get("did")
         .and_then(|v| v.as_str())
@@ -305,24 +273,7 @@ pub fn bind_candidate_document(
         }
     }
 
-    let (candidate_obj_id, _) = build_named_object_by_json(OBJ_TYPE_APP_DOC, candidate_value);
-    let matches_published = snapshot
-        .app_doc_object_id
-        .as_ref()
-        .map(|published| *published == candidate_obj_id)
-        .unwrap_or(false);
-
-    Ok(CandidateBinding {
-        candidate_obj_id,
-        matches_published,
-    })
-}
-
-#[derive(Debug, Clone)]
-pub struct CandidateBinding {
-    pub candidate_obj_id: ObjId,
-    /// candidate 是否就是权威当前发布的 body。
-    pub matches_published: bool,
+    Ok(build_named_object_by_json(OBJ_TYPE_APP_DOC, candidate_value).0)
 }
 
 // ---------------------------------------------------------------------------
@@ -758,8 +709,8 @@ mod tests {
         let snapshot = fake::active_answer(&app_did, doc_value.clone(), 1).snapshot;
 
         // 一致：绑定成功且命中已发布 body。
-        let binding = bind_candidate_document(&app_did, &snapshot, &doc_value).unwrap();
-        assert!(binding.matches_published);
+        let candidate_id = bind_candidate_document(&app_did, &snapshot, &doc_value).unwrap();
+        assert_eq!(snapshot.app_doc_object_id.as_ref(), Some(&candidate_id));
 
         // document.did 不一致必须拒绝。
         let mut wrong_did = doc_value.clone();
@@ -774,11 +725,11 @@ mod tests {
         assert_eq!(err.code, InstallErrorCode::VerificationFailed);
         assert!(err.message.contains("expected owner"));
 
-        // 权威 body 不同（旧版本 candidate）：可绑定但 matches_published=false。
+        // 权威 body 不同（旧版本 candidate）：仍可绑定，但 Object ID 不同。
         let mut older = doc_value.clone();
         older["version"] = Value::String("0.0.9".to_string());
-        let binding = bind_candidate_document(&app_did, &snapshot, &older).unwrap();
-        assert!(!binding.matches_published);
+        let older_id = bind_candidate_document(&app_did, &snapshot, &older).unwrap();
+        assert_ne!(snapshot.app_doc_object_id.as_ref(), Some(&older_id));
     }
 
     #[test]
@@ -795,19 +746,6 @@ mod tests {
             )),
             DocumentStatus::Unknown
         );
-    }
-
-    #[test]
-    fn terminal_status_is_not_retryable() {
-        let app_did = DID::from_str("did:bns:demo-web.tester").unwrap();
-        let revoked = fake::status_answer(&app_did, DocumentStatus::Revoked);
-        let err = reject_terminal_status(&app_did, &revoked.snapshot).unwrap_err();
-        assert_eq!(err.code, InstallErrorCode::IdentityRevoked);
-        assert!(!err.retryable);
-
-        let tombstoned = fake::status_answer(&app_did, DocumentStatus::Tombstoned);
-        let err = reject_terminal_status(&app_did, &tombstoned.snapshot).unwrap_err();
-        assert_eq!(err.code, InstallErrorCode::IdentityRevoked);
     }
 
     #[tokio::test]

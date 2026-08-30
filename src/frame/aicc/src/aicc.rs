@@ -31,7 +31,6 @@ use buckyos_api::{
     ReportStartedReq, Requirements, ResourceRef, RouteFallbackAttempt, RouteResolveRequest,
     RouteResolveResponse, RunnerWriteEnvelope, TaskControlAction, TaskError, TaskManagerClient,
     TaskPhase, TextToImageInvokeRequest, TextToImageInvokeResponse, TokenUse, TypedTaskData,
-    AICC_SERVICE_SERVICE_NAME,
 };
 #[cfg(test)]
 use buckyos_api::{bind_token_principal_kind, bind_token_target, AuthTarget, TokenPrincipalKind};
@@ -5429,29 +5428,6 @@ fn user_summary_for_route(
         was_fallback: trace.fallback_applied,
         was_failover: trace.runtime_failover_count > 0,
     }
-}
-
-fn extract_rootid_from_complete_request(request: &AiMethodRequest) -> Option<String> {
-    request.payload.options.as_ref().and_then(|options| {
-        json_non_empty_string(options.get("rootid"))
-            .or_else(|| json_non_empty_string(options.get("root_id")))
-    })
-}
-
-fn resolve_task_root_id(request: &AiMethodRequest, invoke_ctx: &InvokeCtx) -> Option<String> {
-    extract_rootid_from_complete_request(request)
-        .or_else(|| extract_session_id_from_complete_request(request))
-        .or_else(|| Some(resolve_default_rootid(invoke_ctx)))
-}
-
-fn resolve_default_rootid(invoke_ctx: &InvokeCtx) -> String {
-    let app_seed = invoke_ctx
-        .caller_app_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .unwrap_or(AICC_SERVICE_SERVICE_NAME);
-    format!("{app_seed}-default")
 }
 
 fn build_initial_aicc_task_data(
