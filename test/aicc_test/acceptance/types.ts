@@ -114,7 +114,7 @@ export type ModelCoverageRule = {
   model_pattern: string;
   action: "exclude" | "alias";
   physical_model_id?: string;
-  reason: "deprecated_or_retiring" | "logical_alias" | "not_physical_model";
+  reason: "deprecated_or_retiring" | "logical_alias" | "not_physical_model" | "unsupported_canonical_protocol";
   source_urls: string[];
   evidence_summary: string;
 };
@@ -128,7 +128,7 @@ export type ModelCoverageRecord = {
   provider_actual_model_id?: string;
   physical_model_id: string;
   status: "included" | "filtered";
-  reason?: "deprecated_or_retiring" | "logical_alias" | "not_physical_model" | "duplicate_physical_model";
+  reason?: "deprecated_or_retiring" | "logical_alias" | "not_physical_model" | "unsupported_canonical_protocol" | "duplicate_physical_model";
   retained_exact_model?: string;
   source_urls: string[];
   evidence_summary: string;

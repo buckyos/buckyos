@@ -148,7 +148,7 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         if (!["exclude", "alias"].includes(String(rule.action))) {
           throw new Error(`${driver}.coverage_rule.action is invalid`);
         }
-        if (!["deprecated_or_retiring", "logical_alias", "not_physical_model"].includes(String(rule.reason))) {
+        if (!["deprecated_or_retiring", "logical_alias", "not_physical_model", "unsupported_canonical_protocol"].includes(String(rule.reason))) {
           throw new Error(`${driver}.coverage_rule.reason is invalid`);
         }
         if (rule.action === "alias") requireString(rule.physical_model_id, `${driver}.coverage_rule.physical_model_id`);

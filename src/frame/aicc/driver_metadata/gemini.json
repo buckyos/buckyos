@@ -3,7 +3,7 @@
   "schema_version": 4,
   "schema_revision": 4,
   "provider_driver": "google-gemini",
-  "revision_seq": 5,
+  "revision_seq": 6,
   "required_features": [],
   "models": [
     {
@@ -140,6 +140,64 @@
     }
   ],
   "patterns": [
+    {
+      "pattern": "gemma-4-*",
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini.{model}",
+        "vision.ocr",
+        "vision.ocr.google",
+        "vision.ocr.gemini",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.google",
+        "vision.caption.gemini",
+        "vision.caption.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": false,
+        "web_search": true,
+        "vision": true
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
+    {
+      "pattern": "aqa",
+      "api_types": [
+        "llm"
+      ],
+      "logical_mounts": [
+        "llm.google-gemini",
+        "llm.gemini",
+        "llm.gemini.{model}"
+      ],
+      "capabilities": {
+        "streaming": false,
+        "tool_call": false,
+        "json_schema": false,
+        "web_search": false,
+        "vision": false,
+        "max_context_tokens": 7168,
+        "max_output_tokens": 1024
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1400
+    },
     {
       "pattern": "gemini-omni-*",
       "provider_options": {

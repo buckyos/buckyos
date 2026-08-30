@@ -4747,7 +4747,11 @@ fn classify_gemini_model(id: &str, methods: &HashSet<String>) -> Option<GeminiMo
     if is_text2image_model_name(id) {
         return Some(GeminiModelKind::Image);
     }
-    if lowered.starts_with("gemini") && (methods.contains("generatecontent") || methods.is_empty())
+    if methods.contains("generatecontent")
+        || (methods.is_empty()
+            && (lowered.starts_with("gemini")
+                || lowered.starts_with("gemma-")
+                || lowered == "aqa"))
     {
         return Some(GeminiModelKind::Llm);
     }
@@ -6194,6 +6198,19 @@ mod tests {
                 "veo-3.1-generate-preview".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn classify_generate_content_models_without_gemini_prefix() {
+        let methods = HashSet::from(["generatecontent".to_string()]);
+        assert!(matches!(
+            classify_gemini_model("gemma-4-31b-it", &methods),
+            Some(GeminiModelKind::Llm)
+        ));
+        assert!(matches!(
+            classify_gemini_model("aqa", &methods),
+            Some(GeminiModelKind::Llm)
+        ));
     }
 
     #[test]
