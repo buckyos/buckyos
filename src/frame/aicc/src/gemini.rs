@@ -4750,8 +4750,7 @@ fn classify_gemini_model(id: &str, methods: &HashSet<String>) -> Option<GeminiMo
     if methods.contains("generatecontent")
         || (methods.is_empty()
             && (lowered.starts_with("gemini")
-                || lowered.starts_with("gemma-")
-                || lowered == "aqa"))
+                || lowered.starts_with("gemma-")))
     {
         return Some(GeminiModelKind::Llm);
     }
@@ -6205,10 +6204,6 @@ mod tests {
         let methods = HashSet::from(["generatecontent".to_string()]);
         assert!(matches!(
             classify_gemini_model("gemma-4-31b-it", &methods),
-            Some(GeminiModelKind::Llm)
-        ));
-        assert!(matches!(
-            classify_gemini_model("aqa", &methods),
             Some(GeminiModelKind::Llm)
         ));
     }

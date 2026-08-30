@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-30.3",
+  "baseline_revision": "2026-08-30.4",
   "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
@@ -418,6 +418,13 @@
           "evidence_summary": "Antigravity is a managed remote computer-use agent whose Interactions lifecycle is not represented by the current AICC computer-use request contract."
         },
         {
+          "model_pattern": "aqa",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://ai.google.dev/api/generate-content"],
+          "evidence_summary": "AQA only exposes the specialized generateAnswer semantic-retrieval protocol, whose required grounding source and attribution contract are not represented by canonical AICC LLM requests."
+        },
+        {
           "model_pattern": "gemini-robotics-er-2-streaming-preview",
           "action": "exclude",
           "reason": "not_physical_model",
@@ -487,16 +494,6 @@
           "output_kinds": ["text", "tool_call"],
           "source_urls": ["https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api"],
           "evidence_summary": "Hosted Gemma 4 supports text and image input, multi-turn text generation, and function calling through Gemini generateContent."
-        },
-        {
-          "model_pattern": "aqa",
-          "status": "active",
-          "api_types": ["llm"],
-          "methods": ["llm.chat"],
-          "input_kinds": ["text"],
-          "output_kinds": ["text"],
-          "source_urls": ["https://ai.google.dev/gemini-api/docs/models/gemini"],
-          "evidence_summary": "AQA is a text-input, text-output generateContent model with a 7,168-token input limit and 1,024-token output limit."
         },
         {
           "model_pattern": "gemini-embedding-2*",
