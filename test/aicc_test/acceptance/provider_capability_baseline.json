@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-30.1",
+  "baseline_revision": "2026-08-30.2",
   "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
@@ -540,6 +540,16 @@
           "output_kinds": ["image"],
           "source_urls": ["https://ai.google.dev/gemini-api/docs/image-generation"],
           "evidence_summary": "Nano Banana models support image generation and editing."
+        },
+        {
+          "model_pattern": "gemini-3.5-transcribe",
+          "status": "active",
+          "api_types": ["audio.asr"],
+          "methods": ["audio.asr"],
+          "input_kinds": ["audio"],
+          "output_kinds": ["text"],
+          "source_urls": ["https://ai.google.dev/gemini-api/docs/transcribe"],
+          "evidence_summary": "Gemini 3.5 Transcribe uses the Interactions API for file-based speech transcription."
         },
         {
           "model_pattern": "gemini-robotics-*",

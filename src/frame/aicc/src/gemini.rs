@@ -32,12 +32,12 @@ use tokio::time;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GEMINI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_GEMINI_MODELS: &str =
-    "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.1-pro-preview,gemini-3-flash-preview,gemini-robotics-er-2-preview";
+const DEFAULT_GEMINI_MODELS: &str = "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.1-pro-preview,gemini-3-flash-preview,gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.5-pro,gemini-2.5-computer-use-preview-10-2025,gemini-3.5-transcribe,gemini-robotics-er-2-preview";
 const DEFAULT_GEMINI_IMAGE_MODELS: &str =
-    "gemini-3.1-flash-image,gemini-3.1-flash-lite-image,gemini-3-pro-image";
+    "gemini-3.1-flash-image,gemini-3.1-flash-lite-image,gemini-3-pro-image,gemini-2.5-flash-image";
 const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001,gemini-embedding-2";
-const DEFAULT_GEMINI_TTS_MODELS: &str = "";
+const DEFAULT_GEMINI_TTS_MODELS: &str =
+    "gemini-3.1-flash-tts-preview,gemini-2.5-flash-preview-tts,gemini-2.5-pro-preview-tts";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";
 const DEFAULT_GEMINI_VIDEO_MODELS: &str = "gemini-omni-1.1-flash,gemini-omni-flash-preview,veo-3.1-fast-generate-preview,veo-3.1-generate-preview,veo-3.1-lite-generate-preview";
 
@@ -46,6 +46,7 @@ const GEMINI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const GEMINI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
 const GEMINI_MODELS_PAGE_SIZE: u32 = 1000;
 const GEMINI_MODELS_MAX_PAGES: usize = 10;
+const GEMINI_INTERACTIONS_API_REVISION: &str = "2026-05-20";
 const MIN_RELIABLE_ASR_CONFIDENCE: f64 = 0.75;
 
 #[derive(Debug, PartialEq)]
@@ -748,19 +749,6 @@ impl GoogleGeminiProvider {
         prefer_alias_over_versioned(&mut buckets.tts);
         prefer_alias_over_versioned(&mut buckets.music);
         prefer_alias_over_versioned(&mut buckets.video);
-
-        // Google 弃用模型时是按整个主版本族下架（例如 2.0 family 整体对新用户停服，
-        // 但 `gemini-2.0-flash` / `gemini-2.0-flash-lite` 这些 alias 仍然出现在
-        // `/v1beta/models` 列表里）。aicc 的设计也鼓励调用方用 family alias 而非
-        // 完整模型名，所以这里再加一道：每个 bucket 内识别 `gemini-X.Y-...` 的版本
-        // 前缀，只保留全局最大 (X,Y) 的那一族。无版本前缀的条目
-        // `gemini-embedding-001`）当成"独立模型"原样保留。
-        keep_only_max_gemini_version(&mut buckets.llm);
-        keep_only_max_gemini_version(&mut buckets.image);
-        keep_only_max_gemini_version(&mut buckets.embedding);
-        keep_only_max_gemini_version(&mut buckets.tts);
-        keep_only_max_gemini_version(&mut buckets.music);
-        keep_only_max_gemini_version(&mut buckets.video);
 
         // Categories that the API never returns (lyria/veo are typically not
         // listed) fall back to defaults so we don't drop them on refresh.
@@ -2282,6 +2270,7 @@ impl GoogleGeminiProvider {
             .client
             .post(url.as_str())
             .header("x-goog-api-key", self.api_token.as_str())
+            .header("Api-Revision", GEMINI_INTERACTIONS_API_REVISION)
             .json(request_obj)
             .send()
             .await
@@ -2604,6 +2593,193 @@ impl GoogleGeminiProvider {
             .and_then(|options| options.get("provider_options"))
             .and_then(|options| options.get("protocol"))
             .and_then(Value::as_str)
+    }
+
+    fn interactions_output_text(body: &Value) -> String {
+        body.get("steps")
+            .and_then(Value::as_array)
+            .and_then(|steps| {
+                steps
+                    .iter()
+                    .rev()
+                    .find(|step| step.get("type").and_then(Value::as_str) == Some("model_output"))
+            })
+            .and_then(|step| step.get("content"))
+            .and_then(Value::as_array)
+            .map(|content| {
+                content
+                    .iter()
+                    .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default()
+    }
+
+    fn interactions_word_segments(body: &Value) -> Vec<Value> {
+        body.get("steps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|step| step.get("content").and_then(Value::as_array))
+            .flatten()
+            .filter_map(|content| content.get("annotations").and_then(Value::as_array))
+            .flatten()
+            .filter(|annotation| {
+                annotation.get("type").and_then(Value::as_str) == Some("word_info")
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn interactions_usage(body: &Value) -> Option<AiUsage> {
+        let usage = body.get("usage")?;
+        Some(AiUsage {
+            input_tokens: usage.get("total_input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("total_output_tokens").and_then(Value::as_u64),
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: None,
+        })
+    }
+
+    fn build_interactions_asr_request(
+        provider_model: &str,
+        req: &AiMethodRequest,
+        resource: Value,
+    ) -> Result<Map<String, Value>, ProviderError> {
+        let input = req.payload.input_json.as_ref();
+        let timestamps = input
+            .and_then(|value| value.get("timestamps"))
+            .and_then(Value::as_str)
+            .unwrap_or("none");
+        let diarization = input
+            .and_then(|value| value.get("diarization"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mode = input
+            .and_then(|value| value.get("mode"))
+            .and_then(Value::as_str)
+            .unwrap_or("verbatim");
+        if mode == "smart" && (diarization || timestamps != "none") {
+            return Err(ProviderError::fatal(
+                "google gemini smart transcription is incompatible with timestamps and diarization",
+            ));
+        }
+        if !matches!(mode, "verbatim" | "smart") {
+            return Err(ProviderError::fatal(format!(
+                "unsupported google gemini transcription mode {}",
+                mode
+            )));
+        }
+
+        let mut transcription_config = Map::new();
+        if let Some(language) = input
+            .and_then(|value| value.get("language"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            transcription_config.insert("language_codes".to_string(), json!([language]));
+        }
+        if let Some(vocabulary) = input
+            .and_then(|value| value.get("custom_vocabulary"))
+            .and_then(Value::as_array)
+        {
+            transcription_config.insert(
+                "custom_vocabulary".to_string(),
+                Value::Array(vocabulary.clone()),
+            );
+        }
+        if mode == "smart" {
+            transcription_config.insert("mode".to_string(), Value::String("smart".to_string()));
+        } else {
+            let mut mode_config =
+                Map::from_iter([("type".to_string(), Value::String("verbatim".to_string()))]);
+            if diarization {
+                mode_config.insert(
+                    "diarization_mode".to_string(),
+                    Value::String("speaker".to_string()),
+                );
+            }
+            if timestamps != "none" {
+                mode_config.insert("timestamp_granularities".to_string(), json!(["word"]));
+            }
+            transcription_config.insert("mode".to_string(), Value::Object(mode_config));
+        }
+
+        Ok(Map::from_iter([
+            (
+                "model".to_string(),
+                Value::String(provider_model.to_string()),
+            ),
+            ("input".to_string(), Value::Array(vec![resource])),
+            (
+                "generation_config".to_string(),
+                json!({ "transcription_config": transcription_config }),
+            ),
+        ]))
+    }
+
+    async fn start_interactions_asr(
+        &self,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        resource: ResourceRef,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let resource = self.interactions_resource_part(&resource, "audio").await?;
+        let request_obj = Self::build_interactions_asr_request(provider_model, req, resource)?;
+        let (status, body, latency_ms) = self.post_interaction(&request_obj).await?;
+        if !status.is_success() {
+            return Err(Self::classify_api_error(
+                status,
+                Self::api_error_message(
+                    &body,
+                    "google gemini interactions transcription returned non-success status",
+                ),
+            ));
+        }
+        match body.get("status").and_then(Value::as_str) {
+            Some("completed") => {}
+            Some("in_progress") => {
+                return Err(ProviderError::retryable(
+                    "google gemini interactions transcription remained in progress",
+                ));
+            }
+            Some(other) => {
+                return Err(ProviderError::fatal(format!(
+                    "google gemini interactions transcription finished with status {}",
+                    other
+                )));
+            }
+            None => {
+                return Err(ProviderError::fatal(
+                    "google gemini interactions transcription response is missing status",
+                ));
+            }
+        }
+        let text = Self::interactions_output_text(&body);
+        let segments = Self::interactions_word_segments(&body);
+        let usage = Self::interactions_usage(&body);
+        let cost = usage
+            .as_ref()
+            .and_then(|usage| self.estimate_cost_for_usage(provider_model, usage));
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: AiResponse::message_from_parts(Some(text.clone()), vec![], vec![]),
+            usage,
+            cost,
+            finish_reason: Some("stop".to_string()),
+            extra: Some(json!({
+                "asr": {
+                    "status": if text.trim().is_empty() { "no_speech" } else { "reliable" },
+                    "speech_detected": !text.trim().is_empty(),
+                    "text": text,
+                    "segments": segments
+                },
+                "latency_ms": latency_ms,
+                "provider_io": { "input": request_obj, "output": body }
+            })),
+            ..Default::default()
+        }))
     }
 
     fn interactions_video_artifact(body: &Value) -> Result<AiArtifact, ProviderError> {
@@ -3532,10 +3708,7 @@ impl GoogleGeminiProvider {
         if !status.is_success() {
             return Err(Self::classify_api_error(
                 status,
-                Self::api_error_message(
-                    &body,
-                    "google gemini vision returned non-success status",
-                ),
+                Self::api_error_message(&body, "google gemini vision returned non-success status"),
             ));
         }
         let text = Self::extract_text_content(&body);
@@ -3598,6 +3771,11 @@ impl GoogleGeminiProvider {
             .cloned()
             .or_else(|| Self::resource_from_input_json(req, &["audio"]))
             .ok_or_else(|| ProviderError::fatal("audio.asr requires an audio resource"))?;
+        if Self::provider_protocol(req) == Some("interactions") {
+            return self
+                .start_interactions_asr(provider_model, req, resource)
+                .await;
+        }
         let input = req.payload.input_json.as_ref();
         let language = input
             .and_then(|value| value.get("language"))
@@ -4461,49 +4639,6 @@ fn strip_gemini_model_prefix(name: &str) -> &str {
         .unwrap_or(name)
 }
 
-/// 在一份模型列表里识别 `gemini-X.Y-...` 形态的版本前缀，找到全局最大 (X,Y)，
-/// 把所有更老主版本族的条目都丢掉。无版本前缀的条目
-/// `gemini-embedding-001` / 不以 `gemini-` 开头的命名）原样保留——它们没有
-/// 跟谁竞争。
-///
-/// 设计目的：Google 弃用模型时是整个主版本族（2.0 family）一起对新用户停服，
-/// 但 alias（`gemini-2.0-flash` / `gemini-2.0-flash-lite`）仍然出现在
-/// `/v1beta/models` 列表里给老用户兼容；只看名字看不出 deprecation。
-/// 这里直接相信 Google 的命名约定：同时给出 N.M 和 N.M+1 时，N.M 已经是过气
-/// 的版本族，不应再被路由选中。
-fn keep_only_max_gemini_version(models: &mut Vec<String>) {
-    let mut max_version: Option<(u32, u32)> = None;
-    for name in models.iter() {
-        if let Some(v) = parse_gemini_major_minor(name) {
-            max_version = Some(match max_version {
-                Some(prev) if prev >= v => prev,
-                _ => v,
-            });
-        }
-    }
-    let Some(max) = max_version else { return };
-    models.retain(|name| match parse_gemini_major_minor(name) {
-        Some(v) => v >= max,
-        None => true,
-    });
-}
-
-/// 解析 `gemini-X.Y-...` 形态的主.次版本号。识别要求：
-/// - 必须以 `gemini-` 开头（其它命名族——`lyria-*` / `veo-*` / `text-embedding-*`
-///   ——不参与版本竞争，函数返回 None 让 caller 原样保留）。
-/// - 紧跟的 token 必须能解析成 `<u32>.<u32>` 形式（`2.5` / `1.5` / `3.0`）。
-fn parse_gemini_major_minor(name: &str) -> Option<(u32, u32)> {
-    let rest = name.strip_prefix("gemini-")?;
-    let version_token = rest.split('-').next()?;
-    let mut nums = version_token.splitn(2, '.');
-    let major: u32 = nums.next()?.parse().ok()?;
-    let minor: u32 = nums.next()?.parse().ok()?;
-    if nums.next().is_some() {
-        return None;
-    }
-    Some((major, minor))
-}
-
 /// 若同一 bucket 里既有 alias `X` 又有它的数字后缀版本 `X-NNN`（NNN 是 2~4 位
 /// 数字），就只保留 alias、把版本快照剔除。Google `/v1beta/models` 同时返回这两
 /// 种命名，alias 通常生命周期更长，先停的是版本快照（`gemini-2.0-flash-001` /
@@ -4992,6 +5127,92 @@ mod tests {
     }
 
     #[test]
+    fn interactions_asr_request_uses_official_transcription_config() {
+        let mut request = build_llm_request(vec![], vec![]);
+        request.payload.input_json = Some(json!({
+            "language": "zh",
+            "timestamps": "word",
+            "diarization": true,
+            "custom_vocabulary": ["BuckyOS"]
+        }));
+        let body = GoogleGeminiProvider::build_interactions_asr_request(
+            "gemini-3.5-transcribe",
+            &request,
+            json!({ "type": "audio", "mime_type": "audio/wav", "data": "YXVkaW8=" }),
+        )
+        .expect("interactions transcription request");
+        let body = Value::Object(body);
+
+        assert_eq!(
+            body.pointer("/model"),
+            Some(&json!("gemini-3.5-transcribe"))
+        );
+        assert_eq!(body.pointer("/input/0/type"), Some(&json!("audio")));
+        assert_eq!(
+            body.pointer("/generation_config/transcription_config/language_codes/0"),
+            Some(&json!("zh"))
+        );
+        assert_eq!(
+            body.pointer("/generation_config/transcription_config/mode/diarization_mode"),
+            Some(&json!("speaker"))
+        );
+        assert_eq!(
+            body.pointer("/generation_config/transcription_config/mode/timestamp_granularities/0"),
+            Some(&json!("word"))
+        );
+    }
+
+    #[test]
+    fn interactions_asr_response_extracts_text_annotations_and_usage() {
+        let response = json!({
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{
+                    "type": "text",
+                    "text": "hello world",
+                    "annotations": [{
+                        "type": "word_info",
+                        "text": "hello",
+                        "speaker": "spk_1",
+                        "start_offset": "0.100s",
+                        "end_offset": "0.450s"
+                    }]
+                }]
+            }],
+            "usage": {
+                "total_input_tokens": 10,
+                "total_output_tokens": 2,
+                "total_tokens": 12
+            }
+        });
+
+        assert_eq!(
+            GoogleGeminiProvider::interactions_output_text(&response),
+            "hello world"
+        );
+        assert_eq!(
+            GoogleGeminiProvider::interactions_word_segments(&response),
+            vec![json!({
+                "type": "word_info",
+                "text": "hello",
+                "speaker": "spk_1",
+                "start_offset": "0.100s",
+                "end_offset": "0.450s"
+            })]
+        );
+        assert_eq!(
+            GoogleGeminiProvider::interactions_usage(&response),
+            Some(AiUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                total_tokens: Some(12),
+                request_units: None,
+            })
+        );
+    }
+
+    #[test]
     fn llm_tools_include_function_declarations_and_google_search() {
         let request = build_llm_request(
             vec![
@@ -5379,36 +5600,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_gemini_major_minor_recognizes_canonical_shape() {
-        assert_eq!(parse_gemini_major_minor("gemini-2.5-flash"), Some((2, 5)));
-        assert_eq!(
-            parse_gemini_major_minor("gemini-2.5-flash-image-preview"),
-            Some((2, 5))
-        );
-        assert_eq!(
-            parse_gemini_major_minor("gemini-2.5-computer-use-preview-10-2025"),
-            Some((2, 5))
-        );
-        assert_eq!(
-            parse_gemini_major_minor("gemini-2.0-flash-lite"),
-            Some((2, 0))
-        );
-        assert_eq!(parse_gemini_major_minor("gemini-1.5-pro"), Some((1, 5)));
-        // 不带 family 的纯版本号也认（比较少见但合理）
-        assert_eq!(parse_gemini_major_minor("gemini-3.0"), Some((3, 0)));
-        // 没 X.Y 形式 → None（让 caller 原样保留）
-        assert_eq!(parse_gemini_major_minor("gemini-embedding-001"), None);
-        assert_eq!(parse_gemini_major_minor("gemini-pro-vision"), None);
-        assert_eq!(parse_gemini_major_minor("gemini-2-flash"), None);
-        // 不是 gemini- 开头的
-        assert_eq!(parse_gemini_major_minor("custom-model"), None);
-        assert_eq!(parse_gemini_major_minor("veo-3.1-generate-preview"), None);
-        assert_eq!(parse_gemini_major_minor("text-embedding-004"), None);
-        // 三段版本 (2.5.1) 不识别——Google 没有这种命名，避免误判
-        assert_eq!(parse_gemini_major_minor("gemini-2.5.1-flash"), None);
-    }
-
-    #[test]
     fn gemini_video_inventory_uses_configured_protocols() {
         let inventory = GoogleGeminiProvider::build_inventory_from_buckets(
             "gemini-primary",
@@ -5674,6 +5865,7 @@ mod tests {
                     "gemini-3.1-pro-preview".to_string(),
                     "gemini-3.1-pro-preview-001".to_string(),
                     "gemini-3.5-flash-lite".to_string(),
+                    "gemini-3.5-transcribe".to_string(),
                     "gemini-deepthink-preview".to_string(),
                     "gemini-future-model".to_string(),
                 ],
@@ -5694,6 +5886,7 @@ mod tests {
             "gemini-3.1-pro-preview",
             "gemini-3.1-pro-preview-001",
             "gemini-3.5-flash-lite",
+            "gemini-3.5-transcribe",
         ] {
             let model = inventory
                 .models
@@ -5701,6 +5894,17 @@ mod tests {
                 .find(|model| model.provider_model_id == id)
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::AudioAsr), "{id}");
+            if id == "gemini-3.5-transcribe" {
+                assert_eq!(
+                    model
+                        .provider_options
+                        .as_ref()
+                        .and_then(|options| options.get("protocol"))
+                        .and_then(Value::as_str),
+                    Some("interactions")
+                );
+                assert_eq!(model.api_types, vec![ApiType::AudioAsr]);
+            }
         }
         for id in [
             "gemini-deepthink-preview",
@@ -5919,69 +6123,6 @@ mod tests {
     }
 
     #[test]
-    fn keep_only_max_gemini_version_drops_older_families() {
-        let mut models = vec![
-            "gemini-1.5-flash".to_string(),
-            "gemini-1.5-pro".to_string(),
-            "gemini-2.0-flash".to_string(),
-            "gemini-2.0-flash-lite".to_string(),
-            "gemini-2.5-flash".to_string(),
-            "gemini-2.5-flash-lite".to_string(),
-            "gemini-2.5-pro".to_string(),
-            "gemini-2.5-computer-use-preview-10-2025".to_string(),
-            // 没 X.Y 版本号的非 gemini 命名 → 原样保留
-            "gemini-embedding-001".to_string(),
-            "lyria-3-clip-preview".to_string(),
-            "veo-3.1-generate-preview".to_string(),
-        ];
-        keep_only_max_gemini_version(&mut models);
-        assert_eq!(
-            models,
-            vec![
-                "gemini-2.5-flash".to_string(),
-                "gemini-2.5-flash-lite".to_string(),
-                "gemini-2.5-pro".to_string(),
-                "gemini-2.5-computer-use-preview-10-2025".to_string(),
-                "gemini-embedding-001".to_string(),
-                "lyria-3-clip-preview".to_string(),
-                "veo-3.1-generate-preview".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn keep_only_max_gemini_version_no_op_without_versioned_models() {
-        // 全部都没 gemini-X.Y 版本号 → 不动
-        let mut models = vec![
-            "lyria-3-clip-preview".to_string(),
-            "veo-3.1-generate-preview".to_string(),
-            "gemini-embedding-001".to_string(),
-        ];
-        keep_only_max_gemini_version(&mut models);
-        assert_eq!(
-            models,
-            vec![
-                "lyria-3-clip-preview".to_string(),
-                "veo-3.1-generate-preview".to_string(),
-                "gemini-embedding-001".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn keep_only_max_gemini_version_picks_higher_minor() {
-        // 同主版本不同次版本 → 留次版本最高的
-        let mut models = vec![
-            "gemini-2.0-flash".to_string(),
-            "gemini-2.5-flash".to_string(),
-            "gemini-2.5-pro".to_string(),
-            "gemini-2.10-flash".to_string(), // 假设未来真出现
-        ];
-        keep_only_max_gemini_version(&mut models);
-        assert_eq!(models, vec!["gemini-2.10-flash".to_string()]);
-    }
-
-    #[test]
     fn strip_numeric_version_suffix_matches_only_short_digit_tails() {
         assert_eq!(
             strip_numeric_version_suffix("gemini-2.0-flash-001"),
@@ -6143,6 +6284,21 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].provider_instance_name, "google-gemini-default");
         assert_eq!(instances[0].provider_driver, "google-gemini");
+        for model in [
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-3.5-transcribe",
+        ] {
+            assert!(instances[0].models.iter().any(|item| item == model), "{model}");
+        }
+        for model in ["gemini-3.1-flash-image", "gemini-2.5-flash-image"] {
+            assert!(
+                instances[0].image_models.iter().any(|item| item == model),
+                "{model}"
+            );
+        }
     }
 
     #[tokio::test]

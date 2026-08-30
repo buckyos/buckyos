@@ -3,7 +3,7 @@
   "schema_version": 4,
   "schema_revision": 4,
   "provider_driver": "google-gemini",
-  "revision_seq": 4,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
@@ -362,6 +362,33 @@
         "estimated_cost": 0.04
       },
       "estimated_latency_ms": 6000
+    },
+    {
+      "pattern": "gemini-3.5-transcribe",
+      "provider_options": {
+        "protocol": "interactions"
+      },
+      "api_types": [
+        "audio.asr"
+      ],
+      "logical_mounts": [
+        "audio.asr",
+        "audio.asr.google",
+        "audio.asr.gemini",
+        "audio.asr.{model}"
+      ],
+      "capabilities": {
+        "streaming": false,
+        "tool_call": false,
+        "json_schema": false,
+        "web_search": false,
+        "vision": false
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 3000
     },
     {
       "pattern": "gemini-2.5-*flash-lite*",
