@@ -16,7 +16,7 @@ import type {
 import { getEmptySeed, getPopulatedSeed, model } from './seed'
 
 function getScenarioFromURL(): 'empty' | 'populated' {
-  const params = new URLSearchParams(window.location.search)
+  const params = new URLSearchParams(globalThis.location?.search ?? '')
   return (params.get('aiccScenario') ?? params.get('scenario')) === 'populated' ? 'populated' : 'empty'
 }
 
@@ -72,8 +72,7 @@ export class MockDataStore {
   private listeners: Set<() => void> = new Set()
   private snapshotVersion = 0
 
-  constructor() {
-    const scenario = getScenarioFromURL()
+  constructor(scenario = getScenarioFromURL()) {
     const seed = scenario === 'populated' ? getPopulatedSeed() : getEmptySeed()
 
     this.providers = new Map(seed.providers.map((p) => [p.config.id, p]))
@@ -118,14 +117,16 @@ export class MockDataStore {
 
   private allModels(): ModelMetadata[] {
     return [
-      ...Array.from(this.providers.values()).flatMap((p) => p.status.discovered_models),
+      ...Array.from(this.providers.values())
+        .filter((provider) => provider.config.enabled)
+        .flatMap((p) => p.status.discovered_models),
       ...this.localModels,
     ]
   }
 
   private computeAIStatus(): AIStatus {
     const providers = Array.from(this.providers.values())
-    const cloudProviderCount = providers.filter((p) => p.config.provider_runtime_type === 'cloud_api' || p.config.provider_runtime_type === 'proxy_unknown').length
+    const cloudProviderCount = providers.filter((p) => p.config.enabled && (p.config.provider_runtime_type === 'cloud_api' || p.config.provider_runtime_type === 'proxy_unknown')).length
     const models = this.allModels()
     const hasProviderOrModel = cloudProviderCount > 0 || models.length > 0
     const healthCounts = {
@@ -176,6 +177,7 @@ export class MockDataStore {
       config: {
         id,
         name: draft.name || providerType,
+        enabled: true,
         provider_type: providerType,
         provider_instance_name: instanceName,
         provider_runtime_type: 'cloud_api',
@@ -250,6 +252,24 @@ export class MockDataStore {
         model_sync_status: 'ok',
         last_verified_at: new Date().toISOString(),
         last_model_sync_at: new Date().toISOString(),
+      },
+    })
+    this.notify()
+  }
+
+  setProviderEnabled(id: string, enabled: boolean): void {
+    const provider = this.providers.get(id)
+    if (!provider) {
+      throw new Error('provider_not_found')
+    }
+    this.providers.set(id, {
+      ...provider,
+      config: { ...provider.config, enabled },
+      status: {
+        ...provider.status,
+        is_connected: enabled,
+        auth_status: enabled ? 'ok' : 'unknown',
+        model_sync_status: enabled ? 'ok' : 'failed',
       },
     })
     this.notify()

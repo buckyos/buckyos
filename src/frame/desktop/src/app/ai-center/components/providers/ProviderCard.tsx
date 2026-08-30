@@ -34,7 +34,9 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
   const modelCount = provider.status.discovered_models.length
   const degradedCount = provider.status.discovered_models.filter((m) => m.health.status !== 'available').length
   const managedSn = isManagedSnProvider(provider)
-  const statusVariant = provider.status.model_sync_status === 'failed'
+  const statusVariant = !provider.config.enabled
+    ? 'unknown'
+    : provider.status.model_sync_status === 'failed'
     ? 'warning'
     : authStatusToVariant(provider.status.auth_status)
 
@@ -65,7 +67,9 @@ export function ProviderCard({ provider, selected, onClick }: ProviderCardProps)
       <div className="flex shrink-0 flex-col items-end gap-1">
         <StatusBadge
           status={statusVariant}
-          label={provider.status.model_sync_status === 'failed'
+          label={!provider.config.enabled
+            ? t('aiCenter.providers.disabled', 'Disabled')
+            : provider.status.model_sync_status === 'failed'
             ? t('aiCenter.providers.syncFailedShort', 'Sync failed')
             : undefined}
         />

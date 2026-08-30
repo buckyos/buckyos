@@ -169,6 +169,8 @@ fn apply_provider_settings(
     }
     center.registry().clear();
     center.reset_model_routes();
+    let active_settings = settings_with_disabled_provider_instances_removed(settings);
+    let settings = &active_settings;
 
     let mut registered_total = 0usize;
     let mut errors = vec![];
@@ -255,6 +257,33 @@ fn apply_provider_settings(
     }
 
     Ok(registered_total)
+}
+
+fn settings_with_disabled_provider_instances_removed(settings: &Value) -> Value {
+    let mut active = settings.clone();
+    let Some(root) = active.as_object_mut() else {
+        return active;
+    };
+    for section_name in PROVIDER_SECTIONS {
+        let Some(section) = root.get_mut(*section_name).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let section_enabled = section
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let Some(instances) = section.get_mut("instances").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        instances
+            .retain(|instance| instance.get("enabled").and_then(Value::as_bool) != Some(false));
+        let has_active_instances = !instances.is_empty();
+        section.insert(
+            "enabled".to_string(),
+            Value::Bool(section_enabled && has_active_instances),
+        );
+    }
+    active
 }
 
 fn apply_logical_directory_settings(
@@ -2217,6 +2246,43 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_provider_instances_are_removed_without_disabling_siblings() {
+        let settings = serde_json::json!({
+            "openai": {
+                "enabled": true,
+                "instances": [
+                    { "provider_instance_name": "openai-primary", "enabled": false },
+                    { "provider_instance_name": "openai-backup", "enabled": true }
+                ]
+            }
+        });
+
+        let active = settings_with_disabled_provider_instances_removed(&settings);
+        assert_eq!(active["openai"]["enabled"], true);
+        assert_eq!(active["openai"]["instances"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            active["openai"]["instances"][0]["provider_instance_name"],
+            "openai-backup"
+        );
+    }
+
+    #[test]
+    fn disabling_last_provider_instance_disables_section() {
+        let settings = serde_json::json!({
+            "fal": {
+                "enabled": true,
+                "instances": [
+                    { "provider_instance_name": "fal-main", "enabled": false }
+                ]
+            }
+        });
+
+        let active = settings_with_disabled_provider_instances_removed(&settings);
+        assert_eq!(active["fal"]["enabled"], false);
+        assert!(active["fal"]["instances"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn settings_log_redacts_source_url_userinfo() {

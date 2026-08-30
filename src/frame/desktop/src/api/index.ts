@@ -810,7 +810,7 @@ export type AiProviderCard = {
   id: string
   displayName: string
   providerType: string
-  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned'
+  status: 'healthy' | 'needs_setup' | 'degraded' | 'planned' | 'disabled'
   endpoint: string
   authMode: string
   credentialConfigured?: boolean
