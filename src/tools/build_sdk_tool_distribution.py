@@ -6,19 +6,10 @@ import hashlib
 import json
 import os
 import shutil
-import stat
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
-
-
-ENVIRONMENT_NAMES = (
-    "HOME,USERPROFILE,APPDATA,BUCKYOS_TOOL_CONFIG_DIR,BUCKYOS_TOOL_PROFILE,"
-    "BUCKYOS_TOOL_ZONE,BUCKYOS_TOOL_ENDPOINT,BUCKYOS_TOOL_IDENTITY,"
-    "BUCKYOS_TOOL_OUTPUT,BUCKYOS_IDENTITY_ROOT,BUCKYOS_SECURITY_ROOT,"
-    "BUCKYOS_APPCLIENT_SESSION_TOKEN,BUCKYOS_ROOT,SOURCE_DATE_EPOCH"
-)
 
 
 def digest(path: Path, algorithm: str = "sha256") -> str:
@@ -126,49 +117,6 @@ def package_file_manifest(package_root: Path) -> list[dict]:
     return output
 
 
-def write_launchers(bin_dir: Path, windows: bool) -> None:
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    posix = bin_dir / "buckyos"
-    posix.write_text(
-        "\n".join(
-            [
-                "#!/bin/sh",
-                "set -eu",
-                'ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)',
-                'TOOL="$ROOT/libexec/buckyos-tool"',
-                'DENO="$TOOL/runtime/deno"',
-                "export BUCKYOS_ROOT=${BUCKYOS_ROOT:-$ROOT}",
-                'exec "$DENO" run --no-prompt --allow-read="$TOOL" '
-                f'--allow-env="{ENVIRONMENT_NAMES}" --allow-run="$DENO" '
-                '"$TOOL/cli/system_bootstrap.ts" "$@"',
-                "",
-            ]
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    posix.chmod(posix.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    if windows:
-        (bin_dir / "buckyos.cmd").write_text(
-            "\r\n".join(
-                [
-                    "@echo off",
-                    "setlocal",
-                    'set "ROOT=%~dp0.."',
-                    'set "TOOL=%ROOT%\\libexec\\buckyos-tool"',
-                    'set "DENO=%TOOL%\\runtime\\deno.exe"',
-                    'if not defined BUCKYOS_ROOT set "BUCKYOS_ROOT=%ROOT%"',
-                    '"%DENO%" run --no-prompt --allow-read="%TOOL%" '
-                    f'--allow-env="{ENVIRONMENT_NAMES}" --allow-run="%DENO%" '
-                    '"%TOOL%\\cli\\system_bootstrap.ts" %*',
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-            newline="",
-        )
-
-
 def build(args: argparse.Namespace) -> None:
     tarball = args.artifact.resolve(strict=True)
     deno = args.deno.resolve(strict=True)
@@ -241,7 +189,6 @@ def build(args: argparse.Namespace) -> None:
             raise
         if backup.exists():
             shutil.rmtree(backup)
-    write_launchers(rootfs / "bin", args.windows)
 
 
 def parse_args() -> argparse.Namespace:

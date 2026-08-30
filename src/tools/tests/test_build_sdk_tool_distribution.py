@@ -1,7 +1,12 @@
 import importlib.util
+import hashlib
+import json
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "build_sdk_tool_distribution.py"
@@ -58,21 +63,79 @@ class PackageFileManifestTests(unittest.TestCase):
             ["LICENSE", "README.md", "cli/main.ts"],
         )
 
-    def test_generated_launchers_match_committed_rootfs_files(self) -> None:
-        committed_bin_dir = SCRIPT_PATH.parents[1] / "rootfs" / "bin"
+    def test_build_does_not_modify_committed_launchers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            generated_bin_dir = Path(temporary) / "bin"
+            temporary_root = Path(temporary)
+            package_root = temporary_root / "package"
+            package_files = {
+                "LICENSE": "license",
+                "dist/node.mjs": "export {};",
+                "cli/main.ts": "export {};",
+                "cli/system_bootstrap.ts": "export {};",
+                "cli/system_launcher.ts": "export {};",
+                "package.json": json.dumps({"name": "buckyos", "version": "1.2.3"}),
+            }
+            for relative, content in package_files.items():
+                path = package_root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
 
-            MODULE.write_launchers(generated_bin_dir, windows=True)
+            artifact = temporary_root / "buckyos.tgz"
+            with tarfile.open(artifact, "w:gz") as archive:
+                for path in sorted(package_root.rglob("*")):
+                    if path.is_file():
+                        archive.add(path, arcname=f"package/{path.relative_to(package_root).as_posix()}")
 
-            self.assertEqual(
-                (generated_bin_dir / "buckyos").read_bytes(),
-                (committed_bin_dir / "buckyos").read_bytes(),
+            npm_files = MODULE.package_file_manifest(package_root)
+            npm_files_sha256 = hashlib.sha256(
+                json.dumps(npm_files, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            release = {
+                "schema_version": 1,
+                "buckyos_version": "0.6.0",
+                "build_id": "test",
+                "tool_version": "1.2.3",
+                "sdk_version": "1.2.3",
+                "npm_tarball_sha256": "test",
+                "npm_integrity": "test",
+                "npm_files_sha256": npm_files_sha256,
+                "npm_files": npm_files,
+                "deno_version": "2.9.6",
+                "deno_sha256": "test",
+                "sbom_sha256": "test",
+                "protocol_version": "1",
+                "capability_range": "buckyos.tool.v1",
+            }
+            release_manifest = temporary_root / "release.json"
+            release_manifest.write_text(json.dumps(release), encoding="utf-8")
+            deno = temporary_root / "deno.exe"
+            deno.write_bytes(b"deno")
+            sbom = temporary_root / "sbom.json"
+            sbom.write_text("{}", encoding="utf-8")
+
+            rootfs = temporary_root / "rootfs"
+            bin_dir = rootfs / "bin"
+            bin_dir.mkdir(parents=True)
+            posix_launcher = bin_dir / "buckyos"
+            windows_launcher = bin_dir / "buckyos.cmd"
+            posix_launcher.write_bytes(b"committed posix launcher")
+            windows_launcher.write_bytes(b"committed windows launcher")
+
+            args = SimpleNamespace(
+                artifact=artifact,
+                deno=deno,
+                sbom=sbom,
+                release_manifest=release_manifest,
+                deno_version="2.9.6",
+                rootfs=rootfs,
+                windows=True,
             )
-            self.assertEqual(
-                (generated_bin_dir / "buckyos.cmd").read_bytes(),
-                (committed_bin_dir / "buckyos.cmd").read_bytes(),
-            )
+            with mock.patch.object(MODULE, "verify_artifacts"):
+                MODULE.build(args)
+
+            self.assertEqual(posix_launcher.read_bytes(), b"committed posix launcher")
+            self.assertEqual(windows_launcher.read_bytes(), b"committed windows launcher")
+            self.assertTrue((rootfs / "libexec" / "buckyos-tool" / "distribution.json").is_file())
 
 
 if __name__ == "__main__":
