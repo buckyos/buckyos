@@ -349,6 +349,8 @@ pub struct ModelCapabilities {
     #[serde(default)]
     pub vision: bool,
     #[serde(default)]
+    pub image_generation: bool,
+    #[serde(default)]
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
     pub max_output_tokens: Option<u64>,
@@ -365,6 +367,7 @@ impl ModelCapabilities {
                 .unsupported_combination(required_features.as_slice())
                 .is_none()
             && (!required.vision || self.vision)
+            && (!required.image_generation || self.image_generation)
             && required
                 .min_context_tokens
                 .map(|min| self.max_context_tokens.unwrap_or(0) >= min)
@@ -403,6 +406,9 @@ impl ModelCapabilities {
         }
         if required.vision && !self.vision {
             missing.push("vision".to_string());
+        }
+        if required.image_generation && !self.image_generation {
+            missing.push("image_generation".to_string());
         }
         if let Some(min) = required.min_context_tokens {
             if self.max_context_tokens.unwrap_or(0) < min {
@@ -459,6 +465,7 @@ impl ModelCapabilities {
             "json_output" => self.json_schema,
             "web_search" => self.web_search,
             "vision" => self.vision,
+            "image_generation" => self.image_generation,
             _ => false,
         }
     }
@@ -477,6 +484,8 @@ pub struct RequiredModelFeatures {
     #[serde(default)]
     pub vision: bool,
     #[serde(default)]
+    pub image_generation: bool,
+    #[serde(default)]
     pub min_context_tokens: Option<u64>,
 }
 
@@ -488,6 +497,7 @@ impl RequiredModelFeatures {
             json_schema: self.json_schema,
             web_search: self.web_search,
             vision: self.vision,
+            image_generation: self.image_generation,
             min_context_tokens: None,
         }
         .feature_names()
@@ -506,6 +516,8 @@ pub struct ModelRequirement {
     pub web_search: bool,
     #[serde(default)]
     pub vision: bool,
+    #[serde(default)]
+    pub image_generation: bool,
     #[serde(default)]
     pub min_context_tokens: Option<u64>,
 }
@@ -532,6 +544,9 @@ impl ModelRequirement {
         if self.vision {
             features.push("vision".to_string());
         }
+        if self.image_generation {
+            features.push("image_generation".to_string());
+        }
         if let Some(tokens) = self.min_context_tokens {
             features.push(format!("min_context_tokens:{}", tokens));
         }
@@ -547,6 +562,7 @@ impl From<&ModelRequirement> for RequiredModelFeatures {
             json_schema: value.json_schema,
             web_search: value.web_search,
             vision: value.vision,
+            image_generation: value.image_generation,
             min_context_tokens: value.min_context_tokens,
         }
     }
@@ -564,6 +580,8 @@ pub struct ModelDisable {
     pub web_search: bool,
     #[serde(default)]
     pub vision: bool,
+    #[serde(default)]
+    pub image_generation: bool,
     #[serde(default)]
     pub min_context_tokens: Option<u64>,
 }
@@ -585,6 +603,9 @@ impl ModelDisable {
         }
         if self.vision {
             features.push("vision".to_string());
+        }
+        if self.image_generation {
+            features.push("image_generation".to_string());
         }
         if let Some(tokens) = self.min_context_tokens {
             features.push(format!("min_context_tokens:{}", tokens));
@@ -1559,6 +1580,7 @@ mod tests {
                 web_search: true,
                 unsupported_feature_combinations: vec![],
                 vision: false,
+                image_generation: false,
                 max_context_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),
             },
@@ -1577,6 +1599,10 @@ mod tests {
         }));
         assert!(!model.supports_requirements(&RequiredModelFeatures {
             vision: true,
+            ..Default::default()
+        }));
+        assert!(!model.supports_requirements(&RequiredModelFeatures {
+            image_generation: true,
             ..Default::default()
         }));
         assert!(!ModelMetadata {

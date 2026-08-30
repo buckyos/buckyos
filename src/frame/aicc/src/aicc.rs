@@ -3021,6 +3021,7 @@ fn required_model_features(requirements: &Requirements) -> RequiredModelFeatures
     required.json_schema = requirements.required.json_schema;
     required.web_search = requirements.required.web_search;
     required.vision = requirements.required.vision;
+    required.image_generation = requirements.required.image_generation;
     required.min_context_tokens = requirements.required.min_context_tokens;
     for feature in &requirements.must_features {
         match feature.as_str() {
@@ -3028,6 +3029,7 @@ fn required_model_features(requirements: &Requirements) -> RequiredModelFeatures
             buckyos_api::features::JSON_OUTPUT => required.json_schema = true,
             buckyos_api::features::WEB_SEARCH => required.web_search = true,
             buckyos_api::features::VISION => required.vision = true,
+            buckyos_api::features::IMAGE_GENERATION => required.image_generation = true,
             "streaming" => required.streaming = true,
             _ => {}
         }
@@ -3265,6 +3267,9 @@ pub fn provider_model_metadata(
             vision: features
                 .iter()
                 .any(|item| item == buckyos_api::features::VISION),
+            image_generation: features
+                .iter()
+                .any(|item| item == buckyos_api::features::IMAGE_GENERATION),
             max_context_tokens: None,
             max_output_tokens: None,
         },

@@ -1,50 +1,11 @@
 {
   "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 4,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "provider_driver": "openai",
-  "revision_seq": 1,
+  "revision_seq": 2,
   "required_features": [],
   "models": [
-    {
-      "id": "gpt-image-1-mini",
-      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
-      "logical_mounts": [
-        "image.txt2img.{driver}",
-        "image.txt2img.gpt_image",
-        "image.txt2img.{model}",
-        "image.img2img",
-        "image.img2img.{driver}",
-        "image.img2img.{model}",
-        "image.inpaint",
-        "image.inpaint.{driver}",
-        "image.inpaint.{model}"
-      ],
-      "pricing": {
-        "currency": "USD",
-        "estimated_cost": 0.04
-      },
-      "estimated_latency_ms": 5000,
-      "quality_score": 0.9
-    },
-    {
-      "id": "gpt-image-1.5",
-      "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
-      "logical_mounts": [
-        "image.txt2img.{driver}",
-        "image.txt2img.gpt_image",
-        "image.txt2img.{model}",
-        "image.img2img",
-        "image.img2img.{driver}",
-        "image.img2img.{model}",
-        "image.inpaint",
-        "image.inpaint.{driver}",
-        "image.inpaint.{model}"
-      ],
-      "pricing": { "currency": "USD", "estimated_cost": 0.04 },
-      "estimated_latency_ms": 5000,
-      "quality_score": 0.95
-    },
     {
       "id": "gpt-image-2",
       "api_types": ["image.txt2img", "image.img2img", "image.inpaint"],
@@ -230,7 +191,7 @@
     },
     {
       "pattern": "gpt-5.6",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-pro",
@@ -240,7 +201,13 @@
         "vision.ocr.{model}",
         "vision.caption",
         "vision.caption.{driver}",
-        "vision.caption.{model}"
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
       ],
       "capabilities": {
         "streaming": true,
@@ -248,6 +215,7 @@
         "json_schema": true,
         "web_search": true,
         "vision": true,
+        "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -265,7 +233,7 @@
     },
     {
       "pattern": "gpt-5.6-sol*",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-pro",
@@ -275,7 +243,13 @@
         "vision.ocr.{model}",
         "vision.caption",
         "vision.caption.{driver}",
-        "vision.caption.{model}"
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
       ],
       "capabilities": {
         "streaming": true,
@@ -283,6 +257,7 @@
         "json_schema": true,
         "web_search": true,
         "vision": true,
+        "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -300,7 +275,7 @@
     },
     {
       "pattern": "gpt-5.6-terra*",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-mini",
@@ -310,7 +285,13 @@
         "vision.ocr.{model}",
         "vision.caption",
         "vision.caption.{driver}",
-        "vision.caption.{model}"
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
       ],
       "capabilities": {
         "streaming": true,
@@ -318,6 +299,7 @@
         "json_schema": true,
         "web_search": true,
         "vision": true,
+        "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -335,7 +317,7 @@
     },
     {
       "pattern": "gpt-5.6-luna*",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "logical_mounts": [
         "llm.{driver}",
         "llm.gpt-nano",
@@ -345,7 +327,13 @@
         "vision.ocr.{model}",
         "vision.caption",
         "vision.caption.{driver}",
-        "vision.caption.{model}"
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
       ],
       "capabilities": {
         "streaming": true,
@@ -353,6 +341,7 @@
         "json_schema": true,
         "web_search": true,
         "vision": true,
+        "image_generation": true,
         "max_context_tokens": 1050000,
         "max_output_tokens": 128000
       },
@@ -367,6 +356,44 @@
       "quality_score": 0.9,
       "latency_class": "fast",
       "cost_class": "low"
+    },
+    {
+      "pattern": "gpt-5*",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+      "logical_mounts": [
+        "llm.{driver}",
+        "llm.openai.{model}",
+        "vision.ocr",
+        "vision.ocr.{driver}",
+        "vision.ocr.{model}",
+        "vision.caption",
+        "vision.caption.{driver}",
+        "vision.caption.{model}",
+        "image.txt2img",
+        "image.txt2img.{driver}",
+        "image.txt2img.{model}",
+        "image.img2img",
+        "image.img2img.{driver}",
+        "image.img2img.{model}"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "web_search": true,
+        "vision": true,
+        "image_generation": true,
+        "max_context_tokens": 128000,
+        "max_output_tokens": 8192
+      },
+      "pricing": {
+        "currency": "USD",
+        "estimated_cost": 0.01
+      },
+      "estimated_latency_ms": 1200,
+      "quality_score": 0.9,
+      "latency_class": "normal",
+      "cost_class": "medium"
     },
     {
       "pattern": "gpt-*",

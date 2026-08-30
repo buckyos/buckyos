@@ -43,12 +43,13 @@ use tokio::time;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_OPENAI_MODELS: &str = "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,o1,o1-pro,o3,o3-deep-research,o3-mini,o3-pro,o4-mini,o4-mini-deep-research";
-const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-1-mini,gpt-image-1.5,gpt-image-2";
+const DEFAULT_OPENAI_MODELS: &str = "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna";
+const DEFAULT_OPENAI_IMAGE_MODELS: &str = "gpt-image-2";
 const DEFAULT_OPENAI_EMBEDDING_MODELS: &str =
     "text-embedding-3-large,text-embedding-3-small,text-embedding-ada-002";
-const DEFAULT_OPENAI_ASR_MODELS: &str = "gpt-transcribe,whisper-1";
-const DEFAULT_OPENAI_TTS_MODELS: &str = "tts-1,tts-1-hd";
+const DEFAULT_OPENAI_ASR_MODELS: &str =
+    "gpt-transcribe,gpt-4o-transcribe,gpt-4o-mini-transcribe,whisper-1";
+const DEFAULT_OPENAI_TTS_MODELS: &str = "gpt-4o-mini-tts,tts-1,tts-1-hd";
 const DEFAULT_OPENAI_VIDEO_MODELS: &str = "";
 const DEFAULT_OPENAI_PROVIDER_DRIVER: &str = "openai";
 const DEFAULT_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
@@ -85,6 +86,16 @@ const OPENAI_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "quality",
     "size",
     "user",
+];
+const OPENAI_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST: &[&str] = &[
+    "background",
+    "input_fidelity",
+    "moderation",
+    "output_compression",
+    "output_format",
+    "partial_images",
+    "quality",
+    "size",
 ];
 const OPENAI_VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const OPENAI_VIDEO_MAX_WAIT: Duration = Duration::from_secs(600);
@@ -901,6 +912,16 @@ impl OpenAIProvider {
         Some(AiCost { amount, currency })
     }
 
+    fn model_supports_responses_image_generation(&self, provider_model: &str) -> bool {
+        self.inventory.read().ok().is_some_and(|inventory| {
+            inventory.models.iter().any(|metadata| {
+                (metadata.provider_model_id == provider_model
+                    || metadata.provider_actual_model_id.as_deref() == Some(provider_model))
+                    && metadata.capabilities.image_generation
+            })
+        })
+    }
+
     /// 把 `AiRole` 映射成 OpenAI Responses API 接受的 role 字符串。
     /// `Tool` 不会出现在 message-role 上 —— ToolResult 走的是 `function_call_output`
     /// 顶层 item,不再当作 role 消息;但兜底仍降级到 `user` 防止野生数据。
@@ -1552,8 +1573,9 @@ impl OpenAIProvider {
         body: &Value,
         text: Option<String>,
         tool_calls: Vec<AiToolCall>,
+        artifacts: Vec<AiArtifact>,
     ) -> AiMessage {
-        let mut message = AiResponse::message_from_parts(text, tool_calls, vec![]);
+        let mut message = AiResponse::message_from_parts(text, tool_calls, artifacts);
         if let Some(output_items) = body.get("output").and_then(Value::as_array) {
             message
                 .content
@@ -2085,6 +2107,217 @@ impl OpenAIProvider {
             target.insert(key.clone(), value.clone());
         }
         Ok(ignored)
+    }
+
+    fn responses_image_input_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_image",
+                "image_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => {
+                if !mime.starts_with("image/") {
+                    return Err(ProviderError::fatal(format!(
+                        "OpenAI Responses image input requires image MIME type, got '{}'",
+                        mime
+                    )));
+                }
+                general_purpose::STANDARD
+                    .decode(data_base64)
+                    .map_err(|err| {
+                        ProviderError::fatal(format!(
+                            "OpenAI Responses image input contains invalid base64: {}",
+                            err
+                        ))
+                    })?;
+                Ok(json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{};base64,{}", mime, data_base64),
+                }))
+            }
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "named image object '{}' must be materialized before OpenAI dispatch",
+                obj_id
+            ))),
+        }
+    }
+
+    fn image_resources_from_request(req: &AiMethodRequest) -> Vec<ResourceRef> {
+        if !req.payload.resources.is_empty() {
+            return req.payload.resources.clone();
+        }
+        let Some(input) = req.payload.input_json.as_ref() else {
+            return vec![];
+        };
+        for key in ["images", "image"] {
+            let Some(value) = input.get(key) else {
+                continue;
+            };
+            let values = value
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![value.clone()]);
+            let resources = values
+                .into_iter()
+                .filter_map(|value| serde_json::from_value::<ResourceRef>(value).ok())
+                .collect::<Vec<_>>();
+            if !resources.is_empty() {
+                return resources;
+            }
+        }
+        vec![]
+    }
+
+    fn build_responses_image_request(
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
+        let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal(
+                "Responses image generation requires prompt in payload.text/messages/input_json/options",
+            )
+        })?;
+        let mut tool = Map::new();
+        tool.insert(
+            "type".to_string(),
+            Value::String("image_generation".to_string()),
+        );
+        tool.insert("action".to_string(), Value::String(action.to_string()));
+        let mut ignored = vec![];
+        for source in [
+            req.payload.input_json.as_ref(),
+            req.payload.options.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(options) = source.as_object() else {
+                continue;
+            };
+            for (key, value) in options {
+                if key == "model"
+                    || key == "messages"
+                    || key == "prompt"
+                    || key == "image"
+                    || key == "images"
+                {
+                    continue;
+                }
+                if OPENAI_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST.contains(&key.as_str()) {
+                    tool.insert(key.clone(), value.clone());
+                } else if !ignored.contains(key) {
+                    ignored.push(key.clone());
+                }
+            }
+        }
+
+        let input = if action == "edit" {
+            let resources = Self::image_resources_from_request(req);
+            if resources.is_empty() {
+                return Err(ProviderError::fatal(
+                    "Responses image edit requires at least one canonical image input",
+                ));
+            }
+            let mut content = vec![json!({ "type": "input_text", "text": prompt })];
+            for resource in &resources {
+                content.push(Self::responses_image_input_part(resource)?);
+            }
+            json!([{ "role": "user", "content": content }])
+        } else {
+            Value::String(prompt)
+        };
+
+        let stream =
+            req.requirements.requires_feature("streaming") || tool.contains_key("partial_images");
+        let mut request_obj = Map::new();
+        request_obj.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        request_obj.insert("input".to_string(), input);
+        request_obj.insert("tools".to_string(), Value::Array(vec![Value::Object(tool)]));
+        if stream {
+            request_obj.insert("stream".to_string(), Value::Bool(true));
+        }
+        Ok((request_obj, ignored))
+    }
+
+    fn image_mime_from_bytes(bytes: &[u8]) -> Result<&'static str, ProviderError> {
+        match image::guess_format(bytes) {
+            Ok(ImageFormat::Png) => Ok("image/png"),
+            Ok(ImageFormat::Jpeg) => Ok("image/jpeg"),
+            Ok(ImageFormat::WebP) => Ok("image/webp"),
+            Ok(format) => Err(ProviderError::fatal(format!(
+                "OpenAI Responses returned unsupported image format {:?}",
+                format
+            ))),
+            Err(err) => Err(ProviderError::fatal(format!(
+                "OpenAI Responses returned invalid image bytes: {}",
+                err
+            ))),
+        }
+    }
+
+    fn parse_responses_image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
+        let output = body
+            .get("output")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ProviderError::fatal("OpenAI Responses image result is missing output")
+            })?;
+        let mut artifacts = vec![];
+        for item in output {
+            if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+                continue;
+            }
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if status != "completed" {
+                return Err(ProviderError::fatal(format!(
+                    "OpenAI Responses image generation call did not complete (status='{}')",
+                    status
+                )));
+            }
+            let encoded = item
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ProviderError::fatal(
+                        "OpenAI Responses image generation call is missing base64 result",
+                    )
+                })?;
+            let bytes = general_purpose::STANDARD.decode(encoded).map_err(|err| {
+                ProviderError::fatal(format!(
+                    "OpenAI Responses image generation returned invalid base64: {}",
+                    err
+                ))
+            })?;
+            let mime = Self::image_mime_from_bytes(bytes.as_slice())?.to_string();
+            let index = artifacts.len() + 1;
+            artifacts.push(AiArtifact {
+                name: format!("image_{}", index),
+                resource: ResourceRef::Base64 {
+                    mime: mime.clone(),
+                    data_base64: encoded.to_string(),
+                },
+                mime: Some(mime),
+                metadata: Some(json!({
+                    "provider_call_id": item.get("id").cloned(),
+                    "action": item.get("action").cloned(),
+                })),
+            });
+        }
+        if artifacts.is_empty() {
+            return Err(ProviderError::fatal(
+                "OpenAI Responses result has no image_generation_call outputs",
+            ));
+        }
+        Ok(artifacts)
     }
 
     fn parse_text2image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
@@ -2759,7 +2992,7 @@ impl OpenAIProvider {
         );
 
         let summary = AiResponse {
-            message: self.message_from_response_body(&body, content, tool_choices),
+            message: self.message_from_response_body(&body, content, tool_choices, vec![]),
             usage,
             cost,
             finish_reason: body
@@ -2890,6 +3123,11 @@ impl OpenAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "generate")
+                .await;
+        }
         let mut request_obj = Map::new();
         request_obj.insert(
             "model".to_string(),
@@ -3010,6 +3248,103 @@ impl OpenAIProvider {
             extra: Some(Value::Object(extra)),
         };
         Ok(ProviderStartResult::Immediate(summary))
+    }
+
+    async fn start_responses_image_generation(
+        &self,
+        ctx: &crate::aicc::InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let (request_obj, ignored_options) =
+            Self::build_responses_image_request(provider_model, req, action)?;
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.openai.responses_image ignored unsupported options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                ignored_options
+            );
+        }
+        let request_log = redacted_json_log(&Value::Object(request_obj.clone()));
+        info!(
+            "aicc.openai.responses_image.input provider_instance_name={} model={} action={} trace_id={:?} request={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            action,
+            ctx.trace_id,
+            request_log
+        );
+        let url = format!("{}/responses", self.base_url);
+        let (status, body, latency_ms) = self.post_json(ctx, url.as_str(), &request_obj).await?;
+        let response_log = redacted_json_log(&body);
+        if !status.is_success() {
+            warn!(
+                "aicc.openai.responses_image.output provider_instance_name={} model={} action={} trace_id={:?} status={} response={}",
+                self.instance.provider_instance_name,
+                provider_model,
+                action,
+                ctx.trace_id,
+                status.as_u16(),
+                response_log
+            );
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("OpenAI Responses image generation returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        info!(
+            "aicc.openai.responses_image.output provider_instance_name={} model={} action={} trace_id={:?} status={} response={}",
+            self.instance.provider_instance_name,
+            provider_model,
+            action,
+            ctx.trace_id,
+            status.as_u16(),
+            response_log
+        );
+
+        let artifacts = Self::parse_responses_image_artifacts(&body)?;
+        let usage = body.get("usage").map(|usage| AiUsage {
+            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: Some(1),
+        });
+        let cost = Self::estimate_text2image_cost(req, provider_model).map(|amount| AiCost {
+            amount,
+            currency: "USD".to_string(),
+        });
+        let mut extra = Map::new();
+        extra.insert("provider".to_string(), Value::String("openai".to_string()));
+        extra.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        extra.insert("latency_ms".to_string(), Value::from(latency_ms));
+        extra.insert(
+            "provider_io".to_string(),
+            json!({
+                "input": Value::Object(request_obj),
+                "output": body.clone()
+            }),
+        );
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: self.message_from_response_body(&body, None, vec![], artifacts),
+            usage,
+            cost,
+            finish_reason: body
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            provider_task_ref: body
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            extra: Some(Value::Object(extra)),
+        }))
     }
 
     fn embedding_inputs(
@@ -3757,6 +4092,11 @@ impl OpenAIProvider {
         req: &AiMethodRequest,
         with_mask: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if !with_mask && self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "edit")
+                .await;
+        }
         let image_resource = req
             .payload
             .resources
@@ -4596,6 +4936,26 @@ mod tests {
                 vec![],
                 vec![],
                 vec![],
+                None,
+                options,
+            ),
+            None,
+        )
+    }
+
+    fn build_image_edit_request(
+        resources: Vec<ResourceRef>,
+        options: Option<Value>,
+    ) -> AiMethodRequest {
+        AiMethodRequest::new(
+            Capability::Image,
+            ModelSpec::new("image.img2img.default".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("edit the test image".to_string()),
+                vec![],
+                vec![],
+                resources,
                 None,
                 options,
             ),
@@ -6031,8 +6391,14 @@ data: [DONE]
         let messages = provider.build_messages(&request).expect("messages");
 
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].pointer("/content/0/type"), Some(&json!("input_file")));
-        assert_eq!(messages[1].pointer("/content/0/filename"), Some(&json!("input.pdf")));
+        assert_eq!(
+            messages[1].pointer("/content/0/type"),
+            Some(&json!("input_file"))
+        );
+        assert_eq!(
+            messages[1].pointer("/content/0/filename"),
+            Some(&json!("input.pdf"))
+        );
         assert_eq!(
             messages[1].pointer("/content/0/file_data"),
             Some(&json!("data:application/pdf;base64,aGVsbG8="))
@@ -6073,6 +6439,7 @@ data: [DONE]
         let assistant = provider.message_from_response_body(
             &json!({"output": [reasoning_item.clone(), message_item.clone()]}),
             Some("hi".to_string()),
+            vec![],
             vec![],
         );
         assert!(assistant.content.iter().all(|content| match content {
@@ -6349,5 +6716,234 @@ data: [DONE]
             ResourceRef::Base64 { data_base64, .. } => assert_eq!(data_base64, "aGVsbG8="),
             other => panic!("unexpected second artifact resource: {:?}", other),
         }
+    }
+
+    #[test]
+    fn responses_image_request_nests_supported_options_in_tool() {
+        let request = build_text2image_request(Some(json!({
+            "size": "1024x1536",
+            "quality": "high",
+            "output_format": "png",
+            "n": 2
+        })));
+        let (body, ignored) =
+            OpenAIProvider::build_responses_image_request("gpt-5.6-sol", &request, "generate")
+                .expect("request");
+        let body = Value::Object(body);
+
+        assert_eq!(body.get("input"), Some(&json!("draw a test image")));
+        assert_eq!(
+            body.pointer("/tools/0/type"),
+            Some(&json!("image_generation"))
+        );
+        assert_eq!(body.pointer("/tools/0/action"), Some(&json!("generate")));
+        assert_eq!(body.pointer("/tools/0/size"), Some(&json!("1024x1536")));
+        assert_eq!(body.pointer("/tools/0/quality"), Some(&json!("high")));
+        assert!(body.get("size").is_none());
+        assert_eq!(ignored, vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn responses_image_edit_supports_multiple_materialized_images() {
+        let resources = vec![
+            ResourceRef::Url {
+                url: "https://example.com/one.png".to_string(),
+                mime_hint: Some("image/png".to_string()),
+            },
+            ResourceRef::Base64 {
+                mime: "image/png".to_string(),
+                data_base64: "iVBORw0KGgo=".to_string(),
+            },
+        ];
+        let request = build_image_edit_request(
+            resources,
+            Some(json!({
+                "input_fidelity": "high"
+            })),
+        );
+        let (body, ignored) =
+            OpenAIProvider::build_responses_image_request("gpt-5.6-terra", &request, "edit")
+                .expect("request");
+        let body = Value::Object(body);
+
+        assert!(ignored.is_empty());
+        assert_eq!(body.pointer("/tools/0/action"), Some(&json!("edit")));
+        assert_eq!(
+            body.pointer("/tools/0/input_fidelity"),
+            Some(&json!("high"))
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/0/type"),
+            Some(&json!("input_text"))
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/1/type"),
+            Some(&json!("input_image"))
+        );
+        assert_eq!(
+            body.pointer("/input/0/content/2/type"),
+            Some(&json!("input_image"))
+        );
+    }
+
+    #[test]
+    fn responses_image_parser_preserves_multiple_outputs_and_provider_state() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let body = json!({
+            "status": "completed",
+            "output": [
+                {"type": "image_generation_call", "id": "ig_1", "status": "completed", "action": "generate", "result": png},
+                {"type": "image_generation_call", "id": "ig_2", "status": "completed", "action": "generate", "result": png}
+            ]
+        });
+        let artifacts = OpenAIProvider::parse_responses_image_artifacts(&body).expect("artifacts");
+        assert_eq!(artifacts.len(), 2);
+        assert!(artifacts
+            .iter()
+            .all(|artifact| artifact.mime.as_deref() == Some("image/png")));
+
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-history".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider");
+        let message = provider.message_from_response_body(&body, None, vec![], artifacts);
+        assert_eq!(
+            message
+                .content
+                .iter()
+                .filter(|content| matches!(content, AiContent::Image { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            message
+                .content
+                .iter()
+                .filter(|content| matches!(content, AiContent::ProviderState { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn responses_image_parser_rejects_invalid_or_incomplete_results() {
+        for body in [
+            json!({"output": [{"type": "image_generation_call", "status": "completed", "result": "not-base64"}]}),
+            json!({"output": [{"type": "image_generation_call", "status": "in_progress", "result": "iVBORw0KGgo="}]}),
+            json!({"output": [{"type": "message", "status": "completed"}]}),
+        ] {
+            assert!(OpenAIProvider::parse_responses_image_artifacts(&body).is_err());
+        }
+    }
+
+    #[test]
+    fn responses_image_stream_parser_uses_completed_response_payload() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let sse = format!(
+            "event: response.completed\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_stream",
+                    "status": "completed",
+                    "output": [{
+                        "type": "image_generation_call",
+                        "id": "ig_stream",
+                        "status": "completed",
+                        "result": png
+                    }]
+                }
+            })
+        );
+        let response = OpenAIProvider::parse_sse_response_body(sse.as_str()).expect("SSE");
+        let artifacts =
+            OpenAIProvider::parse_responses_image_artifacts(&response).expect("artifacts");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].mime.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn image_protocol_selection_uses_resolved_metadata_capability() {
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-capability".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: default_base_url(),
+                timeout_ms: default_timeout_ms(),
+            },
+            "token",
+        )
+        .expect("provider");
+        assert!(provider.model_supports_responses_image_generation("gpt-5.6-sol"));
+        assert!(!provider.model_supports_responses_image_generation("gpt-image-2"));
+    }
+
+    #[tokio::test]
+    async fn gpt5_text2image_posts_to_responses_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let response_body = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [{
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "action": "generate",
+                "result": png
+            }],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        })
+        .to_string();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut request = [0u8; 8192];
+            let size = stream.read(&mut request).await.expect("read request");
+            let request = String::from_utf8_lossy(&request[..size]).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            request
+        });
+        let provider = OpenAIProvider::new(
+            OpenAIInstanceConfig {
+                provider_instance_name: "openai-responses-image".to_string(),
+                provider_type: "cloud_api".to_string(),
+                provider_driver: "openai".to_string(),
+                api_token: "token".to_string(),
+                base_url: format!("http://{}", address),
+                timeout_ms: 1_000,
+            },
+            "token",
+        )
+        .expect("provider");
+        let result = provider
+            .start_text2image(
+                &crate::aicc::InvokeCtx::default(),
+                "gpt-5.6-sol",
+                &build_text2image_request(None),
+            )
+            .await
+            .expect("response");
+        assert!(matches!(result, ProviderStartResult::Immediate(_)));
+        let request = server.await.expect("server task");
+        assert!(request.starts_with("POST /responses HTTP/1.1"), "{request}");
     }
 }

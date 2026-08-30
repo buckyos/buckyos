@@ -118,6 +118,16 @@ const SN_IMAGE_EDIT_OPTION_ALLOWLIST: &[&str] = &[
     "size",
     "user",
 ];
+const SN_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST: &[&str] = &[
+    "background",
+    "input_fidelity",
+    "moderation",
+    "output_compression",
+    "output_format",
+    "partial_images",
+    "quality",
+    "size",
+];
 
 fn valid_sn_function_name(value: &str) -> bool {
     !value.is_empty()
@@ -937,6 +947,16 @@ impl SnAIProvider {
         }
         inventory.models.retain(|model| !model.api_types.is_empty());
         inventory
+    }
+
+    fn model_supports_responses_image_generation(&self, provider_model: &str) -> bool {
+        self.inventory.read().ok().is_some_and(|inventory| {
+            inventory.models.iter().any(|metadata| {
+                (metadata.provider_model_id == provider_model
+                    || metadata.provider_actual_model_id.as_deref() == Some(provider_model))
+                    && metadata.capabilities.image_generation
+            })
+        })
     }
 
     fn normalize_remote_provider_inventory(
@@ -1959,6 +1979,27 @@ impl SnAIProvider {
         message
     }
 
+    fn message_from_response_body_with_artifacts(
+        body: &Value,
+        artifacts: Vec<AiArtifact>,
+    ) -> AiMessage {
+        let mut message = AiResponse::message_from_parts(None, vec![], artifacts);
+        if let Some(output_items) = body.get("output").and_then(Value::as_array) {
+            message
+                .content
+                .extend(
+                    output_items
+                        .iter()
+                        .cloned()
+                        .map(|value| AiContent::ProviderState {
+                            provider: SN_AI_PROVIDER_DRIVER.to_string(),
+                            value,
+                        }),
+                );
+        }
+        message
+    }
+
     fn incomplete_output_error(
         body: &Value,
         content: Option<&str>,
@@ -2251,6 +2292,208 @@ impl SnAIProvider {
             }
         }
         Ok((target, ignored))
+    }
+
+    fn responses_image_input_part(source: &ResourceRef) -> Result<Value, ProviderError> {
+        match source {
+            ResourceRef::Url { url, .. } => Ok(json!({
+                "type": "input_image",
+                "image_url": url,
+            })),
+            ResourceRef::Base64 { mime, data_base64 } => {
+                if !mime.starts_with("image/") {
+                    return Err(ProviderError::fatal(format!(
+                        "SN Responses image input requires image MIME type, got '{}'",
+                        mime
+                    )));
+                }
+                general_purpose::STANDARD
+                    .decode(data_base64)
+                    .map_err(|err| {
+                        ProviderError::fatal(format!(
+                            "SN Responses image input contains invalid base64: {}",
+                            err
+                        ))
+                    })?;
+                Ok(json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{};base64,{}", mime, data_base64),
+                }))
+            }
+            ResourceRef::NamedObject { obj_id } => Err(ProviderError::fatal(format!(
+                "named image object '{}' must be materialized before SN dispatch",
+                obj_id
+            ))),
+        }
+    }
+
+    fn image_resources_from_request(req: &AiMethodRequest) -> Vec<ResourceRef> {
+        if !req.payload.resources.is_empty() {
+            return req.payload.resources.clone();
+        }
+        let Some(input) = req.payload.input_json.as_ref() else {
+            return vec![];
+        };
+        for key in ["images", "image"] {
+            let Some(value) = input.get(key) else {
+                continue;
+            };
+            let values = value
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![value.clone()]);
+            let resources = values
+                .into_iter()
+                .filter_map(|value| serde_json::from_value::<ResourceRef>(value).ok())
+                .collect::<Vec<_>>();
+            if !resources.is_empty() {
+                return resources;
+            }
+        }
+        vec![]
+    }
+
+    fn build_responses_image_request(
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<(Map<String, Value>, Vec<String>), ProviderError> {
+        let prompt = Self::extract_text2image_prompt(req).ok_or_else(|| {
+            ProviderError::fatal(
+                "SN Responses image generation requires prompt in payload.text/messages/input_json/options",
+            )
+        })?;
+        let mut tool = Map::new();
+        tool.insert(
+            "type".to_string(),
+            Value::String("image_generation".to_string()),
+        );
+        tool.insert("action".to_string(), Value::String(action.to_string()));
+        let mut ignored = vec![];
+        for source in [
+            req.payload.input_json.as_ref(),
+            req.payload.options.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(options) = source.as_object() else {
+                continue;
+            };
+            for (key, value) in options {
+                if ["model", "messages", "prompt", "image", "images"].contains(&key.as_str()) {
+                    continue;
+                }
+                if SN_RESPONSES_IMAGE_TOOL_OPTION_ALLOWLIST.contains(&key.as_str()) {
+                    tool.insert(key.clone(), value.clone());
+                } else if !ignored.contains(key) {
+                    ignored.push(key.clone());
+                }
+            }
+        }
+        let input = if action == "edit" {
+            let resources = Self::image_resources_from_request(req);
+            if resources.is_empty() {
+                return Err(ProviderError::fatal(
+                    "SN Responses image edit requires at least one canonical image input",
+                ));
+            }
+            let mut content = vec![json!({ "type": "input_text", "text": prompt })];
+            for resource in &resources {
+                content.push(Self::responses_image_input_part(resource)?);
+            }
+            json!([{ "role": "user", "content": content }])
+        } else {
+            Value::String(prompt)
+        };
+        let stream =
+            req.requirements.requires_feature("streaming") || tool.contains_key("partial_images");
+        let mut target = Map::new();
+        target.insert(
+            "model".to_string(),
+            Value::String(provider_model.to_string()),
+        );
+        target.insert("input".to_string(), input);
+        target.insert("tools".to_string(), Value::Array(vec![Value::Object(tool)]));
+        if stream {
+            target.insert("stream".to_string(), Value::Bool(true));
+        }
+        Ok((target, ignored))
+    }
+
+    fn parse_responses_image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
+        let output = body
+            .get("output")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ProviderError::fatal("SN Responses image result is missing output"))?;
+        let mut artifacts = vec![];
+        for item in output {
+            if item.get("type").and_then(Value::as_str) != Some("image_generation_call") {
+                continue;
+            }
+            let status = item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if status != "completed" {
+                return Err(ProviderError::fatal(format!(
+                    "SN Responses image generation call did not complete (status='{}')",
+                    status
+                )));
+            }
+            let encoded = item
+                .get("result")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ProviderError::fatal(
+                        "SN Responses image generation call is missing base64 result",
+                    )
+                })?;
+            let bytes = general_purpose::STANDARD.decode(encoded).map_err(|err| {
+                ProviderError::fatal(format!(
+                    "SN Responses image generation returned invalid base64: {}",
+                    err
+                ))
+            })?;
+            let mime = match image::guess_format(bytes.as_slice()) {
+                Ok(ImageFormat::Png) => "image/png",
+                Ok(ImageFormat::Jpeg) => "image/jpeg",
+                Ok(ImageFormat::WebP) => "image/webp",
+                Ok(format) => {
+                    return Err(ProviderError::fatal(format!(
+                        "SN Responses returned unsupported image format {:?}",
+                        format
+                    )))
+                }
+                Err(err) => {
+                    return Err(ProviderError::fatal(format!(
+                        "SN Responses returned invalid image bytes: {}",
+                        err
+                    )))
+                }
+            }
+            .to_string();
+            artifacts.push(AiArtifact {
+                name: format!("image_{}", artifacts.len() + 1),
+                resource: ResourceRef::Base64 {
+                    mime: mime.clone(),
+                    data_base64: encoded.to_string(),
+                },
+                mime: Some(mime),
+                metadata: Some(json!({
+                    "provider_call_id": item.get("id").cloned(),
+                    "action": item.get("action").cloned(),
+                })),
+            });
+        }
+        if artifacts.is_empty() {
+            return Err(ProviderError::fatal(
+                "SN Responses result has no image_generation_call outputs",
+            ));
+        }
+        Ok(artifacts)
     }
 
     fn parse_text2image_artifacts(body: &Value) -> Result<Vec<AiArtifact>, ProviderError> {
@@ -3078,6 +3321,11 @@ impl SnAIProvider {
         req: &AiMethodRequest,
         with_mask: bool,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if !with_mask && self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "edit")
+                .await;
+        }
         let image = req
             .payload
             .resources
@@ -3156,6 +3404,11 @@ impl SnAIProvider {
         provider_model: &str,
         req: &AiMethodRequest,
     ) -> Result<ProviderStartResult, ProviderError> {
+        if self.model_supports_responses_image_generation(provider_model) {
+            return self
+                .start_responses_image_generation(ctx, provider_model, req, "generate")
+                .await;
+        }
         let (request_obj, ignored_options) = Self::build_text2image_request(provider_model, req)?;
         if !ignored_options.is_empty() {
             warn!(
@@ -3235,6 +3488,73 @@ impl SnAIProvider {
             })),
         };
         Ok(ProviderStartResult::Immediate(summary))
+    }
+
+    async fn start_responses_image_generation(
+        &self,
+        ctx: &InvokeCtx,
+        provider_model: &str,
+        req: &AiMethodRequest,
+        action: &str,
+    ) -> Result<ProviderStartResult, ProviderError> {
+        let (request_obj, ignored_options) =
+            Self::build_responses_image_request(provider_model, req, action)?;
+        if !ignored_options.is_empty() {
+            warn!(
+                "aicc.sn_ai_provider.responses_image ignored unsupported options: provider_instance_name={} model={} trace_id={:?} ignored={:?}",
+                self.instance.provider_instance_name,
+                provider_model,
+                ctx.trace_id,
+                ignored_options
+            );
+        }
+        let endpoint = self.responses_endpoint();
+        let (status, body, latency_ms) =
+            self.post_json(ctx, endpoint.as_str(), &request_obj).await?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("SN Responses image generation returned non-success status");
+            return Err(Self::classify_api_error(status, message.to_string()));
+        }
+        let artifacts = Self::parse_responses_image_artifacts(&body)?;
+        let usage = body.get("usage").map(|usage| AiUsage {
+            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+            request_units: Some(1),
+        });
+        let cost = self.inventory.read().ok().and_then(|inventory| {
+            inventory.models.iter().find_map(|metadata| {
+                (metadata.provider_model_id == provider_model)
+                    .then_some(metadata.pricing.estimated_cost)
+                    .flatten()
+                    .map(|amount| AiCost {
+                        amount,
+                        currency: metadata.pricing.currency.clone(),
+                    })
+            })
+        });
+        Ok(ProviderStartResult::Immediate(AiResponse {
+            message: Self::message_from_response_body_with_artifacts(&body, artifacts),
+            usage,
+            cost,
+            finish_reason: body
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            provider_task_ref: body.get("id").and_then(Value::as_str).map(str::to_string),
+            extra: Some(json!({
+                "provider": SN_AI_PROVIDER_DRIVER,
+                "model": provider_model,
+                "latency_ms": latency_ms,
+                "provider_io": {
+                    "input": Value::Object(request_obj),
+                    "output": body
+                }
+            })),
+        }))
     }
 }
 
@@ -3731,6 +4051,71 @@ mod tests {
                 .expect("artifacts");
         assert_eq!(artifacts.len(), 1);
         assert!(matches!(artifacts[0].resource, ResourceRef::Base64 { .. }));
+    }
+
+    #[test]
+    fn gpt5_responses_image_request_and_result_follow_openai_shape() {
+        let request = AiMethodRequest::new(
+            Capability::Image,
+            ModelSpec::new("image.txt2img".to_string(), None),
+            Requirements::default(),
+            AiPayload::new(
+                Some("draw a tiger".to_string()),
+                vec![],
+                vec![],
+                vec![],
+                None,
+                Some(json!({ "quality": "high", "n": 2 })),
+            ),
+            None,
+        );
+        let (body, ignored) =
+            SnAIProvider::build_responses_image_request("gpt-5.6-sol", &request, "generate")
+                .expect("request");
+        let body = Value::Object(body);
+        assert_eq!(body.get("input"), Some(&json!("draw a tiger")));
+        assert_eq!(
+            body.pointer("/tools/0/type"),
+            Some(&json!("image_generation"))
+        );
+        assert_eq!(body.pointer("/tools/0/action"), Some(&json!("generate")));
+        assert_eq!(body.pointer("/tools/0/quality"), Some(&json!("high")));
+        assert_eq!(ignored, vec!["n".to_string()]);
+
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let response = json!({
+            "output": [{
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "result": png
+            }]
+        });
+        let artifacts =
+            SnAIProvider::parse_responses_image_artifacts(&response).expect("artifacts");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].mime.as_deref(), Some("image/png"));
+        let message = SnAIProvider::message_from_response_body_with_artifacts(&response, artifacts);
+        assert!(message
+            .content
+            .iter()
+            .any(|content| matches!(content, AiContent::ProviderState { .. })));
+    }
+
+    #[test]
+    fn gpt5_image_protocol_selection_uses_sn_inventory_metadata() {
+        let provider = SnAIProvider::new(test_instance_config()).expect("provider");
+        let inventory = provider
+            .build_inventory_from_remote_value(json!({
+                "items": [
+                    {"model": "gpt-5.6-sol"},
+                    {"model": "gpt-image-2"}
+                ]
+            }))
+            .expect("inventory");
+        *provider.inventory.write().expect("inventory lock") = inventory;
+        assert!(provider.model_supports_responses_image_generation("gpt-5.6-sol"));
+        assert!(!provider.model_supports_responses_image_generation("gpt-image-2"));
     }
 
     #[tokio::test]

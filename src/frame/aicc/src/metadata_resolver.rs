@@ -220,6 +220,8 @@ pub struct DriverCapabilitiesPatch {
     #[serde(default)]
     pub vision: Option<bool>,
     #[serde(default)]
+    pub image_generation: Option<bool>,
+    #[serde(default)]
     pub max_context_tokens: Option<u64>,
     #[serde(default)]
     pub max_output_tokens: Option<u64>,
@@ -1268,6 +1270,7 @@ fn conservative_capabilities() -> ModelCapabilities {
         web_search: false,
         unsupported_feature_combinations: vec![],
         vision: false,
+        image_generation: false,
         max_context_tokens: None,
         max_output_tokens: None,
     }
@@ -1281,6 +1284,7 @@ impl DriverCapabilitiesPatch {
             || self.web_search.is_some()
             || self.unsupported_feature_combinations.is_some()
             || self.vision.is_some()
+            || self.image_generation.is_some()
             || self.max_context_tokens.is_some()
             || self.max_output_tokens.is_some()
     }
@@ -1304,6 +1308,9 @@ fn apply_capabilities_patch(capabilities: &mut ModelCapabilities, patch: &Driver
     }
     if let Some(value) = patch.vision {
         capabilities.vision = value;
+    }
+    if let Some(value) = patch.image_generation {
+        capabilities.image_generation = value;
     }
     if patch.max_context_tokens.is_some() {
         capabilities.max_context_tokens = patch.max_context_tokens;
@@ -2338,6 +2345,41 @@ mod tests {
                 .iter()
                 .any(|mount| mount.starts_with("llm.openai.gpt-")));
         }
+    }
+
+    #[test]
+    fn openai_gpt5_image_generation_is_metadata_driven() {
+        let inventory = resolve_driver_inventory(
+            "openai-test",
+            ProviderType::CloudApi,
+            "openai",
+            &[
+                DriverModelResolveRequest::new("gpt-5.6-sol", vec![ApiType::Llm]),
+                DriverModelResolveRequest::new("gpt-5.4", vec![ApiType::Llm]),
+                DriverModelResolveRequest::new(
+                    "gpt-image-2",
+                    vec![ApiType::ImageTextToImage, ApiType::ImageToImage],
+                ),
+            ],
+            None,
+        );
+        for id in ["gpt-5.6-sol", "gpt-5.4"] {
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == id)
+                .expect("GPT-5 model");
+            assert!(model.capabilities.image_generation);
+            assert!(model.api_types.contains(&ApiType::ImageTextToImage));
+            assert!(model.api_types.contains(&ApiType::ImageToImage));
+            assert!(!model.api_types.contains(&ApiType::ImageInpaint));
+        }
+        let image_model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == "gpt-image-2")
+            .expect("GPT Image model");
+        assert!(!image_model.capabilities.image_generation);
     }
 
     #[test]

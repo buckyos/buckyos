@@ -643,6 +643,7 @@ mod tests {
                 web_search: true,
                 unsupported_feature_combinations: vec![],
                 vision: false,
+                image_generation: false,
                 max_context_tokens: Some(128_000),
                 max_output_tokens: Some(16_384),
             },

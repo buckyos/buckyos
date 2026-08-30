@@ -35,7 +35,7 @@ provider's complete mapping list.
 {
   "format": "buckyos.aicc.provider-driver-metadata",
   "schema_version": 4,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "provider_driver": "openai",
   "revision_seq": 1,
   "required_features": [],
@@ -53,7 +53,7 @@ Fields:
 
  - `format`: fixed to `buckyos.aicc.provider-driver-metadata`.
  - `schema_version`: incompatible schema major, currently `4`.
- - `schema_revision`: additive schema revision, currently `0`.
+ - `schema_revision`: additive schema revision, currently `1`.
  - `provider_driver`: driver id such as `openai`, `openrouter`, `claude`,
   `google-gemini`, `fal`, or `minimax`.
  - `revision_seq`: monotonically increasing unsigned integer for this provider.
@@ -97,7 +97,7 @@ Rules support these fields:
   `{provider_driver}`, and `{provider_model_id}` are expanded by the resolver.
   The first pair identifies the physical origin; the second pair identifies the
   current delivery channel.
-- `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `max_context_tokens`, `max_output_tokens`, `unsupported_feature_combinations`. Each entry in `unsupported_feature_combinations` is a set of two or more otherwise-supported features that cannot be used in the same request, for example `[["tool_calling", "web_search"]]`. Supported feature names are `streaming`, `tool_calling`, `json_output`, `web_search`, and `vision`.
+- `capabilities`: partial capability patch: `streaming`, `tool_call`, `json_schema`, `web_search`, `vision`, `image_generation`, `max_context_tokens`, `max_output_tokens`, `unsupported_feature_combinations`. `image_generation` selects the OpenAI Responses image-generation tool for models that expose image generation through the Responses API; it does not infer support from the model name. Each entry in `unsupported_feature_combinations` is a set of two or more otherwise-supported features that cannot be used in the same request, for example `[["tool_calling", "web_search"]]`. Supported feature names are `streaming`, `tool_calling`, `json_output`, `web_search`, `vision`, and `image_generation`.
 - `pricing`: optional monetary data object. `currency` identifies the ISO 4217
   currency; `input_token`, `output_token`, and `cache_input_token` are optional
   per-token prices; `estimated_cost` is the default scheduler cost estimate.
@@ -111,7 +111,7 @@ mount template expansion. For example, OpenAI uses `gpt-*`, while OpenRouter
 uses `openai/gpt-*` for the same origin model family.
 
 Unknown fallback is intentionally conservative: it does not declare
-`tool_call`, `web_search`, `vision`, or `json_schema`.
+`tool_call`, `web_search`, `vision`, `image_generation`, or `json_schema`.
 
 ## Origin Identity Mappings
 

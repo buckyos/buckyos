@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "baseline_revision": "2026-08-29.1",
-  "checked_at": "2026-08-29",
+  "baseline_revision": "2026-08-30.1",
+  "checked_at": "2026-08-30",
   "canonical_api_types": [
     "llm",
     "embedding.text",
@@ -76,11 +76,11 @@
           "evidence_summary": "Excluded from new acceptance calls because the catalog marks Sora 2 as deprecated. Existing recorded results remain valid evidence."
         },
         {
-          "model_pattern": "gpt-image-1",
+          "model_pattern": "gpt-image-1*",
           "action": "exclude",
           "reason": "deprecated_or_retiring",
           "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
-          "evidence_summary": "Explicit acceptance scope decision: do not start new calls for gpt-image-1 because it is expired or approaching retirement. Existing recorded results remain valid evidence."
+          "evidence_summary": "The official catalog marks GPT Image 1, GPT Image 1 Mini, and GPT Image 1.5 as deprecated; use gpt-image-2. Existing recorded results remain valid evidence."
         },
         {
           "model_pattern": "gpt-audio*",
@@ -201,6 +201,18 @@
           "output_kinds": ["audio"],
           "source_urls": ["https://developers.openai.com/api/docs/guides/text-to-speech"],
           "evidence_summary": "OpenAI TTS models convert text to audio."
+        },
+        {
+          "model_pattern": "gpt-5*",
+          "status": "active",
+          "source_status": "official_catalog_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "methods": ["llm.chat", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
+          "input_kinds": ["text", "image", "document"],
+          "output_kinds": ["text", "json", "tool_call", "image"],
+          "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
+          "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation", "https://developers.openai.com/api/docs/models"],
+          "evidence_summary": "GPT-5 and newer models that list the Responses image generation tool support generation and editing through image_generation calls; masked inpaint remains unsupported on this surface."
         },
         {
           "model_pattern": "gpt-*",

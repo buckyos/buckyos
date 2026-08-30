@@ -33,8 +33,9 @@ use tokio::time;
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GEMINI_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_GEMINI_MODELS: &str =
-    "gemini-3-flash-preview,gemini-3.7-flash,gemini-robotics-er-2-preview";
-const DEFAULT_GEMINI_IMAGE_MODELS: &str = "gemini-3-pro-image";
+    "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.1-pro-preview,gemini-3-flash-preview,gemini-robotics-er-2-preview";
+const DEFAULT_GEMINI_IMAGE_MODELS: &str =
+    "gemini-3.1-flash-image,gemini-3.1-flash-lite-image,gemini-3-pro-image";
 const DEFAULT_GEMINI_EMBEDDING_MODELS: &str = "gemini-embedding-001,gemini-embedding-2";
 const DEFAULT_GEMINI_TTS_MODELS: &str = "";
 const DEFAULT_GEMINI_MUSIC_MODELS: &str = "lyria-3-clip-preview,lyria-3-pro-preview";

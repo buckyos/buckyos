@@ -1142,12 +1142,18 @@ test("SN matrix uses its inventory and OpenAI capability evidence", async () => 
       models: [{
         exact_model: "gpt-5.6-sol@sn-default",
         provider_model_id: "gpt-5.6-sol",
-        api_types: ["llm", "vision.ocr", "vision.caption"],
+        api_types: ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
         logical_mounts: [],
       }],
     }]),
   });
-  assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), ["llm", "vision.caption", "vision.ocr"]);
+  assert.deepEqual([...new Set(cells.map((cell) => cell.api_type))].sort(), [
+    "image.img2img",
+    "image.txt2img",
+    "llm",
+    "vision.caption",
+    "vision.ocr",
+  ]);
   assert.ok(cells.every((cell) => cell.provider_driver === "sn-ai-provider"));
 });
 
