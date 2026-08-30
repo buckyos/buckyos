@@ -19,7 +19,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::task_mgr::{Task, TaskId};
 
 pub const TASK_DISPATCHER_SERVICE_NAME: &str = "task-dispatcher";
@@ -231,6 +231,7 @@ pub fn task_dispatcher_default_rdb_instance_config() -> RdbInstanceConfig {
         version: TASK_DISPATCHER_RDB_SCHEMA_VERSION,
         schema,
         connection: String::new(),
+        partitions: vec![RdbPartition::Local],
     }
 }
 

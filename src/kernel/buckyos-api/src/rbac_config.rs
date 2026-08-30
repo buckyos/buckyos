@@ -270,6 +270,20 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn buckyos_info_is_read_only_for_admin_and_writable_by_scheduler() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, admin\ng, ood1, ood"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let resource = "obj://config/system/buckyos_info";
+        assert!(rbac::enforce("alice", "system:control-panel", resource, "read", None).await);
+        assert!(!rbac::enforce("alice", "system:control-panel", resource, "write", None).await);
+        assert!(rbac::enforce("ood1", "system:scheduler", resource, "write", None).await);
+    }
+
     #[test]
     fn overlap_rbac_policy_appends_tail_to_default() {
         let policy = overlap_rbac_policy(

@@ -8,12 +8,12 @@ use buckyos_api::{
     generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
-    AppInstanceId, AppRegistry, GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig,
-    NodeState, ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteConfig, ServiceInfo,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceProtocol,
+    AppInstanceId, AppRegistry, BuckyOSInfo, GatewaySettings, GatewayShortcut, KernelServiceSpec,
+    NodeConfig, NodeState, ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteConfig,
+    ServiceInfo, ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceProtocol,
     ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile,
     UserProfile, UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig,
-    AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, OPENDAN_SERVICE_UNIQUE_ID,
+    AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, BUCKYOS_INFO_KEY, OPENDAN_SERVICE_UNIQUE_ID,
     SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID, ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_api::{
@@ -22,7 +22,9 @@ use buckyos_api::{
     REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
-use buckyos_kit::get_buckyos_system_etc_dir;
+use buckyos_kit::{
+    buckyos_get_unix_timestamp, get_buckyos_system_etc_dir, get_channel, get_target, get_version,
+};
 use jsonwebtoken::jwk::Jwk;
 use log::{debug, info, warn};
 use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, VerifyHubInfo, DID};
@@ -431,6 +433,16 @@ impl SystemConfigBuilder {
     }
 
     pub fn add_system_defaults(&mut self) -> Result<&mut Self> {
+        let installed_at = buckyos_get_unix_timestamp();
+        let release_channel = get_channel().to_string();
+        let buckyos_info = BuckyOSInfo::from_runtime(
+            get_version(),
+            release_channel.as_str(),
+            get_target(),
+            installed_at,
+        );
+        buckyos_info.validate().map_err(anyhow::Error::msg)?;
+        self.insert_json(BUCKYOS_INFO_KEY, &buckyos_info)?;
         self.insert_json("system/system_pkgs", &json!({}))?;
         self.insert_json_if_absent(APP_REGISTRY_KEY, &AppRegistry::default())?;
         Ok(self)

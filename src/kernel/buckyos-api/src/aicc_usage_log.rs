@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 
 /// Logical name of the aicc usage-log rdb instance. The scheduler writes this
 /// into `services/aicc/spec` and the aicc service resolves it at start via
@@ -172,9 +172,8 @@ pub fn aicc_usage_log_default_rdb_instance_config() -> RdbInstanceConfig {
         backend: RdbBackend::Sqlite,
         version: AICC_USAGE_LOG_RDB_SCHEMA_VERSION,
         schema,
-        // Empty -> rdb_mgr generates `sqlite://$appdata/aicc-usage-log.db` at
-        // resolve time.
         connection: String::new(),
+        partitions: vec![RdbPartition::UserData],
     }
 }
 

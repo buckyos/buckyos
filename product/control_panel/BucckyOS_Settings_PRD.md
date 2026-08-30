@@ -313,6 +313,26 @@ General
 - Release Channel（Stable / Beta / Dev）
 - Last Update Time（如可获取）
 
+数据来源：SystemConfig 的 `system/buckyos_info`。该记录由 scheduler 在系统首次 booting
+时统一创建，除系统安装、升级等系统行为外保持只读。持久结构如下：
+
+```json
+{
+  "schema_version": 1,
+  "version": "0.7.0",
+  "build_version": "build260829.main.abcdef123456",
+  "release_channel": "nightly",
+  "target": "x86_64-unknown-linux-gnu",
+  "installed_at": 1788000000,
+  "updated_at": 1788000000
+}
+```
+
+- `installed_at`：首次 boot scheduler 初始化 SystemConfig 的 Unix 时间，即系统安装时间，后续升级不得覆盖。
+- `updated_at`：BuckyOS 信息最后一次被系统安装/升级流程更新的 Unix 时间；首次安装时与 `installed_at` 相同。
+- Runtime 的 `nightly` channel 在产品 UI 中展示为 `Dev`。
+- `Check for Updates`、`Update Now` 和 `Auto Update` 属于更新能力与用户设置，不写入 `BuckyOSInfo`。
+
 操作：
 
 - Check for Updates
@@ -1165,5 +1185,4 @@ V1 对 Settings 内能力按可写性分层：
 - 最后放开发者模式
 
 ---
-
 

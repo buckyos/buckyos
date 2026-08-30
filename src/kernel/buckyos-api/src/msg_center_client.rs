@@ -1,4 +1,4 @@
-use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::{get_buckyos_api_runtime, AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -447,9 +447,8 @@ pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
         backend: RdbBackend::Sqlite,
         version: MSG_CENTER_RDB_SCHEMA_VERSION,
         schema,
-        // Empty -> rdb_mgr generates `sqlite://$appdata/msg-center-main.db` at
-        // resolve time.
         connection: String::new(),
+        partitions: vec![RdbPartition::UserData],
     }
 }
 

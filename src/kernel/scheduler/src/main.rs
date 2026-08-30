@@ -419,6 +419,18 @@ mod test {
         .expect("device info generation failed");
 
         assert!(init_map.contains_key("boot/config"));
+        let buckyos_info: BuckyOSInfo = serde_json::from_str(
+            init_map
+                .get(BUCKYOS_INFO_KEY)
+                .expect("BuckyOSInfo should be initialized"),
+        )
+        .expect("BuckyOSInfo should be valid JSON");
+        buckyos_info
+            .validate()
+            .expect("boot BuckyOSInfo should be valid");
+        assert_eq!(buckyos_info.release_channel, get_channel().to_string());
+        assert_eq!(buckyos_info.target, get_target());
+        assert_eq!(buckyos_info.installed_at, buckyos_info.updated_at);
         assert!(init_map.contains_key("security/verify-hub/key"));
         assert!(!init_map.contains_key("system/verify-hub/key"));
         assert!(!init_map.contains_key(&format!("devices/{}/doc", TEST_DEVICE_NAME)));

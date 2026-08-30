@@ -81,6 +81,23 @@ $buckyos_service_home => cyfs://$zone_id/srv/$service_name/=> $buckyos_root/data
 $buckyos_service_local_cache => /tmp/buckyos/$service_name
 $buckyos_service_local_data => /opt/buckyos/local/$service_name
 
+### RDB instance 数据分区
+
+服务和 App 通过 `buckyos-api::rdb_mgr` 获取关系数据库连接串时，spec 中的 `partitions` 决定库的
+物理目录和生命周期：
+
+| 分区 | Kernel/Frame service | AppService | 备份、卸载与软重置语义 |
+| --- | --- | --- | --- |
+| `user_data`（默认） | `$buckyos_root/data/$appid` | `$buckyos_root/data/$user/$appid` | 属于用户/Zone 数据；保持既有 RDB 路径，不自动搬迁 |
+| `local` | `$buckyos_root/local/$service_name` | 不允许 | 本机运行状态；不备份，随 `local/` 删除，缺失时自举空库 |
+| `cache` | `$buckyos_root/data/cache/$service_name` | `$buckyos_root/data/cache/$user/$appid` | 可重建派生数据；不备份，卸载或软重置时删除 |
+| `storage` | `$buckyos_root/storage/$appid` | 不允许 | 内核基础设施持久存储；不进入用户备份，不随普通卸载删除 |
+
+`user_data` 为兼容已部署数据库，使用 `data/$appid`，不等同于上文
+`$buckyos_service_data` 的 `data/var/$service_name`。RDB 的 `cache` 分区固定使用 `data/cache/**`，
+不使用旧 runtime cache helper 的 `cache/**`。SQLite 文件必须位于所选分区的 base dir 内；
+`../`、绝对路径覆盖和符号链接逃逸都会被拒绝。
+
 ## 内核服务视角
 
 内核服务基本只和node-host-fs打交道
@@ -104,12 +121,14 @@ $buckyos_root/etc : 内核配置区,覆盖安装和卸载时的操作是逐个�
   - $buckyos_root/data/home/ (用户个人数据)
   - $buckyos_root/data/srv/ (服务持久数据 + zone共享数据)
   - $buckyos_root/storage (内核基础设施在各host-node上的持久化存储)
+  - RDB `storage` 分区（位于上述 storage 目录）
   - 根据 $buckyos_root/bin/applist.json 决定保留哪些host-node-local-app的数据
 - 卸载时删除
   - $buckyos_root/bin/ (二进制文件,删除前先读取applist.json)
   - $buckyos_root/data/var/ (服务运行数据)
   - $buckyos_root/data/cache/ (服务缓存数据)
   - $buckyos_root/local/ (服务本地数据)
+  - RDB `cache` 和 `local` 分区；RDB `user_data` 按所在 data 子目录的既有规则处理
   - $buckyos_root/etc/ (系统配置,删除前自动执行身份备份)
   - $buckyos_root/logs/ (日志)
   - /tmp/buckyos/ (应用和服务的临时数据,在$buckyos_root外)
@@ -119,6 +138,7 @@ $buckyos_root/etc : 内核配置区,覆盖安装和卸载时的操作是逐个�
   - 删除 $buckyos_service_data
   - 删除 $buckyos_service_cache
   - 保留 $buckyos_service_home
+  - 删除 RDB `local`/`cache` 分区，保留 `user_data`/`storage` 分区；服务必须能从空库自举
 - 删除所有应用和应用的数据
 - 保留分布式系统的拓扑 （内核数据保留）
 - 保留分布式存储（DFS+KV+RDB)

@@ -134,10 +134,11 @@ impl TaskStore {
     }
 
     pub async fn open_from_service_spec() -> std::result::Result<Self, String> {
-        let instance = get_rdb_instance(
+        let instance = get_rdb_instance_in(
             TASK_MANAGER_SERVICE_NAME,
             None,
             TASK_MANAGER_RDB_INSTANCE_ID,
+            RdbPartition::UserData,
         )
         .await
         .map_err(|err| format!("resolve task-manager rdb instance failed: {}", err))?;

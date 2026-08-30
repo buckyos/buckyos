@@ -15,12 +15,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Once};
 
 use buckyos_api::{
-    aicc_usage_log_default_rdb_instance_config, get_rdb_instance, AiccRouteTraceEvent,
+    aicc_usage_log_default_rdb_instance_config, get_rdb_instance_in, AiccRouteTraceEvent,
     AiccUsageEvent, AiccVideoContinuationSource, QueryRouteTraceRequest, QueryRouteTraceResponse,
-    QueryUsageRequest, QueryUsageResponse, RdbBackend, UsageAggregate, UsageBucketedRow,
-    UsageGroupedRow, UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode, UsageQueryTimeRange,
-    AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID, AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
-    AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
+    QueryUsageRequest, QueryUsageResponse, RdbBackend, RdbPartition, UsageAggregate,
+    UsageBucketedRow, UsageGroupedRow, UsageQueryBucket, UsageQueryGroup, UsageQueryOutputMode,
+    UsageQueryTimeRange, AICC_SERVICE_SERVICE_NAME, AICC_USAGE_LOG_RDB_INSTANCE_ID,
+    AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES, AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
 };
 use kRPC::RPCErrors;
 use log::info;
@@ -79,10 +79,11 @@ impl AiccUsageLogDb {
     /// Resolve the usage-log rdb instance from the aicc service spec and open
     /// a pool against it. This is the production entry point.
     pub async fn open_from_service_spec() -> Result<Self, RPCErrors> {
-        let instance = get_rdb_instance(
+        let instance = get_rdb_instance_in(
             AICC_SERVICE_SERVICE_NAME,
             None,
             AICC_USAGE_LOG_RDB_INSTANCE_ID,
+            RdbPartition::UserData,
         )
         .await
         .map_err(|error| {

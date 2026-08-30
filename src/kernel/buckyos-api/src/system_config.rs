@@ -19,7 +19,82 @@ use crate::KVAction;
 
 const CONFIG_CACHE_TIME: u64 = 10; //10s
 pub const SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE: &str = "system-config-bootstrap";
+pub const BUCKYOS_INFO_KEY: &str = "system/buckyos_info";
+pub const BUCKYOS_INFO_SCHEMA_VERSION: u32 = 1;
 type ConfigCache = HashMap<String, (String, u64, u64)>;
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BuckyOSInfo {
+    pub schema_version: u32,
+    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_version: Option<String>,
+    pub release_channel: String,
+    pub target: String,
+    pub installed_at: u64,
+    pub updated_at: u64,
+}
+
+impl BuckyOSInfo {
+    pub fn from_runtime(
+        runtime_version: &str,
+        release_channel: &str,
+        target: &str,
+        installed_at: u64,
+    ) -> Self {
+        let channel_suffix = format!(" ({release_channel})");
+        let version_without_channel = runtime_version
+            .trim()
+            .strip_suffix(channel_suffix.as_str())
+            .unwrap_or(runtime_version)
+            .trim();
+        let (version, build_version) = version_without_channel
+            .split_once('+')
+            .map(|(version, build_version)| {
+                (
+                    version.to_string(),
+                    (!build_version.is_empty()).then(|| build_version.to_string()),
+                )
+            })
+            .unwrap_or_else(|| (version_without_channel.to_string(), None));
+
+        Self {
+            schema_version: BUCKYOS_INFO_SCHEMA_VERSION,
+            version,
+            build_version,
+            release_channel: release_channel.to_string(),
+            target: target.to_string(),
+            installed_at,
+            updated_at: installed_at,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != BUCKYOS_INFO_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported BuckyOSInfo schema_version {}",
+                self.schema_version
+            ));
+        }
+        if self.version.trim().is_empty() {
+            return Err("BuckyOSInfo version is empty".to_string());
+        }
+        if self.release_channel.trim().is_empty() {
+            return Err("BuckyOSInfo release_channel is empty".to_string());
+        }
+        if self.target.trim().is_empty() {
+            return Err("BuckyOSInfo target is empty".to_string());
+        }
+        if self.installed_at == 0 {
+            return Err("BuckyOSInfo installed_at is zero".to_string());
+        }
+        if self.updated_at < self.installed_at {
+            return Err("BuckyOSInfo updated_at predates installed_at".to_string());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct ZoneConfig {
@@ -506,6 +581,42 @@ impl SystemConfigClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buckyos_info_splits_runtime_version_and_preserves_install_time() {
+        let info = BuckyOSInfo::from_runtime(
+            "0.7.0+build260829.main.abcdef123456 (nightly)",
+            "nightly",
+            "x86_64-unknown-linux-gnu",
+            1_788_000_000,
+        );
+
+        assert_eq!(info.schema_version, BUCKYOS_INFO_SCHEMA_VERSION);
+        assert_eq!(info.version, "0.7.0");
+        assert_eq!(
+            info.build_version.as_deref(),
+            Some("build260829.main.abcdef123456")
+        );
+        assert_eq!(info.release_channel, "nightly");
+        assert_eq!(info.target, "x86_64-unknown-linux-gnu");
+        assert_eq!(info.installed_at, 1_788_000_000);
+        assert_eq!(info.updated_at, info.installed_at);
+        info.validate().expect("BuckyOSInfo should be valid");
+    }
+
+    #[test]
+    fn buckyos_info_accepts_runtime_version_without_build_metadata() {
+        let info = BuckyOSInfo::from_runtime(
+            "0.7.0 (stable)",
+            "stable",
+            "aarch64-apple-darwin",
+            1_788_000_000,
+        );
+
+        assert_eq!(info.version, "0.7.0");
+        assert_eq!(info.build_version, None);
+        info.validate().expect("BuckyOSInfo should be valid");
+    }
 
     #[tokio::test]
     async fn cache_is_scoped_to_client_instance() {

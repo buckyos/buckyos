@@ -280,6 +280,10 @@ pub(crate) fn build_install_config(
         start_param: tips.start_param.clone(),
         ..Default::default()
     };
+    let appid = buckyos_api::AppId::from_app_did(app_doc.app_did())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| app_doc.app_did().to_string());
+    validate_app_rdb_instances(&appid, &config.rdb_instances, &mut issues);
     for (name, endpoint) in &tips.service_endpoints {
         let setting = install_params.service_settings.services.get(name);
         if matches!(setting, Some(setting) if !setting.enabled) {
@@ -365,6 +369,20 @@ pub(crate) fn build_install_config(
     (config, issues)
 }
 
+fn validate_app_rdb_instances(
+    appid: &str,
+    instances: &HashMap<String, buckyos_api::RdbInstanceConfig>,
+    issues: &mut Vec<String>,
+) {
+    for (instance_id, instance) in instances {
+        if let Err(error) =
+            buckyos_api::validate_rdb_instance_config(instance, appid, instance_id, true)
+        {
+            issues.push(error.to_string());
+        }
+    }
+}
+
 fn apply_selected_mounts(
     declared: &HashMap<PathBuf, Option<buckyos_api::MountPointInfo>>,
     selected: &HashMap<PathBuf, MountPointConfig>,
@@ -396,5 +414,31 @@ fn mount_config_from_tip(
             .filter(|access| !access.is_empty())
             .unwrap_or(default_access)
             .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::{RdbBackend, RdbInstanceConfig, RdbPartition};
+
+    #[test]
+    fn app_rdb_config_rejects_host_partitions() {
+        let instances = HashMap::from([(
+            "main".to_string(),
+            RdbInstanceConfig {
+                backend: RdbBackend::Sqlite,
+                version: 1,
+                schema: HashMap::new(),
+                connection: String::new(),
+                partitions: vec![RdbPartition::Local],
+            },
+        )]);
+        let mut issues = Vec::new();
+        validate_app_rdb_instances("demo.buckyos.did", &instances, &mut issues);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("partition_not_allowed_for_app"));
+        assert!(issues[0].contains("appid=demo.buckyos.did"));
+        assert!(issues[0].contains("instance_id=main"));
     }
 }

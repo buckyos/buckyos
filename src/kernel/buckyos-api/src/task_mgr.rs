@@ -20,7 +20,7 @@ use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::{AppDoc, AppType, AuthTarget, SelectorType};
 
 pub const TASK_MANAGER_SERVICE_UNIQUE_ID: &str = "task-manager";
@@ -312,8 +312,8 @@ pub fn task_manager_default_rdb_instance_config() -> RdbInstanceConfig {
         backend: RdbBackend::Sqlite,
         version: TASK_MANAGER_RDB_SCHEMA_VERSION,
         schema,
-        // Empty -> rdb_mgr generates `sqlite://$appdata/main.db` at resolve time.
         connection: String::new(),
+        partitions: vec![RdbPartition::UserData, RdbPartition::Local],
     }
 }
 

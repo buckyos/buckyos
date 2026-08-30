@@ -17,9 +17,9 @@
  */
 
 use buckyos_api::{
-    get_rdb_instance, msg_center_default_rdb_instance_config, DeliveryEnvelope, DeliveryError,
+    get_rdb_instance_in, msg_center_default_rdb_instance_config, DeliveryEnvelope, DeliveryError,
     DeliveryRecord, DeliveryState, IngressContext, MailboxKind, MailboxRecord, RdbBackend,
-    RecipientState, UiSessionStateEntry, MSG_CENTER_RDB_INSTANCE_ID,
+    RdbPartition, RecipientState, UiSessionStateEntry, MSG_CENTER_RDB_INSTANCE_ID,
     MSG_CENTER_RDB_SCHEMA_POSTGRES, MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_SERVICE_NAME,
 };
 use kRPC::RPCErrors;
@@ -137,11 +137,16 @@ impl MsgBoxDbMgr {
     /// Resolve the msg-center rdb instance from the service spec and open a
     /// pool against it. This is the production entry point.
     pub async fn open_from_service_spec() -> std::result::Result<Self, RPCErrors> {
-        let instance = get_rdb_instance(MSG_CENTER_SERVICE_NAME, None, MSG_CENTER_RDB_INSTANCE_ID)
-            .await
-            .map_err(|error| {
-                RPCErrors::ReasonError(format!("resolve msg-center rdb instance failed: {}", error))
-            })?;
+        let instance = get_rdb_instance_in(
+            MSG_CENTER_SERVICE_NAME,
+            None,
+            MSG_CENTER_RDB_INSTANCE_ID,
+            RdbPartition::UserData,
+        )
+        .await
+        .map_err(|error| {
+            RPCErrors::ReasonError(format!("resolve msg-center rdb instance failed: {}", error))
+        })?;
         info!("msg_box_db.open {}", instance.connection);
         Self::open(
             &instance.connection,

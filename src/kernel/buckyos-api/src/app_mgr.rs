@@ -581,6 +581,7 @@ mod tests {
                 "create table demo(id int)".to_string(),
             )]),
             connection: "postgres://scheduler-assigned".to_string(),
+            partitions: vec![crate::RdbPartition::UserData],
         };
         let mut spec = ServiceSpecConfig::default();
         spec.rdb_instances.insert("main".to_string(), rdb.clone());

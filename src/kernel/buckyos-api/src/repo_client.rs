@@ -1,4 +1,4 @@
-use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig};
+use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 use crate::{AppDoc, AppType, SelectorType};
 use ::kRPC::*;
 use async_trait::async_trait;
@@ -151,8 +151,8 @@ pub fn repo_service_default_rdb_instance_config() -> RdbInstanceConfig {
         backend: RdbBackend::Sqlite,
         version: REPO_SERVICE_RDB_SCHEMA_VERSION,
         schema,
-        // Empty -> rdb_mgr generates `sqlite://$appdata/<instance>.db` at resolve time.
         connection: String::new(),
+        partitions: vec![RdbPartition::UserData],
     }
 }
 

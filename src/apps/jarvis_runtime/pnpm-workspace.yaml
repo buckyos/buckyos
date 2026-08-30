@@ -1,4 +1,2 @@
-allowBuilds:
-  esbuild: true
 minimumReleaseAgeExclude:
   - buckyos@0.7.116
