@@ -1,0 +1,11 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "buckyos": "./node_modules/buckyos/dist/node.mjs",
+    "telegram": "npm:telegram@2.26.22",
+    "telegram/": "npm:telegram@2.26.22/"
+  },
+  "tasks": {
+    "test": "deno run --allow-net --allow-read --allow-write --allow-env --allow-sys --unsafely-ignore-certificate-errors jarvis_media_dv.ts"
+  }
+}
