@@ -10,6 +10,7 @@ from pathlib import Path
 
 DEVKIT_SPEC = "buckyos-devkit @ git+https://github.com/buckyos/buckyos-devkit.git"
 SCRIPT_DIR = Path(__file__).resolve().parent
+SDK_TOOL_DIR = SCRIPT_DIR / "rootfs" / "libexec" / "buckyos-tool"
 
 build_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -69,6 +70,28 @@ def _print_help() -> int:
         )
     )
     return 0
+
+
+def _sdk_tool_distribution_ready() -> bool:
+    runtime_name = "deno.exe" if os.name == "nt" else "deno"
+    required = (
+        SDK_TOOL_DIR / "distribution.json",
+        SDK_TOOL_DIR / "cli" / "system_bootstrap.ts",
+        SDK_TOOL_DIR / "runtime" / runtime_name,
+    )
+    missing = [path for path in required if not path.is_file()]
+    if not missing:
+        return True
+
+    print(f"Missing generated SDK/Tool distribution: {SDK_TOOL_DIR}")
+    print("Missing required files:")
+    for path in missing:
+        print(f"  - {path.relative_to(SCRIPT_DIR)}")
+    print(
+        "Generate it first with `uv run buckyos-build.py` and the four "
+        "BUCKYOS_SDK_TOOL_* input paths."
+    )
+    return False
 
 
 def _run_command(command: str, args: list[str]) -> int:
@@ -240,9 +263,9 @@ def start_system():
         print(f"Failed to start system: {e}")
         sys.exit(1)
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Main function"""
-    args = sys.argv[1:]
+    args = sys.argv[1:] if argv is None else list(argv)
     if any(arg in {"-h", "--help"} for arg in args):
         return _print_help()
 
@@ -259,6 +282,9 @@ def main() -> int:
         group_name_index = args.index("--reinstall") + 1
         if group_name_index < len(args):
             config_group_name = args[group_name_index]
+
+    if need_update and not _sdk_tool_distribution_ready():
+        return 2
     
     # Step 1: Kill all processes
     kill_all_processes()
