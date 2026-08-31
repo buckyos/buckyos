@@ -246,20 +246,12 @@
 
 ## 7. P2：远程 driver metadata 更新
 
-- [x] 实现 HTTPS/NDN 可信远程 metadata 更新通道。
-  - 缓存路径：
-    - `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`
-  - 要求：
-    - provider 自发现不能直接声明最终能力。
-    - 远程 metadata 来源必须是 AICC 信任源。
-    - 下载或候选验证失败时保持最新有效 activation；activation 不可用时回退 builtin/local/system-config 或 conservative fallback。
-
-- [ ] 评估 provider metadata 内嵌 signature。
-  - 当前下载信任由 NDN PathObject/FileObject 验证链提供；`DriverMetadataSignature` 类型存在，但不参与云更新验签。
-  - 如果未来启用内嵌 signature，必须先定义 signer scope、密钥轮换和失败语义。
-
-- [ ] 增加 metadata source trace。
-  - 目标：能解释某模型 metadata 来自 builtin、remote_cache、local override 还是 system-config override。
+- [ ] 按 Beta 2.2 简化目标替换旧 remote cache/activation 实现。
+  - NDN 负责版本发现、下载、校验和当前 metadata 文件替换；保证不足时向 NDN 提交 bug。
+  - 文件替换后由 NDN 推进全局 `metadata_target_seq`，每个 Provider inventory 保存 `metadata_applied_seq`。
+  - 下一次推理前或任一 Provider Instance 定时库存刷新时，统一收敛所有 applied seq 落后的 Provider，成功后才提交该 Provider 的新序列。
+  - model 列表未变化且 seq 相同时仅探测、不重写库存；禁止按本次推理或当前 Provider 只更新部分落后库存。
+  - AICC 不再维护 signature 校验、remote cache、candidate、activation、LKGS 或 revision 回滚流程。
 
 ## 8. P2：空目录 auto admission 与 UI 可解释性
 

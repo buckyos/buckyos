@@ -402,7 +402,7 @@ Provider 需要通过声明式接口返回自身当前可提供的模型及其�
 
 这份模型列表是 Provider 的运行时能力声明，不是 AICC 的静态配置。AICC Registry 应周期性或按需调用 Provider 的 inventory/metadata 接口刷新能力清单，避免出现“厂商新增或下线模型后必须修改 AICC 配置才能生效”的情况。Provider 可以自行决定自己的能力清单何时更新，例如启动时加载、本地模型安装完成后更新、云端 inventory 变化后更新，或凭据/套餐变化后更新。
 
-> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id，AICC 的 metadata resolver 再按 driver metadata（builtin → 已提交 cloud activation → local override → system-config override；匹配优先级 exact → pattern → default → conservative fallback）把它转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`。unknown model 走保守 fallback，不默认声明 `tool_call` / `web_search` / `vision` / `json_schema`。schema 与 driver 文件见 `doc/aicc/driver_metadata_schema.md`；NDN 增量更新、revision 回滚防护和 LKGS 见 `doc/aicc/driver_metadata_update_protocol.md`。更新失败或缓存损坏时退回上一份完整 activation，再不行使用 builtin，启动不依赖云端可用性。
+> **Provider 自发现只负责发现 provider model id；能力 metadata 由 driver metadata resolver 产出。** Provider（如 OpenAI）可以只通过 `/models` 报告模型 id，AICC 的 metadata resolver 再按 driver metadata（builtin → NDN 当前云端文件 → local override → system-config override；匹配优先级 exact → pattern → default → conservative fallback）把它转成最终 `ModelMetadata.capabilities` / `logical_mounts` / `variants`。unknown model 走保守 fallback。NDN 文件替换后推进 `metadata_target_seq`，每个 Provider inventory 保存 `metadata_applied_seq`；推理前或 Provider 定时库存刷新触发所有落后 Provider 的全局收敛。model 列表未变化且 seq 相同时只探测、不重写库存。详见 `driver_metadata_update_protocol.md`。
 
 建议接口返回 schema：
 

@@ -84,8 +84,8 @@
 | `provider.health` | provider instance / driver | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
 | `provider.validate` | Provider Instance 草案、endpoint、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、endpoint 非法、未知 Profile/Adapter、不得写入 system_config |
 | `provider.add` | provider settings、tenant/session 上下文 | system_config 写入、reload 后 `models.list` 可见、审计记录 | 重名冲突、无权限、schema 非法、写入失败回滚 |
-| `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限 |
-| `provider.refresh_models` | provider instance / driver、刷新策略 | inventory 更新、metadata resolver 生效、`models.list` 反映新 revision | Provider 不可达、返回损坏 metadata、刷新失败不破坏旧 inventory |
+| `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、库存定时循环收到幂等 `Stop` 并优雅退出、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限、孤儿定时器或停止后迟到写入 |
+| `provider.refresh_models` | provider instance / driver、刷新策略 | model 列表变化时更新库存；target/applied seq 不同时触发所有落后 Provider 收敛；列表未变且 seq 相同时只探测 | Provider 不可达、重建失败不推进 applied seq、目标在刷新中再次变化 |
 
 ## 2. 分层用例清单
 
@@ -132,7 +132,7 @@
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
-| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
+| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |

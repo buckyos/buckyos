@@ -23,8 +23,8 @@
 | Streaming | Provider-native streaming 转最终 summary；中间态写 task data；AICC response 只返回 `succeeded` 或 `running` | L1/L3/L4 |
 | Usage log | 成功调用写一条 durable event；幂等不重复写；缺 usage 视为 provider protocol error；按 1d/7d/provider/model 查询 | L1/L3 |
 | 控制与管理 method | `cancel`、`service.reload_settings`、`models.list`、`usage.query`、`quota.query`、`provider.list`、`provider.health`、`provider.validate`、`provider.add`、`provider.delete`、`provider.refresh_models`、`provider.catalog`、`protocol_adapter.list` | L1/L2/L3/L4 |
-| 配置 | system_config 写入、全量/局部更新、Provider validate/add/delete/refresh、`service.reload_settings`、`models.list` 生效验证 | L3/L4 |
-| 维护更新 | 模型事实基线、运营策略、`remote_cache` / 本地 override、随版本内置缓存、provider settings、routing_config、相关用例筛选、发布后复验、事实配置回滚、策略配置回滚 | L3/L4 |
+| 配置 | system_config 写入、全量/局部更新、Provider validate/add/delete/refresh、`service.reload_settings`、`models.list` 生效，以及 Provider 库存定时循环停止事件与优雅退出验证 | L3/L4 |
+| 维护更新 | 模型事实基线、运营策略、NDN target seq、Provider applied/updating seq、model 列表变化矩阵、本地 override、双触发点全局收敛和发布后复验 | L3/L4 |
 | 安全 | `local_only` 硬过滤、`proxy_unknown` 非本地、trace 脱敏、密钥不入日志、跨租户隔离 | L1/L3/L4 |
 
 ## 2. 需求追踪矩阵
@@ -109,7 +109,7 @@
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
-| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
+| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |

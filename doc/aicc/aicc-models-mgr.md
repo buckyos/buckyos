@@ -42,7 +42,7 @@ Protocol Adapter 只执行已经解析好的 operation
 - Provider Call Resolver：产生内部 `ResolvedProviderCall`。
 - Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
-四类 catalog 通过同一个 manifest 原子 activation，但保持独立 schema 和 revision。任何 Provider 的 discovery 或解析失败只影响该实例，不能阻塞其它实例。
+四类 metadata/catalog 保持独立 schema 和 revision。它们的文件发现、下载、校验与替换由 NDN 保证；AICC 不实现 manifest activation。文件替换后 NDN 推进全局 `metadata_target_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
 ## 3. 核心概念
 
 ### 3.1 物理模型与精确模型名
@@ -99,6 +99,8 @@ Provider 的核心职责是：
 
 Provider 不应该负责定义 `llm.plan`、`llm.chat` 这类逻辑目录，也不应该假设某个逻辑目录一定存在。Provider 刷新出来的内容应该先是物理模型列表。
 
+每个处于运行状态的 Provider Instance 拥有一个库存刷新定时任务循环。该循环必须同时等待定时间隔和控制事件；Provider 停止、禁用、删除、因配置变化被替换，或 AICC 服务退出时，都必须向循环发送幂等的 `Stop` 事件并等待其优雅退出，不能只丢弃任务句柄或依赖进程回收。进入 stopping 状态后不得再启动新一轮刷新；正在进行的刷新应响应停止信号，并且不得在 Provider 已退出运行状态后提交库存或健康状态。Provider 再次启用时创建新的定时任务循环，并按当前 model 列表与 metadata 目标序列重新判断是否需要刷新。
+
 当前代码里 `ProviderInventory` 已经表达了这个边界：
 
 ```text
@@ -139,7 +141,7 @@ exact models[].id
 
 ```text
 builtin
--> latest complete cloud activation
+-> current cloud metadata files delivered by NDN
 -> local override
 -> system-config override
 ```
@@ -408,6 +410,8 @@ Provider discovery
   -> Route resolve
 ```
 
+库存刷新任务属于 Provider Instance 的运行时资源，不属于持久 inventory。停止顺序固定为：先把 Provider 标记为 stopping 并阻止新刷新，再向定时任务循环发送 `Stop` 事件，等待循环退出，最后从 registry 删除或替换实例。`Stop` 必须可重复发送；已经退出或尚未启动的循环视为停止成功。该顺序用于避免禁用、删除、reload 或服务退出后出现孤儿定时器和迟到的 inventory 写入。
+
 ### 5.1 Provider 自发现返回什么
 
 Provider 自发现的最小输出应是 provider model id 列表，以及必要时的 provider 原始 metadata。
@@ -456,15 +460,11 @@ ModelMetadata {
 - 使用保守的成本、延迟、质量估计；
 - 生成泛化挂载，例如 `llm.chat`、`llm.<driver>`、`llm.<driver>.<model>`。
 
-系统可以通过 HTTPS/NDN 可信通道从远程 URL 更新 driver metadata。更新器按发布源隔离水位和 activation，缓存到：
-
-```text
-$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/{objects,activations,observed}/
-```
+系统通过 NDN 更新 driver metadata。NDN 负责发现版本、下载、校验并替换当前文件；AICC 不维护按发布源隔离的水位、activation 或对象缓存。替换完成后 NDN 发布 `metadata_target_seq`，由下一次推理或任一 Provider Instance 的定时库存刷新触发全局收敛。
 
 如果仍没有，则使用 conservative fallback。这样系统可用性优先，但不会把未知模型误判成具备高级能力。
 
-这里的信任边界是配置的 HTTPS host 和 NDN PathObject 验证链。远程 driver metadata 不是任意 provider 自称的 metadata，也不能通过手工写入旧的 `etc/.../remote_cache/<driver>.json` 生效。Provider 自发现仍只提供模型名和必要 hints，最终能力和挂载语义以 driver metadata resolver 为准。
+Metadata 文件的信任、完整性和版本替换边界完全属于 NDN；如果这些保证不足，应向 NDN 提交 bug，不能在 AICC 中补第二套验证。每个 Provider inventory 记录 `metadata_applied_seq`；与目标不同即按目标 metadata 重建，成功后才推进已应用序列。定时探测发现 model 列表未变化且序列相同时只探测、不重写库存；触发点即使是某个具体 Provider，也必须同时收敛其它序列落后的 Provider。
 
 ### 5.3 Driver 如何挂载到模型家族目录
 

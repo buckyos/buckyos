@@ -15,7 +15,7 @@ the Provider Rules catalog described by `provider_profile_schema.md`.
 The resolver loads metadata in this override order:
 
 1. builtin metadata under `src/frame/aicc/driver_metadata/`
-2. latest complete cloud activation under `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`
+2. current cloud metadata files delivered and replaced by NDN
 3. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<model-driver-id>.json`
 4. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/<model-driver-id>.json`
 
@@ -45,12 +45,12 @@ before patterns across the effective source set.
 `google-gemini`, `fal`, or `minimax`. `openrouter` is a Provider Profile and is
 therefore not a Model Driver.
 
-Documents use strict parsing. Unknown fields, unsupported required features,
-identity mismatches and invalid rules reject the complete candidate before
-activation. The former `provider_driver`, `provider_options`,
+NDN must deliver a complete file set conforming to this schema. AICC only parses
+the current files into runtime types; a parse failure is an NDN delivery-contract
+violation and must keep the update marker for diagnosis. The former `provider_driver`, `provider_options`,
 `origin_provider_aliases`, `origin_mappings` and `signature` fields are rejected
 in beta 2.2; no compatibility alias is provided. Catalog authenticity comes
-from the NDN PathObject/FileObject trust chain and manifest ObjId binding.
+from NDN's file delivery contract; AICC does not repeat file verification.
 
 ## Model rule
 

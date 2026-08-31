@@ -711,9 +711,11 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 - 非法新配置失败后继续使用旧配置。
 - Provider validate/add/delete/refresh models。
 - 多 instance 独立更新与删除。
-- metadata、variants、version rules 和 routing config 更新。
+- Provider 停止、禁用、删除、reload 替换和 AICC 服务退出都必须向对应库存刷新定时任务循环发送幂等 `Stop` 事件并等待优雅退出；验证停止后没有新探测、孤儿定时器或迟到的 inventory/health 写入，重新启用后创建新循环并从持久 seq 继续收敛。
+- metadata 更新由 NDN 替换文件并推进 `metadata_target_seq`；分别验证推理前和 Provider 定时库存刷新触发同一全局收敛，所有落后 Provider 成功后才推进各自 `metadata_applied_seq`。
+- variants、version rules 和 routing config 更新。
 - inventory 与发布基线同步。
-- 更新失败回滚和服务重启后配置一致。
+- metadata 文件更新失败恢复由 NDN 验证；AICC 刷新失败不得推进对应 Provider 的 applied seq。服务重启后 target/applied seq 和配置保持一致。
 
 Gateway、消息入口、登录信息、Provider API token 和选定 instance 必须通过 `aicc_acceptance.toml`、`jarvis_media_dv.toml` 或等价的显式参数配置。测试在授权范围内可以临时新增 Provider instance 或修改 AICC settings，但必须：
 

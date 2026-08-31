@@ -12,10 +12,10 @@
 
 - ✅ **Phase 1 新 API 边界**：`route.resolve` / `chat.completions.create` / `images.generate` / `helper.llm_chat` / `helper.text_to_image` 全部定义、dispatch、有 handler；`route.resolve` 拒绝 exact model 输入，typed inference 强制 `exact_model`；helper 走两阶段（resolve + typed inference），不再转发旧 all-in-one。`RouteResolveResponse` 带 `enabled/disabled_capabilities`。（`aicc_client.rs:17-21,1332-1353`，`aicc.rs:3307-3528,4286-4324`）
 - ✅ **Phase 2 SDK/Workflow 迁移**：Agent SDK 有 `llmChat()/textToImage()`（透明走 helper）；workflow adapter `LLM_CHAT/IMAGE_TXT2IMG` 走 `helper_*`。唯独 **CLI 两阶段调试命令仍缺**。（`aicc.ts:145-149,280-330`，`adapters/aicc.rs:387-392`）
-- ✅ **Phase 3 Metadata Resolver**：`metadata_resolver.rs`（968 行）schema 齐全；match 优先级 exact→pattern→default→conservative 正确；五个 driver（openai/claude/gemini/minimax/fal）全部接入 resolver；unknown model 保守 fallback（有测试 `openai_unknown_fallback_is_conservative`）；metadata 缺失/损坏会 `warn` 后跳过并退回 builtin。override 链为 builtin→已提交 cloud activation→local→system_config；云更新通过 NDN PathObject/FileObject 严格验证，协议见 `driver_metadata_update_protocol.md`。
+- ✅ **Phase 3 Metadata Resolver（历史实现记录）**：`metadata_resolver.rs`（968 行）schema 齐全；match 优先级 exact→pattern→default→conservative 正确；五个 driver（openai/claude/gemini/minimax/fal）全部接入 resolver。旧 cloud activation 描述已被 Beta 2.2 简化目标取代，目标协议见 `driver_metadata_update_protocol.md`。
 - ✅ **Phase 4 Logical Definition + Auto-Mount**：`LogicalModelDefinition`（全字段）、`ModelRequirement/min_line`、`ModelDisable/disable_line`、`MountMode(manual/auto/hybrid)`、admission check、auto-mount、manual override、route trace 来源标注全部落地。（`model_types.rs:405-502,878-912`，`model_registry.rs:264-425`，`default_logical_tree.rs:455-485`）
 - ✅ **Phase 5 Session Overlay**：`SessionLogicalProfile`/`LogicalTreeOverlay`/`OverlayMergeMode(inherit|replace)`、`EffectiveSessionConfig`、overlay 覆盖 disable_line、`route_policy_override` 独立、overlay trace、inherit 可 fallback / replace 失败 均有实现且有测试。（`model_session.rs:93-369`，`model_router.rs:1086-1233`）
-- ❌ **Phase 6 Remote Metadata Sync：未开始**（无 per-driver URL 拉取、无 cache TTL/原子写、无 signature 验证、无 revision 回滚）。这是后端唯一的大块缺口，但属于“更新通道”，不阻塞 PRD/UI。
+- ❌ **Phase 6 Remote Metadata Sync：目标已简化**。NDN 承担版本发现、下载、校验、替换和目标 seq；AICC 只需 Provider applied seq 与双触发点的全局库存收敛。
 
 **进入 PRD/UI 前仍建议收尾的小项（非阻塞）：**
 - `route_trace` 仍是裸 `Value`（`RouteResolveResponse.route_trace: Option<Value>`），未提升为 typed struct（§1.2）。
@@ -417,26 +417,16 @@ Base Logical Tree
 
 ### 8.1 目标
 
-避免为了更新 provider model metadata 频繁发 BuckyOS 版本。远端同步是更新通道，不是启动依赖。
+避免为了更新 provider model metadata 频繁发 BuckyOS 版本，同时不在 AICC 中复制 NDN 的文件更新能力。
 
 ### 8.2 TODO
 
-- [ ] 定义 per-driver metadata URL：
-  - `https://meta.buckyos.ai/aicc/model_metadata/v1/openai.json`
-  - `https://meta.buckyos.ai/aicc/model_metadata/v1/claude.json`
-  - `https://meta.buckyos.ai/aicc/model_metadata/v1/gemini.json`
-- [ ] 每个 package 带：
-  - `schema_version`
-  - `provider_driver`
-  - `revision`
-  - `expires_at`
-  - `signature`
-- [ ] 拉取结果落本地 cache。
-- [ ] 失败使用上一个 cache 或 builtin。
-- [ ] 支持禁用远端同步。
-- [ ] 支持回滚到指定 revision。
-- [ ] 签名验证失败时拒绝使用。
-- [ ] 远端同步失败不得影响 AICC 启动和已有 provider inventory。
+- [ ] 接入 NDN 当前 metadata 文件集合和 `metadata_target_seq`。
+- [ ] 每个 Provider inventory 持久化 `metadata_applied_seq`，刷新前临时捕获 `metadata_updating_seq`，成功后才提交。
+- [ ] 推理进入路由前检查所有 Provider 的 applied/target seq 并执行全局收敛。
+- [ ] 任一 Provider Instance 定时库存刷新前执行相同检查；列表未变化且 seq 相同时仅探测。
+- [ ] 并发触发合并为一次刷新；不得按请求、Provider 或模型做局部 metadata 更新。
+- [ ] 删除 AICC 旧 remote cache、signature、activation、LKGS、水位和回滚目标。
 
 ## 9. Trace / Usage / Audit
 
@@ -506,8 +496,9 @@ Base Logical Tree
 
 ### Phase 6: Remote Sync
 
-- [ ] per-driver remote sync。
-- [ ] cache、签名、revision、回滚。
+- [ ] NDN 文件替换后的 `metadata_target_seq` 接入。
+- [ ] 推理前/Provider 定时库存刷新时统一收敛全部 seq 落后的 Provider。
+- [ ] 为每个 Provider 库存刷新循环增加停止事件；停止、禁用、删除、替换实例及服务退出时发送 `Stop` 并等待优雅退出，禁止迟到写入。
 - [ ] 管理开关和诊断日志。
 
 ## 11. 最小验证集

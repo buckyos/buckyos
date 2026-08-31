@@ -33,18 +33,20 @@
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
-| 云端 metadata 更新 | 配置的 HTTPS/NDN 发布源；客户端内部 activation 位于 `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/` | 完整验证后原子生效；损坏候选不破坏 LKGS；revision 回退和冲突被拒绝 |
-| 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `reload_settings` 后生效；优先级高于 cloud activation；损坏配置被拒绝且不破坏可用基线 |
+| 云端 metadata 更新 | NDN 当前文件与 `metadata_target_seq`；Provider `metadata_applied_seq` | 两个触发点均收敛所有落后 Provider；刷新前临时捕获 target seq，成功后才提交 applied seq；列表未变且 seq 相同时仅探测；不得局部更新或由 AICC 重复校验 |
+| 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
 
 统一验收顺序：
 
 1. 准备更新说明，列出 provider、model、api type、逻辑目录、模型事实变更、运营策略变更、routing 变更、是否需要 adapter 发版，以及影响的旧用例族。
 2. 新增或更新命名可检索的相关用例，并在 manifest tags 中标明更新类型、provider、model、api type 和逻辑目录。
-3. 在测试环境发布云端配置、运行时覆盖文件或版本包，触发 `reload_settings`。
-4. 先执行本次新增用例和受影响旧用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
-5. 相关用例通过后执行 AICC 全量用例，确认旧 Provider、旧模型和旧路由策略未回归。
-6. 发布环境上线后重复相关用例，再执行发布环境全量用例；发布环境的授权、网络、Provider 实际状态和报告摘要必须可诊断。
-7. 如本次支持回滚，至少执行一次目标回滚用例：模型事实错误时回滚 metadata / override；路由错误时优先回滚运营策略或 routing_config；回滚后重新 `reload_settings`，确认 `models.list`、route trace 和关键调用恢复预期。
+3. 在测试环境发布云端 metadata、运行时覆盖文件或版本包。云端场景由 NDN 替换文件并推进 `metadata_target_seq`，不调用 `reload_settings`；人工覆盖场景才触发 `reload_settings`。
+4. 云端场景分别验证“下一次推理前触发”和“某个 Provider 定时库存刷新触发”：任一触发都遍历全部 `metadata_applied_seq != metadata_target_seq` 的 Provider。每个 Provider 刷新前临时捕获目标 seq，成功后才提交 applied seq；不得只处理触发请求或触发 Provider。
+5. 覆盖四种库存判定：model 列表未变且 seq 相同只探测；列表变化但 seq 相同更新库存；列表未变但 seq 不同按 metadata 重建；两者都变化时一起重建。
+6. 执行本次新增用例和受影响旧用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
+7. 相关用例通过后执行 AICC 全量用例，确认旧 Provider、旧模型和旧路由策略未回归。
+8. 发布环境上线后重复相关用例，再执行发布环境全量用例；发布环境的授权、网络、Provider 实际状态和报告摘要必须可诊断。
+9. 如本次支持回滚，云端 metadata 文件回滚由 NDN 完成并推进新的目标 seq；AICC 仍通过相同全局收敛流程应用，不实现独立回滚。人工 override 或 routing 回滚后按各自配置流程复验。
 
 角色边界：
 
@@ -79,7 +81,7 @@
 6. 修改 fallback、session config、policy 字段。
 7. 修改 usage log schema。
 8. 修改 task data / event 中 AICC 字段。
-9. 修改 metadata、运营策略、`remote_cache`、provider settings、routing_config 或回滚流程。
+9. 修改 metadata、运营策略、NDN 当前文件/目标 seq、Provider applied seq、provider settings、routing_config 或回滚流程。
 
 ## 3. 用例 Manifest 约定
 

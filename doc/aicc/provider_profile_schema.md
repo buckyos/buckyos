@@ -62,7 +62,7 @@ Provider 参数配置是配置型 Provider 内置默认行为的**可选覆盖�
 - 无匹配时使用 conservative fallback；
 - 多个 Model Driver 同时匹配时拒绝解析；
 - discovery 失败策略；
-- 配置加载、校验、云更新、activation 和回滚机制。
+- 配置加载、schema 解析，以及由 NDN `metadata_target_seq` 和 Provider `metadata_applied_seq` 驱动的全局库存收敛机制。
 
 Provider Instance 的名称、凭据、区域和用户自定义 endpoint 属于实例私有配置，也不进入可云更新的 Provider 参数文件。
 
@@ -550,7 +550,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 1. 内置专用 Provider 包括 OpenAI、Claude、Google Gemini、OpenRouter、SN、MiniMax 和 fal；新增发布级 Provider 必须进入协议验收矩阵。
 2. 配置型 Provider 只能使用运行时已经注册的 Protocol Adapter；用户只提供协议族和连接信息，接入测试自动解析并固化具体 Adapter。AICC 不开放第三方 Provider 插件或任意协议 ID。
-3. Provider Rules、Model Driver、Pricing 和 Known Provider 使用统一 catalog 更新、严格校验、原子 activation 与 LKGS 机制，但保持独立对象和 revision。
+3. Provider Rules、Model Driver、Pricing 和 Known Provider 保持独立对象和 revision；文件发现、下载、校验、替换及目标 seq 由 NDN 保证。AICC 在推理前或 Provider 定时库存刷新时统一收敛所有 applied seq 落后的 Provider；列表未变化且 seq 相同时只探测。
 4. Model Driver variant 定义语义身份；Provider variant 必须完整覆盖该身份到 adapter 参数的 lowering，否则该 Provider 不得声明对应 variant 可用。
 5. 旧 `provider_driver` 拆为 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`，不提供兼容读取。
 6. OpenAI、Claude、Google Gemini 分别实现专用协议族；优先实现官方新接口，历史接口只在具体派生 Provider 需要时按需增加，并使用独立、版本化语义的可执行 Adapter。

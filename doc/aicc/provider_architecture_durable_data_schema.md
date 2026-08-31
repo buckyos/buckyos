@@ -20,12 +20,11 @@
 | 数据项 | 所有者 | 说明 |
 | --- | --- | --- |
 | Provider Instance 配置 | system-config | 用户配置的实例名称、Provider profile、protocol adapter、endpoint、区域及凭据引用 |
-| catalog observed 水位 | AICC | 各更新源已经验证的 index/manifest revision，防止回滚 |
-| catalog 内容对象 | AICC | Model Driver、Provider rules、Pricing、Known Provider catalog 的不可变内容寻址对象 |
-| catalog activation | AICC | 一次完整 catalog 发布的原子生效点及 LKGS |
+| 当前 metadata 文件集合 | NDN | Model Driver、Provider Rules、Pricing、Known Provider 的当前版本文件；下载、校验和替换由 NDN 保证 |
+| metadata 目标序列 | NDN | `metadata_target_seq` 指向当前已替换文件版本，持续保留而非消费后清除 |
 | Provider inventory LKGS | AICC RDB | 每个 Provider Instance 最近一次成功 discovery 并解析后的动态库存快照 |
 
-Provider Instance 中不保存明文凭据；只保存 system-config 现有 locked value 或 credential reference。catalog activation 不能修改 Provider Instance 数据。
+Provider Instance 中不保存明文凭据；只保存 system-config 现有 locked value 或 credential reference。Metadata 文件替换和刷新不能修改 Provider Instance 私有配置。
 
 ### Disposable Data（可丢弃数据）
 
@@ -36,6 +35,7 @@ Provider Instance 中不保存明文凭据；只保存 system-config 现有 lock
 | adapter operation registry | 进程内静态注册 | 服务启动时从代码重建 |
 | 当前 Provider health、队列和短期错误率 | 内存 | 运行时重新采集 |
 | refresh 退避计数 | 内存 | 重启后重新开始 |
+| Provider 库存刷新任务和停止事件通道 | 内存 | 实例进入运行状态时创建；停止、禁用、删除、替换或服务退出时发送 `Stop` 并等待任务循环优雅退出 |
 | resolved call | 请求生命周期内存 | 每次调用重新解析 |
 
 ## 3. Storage Strategy
@@ -48,66 +48,25 @@ Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 ca
 
 同一协议族的新旧 API 形态必须使用不同 Adapter ID，例如 `openai-responses` / `openai-chat-completions` 和 `gemini-interactions` / `gemini-generate-content`。官方 Known Provider 默认新接口；历史 Adapter 仅在具体派生 Provider 需要时按需注册。自定义 Provider 创建/更新时由接入测试按“新接口优先、已注册历史接口其次”解析 Adapter，用户不提供版本；resolved Adapter 保存到 Provider Instance，不能由运行时调用失败触发隐式切换。
 
-### 3.2 Catalog 对象与 activation
+### 3.2 NDN 当前 Metadata 与目标序列
 
-catalog 是不可变、内容寻址、无复杂查询的 NDN JSON 对象，沿用 `$BUCKYOS_ROOT/data/srv/aicc/provider_catalog/remote_cache/v2/<source-key>/` 文件系统布局：
+NDN 管理当前 metadata 文件集合，负责版本发现、下载、校验和替换。AICC 不规定其 index、manifest、ObjId、缓存目录、水位或回滚布局，也不持久化 activation。
 
-```text
-<source-key>/objects/<FileObject-ObjId>.json
-<source-key>/objects/<FileObject-ObjId>.sha256
-<source-key>/activations/<manifest-revision>.json
-<source-key>/observed/index/<index-revision>.json
-<source-key>/observed/manifest/<manifest-revision>.json
-<source-key>/staging/<attempt>/...
-<source-key>/last_used
-```
-
-这是直接使用文件系统的显式例外。理由与现有 driver metadata v1 相同：对象不可变、内容寻址、通过 NDN ObjId 直接读取，不需要结构化查询；activation 单文件是唯一提交点，可避免 RDB head 与对象文件之间的双提交。所有 durable 文件必须使用写临时文件、`sync_all`、原子 create-if-absent 和父目录同步流程。
+文件替换成功后，NDN 推进持久的 `metadata_target_seq`。每个 Provider inventory 保存 `metadata_applied_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有序列不一致的 Provider，不能只处理当前请求或当前 Provider。每个 Provider 重建前临时捕获 `metadata_updating_seq`，成功提交 inventory 后才把 applied seq 更新为该值。
 
 ### 3.3 Provider inventory LKGS
 
 inventory LKGS 是按实例查询和替换的结构化状态，必须使用平台提供的 RDB instance，不绑定具体数据库后端。每个 Provider Instance 只保留一份已验证的最近成功快照；历史 inventory 不作为审计日志长期保存。
 
+inventory LKGS 的生命周期与刷新任务分离。停止 Provider 不删除 LKGS，但必须先向刷新任务循环发送 `Stop` 并等待优雅退出；任务退出后不得再写 inventory 或 health。重新启用实例时基于 LKGS 与当前 metadata 目标序列决定只探测还是重建。
+
 ## 4. Schema Definitions
 
-### 4.1 Object Type: Provider Catalog Index
+### 4.1 NDN-managed Metadata File Set
 
-Description：声明客户端可选择的 catalog protocol track。
+AICC 只约束各 metadata 文件被加载后的业务 schema，不定义 NDN 的发布对象 schema。文件版本、集合完整性、可信性、下载和替换均由 NDN 保证；若保证不足，应向 NDN 提交 bug。
 
-Naming Convention：固定路径 `/aicc/provider-catalog/index.json`。
-
-Content Format：UTF-8 JSON。
-
-Content Schema：
-
-- `format: string`，固定为 `buckyos.aicc.provider-catalog-index`。
-- `index_version: u32`，v2 初始值为 `2`。
-- `index_revision: u32`，同 major 下的可选字段 revision。
-- `index_revision_seq: u64`，更新源内严格递增。
-- `required_features: string[]`。
-- `tracks[]`：`protocol_version`、`protocol_revision`、`revision_seq`、`required_features`、`manifest.path`、`manifest.obj_id`。
-
-### 4.2 Object Type: Provider Catalog Manifest
-
-Description：一次原子发布所包含的全部 active catalog 对象。
-
-Naming Convention：`v2/manifest-<revision_seq>.json`。
-
-Content Format：UTF-8 JSON。
-
-Content Schema：
-
-- `format: string`，固定为 `buckyos.aicc.provider-catalog-manifest`。
-- `protocol_version: u32`，固定为 `2`。
-- `protocol_revision: u32`。
-- `revision_seq: u64`。
-- `required_features: string[]`。
-- `files[]`：`catalog_kind`、`catalog_id`、`path`、`schema_version`、`revision_seq`、`obj_id`。
-- `tombstones[]`：`catalog_kind`、`catalog_id`、`revision_seq`。
-
-`catalog_kind + catalog_id` 在 manifest 中唯一。`catalog_kind` 只允许 `model_driver`、`provider_rules`、`pricing`、`known_provider`。
-
-### 4.3 Object Type: Model Driver Catalog
+### 4.2 Object Type: Model Driver Catalog
 
 Description：模型静态技术语义的唯一真相源。
 
@@ -129,9 +88,9 @@ Content Schema：
 - `variants: ModelVariant[]`
 - `version_rules: VersionRule[]`
 
-ModelRule 只允许模型技术字段：`id/pattern`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score`、`version_rules` 引用和可选保守默认价格。禁止 endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 真实性由 NDN 对象链和 manifest ObjId 绑定保证。
+ModelRule 只允许模型技术字段：`id/pattern`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score`、`version_rules` 引用和可选保守默认价格。禁止 endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 文件真实性与完整性由 NDN 文件交付契约保证，AICC 不重复校验。
 
-### 4.4 Object Type: Provider Rules Catalog
+### 4.3 Object Type: Provider Rules Catalog
 
 Description：连接 Provider 渠道模型 ID、Model Driver 和已注册 operation 的规则。
 
@@ -157,7 +116,7 @@ ProviderModelRule 可包含 `match_source`、`exclude`、`operations`、`provide
 
 `metadata_drivers` 缺失表示使用内置 adapter 候选范围；显式空数组表示不匹配任何 Model Driver。空对象 `{}` 是合法的配置型 Provider override，表示全部使用程序默认规则。
 
-### 4.5 Object Type: Pricing Catalog
+### 4.4 Object Type: Pricing Catalog
 
 Description：Provider 渠道默认价格和条件价格规则。
 
@@ -176,7 +135,7 @@ Content Schema：
 
 PricingOffering 使用 `provider_profile_id`、可选 `provider_model_id/origin_model_id`、可选 pricing context 和价格。价格支持 token、request、image、audio_second、video_second，以及基于归一化请求字段的有序条件规则。它不能包含凭据、实例 endpoint 或实例名称。
 
-### 4.6 Object Type: Known Provider Catalog
+### 4.5 Object Type: Known Provider Catalog
 
 Description：管理 UI 使用的已知服务商列表。
 
@@ -197,7 +156,7 @@ Content Schema：
 
 Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 OpenAI 官方 Adapter。registry 中 `sn-openai.protocol_family_id = "openai"`、`sn-openai.base_adapter_id = "openai-responses"`，从而保留独立身份和从 SN 到特定 OpenAI API 代际的单向依赖。
 
-### 4.7 External Object: Provider Instance Config
+### 4.6 External Object: Provider Instance Config
 
 Description：system-config 中由用户管理的实例私有配置。
 
@@ -212,7 +171,7 @@ Content Schema：
 - 可选 `region/account/pricing_context`。
 - 可选 `provider_rules_id` 和实例级 rules/pricing override。
 
-### 4.8 Table: aicc_provider_inventory_lkgs
+### 4.7 Table: aicc_provider_inventory_lkgs
 
 Description：每个 Provider Instance 最近一次成功 discovery 后的已验证 inventory。
 
@@ -222,7 +181,8 @@ Description：每个 Provider Instance 最近一次成功 discovery 后的已验
 | schema_version | INTEGER | NO | 1 | 行中 snapshot JSON 的 schema major |
 | provider_profile_id | TEXT | NO | | 生成快照时使用的 Provider profile |
 | protocol_adapter_id | TEXT | NO | | 生成快照时使用的 adapter |
-| catalog_activation_revision | INTEGER | NO | | 解析所用 catalog activation revision |
+| provider_model_list_fingerprint | TEXT | NO | | 最近一次 discovery model 列表摘要，只用于变化判断 |
+| metadata_applied_seq | INTEGER | NO | | 该库存已经正式应用的 NDN metadata 目标序列 |
 | inventory_revision | TEXT | YES | | Provider discovery revision |
 | discovered_at_ms | INTEGER | NO | | 最近成功 discovery 时间 |
 | snapshot_json | TEXT | NO | | 完整 `ProviderInventorySnapshot` JSON |
@@ -233,7 +193,7 @@ Description：每个 Provider Instance 最近一次成功 discovery 后的已验
 Indexes：
 
 - `idx_aicc_provider_inventory_lkgs_updated` ON `aicc_provider_inventory_lkgs(updated_at_ms)`：维护和诊断。
-- `idx_aicc_provider_inventory_lkgs_activation` ON `aicc_provider_inventory_lkgs(catalog_activation_revision)`：catalog 更新后查找需重解析的实例。
+- `idx_aicc_provider_inventory_lkgs_metadata` ON `aicc_provider_inventory_lkgs(metadata_applied_seq)`：全局收敛时统一定位序列落后的库存。
 
 Constraints：
 
@@ -261,11 +221,11 @@ Constraints：
 
 | 数据项 | 策略 |
 | --- | --- |
-| 旧 driver metadata v1 cache | Rebuild；v2 不读取、不迁移，旧目录可在安装清理策略中删除 |
-| Provider catalog v2 objects/activation | No-compat；首次实现使用全新 v2 namespace |
+| 旧 driver metadata v1 cache | Ignore；不读取、不迁移 |
+| Provider catalog v2 objects/activation | Ignore；AICC 不再维护该存储结构 |
 | inventory LKGS | Rebuild；schema 不匹配或摘要无效时删除该实例行并重新 discovery |
 | Provider Instance config | No-compat；control-panel 与 AICC 同步切换到新字段 |
-| staging/运行时索引 | Rebuild |
+| staging/运行时索引 | 旧 staging 忽略；运行时索引从 NDN 当前文件重建 |
 
 inventory 行迁移或重建失败不能阻止 AICC 使用已验证的内置 default inventory；不得把无效旧行标记为最新成功快照。
 
@@ -273,9 +233,9 @@ inventory 行迁移或重建失败不能阻止 AICC 使用已验证的内置 def
 
 ### Catalog objects
 
-- Frozen：identity、revision 单调性、ObjId 绑定、ordered pattern 首命中语义、capability 只能收窄、原始 `provider_model_id` 用于调用。
+- Frozen：业务 identity、ordered pattern 首命中语义、capability 只能收窄、原始 `provider_model_id` 用于调用。文件 revision、ObjId 和可信交付属于 NDN。
 - Extensible：带缺省行为的 optional UI hints、诊断字段和新 pricing context。
-- 禁止通用 `extra` 改变安全或调用语义；新增解释能力必须通过 `required_features` 协商。
+- 禁止通用 `extra` 改变安全或调用语义；新增解释能力必须提升 AICC 支持的 metadata schema。
 
 ### Provider Instance
 
@@ -295,10 +255,10 @@ inventory 行迁移或重建失败不能阻止 AICC 使用已验证的内置 def
 | --- | --- | --- |
 | 按实例加载 LKGS | inventory table PK | 启动及 discovery 失败时，高 |
 | discovery 成功原子替换实例 LKGS | inventory table PK upsert | 中 |
-| catalog activation 后列出旧 revision 快照 | activation index | 每次 catalog 生效，低 |
+| 目标序列触发全局 inventory 收敛 | `metadata_target_seq` + Provider `metadata_applied_seq` | 推理前或 Provider 定时库存刷新时，低 |
 | 清理长期不存在的实例快照 | updated index + system-config 实例集合 | 维护任务，低 |
-| 按 catalog kind/id 读取对象 | manifest 内存索引 + ObjId 文件名 | 启动/更新，中 |
+| 按 catalog kind/id 读取对象 | 当前 metadata 内存 snapshot | 启动/全局刷新，中 |
 | Model Driver exact/pattern 匹配 | active catalog 构建内存索引 | 每次 discovery，重启重建 |
 | pricing/provider rule 解析 | active catalog 构建内存索引 | 每次调用，高 |
 
-不允许在每次模型调用时扫描 RDB 或 catalog 文件。active catalog 必须在 activation 切换后构建不可变内存 snapshot，并以一次指针替换原子生效。
+目标序列与所有 Provider applied seq 相同时，不允许在每次模型调用中扫描 metadata 文件。推理前或 Provider 定时库存刷新发现序列不一致时，必须捕获目标序列、加载对应完整 metadata snapshot，并统一收敛所有落后库存；不得按当前调用或 Provider 局部处理。定时 discovery 的 model 列表未变化且序列相同时只探测，不写 inventory。

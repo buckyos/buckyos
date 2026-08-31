@@ -1608,7 +1608,7 @@ Fallback：
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
   "protocol_adapter_id": "openai-responses",
-  "catalog_activation_revision": 42,
+  "metadata_applied_seq": 42,
   "models": [
     {
       "model_uid": "openai:gpt-5.5:responses",

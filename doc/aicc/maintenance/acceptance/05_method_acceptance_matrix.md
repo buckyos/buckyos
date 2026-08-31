@@ -76,7 +76,7 @@
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
 | `cancel` | `task_id`、tenant/session 上下文 | accepted / rejected、原 task 状态可观察、task data / event 记录 cancel 语义 | unknown task、跨 tenant cancel、provider 不支持取消、已完成任务重复取消 |
-| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要 | settings 非法、凭据缺失、保留上一版可用配置 |
+| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要；被禁用、移除或替换的旧实例收到库存定时循环 `Stop` 并优雅退出 | settings 非法、凭据缺失、保留上一版可用配置、孤儿定时器或迟到写入 |
 | `models.list` | 空 params、可选诊断过滤参数 | Provider inventory、完整模型/渠道身份、operations、逻辑目录、health 摘要 | registry 为空、敏感字段泄露、损坏 catalog 不应导致服务不可诊断 |
 | `usage.query` | 时间窗口、provider/model/method/api_type 过滤 | 聚合 usage、明细数量、成本/usage 字段、空结果 | 非法时间窗口、无权限、重复幂等记录不应重复计费 |
 | `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置 quota、跨 tenant 查询、非法 method |
@@ -84,8 +84,8 @@
 | `provider.health` | Provider Instance | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
 | `provider.validate` | Provider Instance 草案、endpoint、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、endpoint 非法、未知 Profile/Adapter、不得写入 system_config |
 | `provider.add` | provider settings、tenant/session 上下文 | system_config 写入、reload 后 `models.list` 可见、审计记录 | 重名冲突、无权限、schema 非法、写入失败回滚 |
-| `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限 |
-| `provider.refresh_models` | Provider Instance、刷新策略 | discovery 更新、catalog resolver 生效、`models.list` 反映新 revision | Provider 不可达、返回损坏 inventory、刷新失败不破坏旧 inventory |
+| `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、库存定时循环收到幂等 `Stop` 并优雅退出、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限、孤儿定时器或停止后迟到写入 |
+| `provider.refresh_models` | Provider Instance、刷新策略 | model 列表变化时更新库存；target/applied seq 不同时触发所有落后 Provider 收敛；列表未变且 seq 相同时只探测 | Provider 不可达、重建失败不推进 applied seq、目标在刷新中再次变化 |
 
 ## 2. 真实模型判定规则
 

@@ -20,15 +20,15 @@ system_config 写入 settings
 用例：
 
 1. 写入 Mock OpenAI Provider Instance，`endpoint` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
-2. 禁用 Provider，reload 后候选消失，调用返回无候选或策略拒绝。
+2. 禁用 Provider，确认向库存刷新定时任务循环发送 `Stop` 并等待优雅退出；reload 后候选消失，调用返回无候选或策略拒绝，且没有新探测或迟到的 inventory/health 写入。
 3. 修改 Model Driver 的结构化能力，reload 后 `ModelRequirement` 硬过滤结果变化。
 4. 修改 `provider_type` 为 `local_inference` / `cloud_api` / `proxy_unknown`，验证 `local_only` 过滤。
 5. 全量覆盖 settings 和局部更新 settings 都能生效。
 6. settings 非法时 reload 失败，不破坏上一版可用配置。
 7. `provider.validate` 只做校验和脱敏诊断，不写入 system_config。
 8. `provider.add` 写入后 reload，`models.list` / `provider.list` / `provider.health` 可见，且路由可命中新增 Provider。
-9. `provider.refresh_models` 更新 inventory revision 后，`models.list` 中 exact model、`api_types`、`logical_mounts` 和 metadata resolver 结果同步变化。
-10. `provider.delete` 后 reload，候选和 provider list 中删除目标消失；若仍被 locked policy 引用，必须返回明确错误或诊断。
+9. `provider.refresh_models` 在 model 列表变化或 target/applied seq 不同时更新 inventory；列表未变且 seq 相同时只探测。seq 不一致时必须收敛所有落后 Provider，成功后 `models.list` 和 applied seq 同步变化。
+10. `provider.delete`、配置替换实例和 AICC 服务停止都向对应库存刷新定时任务循环发送幂等 `Stop` 并等待退出，不遗留孤儿定时器；删除后 reload，候选和 provider list 中目标消失，若仍被 locked policy 引用则返回明确错误或诊断。
 
 ## 2. Usage Log 验收
 
@@ -108,7 +108,7 @@ system_config 写入 settings
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
-| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
+| `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |

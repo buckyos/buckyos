@@ -32,6 +32,8 @@ Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 
 方法不提供 `service.*` 双入口、错误拼写或旧名称兼容别名。
 
+Provider Instance 的库存刷新定时任务是实例级运行时资源。`provider.update` 把实例从 enabled 改为 disabled、更新导致实例重建、`provider.delete`、reload 移除或替换实例，以及 AICC 服务停止时，管理层必须先把实例标记为 stopping，向其定时任务循环发送幂等 `Stop` 事件并等待循环优雅退出，再完成 registry 切换或资源清理。停止后不得接受新的定时刷新，也不得提交迟到的 inventory/health 结果。
+
 ### 2.2 settings key
 
 当前 AICC 真实运行配置主 key：
@@ -317,10 +319,12 @@ Response：
 
 1. 读取 `services/aicc/settings`。
 2. 遍历统一 `providers[]`。
-3. 删除 `provider_instance_name` 匹配的 Provider Instance。
-4. 删除实例时同步删除或解除其 credential reference；动态 token 只存在内存，无需持久化清理。
-5. `exec_tx` CAS 写回。
-6. reload。
+3. 校验删除目标及 policy 引用，`exec_tx` CAS 写回不再包含该实例的新 settings。
+4. reload 应先把旧实例标记为 stopping，向其库存刷新定时任务循环发送 `Stop` 事件，并等待循环优雅退出。
+5. 循环退出后从 registry 删除实例，并同步删除或解除其 credential reference；动态 token 只存在内存，无需持久化清理。
+6. 原子发布新 registry；停止过程失败时不得留下仍可路由但 settings 已删除的半状态，必须返回可诊断错误。
+
+禁用实例以及因 endpoint、Profile、Adapter、认证等变化而重建实例时使用相同停止协议：先停止旧实例的定时任务，再发布禁用状态或新实例。AICC 服务停止时应向全部 Provider 定时任务循环广播 `Stop` 并等待退出。
 
 未找到时返回：
 
@@ -410,13 +414,13 @@ Response 直接复用 `buckyos_api::QueryUsageResponse`：
 
 ### 4.7 `driver_metadata_update.get` / `driver_metadata_update.set`
 
-AI Center 通过这两个接口读取并启用或停用 Provider Driver Metadata 云更新。配置仍持久化在 `services/aicc/settings.driver_metadata_update`：
+AI Center 通过这两个接口配置和观察 NDN metadata 文件更新。AICC 不实现下载校验、activation、LKGS、水位或专用后台生效流程：
 
-- `get` 返回 `enabled`、脱敏后的 `source_url`、`source_configured`、`interval_secs`，以及 `status`、`active_revision`、`last_attempt_at_ms`、`last_success_at_ms`、`last_error`、`consecutive_failures` 运行状态。
-- `set` 接收 `enabled`，并可选接收 `source_url`；启用时校验 HTTPS、固定路径 `/aicc/driver-metadata/index.json`。写入后只切换 metadata source 并刷新现有 Provider inventory，不执行会清空 registry 的全量 Provider reload。
-- `set.ok` 表示 settings 已持久化；`runtime_apply.refresh_scheduled=true` 表示 metadata updater 已收到新配置。接口不等待 Provider 的外部模型发现请求，后台刷新结果随后同步到 `settings.status/last_error`。
+- `get` 返回配置状态、NDN 报告的 `metadata_target_seq`，以及各 Provider 的 `metadata_applied_seq`；不包装一套 AICC 更新状态机。
+- `set` 只把启停、源和检查周期配置交给 NDN。NDN 负责发现版本、下载、校验、替换文件，并在替换成功后推进目标序列。
+- `set.ok` 只表示配置已持久化并交给 NDN，不表示 metadata 已经进入 AICC 运行时。
+- 下一次推理前或任一 Provider Instance 定时库存刷新发现 applied/target seq 不一致时，AICC 统一收敛所有落后库存；model 列表未变化且 seq 相同的 Provider 只探测、不重写库存。
 - 写操作复用 settings revision CAS 和调用者 token，不允许前端直接写 `system_config`。
-- 停用或切换源时保留各 source namespace 的 LKGS 和防回滚水位；重新启用同一源仍沿用原有水位。
 
 `driver_metadata_update.get` Request：
 
@@ -429,31 +433,32 @@ Response：
 ```json
 {
   "enabled": true,
-  "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+  "source_url": "ndn://metadata.example/aicc/driver-metadata",
   "source_configured": true,
   "interval_secs": 900,
-  "status": "healthy",
-  "active_revision": 42,
-  "last_attempt_at_ms": 1785830400000,
-  "last_success_at_ms": 1785830400000,
-  "last_error": null,
-  "consecutive_failures": 0
+  "metadata_target_seq": 42,
+  "providers": [
+    {
+      "provider_instance_name": "openai-main",
+      "metadata_applied_seq": 41
+    }
+  ]
 }
 ```
 
-`status` 只允许 `disabled`、`idle`、`updating`、`healthy`、`degraded`、`error`。
+文件下载和校验诊断直接使用 NDN 状态，不在 AICC API 中重新定义错误分类。
 
 `driver_metadata_update.set` Request：
 
 ```json
 {
   "enabled": true,
-  "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+  "source_url": "ndn://metadata.example/aicc/driver-metadata",
   "interval_secs": 900
 }
 ```
 
-`enabled` 必填；`source_url` 和 `interval_secs` 可选。未知字段按请求解析错误拒绝，`interval_secs` 归一化到 60 至 86400 秒。停用时省略 `source_url` 表示保留当前源。
+`enabled` 必填；`source_url` 和 `interval_secs` 可选。未知字段按请求解析错误拒绝。源格式、检查周期和下载策略由 NDN 契约校验，AICC 不复制这些规则。
 
 Response：
 
@@ -463,15 +468,13 @@ Response：
   "settings_revision": 17,
   "settings": {
     "enabled": true,
-    "source_url": "https://metadata.example/aicc/driver-metadata/index.json",
+    "source_url": "ndn://metadata.example/aicc/driver-metadata",
     "source_configured": true,
-    "interval_secs": 900,
-    "status": "updating",
-    "consecutive_failures": 0
+    "interval_secs": 900
   },
   "runtime_apply": {
     "ok": true,
-    "refresh_scheduled": true
+    "ndn_configured": true
   }
 }
 ```
@@ -631,7 +634,7 @@ uv run buckyos-build.py --skip-web
 4. 调 `provider.add`，确认 `services/aicc/settings` 发生一次事务更新，随后 `models.list.providers` 出现新 provider。
 5. 连续添加多个同 Profile Provider Instance，确认凭据和 inventory 不互相覆盖。
 6. 调 `provider.refresh_models`，确认执行指定 provider 的 inventory refresh，不只是全量 reload。
-7. 调 `provider.delete`，确认实例及其 credential reference 被删除并 reload。
+7. 分别禁用、删除、替换 Provider 以及停止 AICC 服务，确认都向对应库存刷新定时任务循环发送 `Stop`、等待优雅退出，且退出后没有孤儿定时器或迟到的 inventory/health 写入；删除时再确认实例及其 credential reference 被清理。
 8. 调 `usage.query`，确认没有 usage db 时返回空 aggregate，有 usage db 时能返回 summary / bucket。
 9. 使用无 `services/aicc/settings` 写权限的普通 token 调 `provider.add/delete`，确认被 system_config 拒绝。
 
