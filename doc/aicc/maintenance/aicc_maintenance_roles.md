@@ -22,7 +22,7 @@
 上线新模型或新厂商时，先按下面顺序判断需要哪类维护：
 
 1. **只是已有 Provider 新增模型，且协议兼容**：优先维护 metadata / routing 配置，不需要发版。目标是让 AICC 知道模型 ID、能力、成本估算、逻辑目录挂载和路由偏好。
-2. **新厂商兼容已注册协议**：用户或服务商可以新增 Provider Instance，选择 Provider Profile 和 Protocol Adapter，配置 `endpoint`、授权信息和模型发现策略。通常不需要 BuckyOS 发版。
+2. **新厂商兼容已注册协议**：用户或服务商可以新增 Provider Instance，选择 Provider Profile 或大致协议族，配置 `endpoint`、授权信息和模型发现策略。后端自动解析具体 Protocol Adapter，通常不需要 BuckyOS 发版。
 3. **新厂商协议不兼容现有 Protocol Adapter**：需要 BuckyOS 项目方发布新版本，注册新的 Protocol Adapter，再配套发布 Provider Profile、Provider Rules、Model Driver 和验收用例。
 4. **模型能力类型本身是新的**：例如新增 API type、输入输出形态或调度语义，通常需要发版更新 AICC 协议、inventory schema、路由策略和测试。
 
@@ -95,11 +95,11 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **何时必须发版**：当新厂商不是 OpenAI-compatible，或者已有 adapter 无法正确调用新协议时，需要发布新版本；当新模型引入 AICC 尚不认识的新 API type / method / 输入输出形态时，也需要发布新版本。
+- **何时必须发版**：当新厂商不兼容任何已注册的特定 API 代际 Adapter，或者已有 Adapter 无法正确调用其协议时，需要发布新版本；不能通过给新接口 Adapter 增加旧协议分支来规避发版。当新模型引入 AICC 尚不认识的新 API type / method / 输入输出形态时，也需要发布新版本。
 - **发版组件清单**：需要实现或更新 Provider adapter、Provider settings 解析、inventory 生成、成本估算、协议转换、错误映射、metadata 基线、默认逻辑目录挂载、route fallback 规则和验收测试。
 - **随版本携带本地缓存**：版本包应包含发布时最新的模型事实基线、默认逻辑目录基线和默认运营策略基线。这样新安装用户在没有云端更新的情况下，也能识别该版本已支持的新模型，并获得可用的默认路由和成本/健康度策略。
 - **随版本携带验收用例**：版本发布必须带上新增或更新的测试用例，并保证用例命名能识别 provider、model、api type、逻辑目录和更新类型，方便后续只跑相关用例。
-- **期望效果**：升级版本后，用户只需选择 Provider Profile、Protocol Adapter，并配置授权和必要的 `endpoint`，AICC 即可从 Provider 获取模型列表，生成 inventory，并按逻辑目录完成路由。
+- **期望效果**：升级版本后，用户只需选择 Provider Profile 或大致协议族，并配置授权和必要的 `endpoint`；AICC 自动按新接口优先顺序解析 Protocol Adapter、获取模型列表、生成 inventory，并按逻辑目录完成路由。
 - **验收方法**：先在测试环境安装版本包，用真实或 mock Provider 验证 `/models` 拉取、`models.list` 输出、exact model 调用、logical model 路由、fallback、错误返回和成本估算；相关用例通过后执行全量用例。发布环境上线后重复相关用例和全量用例。对新 API type 还应验证 helper / typed inference 调用链。
 
 #### 规划中 / 未完全实现
@@ -141,7 +141,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 #### 已实现
 
 - **接收 BuckyOS 的模型事实和运营策略基线**：服务商可以直接使用 BuckyOS 发布的 builtin metadata 和默认策略，也可以配置可信云更新源获取经过 NDN 验证并原子提交的 metadata activation，再叠加自己的运营策略。这适合只想跟随官方节奏、但仍希望控制产品默认路由的产品。
-- **维护产品默认 Provider settings**：服务商可以预置或引导用户配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、`protocol_adapter_id`、`endpoint`、是否启用和模型发现策略等。
+- **维护产品默认 Provider settings**：服务商可以预置或引导用户配置 `services/aicc/settings`，包括 Provider Instance、`provider_profile_id`、协议族、`endpoint`、是否启用和模型发现策略等。`protocol_adapter_id` 由 Known Profile 固定或由自定义 Provider 接入测试解析。
 - **维护产品默认 routing_config**：服务商可以管理系统级 `services/aicc/settings.routing_config`，设置默认逻辑目录、Provider 权重、禁用列表、exact model 权重和 fallback 策略。
 - **维护服务商相关用例集合**：服务商跟随 BuckyOS 更新时，应把本产品启用的 Provider、模型、逻辑目录和路由策略映射到测试用例命名或 tags 上，确保能筛选出本次更新相关用例。
 - **期望效果**：产品用户配置自己的 API Key 后，就能看到服务商认可的新模型；逻辑模型调用会按服务商的默认策略路由到新模型或保留旧模型 fallback。
@@ -210,8 +210,8 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 已实现
 
-- **新增或修改 Provider 授权**：用户可以在自己的 system_config / AICC settings 中维护 `services/aicc/settings`，配置 API Key、`endpoint`、Provider Instance、`provider_profile_id`、`protocol_adapter_id` 和启用状态。
-- **使用 OpenAI-compatible 新厂商**：如果新厂商兼容已注册的 OpenAI Protocol Adapter，用户可以新增一个 Provider Instance，选择相应 Profile，填入厂商提供的 `endpoint` 和 API Key，然后调用 `service.reload_settings`。
+- **新增或修改 Provider 授权**：用户可以在自己的 system_config / AICC settings 中维护 `services/aicc/settings`，配置 API Key、`endpoint`、Provider Instance、`provider_profile_id`、协议族和启用状态；不要求填写 API 代际或 `protocol_adapter_id`。
+- **使用 OpenAI-compatible 新厂商**：用户只需确认大致协议族，新增 Provider Instance 并填写厂商提供的 `endpoint` 和 API Key，不需要区分 Responses、Chat Completions 等代际。后端接入测试优先验证官方新接口，再验证当前已注册的历史接口并固化结果；运行时不重新探测。
 - **使用官方 SN Provider**：`sn-ai-provider` 使用独立 `sn-openai` 派生 Adapter。用户可以选择静态 API Key，或使用设备签名登录 SN 并缓存短期 token；动态登录状态只属于 SN 层，不进入 OpenAI 基础 Adapter，也不透传 BuckyOS `verify-hub` session。
 - **期望效果**：`models.list` 能看到该 Provider，并列出用户配置或 Provider `/models` 返回的新模型。
 - **验收方法**：配置后调用 `service.reload_settings`，再调用 `models.list`。如果 Provider 不出现，优先检查启用状态、Profile、Adapter、`endpoint` 和授权；如果 Provider 出现但模型不出现，检查 discovery 结果与 Model Driver catalog。
@@ -265,7 +265,7 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 #### 规划中 / 未完全实现
 
-- 对非 OpenAI-compatible 的全新 Provider，通常仍需要 adapter 代码支持，用户无法只靠配置完整接入。
+- 对不兼容任何已注册代际 Adapter 的全新 Provider，通常仍需要独立 Adapter 代码支持，用户无法只靠配置完整接入。
 - metadata 签名和第三方包可信管理未完整实现。
 - 对新模型自动测试能力并生成 override 目前没有明确已实现机制。
 

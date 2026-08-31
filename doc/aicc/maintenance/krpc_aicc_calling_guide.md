@@ -49,7 +49,7 @@ RPC `method` 是公开方法名；`api_type` 是路由操作类型。两者不�
   "selected_model_uid": "openai/gpt-5.1/reasoning-high",
   "provider_instance_name": "openai-primary",
   "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai",
+      "protocol_adapter_id": "openai-responses",
   "model_driver_id": "openai-gpt-5",
   "origin_model_id": "gpt-5.1",
   "provider_model_id": "gpt-5.1",

@@ -24,13 +24,15 @@ P1 optional:
   SN Provider Profile + sn-openai derived adapter
 ```
 
-OpenRouter 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。目标实现使用独立的 `openrouter` Provider Profile、`openrouter-openai` 派生 Adapter 和专用策略对象；派生 Adapter 语义上复用 OpenAI 基础协议，但不复用 OpenAI 官方渠道规则或 Model Driver。
+OpenRouter 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。目标实现使用独立的 `openrouter` Provider Profile、`openrouter-openai` 派生 Adapter 和专用策略对象；该 Adapter 当前派生自 `openai-chat-completions`，不复用 OpenAI 官方渠道规则或 Model Driver。
 
 所有 Provider 均遵循同一分层：Provider Profile 决定渠道 discovery、origin mapping、operation、请求限制和价格；Model Driver Metadata 只解释模型固有能力、家族和语义 variant；Protocol Adapter 只实现已注册 operation 的认证、endpoint、wire 编解码及异步状态机。路由阶段产生 `ResolvedProviderCall`，执行阶段不得再按模型名称切换协议。
 
-OpenAI、Claude、Google Gemini 分别实现 `openai`、`claude`、`gemini` 基础 Protocol Adapter，拥有独立 wire schema、stream、错误映射和协议测试。内置兼容渠道可以定义独立的派生 Adapter，并通过 `base_adapter_id` 表达语义子类关系；具体代码可以继承、组合或委托。基础 Adapter 禁止引用派生 Adapter 或按 Provider ID 分支。
+OpenAI、Claude、Google Gemini 分别拥有独立协议族。官方 Profile 优先使用 `openai-responses`、`claude-messages`、`gemini-interactions`。`openai-chat-completions`、`openai-completions`、`claude-completions`、`gemini-generate-content` 等历史接口不要求一次性实现，只在接入确实依赖它们的具体派生 Provider 时按需增加。每个已实现 Adapter 拥有独立 endpoint、wire schema、stream、错误映射和协议测试。
 
-SN Provider 使用 `sn-openai` 派生 Adapter，`base_adapter_id` 为 `openai`。它支持静态 API Key 和运行时登录获取动态 token 两种互斥认证模式；登录、缓存和刷新只在 SN 层实现，OpenAI 基础 Adapter 只接收已解析的 Bearer credential。未来 SN 使用独立协议时，应能只替换或删除 SN Profile、Rules、Adapter 和测试。
+新接口 Adapter 与按需实现的历史接口 Adapter 平级，不能相互 fallback。两者只共享 HTTP transport、SSE framing、通用 JSON/错误工具和 AICC normalized IR 等低层组件。内置兼容渠道可以定义独立派生 Adapter，并通过 `base_adapter_id` 表达语义子类关系；具体代码可以继承、组合或委托。基础 Adapter 禁止引用派生 Adapter 或按 Provider ID 分支。自定义 Provider 的接入验证负责按新接口优先顺序选择已注册 Adapter，用户不选择 API 版本；选择结果保存后，执行路径不再协商。
+
+SN Provider 使用 `sn-openai` 派生 Adapter，属于 `openai` 协议族，当前 `base_adapter_id` 为 `openai-responses`。它支持静态 API Key 和运行时登录获取动态 token 两种互斥认证模式；登录、缓存和刷新只在 SN 层实现，Responses Adapter 只接收已解析的 Bearer credential。未来 SN 使用独立协议时，应能只替换或删除 SN Profile、Rules、Adapter 和测试。
 
 `agent.computer_use` 不纳入本版 provider coverage。该能力涉及浏览器/桌面 runtime、沙箱、权限和审计，应单独规划。
 
@@ -232,7 +234,8 @@ SN Provider 当前不复制 OpenAI 协议实现，而是使用独立 `sn-openai`
 ```text
 sn Provider Profile
   -> sn-openai Adapter
-     -> base_adapter_id: openai
+     -> protocol_family_id: openai
+     -> base_adapter_id: openai-responses
      -> auth.mode: api_key | dynamic_login
 ```
 

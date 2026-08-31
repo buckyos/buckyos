@@ -28,9 +28,11 @@
 
 只处理协议：请求编码、认证、传输、流式/异步任务、响应解析、错误和取消。Adapter 不负责逻辑模型路由，也不根据模型名猜测能力。
 
-OpenAI、Claude、Gemini 必须分别实现基础 Adapter。内置厂商若只扩展某个基础协议，应注册独立派生 Adapter，并声明 `base_adapter_id`；实现可以继承、组合或委托。基础 Adapter 不允许识别派生 Provider。
+OpenAI、Claude、Gemini 必须分别实现协议族，并按 API 代际注册独立 Adapter。基础协议优先实现 Responses、Messages、Interactions 等官方新接口；Chat Completions、旧 Completions 或 `generateContent` 等历史实现只在接入具体派生 Provider 确有需要时增加，不为完整覆盖历史而预先实现。
 
-SN 的标准示例是 `sn-openai -> openai`：SN 层实现 `api_key` 或 `dynamic_login` 认证，OpenAI 层只执行基础协议。新增类似内置厂商时必须保持相同的单向依赖和可拆除性。
+新旧接口 Adapter 平级且互不 fallback，只共享协议中立的 transport、SSE、JSON、错误工具和 normalized IR。内置厂商若只扩展某个确定的 Adapter，应注册独立派生 Adapter并声明 `base_adapter_id`；实现可以继承、组合或委托。基础 Adapter 不允许识别派生 Provider。
+
+SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` 或 `dynamic_login` 认证，Responses 层只执行基础协议。新增类似内置厂商时必须保持相同的单向依赖和可拆除性。
 
 ### Model Driver
 
@@ -47,7 +49,7 @@ SN 的标准示例是 `sn-openai -> openai`：SN 层实现 `api_key` 或 `dynami
       "provider_instance_name": "openai-work",
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai",
+      "protocol_adapter_id": "openai-responses",
       "endpoint": "https://api.openai.com/v1",
       "credentials": {
         "type": "bearer",
@@ -63,11 +65,25 @@ SN 的标准示例是 `sn-openai -> openai`：SN 层实现 `api_key` 或 `dynami
 
 不使用 Provider family section、`instances[]` 包装、`provider_driver`、`base_url`、section 级 token、`features` 或字段别名。Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
+用户添加自定义 Provider 时不填写 `protocol_adapter_id`，只提交协议族、endpoint 和凭据。例如：
+
+```json
+{
+  "provider_instance_name": "compat-router",
+  "provider_profile_id": "custom",
+  "protocol_family_id": "openai",
+  "endpoint": "https://compat.example/v1"
+}
+```
+
+`provider.validate` / `provider.add` 先测试该协议族的官方新接口，再按优先级测试运行时已经注册的历史接口。首个成功结果作为内部 `protocol_adapter_id` 保存，例如解析为 `openai-chat-completions`。只有“接口不支持”允许继续下一个候选；认证、网络、限流和服务端错误直接返回。该协商只发生在创建或更新阶段，运行时不得再次试探或 fallback。
+
 ## 4. 接入步骤
 
 1. 在 Provider Profile catalog 增加或选择 Profile，并定义认证、endpoint、discovery 和 UI schema。
-2. 如需新协议，在 Adapter registry 注册固定 `protocol_adapter_id` 和支持的 operations。
+2. 如具体派生 Provider 需要尚未实现的新协议或历史接口，在 Adapter registry 按需注册固定 `protocol_adapter_id` 和支持的 operations；不要为了覆盖厂商历史而预先实现未被使用的 Adapter。
    若复用基础协议，则同时声明 `base_adapter_id`，并把所有厂商差异留在派生 Adapter。
+   若只是兼容旧 API，则新增独立历史接口 Adapter，不修改官方新接口 Adapter，也不增加运行时协议 fallback；同时把它加入该协议族的接入测试候选顺序。
 3. 在 Model Driver catalog 声明 ModelUID、origin model、variants、能力与限制。
 4. 在 Provider Rules 中声明 provider model 映射、operation 选择、参数 lowering 和价格解析。
 5. 让 discovery 只收窄 catalog 声明，不能自行抬高模型能力。
@@ -84,6 +100,7 @@ SN 的标准示例是 `sn-openai -> openai`：SN 层实现 `api_key` 或 `dynami
 - 同步、SSE、异步轮询、取消、usage、错误分类和敏感信息脱敏均符合协议。
 - OpenRouter 等聚合渠道至少覆盖跨 Model Driver 的映射测试。
 - 基础 Adapter 与每个派生 Adapter 分别测试；SN 必须覆盖静态 API Key、动态登录、token 刷新以及删除 SN 不影响 OpenAI 的回归测试。
+- 每个实际注册的协议代际分别做 contract test；历史 Adapter 删除或失败不能改变官方新接口 Adapter 的行为。自定义 Provider 另需测试新接口优先、历史接口按序匹配、非协议错误停止探测以及 resolved Adapter 持久化。
 - GPT-5 `image_generation` 按 metadata 选择 Responses tool；GPT Image/DALL-E 仍走 Image API。
 
 ## 6. 文档联动

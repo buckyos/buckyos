@@ -47,6 +47,8 @@ POST /kapi/aicc
 
 `method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。`api_type` 是路由能力类型，例如 `llm.chat`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
 
+`chat.completions.create` 是 AICC 的 provider-neutral typed method 名，不表示底层必须调用 OpenAI Chat Completions。Provider Rules 可以把它映射到 `openai-responses`、`claude-messages`、`gemini-interactions` 或显式兼容 Adapter。Adapter ID 和 operation 才决定实际 wire API。
+
 Provider 不能自定义方法名，只能声明自己支持标准集合中的哪些 method。`Capability` 只表达粗能力和权限边界，不决定 schema，也不随 method 数量膨胀。
 
 每个数据面 method 定义独立 typed request/response。method 自有字段直接位于 `params`，不使用 `AiMethodRequest`、`payload.input_json`、`payload.resources` 或 `payload.options` 等通用容器。
@@ -169,7 +171,7 @@ Response：
   "selected_model_uid": "openai:gpt-5.1:responses",
   "provider_instance_name": "openai_primary",
   "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai",
+      "protocol_adapter_id": "openai-responses",
   "model_driver_id": "openai",
   "origin_model_id": "gpt-5.1",
   "provider_model_id": "gpt-5.1",
@@ -1605,7 +1607,7 @@ Fallback：
   "provider_instance_name": "openai_primary",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai",
+  "protocol_adapter_id": "openai-responses",
   "catalog_activation_revision": 42,
   "models": [
     {

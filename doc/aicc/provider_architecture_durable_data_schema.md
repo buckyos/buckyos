@@ -44,7 +44,9 @@ Provider Instance 中不保存明文凭据；只保存 system-config 现有 lock
 
 Provider Instance 配置是 Zone 级配置，继续存储在 system-config，由 control-panel 写入、AICC 只读。AICC 不复制实例配置到本地数据库，避免两个配置真相源。
 
-Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 catalog。运行时 registry descriptor 至少包含 `protocol_adapter_id`、支持的 operations，以及可选 `base_adapter_id`。`base_adapter_id` 声明语义复用关系，不规定继承、组合或委托的具体实现。OpenAI、Claude、Gemini 基础 Adapter 必须使用不同 ID；派生 Adapter 也必须使用自己的 ID。
+Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 catalog。运行时 registry descriptor 至少包含 `protocol_family_id`、`protocol_adapter_id`、接口代际/状态、支持的 operations，以及可选 `base_adapter_id`。`base_adapter_id` 声明语义复用关系，不规定继承、组合或委托的具体实现。
+
+同一协议族的新旧 API 形态必须使用不同 Adapter ID，例如 `openai-responses` / `openai-chat-completions` 和 `gemini-interactions` / `gemini-generate-content`。官方 Known Provider 默认新接口；历史 Adapter 仅在具体派生 Provider 需要时按需注册。自定义 Provider 创建/更新时由接入测试按“新接口优先、已注册历史接口其次”解析 Adapter，用户不提供版本；resolved Adapter 保存到 Provider Instance，不能由运行时调用失败触发隐式切换。
 
 ### 3.2 Catalog 对象与 activation
 
@@ -193,7 +195,7 @@ Content Schema：
 
 该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 endpoint，并执行连接与协议验证。
 
-Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 `openai`。registry 中 `sn-openai.base_adapter_id = "openai"`，从而保留独立身份和从 SN 到 OpenAI 的单向依赖。
+Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 OpenAI 官方 Adapter。registry 中 `sn-openai.protocol_family_id = "openai"`、`sn-openai.base_adapter_id = "openai-responses"`，从而保留独立身份和从 SN 到特定 OpenAI API 代际的单向依赖。
 
 ### 4.7 External Object: Provider Instance Config
 

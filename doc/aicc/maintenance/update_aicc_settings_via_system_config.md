@@ -21,7 +21,7 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
       "provider_instance_name": "openai-primary",
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai",
+      "protocol_adapter_id": "openai-responses",
       "endpoint": "https://api.openai.com/v1",
       "credentials": {
         "api_token": { "locked": "..." }
@@ -110,7 +110,7 @@ POST /kapi/system_config
   "method": "sys_config_set",
   "params": {
     "key": "services/aicc/settings",
-    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
+    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
   },
   "sys": [3002, "<session_token>", "trace-aicc-cfg-set"]
 }
@@ -126,7 +126,7 @@ POST /kapi/system_config
   "params": {
     "key": "services/aicc/settings",
     "json_path": "/providers/0",
-    "value": "{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}"
+    "value": "{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}"
   },
   "sys": [3003, "<session_token>", "trace-aicc-cfg-patch"]
 }

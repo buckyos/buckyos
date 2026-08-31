@@ -89,7 +89,7 @@
 
 ## 2. 真实模型判定规则
 
-Protocol Adapter 的结构验收同时是发布门禁：OpenAI、Claude、Gemini 必须以不同 `protocol_adapter_id` 注册并运行各自协议测试；派生 Adapter 必须暴露独立 ID 和 `base_adapter_id`。SN 必须分别通过 API Key、动态登录、token 过期刷新和认证失败测试，并通过“移除 SN 后 OpenAI 测试与行为不变”的删除性测试。
+Protocol Adapter 的结构验收同时是发布门禁：OpenAI、Claude、Gemini 必须覆盖官方新接口；历史接口只在具体派生 Provider 需要时按需实现。每个实际注册的 Adapter 使用不同 `protocol_adapter_id` 并分别运行 contract test，不得相互 fallback，只允许复用协议中立组件。自定义 Provider 必须验证接入测试优先选择新接口、按序尝试已注册历史接口、非协议错误停止探测并持久化 resolved Adapter；用户不选择 API 代际。派生 Adapter 必须暴露独立 ID 和 `base_adapter_id`。SN 必须分别通过 API Key、动态登录、token 过期刷新和认证失败测试，并通过“移除 SN 后 `openai-responses` 测试与行为不变”的删除性测试。
 
 真实模型输出不可完全确定，验收断言必须避开自然语言全文匹配。
 

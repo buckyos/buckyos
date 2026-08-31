@@ -61,7 +61,7 @@
 | 类型 | 交付物 | 必验内容 |
 |---|---|---|
 | 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
-| 新增 OpenAI-compatible Provider Instance | Provider Profile、Protocol Adapter、`endpoint`、授权、discovery 策略 | Provider 启用后 inventory 可见；完整身份链正确；exact model 可调用；逻辑目录可路由；缺 key / 错 key / discovery 不兼容时错误可诊断 |
+| 新增 OpenAI-compatible Provider Instance | Provider Profile、协议族、`endpoint`、授权、discovery 策略 | 用户无需选择 API 代际；接入测试优先新接口并按序测试已注册历史接口；resolved Adapter 固化后 inventory 身份链正确；运行时不得重新探测或跨代际降级 |
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |

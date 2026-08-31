@@ -68,7 +68,7 @@ Provider Instance 的名称、凭据、区域和用户自定义 endpoint 属于�
 
 ### 2.1 基础协议与派生 Adapter
 
-OpenAI、Claude、Google Gemini 必须各自拥有专门实现、独立注册和独立验收的基础 Protocol Adapter。三套基础协议不得合并成一个依靠 Provider ID 或模型名切换行为的通用 Adapter。
+OpenAI、Claude、Google Gemini 必须各自拥有专门实现、独立注册和独立验收的协议族。协议族不是可执行 Adapter；同一厂商的新旧 API 形态使用不同的内部 `protocol_adapter_id`，不能在一个 Adapter 内按 endpoint 能力或 Provider ID 切换。基础协议首先实现并维护官方推荐的新接口；历史接口仅在接入仍依赖它的具体派生 Provider Adapter 时按需增加，不要求预先实现该协议族的全部历史版本。
 
 内置厂商 Adapter 可以复用基础协议，并声明语义上的子类关系：
 
@@ -89,17 +89,25 @@ derived protocol_adapter_id
 
 初始 registry 关系至少包括：
 
-| `protocol_adapter_id` | `base_adapter_id` | 定位 |
-| --- | --- | --- |
-| `openai` | 无 | OpenAI 基础 API 协议实现 |
-| `claude` | 无 | Anthropic Claude 基础 API 协议实现 |
-| `gemini` | 无 | Google Gemini 基础 API 协议实现 |
-| `sn-openai` | `openai` | SN 鉴权扩展，复用 OpenAI 基础协议 |
-| `openrouter-openai` | `openai` | OpenRouter 渠道扩展，复用 OpenAI 基础协议 |
+| `protocol_family_id` | `protocol_adapter_id` | `base_adapter_id` | 定位 |
+| --- | --- | --- | --- |
+| `openai` | `openai-responses` | 无 | OpenAI 官方默认的新接口实现 |
+| `openai` | `openai-chat-completions` | 无 | 有具体派生 Provider 需要时才注册的 Chat Completions 实现 |
+| `openai` | `openai-completions` | 无 | 有具体派生 Provider 需要时才注册的旧 Text Completions 实现 |
+| `claude` | `claude-messages` | 无 | Claude 官方默认 Messages 实现 |
+| `claude` | `claude-completions` | 无 | 有具体派生 Provider 需要时才提供 |
+| `gemini` | `gemini-interactions` | 无 | Gemini 官方默认的新接口实现 |
+| `gemini` | `gemini-generate-content` | 无 | 有具体派生 Provider 需要时才提供 |
+| `openai` | `sn-openai` | `openai-responses` | SN 鉴权扩展，当前复用 Responses 实现 |
+| `openai` | `openrouter-openai` | `openai-chat-completions` | OpenRouter 渠道扩展，复用其实际兼容的旧接口 |
+
+新接口 Adapter 与兼容 Adapter 是平级实现。兼容 Adapter 不继承新接口 Adapter，也不通过调用新接口失败后回退旧接口。两者只允许复用低层、无状态且协议中立的组件，例如 HTTP transport、SSE framing、通用 JSON/错误工具和 AICC normalized IR；endpoint path、request schema、response event、错误映射和能力声明保持各自内聚。
+
+Provider Profile/Rules 必须在路由前得到一个确定的 Adapter 和 operation。Known Provider 由内置 Profile 固定该选择；用户添加 `custom` Provider 时只选择或识别 OpenAI、Claude、Gemini 等协议族，不选择 API 代际。接入测试按该协议族“官方新接口优先、运行时已注册的历史接口其次”的顺序验证，成功后把 resolved `protocol_adapter_id` 固化到 Provider Instance。接口不支持才继续测试下一候选；认证、网络和服务端故障必须直接报告，不能被误判成历史接口需求。运行时只使用已固化 Adapter，不重新探测，也不在一次调用中静默切换新旧 Adapter。
 
 ### 2.2 SN Provider 的 OpenAI 子类语义
 
-SN Provider 当前使用独立的 `sn-openai` Protocol Adapter，并声明 `base_adapter_id: "openai"`。它复用 OpenAI 请求、响应、stream、错误和 operation 语义，SN 特性只实现在派生层。
+SN Provider 当前使用独立的 `sn-openai` Protocol Adapter，属于 `openai` 协议族，并声明 `base_adapter_id: "openai-responses"`。它复用 OpenAI Responses 请求、响应、stream、错误和 operation 语义，SN 特性只实现在派生层。
 
 SN Provider 支持两种显式且互斥的认证模式：
 
@@ -463,7 +471,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 ## 10. 小型兼容 Provider 示例
 
-假设 `example-router` 是影响力较小的 OpenAI-compatible 聚合服务，可以复用已有通用 adapter，只需要配置模型匹配范围、命名映射和少量 operation：
+假设 `example-router` 是影响力较小、仍只提供 Chat Completions 的 OpenAI-compatible 聚合服务。用户只声明 `openai` 协议族，接入测试将其解析为已注册的 `openai-chat-completions`；Provider 规则只需要配置模型匹配范围、命名映射和少量 operation：
 
 ```json
 {
@@ -518,7 +526,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 }
 ```
 
-如果通用 adapter 的全部默认行为已经适用，该 Provider 同样允许使用空配置：
+如果接入测试解析出的 Adapter 的全部默认行为已经适用，该 Provider 同样允许使用空配置：
 
 ```json
 {}
@@ -526,7 +534,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 ## 11. 默认值与覆盖语义
 
-配置型 Provider 的通用 adapter 提供经过验证的默认行为，外部配置只覆盖显式字段：
+配置型 Provider 解析出的特定 Adapter 提供经过验证的默认行为，外部配置只覆盖显式字段；配置不能把多个 API 代际合并为一个运行时探测或降级 Adapter：
 
 - map 按 key 覆盖；
 - `models` 按 `id` 覆盖同名 exact rule；
@@ -541,10 +549,11 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 ## 12. 已确定的实现约束
 
 1. 内置专用 Provider 包括 OpenAI、Claude、Google Gemini、OpenRouter、SN、MiniMax 和 fal；新增发布级 Provider 必须进入协议验收矩阵。
-2. 配置型 Provider 只能选择运行时已经注册的 Protocol Adapter；AICC 不开放第三方 Provider 插件或任意协议 ID。
+2. 配置型 Provider 只能使用运行时已经注册的 Protocol Adapter；用户只提供协议族和连接信息，接入测试自动解析并固化具体 Adapter。AICC 不开放第三方 Provider 插件或任意协议 ID。
 3. Provider Rules、Model Driver、Pricing 和 Known Provider 使用统一 catalog 更新、严格校验、原子 activation 与 LKGS 机制，但保持独立对象和 revision。
 4. Model Driver variant 定义语义身份；Provider variant 必须完整覆盖该身份到 adapter 参数的 lowering，否则该 Provider 不得声明对应 variant 可用。
 5. 旧 `provider_driver` 拆为 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`，不提供兼容读取。
-6. OpenAI、Claude、Google Gemini 分别实现基础 Protocol Adapter；不得用 Provider 分支模拟三套专用协议。
-7. SN 使用独立 `sn-openai` Adapter，并以 `openai` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
+6. OpenAI、Claude、Google Gemini 分别实现专用协议族；优先实现官方新接口，历史接口只在具体派生 Provider 需要时按需增加，并使用独立、版本化语义的可执行 Adapter。
+7. SN 使用独立 `sn-openai` Adapter，并以 `openai-responses` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
 8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。
+9. 官方 Profile 默认新接口；自定义 Provider 接入测试先测新接口，再测已注册的历史接口，用户不选择接口版本。解析完成后新旧 Adapter 不互相 fallback，只复用协议中立的底层组件。

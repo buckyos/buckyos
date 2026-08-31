@@ -431,7 +431,7 @@ T2 按模型官方能力覆盖：
 
 当前 canonical API type 的行为组合必须逐项覆盖：
 
-`chat.completions.create` 是 AICC 的 LLM typed inference 接口。Beta 2.2 不保留或测试 `llm.chat`、`llm.completion` 等旧式 all-in-one 接口；Protocol Adapter 使用 Responses、Chat Completions 或其他厂商协议属于内部传输实现。
+`chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口。Beta 2.2 不保留或测试 `llm.chat`、`llm.completion` 等旧式 all-in-one 接口；底层 Responses、Chat Completions、Messages、Interactions 等 wire API 由 Provider Instance 已解析的 Adapter 决定。自定义 Provider 接入测试必须验证“新接口优先、已注册历史接口其次”，用户不提供版本；解析后的新旧 Adapter 分别测试，推理调用失败后不能隐式切换。
 
 - `llm.chat`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
 - `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。

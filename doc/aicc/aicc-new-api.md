@@ -193,7 +193,7 @@ operation 按 `method > api_type > adapter default` 解析，并必须存在于 
 
 新的推理接口不再追求 all-in-one，而是按 API 形态拆分，让类型更强。
 
-接口命名尽量贴近行业开创者已经建立的资源语义。AICC 不必完全复制某一家 provider 的 wire protocol，但命名上应优先采用开发者熟悉的形态，例如 `chat.completions.create`、`images.generate`、`embeddings.create`、`audio.transcriptions.create`。
+接口命名尽量贴近行业开创者已经建立的资源语义。AICC 不复制某一家 Provider 的 wire protocol；`chat.completions.create` 是稳定的 provider-neutral method，可以映射到 Responses、Messages、Interactions 或旧兼容 Adapter。实际接口由 `protocol_adapter_id + operation` 决定。
 
 #### LLM 推理接口
 
@@ -323,7 +323,7 @@ Model Driver 定义 variant 的语义身份，Provider Rules 定义该身份在�
 AICC exact model: gpt-5.1:reasoning-high@openai-primary
 provider_model_id: gpt-5.1
 provider_profile_id: openai
-protocol_adapter_id: openai
+protocol_adapter_id: openai-responses
 operation: responses.create
 resolved_options.reasoning.effort: high
 ```

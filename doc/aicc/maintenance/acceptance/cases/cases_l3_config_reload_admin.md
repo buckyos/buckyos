@@ -78,9 +78,9 @@ system_config 写入 settings
 | `l1_scheduler_weight_*` | P0 | item weight、exact model weight、weight 0 硬过滤、同权重 profile 评分 |
 | `l1_scheduler_profile_*` | P0 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` |
 | `l1_request_overlay_*` | P0 | overlay 合并、逻辑目录覆盖、policy locked、互不污染 |
-| `l1_provider_protocol_openai_*` | P0 | OpenAI request/response 转换、tool call、JSON schema、SSE 聚合 |
-| `l1_provider_protocol_claude_*` | P0 | Claude content block、tool use、vision block、stop reason、usage |
-| `l1_provider_protocol_gemini_*` | P0 | Gemini parts、function call、safety block、operation 状态 |
+| `l1_provider_protocol_openai_*` | P0 | Responses 与 Chat Completions 分 Adapter contract、无隐式 fallback |
+| `l1_provider_protocol_claude_*` | P0 | Messages 与兼容 Completions 分 Adapter contract |
+| `l1_provider_protocol_gemini_*` | P0 | Interactions 与 `generateContent` 分 Adapter contract、无隐式 fallback |
 | `l1_provider_protocol_fal_*` | P1 | fal submit/poll、artifact URL、operation timeout |
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |

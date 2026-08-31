@@ -8,10 +8,10 @@
 
 | Provider | 输入格式 | 输出格式 | Streaming / 异步 | Mock 重点 |
 |---|---|---|---|---|
-| OpenAI | Responses API、image generation/edit、audio transcription/speech、embedding | text、tool calls、JSON schema、image/audio artifact、usage | SSE delta 归并；图片/音频直接 artifact | tool call、JSON schema、vision content part、rate limit、context too long |
-| Claude | Messages API、content blocks、tool use、vision block | text block、tool_use、stop_reason、usage | SSE event stream 归并 | content block 转换、tool schema、vision fallback、overloaded/rate limit |
-| Google Gemini | `generateContent`、多模态 parts、embedding、image/video/audio | candidates、function_call、safety、media outputs | streamGenerateContent / 长任务 operation | parts 映射、safety block、multimodal embedding space、video operation |
-| OpenAI-compatible / OpenRouter | Chat completions 或 responses-like | OpenAI-like，但字段可能缺失或扩展 | SSE 兼容差异 | 兼容字段缺失、模型名映射、provider-specific error |
+| OpenAI 官方 | `openai-responses`；其它资源 API 按 operation | Responses item、tool calls、JSON schema、artifact、usage | Responses SSE delta 归并 | 新接口 contract、tool、vision、rate limit、context too long |
+| Claude 官方 | `claude-messages` | content block、tool_use、stop_reason、usage | Messages SSE event stream | Messages contract、tool schema、vision、overloaded/rate limit |
+| Google Gemini 官方 | `gemini-interactions`；其它媒体/embedding API 按 operation | interaction outputs、function call、safety、media outputs | Interactions stream / 长任务 operation | 新接口 contract、safety、multimodal、video operation |
+| 按需历史接口 | 当前已注册的 `openai-chat-completions` / `openai-completions` / `claude-completions` / `gemini-generate-content` | 各旧 API 原生响应归一化 | 各自独立 stream 解析 | 只测试具体派生 Provider 已引入的历史 Adapter；禁止运行时跨代际 fallback |
 | fal | 图片/音频/视频工具型任务 | artifact URL / operation status | 异步 submit + poll | upscale、bg_remove、audio.enhance、video.upscale、operation timeout |
 | SN AI Provider | 统一 Provider Instance，`sn-openai` 派生 Adapter | OpenAI 基础协议语义 | 复用 OpenAI stream/响应处理 | API Key 与动态登录双模式、token 刷新、SN 错误隔离、usage / trace / free credit 归因 |
 
@@ -81,11 +81,15 @@ case_set = {
 | `l1_scheduler_weight_*` | P0 | item weight、exact model weight、weight 0 硬过滤、同权重 profile 评分 |
 | `l1_scheduler_profile_*` | P0 | `cost_first`、`latency_first`、`quality_first`、`balanced`、`local_first`、`strict_local` |
 | `l1_request_overlay_*` | P0 | overlay 合并、逻辑目录覆盖、policy locked、互不污染 |
-| `l1_provider_protocol_openai_*` | P0 | OpenAI request/response 转换、tool call、JSON schema、SSE 聚合 |
-| `l1_provider_protocol_claude_*` | P0 | Claude content block、tool use、vision block、stop reason、usage |
-| `l1_provider_protocol_gemini_*` | P0 | Gemini parts、function call、safety block、operation 状态 |
-| `l1_provider_adapter_isolation_*` | P0 | OpenAI、Claude、Gemini 使用独立基础 Adapter，互不按 Provider ID 分支 |
-| `l1_provider_protocol_sn_openai_*` | P0 | `sn-openai.base_adapter_id=openai`、API Key、动态登录、token 缓存/刷新、SN 错误隔离 |
+| `l1_provider_protocol_openai_responses_*` | P0 | Responses request/item/SSE、tool call、JSON schema、usage |
+| `l1_provider_protocol_openai_chat_completions_*` | P0 | Chat Completions 独立 contract，不经过 Responses Adapter |
+| `l1_provider_protocol_claude_messages_*` | P0 | Messages content block、tool use、vision、stop reason、usage |
+| `l1_provider_protocol_claude_compat_*` | P1 | 旧 Completions 独立 contract，不污染 Messages Adapter |
+| `l1_provider_protocol_gemini_interactions_*` | P0 | Interactions、function call、safety、operation 状态 |
+| `l1_provider_protocol_gemini_generate_content_*` | P0 | `generateContent` 独立 contract，不经过 Interactions Adapter |
+| `l1_provider_adapter_isolation_*` | P0 | 新旧 Adapter 平级、无运行时 fallback，只共享协议中立组件 |
+| `l1_provider_protocol_sn_openai_*` | P0 | `sn-openai.base_adapter_id=openai-responses`、API Key、动态登录、token 缓存/刷新、SN 错误隔离 |
+| `l1_provider_protocol_custom_resolve_*` | P0 | 用户只给协议族；接入测试新接口优先、历史接口按注册优先级、非协议错误停止、resolved Adapter 持久化；运行时不重新协商 |
 | `l1_provider_adapter_removal_*` | P0 | 移除 SN Profile/Rules/Adapter 后 OpenAI 全量协议测试不变且通过 |
 | `l1_provider_protocol_fal_*` | P1 | fal submit/poll、artifact URL、operation timeout |
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |

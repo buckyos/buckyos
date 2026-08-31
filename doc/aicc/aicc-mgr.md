@@ -64,7 +64,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
       "provider_instance_name": "openai-main",
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai",
+      "protocol_adapter_id": "openai-responses",
       "endpoint": "https://api.openai.com/v1",
       "credentials": {
         "api_token": { "locked": "..." }
@@ -83,8 +83,10 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 - `provider_instance_name` 是 Zone 内稳定唯一主键。
 - `provider_type` 只表达部署类型，不表达厂商或协议。
 - `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
-- `protocol_adapter_id` 必须来自运行时 adapter registry；Known Provider 只提供默认值。
-- `endpoint` 和 adapter 必须在保存前完成连接、认证和协议验证。
+- `protocol_family_id` 只用于 `custom` Provider 的创建/更新请求，表达 OpenAI-compatible、Claude-compatible、Gemini-compatible 等大类；解析成功后可由 resolved Adapter 反查，不作为另一个运行期选择字段。
+- `protocol_adapter_id` 是后端解析并保存的内部执行字段，必须来自运行时 adapter registry；Known Provider 由 Profile 给出确定值，`custom` Provider 的创建请求不要求用户填写。
+- `custom` Provider 只提交协议族、`endpoint` 和凭据；后端在保存前先测官方新接口，再测该协议族中已注册的历史接口，并固化首个协议验证成功的 Adapter。
+- 只有明确的“接口不支持”结果才继续下一候选；连接、认证、限流和服务端故障直接返回，不能用旧接口测试掩盖。
 - 凭据使用 system-config locked value 或 credential reference，不进入 catalog、inventory、trace 或日志。
 - Catalog activation 不得修改实例名称、endpoint、凭据、区域、账号、协议选择或实例级价格上下文。
 - 不读取 `instance_id`、`provider_driver`、`base_url`、`api_key`、`apiKey` 等旧字段或别名。
@@ -101,11 +103,11 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 
 ### 4.0 `provider.catalog` / `protocol_adapter.list`
 
-`provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、默认 `protocol_adapter_id` 和 UI hints。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
+`provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、内部默认 `protocol_adapter_id` 和 UI hints。Adapter 默认值供后端解析 Known Provider，不要求 UI 暴露 API 版本选择。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
 
-`protocol_adapter.list` 返回程序实际注册的 adapter ID、可选 `base_adapter_id`、支持的 operation 和协议能力。OpenAI、Claude、Gemini 基础 Adapter 必须分别可见；`sn-openai` 等派生 Adapter 使用独立 ID，并展示其基础 Adapter。配置型 Provider 只能选择该列表中的 adapter，不能自由输入协议 ID、endpoint path 或脚本。
+`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `base_adapter_id`、支持的 operation 和协议能力。每个协议族必须包含官方新接口；历史接口仅在已有具体派生 Provider 需要并完成实现时出现。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
 
-Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式必须从 `protocol_adapter.list` 选择 adapter，保存前执行 endpoint、认证、协议和 discovery 验证。
+Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 endpoint、认证、协议和 discovery 验证并返回 resolved Adapter。
 
 ### 4.1 `models.list`
 
@@ -155,7 +157,7 @@ Request：
   "provider_instance_name": "openai-work",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai",
+  "protocol_adapter_id": "openai-responses",
   "endpoint": "https://api.openai.com/v1",
   "credentials": {
     "type": "bearer",
@@ -203,7 +205,7 @@ Request：
   "provider_instance_name": "openai-work",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai",
+      "protocol_adapter_id": "openai-responses",
   "endpoint": "https://api.openai.com/v1",
   "credentials": {
     "type": "bearer",
@@ -263,7 +265,7 @@ Response：
     "provider_instance_name": "openai-work",
     "provider_type": "cloud_api",
     "provider_profile_id": "openai",
-    "protocol_adapter_id": "openai",
+    "protocol_adapter_id": "openai-responses",
     "endpoint": "https://api.openai.com/v1",
     "credentials": {
       "type": "bearer",
@@ -275,14 +277,15 @@ Response：
 }
 ```
 
-`openrouter`、`sn` 和需要内置扩展的兼容渠道使用独立派生 Adapter；小型 `custom` Provider 才可直接选择受限的 OpenAI-compatible Adapter：
+`openrouter`、`sn` 和需要内置扩展的兼容渠道使用独立派生 Adapter；小型 `custom` Provider 由接入测试自动解析其实际支持的 Adapter：
 
 - `provider_profile_id` 标识渠道规则。OpenAI 使用 `openai`，OpenRouter 使用 `openrouter`，自定义 OpenAI-compatible Provider 使用 `custom` 或已注册的 Profile ID。
-- `protocol_adapter_id` 必须来自 AICC 运行时注册表。Known Provider catalog 可以给出默认值，但 UI 必须展示并允许修正，保存时由后端验证。
+- `protocol_adapter_id` 必须来自 AICC 运行时注册表。Known Provider catalog 给出确定值；自定义 Provider 由后端按新接口优先顺序解析。UI 只展示解析结果和诊断，不要求用户修正 API 版本。
 - `provider_type` 只表示部署类型（例如 `cloud_api`），不能代替 `provider_profile_id`。新配置不读取旧 `provider_driver` 字段。
 - 派生 Adapter 必须有独立 ID 和可选 `base_adapter_id`；基础 Adapter 不读取派生 Provider 配置。
+- 官方 Profile 默认选择新接口；自定义 Provider 保存时自动测试新接口和已注册历史接口，resolved Adapter 一旦保存，运行时不能从新接口静默降级。
 
-`sn-ai-provider` 使用独立 Profile 和 `sn-openai` Adapter，后者语义上派生自 `openai`。`auth.mode=api_key` 时使用静态 Bearer API Key；`auth.mode=dynamic_login` 时由 SN 层使用登录凭据换取并刷新短期 token，再委托 OpenAI 基础协议。OpenAI Adapter 不包含 SN 登录或 Provider 分支。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合，价格由 Pricing catalog 精确解析。
+`sn-ai-provider` 使用独立 Profile 和 `sn-openai` Adapter，后者属于 `openai` 协议族并派生自 `openai-responses`。`auth.mode=api_key` 时使用静态 Bearer API Key；`auth.mode=dynamic_login` 时由 SN 层使用登录凭据换取并刷新短期 token，再委托 Responses 实现。OpenAI 官方 Adapter 不包含 SN 登录或 Provider 分支。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合，价格由 Pricing catalog 精确解析。
 
 ### 4.4 `provider.delete`
 
@@ -598,8 +601,9 @@ let next = config_client.get("services/aicc/settings").await?;
   - 在 `Provider` trait 暴露 `refresh_inventory`，并在 registry / model_registry 中提供按 `provider_instance_name` 刷新并 apply inventory 的方法。
   - 暴露 usage query helper，如不方便可先放在 `main.rs` 调用 `usage_log_db()`。
 - `src/frame/aicc/src/openai.rs`、`src/frame/aicc/src/claude.rs`、`src/frame/aicc/src/gemini.rs`、`src/frame/aicc/src/minimax.rs`、`src/frame/aicc/src/fal.rs`、`src/frame/aicc/src/sn_ai_provider.rs`
-  - OpenAI、Claude、Gemini 分别提供专门的基础协议实现和测试。
-  - SN 使用独立 `sn-openai` Adapter，通过组合、委托或继承复用 OpenAI 基础协议，只在 SN 层实现静态 API Key/动态登录认证。
+  - OpenAI、Claude、Gemini 按 API 代际分别提供专门实现和测试；官方 Profile 只默认新接口。
+  - 旧接口 Adapter 与新接口 Adapter 平级，只共享协议中立底层组件，不共享 endpoint 分支或 fallback 状态机。
+  - SN 使用独立 `sn-openai` Adapter，通过组合、委托或继承复用 `openai-responses`，只在 SN 层实现静态 API Key/动态登录认证。
   - 其他内置兼容渠道采用相同的独立派生 Adapter 语义，不在基础 Adapter 中增加 Provider 分支。
   - 实现 `Provider::refresh_inventory`，复用现有 `refresh_inventory_once` 逻辑。
 - `src/kernel/buckyos-api/src/aicc_client.rs`

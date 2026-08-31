@@ -8,10 +8,10 @@
 
 | Provider | 输入格式 | 输出格式 | Streaming / 异步 | Mock 重点 |
 |---|---|---|---|---|
-| OpenAI | Responses API、image generation/edit、audio transcription/speech、embedding | text、tool calls、JSON schema、image/audio artifact、usage | SSE delta 归并；图片/音频直接 artifact | tool call、JSON schema、vision content part、rate limit、context too long |
-| Claude | Messages API、content blocks、tool use、vision block | text block、tool_use、stop_reason、usage | SSE event stream 归并 | content block 转换、tool schema、vision fallback、overloaded/rate limit |
-| Google Gemini | `generateContent`、多模态 parts、embedding、image/video/audio | candidates、function_call、safety、media outputs | streamGenerateContent / 长任务 operation | parts 映射、safety block、multimodal embedding space、video operation |
-| OpenAI-compatible / OpenRouter | Chat completions 或 responses-like | OpenAI-like，但字段可能缺失或扩展 | SSE 兼容差异 | 兼容字段缺失、模型名映射、provider-specific error |
+| OpenAI 官方 | `openai-responses`；其它资源 API 按 operation | Responses item、tool calls、JSON schema、artifact、usage | Responses SSE delta 归并 | 新接口 contract、tool、vision、rate limit、context too long |
+| Claude 官方 | `claude-messages` | content block、tool_use、stop_reason、usage | Messages SSE event stream | Messages contract、tool schema、vision、overloaded/rate limit |
+| Google Gemini 官方 | `gemini-interactions`；其它媒体/embedding API 按 operation | interaction outputs、function call、safety、media outputs | Interactions stream / 长任务 operation | 新接口 contract、safety、multimodal、video operation |
+| 按需历史接口 | 当前已注册的 `openai-chat-completions` / `openai-completions` / `claude-completions` / `gemini-generate-content` | 各旧 API 原生响应归一化 | 各自独立 stream 解析 | 只测试具体派生 Provider 已引入的历史 Adapter；禁止运行时跨代际 fallback |
 | fal | 图片/音频/视频工具型任务 | artifact URL / operation status | 异步 submit + poll | upscale、bg_remove、audio.enhance、video.upscale、operation timeout |
 | SN AI Provider | 统一 Provider Instance，`sn-openai` 派生 Adapter | OpenAI 基础协议语义 | 复用 OpenAI stream/响应处理 | API Key 与动态登录双模式、token 刷新、SN 错误隔离、usage / trace / free credit 归因 |
 
@@ -135,14 +135,15 @@ Mock Provider 需要提供测试管理接口：
 
 管理接口不应暴露真实 key、session token 和原始敏感资源内容。
 
-### 3.2 OpenAI-like 接口
+### 3.2 OpenAI 协议族接口
 
 建议支持：
 
 | Method | Path | 覆盖能力 |
 |---|---|---|
-| `POST` | `/v1/responses` | `llm.chat`、tool call、JSON schema、stream |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible / legacy 兼容 |
+| `POST` | `/v1/responses` | `openai-responses` contract |
+| `POST` | `/v1/chat/completions` | `openai-chat-completions` contract |
+| `POST` | `/v1/completions` | 可选 `openai-completions` contract |
 | `POST` | `/v1/embeddings` | `embedding.text` |
 | `POST` | `/v1/images/generations` | `image.txt2img` |
 | `POST` | `/v1/images/edits` | `image.img2img`、`image.inpaint` |
@@ -157,6 +158,7 @@ Mock Provider 需要提供测试管理接口：
 |---|---|---|
 | `POST` | `/v1/messages` | `llm.chat`、content block、tool use、vision |
 | `POST` | `/v1/messages?stream=true` | SSE streaming |
+| `POST` | `/v1/complete` | 可选 `claude-completions` contract |
 
 ### 3.4 Gemini-like 接口
 
@@ -164,6 +166,7 @@ Mock Provider 需要提供测试管理接口：
 
 | Method | Path | 覆盖能力 |
 |---|---|---|
+| `POST` | `<interactions-endpoint>` | `gemini-interactions` contract；实际路径由 Adapter contract 固定 |
 | `POST` | `/v1beta/models/{model}:generateContent` | `llm.chat`、multimodal parts、function call |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | streaming |
 | `POST` | `/v1beta/models/{model}:embedContent` | `embedding.text`、`embedding.multimodal` |
