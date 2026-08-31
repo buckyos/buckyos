@@ -75,7 +75,7 @@ quota_state = "normal"
 [[providers.models]]
 provider_model_id = "gpt-5-mini"
 exact_model = "gpt-5-mini@openai-mock-1"
-api_types = ["llm.chat", "llm.completion", "embedding.text", "image.txt2img"]
+api_types = ["llm.chat", "embedding.text", "image.txt2img"]
 logical_mounts = ["llm.gpt5", "llm.chat", "embedding.text", "image.txt2img"]
 features = ["json_output", "tool_calling", "web_search", "vision", "streaming"]
 max_context_tokens = 128000

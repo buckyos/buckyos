@@ -1,0 +1,645 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "facts-txt",
+      "path": "../fixtures/facts.txt",
+      "mime": "text/plain",
+      "size": 40,
+      "sha256": "392e7d2aaecb84b4ea112782937584ef4d943ee3e43b54d46743bd4218e07f4b",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-md",
+      "path": "../fixtures/facts.md",
+      "mime": "text/markdown",
+      "size": 65,
+      "sha256": "6525884012425e7020b4057ddfbf7c541d822a94edee4157b7bf92b26337dc26",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-html",
+      "path": "../fixtures/facts.html",
+      "mime": "text/html",
+      "size": 65,
+      "sha256": "9c71816cbad5358df4280195e9c288b02a68a49c282dcba2c3406ff312411e40",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-csv",
+      "path": "../fixtures/facts.csv",
+      "mime": "text/csv",
+      "size": 47,
+      "sha256": "915bac352b52d5d492b1019c969144312eb5543b732e1bc8120ae02094072b93",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-tsv",
+      "path": "../fixtures/facts.tsv",
+      "mime": "text/tab-separated-values",
+      "size": 47,
+      "sha256": "490073c9eb33095d1b7b9868e828a326a665a8129f102d2d21d72e0fe30ef709",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-json",
+      "path": "../fixtures/facts.json",
+      "mime": "application/json",
+      "size": 64,
+      "sha256": "307b2a0c302f2882842b70c98d075bdd0514f044d7adb515ff2ef91a853a8d92",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-yaml",
+      "path": "../fixtures/facts.yaml",
+      "mime": "application/yaml",
+      "size": 50,
+      "sha256": "e918c7cbc02032164ae1ba9947719a5f63b1654df73ce2025b0fe694bff38727",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-xml",
+      "path": "../fixtures/facts.xml",
+      "mime": "application/xml",
+      "size": 91,
+      "sha256": "720613d46790f949573d9b7fdc065597eb637b07aedc35e49402ca99582e540a",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-rtf",
+      "path": "../fixtures/facts.rtf",
+      "mime": "application/rtf",
+      "size": 52,
+      "sha256": "9716afae0bd84aa66ca049a8e5ad67f2f9b4f6de89b40960960f1b1d6e976572",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-py",
+      "path": "../fixtures/facts.py",
+      "mime": "text/x-python",
+      "size": 43,
+      "sha256": "ae19c88d55ca6b9ea1f6a0b4cbb3bfa23832c50bfb7234fce610bb5f05da9c0d",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "prompt-injection-md",
+      "path": "../fixtures/prompt_injection.md",
+      "mime": "text/markdown",
+      "size": 109,
+      "sha256": "5326b782cf0cfbd6892636c32c3b7c123edacf84827b7c1370927b5d8a1cfad7",
+      "facts": [
+        "prompt_injection"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-pdf",
+      "path": "../fixtures/facts.pdf",
+      "mime": "application/pdf",
+      "size": 613,
+      "sha256": "30f9863bacae4b74ebcf617b41ad5d5e515c53a1e07f97adbe6f474f72c57edf",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-docx",
+      "path": "../fixtures/facts.docx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 859,
+      "sha256": "27a3927beb614706b7d8722dfb86984d9aae73d6d50a7060b4cfe3f31304f8ee",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-xlsx",
+      "path": "../fixtures/facts.xlsx",
+      "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "size": 1453,
+      "sha256": "5bc0af1961f2afd61818c9bd1a4c3e6789fd78c303771ff20b2e253ff1eddbe5",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-pptx",
+      "path": "../fixtures/facts.pptx",
+      "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "size": 1466,
+      "sha256": "ce5ea1dce1db65998f147ac008ef3d3e2bbe853569998fede130ba40dba8f63d",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "facts-epub",
+      "path": "../fixtures/facts.epub",
+      "mime": "application/epub+zip",
+      "size": 958,
+      "sha256": "dc1cc761dc65198afbe6929bc7e15126d18b8c2fc322950e8e54e0ff240d21b8",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "transparent-png",
+      "path": "../fixtures/transparent.png",
+      "mime": "image/png",
+      "size": 72,
+      "sha256": "3f1f0c45e7bd172b1c2ad96b1ec8e534f61033d345117844eba6802e49e71555",
+      "facts": [
+        "transparent"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "mask-png",
+      "path": "../fixtures/mask.png",
+      "mime": "image/png",
+      "size": 68,
+      "sha256": "6f8f6a523797389e5890789f740e9c6e0f46b43290cf7b0dc9e903b25d8b36d6",
+      "facts": [
+        "mask"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "marker-jpg",
+      "path": "../fixtures/marker.jpg",
+      "mime": "image/jpeg",
+      "size": 517,
+      "sha256": "9a1a853f2907c42c7a7525f80dbedeb7e95a7c46b02330ffea6cf378f113cbd6",
+      "facts": [
+        "marker"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "speech-8khz-stereo-wav",
+      "path": "../fixtures/speech_8khz_stereo.wav",
+      "mime": "audio/wav",
+      "size": 32044,
+      "sha256": "c857cee5437da14d871943ade91126cb970dbddff69550f5cd028a66d045484c",
+      "facts": [
+        "speech_8khz_stereo"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "marker-srt",
+      "path": "../fixtures/marker.srt",
+      "mime": "application/x-subrip",
+      "size": 50,
+      "sha256": "117b82a8f628c9bcc0b33fa80eace5ded611b6f6b0348ea23b86d7a276456bfa",
+      "facts": [
+        "AICC-FIXTURE-7319"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-single-document-zip",
+      "path": "../fixtures/zip_single_document.zip",
+      "mime": "application/zip",
+      "size": 136,
+      "sha256": "5949a8805a76752581544f452f6ebc2875f15551b7c2fd38be1cb91d951ffd79",
+      "facts": [
+        "zip_single_document"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-multiple-documents-zip",
+      "path": "../fixtures/zip_multiple_documents.zip",
+      "mime": "application/zip",
+      "size": 487,
+      "sha256": "d9dcd364891b7ef6a3049ab5d5f459ce8fb5176f8eba77830c407835b9c2b123",
+      "facts": [
+        "zip_multiple_documents"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-path-traversal-zip",
+      "path": "../fixtures/zip_path_traversal.zip",
+      "mime": "application/zip",
+      "size": 142,
+      "sha256": "552728ff676928fbcb975d4f6ddbad4a072dea7b004469f16118c0f3afcd7448",
+      "facts": [
+        "zip_path_traversal"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-deep-nesting-zip",
+      "path": "../fixtures/zip_deep_nesting.zip",
+      "mime": "application/zip",
+      "size": 279,
+      "sha256": "8be1da1aece23ac86948277a152db96433dc82b6789c946eed22716a7a4411b5",
+      "facts": [
+        "zip_deep_nesting"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-many-files-zip",
+      "path": "../fixtures/zip_many_files.zip",
+      "mime": "application/zip",
+      "size": 13608,
+      "sha256": "e24727c533fa482da852c03d86ac0af329f36df0f8dd64339f09c5d0b0b1b990",
+      "facts": [
+        "zip_many_files"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-large-expansion-zip",
+      "path": "../fixtures/zip_large_expansion.zip",
+      "mime": "application/zip",
+      "size": 6331,
+      "sha256": "efaad7a1c15c79d62133fa161fb64ac1efc2ff9e3a5f66b1081f28d68e3ec34f",
+      "facts": [
+        "zip_large_expansion"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-empty-zip",
+      "path": "../fixtures/zip_empty.zip",
+      "mime": "application/zip",
+      "size": 22,
+      "sha256": "8739c76e681f900923b900c9df0ef75cf421d39cabb54650c4b9ad19b6a76d85",
+      "facts": [
+        "zip_empty"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-nested-zip",
+      "path": "../fixtures/zip_nested.zip",
+      "mime": "application/zip",
+      "size": 214,
+      "sha256": "a599fc45f8c39a79bf0a17617337575fc49fbfcc63b50144b394698113870f8a",
+      "facts": [
+        "zip_nested"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-corrupt-zip",
+      "path": "../fixtures/zip_corrupt.zip",
+      "mime": "application/zip",
+      "size": 24,
+      "sha256": "ba183df50e22a23de1a5a62fe5f334e0a8d61c9eff57f6e512807c651d95a990",
+      "facts": [
+        "zip_corrupt"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "zip-encrypted-flag-zip",
+      "path": "../fixtures/zip_encrypted_flag.zip",
+      "mime": "application/zip",
+      "size": 137,
+      "sha256": "6d90152cdcd99d42ab8afaf61cf02c681212b1ad283a344298a585583b9fc74d",
+      "facts": [
+        "zip_encrypted_flag"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "empty-bin",
+      "path": "../fixtures/empty.bin",
+      "mime": "application/octet-stream",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "facts": [
+        "empty"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "mime-mismatch-png",
+      "path": "../fixtures/mime_mismatch.png",
+      "mime": "image/png",
+      "size": 24,
+      "sha256": "ac0e5efec6d05586ad9fa8ff1fa6b0a8502f001e7087bacab91c108becf95329",
+      "facts": [
+        "mime_mismatch"
+      ],
+      "cases": [
+        "T1.resource",
+        "T2.format",
+        "T3.attachment"
+      ],
+      "source": "deterministic:generate_fixtures.py"
+    },
+    {
+      "id": "image-primary-png",
+      "path": "../../jarvis_media_dv/assets/image_primary.png",
+      "mime": "image/png",
+      "size": 4495,
+      "sha256": "b46904a386c4330a5672964921b3ae10638320e9f6abdbce56cc1962ae01f846",
+      "facts": [
+        "pink flower"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "image-secondary-png",
+      "path": "../../jarvis_media_dv/assets/image_secondary.png",
+      "mime": "image/png",
+      "size": 3805,
+      "sha256": "cd9daa4abb178d0d40f71c98e119bd936669587377174c0b287b0ad96bc7b440",
+      "facts": [
+        "mountain road"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "image-ocr-png",
+      "path": "../../jarvis_media_dv/assets/image_ocr.png",
+      "mime": "image/png",
+      "size": 2189,
+      "sha256": "eaa912debbdd30ccbbebbdae7ac4950b321afaaf740dd98ad76af3d7cfdc19c9",
+      "facts": [
+        "BUCKYOS-DV-4827"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "audio-sfx-wav",
+      "path": "../../jarvis_media_dv/assets/audio_sfx.wav",
+      "mime": "audio/wav",
+      "size": 128044,
+      "sha256": "9920b528fad7d5134970b61d021bff6080e89a54afee228d5f07329038715115",
+      "facts": [
+        "no speech"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "audio-speech-wav",
+      "path": "../../jarvis_media_dv/assets/audio_speech.wav",
+      "mime": "audio/wav",
+      "size": 155860,
+      "sha256": "ca5c54da773795d50938a208ab786577ceef4395124c600d2fe0fc529227026b",
+      "facts": [
+        "4827 spoken in Chinese"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "video-fresh-mp4",
+      "path": "../../jarvis_media_dv/assets/video_fresh.mp4",
+      "mime": "video/mp4",
+      "size": 1128375,
+      "sha256": "0cd83d944a6ca7822b4a8306cecc60a36e859b041f6702c6a1ad9ead78924451",
+      "facts": [
+        "flower moving in wind"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "document-facts-md",
+      "path": "../../jarvis_media_dv/assets/document_facts.md",
+      "mime": "text/markdown",
+      "size": 90,
+      "sha256": "238010bfc3a2fb618acdecbb70487ae46998506eba0d04e72291a62ed0b1af9a",
+      "facts": [
+        "AICC-DOC-7319"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    },
+    {
+      "id": "archive-mixed-zip",
+      "path": "../../jarvis_media_dv/assets/archive_mixed.zip",
+      "mime": "application/zip",
+      "size": 2255,
+      "sha256": "333fc27766c85e50d4363cf4fa3a50d4958e87109906cc01d3b18aa4421ff892",
+      "facts": [
+        "AICC-ZIP-8642"
+      ],
+      "cases": [
+        "T3.jarvis_media"
+      ],
+      "source": "jarvis_media_dv fixture"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import math
 import struct
 import wave
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -176,11 +177,43 @@ def sfx_audio() -> None:
         output.writeframes(frames)
 
 
+def document_and_archive() -> None:
+    document = (
+        "# AICC DV facts\n\n"
+        "- fact_id: AICC-DOC-7319\n"
+        "- owner: Lin\n"
+        "- budget_cny: 4827\n"
+        "- status: ready\n"
+    )
+    (ROOT / "document_facts.md").write_text(document, encoding="utf-8", newline="\n")
+    entries = {
+        "README.txt": "archive fact: AICC-ZIP-8642\n",
+        "docs/中文说明.md": "事实码 AICC-ZIP-8642，负责人 Lin。\n",
+        "data/items.csv": "id,name\n1,alpha\n2,beta\n",
+    }
+    timestamp = (2024, 1, 1, 0, 0, 0)
+    with zipfile.ZipFile(ROOT / "archive_mixed.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in entries.items():
+            info = zipfile.ZipInfo(name, timestamp)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, content.encode("utf-8"))
+        directory = zipfile.ZipInfo("empty/", timestamp)
+        directory.external_attr = (0o40755 << 16) | 0x10
+        archive.writestr(directory, b"")
+        image = ROOT / "image_ocr.png"
+        info = zipfile.ZipInfo("media/marker.png", timestamp)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, image.read_bytes())
+
+
 def main() -> None:
     save_png("image_primary.png", primary_image())
     save_png("image_secondary.png", secondary_image())
     save_png("image_ocr.png", ocr_image())
     sfx_audio()
+    document_and_archive()
 
 
 if __name__ == "__main__":

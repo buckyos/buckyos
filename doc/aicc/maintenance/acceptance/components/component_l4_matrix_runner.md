@@ -4,6 +4,8 @@
 
 本文档是拆分后的自包含验收任务文档。实现或评审本任务时，以本文档和 README 中列出的依赖文档为准。
 
+T2 矩阵必须先直接抓取 Provider 官方模型目录，再按能力基线的 `coverage_rules` 过滤逻辑别名、退役项并合并重复物理模型。随后确定本轮选中的 Provider instance，对每个 instance 调用 `provider.refresh_models` 直到首次成功，最后读取刷新后的 AICC `models.list`。不同 Provider 可以并行；同一 Provider 的失败尝试串行退避，达到上限仍未成功时不得开始矩阵 case，也不得使用刷新前缓存继续执行；首次成功后本轮不得再次主动刷新。AICC `models.list` 是被测库存，只与官方目录做双向差异检查；不得作为矩阵的模型事实源。只有官方库存与 AICC 库存一致的基础物理模型及其 metadata variants 才进入真实调用矩阵，任一方向的库存缺失都生成 baseline mismatch。
+
 ## 1. Provider 协议覆盖
 
 | Provider | 输入格式 | 输出格式 | Streaming / 异步 | Mock 重点 |
@@ -47,7 +49,7 @@ case_set = {
 矩阵来源：
 
 1. `canonical ApiType` 以 `src/frame/aicc/src/model_types.rs` 中的 `ApiType` 序列化值为准。当前 `llm` 是 canonical api_type，`llm.chat` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
-2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat`、`llm.chat`、`llm.completion` 中适用的调用形态。
+2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat`、`llm.chat` 中适用的调用形态。
 3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
 4. `enabled_official_providers` 发布强覆盖默认至少包含 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider`；如果官方配置或本次发布基线新增 Provider driver，必须自动纳入矩阵或在报告中标记为未覆盖缺口。
 5. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名、provider instance、`api_types`、`logical_mounts`、capabilities、health 和 pricing 摘要。
