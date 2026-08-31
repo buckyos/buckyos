@@ -20,6 +20,7 @@
 - `driver_metadata_update_storage.md`：当前 metadata 文件、目标/已应用序列和 Provider inventory 的持久边界。
 - `provider_profile_schema.md`：Provider Profile、Protocol Adapter、Provider Rules、Model Driver 和 Pricing 的目标边界与 schema。
 - `match_rule.md`：Model Driver、Provider Rules、请求/价格条件及发布 track 共用的统一匹配语义，采用字符串优先、多维对象按需展开的配置形式。
+- `internal_module_architecture.md`：AICC 重构后的内部模块职责、依赖方向、协议代际复用、运行时快照和生命周期边界。
 - `provider_architecture_durable_data_schema.md`：Issue #579 新 Provider 架构的持久数据边界，定义三类 catalog、Provider Instance 外部真相源和实例级 inventory LKGS。
 - `provider_ui_backend_mapping.md`：Provider catalog、Instance、inventory、trace 的前后端字段映射、状态和性能边界。
 - `aicc-upgrade-todo.md`：新 API 与模型体系历史实现记录。

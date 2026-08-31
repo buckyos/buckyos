@@ -1,6 +1,6 @@
 ﻿# AICC L4 Gateway LLM Provider 用例
 
-定义 OpenAI、Claude、Google Gemini、OpenRouter、SN AI Provider 的真实 LLM gateway workflow 和判定规则。
+定义第一版内置 LLM Provider 以及 SN 扩展 Provider 的真实 gateway workflow 和判定规则。
 
 本文档是拆分后的自包含验收任务文档。实现或评审本任务时，以本文档和 README 中列出的依赖文档为准。
 
@@ -11,18 +11,20 @@
 | OpenAI 官方 | `openai-responses`；其它资源 API 按 operation | Responses item、tool calls、JSON schema、artifact、usage | Responses SSE delta 归并 | 新接口 contract、tool、vision、rate limit、context too long |
 | Claude 官方 | `claude-messages` | content block、tool_use、stop_reason、usage | Messages SSE event stream | Messages contract、tool schema、vision、overloaded/rate limit |
 | Google Gemini 官方 | `gemini-interactions`；其它媒体/embedding API 按 operation | interaction outputs、function call、safety、media outputs | Interactions stream / 长任务 operation | 新接口 contract、safety、multimodal、video operation |
-| 按需历史接口 | 当前已注册的 `openai-chat-completions` / `openai-completions` / `claude-completions` / `gemini-generate-content` | 各旧 API 原生响应归一化 | 各自独立 stream 解析 | 每个历史 API 代际只实现并测试一份共享 Adapter；多个 Provider 直接引用或派生复用；禁止运行时跨代际 fallback |
+| 首版历史接口 | `openai-chat-completions` | Chat completion、tool calls、usage | Chat Completions SSE | 由 OpenRouter/Kimi/GLM 的真实需求触发，只维护一份基础 Adapter；其它历史代际仍按需加入 |
 | fal | 图片/音频/视频工具型任务 | artifact URL / operation status | 异步 submit + poll | upscale、bg_remove、audio.enhance、video.upscale、operation timeout |
+| OpenRouter / Kimi / GLM | 共享 `openai-chat-completions` + 各自 dialect | 归一化 message/tool/reasoning/usage | 共享基础 SSE，各自验证扩展 event | 基础合同只维护一次；分别验证路由参数、partial/cache、thinking/tool_stream |
+| MiniMax | `claude-messages` + MiniMax dialect；媒体走原生 operation | Messages content block / media artifact | Messages SSE / 原生异步任务 | 复用 Claude 基础合同，只增加 `base_resp` 和兼容差异 |
+| DeepSeek / 豆包 / Qwen | 共享 `openai-responses` + 各自 dialect | Responses item/tool/reasoning/usage | 共享基础 SSE，各自验证扩展 event | 分别验证 thinking、方舟工具、Qwen 参数子集/session cache |
 | SN AI Provider | 统一 Provider Instance，`sn-openai` 派生 Adapter | OpenAI 基础协议语义 | 复用 OpenAI stream/响应处理 | API Key 与动态登录双模式、token 刷新、SN 错误隔离、usage / trace / free credit 归因 |
 
-P0 Provider 最小集合按 `aicc_provider_plan.md`：
+第一版内置 Provider 集合按 `aicc_provider_plan.md`：
 
-- `openai.rs`
-- `claude.rs`
-- `gemini.rs` / `google-gemini` driver（代码中保留历史拼写，配置与 metadata 统一按 Google Gemini 语义验收）
-- `fal.rs`
+- `openai`、`claude`、`gemini`、`fal`
+- `openrouter`、`minimax`、`kimi`、`glm`
+- `deepseek`、`doubao`、`qwen`
 
-OpenRouter 在 Mock 和 Provider adapter 单测中仍可作为 P1 optional provider；在 L4 gateway 发布强覆盖验收中纳入 Provider 覆盖矩阵，用于验证 OpenAI-compatible 长尾模型、成本 fallback 和兼容性。普通开发验收缺少 OpenRouter key 时应 skipped，不阻塞 P0。
+Mock、基础协议复用、派生 Adapter 和 builtin 装配测试必须覆盖全部首版 Provider。缺少某家 key 时只允许跳过该 Provider 的 live smoke test，不能跳过离线协议和装配测试。
 
 ### 1.1 L4 真实 Provider、逻辑目录与物理模型矩阵
 
