@@ -106,7 +106,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 
 `provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、内部默认 `protocol_adapter_id` 和 UI hints。Adapter 默认值供后端解析 Known Provider，不要求 UI 暴露 API 版本选择。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
 
-`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `base_adapter_id`、支持的 operation 和协议能力。每个协议族必须包含官方新接口；历史接口仅在已有具体派生 Provider 需要并完成实现时出现。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
+`protocol_adapter.list` 返回当前实际注册的 `protocol_family_id`、adapter ID、接口代际/状态、探测优先级、可选 `base_adapter_id`、支持的 operation 和协议能力。每个协议族必须包含官方新接口；历史接口由首个真实 Provider 需求触发实现，之后作为协议族级 Adapter 被多个 Provider 或派生 Adapter 共享。`sn-openai` 等派生 Adapter 使用独立 ID，并展示其确定的基础 Adapter。该接口用于后端接入解析、诊断和管理员只读展示，不作为普通用户的 API 版本选择列表。
 
 Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式让用户选择 OpenAI-compatible、Claude-compatible、Gemini-compatible 等协议族，不要求识别 Responses、Chat Completions、Interactions 等 API 代际。保存前由后端执行 endpoint、认证、协议和 discovery 验证并返回 resolved Adapter。
 
@@ -604,9 +604,9 @@ let next = config_client.get("services/aicc/settings").await?;
   - 暴露 usage query helper，如不方便可先放在 `main.rs` 调用 `usage_log_db()`。
 - `src/frame/aicc/src/openai.rs`、`src/frame/aicc/src/claude.rs`、`src/frame/aicc/src/gemini.rs`、`src/frame/aicc/src/minimax.rs`、`src/frame/aicc/src/fal.rs`、`src/frame/aicc/src/sn_ai_provider.rs`
   - OpenAI、Claude、Gemini 按 API 代际分别提供专门实现和测试；官方 Profile 只默认新接口。
-  - 旧接口 Adapter 与新接口 Adapter 平级，只共享协议中立底层组件，不共享 endpoint 分支或 fallback 状态机。
+  - 旧接口 Adapter 与新接口 Adapter 平级，只共享协议中立底层组件，不共享 endpoint 分支或 fallback 状态机；每个历史 API 代际只实现一份共享 Adapter。
   - SN 使用独立 `sn-openai` Adapter，通过组合、委托或继承复用 `openai-responses`，只在 SN 层实现静态 API Key/动态登录认证。
-  - 其他内置兼容渠道采用相同的独立派生 Adapter 语义，不在基础 Adapter 中增加 Provider 分支。
+  - 其他内置兼容渠道可以与 SN 一样建立差异层，但多个派生 Adapter 应复用同一个基础/历史 Adapter，不在基础 Adapter 中增加 Provider 分支，也不复制 wire protocol。
   - 实现 `Provider::refresh_inventory`，复用现有 `refresh_inventory_once` 逻辑。
 - `src/kernel/buckyos-api/src/aicc_client.rs`
   - 可选：补齐 typed client method。若只供 desktop web 直接用 raw kRPC，第一版可以不改。

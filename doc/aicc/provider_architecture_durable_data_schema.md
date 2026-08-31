@@ -46,7 +46,7 @@ Provider Instance 配置是 Zone 级配置，继续存储在 system-config，由
 
 Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 catalog。运行时 registry descriptor 至少包含 `protocol_family_id`、`protocol_adapter_id`、接口代际/状态、支持的 operations，以及可选 `base_adapter_id`。`base_adapter_id` 声明语义复用关系，不规定继承、组合或委托的具体实现。
 
-同一协议族的新旧 API 形态必须使用不同 Adapter ID，例如 `openai-responses` / `openai-chat-completions` 和 `gemini-interactions` / `gemini-generate-content`。官方 Known Provider 默认新接口；历史 Adapter 仅在具体派生 Provider 需要时按需注册。自定义 Provider 创建/更新时由接入测试按“新接口优先、已注册历史接口其次”解析 Adapter，用户不提供版本；resolved Adapter 保存到 Provider Instance，不能由运行时调用失败触发隐式切换。
+同一协议族的新旧 API 形态必须使用不同 Adapter ID，例如 `openai-responses` / `openai-chat-completions` 和 `gemini-interactions` / `gemini-generate-content`。官方 Known Provider 默认新接口；历史 Adapter 只在首个实际 Provider 需求出现时按需实现和注册，但注册后是协议族级共享能力，不归触发它的派生 Provider 私有。其它 Provider 使用相同历史 API 代际时直接引用该 Adapter；存在渠道差异时，其派生 Adapter 通过 `base_adapter_id` 复用它。自定义 Provider 创建/更新时由接入测试按“新接口优先、已注册历史接口其次”解析 Adapter，用户不提供版本；resolved Adapter 保存到 Provider Instance，不能由运行时调用失败触发隐式切换。
 
 ### 3.2 NDN 当前 Metadata 与目标序列
 

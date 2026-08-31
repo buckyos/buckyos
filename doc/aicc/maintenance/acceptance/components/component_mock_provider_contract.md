@@ -121,6 +121,7 @@ usage_output_tokens = 3
 - 同一个 scenario 在 Rust Mock 和 TS Mock 中语义一致。
 - scenario 触发方式必须稳定，推荐通过 `payload.options.mock_behavior.scenario` 指定。
 - 每个协议代际使用独立 Provider Instance 和 `protocol_adapter_id`。Mock 可以监听同一端口，但 request 记录、scenario 和断言必须按 Adapter 隔离。
+- 同一历史 `protocol_adapter_id` 必须增加至少两个 Provider Instance/Profile 复用用例，证明协议实现和 contract suite 没有按派生 Provider 复制；派生 Adapter 只增加差异层断言。
 - 必须能分别配置“新接口失败、旧接口成功”和“旧接口失败、新接口成功”，验证任一 Adapter 都不会自动 fallback 到另一个。
 
 ## 3. Mock Provider HTTP 接口约定

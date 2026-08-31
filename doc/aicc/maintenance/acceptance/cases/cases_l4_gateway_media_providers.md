@@ -94,7 +94,7 @@
 | OpenAI 官方 | `openai-responses`；其它资源 API 按 operation | Responses item、tool calls、JSON schema、artifact、usage | Responses SSE delta 归并 | 新接口 contract、tool、vision、rate limit、context too long |
 | Claude 官方 | `claude-messages` | content block、tool_use、stop_reason、usage | Messages SSE event stream | Messages contract、tool schema、vision、overloaded/rate limit |
 | Google Gemini 官方 | `gemini-interactions`；其它媒体/embedding API 按 operation | interaction outputs、function call、safety、media outputs | Interactions stream / 长任务 operation | 新接口 contract、safety、multimodal、video operation |
-| 按需历史接口 | 当前已注册的 `openai-chat-completions` / `openai-completions` / `claude-completions` / `gemini-generate-content` | 各旧 API 原生响应归一化 | 各自独立 stream 解析 | 只测试具体派生 Provider 已引入的历史 Adapter；禁止运行时跨代际 fallback |
+| 按需历史接口 | 当前已注册的 `openai-chat-completions` / `openai-completions` / `claude-completions` / `gemini-generate-content` | 各旧 API 原生响应归一化 | 各自独立 stream 解析 | 每个历史 API 代际只实现并测试一份共享 Adapter；多个 Provider 直接引用或派生复用；禁止运行时跨代际 fallback |
 | fal | 图片/音频/视频工具型任务 | artifact URL / operation status | 异步 submit + poll | upscale、bg_remove、audio.enhance、video.upscale、operation timeout |
 | SN AI Provider | 统一 Provider Instance，`sn-openai` 派生 Adapter | OpenAI 基础协议语义 | 复用 OpenAI stream/响应处理 | API Key 与动态登录双模式、token 刷新、SN 错误隔离、usage / trace / free credit 归因 |
 
