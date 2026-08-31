@@ -1076,7 +1076,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 - `items`：目录下的软链接入口，每个 item 只需要 `target` 和 `weight`；`target` 可以是另一个逻辑目录或精确模型。
 - `weight`：item 在当前目录下的权重，默认 `1.0`；用户调整优先级时通常只需要改这个字段。
 - `global_exact_model_weights`：调整精确模型在本次 request overlay 中的全局权重；只影响已经由当前逻辑目录展开得到的候选，且不会覆盖目录 item 的分支优先级。
-- Provider 级别的允许/禁止列表仍可作为安全或组织策略存在，但不应作为用户选择模型的主要表达方式。
+- Provider 级别的允许/禁止列表仍可作为安全或组织策略存在，但不应作为用户选择模型的主要表达方式。列表项使用 [match_rule.md](match_rule.md) 的统一 `MatchRule`；通常直接写 Provider instance 的精确名称或 wildcard 字符串，只有同时约束 `api_type`、`logical_path` 等维度时才展开为对象。
 
 配置合并优先级建议：
 

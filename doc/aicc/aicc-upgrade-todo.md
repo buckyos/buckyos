@@ -421,6 +421,7 @@ Base Logical Tree
 
 ### 8.2 TODO
 
+- [ ] 实现统一 `MatchRule` 编译和执行层，供 Model Driver、Provider Rules、request/pricing rules、routing policy 范围及 metadata 发布 track 复用；简单配置保持 wildcard 字符串，多维匹配才使用对象。
 - [ ] 接入云端按客户端版本/通道/灰度分组选择的兼容 metadata 发布，以及 NDN 当前文件集合和只递增的 `metadata_target_seq = manifest.revision_seq`。
 - [ ] 验证发布序列不可复用、同序列内容冲突被拒绝、低版本回退被拒绝；回退内容必须用更高序列重新发布。
 - [ ] 保证新 metadata 文件下载、校验、替换完成并就绪后才推进 target seq；Provider 真正完成库存刷新后才推进自己的 applied seq。

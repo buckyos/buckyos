@@ -164,7 +164,7 @@ Model Driver 的 variant 只定义语义身份，例如 `reasoning.high`。配�
 | Provider 厂商 slug 映射 | `origin_provider_aliases` |
 | `provider_model_id` 到原厂身份的确定性映射 | `origin_mappings` |
 | 渠道专属排除规则 | `models[].exclude` / `patterns[].exclude` |
-| 选择按渠道模型名还是原厂模型名匹配 | `match_source` |
+| 选择按渠道模型名、原厂模型名或其它维度匹配 | `match: MatchRule`；字符串默认匹配渠道模型名 |
 | Provider 请求参数 | `provider_options` / `variants` |
 | 模型级请求默认值、改写和参数删除 | `request_rules` |
 | Provider 渠道默认价格 | `pricing` |
@@ -198,7 +198,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 - `origin_provider_aliases`：Provider 命名中的厂商 slug 到 Model Driver 名称的映射。
 - `origin_mappings`：可以从命名确定性解析原厂身份时使用的特殊映射。
 - `models`：按完整 `provider_model_id` 精确匹配的 Provider 规则。
-- `patterns`：按完整 `provider_model_id` 匹配的有序规则，按数组顺序从精确到宽松处理。
+- `patterns`：有序 Provider 规则；每项的 `match` 通常直接写匹配完整 `provider_model_id` 的 wildcard 字符串，多维条件才写对象。
 - `variants`：将 Model Driver 语义 variant 转换为 Provider 请求参数。
 
 不增加 `refresh_interval_sec`、`on_no_match`、`on_ambiguous`、`failure_policy`、`protocol_adapter` 等程序固定字段。
@@ -207,7 +207,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 ## 5. 模型规则
 
-`models` 和 `patterns` 复用已有 exact/pattern 规则结构。exact `models` 优先；未命中 exact 时，`patterns` 按数组顺序使用第一条匹配规则。
+`models` 和 `patterns` 使用 [match_rule.md](match_rule.md) 定义的统一 `MatchRule`。简单规则只写字符串 wildcard；只有同时约束多个维度时才使用对象。exact `models` 优先；未命中 exact 时，`patterns` 按数组顺序使用第一条匹配规则。
 
 专用 Provider 与配置型 Provider 都复用现有模型规则和 resolver。区别只是专用 Provider 从代码或内置数据提供 Provider model rules，配置型 Provider 从以下外部字段加载；专用 Provider 不因此开放外部覆盖。调用前可以产生临时的 resolved provider call，但它不是新的配置或真相源。
 
@@ -215,9 +215,8 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 | 配置项 | 默认值 | 用途 | 来源 |
 | --- | --- | --- | --- |
-| `id` | 无 | `models` 中精确匹配模型 | 复用现有字段 |
-| `pattern` | 无 | `patterns` 中 wildcard 匹配模型 | 复用现有字段 |
-| `match_source` | `provider_model_id` | 选择规则匹配渠道模型名或 `origin_model_id` | 新增 |
+| `id` | 无 | `models` 中精确匹配模型；内部归一化为单维 `MatchRule` | 复用现有字段 |
+| `match` | 无 | `patterns` 中的 `MatchRule`；通常直接写 wildcard 字符串 | 统一字段 |
 | `exclude` | `false` | 从当前 Provider inventory 排除模型 | 从 Model Driver metadata 移入 |
 | `operations` | `{}` | method/api_type 到 adapter operation 的映射 | 新增 |
 | `provider_options` | `{}` | 调用该模型时附加的 Provider 参数 | 从 Model Driver metadata 移入 |
@@ -233,7 +232,7 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 ```json
 {
-  "pattern": "vendor/veo-3.1-*",
+  "match": "vendor/veo-3.1-*",
   "operations": {
     "video.txt2video": "videos.create"
   },
@@ -257,7 +256,18 @@ Provider 配置只能收窄 Model Driver 声明的能力，不能增加模型固
 
 ### 5.1 匹配对象
 
-`match_source` 只允许：
+Provider model rule 的字符串 `match` 默认匹配 `provider_model_id`。需要改用原厂模型身份或联合其它维度时才展开为对象，例如：
+
+```json
+{
+  "match": {
+    "origin_model_id": "gpt-5-*",
+    "api_type": "llm"
+  }
+}
+```
+
+允许的模型身份维度包括：
 
 - `provider_model_id`：默认值，用于渠道命名、排除和 operation 规则；
 - `origin_model_id`：用于模型被 Provider 重命名后仍需应用的模型级 wire 参数和价格规则。
@@ -297,14 +307,15 @@ operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapte
 - `set`：覆盖已有字段；
 - `remove`：删除不兼容字段，使用 JSON Pointer。
 
-`when` 可以是单个谓词，也可以是 `{ "all": [...] }` 表示多个谓词同时成立。单个谓词只包含 `path`、`op`、`value`；第一版只支持 `exists`、`equals`、`not_equals`、`in`、`contains`。`all` 只接受一层谓词数组，不递归嵌套，也不支持脚本、任意表达式或自定义函数。
+`when` 使用统一 `MatchRule` 的多维对象形式，维度名是 normalized option 的 JSON Pointer；多个字段固定为 AND，数组值为 OR。简单等值条件直接写 `{ "/quality": "high" }`，不再使用 `path/op/value` 谓词对象，也不支持脚本、任意表达式或自定义函数。
 
 以下规则可以替代 GPT nano 默认参数和 GPT/Codex sampling 参数特判：
 
 ```json
 {
-  "pattern": "gpt-5-nano*",
-  "match_source": "origin_model_id",
+  "match": {
+    "origin_model_id": "gpt-5-nano*"
+  },
   "request_rules": [
     {
       "defaults": {
@@ -318,9 +329,9 @@ operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapte
     },
     {
       "when": {
-        "path": "/reasoning/effort",
-        "op": "not_equals",
-        "value": "none"
+        "/reasoning/effort": {
+          "not": "none"
+        }
       },
       "remove": [
         "/temperature",
@@ -344,7 +355,7 @@ operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapte
 - `estimated_cost`：无法精确计算时的默认估值；
 - `unit`：`request`、`image`、`audio_second` 或 `video_second`；
 - `amount`：对应 unit 的单价；
-- `rules`：根据请求参数选择单价的有序规则，使用与 `request_rules.when` 相同的谓词。
+- `rules`：根据请求参数选择单价的有序规则，使用与 `request_rules.when` 相同的 `MatchRule`。
 
 `pricing.rules` 使用第一条命中的价格；均未命中时使用外层 `amount` 或 `estimated_cost`。例如 GPT Image 按 quality/size 计价：
 
@@ -357,29 +368,17 @@ operation 是现有 adapter 已实现的符号名称，不是任意 URL。adapte
     "rules": [
       {
         "when": {
-          "all": [
-            {
-              "path": "/quality",
-              "op": "equals",
-              "value": "high"
-            },
-            {
-              "path": "/size",
-              "op": "in",
-              "value": [
-                "1536x1024",
-                "1024x1536"
-              ]
-            }
+          "/quality": "high",
+          "/size": [
+            "1536x1024",
+            "1024x1536"
           ]
         },
         "amount": 0.167
       },
       {
         "when": {
-          "path": "/quality",
-          "op": "equals",
-          "value": "low"
+          "/quality": "low"
         },
         "amount": 0.011
       }
@@ -483,7 +482,7 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
   },
   "origin_mappings": [
     {
-      "match": {
+      "extract": {
         "source": "provider_model_id",
         "regex": "^(?<driver>[^/]+)/(?<model>.+)$"
       },
@@ -508,15 +507,15 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
   ],
   "patterns": [
     {
-      "pattern": "*:*",
+      "match": "*:*",
       "exclude": true
     },
     {
-      "pattern": "*/*latest*",
+      "match": "*/*latest*",
       "exclude": true
     },
     {
-      "pattern": "openai/gpt-5*",
+      "match": "openai/gpt-5*",
       "operations": {
         "llm": "chat.completions.create"
       }
@@ -537,9 +536,9 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 
 - map 按 key 覆盖；
 - `models` 按 `id` 覆盖同名 exact rule；
-- `patterns` 出现时整体替换默认有序列表；
+- `patterns` 出现时整体替换默认有序列表；每项的 `match` 使用统一 `MatchRule`，通常是字符串 wildcard；
 - `origin_mappings` 出现时整体替换，避免合并后产生不可解释的顺序；
-- `variants` 按 `model_driver + variant + model_pattern` 覆盖；
+- `variants` 按 `model_driver + variant + match` 覆盖；
 - 字段缺失继续使用默认值；
 - `{}` 完全使用默认方案。
 
@@ -556,3 +555,4 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 7. SN 使用独立 `sn-openai` Adapter，并以 `openai-responses` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
 8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。
 9. 官方 Profile 默认新接口；自定义 Provider 接入测试先测新接口，再测已注册的历史接口，用户不选择接口版本。解析完成后新旧 Adapter 不互相 fallback，只复用协议中立的底层组件。
+10. Model Driver、Provider Rules、request/pricing rules 和发布 track 统一使用 `MatchRule`；简单规则保持 wildcard 字符串，多维条件才展开为对象，各业务模块不得再实现独立匹配 DSL。

@@ -10,6 +10,10 @@ Provider-specific origin mappings, exclusions, operations, request fields,
 endpoints and channel pricing are not valid Model Driver fields. They belong to
 the Provider Rules catalog described by `provider_profile_schema.md`.
 
+All boolean matching uses the shared `MatchRule` defined by `match_rule.md`.
+Simple model rules remain wildcard strings; the object form is only used when a
+rule must constrain multiple dimensions.
+
 ## Source priority
 
 The resolver loads metadata in this override order:
@@ -20,7 +24,7 @@ The resolver loads metadata in this override order:
 4. `$BUCKYOS_ROOT/etc/aicc/driver_metadata/system-config/<model-driver-id>.json`
 
 For one origin model, match priority is exact `models[].id`, ordered
-`patterns[].pattern`, `defaults`, then conservative fallback. Exact rules win
+`patterns[].match`, `defaults`, then conservative fallback. Exact rules win
 before patterns across the effective source set.
 
 ## Document
@@ -54,7 +58,8 @@ from NDN's file delivery contract; AICC does not repeat file verification.
 
 ## Model rule
 
-Exact and pattern rules can define:
+Exact and pattern rules can define the following fields. A pattern entry uses `match: MatchRule`;
+for the common case it is only `"match": "gpt-*"`:
 
 - `model_driver`: an exceptional semantic attribution override.
 - `exclude`: excludes an origin model from this Model Driver.
@@ -79,7 +84,7 @@ Variants define semantic identities only:
 ```json
 {
   "name": "reasoning.high",
-  "model_pattern": "gpt-*",
+  "match": "gpt-*",
   "mount_suffix": "reasoning-high"
 }
 ```

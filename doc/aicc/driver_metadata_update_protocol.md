@@ -39,9 +39,11 @@ Index 格式为 `buckyos.aicc.provider-catalog-index`，至少包含：
 
 - manifest 的 `revision_seq`；
 - manifest 的 path 和对象身份；
-- 兼容的 AICC/BuckyOS 客户端版本范围；
+- `match: MatchRule`，字符串简写匹配客户端版本；需要联合版本、更新通道或灰度分组时才使用对象；
 - `required_features`；
-- 可选更新通道和灰度分组条件。
+- 可选更新通道和灰度分组条件包含在 `match` 对象中。
+
+`MatchRule` 统一遵循 [match_rule.md](match_rule.md)。单一客户端版本范围保持简写，例如 `"2.2.*"`；多维投放才写成 `{ "client_version": "2.2.*", "update_channel": "stable", "rollout_group": "cn-*" }`，不为普通发布强制填写多层条件对象。
 
 云更新服务可以给不同客户端版本、更新通道或灰度分组配置不同 track。NDN 更新链路只能选择与本机客户端兼容的目标，不兼容或包含未知 required feature 的 track 必须拒绝。
 

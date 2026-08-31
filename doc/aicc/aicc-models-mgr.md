@@ -127,11 +127,11 @@ Driver metadata 负责回答：
 
 Variant 的边界是：如果一个 provider option 会影响路由选择、价格、质量、审计或用户可见模型选择，它就应该进入模型身份。例如 reasoning effort 应展开为 `:reasoning-high`、`:reasoning-low` 这样的 exact model suffix；如果只是一次请求里的普通采样参数，则仍留在 request options 中。
 
-当前 driver metadata 的匹配顺序是：
+当前 driver metadata 的匹配顺序如下。所有布尔匹配统一使用 [match_rule.md](match_rule.md) 的 `MatchRule`；常见模型规则保持为一个 wildcard 字符串，多维条件才展开为对象。
 
 ```text
 exact models[].id
--> wildcard patterns[].pattern
+-> wildcard patterns[].match (`MatchRule`，通常为字符串)
 -> defaults
 -> conservative fallback
 ```
@@ -478,7 +478,7 @@ Driver metadata 中的 `logical_mounts` 是默认挂载语义。推荐它优先�
 ```text
 family: gpt
 tier: standard | pro | mini | nano
-model_pattern: gpt-*
+match: gpt-*
 tier_tokens / exclude_tier_tokens
 version_rank.prefix: gpt
 stability.unstable_tokens: [preview, experimental, beta]

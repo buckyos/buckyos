@@ -85,12 +85,12 @@ Content Schema：
 - `model_driver_id: string`
 - `required_features: string[]`
 - `models: ModelRule[]`
-- `patterns: ModelRule[]`，有序、首个命中生效
+- `patterns: ModelRule[]`，每项使用统一 `MatchRule`，有序、首个命中生效
 - `defaults: ModelSemanticDefaults`
 - `variants: ModelVariant[]`
 - `version_rules: VersionRule[]`
 
-ModelRule 只允许模型技术字段：`id/pattern`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score`、`version_rules` 引用和可选保守默认价格。禁止 endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 文件真实性与完整性由 NDN 文件交付契约保证，AICC 不重复校验。
+ModelRule 只允许模型技术字段：`id/match`、`parameter_scale`、`api_types`、`logical_mounts`、`capabilities`、`quality_score`、`version_rules` 引用和可选保守默认价格。`match` 遵循 [match_rule.md](match_rule.md)，普通规则直接使用 wildcard 字符串。禁止 endpoint、认证、protocol adapter、operation、Provider 请求参数、availability、实例健康状态和对象内嵌签名。Catalog 文件真实性与完整性由 NDN 文件交付契约保证，AICC 不重复校验。
 
 ### 4.3 Object Type: Provider Rules Catalog
 
@@ -111,10 +111,10 @@ Content Schema：
 - `origin_provider_aliases: object<string,string>`
 - `origin_mappings: OriginMapping[]`
 - `models: ProviderModelRule[]`
-- `patterns: ProviderModelRule[]`，有序、首个命中生效
+- `patterns: ProviderModelRule[]`，每项使用统一 `MatchRule`，有序、首个命中生效
 - `variants: ProviderVariantRule[]`
 
-ProviderModelRule 可包含 `match_source`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`pricing` 直接保存该渠道模型的静态价格和条件计价规则。配置只能收窄 Model Driver 能力。
+ProviderModelRule 可包含 `match`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`match` 通常是匹配 `provider_model_id` 的 wildcard 字符串，需要联合 `origin_model_id`、Model Driver、variant 或 API type 时才使用对象。request/pricing 条件也复用同一 `MatchRule`。`pricing` 直接保存该渠道模型的静态价格和条件计价规则。配置只能收窄 Model Driver 能力。
 
 `metadata_drivers` 缺失表示使用内置 adapter 候选范围；显式空数组表示不匹配任何 Model Driver。空对象 `{}` 是合法的配置型 Provider override，表示全部使用程序默认规则。
 
