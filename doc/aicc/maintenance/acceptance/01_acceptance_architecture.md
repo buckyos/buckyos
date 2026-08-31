@@ -166,7 +166,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 | `l4_gateway_gemini_<model>_complex_workflow` | P2 | Google Gemini 每个支持模型的多模态、safety / function call / operation 语义 |
 | `l4_gateway_openrouter_<model>_complex_workflow` | P2 | OpenRouter 每个支持模型的 OpenAI-compatible 协议兼容、usage、trace |
 | `l4_gateway_fal_<model>_media_workflow` | P2 | fal 每个支持模型的 image/video/audio 工具型异步任务和 artifact |
-| `l4_gateway_sn_ai_provider_<model>_complex_workflow` | P2 | SN AI Provider 每个支持模型的无普通 API key 链路、usage、trace、provider 归因 |
+| `l4_gateway_sn_ai_provider_<model>_complex_workflow` | P2 | SN AI Provider 每个支持模型的 API Key/动态登录双链路、token 刷新、usage、trace、provider 归因 |
 | `l4_gateway_models_list` | P2 | 真实环境 inventory、逻辑目录和 Provider health 可诊断 |
 
 L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型名归一化得到；报告中必须保留原始精确模型名。
@@ -258,14 +258,14 @@ pnpm run acceptance:all -- \
 2. 执行 L1/L2 Rust 单测。
 3. 执行 L3 本地 Mock 验收。
 4. 使用 `buckyos-devkit` 创建并启动 L4 临时 group，通过 gateway 访问该 group。
-5. 将传入的 4 个 key 写入临时 group 的 AICC settings；`sn-ai-provider` 不需要普通 API key。
+5. 将传入的 Provider key 写入临时 group 的 AICC settings；SN 按测试矩阵分别配置 `api_key` 或 `dynamic_login`。
 6. 对 `openrouter`，runner 优先读取配置文件或临时 group settings 中的 `openrouter` key；如果发布验收要求强覆盖但缺 key，应在 preflight 阶段失败。普通开发验收可将 openrouter 矩阵标记为 `skipped`。
 7. 动态读取 `models.list` 和最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
 8. 每个 planned 矩阵用例执行逻辑模型段与精确物理模型段验证，失败后最多额外执行 2 次。
 9. 输出 `summary.md`、`summary.json` 和脱敏后的 attempt 明细。
 10. 清理 runner 新建的临时 group。
 
-为了让参数尽可能少，`sn-ai-provider` 不设置普通 API key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
+SN 动态登录用例不要求 API Key，但 SN API Key 用例必须显式提供 key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
 
 ## 7. 实现任务拆分建议
 

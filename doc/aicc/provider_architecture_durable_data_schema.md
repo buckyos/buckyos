@@ -44,6 +44,8 @@ Provider Instance 中不保存明文凭据；只保存 system-config 现有 lock
 
 Provider Instance 配置是 Zone 级配置，继续存储在 system-config，由 control-panel 写入、AICC 只读。AICC 不复制实例配置到本地数据库，避免两个配置真相源。
 
+Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 catalog。运行时 registry descriptor 至少包含 `protocol_adapter_id`、支持的 operations，以及可选 `base_adapter_id`。`base_adapter_id` 声明语义复用关系，不规定继承、组合或委托的具体实现。OpenAI、Claude、Gemini 基础 Adapter 必须使用不同 ID；派生 Adapter 也必须使用自己的 ID。
+
 ### 3.2 Catalog 对象与 activation
 
 catalog 是不可变、内容寻址、无复杂查询的 NDN JSON 对象，沿用 `$BUCKYOS_ROOT/data/srv/aicc/provider_catalog/remote_cache/v2/<source-key>/` 文件系统布局：
@@ -191,6 +193,8 @@ Content Schema：
 
 该 catalog 只提供默认值。保存 Provider Instance 前必须让用户看到并允许修正协议和 endpoint，并执行连接与协议验证。
 
+Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 `openai`。registry 中 `sn-openai.base_adapter_id = "openai"`，从而保留独立身份和从 SN 到 OpenAI 的单向依赖。
+
 ### 4.7 External Object: Provider Instance Config
 
 Description：system-config 中由用户管理的实例私有配置。
@@ -202,6 +206,7 @@ Content Schema：
 - `protocol_adapter_id: string`，必须来自运行时注册表。
 - `endpoint: string`。
 - `credential_ref/locked credential fields`。
+- `auth`：认证模式及其私有参数。SN 至少允许互斥的 `api_key` 和 `dynamic_login`；动态 token 只保存在运行时凭据缓存。
 - 可选 `region/account/pricing_context`。
 - 可选 `provider_rules_id` 和实例级 rules/pricing override。
 

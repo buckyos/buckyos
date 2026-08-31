@@ -169,7 +169,7 @@ Response：
   "selected_model_uid": "openai:gpt-5.1:responses",
   "provider_instance_name": "openai_primary",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai-responses",
+      "protocol_adapter_id": "openai",
   "model_driver_id": "openai",
   "origin_model_id": "gpt-5.1",
   "provider_model_id": "gpt-5.1",
@@ -1605,7 +1605,7 @@ Fallback：
   "provider_instance_name": "openai_primary",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai-responses",
+  "protocol_adapter_id": "openai",
   "catalog_activation_revision": 42,
   "models": [
     {

@@ -323,7 +323,7 @@ Model Driver 定义 variant 的语义身份，Provider Rules 定义该身份在�
 AICC exact model: gpt-5.1:reasoning-high@openai-primary
 provider_model_id: gpt-5.1
 provider_profile_id: openai
-protocol_adapter_id: openai-responses
+protocol_adapter_id: openai
 operation: responses.create
 resolved_options.reasoning.effort: high
 ```

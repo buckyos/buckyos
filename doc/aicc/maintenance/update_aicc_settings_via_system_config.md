@@ -21,7 +21,7 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
       "provider_instance_name": "openai-primary",
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai-responses",
+      "protocol_adapter_id": "openai",
       "endpoint": "https://api.openai.com/v1",
       "credentials": {
         "api_token": { "locked": "..." }
@@ -36,6 +36,39 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
 ```
 
 `provider_instance_name` 是稳定主键；Profile、Protocol Adapter 和 Model Driver 是不同身份。Provider Instance 不保存静态模型能力或逻辑挂载，catalog 更新也不能修改 endpoint、凭据、区域和协议选择。
+
+SN 使用独立 `sn-openai` Adapter，并显式选择认证模式。静态 API Key 示例：
+
+```json
+{
+  "provider_instance_name": "sn-main",
+  "provider_profile_id": "sn",
+  "protocol_adapter_id": "sn-openai",
+  "endpoint": "https://sn.example/v1",
+  "auth": {
+    "mode": "api_key",
+    "credential_ref": "system-config://secrets/aicc/sn-main"
+  }
+}
+```
+
+运行时登录示例：
+
+```json
+{
+  "provider_instance_name": "sn-main",
+  "provider_profile_id": "sn",
+  "protocol_adapter_id": "sn-openai",
+  "endpoint": "https://sn.example/v1",
+  "auth": {
+    "mode": "dynamic_login",
+    "login_profile": "device_jwt",
+    "login_endpoint": "https://sn.example/api/user/login_by_device_token"
+  }
+}
+```
+
+两种模式互斥。动态 token 只由 `sn-openai` 在运行时缓存和刷新，不写回 system-config，也不由 `openai` 基础 Adapter 处理。
 
 Beta 2.2 不读取 Provider family section、`instances[]` 包装、`provider_driver`、`base_url`、`features`、`alias_map`、section 级 token 或字段别名。
 ## 3. 更新方式
@@ -77,7 +110,7 @@ POST /kapi/system_config
   "method": "sys_config_set",
   "params": {
     "key": "services/aicc/settings",
-    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
+    "value": "{\"providers\":[{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}]}"
   },
   "sys": [3002, "<session_token>", "trace-aicc-cfg-set"]
 }
@@ -93,7 +126,7 @@ POST /kapi/system_config
   "params": {
     "key": "services/aicc/settings",
     "json_path": "/providers/0",
-    "value": "{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai-responses\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}"
+    "value": "{\"provider_instance_name\":\"openai-primary\",\"provider_type\":\"cloud_api\",\"provider_profile_id\":\"openai\",\"protocol_adapter_id\":\"openai\",\"endpoint\":\"https://api.openai.com/v1\",\"credentials\":{\"api_token\":{\"locked\":\"...\"}},\"provider_rules_id\":\"openai\"}"
   },
   "sys": [3003, "<session_token>", "trace-aicc-cfg-patch"]
 }

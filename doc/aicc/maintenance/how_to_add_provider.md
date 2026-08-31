@@ -28,6 +28,10 @@
 
 只处理协议：请求编码、认证、传输、流式/异步任务、响应解析、错误和取消。Adapter 不负责逻辑模型路由，也不根据模型名猜测能力。
 
+OpenAI、Claude、Gemini 必须分别实现基础 Adapter。内置厂商若只扩展某个基础协议，应注册独立派生 Adapter，并声明 `base_adapter_id`；实现可以继承、组合或委托。基础 Adapter 不允许识别派生 Provider。
+
+SN 的标准示例是 `sn-openai -> openai`：SN 层实现 `api_key` 或 `dynamic_login` 认证，OpenAI 层只执行基础协议。新增类似内置厂商时必须保持相同的单向依赖和可拆除性。
+
 ### Model Driver
 
 定义模型的稳定语义：ModelUID、origin model、variants、结构化能力、上下文限制、参数约束和支持的 AICC api types。Driver 不包含渠道凭据、endpoint 或厂商请求模板。
@@ -43,7 +47,7 @@
       "provider_instance_name": "openai-work",
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai-responses",
+      "protocol_adapter_id": "openai",
       "endpoint": "https://api.openai.com/v1",
       "credentials": {
         "type": "bearer",
@@ -63,6 +67,7 @@
 
 1. 在 Provider Profile catalog 增加或选择 Profile，并定义认证、endpoint、discovery 和 UI schema。
 2. 如需新协议，在 Adapter registry 注册固定 `protocol_adapter_id` 和支持的 operations。
+   若复用基础协议，则同时声明 `base_adapter_id`，并把所有厂商差异留在派生 Adapter。
 3. 在 Model Driver catalog 声明 ModelUID、origin model、variants、能力与限制。
 4. 在 Provider Rules 中声明 provider model 映射、operation 选择、参数 lowering 和价格解析。
 5. 让 discovery 只收窄 catalog 声明，不能自行抬高模型能力。
@@ -78,6 +83,7 @@
 - 能力结果是 Driver、Adapter 和 discovery 的交集；未知能力不靠模型名猜测。
 - 同步、SSE、异步轮询、取消、usage、错误分类和敏感信息脱敏均符合协议。
 - OpenRouter 等聚合渠道至少覆盖跨 Model Driver 的映射测试。
+- 基础 Adapter 与每个派生 Adapter 分别测试；SN 必须覆盖静态 API Key、动态登录、token 刷新以及删除 SN 不影响 OpenAI 的回归测试。
 - GPT-5 `image_generation` 按 metadata 选择 Responses tool；GPT Image/DALL-E 仍走 Image API。
 
 ## 6. 文档联动

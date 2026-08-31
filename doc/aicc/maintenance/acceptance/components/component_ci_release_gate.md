@@ -46,7 +46,7 @@
 4. 本地 kRPC Mock 验收能完成 `reload_settings -> models.list -> route -> provider call -> task / usage / trace` 闭环。
 5. gateway runner 能读取 TOML 配置并生成 `summary.md` 和 `summary.json`。
 6. gateway runner 能通过 `buckyos-devkit` 启动临时 group，并从宿主机经 gateway 完成访问。
-7. 已配置真实 key 的 Provider 必须覆盖其全部可用模型；`sn-ai-provider` 必须无普通 API key 覆盖；未配置 key 的 Provider 在普通开发验收中标记为 `skipped`，发布强覆盖验收中应 preflight 失败。
+7. 已配置真实凭据的 Provider 必须覆盖其全部可用模型；`sn-ai-provider` 必须覆盖 API Key 和动态登录两种模式；缺少所选模式凭据的 Provider 在普通开发验收中标记为 `skipped`，发布强覆盖验收中应 preflight 失败。
 8. 报告、trace、task data、日志摘要中不得出现 API key、session token、原始 prompt 全文和原始文件内容。
 9. 真实模型调用次数、attempt 次数和成本在报告中可见。
 10. 所有 failed / partial 用例都有明确失败原因、错误码或 Provider 摘要。

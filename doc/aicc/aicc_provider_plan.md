@@ -20,12 +20,17 @@ P0 required:
   fal.rs
 
 P1 optional:
-  OpenRouter Provider Profile + OpenAI-compatible adapter strategy
+  OpenRouter Provider Profile + openrouter-openai derived adapter
+  SN Provider Profile + sn-openai derived adapter
 ```
 
-OpenRouter 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。目标实现使用独立的 `openrouter` Provider Profile 和专用策略对象，复用 OpenAI-compatible Protocol Adapter，但不复用 OpenAI 官方渠道规则或 Model Driver。
+OpenRouter 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。目标实现使用独立的 `openrouter` Provider Profile、`openrouter-openai` 派生 Adapter 和专用策略对象；派生 Adapter 语义上复用 OpenAI 基础协议，但不复用 OpenAI 官方渠道规则或 Model Driver。
 
 所有 Provider 均遵循同一分层：Provider Profile 决定渠道 discovery、origin mapping、operation、请求限制和价格；Model Driver Metadata 只解释模型固有能力、家族和语义 variant；Protocol Adapter 只实现已注册 operation 的认证、endpoint、wire 编解码及异步状态机。路由阶段产生 `ResolvedProviderCall`，执行阶段不得再按模型名称切换协议。
+
+OpenAI、Claude、Google Gemini 分别实现 `openai`、`claude`、`gemini` 基础 Protocol Adapter，拥有独立 wire schema、stream、错误映射和协议测试。内置兼容渠道可以定义独立的派生 Adapter，并通过 `base_adapter_id` 表达语义子类关系；具体代码可以继承、组合或委托。基础 Adapter 禁止引用派生 Adapter 或按 Provider ID 分支。
+
+SN Provider 使用 `sn-openai` 派生 Adapter，`base_adapter_id` 为 `openai`。它支持静态 API Key 和运行时登录获取动态 token 两种互斥认证模式；登录、缓存和刷新只在 SN 层实现，OpenAI 基础 Adapter 只接收已解析的 Bearer credential。未来 SN 使用独立协议时，应能只替换或删除 SN Profile、Rules、Adapter 和测试。
 
 `agent.computer_use` 不纳入本版 provider coverage。该能力涉及浏览器/桌面 runtime、沙箱、权限和审计，应单独规划。
 
@@ -219,6 +224,19 @@ vision.*                    # Google / Claude 更直接
 audio.*                     # OpenAI / Google / fal 更直接
 video.*                     # Google / fal 更直接
 ```
+
+## 5.1 SN Provider 的位置
+
+SN Provider 当前不复制 OpenAI 协议实现，而是使用独立 `sn-openai` 派生 Adapter：
+
+```text
+sn Provider Profile
+  -> sn-openai Adapter
+     -> base_adapter_id: openai
+     -> auth.mode: api_key | dynamic_login
+```
+
+必须分别测试 API Key、首次登录、token 缓存、过期刷新、登录失败和移除 SN 后 OpenAI 回归。不得把 SN 登录逻辑加入 `openai.rs`。
 
 ---
 

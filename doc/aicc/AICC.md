@@ -64,6 +64,9 @@ AICC 内部逻辑可以抽象为 8 个核心子系统（这里按职责描述，
 
    * 只实现已注册 operation 的认证、endpoint、wire 编解码、stream 和异步状态机
    * 多个 Provider Profile 和 Model Driver 可以复用同一 Protocol Adapter
+   * OpenAI、Claude、Gemini 是三套分别实现和测试的基础协议 Adapter，不能用一个“通用 LLM Adapter”加厂商分支代替
+   * 内置厂商可以声明为某个基础 Adapter 的语义子类：实现可使用继承、组合或委托，但依赖只能从派生 Adapter 指向基础 Adapter
+   * 基础 Adapter 不得识别派生 Provider 的 ID、配置字段或认证流程；删除派生 Adapter 不应修改基础 Adapter
 
 7. **Provider Call Resolver（调用解析）**
 
@@ -212,6 +215,10 @@ pub struct CancelResponse {
 ---
 
 ## 5. Provider 抽象与执行边界
+
+Protocol Adapter registry 中每个 Adapter 使用独立 `protocol_adapter_id`。派生 Adapter 还可以声明 `base_adapter_id`，表示它复用基础协议的 wire、stream、错误解析或 operation 实现；该字段表达架构关系，不要求编程语言层面的继承。
+
+SN Provider 的目标形态是独立 `sn-openai` Adapter，语义上派生自 `openai` 基础 Adapter。SN 层只实现自身差异，当前主要是认证：既可配置 API Key，也可在运行时登录获取动态 token，然后委托 OpenAI 基础协议完成请求和响应处理。OpenAI 基础 Adapter 不包含任何 SN 登录、token 缓存、SN endpoint 或 Provider 判断。未来 SN 改为完全独立协议时，只替换或删除 `sn-openai` Adapter 及其 Profile/Rules，不修改 `openai` Adapter。
 
 ### 5.1 ProviderInstance 声明
 

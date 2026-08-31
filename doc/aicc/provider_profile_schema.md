@@ -66,6 +66,70 @@ Provider 参数配置是配置型 Provider 内置默认行为的**可选覆盖�
 
 Provider Instance 的名称、凭据、区域和用户自定义 endpoint 属于实例私有配置，也不进入可云更新的 Provider 参数文件。
 
+### 2.1 基础协议与派生 Adapter
+
+OpenAI、Claude、Google Gemini 必须各自拥有专门实现、独立注册和独立验收的基础 Protocol Adapter。三套基础协议不得合并成一个依靠 Provider ID 或模型名切换行为的通用 Adapter。
+
+内置厂商 Adapter 可以复用基础协议，并声明语义上的子类关系：
+
+```text
+derived protocol_adapter_id
+  -> base_adapter_id
+  -> override/extend auth, endpoint, discovery or selected operations
+  -> delegate unchanged wire behavior to the base adapter
+```
+
+“子类”只约束语义和依赖方向，实现可以采用继承、组合、委托或共享无状态协议组件。必须满足：
+
+- 派生 Adapter 使用独立 `protocol_adapter_id`，不能冒充基础 Adapter；
+- 依赖从派生 Adapter 指向基础 Adapter，基础 Adapter 不引用派生 Adapter；
+- 基础 Adapter 不读取派生 Provider 的配置字段，不按 Provider ID 分支；
+- 派生 Adapter 只覆盖差异点，未覆盖行为保持基础协议语义；
+- 删除派生 Adapter、Profile、Rules 和测试后，基础 Adapter 的代码、schema 和行为不变。
+
+初始 registry 关系至少包括：
+
+| `protocol_adapter_id` | `base_adapter_id` | 定位 |
+| --- | --- | --- |
+| `openai` | 无 | OpenAI 基础 API 协议实现 |
+| `claude` | 无 | Anthropic Claude 基础 API 协议实现 |
+| `gemini` | 无 | Google Gemini 基础 API 协议实现 |
+| `sn-openai` | `openai` | SN 鉴权扩展，复用 OpenAI 基础协议 |
+| `openrouter-openai` | `openai` | OpenRouter 渠道扩展，复用 OpenAI 基础协议 |
+
+### 2.2 SN Provider 的 OpenAI 子类语义
+
+SN Provider 当前使用独立的 `sn-openai` Protocol Adapter，并声明 `base_adapter_id: "openai"`。它复用 OpenAI 请求、响应、stream、错误和 operation 语义，SN 特性只实现在派生层。
+
+SN Provider 支持两种显式且互斥的认证模式：
+
+```json
+{
+  "auth": {
+    "mode": "api_key",
+    "credential_ref": "system-config://secrets/aicc/sn-main"
+  }
+}
+```
+
+```json
+{
+  "auth": {
+    "mode": "dynamic_login",
+    "login_profile": "device_jwt",
+    "login_endpoint": "https://sn.example/api/user/login_by_device_token"
+  }
+}
+```
+
+- `api_key` 模式与 OpenAI Bearer API Key 方式一致。
+- `dynamic_login` 模式由 SN 派生层在运行时登录、缓存并按过期时间刷新 token，再把已解析的 Bearer credential 交给 OpenAI 基础调用路径。
+- 动态 token 不进入 Provider catalog、inventory、trace、日志或持久 metadata；并发刷新需要合并，认证失败只按 SN 认证错误返回。
+- OpenAI 基础 Adapter 只消费已解析的认证材料，不知道 token 来自静态 API Key 还是 SN 登录。
+- 不允许把动态登录作为 OpenAI Adapter 的可选分支；这保证 SN 将来采用独立协议时可以干净拆除。
+
+其他内置厂商也可以使用同样的派生 Adapter 模式，但必须有独立 ID、明确差异面和基础/派生两层验收。
+
 ## 3. Model Driver 与 Provider 配置边界
 
 ### 3.1 Model Driver metadata 管理
@@ -481,3 +545,6 @@ OpenRouter 仍从 OpenAI、Claude、Gemini 等 Model Driver metadata 获取模�
 3. Provider Rules、Model Driver、Pricing 和 Known Provider 使用统一 catalog 更新、严格校验、原子 activation 与 LKGS 机制，但保持独立对象和 revision。
 4. Model Driver variant 定义语义身份；Provider variant 必须完整覆盖该身份到 adapter 参数的 lowering，否则该 Provider 不得声明对应 variant 可用。
 5. 旧 `provider_driver` 拆为 `provider_profile_id`、`protocol_adapter_id` 和模型级 `model_driver_id`，不提供兼容读取。
+6. OpenAI、Claude、Google Gemini 分别实现基础 Protocol Adapter；不得用 Provider 分支模拟三套专用协议。
+7. SN 使用独立 `sn-openai` Adapter，并以 `openai` 为 `base_adapter_id`；支持 `api_key` 与 `dynamic_login` 两种认证模式。
+8. 基础 Adapter 不依赖派生 Adapter。派生 Provider 的删除测试必须证明不需要修改基础 Adapter。

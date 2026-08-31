@@ -6,10 +6,12 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 | --- | --- | --- | --- |
 | `KnownProviderProfile.provider_profile_id` | `provider_profile_id` | Provider catalog | 渠道规则与展示身份 |
 | `KnownProviderProfile.protocol_adapter_id` | `protocol_adapter_id` | catalog + runtime registry | backend 校验 adapter 已注册 |
+| `ProtocolAdapter.base_adapter_id` | `base_adapter_id` | runtime registry | 只读展示语义子类关系；SN 为 `sn-openai -> openai` |
 | `KnownProviderProfile.default_endpoint` | `default_endpoint` | Provider catalog default | 仅作表单初值，用户可修正 |
 | `ProviderConfig.id` | `provider_instance_name` | system-config | Zone 内唯一实例 ID |
 | `ProviderConfig.provider_profile_id` | `provider_profile_id` | system-config | 不读取旧 `provider_driver` |
 | `ProviderConfig.protocol_adapter_id` | `protocol_adapter_id` | system-config | 与 profile 分开保存 |
+| `ProviderConfig.auth` | `auth` | system-config locked value / credential reference | SN 显式选择 `api_key` 或 `dynamic_login` |
 | `ProviderInventory.provider_profile_id` | `provider_profile_id` | inventory / LKGS | discovery 使用的 profile |
 | `ProviderInventory.protocol_adapter_id` | `protocol_adapter_id` | inventory / LKGS | 实际 wire adapter |
 | `ModelItem.model_driver` | `model_driver` | Model Driver catalog | 未知值显示 `unknown`，不回退为 profile |
@@ -21,6 +23,7 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 - catalog 加载中显示 loading，不渲染本地硬编码列表。
 - 请求失败显示可重试错误；空 catalog 与请求失败分开呈现。
 - 保存、连接测试和模型 refresh 失败后保留用户输入。
+- SN 表单根据 `auth.mode` 显示 API Key 或动态登录字段，不同时提交两套凭据；动态 token 永不返回 UI。
 
 ## Performance boundary
 

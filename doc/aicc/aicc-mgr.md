@@ -64,7 +64,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
       "provider_instance_name": "openai-main",
       "provider_type": "cloud_api",
       "provider_profile_id": "openai",
-      "protocol_adapter_id": "openai-responses",
+      "protocol_adapter_id": "openai",
       "endpoint": "https://api.openai.com/v1",
       "credentials": {
         "api_token": { "locked": "..." }
@@ -103,7 +103,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 
 `provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、默认 `protocol_adapter_id` 和 UI hints。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
 
-`protocol_adapter.list` 返回程序实际注册的 adapter ID、支持的 operation 和协议能力。配置型 Provider 只能选择该列表中的 adapter，不能自由输入协议 ID、endpoint path 或脚本。
+`protocol_adapter.list` 返回程序实际注册的 adapter ID、可选 `base_adapter_id`、支持的 operation 和协议能力。OpenAI、Claude、Gemini 基础 Adapter 必须分别可见；`sn-openai` 等派生 Adapter 使用独立 ID，并展示其基础 Adapter。配置型 Provider 只能选择该列表中的 adapter，不能自由输入协议 ID、endpoint path 或脚本。
 
 Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式必须从 `protocol_adapter.list` 选择 adapter，保存前执行 endpoint、认证、协议和 discovery 验证。
 
@@ -155,7 +155,7 @@ Request：
   "provider_instance_name": "openai-work",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai-responses",
+  "protocol_adapter_id": "openai",
   "endpoint": "https://api.openai.com/v1",
   "credentials": {
     "type": "bearer",
@@ -203,7 +203,7 @@ Request：
   "provider_instance_name": "openai-work",
   "provider_type": "cloud_api",
   "provider_profile_id": "openai",
-  "protocol_adapter_id": "openai-responses",
+  "protocol_adapter_id": "openai",
   "endpoint": "https://api.openai.com/v1",
   "credentials": {
     "type": "bearer",
@@ -240,10 +240,10 @@ Response：
 
 | Provider Profile | 默认 instance name |
 | --- | --- |
-| `sn_router` | `sn-ai-provider-main` |
+| `sn` | `sn-ai-provider-main` |
 | `openai` | `openai-main` |
-| `anthropic` | `claude-main` |
-| `google` | `google-gemini-main` |
+| `claude` | `claude-main` |
+| `gemini` | `google-gemini-main` |
 | `openrouter` | `openrouter-main` |
 | `custom` | `custom-<slug(name)>` |
 
@@ -263,7 +263,7 @@ Response：
     "provider_instance_name": "openai-work",
     "provider_type": "cloud_api",
     "provider_profile_id": "openai",
-    "protocol_adapter_id": "openai-responses",
+    "protocol_adapter_id": "openai",
     "endpoint": "https://api.openai.com/v1",
     "credentials": {
       "type": "bearer",
@@ -275,13 +275,14 @@ Response：
 }
 ```
 
-`openrouter` 和 `custom` 复用 OpenAI-compatible Protocol Adapter：
+`openrouter`、`sn` 和需要内置扩展的兼容渠道使用独立派生 Adapter；小型 `custom` Provider 才可直接选择受限的 OpenAI-compatible Adapter：
 
 - `provider_profile_id` 标识渠道规则。OpenAI 使用 `openai`，OpenRouter 使用 `openrouter`，自定义 OpenAI-compatible Provider 使用 `custom` 或已注册的 Profile ID。
 - `protocol_adapter_id` 必须来自 AICC 运行时注册表。Known Provider catalog 可以给出默认值，但 UI 必须展示并允许修正，保存时由后端验证。
 - `provider_type` 只表示部署类型（例如 `cloud_api`），不能代替 `provider_profile_id`。新配置不读取旧 `provider_driver` 字段。
+- 派生 Adapter 必须有独立 ID 和可选 `base_adapter_id`；基础 Adapter 不读取派生 Provider 配置。
 
-`sn-ai-provider` 使用独立 Profile 和 Adapter。它使用本机设备私钥签发 Device JWT，换取短期 `sn-sso` session；配置中不接受普通 API key，也不透传 BuckyOS `verify-hub` session。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合，价格由 Pricing catalog 精确解析。
+`sn-ai-provider` 使用独立 Profile 和 `sn-openai` Adapter，后者语义上派生自 `openai`。`auth.mode=api_key` 时使用静态 Bearer API Key；`auth.mode=dynamic_login` 时由 SN 层使用登录凭据换取并刷新短期 token，再委托 OpenAI 基础协议。OpenAI Adapter 不包含 SN 登录或 Provider 分支。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合，价格由 Pricing catalog 精确解析。
 
 ### 4.4 `provider.delete`
 
@@ -312,9 +313,9 @@ Response：
 事务写入：
 
 1. 读取 `services/aicc/settings`。
-2. 遍历所有已知 provider section 的 `instances[]`。
-3. 删除 `provider_instance_name` 匹配的 instance。
-4. 删除 instance 时同步删除该 instance 内的 `api_token` / `api_key`；如果 section 的 instances 为空，将 `enabled` 置为 `false`。
+2. 遍历统一 `providers[]`。
+3. 删除 `provider_instance_name` 匹配的 Provider Instance。
+4. 删除实例时同步删除或解除其 credential reference；动态 token 只存在内存，无需持久化清理。
 5. `exec_tx` CAS 写回。
 6. reload。
 
@@ -500,7 +501,7 @@ routing.session.patch_node
 
 ### 5.2 provider.update
 
-当前 wizard 只有 add/delete/refresh/validate。编辑已有 provider 时再新增 `provider.update`，语义为修改 endpoint、api_key、auto_sync_models、models、default_model 等字段。
+当前 wizard 只有 add/delete/refresh/validate。编辑已有 provider 时再新增 `provider.update`，语义为修改 endpoint、Profile、Adapter、`auth`、discovery 和实例规则等字段。
 
 ## 6. system_config 事务模型
 
@@ -582,7 +583,8 @@ let next = config_client.get("services/aicc/settings").await?;
 3. `provider.validate` 不落盘，但会使用用户传入 token 访问外部 endpoint，应限制日志脱敏。
 4. 所有日志必须复用 `redact_settings_for_log()` 的规则，至少脱敏 `api_token`、`api_key`、`authorization`。
 5. `models.list` 不返回明文 API Key。
-6. API Key 在本版本存于 `services/aicc/settings.instances[].api_token`。这是 breaking change，所有 provider 注册函数必须改为从 instance 读取 token；旧 section 级 `api_token` 只用于迁移。
+6. 静态 API Key 通过 Provider Instance 的 locked credential 或 credential reference 保存；动态 token 只保存在派生 Adapter 的运行时凭据缓存，不写回 system-config。
+7. SN 动态登录、刷新与认证错误必须在 `sn-openai` 层处理，不能进入 OpenAI 基础 Adapter。
 
 ## 9. 实现入口建议
 
@@ -596,8 +598,9 @@ let next = config_client.get("services/aicc/settings").await?;
   - 在 `Provider` trait 暴露 `refresh_inventory`，并在 registry / model_registry 中提供按 `provider_instance_name` 刷新并 apply inventory 的方法。
   - 暴露 usage query helper，如不方便可先放在 `main.rs` 调用 `usage_log_db()`。
 - `src/frame/aicc/src/openai.rs`、`src/frame/aicc/src/claude.rs`、`src/frame/aicc/src/gemini.rs`、`src/frame/aicc/src/minimax.rs`、`src/frame/aicc/src/fal.rs`、`src/frame/aicc/src/sn_ai_provider.rs`
-  - settings parser 改为从每个 instance 读取 `api_token` / `api_key`。
-  - 旧 section 级 token 只用于一次性迁移到 instance 级。
+  - OpenAI、Claude、Gemini 分别提供专门的基础协议实现和测试。
+  - SN 使用独立 `sn-openai` Adapter，通过组合、委托或继承复用 OpenAI 基础协议，只在 SN 层实现静态 API Key/动态登录认证。
+  - 其他内置兼容渠道采用相同的独立派生 Adapter 语义，不在基础 Adapter 中增加 Provider 分支。
   - 实现 `Provider::refresh_inventory`，复用现有 `refresh_inventory_once` 逻辑。
 - `src/kernel/buckyos-api/src/aicc_client.rs`
   - 可选：补齐 typed client method。若只供 desktop web 直接用 raw kRPC，第一版可以不改。
@@ -622,15 +625,15 @@ uv run buckyos-build.py --skip-web
 2. 调 `models.list`，确认 existing providers 正常返回。
 3. 调 `provider.validate`，确认不写 `services/aicc/settings`。
 4. 调 `provider.add`，确认 `services/aicc/settings` 发生一次事务更新，随后 `models.list.providers` 出现新 provider。
-5. 连续添加多个同 family provider，例如 4 个 `openai`，确认每个 instance 保留独立 `api_token` 且 inventory 不互相覆盖。
+5. 连续添加多个同 Profile Provider Instance，确认凭据和 inventory 不互相覆盖。
 6. 调 `provider.refresh_models`，确认执行指定 provider 的 inventory refresh，不只是全量 reload。
-7. 调 `provider.delete`，确认 instance 及其 `api_token` 被删除并 reload。
+7. 调 `provider.delete`，确认实例及其 credential reference 被删除并 reload。
 8. 调 `usage.query`，确认没有 usage db 时返回空 aggregate，有 usage db 时能返回 summary / bucket。
 9. 使用无 `services/aicc/settings` 写权限的普通 token 调 `provider.add/delete`，确认被 system_config 拒绝。
 
 风险：
 
-- OpenAI-compatible 的 `openrouter` / `custom` 当前复用 `openai` section，inventory 中的 provider type 可能需要前端推断。
-- 本版本改动 provider settings schema，是明确的 breaking change；实现时必须同步更新所有 parser、默认配置和测试数据。
-- API Key 当前仍存 `services/aicc/settings.instances[]`，不是最终 secret 管理模型。
-- `provider.refresh_models` 需要把现有私有 `refresh_inventory_once` 抽成 trait 能力，涉及所有 provider adapter。
+- 本版本改动 Provider settings schema，是明确的 breaking change；实现时必须同步更新所有 parser、默认配置和测试数据。
+- 派生 Adapter 若把厂商分支下沉到基础 Adapter，会重新形成不可拆除的历史负担；代码评审和删除性测试必须阻止该情况。
+- 动态 token 刷新需要处理并发合并、过期和认证失败，但这些状态不能污染持久 catalog 或 inventory。
+- `provider.refresh_models` 需要把现有私有 `refresh_inventory_once` 抽成 trait 能力，涉及所有 Provider Adapter。

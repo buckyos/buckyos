@@ -117,14 +117,14 @@ pnpm run acceptance:all -- \
 2. 执行 L1/L2 Rust 单测。
 3. 执行 L3 本地 Mock 验收。
 4. 使用 `buckyos-devkit` 创建并启动 L4 临时 group，通过 gateway 访问该 group。
-5. 将传入的 4 个 key 写入临时 group 的 AICC settings；`sn-ai-provider` 不需要普通 API key。
+5. 将传入的 Provider key 写入临时 group 的 AICC settings；SN 按测试矩阵分别配置 `api_key` 或 `dynamic_login`。
 6. 对 `openrouter`，runner 优先读取配置文件或临时 group settings 中的 `openrouter` key；如果发布验收要求强覆盖但缺 key，应在 preflight 阶段失败。普通开发验收可将 openrouter 矩阵标记为 `skipped`。
 7. 动态读取 `models.list` 和最终生效逻辑目录，生成 `api_type × method × logical_path × Provider × model` 矩阵。
 8. 每个 planned 矩阵用例执行逻辑模型段与精确物理模型段验证，失败后最多额外执行 2 次。
 9. 输出 `summary.md`、`summary.json` 和脱敏后的 attempt 明细。
 10. 清理 runner 新建的临时 group。
 
-为了让参数尽可能少，`sn-ai-provider` 不设置普通 API key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
+SN 动态登录用例不要求 API Key，但 SN API Key 用例必须显式提供 key；OpenRouter key 不作为默认必填命令行参数，但发布验收若要求 OpenRouter 强覆盖，必须通过 `--openrouter-key` 或配置文件提供。
 
 ## 3. 预检与清理流程
 
