@@ -6,7 +6,7 @@
     "buckyos": "latest"
   },
   "scripts": {
-    "build:web": "pnpm install && pnpm update buckyos && pnpm --filter ./web run build",
-    "build": "pnpm run build:web && node build.mjs"
+    "build:web": "pnpm --filter ./web run build",
+    "build": "pnpm run build:web && node prepare.mjs"
   }
 }
