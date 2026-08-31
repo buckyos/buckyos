@@ -29,7 +29,7 @@
 | 类型 | 交付物 | 必验内容 |
 |---|---|---|
 | 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
-| 新增 OpenAI-compatible Provider instance | provider settings、`base_url`、授权、models 列表、metadata override | Provider 启用后 inventory 可见；exact model 可调用；逻辑目录可路由；缺 key / 错 key / `/models` 不兼容时错误可诊断 |
+| 新增 OpenAI-compatible Provider Instance | Provider Profile、Protocol Adapter、`endpoint`、授权、discovery 策略 | Provider 启用后 inventory 可见；完整身份链正确；exact model 可调用；逻辑目录可路由；缺 key / 错 key / discovery 不兼容时错误可诊断 |
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
@@ -165,7 +165,7 @@ expect_trace = true
 | `logical_path` | 标准逻辑目录路径，例如 `llm.plan`、`image.ocr`；不得用 `vision.ocr` 代替 `image.ocr` |
 | `model_alias` | 请求模型名，可为逻辑模型或精确模型 |
 | `provider` | 期望命中的 Provider；路由类用例可为空 |
-| `provider_driver` | Provider driver 名，例如 `openai`、`google-gemini`、`claude` |
+| `provider_profile_id` / `protocol_adapter_id` / `model_driver_id` | 渠道、协议与模型语义的独立身份 |
 | `scenario` | Mock 行为场景 |
 | `update_type` | 维护更新类型，例如 `metadata`、`policy`、`routing`、`provider_settings`、`adapter_release`、`rollback` |
 | `api_types` | 本用例覆盖的 AICC method / API type 列表；L4 矩阵用例必须同时填写单值 `api_type` |
@@ -191,5 +191,5 @@ Runner 要求：
 - 报告中的 case 顺序应与 manifest 顺序一致，便于人工阅读。
 - L4 动态矩阵用例可以由模板 case 展开；展开后的 `case_id` 必须唯一，并保留 `api_type`、`method`、`logical_path`、`provider`、`model`、`matrix_source`。
 - L4 attempt 明细必须挂在同一个 case 下，不能展开成多个独立 case 影响通过率统计。
-- 维护更新类用例必须支持按 `update_type`、`provider_driver`、`provider`、`model`、`api_types`、`logical_catalogs` 和 `tags` 筛选；报告中应能单独汇总本次更新相关用例与全量回归用例。
+- 维护更新类用例必须支持按 `update_type`、`provider_profile_id`、`protocol_adapter_id`、`model_driver_id`、`provider`、`model`、`api_types`、`logical_catalogs` 和 `tags` 筛选；报告中应能单独汇总本次更新相关用例与全量回归用例。
 

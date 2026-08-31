@@ -1,8 +1,7 @@
 # AICC Models Manager 与模型路由概念说明
 
-状态：Draft  
-基线：结合当前 `src/frame/aicc` 新版模型路由实现整理  
-目标：明确模型路由里“逻辑目录、模型家族、Provider、模型驱动、权重、用户配置”的边界，以及一次路由结果如何被多个因素共同影响。
+状态：Beta 2.2 目标规范
+目标：明确逻辑目录、模型家族、Provider Profile、Protocol Adapter、Model Driver、Provider Rules、Pricing、权重和用户配置的边界。
 
 ## 1. 问题背景
 
@@ -21,46 +20,29 @@ AICC 不是简单的 `model_name -> provider` 映射。一个调用方传入的 
 本文的核心边界是：
 
 ```text
-Provider 只负责发现“我有什么物理模型”
-Driver 负责解释“这些模型有什么能力、属于哪个家族、默认挂到哪里”
+Provider discovery 只负责发现“当前实例有哪些渠道模型和动态事实”
+Provider Rules 负责把渠道模型映射到 origin identity，并选择 operation、请求规则和渠道价格
+Model Driver 负责解释“原厂模型有什么固有能力、属于哪个家族、默认挂到哪里”
+Protocol Adapter 只执行已经解析好的 operation
 逻辑目录负责表达“调用方想要什么用途/能力”
 权重和 policy 负责表达“多个可选结果里更偏好谁”
 用户/session 配置只做 overlay，不改系统基础语义
 ```
 
-## 2. 当前实现基线
+## 2. 目标架构基线
 
-当前实现已经具备新版模型路由的主要骨架：
+- Model Driver catalog：模型固有 API type、capability、家族、版本、variant 和逻辑挂载的唯一真相源。
+- Provider Rules catalog：渠道模型 ID 到 origin/ModelUID 的映射，以及 operation、request rules、能力收窄和渠道价格引用。
+- Pricing catalog：Provider offering 的价格和条件规则。
+- Known Provider catalog：管理 UI 使用的服务商默认 endpoint/Profile/adapter。
+- Provider Instance：system-config 中的实例私有配置。
+- Provider inventory：实例级 discovery 动态事实与静态能力交集，并保存 LKGS。
+- ModelRegistry：建立 exact model 和逻辑目录索引。
+- ModelRouter/ModelScheduler：执行 hard filter、权重、policy、fallback 和排序。
+- Provider Call Resolver：产生内部 `ResolvedProviderCall`。
+- Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
-- `model_types.rs`
-  - 定义 `ProviderInventory`、`ModelMetadata`、`LogicalModelDefinition`、`ModelItem`、`RoutePolicy`、`SchedulerProfile`、`ModelCandidate`。
-- `metadata_resolver.rs`
-  - 根据 provider driver 的 metadata，把 provider 返回的模型 id 解析成 `ModelMetadata`。
-  - 支持 exact rule、wildcard pattern、defaults、variants。
-  - 内置 driver metadata 位于 `src/frame/aicc/driver_metadata/`。
-  - 云更新缓存位于 `$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`；人工 override 只使用 `$BUCKYOS_ROOT/etc/aicc/driver_metadata/{local,system-config}/`。
-- `model_registry.rs`
-  - 接收每个 provider 的 `ProviderInventory`。
-  - 建立 exact model 索引。
-  - 根据 `ModelMetadata.logical_mounts` 和 `LogicalModelDefinition.min_line` 自动生成逻辑目录的默认 items。
-  - 支持同一逻辑目录下保留多个 provider 的候选。
-- `default_logical_tree.rs`
-  - 定义系统内置的 LLM 用途目录，如 `llm.plan`、`llm.code`、`llm.swift`、`llm.reason`、`llm.vision`、`llm.long`、`llm.fallback`。
-  - 每个目录带有默认 family item 权重、`min_line`、fallback 和 scheduler profile。
-- `model_session.rs`
-  - 定义 `SessionConfig`、`LogicalNode`、`LogicalTreeOverlay`。
-  - 支持 `inherit` / `replace` overlay、`item_overrides`、`exact_model_weights`、全局 policy 和 profile。
-- `model_router.rs`
-  - 展开逻辑目录。
-  - 执行 hard filter。
-  - 处理 fallback。
-  - 根据目录 item weight 和 exact model weight 先筛出最高优先级候选集合。
-- `model_scheduler.rs`
-  - 在候选集合中按 profile 对 cost、latency、reliability、quality、preference、cache、local 打分。
-  - 支持 session sticky binding。
-
-需要特别注意：当前实现里 provider inventory 里的 `logical_mounts` 已经可以直接挂到用途目录或家族目录，但系统边界上更推荐“provider 只产出模型，driver 决定挂载语义”。也就是说，provider 对逻辑目录不应有存在性假设。
-
+四类 catalog 通过同一个 manifest 原子 activation，但保持独立 schema 和 revision。任何 Provider 的 discovery 或解析失败只影响该实例，不能阻塞其它实例。
 ## 3. 核心概念
 
 ### 3.1 物理模型与精确模型名
@@ -96,7 +78,7 @@ gpt-5.2:reasoning-high@openai-default
 gpt-5.2:reasoning-low@openai-default
 ```
 
-这类 variant exact model 在 AICC 内部是独立模型身份，用于路由、权重、trace、usage 聚合和审计。真正调用 provider 时，再由 data plane lower 成 base model 加 provider options，例如 `provider_model_id=gpt-5.2` 和 `provider_options.reasoning.effort=high`。
+这类 variant exact model 在 AICC 内部是独立模型身份，用于路由、权重、trace、usage 聚合和审计。真正调用 Provider 时，由 Provider Rules lower 成原始 `provider_model_id`、operation 和 adapter options，例如 `provider_model_id=gpt-5.2`、`operation=responses.create`、`resolved_options.reasoning.effort=high`。
 
 ### 3.2 Provider
 
@@ -122,11 +104,12 @@ Provider 不应该负责定义 `llm.plan`、`llm.chat` 这类逻辑目录，也�
 ```text
 provider_instance_name
 provider_type
-provider_driver
+provider_profile_id
+protocol_adapter_id
 models: Vec<ModelMetadata>
 ```
 
-其中 `provider_driver` 表示这个 provider 使用哪个 driver metadata 来解释模型名，例如 `openai`、`claude`、`google-gemini`、`fal`、`minimax`。
+其中 `provider_profile_id` 表示渠道规则，`protocol_adapter_id` 表示线上协议适配器。模型语义由 Provider Rules 选择的 `model_driver` 解释，三者不能复用同一字段。
 
 ### 3.3 模型驱动
 
@@ -432,10 +415,10 @@ Provider 自发现的最小输出应是 provider model id 列表，以及必要�
 从 AICC 视角，可以理解为：
 
 ```text
-provider_model_id + provider_driver + provider_instance_name
+provider_model_id + provider_profile_id + protocol_adapter_id + provider_instance_name
 ```
 
-其中 provider model id 先不是 AICC 的完整语义。AICC 会通过 driver metadata 生成：
+其中 provider model id 先不是 AICC 的完整语义。AICC 会先通过 Provider Rules 解析 origin、operation 和候选 Model Driver，再通过 Model Driver Metadata 生成：
 
 ```text
 ModelMetadata {
@@ -448,7 +431,7 @@ ModelMetadata {
   attributes,
   pricing,
   health,
-  provider_options
+  resolved_provider_call_ref
 }
 ```
 
@@ -523,7 +506,7 @@ reasoning effort 这类 variant 在这个流程中应挂在 base model 之后处
 gpt-5.3
   -> base exact model: gpt-5.3@openai-default
   -> variant exact model: gpt-5.3:reasoning-high@openai-default
-  -> provider call lowering: model=gpt-5.3, provider_options.reasoning.effort=high
+  -> provider call lowering: model=gpt-5.3, operation=responses.create, resolved_options.reasoning.effort=high
 ```
 
 如果 driver 希望把 reasoning variant 暴露成逻辑目录，也应通过 variant mount 表达，例如：
@@ -904,7 +887,7 @@ gpt-5.2@openai-backup  cost=0.008 latency=1500 quality=0.9
 selected_exact_model
 selected_provider_instance_name
 selected_provider_model_id
-provider_options
+operation / resolved options / pricing source
 fallback_attempts
 enabled/disabled capability trace
 route_trace
@@ -922,7 +905,7 @@ route_trace
 
 Provider 只发现物理模型并执行调用。它不应该硬编码 `llm.plan`、`llm.chat` 是否存在。
 
-### 9.3 Driver 是 provider 模型名到 AICC 语义的桥
+### 9.3 Provider Rules 与 Model Driver 共同连接渠道模型和 AICC 语义
 
 Driver metadata 负责把模型 id 解释成能力、家族、默认挂载、成本和 variant。
 
@@ -938,7 +921,7 @@ Driver 通常把物理模型挂到家族目录；用途目录引用家族目录�
 
 用户不改系统基础逻辑，不改 driver 语义，只通过 overlay、exact model weight、provider allow/block、scheduler profile 和成本配置影响结果。
 
-## 10. 与当前实现的差距和建议
+## 10. 重构实现约束
 
 ### 10.1 Provider 侧应进一步弱化逻辑目录假设
 

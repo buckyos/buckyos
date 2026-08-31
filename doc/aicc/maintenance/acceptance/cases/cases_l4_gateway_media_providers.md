@@ -18,8 +18,8 @@
 
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
-| `route.resolve` | `api_type`、逻辑模型名 `logical_model`、requirements、disable、policy | `selected_exact_model`、provider 信息、`provider_options`、`fallback_attempts`、`enabled/disabled_capabilities`、`route_trace` | 传入 exact model 被拒（错误码明确）、无候选 |
-| `chat.completions.create` | `exact_model`、content-block `messages`、tools、response_format、provider_options | `message: AiMessage`、`tool_calls`、`finish_reason`、usage、route trace | 传入逻辑模型名被拒、primary quota exhausted 不 fallback |
+| `route.resolve` | `api_type`、逻辑模型名 `logical_model`、requirements、disable、policy | 完整渠道/模型身份、operation、fallback、capabilities、trace | 传入 exact model 被拒、无匹配、多 Driver 冲突 |
+| `chat.completions.create` | `exact_model`、content-block `messages`、tools、response_format | `message: AiMessage`、`tool_calls`、`finish_reason`、usage、route trace | 传入逻辑模型名被拒、primary quota exhausted 不 fallback、无注册 operation |
 | `helper.llm_chat` | 逻辑模型名 + messages | 等价于 `route.resolve` + `chat.completions.create` | 与两阶段行为一致性 |
 | `llm.chat`（legacy） | content-block messages、image/document/tool_use block、tools、response_format JSON schema、generation params | `text`/`message`、`tool_calls`、`finish_reason`、usage、route trace | tool schema 非法、JSON schema 不满足、context too long、feature unsupported |
 
@@ -76,15 +76,13 @@
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
 | `cancel` | `task_id`、tenant/session 上下文 | accepted / rejected、原 task 状态可观察、task data / event 记录 cancel 语义 | unknown task、跨 tenant cancel、provider 不支持取消、已完成任务重复取消 |
-| `reload_settings` | 空 params 或兼容旧调用 | reload 结果、Provider registry / ModelRegistry 重建摘要 | settings 非法、凭据缺失、保留上一版可用配置 |
-| `service.reload_settings` | 同 `reload_settings` | 同 `reload_settings` | 同 `reload_settings` |
-| `models.list` | 空 params、可选诊断过滤参数 | Provider inventory、exact model、`api_types`、`logical_mounts`、逻辑目录、legacy aliases、health 摘要 | registry 为空、敏感字段泄露、损坏 metadata 不应导致服务不可诊断 |
-| `service.models.list` | 同 `models.list` | 同 `models.list` | 同 `models.list` |
+| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要 | settings 非法、凭据缺失、保留上一版可用配置 |
+| `models.list` | 空 params、可选诊断过滤参数 | Provider inventory、完整模型/渠道身份、operations、逻辑目录、health 摘要 | registry 为空、敏感字段泄露、损坏 catalog 不应导致服务不可诊断 |
 | `usage.query` | 时间窗口、provider/model/method/api_type 过滤 | 聚合 usage、明细数量、成本/usage 字段、空结果 | 非法时间窗口、无权限、重复幂等记录不应重复计费 |
 | `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置 quota、跨 tenant 查询、非法 method |
 | `provider.list` | 可选 provider/type/driver 过滤 | Provider 列表、inventory 摘要、health、capability、pricing 脱敏视图 | 无权限、凭据泄露、Provider 状态异常仍可诊断 |
 | `provider.health` | provider instance / driver | health 状态、最近错误摘要、latency / quota / availability | Provider 不存在、health 过期、敏感错误未脱敏 |
-| `provider.validate` | provider settings 草案、base_url、auth mode、模型声明 | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、base_url 非法、未知 driver、不得写入 system_config |
+| `provider.validate` | Provider Instance 草案、endpoint、Profile、Adapter、auth | schema 校验结果、可连接性 / mock 可达性、脱敏诊断 | 凭据缺失、endpoint 非法、未知 Profile/Adapter、不得写入 system_config |
 | `provider.add` | provider settings、tenant/session 上下文 | system_config 写入、reload 后 `models.list` 可见、审计记录 | 重名冲突、无权限、schema 非法、写入失败回滚 |
 | `provider.delete` | provider instance name、tenant/session 上下文 | system_config 删除、reload 后候选消失、相关 routing 诊断 | 删除不存在、仍被 policy 锁定引用、无权限 |
 | `provider.refresh_models` | provider instance / driver、刷新策略 | inventory 更新、metadata resolver 生效、`models.list` 反映新 revision | Provider 不可达、返回损坏 metadata、刷新失败不破坏旧 inventory |
@@ -142,7 +140,7 @@ case_set = {
 1. runner 必须先生成 `api_type × method × logical_path × provider × model` 的候选矩阵，再按模型实际能力、逻辑目录 `min_line`、`disable_line`、`mount_mode`、health、quota、policy 和 key 可用性决定 `planned` / `skipped` / `not_applicable`。
 2. `skipped` 只用于环境缺失或凭据缺失；模型不支持该 api_type、未挂载到该逻辑目录或不满足 `min_line` 时，应记录为 `not_applicable`，不能混入 skipped 通过率。
 3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起路由或 helper/legacy 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference / exact model 调用，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
-4. 如果某个 method 只允许 exact model，例如 typed inference，逻辑模型段必须拆成 `route.resolve(logical_path)`，再把结果传给该 method；如果某个 legacy/helper method 接受逻辑模型名，则必须直接用逻辑路径调用一次。
+4. typed inference 只允许 exact model；逻辑模型段必须调用 `route.resolve(logical_model)`，再把结果传给 typed method。Helper 的逻辑模型调用作为独立组合链路验收。
 5. 同一个 Provider 下同一个物理模型如果支持多个 `api_types`，不得只用一条“代表性 workflow”替代全部 api_type 覆盖；可以把昂贵能力合并到同一 workflow 中执行，但报告必须保留每个 `api_type × method × logical_path × provider × model` 维度的覆盖状态。
 6. Provider 已启用但没有任何可用模型时，生成一个 `skipped` 诊断用例，原因记为 `provider_has_no_models`。
 7. `sn-ai-provider` 不需要普通 API key；如果临时 group 的 `settings.sn-ai-provider` 没有注册成功，应判为环境或配置失败，而不是 key 缺失。
@@ -211,7 +209,7 @@ case_set = {
 | 类型 | 交付物 | 必验内容 |
 |---|---|---|
 | 已有 Provider 新增协议兼容模型 | 模型事实 metadata、运营策略、必要的 routing_config | `models.list` 出现新 exact model；`api_types`、`capabilities`、上下文长度、`logical_mounts` 正确；成本、健康度、权重和 fallback 策略生效 |
-| 新增 OpenAI-compatible Provider instance | provider settings、`base_url`、授权、models 列表、metadata override | Provider 启用后 inventory 可见；exact model 可调用；逻辑目录可路由；缺 key / 错 key / `/models` 不兼容时错误可诊断 |
+| 新增 OpenAI-compatible Provider Instance | Provider Profile、Protocol Adapter、`endpoint`、授权、discovery 策略 | Provider 启用后 inventory 可见；完整身份链正确；exact model 可调用；逻辑目录可路由；缺 key / 错 key / discovery 不兼容时错误可诊断 |
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
@@ -281,7 +279,7 @@ case_set = {
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
-| `l3_models_list_*` | P0 | `models.list` / `service.models.list` inventory、逻辑目录、health、legacy aliases 脱敏诊断 |
+| `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
@@ -290,7 +288,7 @@ case_set = {
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_legacy_*` | P1 | legacy alias、旧字段兼容或迁移提示 |
+| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 5.4 L4 Gateway 真实模型验收
 

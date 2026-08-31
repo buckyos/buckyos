@@ -20,22 +20,24 @@ P0 required:
   fal.rs
 
 P1 optional:
-  openrouter.rs
+  OpenRouter Provider Profile + OpenAI-compatible adapter strategy
 ```
 
-`openrouter.rs` 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。
+OpenRouter 不进入 P0，因为它与 OpenAI、Claude、Google 的直连能力高度重叠；它只作为长尾模型、成本 fallback、临时 rerank 或模型试用入口。目标实现使用独立的 `openrouter` Provider Profile 和专用策略对象，复用 OpenAI-compatible Protocol Adapter，但不复用 OpenAI 官方渠道规则或 Model Driver。
+
+所有 Provider 均遵循同一分层：Provider Profile 决定渠道 discovery、origin mapping、operation、请求限制和价格；Model Driver Metadata 只解释模型固有能力、家族和语义 variant；Protocol Adapter 只实现已注册 operation 的认证、endpoint、wire 编解码及异步状态机。路由阶段产生 `ResolvedProviderCall`，执行阶段不得再按模型名称切换协议。
 
 `agent.computer_use` 不纳入本版 provider coverage。该能力涉及浏览器/桌面 runtime、沙箱、权限和审计，应单独规划。
 
-`llm.completion` 作为 legacy ApiType，不要求 provider-native 实现；系统层统一转换为 `llm.chat` 请求。
+Beta 2.2 不定义 `llm.completion`。纯文本 completion 由调用方转换为单条 message 后使用 `chat.completions.create`。
 
 ---
 
 ## 2. P0 最小 Provider 集合
 
-| Provider Adapter | Credential                    | 定位                                             | 必须支持的 ApiType                                                                                                                                                                                                                                      |
+| 内置 Provider Profile / 实现 | Credential                    | 定位                                             | 必须支持的 ApiType                                                                                                                                                                                                                                      |
 | ---------------- | ----------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `openai.rs`      | `OPENAI_API_KEY`              | 文本、视觉理解、embedding、图像编辑、ASR/TTS、rerank MVP     | `llm.chat`、`llm.completion` wrapper、`vision.caption`、`vision.ocr`、`embedding.text`、`rerank`、`image.txt2img`、`image.img2img`、`image.inpaint`、`audio.asr`、`audio.tts`                                                                                  |
+| `openai.rs`      | `OPENAI_API_KEY`              | 文本、视觉理解、embedding、图像编辑、ASR/TTS、rerank MVP     | `llm.chat`、`vision.caption`、`vision.ocr`、`embedding.text`、`rerank`、`image.txt2img`、`image.img2img`、`image.inpaint`、`audio.asr`、`audio.tts`                                                                                  |
 | `claude.rs`      | `ANTHROPIC_API_KEY`           | 主流 LLM 与视觉理解 fallback                          | `llm.chat`、`vision.caption`、`vision.ocr`                                                                                                                                                                                                           |
 | `google.rs`      | `GOOGLE_API_KEY` / Gemini key | 多模态主力 provider，覆盖 embedding、vision、audio、video | `llm.chat`、`embedding.text`、`embedding.multimodal`、`image.txt2img`、`image.img2img`、`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment`、`audio.asr`、`audio.tts`、`audio.music`、`video.txt2video`、`video.img2video`、`video.video2video`、`video.extend` |
 | `fal.rs`         | `FAL_KEY`                     | 专用媒体处理工具 provider                              | `image.upscale`、`image.bg_remove`、`audio.enhance`、`video.upscale`                                                                                                                                                                                  |
@@ -55,7 +57,6 @@ fal.ai 只用于通用大模型不擅长的专用媒体处理：ESRGAN 负责 im
 | Capability  | ApiType                | 主 Provider               | Fallback / 备注                                              |
 | ----------- | ---------------------- | ------------------------ | ---------------------------------------------------------- |
 | `llm`       | `llm.chat`             | OpenAI / Claude / Google | 三家都必须声明                                                    |
-| `llm`       | `llm.completion`       | System wrapper           | 不做 provider-native；转换为 `llm.chat`                          |
 | `embedding` | `embedding.text`       | Google / OpenAI          | Google 可作为主路由，OpenAI fallback                              |
 | `embedding` | `embedding.multimodal` | Google                   | 使用 Gemini Embedding 2                                      |
 | `rerank`    | `rerank`               | OpenAI 或 Google          | MVP 用 LLM structured rerank；生产可选 Cohere / OpenRouter       |
@@ -88,7 +89,6 @@ fal.ai 只用于通用大模型不擅长的专用媒体处理：ESRGAN 负责 im
 
 ```text
 llm.chat
-llm.completion        # system-level wrapper to chat
 vision.caption
 vision.ocr
 embedding.text
@@ -104,7 +104,6 @@ video.img2video
 
 说明：
 
-* `llm.completion` 不接旧 Completion API，统一转成 chat message。
 * `rerank` 是 MVP 实现，使用 LLM 对候选文档输出 structured scores；不是 native rerank model。
 * `image.inpaint` 使用 OpenAI image edit + mask。
 * OpenAI 视频使用 Sora 2 / Sora 2 Pro 的 `/v1/videos` 异步任务 API，仅作为 Veo 之外的候选。
@@ -198,12 +197,12 @@ video.upscale   -> fal-ai/video-upscaler@fal
 
 ## 5. OpenRouter 的位置
 
-`openrouter.rs` 不进入最小 P0 集合。
+OpenRouter Provider Profile 不进入最小 P0 集合。
 
 它可以作为 P1 optional provider，用于：
 
 ```text
-openrouter.rs
+openrouter Provider Profile
   + long-tail llm.chat       # DeepSeek / Qwen / Mistral / Llama / xAI 等
   + rerank                   # 若不想直连 Cohere
   + cost fallback

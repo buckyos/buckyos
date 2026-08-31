@@ -146,7 +146,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
-| `l3_models_list_*` | P0 | `models.list` / `service.models.list` inventory、逻辑目录、health、legacy aliases 脱敏诊断 |
+| `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
@@ -155,7 +155,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_legacy_*` | P1 | legacy alias、旧字段兼容或迁移提示 |
+| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 5.4 L4 Gateway 真实模型验收
 
@@ -202,7 +202,7 @@ pnpm run test:fal
 当前命令含义：
 
 1. `pnpm test` 执行 `aicc_smoke.ts`，输出 `reports/aicc_smoke/<run_id>`。
-2. `pnpm run test:models` 调用 `models.list`，打印 Provider inventory、legacy aliases 和逻辑目录树。
+2. `pnpm run test:models` 调用 `models.list`，打印 Provider inventory、完整身份链和逻辑目录树。
 3. `pnpm run test:fal` 执行 fal provider 的 `image.upscale` / `image.bg_remove` / `video.upscale` 用例；未配置 fal 时按 skipped 处理。
 4. 这些命令当前连接已启动的 BuckyOS / AICC，不负责自动启动 TS Mock Provider 或写入 Mock settings；统一 L3 runner 需要补齐该管理闭环。
 

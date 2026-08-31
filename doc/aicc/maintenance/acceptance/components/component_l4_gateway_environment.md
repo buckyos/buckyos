@@ -71,7 +71,7 @@ pnpm run test:fal
 当前命令含义：
 
 1. `pnpm test` 执行 `aicc_smoke.ts`，输出 `reports/aicc_smoke/<run_id>`。
-2. `pnpm run test:models` 调用 `models.list`，打印 Provider inventory、legacy aliases 和逻辑目录树。
+2. `pnpm run test:models` 调用 `models.list`，打印 Provider inventory、完整身份链和逻辑目录树。
 3. `pnpm run test:fal` 执行 fal provider 的 `image.upscale` / `image.bg_remove` / `video.upscale` 用例；未配置 fal 时按 skipped 处理。
 4. 这些命令当前连接已启动的 BuckyOS / AICC，不负责自动启动 TS Mock Provider 或写入 Mock settings；统一 L3 runner 需要补齐该管理闭环。
 
@@ -204,7 +204,7 @@ requires_api_key = false
 - 兼容旧配置 `matrix_mode=provider_model_cartesian` 时，runner 必须在报告中标记为降级模式，并明确列出未覆盖的 `api_type`、`method`、`logical_path` 维度；发布强覆盖不得使用该降级模式。
 - `max_attempts_per_case` 默认为 `3`；只有首轮失败的用例才继续执行第 2 / 第 3 次 attempt。
 - Provider `enabled=true` 但缺 key 时，用例标记 `skipped`；发布强覆盖模式下，缺 key 可在 preflight 直接失败。
-- `google-gemini` 对应 AICC 配置中的 `settings.gemini` / `settings.google_gemini` 兼容入口，生效的 `provider_driver` 应归一为 `google-gemini`。
+- Gemini Provider Instance 必须引用明确的 `provider_profile_id`、`protocol_adapter_id` 和对应 `model_driver_id`，不读取 family section 别名。
 - `sn-ai-provider` 对应 AICC 配置中的 `settings.sn-ai-provider`，`requires_api_key=false`，缺普通 API key 不应导致 skipped。
 - Provider key 不写入报告和日志。
 - runner 应把最终生效配置的脱敏摘要写入报告。

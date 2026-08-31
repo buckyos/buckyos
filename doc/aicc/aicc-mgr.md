@@ -1,50 +1,36 @@
 # AICC Manager 后端接口设计
 
-## 1. 任务确认
+状态：Beta 2.2 目标规范
 
-本设计面向 `src/frame/desktop/src/api/aicc_mgr.ts` 的真实后端接入需求，在 `src/frame/aicc` 服务中补齐 AI Center 管理页需要的 kRPC 接口。
+## 1. 目标与边界
 
-当前前端已经通过 `buckyos.getServiceRpcClient('aicc')` 调用：
+AI Center 前端只调用 AICC kRPC，不直接读写 system-config。AICC 管理 API 负责 Provider Instance 的创建、修改、删除、验证、模型 discovery、catalog 查询和 usage 查询。
 
-- `models.list`：读取模型目录、Provider inventory、当前 `session_config`。
-- `service.reload_settings`：重新加载 `services/aicc/settings` 并刷新 AICC 内存 Provider。
+Provider Instance、Provider Profile 和 Protocol Adapter 是不同身份：
 
-当前前端仍缺少真实后端的能力：
+- Instance 是用户配置的具体账号/endpoint，持久化在 `services/aicc/settings`；
+- Profile 是渠道 discovery、origin mapping、operation 和价格规则；
+- Adapter 是程序已注册的 wire protocol 实现；
+- Catalog 只能提供默认 Profile/endpoint/adapter，不能修改实例私有配置。
 
-- 添加 Provider。
-- 删除 Provider。
-- 刷新某个 Provider 的模型列表。
-- 校验 Provider 连接。
-- 读取 usage summary / trend。
+所有写操作通过 `SystemConfigClient::exec_tx` 做 CAS；完整校验成功后再原子 reload。Beta 2.2 不读取旧 Provider family section、`provider_driver`、section 级 token 或字段别名。
 
-这些接口的写操作应由 AICC 服务封装，内部通过 `SystemConfigClient::exec_tx` 事务更新 `system_config`，前端不直接操作 `system_config`。
+## 2. Beta 2.2 目标配置
 
-本版本允许对 AICC provider settings schema 做 breaking change：Provider credential 从 section 级迁移到 instance 级，以支持同一种 provider family 下配置多个账号 / token，例如 4 个 OpenAI API Key。
+### 2.1 AICC 管理方法
 
-## 2. 现有实现约束
+- `models.list`
+- `provider.catalog`
+- `protocol_adapter.list`
+- `provider.validate`
+- `provider.add` / `provider.update` / `provider.delete`
+- `provider.refresh_models`
+- `provider.list` / `provider.health`
+- `usage.query` / `trace.query`
+- `provider_catalog_update.get` / `provider_catalog_update.set`
+- `service.reload_settings`
 
-### 2.1 AICC 服务现状
-
-入口文件：
-
-- `src/frame/aicc/src/main.rs`
-- `src/frame/aicc/src/aicc.rs`
-
-已有管理类方法：
-
-| Method | 状态 | 行为 |
-| --- | --- | --- |
-| `models.list` | 已实现 | 调用 `AIComputeCenter::dump_model_directory()` 返回 providers / directory / aliases / session_config |
-| `service.models.list` | 已实现 | `models.list` 别名 |
-| `reload_settings` | 已实现 | 读取 `runtime.get_my_settings()` 并重新注册 providers |
-| `service.reload_settings` | 已实现 | `reload_settings` 别名 |
-
-Provider 注册流程：
-
-1. AICC 启动或 reload 时读取 `services/aicc/settings`。
-2. `apply_provider_settings()` 清空 registry 和 route。
-3. 依次调用 `register_openai_llm_providers`、`register_sn_ai_provider`、`register_google_gemini_providers`、`register_claude_providers`、`register_minimax_providers`、`register_fal_providers`。
-4. 应用默认 logical tree。
+方法不提供 `service.*` 双入口、错误拼写或旧名称兼容别名。
 
 ### 2.2 settings key
 
@@ -65,44 +51,43 @@ services/control_panel/ai_models/provider_secrets
 
 本设计不继续扩大 control_panel 的 AICC 配置面。新的 AI Center 后端接口应以 `services/aicc/settings` 为主真相源。
 
-本版本将 `api_token` / `api_key` 从 provider family section 下沉到 `instances[]` 的每个 instance 中。这是 breaking change，需要同步修改所有 AICC provider parser。旧格式只作为一次性迁移输入，不做长期兼容。
+Provider credential 只存在于统一 Provider Instance 的 locked credentials/credential reference 中。Beta 2.2 不迁移或读取旧 provider family section 和 section 级 token。
 
-### 2.3 当前 provider section 格式
+### 2.3 Provider Instance 配置
 
-`services/aicc/settings` 顶层按 provider family 分 section；每个真实 provider instance 都在 section 的 `instances[]` 内保存自己的 endpoint、token 和模型配置：
+`services/aicc/settings` 使用统一 Provider Instance 数组，不按 Provider 名称建立不同 section：
 
 ```json
 {
-  "openai": {
-    "enabled": true,
-    "instances": [
-      {
-        "provider_instance_name": "openai-main",
-        "api_token": "...",
-        "base_url": "https://api.openai.com/v1"
-      }
-    ]
-  },
-  "sn-ai-provider": { "enabled": true, "instances": [] },
-  "google": { "enabled": true, "instances": [] },
-  "claude": { "enabled": true, "instances": [] },
-  "minimax": { "enabled": true, "instances": [] },
-  "fal": { "enabled": true, "instances": [] }
+  "providers": [
+    {
+      "provider_instance_name": "openai-main",
+      "provider_type": "cloud_api",
+      "provider_profile_id": "openai",
+      "protocol_adapter_id": "openai-responses",
+      "endpoint": "https://api.openai.com/v1",
+      "credentials": {
+        "api_token": { "locked": "..." }
+      },
+      "region": null,
+      "pricing_context": null,
+      "provider_rules_id": "openai"
+    }
+  ],
+  "session_config": {}
 }
 ```
 
-各 section 支持的主要字段：
+字段约束：
 
-| Provider type | settings section | instance 字段 |
-| --- | --- | --- |
-| `sn_router` | `sn-ai-provider` | `provider_instance_name`, `provider_type`, `base_url`, `login_url`, `user_name`, `timeout_ms` |
-| `openai` / `openrouter` / `custom` | `openai` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms` |
-| `google` | `google` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `image_models`, `default_image_model`, `features`, `alias_map` |
-| `anthropic` | `claude` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `features`, `alias_map` |
-| `minimax` | `minimax` | `provider_instance_name`, `provider_type`, `provider_driver`, `api_token`, `base_url`, `timeout_ms`, `models`, `default_model`, `features`, `alias_map` |
-| `fal` | `fal` | `provider_instance_name`, `provider_type`, `api_token`, `base_url`, `timeout_ms`, `image_upscale_models`, `image_bg_remove_models`, `audio_enhance_models`, `video_upscale_models` |
-
-`provider_instance_name` 是 UI 与后端之间的 Provider ID。前端当前也用 `inventory.provider_instance_name` 作为 `ProviderView.config.id`。UI 创建 provider 时必须传入全局唯一的 `provider_instance_name`；后端只提供默认命名建议并做冲突检查。
+- `provider_instance_name` 是 Zone 内稳定唯一主键。
+- `provider_type` 只表达部署类型，不表达厂商或协议。
+- `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
+- `protocol_adapter_id` 必须来自运行时 adapter registry；Known Provider 只提供默认值。
+- `endpoint` 和 adapter 必须在保存前完成连接、认证和协议验证。
+- 凭据使用 system-config locked value 或 credential reference，不进入 catalog、inventory、trace 或日志。
+- Catalog activation 不得修改实例名称、endpoint、凭据、区域、账号、协议选择或实例级价格上下文。
+- 不读取 `instance_id`、`provider_driver`、`base_url`、`api_key`、`apiKey` 等旧字段或别名。
 
 ## 3. 设计原则
 
@@ -113,6 +98,14 @@ services/control_panel/ai_models/provider_secrets
 5. 不引入新的持久依赖。usage 已经使用 AICC RDB，settings 继续使用 system_config。
 
 ## 4. kRPC 接口
+
+### 4.0 `provider.catalog` / `protocol_adapter.list`
+
+`provider.catalog` 返回当前 active Known Provider catalog，至少包含 `provider_profile_id`、显示名、默认 `base_url`、默认 `protocol_adapter_id` 和 UI hints。Catalog 只提供表单默认值，不能覆盖 Provider Instance 私有配置。
+
+`protocol_adapter.list` 返回程序实际注册的 adapter ID、支持的 operation 和协议能力。配置型 Provider 只能选择该列表中的 adapter，不能自由输入协议 ID、endpoint path 或脚本。
+
+Provider Wizard 每次打开只读取一次完整 catalog；catalog 不可用时仍允许进入手工模式。手工模式必须从 `protocol_adapter.list` 选择 adapter，保存前执行 endpoint、认证、协议和 discovery 验证。
 
 ### 4.1 `models.list`
 
@@ -160,11 +153,14 @@ Request：
 ```json
 {
   "provider_instance_name": "openai-work",
-  "provider_type": "openai",
-  "name": "OpenAI Main",
+  "provider_type": "cloud_api",
+  "provider_profile_id": "openai",
+  "protocol_adapter_id": "openai-responses",
   "endpoint": "https://api.openai.com/v1",
-  "protocol_type": "openai_compatible",
-  "api_key": "sk-...",
+  "credentials": {
+    "type": "bearer",
+    "secret": "sk-..."
+  },
   "auto_sync_models": true
 }
 ```
@@ -190,8 +186,8 @@ Response：
 实现要求：
 
 - 不写 system_config。
-- `sn_router` 允许没有 `api_key`。
-- `custom` 必须有 `endpoint`。
+- Device JWT 等非 API Key Profile 按 Profile 的认证 schema 校验。
+- Profile、Adapter 和 endpoint 必须同时通过校验。
 - `provider_instance_name` 可选；传入时只用于校验命名合法性，不要求已存在。
 - 第一版可以只做参数校验和轻量 HTTP 探测；若能复用已有 provider adapter 的 inventory refresh 逻辑，则返回真实 `models_discovered`。
 - 返回错误不应泄露 token、Authorization header 或完整 URL query。
@@ -205,11 +201,14 @@ Request：
 ```json
 {
   "provider_instance_name": "openai-work",
-  "provider_type": "openai",
-  "name": "OpenAI Main",
+  "provider_type": "cloud_api",
+  "provider_profile_id": "openai",
+  "protocol_adapter_id": "openai-responses",
   "endpoint": "https://api.openai.com/v1",
-  "protocol_type": "openai_compatible",
-  "api_key": "sk-...",
+  "credentials": {
+    "type": "bearer",
+    "secret": "sk-..."
+  },
   "auto_sync_models": true
 }
 ```
@@ -231,7 +230,7 @@ Response：
 事务写入：
 
 1. 读取 `services/aicc/settings`，拿到 `version`。
-2. 根据 `provider_type` 定位 section。
+2. 校验 Profile、Adapter、endpoint、认证 schema 和 Provider Rules 引用。
 3. 校验 request 中的 `provider_instance_name` 非空且全局唯一。
 4. 写回 `services/aicc/settings`。
 5. 使用 `exec_tx(tx, Some(("services/aicc/settings", version)))`。
@@ -239,7 +238,7 @@ Response：
 
 `provider_instance_name` 由 UI 生成并传入。下面是 UI 可使用的默认命名基准：
 
-| Provider type | 默认 instance name |
+| Provider Profile | 默认 instance name |
 | --- | --- |
 | `sn_router` | `sn-ai-provider-main` |
 | `openai` | `openai-main` |
@@ -256,44 +255,33 @@ Response：
 - `provider.add` 应返回 `ReasonError("provider already exists")`。
 - 后续如需编辑已有 provider，应新增 `provider.update`，不要让 add 混合 upsert 语义。
 
-section 映射：
-
-```text
-sn_router  -> sn-ai-provider
-openai     -> openai
-openrouter -> openai
-custom     -> openai
-anthropic  -> claude
-google     -> google
-minimax    -> minimax
-```
-
 写入示例：
 
 ```json
 {
-  "openai": {
-    "enabled": true,
-    "instances": [
-      {
-        "provider_instance_name": "openai-work",
-        "provider_type": "cloud_api",
-        "provider_driver": "openai",
-        "api_token": "sk-...",
-        "base_url": "https://api.openai.com/v1",
-        "timeout_ms": 60000
-      }
-    ]
-  }
+  "providers": [{
+    "provider_instance_name": "openai-work",
+    "provider_type": "cloud_api",
+    "provider_profile_id": "openai",
+    "protocol_adapter_id": "openai-responses",
+    "endpoint": "https://api.openai.com/v1",
+    "credentials": {
+      "type": "bearer",
+      "secret_ref": "system-config://secrets/aicc/openai-work"
+    },
+    "timeout_ms": 60000,
+    "enabled": true
+  }]
 }
 ```
 
-`openrouter` 和 `custom` 第一版复用 `openai` adapter：
+`openrouter` 和 `custom` 复用 OpenAI-compatible Protocol Adapter：
 
-- OpenAI instance 支持显式配置 `provider_driver`。OpenAI 使用 `openai`，OpenRouter 使用 `openrouter`，自定义 OpenAI-compatible provider 使用与其 driver metadata 文件一致的 driver id。后端 inventory 会原样返回该值，并用它选择对应的模型 metadata。
-- `provider_type` 只表示部署类型（例如 `cloud_api`），不能代替 `provider_driver`。未配置 `provider_driver` 时回退为 `openai`；因此 OpenRouter 和 custom instance 应显式配置该字段。
+- `provider_profile_id` 标识渠道规则。OpenAI 使用 `openai`，OpenRouter 使用 `openrouter`，自定义 OpenAI-compatible Provider 使用 `custom` 或已注册的 Profile ID。
+- `protocol_adapter_id` 必须来自 AICC 运行时注册表。Known Provider catalog 可以给出默认值，但 UI 必须展示并允许修正，保存时由后端验证。
+- `provider_type` 只表示部署类型（例如 `cloud_api`），不能代替 `provider_profile_id`。新配置不读取旧 `provider_driver` 字段。
 
-`sn-ai-provider` 使用独立 adapter，不通过 `OpenAIProvider` 注册。它使用本机设备私钥签发 Device JWT，向配置的 `login_url` 调用 `/api/user/login_by_device_token` 换取 `sn-sso` session，再通过 SN 的 `/models` 刷新 inventory、通过 `/responses` 执行 `llm.chat`；配置中不接受普通 API key，也不透传 BuckyOS `verify-hub` session。`user_name` 是设备在 SN 注册时所属的 Zone 用户名。初始模型取独立 `sn-ai-provider` driver metadata 的 `models[].id` 中声明支持 LLM 的项目，随后由 `/models` 返回的真实 inventory 刷新。metadata 未描述的模型按该 metadata 中的最高价格估算。
+`sn-ai-provider` 使用独立 Profile 和 Adapter。它使用本机设备私钥签发 Device JWT，换取短期 `sn-sso` session；配置中不接受普通 API key，也不透传 BuckyOS `verify-hub` session。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合，价格由 Pricing catalog 精确解析。
 
 ### 4.4 `provider.delete`
 
@@ -487,6 +475,8 @@ Response：
 Rust 契约统一定义在 `buckyos-api::aicc_client` 的 `DriverMetadataUpdate*` 类型、`AiccClient`、`AiccHandler` 和 `AiccServerHandler` 中；服务端和其它 Rust 调用方不得再手写字段名。
 
 ### 4.8 `service.reload_settings`
+
+该方法是唯一 settings reload 入口；不定义 `reload_settings`、`reaload_settings` 或 `service.reaload_settings` 兼容别名。
 
 状态：保留。
 

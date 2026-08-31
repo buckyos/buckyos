@@ -43,9 +43,9 @@ system_config 写入 settings
 
 用例：
 
-1. 写入 Mock OpenAI settings，`base_url` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
+1. 写入 Mock OpenAI Provider Instance，`endpoint` 指向本地 Mock，reload 后 `models.list` 出现 `openai-mock-1`。
 2. 禁用 Provider，reload 后候选消失，调用返回无候选或策略拒绝。
-3. 修改 Provider capabilities，reload 后 `must_features` 硬过滤结果变化。
+3. 修改 Model Driver 的结构化能力，reload 后 `ModelRequirement` 硬过滤结果变化。
 4. 修改 `provider_type` 为 `local_inference` / `cloud_api` / `proxy_unknown`，验证 `local_only` 过滤。
 5. 全量覆盖 settings 和局部更新 settings 都能生效。
 6. settings 非法时 reload 失败，不破坏上一版可用配置。
@@ -133,7 +133,7 @@ system_config 写入 settings
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
-| `l3_models_list_*` | P0 | `models.list` / `service.models.list` inventory、逻辑目录、health、legacy aliases 脱敏诊断 |
+| `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
@@ -142,7 +142,7 @@ system_config 写入 settings
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_legacy_*` | P1 | legacy alias、旧字段兼容或迁移提示 |
+| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 5.4 L4 Gateway 真实模型验收
 

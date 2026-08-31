@@ -1,4 +1,6 @@
-# AICC Models Manager 后续 TODO
+# AICC Models Manager 后续 TODO（历史实现记录）
+
+> 本文保留已完成任务的历史记录，不作为 Beta 2.2 Provider 架构重构规范。目标模型边界以 `aicc-models-mgr.md`、`provider_profile_schema.md` 和 `driver_metadata_schema.md` 为准。
 
 来源：`doc/aicc/aicc-models-mgr.md`  
 状态：Draft  

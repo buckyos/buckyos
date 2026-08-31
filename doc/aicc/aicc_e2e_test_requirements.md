@@ -17,7 +17,7 @@
 本文覆盖：
 
 - AICC route control plane、模型目录、metadata、调度和 fallback。
-- AICC typed inference、legacy/helper 调用和 Provider adapter。
+- AICC typed inference、Helper 调用和 Protocol Adapter。
 - Provider inventory、Provider instance、模型和能力声明。
 - Provider 同步、异步、streaming、资源和错误协议。
 - AICC task、usage、quota、配置、安全和可观测性。
@@ -431,7 +431,7 @@ T2 按模型官方能力覆盖：
 
 当前 canonical API type 的行为组合必须逐项覆盖：
 
-`llm.chat` 是唯一的 AICC LLM 数据面接口。当前 breaking-change 版本不保留或测试旧式 `llm.completion` 兼容接口；Provider adapter 是否使用 Responses、Chat Completions 或其他厂商协议属于内部传输实现。
+`chat.completions.create` 是 AICC 的 LLM typed inference 接口。Beta 2.2 不保留或测试 `llm.chat`、`llm.completion` 等旧式 all-in-one 接口；Protocol Adapter 使用 Responses、Chat Completions 或其他厂商协议属于内部传输实现。
 
 - `llm.chat`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
 - `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。
@@ -707,7 +707,7 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 
 ### 10.4 配置和维护
 
-- `reload_settings` 成功和失败。
+- `service.reload_settings` 成功和失败。
 - 非法新配置失败后继续使用旧配置。
 - Provider validate/add/delete/refresh models。
 - 多 instance 独立更新与删除。

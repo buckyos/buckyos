@@ -1,19 +1,21 @@
 # AICC API 设计
 
-版本：`v0.3-draft`
-更新基线：`2026-05-30`
+版本：`v0.4-beta2.2-target`
+更新基线：`2026-08-31`
 配套文档：
 
 
 - `doc/aicc/aicc 逻辑模型目录.md`
 - `doc/aicc/aicc_router.md`
 - `doc/aicc/driver_metadata_schema.md`
+- `doc/aicc/provider_profile_schema.md`
+- `doc/aicc/provider_architecture_durable_data_schema.md`
 - `doc/aicc/maintenance/krpc_aicc_calling_guide.md`
 - `doc/aicc/maintenance/update_aicc_settings_via_system_config.md`
 
 本文定义 AICC 面向调用方、Provider Adapter、Router、Control Panel 和 Agent Runtime 的标准 API 设计。目标是覆盖 `aicc 逻辑模型目录.md` 中规划的所有已知 AI 调用方法。
 
-> **breaking change 基线（2026-05-30）**：AICC 已落地控制面 / 数据面 / Helper 三层 API 拆分（`route.resolve` + typed inference + `helper.*`），以及 content-block 形态的 `AiMessage`、driver metadata resolver、逻辑模型定义（`min_line` / `disable_line` / `mount_mode` / auto-mount）、reasoning effort 作为 exact model variant、session 逻辑树 overlay。本文中保留的 `AiMethodRequest` / `payload.input_json` / `llm.chat` 等 all-in-one 形态均为 **legacy / helper 兼容层**，不再是 AICC 本体核心语义；新调用方一律走两阶段（`route.resolve` → typed inference）或 `helper.*`。
+> **Beta 2.2 breaking-change 基线**：AICC 只保留控制面、typed inference 数据面和 Helper 三层 API。删除 `AiMethodRequest`、`model.alias`、`must_features`、`requirements.extra.disable_capabilities`、legacy all-in-one method 和管理接口兼容别名。Provider Profile、Protocol Adapter、Model Driver、Provider Rules 和 Pricing 使用独立身份与 schema，不读取旧 `provider_driver`。
 
 ---
 
@@ -32,11 +34,10 @@ POST /kapi/aicc
 | method | 语义 |
 |---|---|
 | `route.resolve` | 控制面路由解析。输入逻辑模型名，输出一次确定的 exact model、Provider 信息、候选顺序和 trace。 |
-| `chat.completions.create` / `images.generate` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
-| `helper.llm_chat` / `helper.text_to_image` | helper 组合层。语义等价于 `route.resolve` + typed inference。 |
-| `llm.chat` / `image.txt2img` / `audio.asr` / ... | legacy all-in-one 调用方法。保留给旧 SDK、DV 用例和兼容调用；不再作为 AICC 本体核心语义。 |
-| `cancel` | best-effort 取消 AI 调用方法返回的 task。 |
-| `reload_settings` / `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置。 |
+| `chat.completions.create`、`embeddings.create`、`rerank.create`、`images.*`、`vision.*`、`audio.*`、`videos.*` | typed inference 数据面。只接受 `exact_model`，不接受逻辑模型名，不做逻辑 fallback。 |
+| `helper.*` | helper 组合层。接收 `logical_model` 和对应 typed request，语义等价于 `route.resolve` + typed inference。 |
+| `cancel` | 请求取消异步 task；返回值必须真实反映是否已触发上游取消或本地中止。 |
+| `service.reload_settings` | 从 `services/aicc/settings` 重新加载 Provider 配置。 |
 | `quota.query` | 查询调用方在 capability / method 维度的剩余额度和预算状态。 |
 | `provider.list` / `provider.health` | 查询 Provider inventory 和健康状态。 |
 
@@ -44,29 +45,16 @@ POST /kapi/aicc
 
 ### 1.2 `method` 决定 schema，`Capability` 只做粗分组
 
-`method` 是 AICC 的 canonical schema discriminator。调用方不再传单独分类字段，而是直接把标准 AI 方法名放在 kRPC `method` 上，例如 `llm.chat`、`image.txt2img`、`audio.asr`。
+`method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。`api_type` 是路由能力类型，例如 `llm.chat`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
 
 Provider 不能自定义方法名，只能声明自己支持标准集合中的哪些 method。`Capability` 只表达粗能力和权限边界，不决定 schema，也不随 method 数量膨胀。
 
-下面的 all-in-one `AiMethodRequest` 是 **legacy / helper 兼容层** 的请求形态，仍服务于 legacy `llm.chat` / `image.txt2img` 等方法和 `helper.*` 组合层内部转换；新调用方应改用按 API 形态拆分的 typed inference 请求（如 `LlmChatInvokeRequest` / `TextToImageInvokeRequest`，见 §2.1 与 §5.1）：
-
-```rust
-pub struct AiMethodRequest {
-    pub capability: Capability,
-    pub model: ModelSpec,
-    pub requirements: Requirements,
-    pub payload: AiPayload,
-    pub policy: Option<RoutePolicy>,
-    pub idempotency_key: Option<String>,
-    pub task_options: Option<AiTaskOptions>,
-}
-```
-
+每个数据面 method 定义独立 typed request/response。method 自有字段直接位于 `params`，不使用 `AiMethodRequest`、`payload.input_json`、`payload.resources` 或 `payload.options` 等通用容器。
 路由规则：
 
-1. Router 和 Provider Adapter 必须按 kRPC `method` 解释 request / response。
+1. Router 按 `api_type` 选择候选；Provider Call Resolver 按 kRPC `method` 和 `api_type` 解析 operation。
 2. fallback 不得改变 method，只能在同一 method 的候选模型内切换。
-3. `model.alias` 负责从逻辑目录展开候选模型，不覆盖 method 的 schema 语义。
+3. `logical_model` 只存在于 `route.resolve` 和 Helper；typed inference 只接受 `exact_model`。
 4. `Capability` 可用于 RBAC 边界、UI tab 分组和粗粒度 quota 桶，但不能作为 schema discriminator。
 5. RBAC / quota 支持直接挂在 method namespace 上，例如 `audio.*`、`image.*`、`llm.chat`。
 
@@ -87,13 +75,13 @@ pub struct AiMethodRequest {
 
 新调用方应按三层语义接入：
 
-1. `route.resolve` 是控制面，只接受逻辑模型名，不接受 `<provider_model_id>@<provider_instance_name>` exact model。它返回 `selected_exact_model`、Provider driver / instance / model、`provider_options`、`fallback_attempts`、`route_trace`、`enabled_capabilities` 和 `disabled_capabilities`。
-2. typed inference 是数据面，例如 `chat.completions.create` 和 `images.generate`。请求字段必须是 `exact_model`，逻辑模型名会被拒绝；内部默认关闭 `allow_fallback` 和 `runtime_failover`，Provider 启动失败后只能由调用方重新 `route.resolve` 才能换模型。
-3. `helper.*` 是组合层，接受旧 `AiMethodRequest` 形态的逻辑请求，但实现上必须先 `route.resolve`，再把 selected exact model 交给 typed inference。helper 不拥有独立路由逻辑。
+1. `route.resolve` 是控制面，只接受逻辑模型名。它返回 selected ModelUID/exact model、Provider Instance/Profile、Protocol Adapter、Model Driver、origin model、原始 provider model、operation、fallback 和 trace。
+2. typed inference 是数据面。请求必须包含 `exact_model`，逻辑模型名会被拒绝；内部关闭逻辑 fallback。调用阶段重新校验 catalog revision 和动态 availability，并生成内部 `ResolvedProviderCall`。
+3. `helper.*` 接受 `logical_model`、结构化 requirements/policy 和对应 typed 业务字段，内部先 `route.resolve`，再调用 typed inference。Helper 不接受或构造 `AiMethodRequest`。
 
 `fallback_attempts` 表达路由建议的运行时 failover 候选顺序，不是 lease，也不保证候选在后续时刻仍可用。它不包含 primary；当前受 `runtime_failover` 和系统 `fallback_limit` 限制，排序来自 scheduler 之后的同 method 候选。
 
-`enabled_capabilities` / `disabled_capabilities` 表达本次路由后模型可用能力与请求禁用能力。`Feature` / `must_features` 只是旧请求兼容表达，不是 inventory 真相源；能力判断必须以 `ProviderInventory.models[].capabilities` 为准，不能继续依赖 legacy `ProviderInstance.features`。
+`enabled_capabilities` / `disabled_capabilities` 表达本次路由后模型可用能力与请求禁用能力。能力判断使用结构化 `ModelRequirement` / `ModelDisable`，最终能力是 Model Driver、Protocol Adapter 与 Provider discovery 的交集。
 
 ### 1.4 数据面复用 BuckyOS ResourceRef / FileObject Meta
 
@@ -136,7 +124,7 @@ AICC 不定义私有 Job API。长任务使用 `task-manager`：
 
 ## 2. 顶层协议
 
-新调用方按三层接入（见 §1.3）。本节先给出控制面 / 数据面 / helper 三类 canonical 形态，再保留 legacy all-in-one 形态作为兼容参考。
+调用方按三层接入（见 §1.3）。本节只定义控制面、数据面和 Helper 三类 canonical 形态。Beta 2.2 不定义 legacy 兼容请求。
 
 ### 2.1 `route.resolve`（控制面）
 
@@ -178,10 +166,14 @@ Response：
 ```json
 {
   "selected_exact_model": "gpt-5.1:reasoning-high@openai_primary",
+  "selected_model_uid": "openai:gpt-5.1:responses",
   "provider_instance_name": "openai_primary",
-  "provider_driver": "openai",
-  "provider_model_id": "gpt-5.1:reasoning-high",
-  "provider_options": { "reasoning": { "effort": "high" } },
+  "provider_profile_id": "openai",
+  "protocol_adapter_id": "openai-responses",
+  "model_driver_id": "openai",
+  "origin_model_id": "gpt-5.1",
+  "provider_model_id": "gpt-5.1",
+  "operation": "responses.create",
   "enabled_capabilities": ["tool_calling", "json_output"],
   "disabled_capabilities": ["web_search"],
   "fallback_attempts": [
@@ -200,8 +192,8 @@ Response：
 
 1. `selected_exact_model` 是 AICC 语义下的确定物理模型名，形如 `provider_model_id[:variant]@provider_instance_name`。
 2. `session_overlay` 是调用方已经合成好的本次请求 route overlay。AICC 不维护应用 session 状态，只把该 overlay 覆盖到系统级 route config 之上。
-3. `provider_model_id` 是 provider wire protocol 中真正使用的模型名（含 variant 后缀时由数据面自动还原，见 §4 与 `aicc_router.md`）。
-4. `provider_options` 是由 route / metadata / variant lowering 得到的 provider 调用参数建议，例如 reasoning effort；它不是 lease，调用方可原样透传，也可与自己的 options 合并后再调用数据面。
+3. `provider_model_id` 是 Provider discovery 返回并用于 wire request 的原始模型名，不得替换为 `origin_model_id`。
+4. `operation` 由 Provider Rules 和 adapter 注册表解析；调用方不能指定任意 operation 或 URL。
 5. `enabled_capabilities` / `disabled_capabilities` 表达本次路由后实际启用 / 禁用的能力集合。
 6. `fallback_attempts` 是路由建议的运行时候选顺序（不含 primary），供调用方在失败后自行决定是否重试，不是 lease，也不保证后续时刻仍可用。
 
@@ -220,7 +212,6 @@ Response：
     ],
     "tools": [],
     "response_format": { "type": "json_schema", "json_schema": { "name": "answer", "schema": {} } },
-    "provider_options": { "reasoning": { "effort": "high" } },
     "idempotency_key": "client-req-001"
   },
   "sys": [1001, "<session_token>", "trace-aicc-chat-001"]
@@ -241,176 +232,52 @@ Response：
 }
 ```
 
-数据面字段直接挂在 `params` 上（不再包进 `payload.input_json`）。逻辑模型名传入会返回 `invalid_model_name`；primary exact model 在推理时 quota exhausted / unavailable 时不 fallback，调用方需重新 `route.resolve` 或自取 `fallback_attempts` 候选。
+数据面字段直接挂在 `params` 上。调用方只能传 canonical 字段；Provider-specific defaults/set/remove 由 Provider Call Resolver 应用。逻辑模型名传入会返回 `invalid_model_name`；primary exact model在推理时 quota exhausted / unavailable 时不 fallback，调用方需重新 `route.resolve` 或使用 `fallback_attempts`。
 
 ### 2.3 `helper.*`（组合层）
 
-`helper.llm_chat` / `helper.text_to_image` 接受逻辑模型名，内部先 `route.resolve` 再调 typed inference，行为等价于两阶段显式调用。helper 不拥有独立路由逻辑：
+Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_model` 替换为 `logical_model`，并增加结构化 `requirements`、`disable` 和 `policy`。例如：
 
 ```json
 {
   "method": "helper.llm_chat",
   "params": {
-    "capability": "llm",
-    "model": { "alias": "llm.plan" },
+    "logical_model": "llm.plan",
     "requirements": {
       "tool_call": true,
-      "must_features": [],
-      "max_latency_ms": null,
-      "max_cost_usd": null,
-      "resp_format": "text",
-      "extra": null
+      "json_schema": false
     },
-    "payload": {
-      "input_json": {
-        "messages": [{ "role": "user", "content": [{ "type": "text", "text": "你好" }] }]
-      },
-      "resources": [],
-      "options": {}
-    }
+    "disable": {
+      "web_search": true
+    },
+    "policy": {
+      "profile": "balanced"
+    },
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "你好" }
+        ]
+      }
+    ]
   }
 }
 ```
 
-展开为：`route.resolve(api_type="llm.chat", logical_model="llm.plan", ...)` → `chat.completions.create(exact_model=route.selected_exact_model, provider_options=route.provider_options, messages=...)`。
+其语义严格等价于 `route.resolve(api_type="llm.chat", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。
+### 2.4 typed inference 通用响应约束
 
-### 2.4 legacy all-in-one request（兼容参考）
+每个 typed inference method 使用独立的请求和响应结构，不再通过通用 `AiMethodRequest`、`AiPayload` 或 `AiResponseSummary` 承载业务字段。所有响应共享以下 envelope 字段：
 
-下面是 legacy `AiMethodRequest` 形态，仅保留给旧 SDK / 兼容调用；新调用方不应再使用：
+- `task_id`、`status`、`usage`、`cost`、`finish_reason`；
+- `provider_task_ref`、`route_trace`、`event_ref`；
+- method 自有的 typed 结果，例如 `message`、`artifacts`、`embeddings` 或 `segments`。
 
-```json
-{
-  "method": "llm.chat",
-  "params": {
-    "capability": "llm",
-    "model": {
-      "alias": "llm.plan",
-      "provider_model_hint": null
-    },
-    "requirements": {
-      "must_features": ["json_output"],
-      "max_latency_ms": 3000,
-      "max_cost_usd": 0.05,
-      "resp_format": "json",
-      "extra": {}
-    },
-    "payload": {
-      "resources": [],
-      "input_json": {},
-      "options": {}
-    },
-    "policy": {
-      "profile": "balanced",
-      "allow_fallback": true,
-      "runtime_failover": true,
-      "explain": false
-    },
-    "idempotency_key": "client-req-001",
-    "task_options": {
-      "parent_id": null
-    }
-  },
-  "sys": [1001, "<session_token>", "trace-aicc-001"]
-}
-```
+同步和异步结果必须使用相同的 typed result。Task Final event 中的业务结果必须精确保存；Base64、ProviderState 和 thinking signature 只能在日志、审计摘要和 provider I/O 观测副本中脱敏，不能改写业务结果。
 
-说明：
-
-1. kRPC `method` 就是标准 AI 方法名，params 内不再有独立分类字段。
-2. 当前实现中的 `resp_foramt` 拼写不再作为新协议字段，新文档统一使用 `resp_format`。
-3. `payload.input_json` 是 method request body 的唯一 canonical 位置，所有 method 自有字段都放在这里。
-4. `payload.resources` 保存跨字段复用或旧调用方需要的 `ResourceRef` 列表；文件类资源的 metadata 通过 `NamedObject` 指向的 `FileObject.meta` 获取。
-5. `payload.options` 只保存 AICC 层通用执行选项，不保存 method schema 字段。
-6. `sys` 三元组含义为 `[caller_id, session_token, trace_id]`。
-7. 对用户请求，`session_token` 表达调用链源头的用户和应用身份。AICC 调用 TaskMgr 创建、更新或取消内部 Task 时原样透传该 token，不改用 AICC runtime 的 service token。
-8. AICC 创建 Task 时不填写 `user_id` / `app_id`；TaskMgr 在标准验签后从 token 的 `sub` / `appid` 确定 owner。存在 `parent_id` 时，父任务写权限和 owner 一致性也由 TaskMgr 判断。
-9. 该透传链路不要求面向 AICC 或 TaskMgr 的 service-specific audience；`aud=verify-hub` 的 refresh token 仍然只能用于换取 session token，不能作为业务 session token 透传。
-
-`payload` 顶层固定为：
-
-```json
-{
-  "input_json": {},
-  "resources": [],
-  "options": {}
-}
-```
-
-禁止在正式协议中新增 `payload.text`、`payload.messages`、`payload.tool_specs`、`payload.input_json.messages_v2` 等并行 body 通道。旧实现迁移时可以在 Provider Adapter 内部兼容，但不得写入本协议。
-
-`policy.profile` 枚举：
-
-| value | 语义 |
-|---|---|
-| `cheap` | 成本优先。 |
-| `fast` | 延迟优先。 |
-| `balanced` | 成本、质量、延迟综合排序。 |
-| `quality` | 质量优先。 |
-
-### 2.5 AI method response（legacy / 通用）
-
-> typed inference 的响应是按 API 形态拆分的 typed struct：`chat.completions.create` 返回 `LlmChatInvokeResponse { task_id, status, message: AiMessage, tool_calls, usage, cost, finish_reason, provider_task_ref, route_trace, event_ref }`；`images.generate` 返回 `TextToImageInvokeResponse { task_id, status, artifacts, usage, cost, ... }`。下面的通用 `result` 形态用于 legacy all-in-one 方法。
-
-同步成功：
-
-```json
-{
-  "task_id": "aicc-001",
-  "status": "succeeded",
-  "result": {
-    "text": "answer",
-    "tool_calls": [],
-    "artifacts": [],
-    "usage": {
-      "tokens": {
-        "input": 100,
-        "output": 30,
-        "total": 130
-      },
-      "request_units": 1
-    },
-    "cost": {
-      "amount": 0.002,
-      "currency": "USD"
-    },
-    "finish_reason": "stop",
-    "provider_task_ref": null,
-    "extra": {
-      "route_trace": {
-        "attempts": [],
-        "final_model": "gpt-5.5@openai_primary"
-      }
-    }
-  },
-  "event_ref": "task://aicc-001/events"
-}
-```
-
-异步启动：
-
-```json
-{
-  "task_id": "aicc-002",
-  "status": "running",
-  "result": null,
-  "event_ref": "task://aicc-002/events"
-}
-```
-
-启动失败：
-
-```json
-{
-  "task_id": "aicc-003",
-  "status": "failed",
-  "result": null,
-  "event_ref": "task://aicc-003/events"
-}
-```
-
-错误细节写入 task event / task data。kRPC error 只用于 transport、鉴权、反序列化、服务异常等系统错误。
-
-### 2.6 流式与进度观察
+Provider 原生扩展只允许放入带 Provider namespace 的 `ProviderState` 或明确定义的扩展字段。Provider adapter 必须保持 content block 顺序；无法归一但需要多轮恢复的原生 block 保存为 opaque ProviderState。
+### 2.5 流式与进度观察
 
 AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 `stream: true`、token delta event、image step、video frame 等中间态字段。
 
@@ -439,7 +306,7 @@ AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 
 
 这些字段只属于实现侧 task data，不进入 AICC 协议规范。UI 通过订阅 task event 或轮询 task 状态获取。
 
-### 2.7 `idempotency_key`
+### 2.6 `idempotency_key`
 
 `idempotency_key` 用于调用方重试去重，避免网络重试或进程恢复导致重复扣费、重复生成或重复写入。
 
@@ -454,13 +321,13 @@ AICC 不为 streaming 引入独立协议层，也不在 method schema 中定义 
 
 同一作用域内重复 key 但 canonical request body 不一致时，必须返回 `idempotency_conflict`。
 
-### 2.8 通用 batch 策略
+### 2.7 通用 batch 策略
 
 AICC v0 不引入通用 batch primitive。批量调用由调用方多次发送标准 method request，AICC 通过 quota、并发限制和 Provider health 控制保护下游 Provider。
 
 单个 method 可以在自身 schema 内定义批量输入，例如 `embedding.text.items`，但这不等同于跨 method 的 batch job API。
 
-### 2.9 `cancel`
+### 2.8 `cancel`
 
 Request：
 
@@ -485,11 +352,12 @@ Response：
 
 语义：
 
-1. `accepted=true` 表示 AICC 已接受取消请求，并尝试通知 Provider / task-manager。
-2. `accepted=false` 表示 task binding 不存在、任务已结束或 Provider 不支持取消。
-3. 跨 tenant cancel 必须拒绝。
+1. `accepted=true` 只能表示已调用 Provider cancel API，或已成功中止本地 polling/执行并安装 late-Final 屏蔽。
+2. task binding 不存在、任务已结束、Provider 不支持取消或无法确认中止时返回 `accepted=false`。
+3. cancel 成功后到达的 Provider Final 结果不得覆盖 canceled 终态。
+4. 已进入 Provider 计费执行阶段时，取消不保证退费；跨 tenant cancel 必须拒绝。
 
-### 2.10 查询类 method 占位
+### 2.9 查询类 method 占位
 
 查询类 method 仍走 `/kapi/aicc`，但不属于 AI 推理 method，不参与 fallback。
 
@@ -540,9 +408,9 @@ Response：
 }
 ```
 
-### 2.11 `reload_settings`
+### 2.10 `service.reload_settings`
 
-`reload_settings` / `service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider 配置。
+`service.reload_settings` 用于从 `services/aicc/settings` 重新加载 Provider Instance 配置。`reload_settings`、`reaload_settings` 和 `service.reaload_settings` 均不是有效别名。
 
 语义：
 
@@ -763,32 +631,21 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 本表只描述协议规范。当前实现进度不在规范正文维护，应迁出到实现 tracker 或 release note。
 
-| method | 默认逻辑目录 | Capability | 默认任务模式 |
+| typed method | api_type | 默认逻辑目录 | 默认任务模式 |
 |---|---|---|---|
-| `llm.chat` | `llm.chat` / `llm.*` | `llm` | sync 或 async |
-| `llm.completion` | `llm.completion` | `llm` | sync |
-| `embedding.text` | `embedding.text` | `embedding` | sync 或 async |
-| `embedding.multimodal` | `embedding.multimodal` | `embedding` | sync 或 async |
-| `rerank` | `rerank.general` | `rerank` | sync |
-| `image.txt2img` | `image.txt2img` | `image` | sync 或 async |
-| `image.img2img` | `image.img2img` | `image` | sync 或 async |
-| `image.inpaint` | `image.inpaint` | `image` | sync 或 async |
-| `image.upscale` | `image.upscale` | `image` | sync 或 async |
-| `image.bg_remove` | `image.bg_remove` | `image` | sync |
-| `vision.ocr` | `image.ocr` | `vision` | sync 或 async |
-| `vision.caption` | `image.caption` | `vision` | sync |
-| `vision.detect` | `image.detect` | `vision` | sync |
-| `vision.segment` | `image.segment` | `vision` | sync |
-| `audio.tts` | `audio.tts` | `audio` | sync 或 async |
-| `audio.asr` | `audio.asr` | `audio` | sync 或 async |
-| `audio.music` | `audio.music` | `audio` | async |
-| `audio.enhance` | `audio.enhance` | `audio` | sync 或 async |
-| `video.txt2video` | `video.txt2video` | `video` | async |
-| `video.img2video` | `video.img2video` | `video` | async |
-| `video.video2video` | `video.video2video` | `video` | async |
-| `video.extend` | `video.extend` | `video` | async |
-| `video.upscale` | `video.upscale` | `video` | async |
-| `agent.computer_use` | `agent.computer_use` | `agent` | session async |
+| `chat.completions.create` | `llm.chat` | `llm.chat` / `llm.*` | sync 或 async |
+| `embeddings.create` | `embedding.text` / `embedding.multimodal` | `embedding.*` | sync 或 async |
+| `rerank.create` | `rerank` | `rerank.general` | sync |
+| `images.generate` | `image.txt2img` | `image.txt2img` | sync 或 async |
+| `images.edit` | `image.img2img` / `image.inpaint` | `image.img2img` / `image.inpaint` | sync 或 async |
+| `images.upscale` / `images.remove_background` | `image.upscale` / `image.bg_remove` | 同 api_type | sync 或 async |
+| `vision.ocr` / `vision.caption` / `vision.detect` / `vision.segment` | 同名 api_type | `image.*` | sync 或 async |
+| `audio.speech.create` | `audio.tts` | `audio.tts` | sync 或 async |
+| `audio.transcriptions.create` | `audio.asr` | `audio.asr` | sync 或 async |
+| `audio.music.create` / `audio.enhance` | `audio.music` / `audio.enhance` | 同 api_type | async 或 sync |
+| `videos.generate` | `video.txt2video` / `video.img2video` | 对应 `video.*` | async |
+| `videos.transform` / `videos.extend` / `videos.upscale` | `video.video2video` / `video.extend` / `video.upscale` | 同 api_type | async |
+| `agent.computer_use` | `agent.computer_use` | `agent.computer_use` | session async |
 
 命名规范：
 
@@ -800,11 +657,11 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 ## 5. LLM API
 
-### 5.1 `chat.completions.create`（typed inference）/ legacy `llm.chat`
+### 5.1 `chat.completions.create`
 
 用途：通用对话、Agent plan/code/reason/summary、VQA、多模态聊天、工具调用。
 
-数据面方法是 `chat.completions.create`，字段直接挂在 `params` 上（`exact_model` + `messages` + `tools` + `response_format` + `provider_options` + ...，见 §2.2）。legacy `llm.chat` 把同样的 body 放在 `payload.input_json` 内。两者的 message / tools / response_format 结构一致：
+数据面字段直接挂在 `params` 上：`exact_model`、`messages`、`tools`、`response_format`、generation parameters、idempotency 和 task options。Provider-specific 参数由 Provider Rules 生成，不属于调用协议。
 
 ```json
 {
@@ -857,15 +714,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 Response mapping：
 
-`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出以 content-block `message: AiMessage` 形态返回；下表的 `AiResponseSummary.*` 是 legacy all-in-one 的字段映射：
-
-| 输出 | typed inference (`LlmChatInvokeResponse`) | legacy (`AiResponseSummary`) |
-|---|---|---|
-| assistant 内容 | `message: AiMessage`（含 `text` / `tool_use` / `thinking` 等 block） | `text` |
-| tool calls | `tool_calls` | `tool_calls` |
-| finish reason | `finish_reason` | `finish_reason` |
-| provider 原生响应摘要 | — | `extra.provider_io`，必须脱敏。 |
-| route trace | `route_trace` | `extra.route_trace` 或 task data。 |
+`chat.completions.create` 返回 `LlmChatInvokeResponse`，assistant 输出使用 content-block `message: AiMessage`。`text`、`tool_use`、`thinking` 和 opaque `ProviderState` 必须保持原始顺序；存在匹配当前 adapter 的 ProviderState 时优先原样 replay，否则从 provider-neutral blocks lowering。foreign ProviderState 被忽略。
 
 Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical definition 承载，数据面 `chat.completions.create` 自身不 fallback）：
 
@@ -873,29 +722,7 @@ Fallback（逻辑路由层语义，由 `route.resolve` / helper / logical defini
 2. `llm.reason` 默认 disabled 或 strict，避免静默降级到无 reasoning 能力模型。
 3. `llm.vision` 必须硬过滤 `vision=true`（在逻辑模型定义 `min_line` 中表达）。
 
-### 5.2 `llm.completion`
-
-用途：legacy completion。新调用方应使用 `llm.chat`。
-
-Request：
-
-```json
-{
-  "prompt": "Complete this text: The future of AI is",
-  "suffix": null
-}
-```
-
-Response：
-
-```json
-{
-  "text": "...",
-  "finish_reason": "stop"
-}
-```
-
-Response mapping：`text` 写入 `AiResponseSummary.text`。
+AICC 不定义 `llm.completion`。纯文本 completion 由调用方构造单条 user message 后调用 `chat.completions.create`；服务端不保留旧 Completion schema、method alias 或自动转换入口。
 
 ---
 
@@ -1085,6 +912,14 @@ Response：
 
 Response mapping：每张图片生成 `AiArtifact`，宽高、media type 等写入生成图片的 FileObject meta。
 
+OpenAI 渠道的 operation 由最终解析后的 metadata/Provider Rules 决定：
+
+- GPT Image / DALL·E 等图片模型使用 Image API operation；
+- 声明 `capabilities.image_generation=true` 的 GPT-5 系列主线模型使用 Responses `image_generation` tool；
+- 不得根据模型名、调用方是否传 feature 或 endpoint URL 在 adapter 中临时猜测路径。
+
+Responses 返回的每个 completed `image_generation_call.result` 必须转换为通用图片 artifact，并同时保留对应 OpenAI `ProviderState` 以支持后续多轮编辑。多个结果全部保留；MIME 根据实际输出格式确定。缺失结果、非法 Base64、tool failed/rejected 必须返回明确 Provider error。
+
 ### 8.2 `image.img2img`
 
 Request：
@@ -1106,6 +941,8 @@ Request：
 ```
 
 Response：同 `image.txt2img`。
+
+当 Provider Rules 为已选模型解析出 Responses image-generation edit operation 时，输入图片降低为 `input_image`，tool action 使用 `edit`；否则使用图片模型的 Image API edit operation。`image.inpaint` 只有在 mask lowering 已被对应 operation 明确支持时才可声明。
 
 ### 8.3 `image.inpaint`
 
@@ -1767,12 +1604,18 @@ Fallback：
 {
   "provider_instance_name": "openai_primary",
   "provider_type": "cloud_api",
-  "provider_driver": "openai",
+  "provider_profile_id": "openai",
+  "protocol_adapter_id": "openai-responses",
+  "catalog_activation_revision": 42,
   "models": [
     {
+      "model_uid": "openai:gpt-5.5:responses",
       "provider_model_id": "gpt-5.5",
+      "model_driver_id": "openai",
+      "origin_model_id": "gpt-5.5",
       "exact_model": "gpt-5.5@openai_primary",
-      "methods": ["llm.chat"],
+      "api_types": ["llm.chat"],
+      "operations": { "chat.completions.create": "responses.create" },
       "logical_mounts": ["llm.gpt5", "llm.plan", "llm.code", "llm.vision"],
       "capabilities": {
         "tool_call": true,
@@ -1801,7 +1644,7 @@ Fallback：
 约束：
 
 1. `exact_model` 必须是 `<provider_model_id>@<provider_instance_name>`，其中 `provider_model_id` 可携带 `:variant` 后缀（见 §14.3）。
-2. `methods` 是 Router 硬过滤条件。
+2. `api_types` 和 Model Driver/adapter/discovery 的能力交集是 Router 硬过滤条件。
 3. `logical_mounts` 只负责候选展开，不决定 schema。
 4. `provider_type` 的可信来源应是 system-config 或 admin override，不能只信 Provider 自声明。
 5. `provider_model_id` 不得包含 `@`（可含 `:variant`）；需要表达 HuggingFace revision 等信息时应放入独立字段或 attributes，避免与 `exact_model` 分隔符冲突。
@@ -1825,57 +1668,50 @@ Fallback：
 
 ### 14.2 调用方选择模型
 
-调用方应使用逻辑路径：
+普通调用方通过 Helper 使用逻辑路径：
 
 ```json
 {
-  "method": "vision.ocr",
+  "method": "helper.vision_ocr",
   "params": {
-    "model": {
-      "alias": "image.ocr"
-    }
+    "logical_model": "image.ocr",
+    "image": { "kind": "named_object", "obj_id": "chunk:image" }
   }
 }
 ```
 
-legacy all-in-one 调试或强制指定 Provider 时可以使用精确模型：
+显式两阶段调用先执行 `route.resolve`，再把返回的 exact model 交给 typed inference：
 
 ```json
 {
-  "method": "llm.chat",
+  "method": "chat.completions.create",
   "params": {
-    "model": {
-      "alias": "claude-sonnet-4.6@anthropic"
-    }
+    "exact_model": "claude-sonnet-4.6@anthropic",
+    "messages": []
   }
 }
 ```
-
-精确模型默认不 fallback。新 typed inference API 只接受精确模型，但它是数据面接口，不会重新展开逻辑目录或隐式 fallback。
 
 解析规则：
 
-1. `alias` 含 `@` 时视为 `exact_model`，按 `<provider_model_id>@<provider_instance_name>` 解析。
-2. `alias` 不含 `@` 时视为 logical path，由逻辑目录展开候选模型。
-3. exact_model 默认 strict，不做 parent fallback；typed inference 额外关闭 `runtime_failover`，Provider 启动失败会直接返回失败。
-4. logical path fallback 只能改变候选模型，不能改变 kRPC `method`。
+1. `route.resolve.logical_model` 必须是不含 `@` 的逻辑路径。
+2. typed inference 的 `exact_model` 按 `<provider_model_id>[:variant]@<provider_instance_name>` 解析。
+3. exact model 不做 parent fallback 或 runtime failover；Provider 启动失败直接返回失败。
+4. logical path fallback 只能改变同一 `api_type` 的候选模型。
+### 14.3 Exact model variant 与 Provider Rules lowering
 
-### 14.3 Exact model variant 与 provider options lowering
-
-对用户来说，“同一 base model + 不同 reasoning effort”应表现为不同 AICC exact model，而不是普通请求参数。AICC exact model 的完整形式为：
+对用户来说，同一 base model 的不同语义档位表现为不同 AICC exact model：
 
 ```text
 <provider_model_id>[:<variant>]@<provider_instance_name>
 ```
 
-例如 `gpt-5.1:reasoning-high@openai_primary`。variant 由 driver metadata 的 `variants` 定义（见 `doc/aicc/driver_metadata_schema.md`），metadata resolver 会把带 variant 的模型展开成独立的 `ModelMetadata`（保留 `provider_actual_model_id` 指回 base，并预置 `provider_options`）。
+例如 `gpt-5.1:reasoning-high@openai_primary`。Model Driver variant 定义语义身份；Provider Rules 将该 variant lowering 为当前 Protocol Adapter 的请求参数。Model Driver Metadata 不包含 `provider_options`。
 
-route / 数据面行为：
-
-1. `route.resolve` 输出 `selected_exact_model`（含 variant）、base `provider_model_id` 还原值、以及 `provider_options`（如 `{ "reasoning": { "effort": "high" } }`）。
-2. typed inference 收到带 variant 的 `exact_model` 时按 metadata 自动 lower 成 provider base model + provider options，不要求调用方手动补 `provider_options`。
-3. 用户传入的 `provider_options` 与 route `provider_options` 的合并规则放在 helper / 调用方层，不在数据面协议里规定优先级。
-4. usage / trace / audit 以 AICC exact model（含 variant）聚合，避免不同 reasoning 档位混在一起；audit 额外保留 provider actual model 和 provider options 以便复现。
+1. `route.resolve` 输出含 variant 的 `selected_exact_model` 和不带 variant 的原始 `provider_model_id`。
+2. typed inference 根据 exact model、Provider Rules 和 method 生成内部 `ResolvedProviderCall`；调用方不传 `provider_options`。
+3. request rules 的顺序是 Provider defaults、用户 canonical 参数、条件 `set/remove`；用户不能恢复 Provider 明确删除的字段。
+4. usage、trace 和 audit 以含 variant 的 exact model 聚合，并记录 Provider Profile、adapter、operation、规则来源和 revision。
 
 ---
 
@@ -1937,7 +1773,7 @@ AICC 错误 payload schema：
 
 1. `/kapi/aicc` 作为稳定入口。
 2. AI 调用使用标准 method 名作为 kRPC method。
-3. `cancel`、`reload_settings` / `service.reload_settings` 保持为控制类 method。
+3. `cancel`、`service.reload_settings` 保持为控制类 method，不定义兼容别名。
 
 ### M1：移除独立分类字段
 

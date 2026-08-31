@@ -47,7 +47,7 @@
 - `ResourceRef` JSON tag 使用 `url`、`base64`、`named_object`。
 - AICC 不暴露独立 streaming 协议；长任务、进度、Provider streaming 中间态统一通过 task-manager event / task data 观察。
 - AI method response 只有 `succeeded`、`running`、`failed` 三类状态；失败细节写入 task event / task data。
-- 精确模型名格式为 `<provider_model_id>[:variant]@<provider_instance_name>`；variant 由 driver metadata 展开并 lower 为 provider base model + `provider_options`。
+- 精确模型名格式为 `<provider_model_id>[:variant]@<provider_instance_name>`；variant 由 Model Driver 定义语义身份，Provider Rules lower 为原始 provider model、operation 和 resolved options。
 - 精确模型默认不 fallback，除非显式开启。
 - fallback 不得跨 API namespace。
 - `local_only`、隐私、预算、能力、上下文长度、Provider health 是硬过滤条件。

@@ -58,7 +58,7 @@ case_set = {
 1. runner 必须先生成 `api_type × method × logical_path × provider × model` 的候选矩阵，再按模型实际能力、逻辑目录 `min_line`、`disable_line`、`mount_mode`、health、quota、policy 和 key 可用性决定 `planned` / `skipped` / `not_applicable`。
 2. `skipped` 只用于环境缺失或凭据缺失；模型不支持该 api_type、未挂载到该逻辑目录或不满足 `min_line` 时，应记录为 `not_applicable`，不能混入 skipped 通过率。
 3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起路由或 helper/legacy 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference / exact model 调用，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
-4. 如果某个 method 只允许 exact model，例如 typed inference，逻辑模型段必须拆成 `route.resolve(logical_path)`，再把结果传给该 method；如果某个 legacy/helper method 接受逻辑模型名，则必须直接用逻辑路径调用一次。
+4. typed inference 只允许 exact model；逻辑模型段必须调用 `route.resolve(logical_model)`，再把结果传给 typed method。Helper 的逻辑模型调用作为独立组合链路验收。
 5. 同一个 Provider 下同一个物理模型如果支持多个 `api_types`，不得只用一条“代表性 workflow”替代全部 api_type 覆盖；可以把昂贵能力合并到同一 workflow 中执行，但报告必须保留每个 `api_type × method × logical_path × provider × model` 维度的覆盖状态。
 6. Provider 已启用但没有任何可用模型时，生成一个 `skipped` 诊断用例，原因记为 `provider_has_no_models`。
 7. `sn-ai-provider` 不需要普通 API key；如果临时 group 的 `settings.sn-ai-provider` 没有注册成功，应判为环境或配置失败，而不是 key 缺失。
@@ -112,7 +112,7 @@ case_set = {
 |---|---|---|
 | `l3_settings_reload_mock_*` | P0 | system_config 写入 Mock settings、reload、models.list |
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload 和回滚语义 |
-| `l3_models_list_*` | P0 | `models.list` / `service.models.list` inventory、逻辑目录、health、legacy aliases 脱敏诊断 |
+| `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
 | `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
@@ -121,7 +121,7 @@ case_set = {
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_legacy_*` | P1 | legacy alias、旧字段兼容或迁移提示 |
+| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 2.4 L4 Gateway 真实模型验收
 

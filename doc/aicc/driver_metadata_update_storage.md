@@ -1,17 +1,17 @@
-# AICC Driver Metadata Update 持久化数据格式
+# AICC Provider Catalog Update 持久化数据格式
 
 ## 1. Overview
 
 服务：AICC。协议见 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md)。
 
-AICC 持久保存已验证的发布水位、provider metadata 对象和已提交 activation，用于防回滚、断电恢复和 LKGS 回退。
+AICC 持久保存已验证的发布水位、四类 catalog 对象和已提交 activation，用于防回滚、断电恢复和 LKGS 回退。Provider Instance inventory LKGS 使用 RDB，完整边界见 [provider_architecture_durable_data_schema.md](provider_architecture_durable_data_schema.md)。
 
 ## 2. Data Classification
 
 | 数据项 | 分类 | 生命周期 |
 |---|---|---|
 | observed index/manifest 水位 | Durable | 跨重启、安装覆盖和升级保留 |
-| provider metadata objects | Durable | 被保留 activation 或最新 candidate 引用时保留 |
+| provider catalog objects | Durable | 被保留 activation 或最新 candidate 引用时保留 |
 | activation | Durable | 当前 LKGS 及一个并发读取/回退版本保留 |
 | staging、`.part` | Disposable | 启动及失败时整体删除 |
 | 未引用对象 | Disposable | mark-and-sweep 删除 |
@@ -19,7 +19,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 
 ## 3. Storage Strategy
 
-位置：`$BUCKYOS_ROOT/data/srv/aicc/driver_metadata/remote_cache/v1/<source-key>/`。
+位置：`$BUCKYOS_ROOT/data/srv/aicc/provider_catalog/remote_cache/v2/<source-key>/`。
 `source-key` 是 canonical `source_url` 的 SHA-256，不同发布源的防回滚水位和对象严格隔离。
 
 ```text
@@ -48,37 +48,37 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 - 内容：经 NDN SDK 下载并验证、且通过协议解析的完整 manifest，加 index 声明的 manifest ObjId。
 - 约束：revision 单调；同 revision 不同 ObjId fail-closed。
 
-### Object: provider metadata
+### Object: provider catalog item
 
 - 文件名：FileObject ObjId 加 `.json`。
 - 内容：协议定义的 UTF-8 JSON。
-- 约束：ObjId 已由 NDN SDK 校验；首次落盘同时保存内容 SHA-256，缓存复用时重新计算并匹配，用于发现落盘后的静默损坏；内部 provider、schema、revision 与 manifest 一致。
+- 约束：ObjId 已由 NDN SDK 校验；首次落盘同时保存内容 SHA-256，缓存复用时重新计算并匹配；内部 `catalog_kind`、`catalog_id`、schema、revision 与 manifest 一致。
 - 大小：单对象不超过 64 MiB；单 manifest 的对象总大小不超过 512 MiB。
 
 ### Object: activation
 
 - 文件名：`<manifest revision_seq>.json`。
 - 内容：已接受 manifest、manifest ObjId 及 manifest SHA-256。
-- 约束：文件名必须等于 manifest `revision_seq`；首次选择该 activation 时验证 wrapper、manifest SHA-256、协议字段及全部 provider object，命中进程内验证缓存后只复核 wrapper 和当前 provider object。只有引用对象全部落盘且可解析后才能创建；文件创建即提交。
+- 约束：文件名必须等于 manifest `revision_seq`；首次选择该 activation 时验证 wrapper、manifest SHA-256、协议字段、全部 catalog object 和跨 catalog 引用。只有引用对象全部落盘、可解析且 operation registry 校验通过后才能创建；文件创建即提交。
 
 ## 5. Schema Version
 
-目录和本地 wrapper 的初始版本为 `v1`。provider metadata 的 `schema_version`、分发协议的 `protocol_version` 与本地目录版本相互独立。
+目录和本地 wrapper 使用 `v2`。各 catalog 的 `schema_version`、分发协议的 `protocol_version` 与本地目录版本相互独立。
 
 ## 6. Upgrade Compatibility Strategy
 
 | 数据项 | 策略 |
 |---|---|
-| v1 observed 水位 | Additive-only；冻结 revision/ObjId 语义 |
-| v1 provider object | Rebuild；可按相同 ObjId 从发布端重新获取 |
-| v1 activation | Rebuild；缺少必需 manifest 摘要的旧 activation 视为无效并重新下载 |
+| v1 driver metadata 水位、对象和 activation | Rebuild；v2 不读取、不导入 |
+| v2 catalog object | Rebuild；可按相同 ObjId 从发布端重新获取 |
+| v2 activation | Rebuild；缺少必需 manifest 摘要的 activation 视为无效并重新下载 |
 | staging | Rebuild；任何升级都可删除 |
 
-不兼容本地布局使用新目录版本并从旧 activation 一次性导入；导入失败继续读旧目录，不原地改写旧状态。
+Beta 2.2 不从旧 activation 导入，也不在失败时回读旧目录；v2 无有效 activation 时使用内置 catalog。
 
 ## 7. Extensibility Rules
 
-冻结：revision 比较、ObjId、provider_driver、activation 提交语义。可扩展：wrapper 中具有缺省行为的诊断字段。核心对象不提供任意 `extra`，避免未知字段被误认为安全语义。
+冻结：revision 比较、ObjId、catalog kind/id、activation 提交语义。可扩展：wrapper 中具有缺省行为的诊断字段。核心对象不提供任意 `extra`。
 
 ## 8. Query Patterns
 
@@ -86,7 +86,7 @@ AICC 持久保存已验证的发布水位、provider metadata 对象和已提交
 |---|---|
 | 最新 observed revision | 枚举小型目录并取最大 revision |
 | 最新可用 activation | revision 降序验证文件及引用对象；进程内缓存已完整验证的最高版本，普通读取只复核 activation wrapper 和目标 provider 对象，目标损坏时清除缓存并重新执行完整 LKGS 选择 |
-| 按 ObjId 读取 provider metadata | 文件名直接定位 |
+| 按 ObjId 读取 catalog object | 文件名直接定位 |
 | 按 exact model 匹配规则 | metadata 载入后构造进程内索引；重启可重建，不持久化 |
 | 清理孤儿 | activation 引用集合与 objects 目录做差 |
 

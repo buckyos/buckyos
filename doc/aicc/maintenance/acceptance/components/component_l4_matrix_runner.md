@@ -59,7 +59,7 @@ case_set = {
 1. runner 必须先生成 `api_type × method × logical_path × provider × model` 的候选矩阵，再按模型实际能力、逻辑目录 `min_line`、`disable_line`、`mount_mode`、health、quota、policy 和 key 可用性决定 `planned` / `skipped` / `not_applicable`。
 2. `skipped` 只用于环境缺失或凭据缺失；模型不支持该 api_type、未挂载到该逻辑目录或不满足 `min_line` 时，应记录为 `not_applicable`，不能混入 skipped 通过率。
 3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起路由或 helper/legacy 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference / exact model 调用，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
-4. 如果某个 method 只允许 exact model，例如 typed inference，逻辑模型段必须拆成 `route.resolve(logical_path)`，再把结果传给该 method；如果某个 legacy/helper method 接受逻辑模型名，则必须直接用逻辑路径调用一次。
+4. typed inference 只允许 exact model；逻辑模型段必须调用 `route.resolve(logical_model)`，再把结果传给 typed method。Helper 的逻辑模型调用作为独立组合链路验收。
 5. 同一个 Provider 下同一个物理模型如果支持多个 `api_types`，不得只用一条“代表性 workflow”替代全部 api_type 覆盖；可以把昂贵能力合并到同一 workflow 中执行，但报告必须保留每个 `api_type × method × logical_path × provider × model` 维度的覆盖状态。
 6. Provider 已启用但没有任何可用模型时，生成一个 `skipped` 诊断用例，原因记为 `provider_has_no_models`。
 7. `sn-ai-provider` 不需要普通 API key；如果临时 group 的 `settings.sn-ai-provider` 没有注册成功，应判为环境或配置失败，而不是 key 缺失。
@@ -171,7 +171,7 @@ requires_api_key = false
 - 兼容旧配置 `matrix_mode=provider_model_cartesian` 时，runner 必须在报告中标记为降级模式，并明确列出未覆盖的 `api_type`、`method`、`logical_path` 维度；发布强覆盖不得使用该降级模式。
 - `max_attempts_per_case` 默认为 `3`；只有首轮失败的用例才继续执行第 2 / 第 3 次 attempt。
 - Provider `enabled=true` 但缺 key 时，用例标记 `skipped`；发布强覆盖模式下，缺 key 可在 preflight 直接失败。
-- `google-gemini` 对应 AICC 配置中的 `settings.gemini` / `settings.google_gemini` 兼容入口，生效的 `provider_driver` 应归一为 `google-gemini`。
+- Gemini Provider Instance 必须引用明确的 `provider_profile_id`、`protocol_adapter_id` 和对应 `model_driver_id`，不读取 family section 别名。
 - `sn-ai-provider` 对应 AICC 配置中的 `settings.sn-ai-provider`，`requires_api_key=false`，缺普通 API key 不应导致 skipped。
 - Provider key 不写入报告和日志。
 - runner 应把最终生效配置的脱敏摘要写入报告。

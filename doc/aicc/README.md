@@ -15,12 +15,14 @@
 - `aicc 逻辑模型目录.md`：逻辑模型目录设计。
 - `aicc_provider_plan.md`：Provider 实现方案。
 - `aicc-models-mgr.md`：模型管理与路由概念设计。
-- `aicc-models-todo.md`：模型管理后续设计任务。
+- `aicc-models-todo.md`：模型管理历史实现记录，不作为 Beta 2.2 目标规范。
 - `driver_metadata_update_protocol.md`：provider-driver metadata 的 NDN 增量更新、验证、LKGS 与生效协议。
 - `driver_metadata_update_storage.md`：更新水位、不可变对象和 activation 的持久化兼容格式。
-- `aicc-upgrade-todo.md`：新 API 与模型体系升级设计任务。
+- `provider_profile_schema.md`：Provider Profile、Protocol Adapter、Provider Rules、Model Driver 和 Pricing 的目标边界与 schema。
+- `provider_architecture_durable_data_schema.md`：Issue #579 新 Provider 架构的持久数据边界，定义四类 catalog、Provider Instance 外部真相源和实例级 inventory LKGS。
+- `provider_ui_backend_mapping.md`：Provider catalog、Instance、inventory、trace 的前后端字段映射、状态和性能边界。
+- `aicc-upgrade-todo.md`：新 API 与模型体系历史实现记录。
 - `aicc改进.md`：AICC 改进方案记录。
-- `provider-driver-cloud-update-design.md`：provider-driver metadata 云更新详细设计。
 - `aicc_log1.html`：AICC 设计讨论和历史记录。
 
 ## 维护参考文档
