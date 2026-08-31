@@ -213,7 +213,7 @@ case_set = {
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
-| 云端 metadata 更新 | NDN 当前文件与 `metadata_target_seq`；Provider `metadata_applied_seq` | 两个触发点均收敛所有落后 Provider；刷新前临时捕获 target seq，成功后才提交 applied seq；列表未变且 seq 相同时仅探测；不得局部更新或由 AICC 重复校验 |
+| 云端 metadata 更新 | 严格递增的 manifest `revision_seq`、客户端兼容范围与分组目标；NDN 当前文件和 `metadata_target_seq`；Provider `metadata_applied_seq` | 新旧客户端获得各自兼容版本；非法发布被拒绝；新文件就绪前 target seq 不推进；Provider 真正完成库存刷新后才推进自己的 applied seq；两个触发点均收敛全部落后 Provider |
 | 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
 
 统一验收顺序：

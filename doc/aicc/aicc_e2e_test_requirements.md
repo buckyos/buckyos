@@ -712,7 +712,9 @@ Telegram Bot API 不能模拟 owner 用户向 bot 发消息。初始方案可以
 - Provider validate/add/delete/refresh models。
 - 多 instance 独立更新与删除。
 - Provider 停止、禁用、删除、reload 替换和 AICC 服务退出都必须向对应库存刷新定时任务循环发送幂等 `Stop` 事件并等待优雅退出；验证停止后没有新探测、孤儿定时器或迟到的 inventory/health 写入，重新启用后创建新循环并从持久 seq 继续收敛。
-- metadata 更新由 NDN 替换文件并推进 `metadata_target_seq`；分别验证推理前和 Provider 定时库存刷新触发同一全局收敛，所有落后 Provider 成功后才推进各自 `metadata_applied_seq`。
+- metadata 云端发布使用严格递增且不可复用的 manifest `revision_seq`，按客户端版本/通道/灰度分组配置兼容目标；验证新旧客户端各自获得兼容版本，低序列回退、同序列不同内容和不兼容版本均被 NDN 更新链路拒绝。
+- NDN 替换文件后令 `metadata_target_seq = manifest.revision_seq`；分别验证推理前和 Provider 定时库存刷新触发同一全局收敛，所有落后 Provider 成功后才推进各自 `metadata_applied_seq`。
+- 在 NDN 下载、校验、替换和文件就绪确认各阶段注入失败，确认 `metadata_target_seq` 不提前推进；在 Provider inventory 刷新进行中和失败时，确认该 Provider 的 `metadata_applied_seq` 不提前推进且原 inventory 不变，并在 health/trace 中暴露 applied/target seq 落后及失败原因。
 - variants、version rules 和 routing config 更新。
 - inventory 与发布基线同步。
 - metadata 文件更新失败恢复由 NDN 验证；AICC 刷新失败不得推进对应 Provider 的 applied seq。服务重启后 target/applied seq 和配置保持一致。

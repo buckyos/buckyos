@@ -40,8 +40,8 @@ AICC 内部逻辑可以抽象为 8 个核心子系统（这里按职责描述，
 2. **Catalog（静态真相源）**
 
    * Model Driver catalog 定义模型固有技术语义
-   * Provider Rules catalog 定义渠道模型映射、operation 和请求规则
-   * Pricing catalog 定义渠道价格，Known Provider catalog 为管理界面提供默认服务商信息
+   * Provider Rules catalog 定义渠道模型映射、operation、请求规则和渠道价格
+   * Known Provider catalog 为管理界面提供默认服务商信息
 
 3. **Registry（实例池与能力声明）**
 
@@ -234,7 +234,6 @@ pub struct ProviderInstance {
     pub protocol_adapter_id: String,
     pub endpoint: String,
     pub credential_ref: CredentialRef,
-    pub pricing_context: Option<PricingContext>,
 }
 ```
 

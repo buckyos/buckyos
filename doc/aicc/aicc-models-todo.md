@@ -247,7 +247,7 @@
 ## 7. P2：远程 driver metadata 更新
 
 - [ ] 按 Beta 2.2 简化目标替换旧 remote cache/activation 实现。
-  - NDN 负责版本发现、下载、校验和当前 metadata 文件替换；保证不足时向 NDN 提交 bug。
+  - 云端按客户端版本/通道/灰度分组配置兼容发布；NDN 负责版本选择、下载、校验、防回退和当前 metadata 文件替换，保证不足时向 NDN 提交 bug。
   - 文件替换后由 NDN 推进全局 `metadata_target_seq`，每个 Provider inventory 保存 `metadata_applied_seq`。
   - 下一次推理前或任一 Provider Instance 定时库存刷新时，统一收敛所有 applied seq 落后的 Provider，成功后才提交该 Provider 的新序列。
   - model 列表未变化且 seq 相同时仅探测、不重写库存；禁止按本次推理或当前 Provider 只更新部分落后库存。

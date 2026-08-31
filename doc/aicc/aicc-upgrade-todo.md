@@ -15,7 +15,7 @@
 - ✅ **Phase 3 Metadata Resolver（历史实现记录）**：`metadata_resolver.rs`（968 行）schema 齐全；match 优先级 exact→pattern→default→conservative 正确；五个 driver（openai/claude/gemini/minimax/fal）全部接入 resolver。旧 cloud activation 描述已被 Beta 2.2 简化目标取代，目标协议见 `driver_metadata_update_protocol.md`。
 - ✅ **Phase 4 Logical Definition + Auto-Mount**：`LogicalModelDefinition`（全字段）、`ModelRequirement/min_line`、`ModelDisable/disable_line`、`MountMode(manual/auto/hybrid)`、admission check、auto-mount、manual override、route trace 来源标注全部落地。（`model_types.rs:405-502,878-912`，`model_registry.rs:264-425`，`default_logical_tree.rs:455-485`）
 - ✅ **Phase 5 Session Overlay**：`SessionLogicalProfile`/`LogicalTreeOverlay`/`OverlayMergeMode(inherit|replace)`、`EffectiveSessionConfig`、overlay 覆盖 disable_line、`route_policy_override` 独立、overlay trace、inherit 可 fallback / replace 失败 均有实现且有测试。（`model_session.rs:93-369`，`model_router.rs:1086-1233`）
-- ❌ **Phase 6 Remote Metadata Sync：目标已简化**。NDN 承担版本发现、下载、校验、替换和目标 seq；AICC 只需 Provider applied seq 与双触发点的全局库存收敛。
+- ❌ **Phase 6 Remote Metadata Sync：目标已简化**。云端负责按客户端版本配置兼容发布；NDN 承担版本选择、下载、校验、防回退、替换和目标 seq；AICC 只需 Provider applied seq 与双触发点的全局库存收敛。
 
 **进入 PRD/UI 前仍建议收尾的小项（非阻塞）：**
 - `route_trace` 仍是裸 `Value`（`RouteResolveResponse.route_trace: Option<Value>`），未提升为 typed struct（§1.2）。
@@ -421,7 +421,9 @@ Base Logical Tree
 
 ### 8.2 TODO
 
-- [ ] 接入 NDN 当前 metadata 文件集合和 `metadata_target_seq`。
+- [ ] 接入云端按客户端版本/通道/灰度分组选择的兼容 metadata 发布，以及 NDN 当前文件集合和只递增的 `metadata_target_seq = manifest.revision_seq`。
+- [ ] 验证发布序列不可复用、同序列内容冲突被拒绝、低版本回退被拒绝；回退内容必须用更高序列重新发布。
+- [ ] 保证新 metadata 文件下载、校验、替换完成并就绪后才推进 target seq；Provider 真正完成库存刷新后才推进自己的 applied seq。
 - [ ] 每个 Provider inventory 持久化 `metadata_applied_seq`，刷新前临时捕获 `metadata_updating_seq`，成功后才提交。
 - [ ] 推理进入路由前检查所有 Provider 的 applied/target seq 并执行全局收敛。
 - [ ] 任一 Provider Instance 定时库存刷新前执行相同检查；列表未变化且 seq 相同时仅探测。
@@ -496,7 +498,8 @@ Base Logical Tree
 
 ### Phase 6: Remote Sync
 
-- [ ] NDN 文件替换后的 `metadata_target_seq` 接入。
+- [ ] NDN 多客户端兼容版本选择、防回退高水位及文件替换后的 `metadata_target_seq` 接入。
+- [ ] 更新过程和失败路径不提前推进 target/applied seq，并暴露 applied/target seq 落后诊断。
 - [ ] 推理前/Provider 定时库存刷新时统一收敛全部 seq 落后的 Provider。
 - [ ] 为每个 Provider 库存刷新循环增加停止事件；停止、禁用、删除、替换实例及服务退出时发送 `Stop` 并等待优雅退出，禁止迟到写入。
 - [ ] 管理开关和诊断日志。

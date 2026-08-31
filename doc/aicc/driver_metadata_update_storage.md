@@ -4,27 +4,29 @@
 
 服务：AICC。流程见 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md)。
 
-Metadata 文件和全局目标序列由 NDN 管理。AICC 不维护对象缓存、activation、更新专用 LKGS、revision 水位、manifest 副本或 staging 目录；AICC 只保存每个 Provider inventory 已应用的序列。
+Metadata 文件、兼容版本选择和全局目标序列由 NDN 更新链路管理。NDN 持久维护本机已接受的发布高水位，保证普通云更新只前进不回退。AICC 不维护对象缓存、activation、更新专用 LKGS、manifest 副本或 staging 目录；AICC 只读取目标序列，并保存每个 Provider inventory 已应用的序列。
 
 ## 2. Data Classification
 
 | 数据项 | 所有者 | 生命周期 |
 | --- | --- | --- |
-| 当前 metadata 文件集合 | NDN | 由 NDN 下载、校验和替换 |
-| `metadata_target_seq` | NDN | Durable，指向当前文件版本的目标序列 |
+| 当前 metadata 文件集合 | NDN | Durable；下载、校验、替换完成且新文件就绪后，才能推进目标序列 |
+| 云端客户端版本投放配置 | 云更新服务 | Durable，按客户端版本、通道或灰度分组选择兼容发布版本 |
+| metadata 发布元信息 | NDN 更新链路 | Durable，包含严格递增的 manifest `revision_seq`、客户端兼容范围、required features 和文件集合身份 |
+| `metadata_target_seq` | NDN | Durable，本机只递增的已接受高水位，等于当前 manifest 的 `revision_seq` |
 | `metadata_applied_seq` | AICC Provider inventory | Durable，该 Provider 已正式应用的目标序列 |
 | `metadata_updating_seq` | AICC 刷新过程 | Transient，单次刷新开始时捕获的目标序列 |
 | metadata resolver/catalog snapshot | AICC | Memory，可由当前文件重建 |
 | provider model 列表及其 inventory | AICC 既有库存机制 | 定时探测或 metadata 序列变化时更新 |
 | Provider 库存刷新定时任务、控制通道 | AICC | Memory，实例启动时创建，停止时发送 `Stop` 并等待循环退出 |
 
-不新增 AICC 专用 remote cache、candidate、activation、observed revision、回滚版本或对象 digest 文件。
+不新增 AICC 专用 remote cache、candidate、activation、observed revision、回滚版本或对象 digest 文件。NDN 为兼容版本选择与防回退保存的数据不属于 AICC 持久化。
 
 ## 3. 序列字段语义
 
 ### `metadata_target_seq`
 
-类型为非负 `u64`。NDN 仅在完整 metadata 文件替换成功后推进。AICC 只做相等性比较，不自行推导、递增或校验文件版本。
+类型为非负 `u64`，等于当前发布 manifest 的 `revision_seq`。NDN 仅在完整且兼容的 metadata 文件替换成功后推进，跨重启保留且不得降低；相同序列对应不同内容必须拒绝。AICC 只做相等性比较，不自行推导、递增或校验文件版本。
 
 ### `metadata_applied_seq`
 
@@ -53,8 +55,8 @@ updated_at
 
 1. 开始重建前设置临时 `metadata_updating_seq = metadata_target_seq`。
 2. 使用该序列对应的完整 metadata snapshot 构造 inventory。
-3. 成功时原子写入 inventory、model list/fingerprint 和 `metadata_applied_seq = metadata_updating_seq`。
-4. 失败时保持原 inventory 和 `metadata_applied_seq`，丢弃临时值。
+3. Provider 真正完成库存刷新后，原子写入 inventory、model list/fingerprint 和 `metadata_applied_seq = metadata_updating_seq`。
+4. 刷新未完成或失败时保持原 inventory 和 `metadata_applied_seq`，丢弃临时值。
 
 新建 Provider 的首份 inventory 直接捕获并应用当前 `metadata_target_seq`，不得以空值表示已经同步。
 
@@ -73,8 +75,10 @@ updated_at
 ## 6. 并发与故障
 
 - 一轮刷新捕获一个目标序列；目标在刷新中再次变化时，不修改本轮捕获值。
+- NDN 只能推进目标序列；AICC 不处理 `metadata_target_seq` 下降。发现下降表示 NDN 更新契约被破坏，应拒绝使用新文件并提交 NDN bug。
 - Provider 成功提交旧捕获值后若仍落后于最新目标，下一轮继续刷新。
 - AICC 无法加载 NDN 文件或重建某个 Provider inventory 时，不推进该 Provider 的 `metadata_applied_seq`。
+- Provider 库存刷新未真正完成时不得推进 `metadata_applied_seq`；失败诊断应暴露 applied/target seq 和最近失败原因。
 - 如果故障来自 NDN 未能保证文件契约，应向 NDN 提交 bug，而不是在 AICC 中增加校验、activation、LKGS 或回滚流程。
 
 ## 7. Beta 2.2 兼容策略

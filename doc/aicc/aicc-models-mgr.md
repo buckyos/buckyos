@@ -32,8 +32,7 @@ Protocol Adapter 只执行已经解析好的 operation
 ## 2. 目标架构基线
 
 - Model Driver catalog：模型固有 API type、capability、家族、版本、variant 和逻辑挂载的唯一真相源。
-- Provider Rules catalog：渠道模型 ID 到 origin/ModelUID 的映射，以及 operation、request rules、能力收窄和渠道价格引用。
-- Pricing catalog：Provider offering 的价格和条件规则。
+- Provider Rules catalog：渠道模型 ID 到 origin/ModelUID 的映射，以及 operation、request rules、能力收窄和渠道价格规则。
 - Known Provider catalog：管理 UI 使用的服务商默认 endpoint/Profile/adapter。
 - Provider Instance：system-config 中的实例私有配置。
 - Provider inventory：实例级 discovery 动态事实与静态能力交集，并保存 LKGS。
@@ -42,7 +41,7 @@ Protocol Adapter 只执行已经解析好的 operation
 - Provider Call Resolver：产生内部 `ResolvedProviderCall`。
 - Protocol Adapter registry：注册可执行 operation，执行层不解释模型家族。
 
-四类 metadata/catalog 保持独立 schema 和 revision。它们的文件发现、下载、校验与替换由 NDN 保证；AICC 不实现 manifest activation。文件替换后 NDN 推进全局 `metadata_target_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
+三类 metadata/catalog 保持独立 schema 和 revision。每个完整发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可以按客户端版本、更新通道或灰度分组投放不同兼容版本。版本选择、下载、校验、防回退与文件替换由 NDN 更新链路保证，AICC 不实现 manifest activation。文件替换后 NDN 令 `metadata_target_seq = manifest.revision_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有 `metadata_applied_seq` 落后的 Provider 库存。
 ## 3. 核心概念
 
 ### 3.1 物理模型与精确模型名
@@ -460,11 +459,13 @@ ModelMetadata {
 - 使用保守的成本、延迟、质量估计；
 - 生成泛化挂载，例如 `llm.chat`、`llm.<driver>`、`llm.<driver>.<model>`。
 
-系统通过 NDN 更新 driver metadata。NDN 负责发现版本、下载、校验并替换当前文件；AICC 不维护按发布源隔离的水位、activation 或对象缓存。替换完成后 NDN 发布 `metadata_target_seq`，由下一次推理或任一 Provider Instance 的定时库存刷新触发全局收敛。
+系统通过 NDN 更新 driver metadata。云端按客户端版本配置兼容发布，每个 manifest 有严格递增的 `revision_seq`；NDN 负责版本选择、下载、校验、防回退并替换当前文件。AICC 不维护按发布源隔离的水位、activation 或对象缓存。替换完成后 NDN 发布只递增的 `metadata_target_seq = manifest.revision_seq`，由下一次推理或任一 Provider Instance 的定时库存刷新触发全局收敛。
 
 如果仍没有，则使用 conservative fallback。这样系统可用性优先，但不会把未知模型误判成具备高级能力。
 
 Metadata 文件的信任、完整性和版本替换边界完全属于 NDN；如果这些保证不足，应向 NDN 提交 bug，不能在 AICC 中补第二套验证。每个 Provider inventory 记录 `metadata_applied_seq`；与目标不同即按目标 metadata 重建，成功后才推进已应用序列。定时探测发现 model 列表未变化且序列相同时只探测、不重写库存；触发点即使是某个具体 Provider，也必须同时收敛其它序列落后的 Provider。
+
+NDN 只有在新 metadata 文件下载、校验、替换完成并就绪后才推进 `metadata_target_seq`。Provider 也只有在真正完成库存刷新后才把自己的 `metadata_applied_seq` 推进到本次捕获的目标；任一步未完成或失败时，对应序列和原有状态保持不变。
 
 ### 5.3 Driver 如何挂载到模型家族目录
 
@@ -554,7 +555,7 @@ llm.swift -> llm.haiku / llm.gemini-flash-lite / llm.qwen-small
 7. 对每个逻辑目录，Registry 根据模型的 `logical_mounts` 和目录 `min_line` 生成默认 items。
 8. 用户/session overlay 在 route 时叠加到默认 items 上。
 
-如果某个 provider inventory 校验失败，当前实现会跳过该 provider，并保留其它 provider 的刷新结果，不让一个坏 provider 阻塞整体刷新。
+如果某个 provider inventory 刷新或校验失败，保持该 provider 的原 inventory 和 `metadata_applied_seq`；其它 provider 只在各自真正完成刷新后推进自己的 applied seq。
 
 ### 5.5 空逻辑目录与 mini line 强制挂载
 

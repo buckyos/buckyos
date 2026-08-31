@@ -72,7 +72,6 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
         "api_token": { "locked": "..." }
       },
       "region": null,
-      "pricing_context": null,
       "provider_rules_id": "openai"
     }
   ],
@@ -90,7 +89,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 - `custom` Provider 只提交协议族、`endpoint` 和凭据；后端在保存前先测官方新接口，再测该协议族中已注册的历史接口，并固化首个协议验证成功的 Adapter。
 - 只有明确的“接口不支持”结果才继续下一候选；连接、认证、限流和服务端故障直接返回，不能用旧接口测试掩盖。
 - 凭据使用 system-config locked value 或 credential reference，不进入 catalog、inventory、trace 或日志。
-- Catalog activation 不得修改实例名称、endpoint、凭据、区域、账号、协议选择或实例级价格上下文。
+- Catalog 更新不得修改实例名称、endpoint、凭据、区域、账号或协议选择。
 - 不读取 `instance_id`、`provider_driver`、`base_url`、`api_key`、`apiKey` 等旧字段或别名。
 
 ## 3. 设计原则
@@ -287,7 +286,7 @@ Response：
 - 派生 Adapter 必须有独立 ID 和可选 `base_adapter_id`；基础 Adapter 不读取派生 Provider 配置。
 - 官方 Profile 默认选择新接口；自定义 Provider 保存时自动测试新接口和已注册历史接口，resolved Adapter 一旦保存，运行时不能从新接口静默降级。
 
-`sn-ai-provider` 使用独立 Profile 和 `sn-openai` Adapter，后者属于 `openai` 协议族并派生自 `openai-responses`。`auth.mode=api_key` 时使用静态 Bearer API Key；`auth.mode=dynamic_login` 时由 SN 层使用登录凭据换取并刷新短期 token，再委托 Responses 实现。OpenAI 官方 Adapter 不包含 SN 登录或 Provider 分支。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合，价格由 Pricing catalog 精确解析。
+`sn-ai-provider` 使用独立 Profile 和 `sn-openai` Adapter，后者属于 `openai` 协议族并派生自 `openai-responses`。`auth.mode=api_key` 时使用静态 Bearer API Key；`auth.mode=dynamic_login` 时由 SN 层使用登录凭据换取并刷新短期 token，再委托 Responses 实现。OpenAI 官方 Adapter 不包含 SN 登录或 Provider 分支。模型能力仍由 Model Driver catalog 声明，SN discovery 只能收窄可用集合；实际价格优先来自 discovery，无法发现时使用 Provider Rules 中的静态价格。
 
 ### 4.4 `provider.delete`
 

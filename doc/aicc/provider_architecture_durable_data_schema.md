@@ -11,7 +11,7 @@
 - [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md)
 - [driver_metadata_update_storage.md](driver_metadata_update_storage.md)
 
-本文定义 Model Driver catalog、Provider mapping/rules catalog、Pricing catalog、已知服务商 catalog、Provider Instance 配置和 Provider Instance 级 inventory LKGS 的持久数据边界。目标是让静态模型语义、渠道映射、价格、动态可用性和实例私有配置分别拥有唯一真相源，并能在服务重启、catalog 更新失败或 discovery 失败后确定性恢复。
+本文定义 Model Driver catalog、Provider mapping/rules catalog、Known Provider catalog、Provider Instance 配置和 Provider Instance 级 inventory LKGS 的持久数据边界。渠道静态价格属于 Provider Rules，不单独建立 Pricing catalog。目标是让静态模型语义、渠道规则、动态可用性和实例私有配置分别拥有唯一真相源，并能在服务重启、catalog 更新失败或 discovery 失败后确定性恢复。
 
 ## 2. Data Classification
 
@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | Provider Instance 配置 | system-config | 用户配置的实例名称、Provider profile、protocol adapter、endpoint、区域及凭据引用 |
 | 当前 metadata 文件集合 | NDN | Model Driver、Provider Rules、Pricing、Known Provider 的当前版本文件；下载、校验和替换由 NDN 保证 |
-| metadata 目标序列 | NDN | `metadata_target_seq` 指向当前已替换文件版本，持续保留而非消费后清除 |
+| metadata 发布选择与目标序列 | NDN 更新链路 | 云端按客户端版本/通道/灰度分组选择兼容发布；本机 `metadata_target_seq` 等于严格递增的 manifest `revision_seq`，持续保留且不允许回退 |
 | Provider inventory LKGS | AICC RDB | 每个 Provider Instance 最近一次成功 discovery 并解析后的动态库存快照 |
 
 Provider Instance 中不保存明文凭据；只保存 system-config 现有 locked value 或 credential reference。Metadata 文件替换和刷新不能修改 Provider Instance 私有配置。
@@ -50,9 +50,11 @@ Protocol Adapter 是随程序发布并注册的代码，不属于可云更新 ca
 
 ### 3.2 NDN 当前 Metadata 与目标序列
 
-NDN 管理当前 metadata 文件集合，负责版本发现、下载、校验和替换。AICC 不规定其 index、manifest、ObjId、缓存目录、水位或回滚布局，也不持久化 activation。
+NDN 管理当前 metadata 文件集合，负责版本发现、下载、校验和替换。Index、manifest、三类 catalog 发布路径及必要字段由更新协议固定；具体 ObjId 表达、下载缓存、水位存储和文件替换布局属于 NDN 实现，AICC 不持久化 activation。
 
-文件替换成功后，NDN 推进持久的 `metadata_target_seq`。每个 Provider inventory 保存 `metadata_applied_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有序列不一致的 Provider，不能只处理当前请求或当前 Provider。每个 Provider 重建前临时捕获 `metadata_updating_seq`，成功提交 inventory 后才把 applied seq 更新为该值。
+每个 metadata manifest 声明严格递增且不可复用的 `revision_seq`、兼容客户端版本范围和 required features。云更新服务可以给不同客户端版本配置不同发布版本；NDN 更新链路只接受与本机客户端兼容且序列高于已接受水位的发布，替换成功后令持久的 `metadata_target_seq = manifest.revision_seq`。回退必须把旧内容重新发布为更高序列的新版本，不能降低本机水位。
+
+每个 Provider inventory 保存 `metadata_applied_seq`；下一次推理前或任一 Provider Instance 定时库存刷新时，AICC 统一收敛所有序列不一致的 Provider，不能只处理当前请求或当前 Provider。每个 Provider 重建前临时捕获 `metadata_updating_seq`，成功提交 inventory 后才把 applied seq 更新为该值。
 
 ### 3.3 Provider inventory LKGS
 
@@ -64,7 +66,7 @@ inventory LKGS 的生命周期与刷新任务分离。停止 Provider 不删除 
 
 ### 4.1 NDN-managed Metadata File Set
 
-AICC 只约束各 metadata 文件被加载后的业务 schema，不定义 NDN 的发布对象 schema。文件版本、集合完整性、可信性、下载和替换均由 NDN 保证；若保证不足，应向 NDN 提交 bug。
+Index、manifest 和 catalog 路径由 [driver_metadata_update_protocol.md](driver_metadata_update_protocol.md) 定义；本节只展开各 catalog 文件被加载后的业务 schema。文件版本、集合完整性、可信性、下载和替换均由 NDN 保证；若保证不足，应向 NDN 提交 bug。
 
 ### 4.2 Object Type: Model Driver Catalog
 
@@ -112,30 +114,11 @@ Content Schema：
 - `patterns: ProviderModelRule[]`，有序、首个命中生效
 - `variants: ProviderVariantRule[]`
 
-ProviderModelRule 可包含 `match_source`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing_ref`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。配置只能收窄 Model Driver 能力。
+ProviderModelRule 可包含 `match_source`、`exclude`、`operations`、`provider_options`、`request_rules`、`pricing`、`remove_api_types`、`remove_features`、`estimated_latency_ms`、`latency_class`、`cost_class`。`pricing` 直接保存该渠道模型的静态价格和条件计价规则。配置只能收窄 Model Driver 能力。
 
 `metadata_drivers` 缺失表示使用内置 adapter 候选范围；显式空数组表示不匹配任何 Model Driver。空对象 `{}` 是合法的配置型 Provider override，表示全部使用程序默认规则。
 
-### 4.4 Object Type: Pricing Catalog
-
-Description：Provider 渠道默认价格和条件价格规则。
-
-Naming Convention：`v2/pricing/<pricing_catalog_id>-<revision_seq>.json`。
-
-Content Format：UTF-8 JSON。
-
-Content Schema：
-
-- `format: "buckyos.aicc.pricing-catalog"`
-- `schema_version: 1`
-- `schema_revision: u32`
-- `revision_seq: u64`
-- `pricing_catalog_id: string`
-- `offerings: PricingOffering[]`
-
-PricingOffering 使用 `provider_profile_id`、可选 `provider_model_id/origin_model_id`、可选 pricing context 和价格。价格支持 token、request、image、audio_second、video_second，以及基于归一化请求字段的有序条件规则。它不能包含凭据、实例 endpoint 或实例名称。
-
-### 4.5 Object Type: Known Provider Catalog
+### 4.4 Object Type: Known Provider Catalog
 
 Description：管理 UI 使用的已知服务商列表。
 
@@ -156,7 +139,7 @@ Content Schema：
 
 Known Provider 可以为 SN 指定 `protocol_adapter_id: "sn-openai"`，不能直接填 OpenAI 官方 Adapter。registry 中 `sn-openai.protocol_family_id = "openai"`、`sn-openai.base_adapter_id = "openai-responses"`，从而保留独立身份和从 SN 到特定 OpenAI API 代际的单向依赖。
 
-### 4.6 External Object: Provider Instance Config
+### 4.5 External Object: Provider Instance Config
 
 Description：system-config 中由用户管理的实例私有配置。
 
@@ -168,10 +151,10 @@ Content Schema：
 - `endpoint: string`。
 - `credential_ref/locked credential fields`。
 - `auth`：认证模式及其私有参数。SN 至少允许互斥的 `api_key` 和 `dynamic_login`；动态 token 只保存在运行时凭据缓存。
-- 可选 `region/account/pricing_context`。
-- 可选 `provider_rules_id` 和实例级 rules/pricing override。
+- 可选 `region/account`。
+- 可选 `provider_rules_id` 和实例级非价格 rules override。
 
-### 4.7 Table: aicc_provider_inventory_lkgs
+### 4.6 Table: aicc_provider_inventory_lkgs
 
 Description：每个 Provider Instance 最近一次成功 discovery 后的已验证 inventory。
 
@@ -209,7 +192,7 @@ Constraints：
 
 - catalog 本地目录版本：`v2`。
 - catalog protocol major：`2`。
-- 四类 catalog 对象初始 `schema_version`：`1`。
+- 三类 catalog 对象初始 `schema_version`：`1`。
 - inventory LKGS table row `schema_version`：`1`。
 - Provider Instance config schema 由 system-config 对应 settings 文档维护，本架构切换后使用新字段，不读取旧 `provider_driver` 兼容别名。
 
@@ -217,7 +200,7 @@ Constraints：
 
 ## 6. Upgrade Compatibility Strategy
 
-当前版本为 beta 2.2 breaking change，采用 No-compat：
+当前版本为 beta 2.2 breaking change，以下 No-compat 只针对本机旧存储和配置迁移；云更新仍必须为当前受支持的不同客户端版本投放各自兼容且不回退的 metadata：
 
 | 数据项 | 策略 |
 | --- | --- |

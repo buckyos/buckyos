@@ -27,7 +27,6 @@ AICC 启动和 `service.reload_settings` 时读取该 key，并原子重建 Prov
         "api_token": { "locked": "..." }
       },
       "region": null,
-      "pricing_context": null,
       "provider_rules_id": "openai"
     }
   ],

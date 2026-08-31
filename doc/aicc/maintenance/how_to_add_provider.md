@@ -56,7 +56,6 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
         "secret_ref": "system-config://secrets/aicc/openai-work"
       },
       "region": "global",
-      "pricing_context": "default",
       "enabled": true
     }
   ]

@@ -428,7 +428,6 @@ Provider discovery 获得 provider_model_id
 
 ```text
 Provider 实时 discovery 价格
-> Provider Instance 显式价格 override
 > Provider 配置 models / patterns 中的价格
 > Model Driver 默认价格
 ```

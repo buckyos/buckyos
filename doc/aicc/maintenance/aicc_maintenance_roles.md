@@ -33,7 +33,7 @@
 
 metadata 基线和运营策略都有两种分发形态：
 
-- **云端更新**：NDN 负责发现版本、下载、校验和替换 metadata 文件，替换成功后推进 `metadata_target_seq`。每个 Provider inventory 保存 `metadata_applied_seq`；下一次推理前或任一 Provider 定时库存刷新时，AICC 统一收敛所有序列落后的库存。
+- **云端更新**：每个完整发布使用严格递增、不可复用的 manifest `revision_seq` 并声明兼容客户端范围；云端可按客户端版本、更新通道或灰度分组配置不同目标。NDN 更新链路负责选择兼容版本、下载、校验、防回退和替换文件，成功后令 `metadata_target_seq = manifest.revision_seq`。每个 Provider inventory 保存 `metadata_applied_seq`；下一次推理前或任一 Provider 定时库存刷新时，AICC 统一收敛所有序列落后的库存。
 - **随版本内置缓存更新**：面向新安装用户或离线安装场景。新版本应携带发布时最新的模型事实基线和默认运营策略基线，使新用户即使没有云端更新，也能直接体验发布时已知的新模型。
 
 ### 0.1 统一更新验收流程
@@ -69,10 +69,10 @@ BuckyOS 项目方维护公共协议、默认模型事实基线、默认运营策
 
 - **维护模型事实基线**：当已支持的厂商发布新模型时，项目方可以更新随版本携带的 driver metadata。应补充或修正模型 ID、`api_types`、`capabilities`、上下文长度、`logical_mounts`、是否弃用、替代模型建议等逻辑上较确定的信息。
 - **维护默认运营策略基线**：项目方可以维护默认价格估算、估算延迟、基础健康度、默认推荐权重和 fallback 建议。这些信息确定性弱于模型事实，应允许云端策略或服务商策略覆盖。
-- **维护云端发布内容**：同一次更新应同时更新新版本携带的 builtin metadata，并通过 NDN 发布完整 metadata 文件集合。文件版本、可信性、完整性和替换由 NDN 保证；AICC 不维护 index/manifest activation 或 remote cache。
+- **维护云端发布内容**：同一次更新应同时更新新版本携带的 builtin metadata，并通过 NDN 发布完整 metadata 文件集合。Manifest 必须分配更高 `revision_seq`、声明客户端兼容范围和 required features，并为仍受支持的旧客户端保留可配置的兼容版本。文件版本、可信性、完整性、防回退和替换由 NDN 保证；AICC 不维护 manifest activation 或 remote cache。
 - **维护对应测试用例**：模型事实或运营策略更新都必须同步新增或更新验收用例，并明确会影响哪些旧用例。用例应覆盖新模型出现在 inventory、能力字段正确、逻辑目录挂载正确、成本/健康度/权重策略生效、fallback 行为正确。
-- **期望效果**：NDN 替换文件并推进目标 seq 后，下一次推理或 Provider 定时库存刷新统一收敛全部落后库存；成功 Provider 的 applied seq 与目标相同，新模型出现在 `models.list` 和对应逻辑目录中。
-- **验收方法**：在测试环境由 NDN 替换 metadata 并推进目标 seq，分别用推理请求和 Provider 定时库存刷新触发全局收敛；检查刷新前临时捕获目标 seq、成功后才提交 applied seq、失败不推进。另验证 model 列表未变化且 seq 相同时仅探测、不重写 inventory，以及任一触发都不会只处理当前 Provider。
+- **期望效果**：新 metadata 文件下载、校验、替换完成并就绪后 NDN 才推进目标 seq；下一次推理或 Provider 定时库存刷新统一收敛全部落后库存，每个 Provider 只有在真正完成刷新后才推进自己的 applied seq。
+- **验收方法**：先验证云端对不同客户端版本投放各自兼容版本，NDN 拒绝低序列、同序列不同内容和不兼容发布；再分别在下载、校验、替换、文件就绪确认和 Provider 库存刷新阶段检查时序。文件未就绪时 target seq 不变；Provider 刷新未完成或失败时，其 applied seq 和原 inventory 不变。另验证 model 列表未变化且 seq 相同时仅探测、不重写 inventory，以及任一触发都不会只处理当前 Provider。
 - **保底回滚**：如果模型事实配置导致错误能力或错误挂载，应回滚事实配置；如果运营策略导致错误路由，应优先回滚策略配置。回滚后重新 `service.reload_settings`，确认 `models.list` 和 route trace 恢复预期。
 
 #### 规划中 / 未完全实现
