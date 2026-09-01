@@ -130,7 +130,7 @@ pub mod features {
 
 Router 使用结构化能力门限（逻辑模型定义的 `min_line`，见 `aicc_router.md` §6.7）做硬过滤。能力真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`；不保留 `Feature`、`must_features` 或 `ProviderInstance.features` 兼容判断。
 
-> 注意：早期实现里 `llm.chat` 默认补 `web_search`、unknown model 乐观声明能力的做法已废弃。现在 unknown model 走 conservative fallback，不默认声明 `tool_call` / `web_search` / `vision` / `json_schema`，只能由 driver metadata 显式声明。
+unknown model 采用 conservative fallback，不默认声明 `tool_call` / `web_search` / `vision` / `json_schema`；这些能力只能由 driver metadata 显式声明。
 
 ---
 

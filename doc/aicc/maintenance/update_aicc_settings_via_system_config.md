@@ -185,7 +185,7 @@ POST /kapi/aicc
 
 ```json
 {
-  "method": "llm.chat",
+  "method": "chat.completions.create",
   "params": {
     "capability": "llm",
     "model": {
@@ -209,7 +209,7 @@ POST /kapi/aicc
 
 ```json
 {
-  "method": "llm.chat",
+  "method": "chat.completions.create",
   "params": {
     "capability": "llm",
     "model": {

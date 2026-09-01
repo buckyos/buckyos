@@ -4,7 +4,7 @@
 //! `executor: "service::aicc.<method>"` 即可调用对应能力，例如：
 //!
 //! ```text
-//! service::aicc.llm.chat
+//! service::aicc.helper.llm_chat
 //! service::aicc.embedding.text
 //! service::aicc.image.txt2img
 //! service::aicc.cancel
@@ -73,7 +73,7 @@ pub fn aicc_method_schemas() -> Vec<AiccMethodSchema> {
 
     // ---- LLM ----
     out.push(llm_schema(
-        LLM_CHAT,
+        HELPER_LLM_CHAT,
         "llm.chat",
         "Chat completion with optional tool calls.",
         true,
@@ -397,7 +397,7 @@ impl AiccAdapter {
     ) -> WorkflowResult<AiMethodResponse> {
         let client = self.client().await?;
         let result = match method {
-            ai_methods::LLM_CHAT => client.helper_llm_chat(request).await,
+            ai_methods::HELPER_LLM_CHAT => client.helper_llm_chat(request).await,
             ai_methods::IMAGE_TXT2IMG => client.helper_text_to_image(request).await,
             _ => client.call_method(method, request).await,
         };
@@ -428,7 +428,7 @@ impl AiccAdapter {
 
 fn method_from_executor(value: &str) -> Option<&str> {
     let method = value.strip_prefix(AICC_EXECUTOR_PREFIX)?;
-    if method == ai_methods::CANCEL || ai_methods::is_ai_method(method) {
+    if aicc_method_schema(method).is_some() {
         Some(method)
     } else {
         None
@@ -1126,7 +1126,7 @@ mod tests {
         let methods: Vec<&str> = schemas.iter().map(|s| s.method).collect();
 
         for expected in [
-            ai_methods::LLM_CHAT,
+            ai_methods::HELPER_LLM_CHAT,
             ai_methods::EMBEDDING_TEXT,
             ai_methods::EMBEDDING_MULTIMODAL,
             ai_methods::RERANK,
@@ -1164,7 +1164,7 @@ mod tests {
         let adapter = AiccAdapter::new(Arc::new(AiccClient::new_in_process(Box::new(
             EchoHandler::default(),
         ))));
-        assert!(adapter.supports(&ExecutorRef::parse("service::aicc.llm.chat").unwrap()));
+        assert!(adapter.supports(&ExecutorRef::parse("service::aicc.helper.llm_chat").unwrap()));
         assert!(adapter.supports(&ExecutorRef::parse("service::aicc.cancel").unwrap()));
         assert!(!adapter.supports(&ExecutorRef::parse("service::aicc.unknown").unwrap()));
         assert!(!adapter.supports(&ExecutorRef::parse("service::msg_center.notify").unwrap()));
@@ -1252,7 +1252,7 @@ mod tests {
             handler.clone(),
         ))));
         let adapter = AiccAdapter::new(client);
-        let executor = ExecutorRef::parse("service::aicc.llm.chat").unwrap();
+        let executor = ExecutorRef::parse("service::aicc.helper.llm_chat").unwrap();
         let input = json!({
             "messages": [{
                 "role": "user",
@@ -1345,7 +1345,7 @@ mod tests {
     async fn failed_status_surfaces_as_error() {
         let client = Arc::new(AiccClient::new_in_process(Box::new(FailedHandler)));
         let adapter = AiccAdapter::new(client);
-        let executor = ExecutorRef::parse("service::aicc.llm.chat").unwrap();
+        let executor = ExecutorRef::parse("service::aicc.helper.llm_chat").unwrap();
         let err = adapter
             .invoke(
                 &executor,

@@ -35,7 +35,7 @@
       "case_id": "routing_exact_model_no_fallback",
       "layer": "L1",
       "priority": "P0",
-      "method": "llm.chat",
+      "method": "chat.completions.create",
       "model": "gpt-5.2@openai-mock-1",
       "provider": "openai-mock-1",
       "status": "passed",
@@ -100,10 +100,10 @@ Manifest 样例：
 
 ```toml
 [[cases]]
-case_id = "l3_krpc_llm_chat_json_schema_success"
+case_id = "l3_krpc_chat_completions_create_json_schema_success"
 layer = "L3"
 priority = "P0"
-method = "llm.chat"
+method = "chat.completions.create"
 model_alias = "llm.plan"
 provider = "openai-mock-1"
 scenario = "success"
@@ -147,9 +147,9 @@ method = "maintenance.update"
 provider = "openai-mock-1"
 model = "gpt-5-mini@openai-mock-1"
 update_type = "metadata"
-api_types = ["llm.chat"]
+api_types = ["llm"]
 logical_catalogs = ["llm.chat"]
-tags = ["update:metadata", "provider:openai", "model:gpt-5-mini", "api_type:llm.chat", "logical:llm.chat"]
+tags = ["update:metadata", "provider:openai", "model:gpt-5-mini", "api_type:llm", "logical:llm.chat"]
 requires = ["mock_provider", "aicc_service", "settings_reload"]
 expect_status = "succeeded"
 expect_usage = false
@@ -270,7 +270,7 @@ Total: 103 passed, 2 failed, 31 skipped, 184 not_applicable, 1 partial.
 
 | Case | Api Type | Method | Logical Path | Provider | Exact Model | Logical Result | Exact Result | Attempts |
 |---|---|---|---|---|---|---|---|---:|
-| l4_gateway_llm_llm_chat_llm_plan_openai_gpt_5_5_pro | llm | llm.chat | llm.plan | openai | gpt-5.5-pro@openai | passed | passed | 1 |
+| l4_gateway_llm_chat_completions_create_llm_plan_openai_gpt_5_5_pro | llm | chat.completions.create | llm.plan | openai | gpt-5.5-pro@openai | passed | passed | 1 |
 | l4_gateway_vision_ocr_vision_ocr_image_ocr_google_florence_2 | vision.ocr | vision.ocr | image.ocr | google-gemini | florence-2@google | failed | not_run | 3 |
 | l4_gateway_image_upscale_image_upscale_image_upscale_fal_esrgan | image.upscale | image.upscale | image.upscale | fal | esrgan@fal | passed | passed | 1 |
 
@@ -279,7 +279,7 @@ Total: 103 passed, 2 failed, 31 skipped, 184 not_applicable, 1 partial.
 ### l3_krpc_provider_5xx_failover
 
 - Failure class: routing_failed
-- Method: llm.chat
+- Method: chat.completions.create
 - Model: llm.plan
 - Provider: openai-mock-1
 - Error code: AICC_ROUTE_NO_CANDIDATE
@@ -336,4 +336,3 @@ Total: 103 passed, 2 failed, 31 skipped, 184 not_applicable, 1 partial.
 - skipped 不能只显示数量，必须显示原因。
 - L4 报告必须显示真实模型调用次数、attempt 次数、`api_type × method × logical_path × Provider × model` 覆盖矩阵、not_applicable/skipped 原因和估算成本。
 - L4 报告必须显示临时 group 是否已清理；如未清理，必须显示保留原因和手工清理命令。
-

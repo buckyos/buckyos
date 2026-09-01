@@ -167,12 +167,6 @@ function buildRequest(opts: CallOptions): Record<string, unknown> {
   return req;
 }
 
-function rpcMethodForCall(method: string): string {
-  if (method === "llm.chat") return "helper.llm_chat";
-  if (method === "image.txt2img") return "helper.text_to_image";
-  return method;
-}
-
 function normalizeTask(result: unknown): TaskRecord {
   if (result && typeof result === "object" && "task" in result) {
     return (result as { task: TaskRecord }).task;
@@ -230,7 +224,7 @@ export async function callAicc(runtime: AiccRuntime, opts: CallOptions): Promise
 
   let response: AiccMethodResponse;
   try {
-    response = await aiccRpc.call(rpcMethodForCall(opts.method), request) as AiccMethodResponse;
+    response = await aiccRpc.call(opts.method, request) as AiccMethodResponse;
   } catch (err) {
     throw err instanceof Error ? err : new Error(String(err));
   }
@@ -300,7 +294,7 @@ export function llmChat(runtime: AiccRuntime, opts: LlmChatOptions): Promise<Cal
   return callAicc(runtime, {
     ...opts,
     capability: "llm",
-    method: "llm.chat",
+    method: "helper.llm_chat",
     modelAlias: opts.modelAlias ?? "llm",
     messages: opts.messages,
     toolSpecs: opts.toolSpecs,
@@ -327,7 +321,7 @@ export function textToImage(runtime: AiccRuntime, opts: TextToImageOptions): Pro
   return callAicc(runtime, {
     ...opts,
     capability: "image",
-    method: "image.txt2img",
+    method: "helper.text_to_image",
     modelAlias: opts.modelAlias ?? "image.txt2img",
     text: opts.prompt,
     inputJson: {

@@ -8,7 +8,7 @@
 
 | 功能域 | 必测点 | 主要层级 |
 |---|---|---|
-| API 分层 | `route.resolve` 拒绝 exact model并返回完整渠道/模型身份、operation、fallback 和 trace；全部 typed inference 只接受 exact model且不 fallback；`helper.*` 等价于 route+typed inference；legacy all-in-one 不存在 | L1/L2/L3 |
+| API 分层 | `route.resolve` 拒绝 exact model并返回完整渠道/模型身份、operation、fallback 和 trace；全部 typed inference 只接受 exact model且不 fallback；`helper.*` 等价于 route+typed inference | L1/L2/L3 |
 | 逻辑模型定义 | `min_line` admission 过滤、`disable_line` 禁用能力、`mount_mode` auto-mount、manual override | L1/L3 |
 | Catalog resolver | Provider mapping 优先、跨 Model Driver 唯一匹配、exact→ordered pattern→default、unknown conservative fallback、variant + Provider Rules lowering | L1/L3 |
 | Session overlay | `SessionLogicalProfile` inherit（可 fallback）/ replace（quota exhausted 失败）、overlay trace | L1/L3 |

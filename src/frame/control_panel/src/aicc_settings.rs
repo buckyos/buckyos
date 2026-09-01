@@ -1,7 +1,7 @@
 use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, Capability,
+    get_buckyos_api_runtime, AiMessage, AiMethodRequest, AiPayload, AiRole, Capability,
     MailboxKind, ModelSpec, MsgCenterClient, Requirements, SystemConfigClient,
 };
 use log::info;
@@ -1387,7 +1387,7 @@ impl ControlPanelServer {
             None,
         );
 
-        match aicc.call_method(ai_methods::LLM_CHAT, request).await {
+        match aicc.helper_llm_chat(request).await {
             Ok(result) => Ok(RPCResponse::new(
                 RPCResult::Success(json!({
                     "providerId": provider_id,
@@ -1555,7 +1555,7 @@ impl ControlPanelServer {
         );
 
         let result = aicc
-            .call_method(ai_methods::LLM_CHAT, request)
+            .helper_llm_chat(request)
             .await
             .map_err(|error| RPCErrors::ReasonError(error.to_string()))?;
         let summary = result

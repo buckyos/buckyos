@@ -2340,7 +2340,7 @@ fn inventory_supports_capability(inventory: &ProviderInventory, capability: &Cap
 
 fn default_method_for_capability(capability: &Capability) -> &'static str {
     match capability {
-        Capability::Llm => ai_methods::LLM_CHAT,
+        Capability::Llm => ai_methods::CHAT_COMPLETIONS_CREATE,
         Capability::Embedding => ai_methods::EMBEDDING_TEXT,
         Capability::Rerank => ai_methods::RERANK,
         Capability::Image => ai_methods::IMAGE_TXT2IMG,
@@ -2353,7 +2353,7 @@ fn default_method_for_capability(capability: &Capability) -> &'static str {
 
 fn capability_for_method(method: &str) -> Option<Capability> {
     match method {
-        ai_methods::LLM_CHAT => Some(Capability::Llm),
+        ai_methods::CHAT_COMPLETIONS_CREATE => Some(Capability::Llm),
         ai_methods::EMBEDDING_TEXT | ai_methods::EMBEDDING_MULTIMODAL => {
             Some(Capability::Embedding)
         }
@@ -2383,7 +2383,7 @@ fn capability_for_method(method: &str) -> Option<Capability> {
 
 fn api_type_for_method(method: &str) -> Option<ApiType> {
     match method {
-        ai_methods::LLM_CHAT => Some(ApiType::Llm),
+        ai_methods::CHAT_COMPLETIONS_CREATE => Some(ApiType::Llm),
         ai_methods::EMBEDDING_TEXT => Some(ApiType::Embedding),
         ai_methods::EMBEDDING_MULTIMODAL => Some(ApiType::EmbeddingMultimodal),
         ai_methods::RERANK => Some(ApiType::Rerank),
@@ -2412,7 +2412,7 @@ fn api_type_for_method(method: &str) -> Option<ApiType> {
 
 fn method_for_route_api_type(api_type: &str) -> std::result::Result<&'static str, RPCErrors> {
     match api_type {
-        "llm" | "chat.completions.create" => Ok(ai_methods::LLM_CHAT),
+        "llm" => Ok(ai_methods::CHAT_COMPLETIONS_CREATE),
         "image.txt2img" | "images.generate" => Ok(ai_methods::IMAGE_TXT2IMG),
         "image.img2img" | "images.edit" => Ok(ai_methods::IMAGE_IMG2IMG),
         "image.inpaint" => Ok(ai_methods::IMAGE_INPAINT),
@@ -2864,7 +2864,7 @@ fn image_generate_to_method_request(
 
 fn apply_default_features_for_method(method: &str, request: &mut AiMethodRequest) {
     apply_disabled_capabilities(request);
-    if method == ai_methods::LLM_CHAT
+    if method == ai_methods::CHAT_COMPLETIONS_CREATE
         && !request_disables_capability(request, buckyos_api::features::WEB_SEARCH)
     {
         request
@@ -4374,7 +4374,11 @@ impl AIComputeCenter {
     ) -> std::result::Result<LlmChatInvokeResponse, RPCErrors> {
         let method_request = llm_chat_invoke_to_method_request(request)?;
         let response = self
-            .complete_with_method(ai_methods::LLM_CHAT, method_request, rpc_ctx)
+            .complete_with_method(
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                method_request,
+                rpc_ctx,
+            )
             .await?;
         Ok(response.into())
     }
@@ -4414,7 +4418,10 @@ impl AIComputeCenter {
             });
         let route = self
             .resolve_route_authenticated(
-                route_request_from_method_request(ai_methods::LLM_CHAT, &request)?,
+                route_request_from_method_request(
+                    ai_methods::CHAT_COMPLETIONS_CREATE,
+                    &request,
+                )?,
                 rpc_ctx.clone(),
             )
             .await?;
@@ -6735,8 +6742,8 @@ mod tests {
     #[test]
     fn llm_chat_default_features_include_web_search_once() {
         let mut request = base_request();
-        apply_default_features_for_method(ai_methods::LLM_CHAT, &mut request);
-        apply_default_features_for_method(ai_methods::LLM_CHAT, &mut request);
+        apply_default_features_for_method(ai_methods::CHAT_COMPLETIONS_CREATE, &mut request);
+        apply_default_features_for_method(ai_methods::CHAT_COMPLETIONS_CREATE, &mut request);
 
         assert!(request.requirements.required.web_search);
         assert!(
@@ -6751,7 +6758,7 @@ mod tests {
         let mut request = base_request();
         request.disable.web_search = true;
 
-        apply_default_features_for_method(ai_methods::LLM_CHAT, &mut request);
+        apply_default_features_for_method(ai_methods::CHAT_COMPLETIONS_CREATE, &mut request);
 
         assert!(!request.requirements.required.web_search);
         assert!(
@@ -6769,7 +6776,7 @@ mod tests {
             .set_feature_required(buckyos_api::features::WEB_SEARCH);
         request.disable.web_search = true;
 
-        apply_default_features_for_method(ai_methods::LLM_CHAT, &mut request);
+        apply_default_features_for_method(ai_methods::CHAT_COMPLETIONS_CREATE, &mut request);
 
         assert!(!request.requirements.required.web_search);
     }
@@ -7423,7 +7430,7 @@ mod tests {
                 base_request(),
                 RPCContext::from_request(
                     &RPCRequest {
-                        method: "llm.chat".to_string(),
+                        method: ai_methods::CHAT_COMPLETIONS_CREATE.to_string(),
                         params: json!({}),
                         seq: 1,
                         token: Some("user-session-token".to_string()),

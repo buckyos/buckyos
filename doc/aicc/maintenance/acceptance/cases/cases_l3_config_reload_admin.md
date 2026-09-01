@@ -85,7 +85,7 @@ system_config 写入 settings
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
 | `l1_usage_log_*` | P0 | 成功写 usage、幂等去重、缺 usage 报错、查询聚合 |
-| `l1_method_api_type_canonical_*` | P0 | `method` 与 `api_type` 边界、`llm` vs `llm.chat`、非正式 api_type 拒绝或降级诊断 |
+| `l1_method_api_type_canonical_*` | P0 | `api_type=llm` 与 `method=chat.completions.create` 的边界、非正式 api_type 拒绝 |
 | `l1_control_method_*` | P0 | cancel、reload、models list、usage/quota/provider 查询的 schema 和权限边界 |
 | `l1_security_*` | P0 | `local_only`、`proxy_unknown`、locked policy、trace 脱敏 |
 | `l1_concurrency_*` | P1 | session patch 并发、幂等并发、异步任务并发完成 |
@@ -94,7 +94,7 @@ system_config 写入 settings
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l2_client_llm_chat_success` | P0 | AiccClient 构造标准 `llm.chat` 请求并解析成功响应 |
+| `l2_client_llm_chat_success` | P0 | `AiccClient::chat_completions_create` 构造 typed 请求并解析成功响应 |
 | `l2_client_exact_model_no_fallback` | P0 | 精确模型不可用时透传可判断错误 |
 | `l2_client_idempotency_*` | P0 | running / succeeded / failed / conflict 语义 |
 | `l2_client_async_task_*` | P0 | running response、event_ref、最终 task 查询 |
@@ -111,14 +111,13 @@ system_config 写入 settings
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
-| `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
+| `l3_krpc_chat_completions_create_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 4.4 L4 Gateway 真实模型验收
 
@@ -133,4 +132,3 @@ system_config 写入 settings
 | `l4_gateway_models_list` | P2 | 真实环境 inventory、逻辑目录和 Provider health 可诊断 |
 
 L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型名归一化得到；报告中必须保留原始精确模型名。
-

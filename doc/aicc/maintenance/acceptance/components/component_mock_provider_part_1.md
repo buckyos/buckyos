@@ -15,7 +15,7 @@ Mock Provider 必须提供统一、确定、低成本的行为控制能力。
 - 所有非确定行为必须由测试显式配置。
 - 支持 provider health、quota、pricing、capabilities 的动态切换。
 - 支持非结构化输出策略：小结果 inline，大结果 `named_object` artifact。
-- 支持 Provider-native streaming 模拟：按固定 chunk 输出，Adapter 聚合后写最终 `AiResponseSummary`，中间 progress 写 task data。
+- 支持 Provider-native streaming 模拟：按固定 chunk 输出，Adapter 聚合后写对应 method 的 typed response，中间 progress 写 task data。
 
 ### 1.2 行为控制
 
@@ -76,7 +76,7 @@ quota_state = "normal"
 [[providers.models]]
 provider_model_id = "gpt-5-mini"
 exact_model = "gpt-5-mini@openai-mock-1"
-api_types = ["llm.chat", "embedding.text", "image.txt2img"]
+api_types = ["llm", "embedding.text", "image.txt2img"]
 logical_mounts = ["llm.gpt5", "llm.chat", "embedding.text", "image.txt2img"]
 features = ["json_output", "tool_calling", "web_search", "vision", "streaming"]
 max_context_tokens = 128000
@@ -122,7 +122,7 @@ usage_output_tokens = 3
 - scenario 触发方式必须稳定，推荐通过 `payload.options.mock_behavior.scenario` 指定。
 - 每个协议代际使用独立 Provider Instance 和 `protocol_adapter_id`。Mock 可以监听同一端口，但 request 记录、scenario 和断言必须按 Adapter 隔离。
 - 同一历史 `protocol_adapter_id` 必须增加至少两个 Provider Instance/Profile 复用用例，证明协议实现和 contract suite 没有按派生 Provider 复制；派生 Adapter 只增加差异层断言。
-- 必须能分别配置“新接口失败、旧接口成功”和“旧接口失败、新接口成功”，验证任一 Adapter 都不会自动 fallback 到另一个。
+- 必须能分别配置“官方推荐接口失败、历史接口成功”和“历史接口失败、官方推荐接口成功”，验证任一 Adapter 都不会自动 fallback 到另一个。
 
 ## 3. Mock Provider HTTP 接口约定
 
@@ -164,7 +164,7 @@ Mock Provider 需要提供测试管理接口：
 
 | Method | Path | 覆盖能力 |
 |---|---|---|
-| `POST` | `/v1/messages` | `llm.chat`、content block、tool use、vision |
+| `POST` | `/v1/messages` | `chat.completions.create`、content block、tool use、vision |
 | `POST` | `/v1/messages?stream=true` | SSE streaming |
 | `POST` | `/v1/complete` | 可选 `claude-completions` contract |
 
@@ -175,7 +175,7 @@ Mock Provider 需要提供测试管理接口：
 | Method | Path | 覆盖能力 |
 |---|---|---|
 | `POST` | `<interactions-endpoint>` | `gemini-interactions` contract；实际路径由 Adapter contract 固定 |
-| `POST` | `/v1beta/models/{model}:generateContent` | `llm.chat`、multimodal parts、function call |
+| `POST` | `/v1beta/models/{model}:generateContent` | `chat.completions.create`、multimodal parts、function call |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | streaming |
 | `POST` | `/v1beta/models/{model}:embedContent` | `embedding.text`、`embedding.multimodal` |
 | `GET` | `/v1beta/operations/{operation}` | video / long running operation |
@@ -192,4 +192,3 @@ Mock Provider 需要提供测试管理接口：
 | `POST` | `/fal-ai/video-upscaler` | `video.upscale` |
 | `GET` | `/queue/requests/{request_id}/status` | 异步状态 |
 | `GET` | `/queue/requests/{request_id}` | 异步结果 |
-

@@ -3649,7 +3649,7 @@ impl Provider for SnAIProvider {
         sink: Arc<dyn TaskEventSink>,
     ) -> std::result::Result<ProviderStartResult, ProviderError> {
         match req.method.as_str() {
-            ai_methods::LLM_CHAT => {
+            ai_methods::CHAT_COMPLETIONS_CREATE => {
                 self.start_llm(&ctx, provider_model.as_str(), &req.request)
                     .await
             }

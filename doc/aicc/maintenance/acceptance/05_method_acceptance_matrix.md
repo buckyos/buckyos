@@ -8,10 +8,9 @@
 
 本节同时覆盖标准 AI 推理 method、分层 API method 和控制/管理 method。`method` 是 kRPC schema discriminator；`api_type` 只用于 `route.resolve`、Provider inventory 和逻辑目录过滤。
 
-当前实现里的 canonical `ApiType` 序列化值以代码枚举为准：LLM 为 `llm`，不是 `llm.chat`；chat 的真实调用 method 仍是 `llm.chat`。验收用例必须同时验证：
+canonical `ApiType` 序列化值以协议 schema 为准：LLM chat 为 `llm`，chat 的 typed inference method 为 `chat.completions.create`。验收用例必须验证：
 
 - `route.resolve(api_type="llm")` 可路由到支持 chat 的模型。
-- `route.resolve(api_type="llm.chat")` 的行为必须与当前协议约定一致：若实现尚未接受该别名，应返回稳定、可判断的错误，并在报告中标注为命名兼容缺口。
 - `embedding.multilingual`、`embedding.code` 当前不是正式 `ApiType` 枚举项；如文档或 inventory 中出现，应作为 capability / logical mount / metadata 标签处理，不能当作已支持的标准 `api_type` 误判为缺测。
 
 ### 1.1 LLM
@@ -21,7 +20,6 @@
 | `route.resolve` | `api_type`、逻辑模型名 `logical_model`、requirements、disable、policy | selected ModelUID/exact model、Provider/Profile/adapter、Model Driver/origin、原始 provider model、operation、fallback、capabilities、trace | 传入 exact model 被拒、无匹配、多 Driver 冲突 |
 | `chat.completions.create` | `exact_model`、content-block `messages`、tools、response_format | `message: AiMessage`、`tool_calls`、`finish_reason`、usage、route trace | 传入逻辑模型名被拒、primary quota exhausted 不 fallback、无注册 operation |
 | `helper.llm_chat` | 逻辑模型名 + messages | 等价于 `route.resolve` + `chat.completions.create` | 与两阶段行为一致性 |
-| `llm.chat`（legacy） | content-block messages、image/document/tool_use block、tools、response_format JSON schema、generation params | `text`/`message`、`tool_calls`、`finish_reason`、usage、route trace | tool schema 非法、JSON schema 不满足、context too long、feature unsupported |
 
 ### 1.2 Embedding / Rerank
 
@@ -37,7 +35,6 @@
 |---|---|---|---|
 | `images.generate`（typed inference） | `exact_model`、prompt、negative_prompt、size、quality、seed、output | image artifacts，FileObject meta 写 media type / size | 传入逻辑模型名被拒、primary 不 fallback |
 | `helper.text_to_image` | 逻辑模型名 + prompt | 等价于 `route.resolve` + `images.generate` | 与两阶段行为一致性 |
-| `image.txt2img`（legacy） | prompt、negative_prompt、n、aspect_ratio、quality、seed、output | image artifacts，FileObject meta 写 media type / size | output media type 不支持、预算超限 |
 | `image.img2img` | source image、prompt、strength、output | image artifacts | source image invalid、strength 越界 |
 | `image.inpaint` | image、mask、prompt、mask_semantics | image artifacts | mask 缺失、mask semantics 不兼容 |
 | `image.upscale` | image、scale、target size、preserve_faces | image artifact | 目标分辨率不满足、fallback 不能满足硬约束 |
@@ -76,7 +73,7 @@
 | Method | 必测输入 | 必测输出 | 异常 |
 |---|---|---|---|
 | `cancel` | `task_id`、tenant/session 上下文 | accepted / rejected、原 task 状态可观察、task data / event 记录 cancel 语义 | unknown task、跨 tenant cancel、provider 不支持取消、已完成任务重复取消 |
-| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要；被禁用、移除或替换的旧实例收到库存定时循环 `Stop` 并优雅退出 | settings 非法、凭据缺失、保留上一版可用配置、孤儿定时器或迟到写入 |
+| `service.reload_settings` | 空 params | reload 结果、Provider registry / ModelRegistry 重建摘要；被禁用、移除或替换的实例收到库存定时循环 `Stop` 并优雅退出 | settings 非法、凭据缺失、保留当前有效配置、孤儿定时器或迟到写入 |
 | `models.list` | 空 params、可选诊断过滤参数 | Provider inventory、完整模型/渠道身份、operations、逻辑目录、health 摘要 | registry 为空、敏感字段泄露、损坏 catalog 不应导致服务不可诊断 |
 | `usage.query` | 时间窗口、provider/model/method/api_type 过滤 | 聚合 usage、明细数量、成本/usage 字段、空结果 | 非法时间窗口、无权限、重复幂等记录不应重复计费 |
 | `quota.query` | capability / method、tenant/session 上下文 | 剩余额度、预算状态、限制来源 | 未配置 quota、跨 tenant 查询、非法 method |
@@ -89,13 +86,13 @@
 
 ## 2. 真实模型判定规则
 
-Protocol Adapter 的结构验收同时是发布门禁：OpenAI、Claude、Gemini 必须覆盖官方新接口；历史 API 代际只在首个真实 Provider 需求出现时按需实现，注册后由所有兼容 Provider 共享。每个实际注册的 API 代际使用不同 `protocol_adapter_id`，但只运行一套共享 contract test；第二、第三个 Provider 不得复制历史 wire protocol 实现或整套 contract test。新旧 Adapter 不得相互 fallback，只允许复用协议中立组件。自定义 Provider 必须验证接入测试优先选择新接口、按序尝试已注册历史接口、非协议错误停止探测并持久化 resolved Adapter；用户不选择 API 代际。派生 Adapter 必须暴露独立 ID 和 `base_adapter_id`，并只测试渠道差异及委托关系。SN 必须分别通过 API Key、动态登录、token 过期刷新和认证失败测试，并通过“移除 SN 后 `openai-responses` 测试与行为不变”的删除性测试。
+Protocol Adapter 的结构验收同时是发布门禁：OpenAI、Claude、Gemini 必须覆盖官方新接口；历史 API 代际只在首个真实 Provider 需求出现时按需实现，注册后由所有兼容 Provider 共享。每个实际注册的 API 代际使用不同 `protocol_adapter_id`，但只运行一套共享 contract test；第二、第三个 Provider 不得复制历史 wire protocol 实现或整套 contract test。不同 API 代际 Adapter 不得相互 fallback，只允许复用协议中立组件。自定义 Provider 必须验证接入测试优先选择新接口、按序尝试已注册历史接口、非协议错误停止探测并持久化 resolved Adapter；用户不选择 API 代际。派生 Adapter 必须暴露独立 ID 和 `base_adapter_id`，并只测试渠道差异及委托关系。SN 必须分别通过 API Key、动态登录、token 过期刷新和认证失败测试，并通过“移除 SN 后 `openai-responses` 测试与行为不变”的删除性测试。
 
 真实模型输出不可完全确定，验收断言必须避开自然语言全文匹配。
 
 | 类型 | 可稳定断言 | 不应断言 |
 |---|---|---|
-| `llm.chat` | status、非空 text 或 tool_calls、usage、finish_reason、route trace | 回答全文、具体措辞 |
+| `chat.completions.create` | status、非空 text 或 tool_calls、usage、finish_reason、route trace | 回答全文、具体措辞 |
 | JSON schema | JSON 可解析、包含 required 字段、字段类型正确 | 字段内容完全一致 |
 | tool call | tool name 在允许集合内、args 可解析、required args 存在 | args 的自然语言细节完全一致 |
 | image/audio/video artifact | artifact 存在、media type 正确、可读取、size > 0 | 视觉/听觉内容完全一致 |

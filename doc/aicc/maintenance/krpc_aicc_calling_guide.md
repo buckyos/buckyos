@@ -32,7 +32,7 @@ RPC `method` 是公开方法名；`api_type` 是路由操作类型。两者不�
 {
   "method": "route.resolve",
   "params": {
-    "api_type": "llm.chat",
+    "api_type": "llm",
     "logical_model": "llm.plan",
     "requirements": { "tool_call": true, "json_schema": true },
     "policy": { "profile": "quality" }

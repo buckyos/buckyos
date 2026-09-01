@@ -18,7 +18,7 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 | api_type | 输入 | 输出 | 说明 |
 |---|---|---|---|
-| `llm.chat` | `messages[]`(可含 image/audio block) | `message` + 可选 `tool_calls` | 主流 chat completion,事实标准 |
+| `llm` | `messages[]`(可含 image/audio block) | `message` + 可选 `tool_calls` | 主流 chat completion,事实标准 |
 | `embedding.text` | `string \| string[]` | `number[][]` | 文本/代码 embedding |
 | `embedding.multimodal` | `text \| image \| (text+image)` | `number[][]` | CLIP 类跨模态 embedding |
 | `rerank` | `query, docs[]` | `score[]` | Cross-encoder 重排序 |
@@ -73,7 +73,7 @@ API Type 决定 request/response schema。**Provider 不能自定义 api_type**,
 
 | 一级目录 | 默认 api_type | fallback 策略 | 默认调度 profile |
 |---|---|---|---|
-| `llm` | `llm.chat` | parent | balanced |
+| `llm` | `llm` | parent | balanced |
 | `embedding` | `embedding.text`、`embedding.multimodal` | **strict**(向量空间不通用) | latency_first |
 | `rerank` | `rerank` | strict | latency_first |
 | `image` | `image.*`、`vision.*` | parent within same api_type | quality_first |
@@ -99,7 +99,7 @@ llm
 └── fallback   # 兜底兜底
 ```
 
-支持的 api_type：`llm.chat`。纯文本 completion 由调用方转换为单条 message，不定义独立 api_type。
+支持的 api_type：`llm`。纯文本 completion 由调用方转换为单条 message，不定义独立 api_type。
 
 ### 2.2 `embedding` 子目录
 
@@ -241,32 +241,32 @@ llm
 
 | 逻辑挂点 | 物理型号 | 家族 | api_type | attributes.tier |
 |---|---|---|---|---|
-| `llm.plan` / `llm.reason` | `gpt-5.5-pro@openai` | openai | llm.chat | flagship |
-| `llm.chat` / `llm.code` / `llm.gpt-standard` | `gpt-5.5@openai` | openai | llm.chat | flagship |
-| `llm.gpt-mini` / `llm.summarize` | `gpt-5.4-mini@openai` | openai | llm.chat | mid |
-| `llm.swift` | `gpt-5.4-nano@openai` | openai | llm.chat | nano |
-| `llm.gpt` | `o1-2024-12-17@openai` | openai | llm.chat | flagship |
-| `llm.opus` | `claude-opus-4.7@anthropic` | claude | llm.chat | flagship |
-| `llm.sonnet` | `claude-sonnet-4.6@anthropic` | claude | llm.chat | mid |
-| `llm.haiku` | `claude-haiku-4.5@anthropic` | claude | llm.chat | nano |
-| `llm.gemini-deepthink` | `gemini-3-deepthink@google` | gemini | llm.chat | flagship |
-| `llm.gemini-pro` | `gemini-3.1-pro@google` | gemini | llm.chat | flagship |
-| `llm.gemini-flash` | `gemini-3-flash@google` | gemini | llm.chat | mid |
-| `llm.gemini-flash-lite` | `gemini-3.1-flash-lite@google` | gemini | llm.chat | nano |
-| `llm.grok-heavy` | `grok-4-heavy@xai` | grok | llm.chat | flagship |
-| `llm.grok` | `grok-4.20@xai` | grok | llm.chat | flagship |
-| `llm.grok-fast` | `grok-4.1-fast@xai` | grok | llm.chat | mid |
-| `llm.deepseek-pro` | `deepseek-v4-pro@deepseek` | deepseek | llm.chat | flagship |
-| `llm.deepseek-flash` | `deepseek-v4-flash@deepseek` | deepseek | llm.chat | mid |
-| `llm.deepseek-reasoner` | `deepseek-r@deepseek` | deepseek | llm.chat | flagship |
-| `llm.qwen-max` | `qwen-3.6-plus@alibaba` | qwen | llm.chat | flagship |
-| `llm.qwen-plus` | `qwen-3.5-plus@alibaba` | qwen | llm.chat | mid |
-| `llm.qwen-coder` | `qwen-3-coder@alibaba` | qwen | llm.chat | flagship |
-| `llm.qwen-small` | `qwen-3.5-9b@local` | qwen | llm.chat | nano |
-| `llm.kimi` | `kimi-k2.6@moonshot` | kimi | llm.chat | flagship |
-| `llm.kimi-thinking` | `kimi-k2-thinking@moonshot` | kimi | llm.chat | flagship |
-| `llm.glm` | `glm-5.1@zai` | glm | llm.chat | flagship |
-| `llm.glm-flash` | `glm-5-flash@zai` | glm | llm.chat | nano |
+| `llm.plan` / `llm.reason` | `gpt-5.5-pro@openai` | openai | llm | flagship |
+| `llm.chat` / `llm.code` / `llm.gpt-standard` | `gpt-5.5@openai` | openai | llm | flagship |
+| `llm.gpt-mini` / `llm.summarize` | `gpt-5.4-mini@openai` | openai | llm | mid |
+| `llm.swift` | `gpt-5.4-nano@openai` | openai | llm | nano |
+| `llm.gpt` | `o1-2024-12-17@openai` | openai | llm | flagship |
+| `llm.opus` | `claude-opus-4.7@anthropic` | claude | llm | flagship |
+| `llm.sonnet` | `claude-sonnet-4.6@anthropic` | claude | llm | mid |
+| `llm.haiku` | `claude-haiku-4.5@anthropic` | claude | llm | nano |
+| `llm.gemini-deepthink` | `gemini-3-deepthink@google` | gemini | llm | flagship |
+| `llm.gemini-pro` | `gemini-3.1-pro@google` | gemini | llm | flagship |
+| `llm.gemini-flash` | `gemini-3-flash@google` | gemini | llm | mid |
+| `llm.gemini-flash-lite` | `gemini-3.1-flash-lite@google` | gemini | llm | nano |
+| `llm.grok-heavy` | `grok-4-heavy@xai` | grok | llm | flagship |
+| `llm.grok` | `grok-4.20@xai` | grok | llm | flagship |
+| `llm.grok-fast` | `grok-4.1-fast@xai` | grok | llm | mid |
+| `llm.deepseek-pro` | `deepseek-v4-pro@deepseek` | deepseek | llm | flagship |
+| `llm.deepseek-flash` | `deepseek-v4-flash@deepseek` | deepseek | llm | mid |
+| `llm.deepseek-reasoner` | `deepseek-r@deepseek` | deepseek | llm | flagship |
+| `llm.qwen-max` | `qwen-3.6-plus@alibaba` | qwen | llm | flagship |
+| `llm.qwen-plus` | `qwen-3.5-plus@alibaba` | qwen | llm | mid |
+| `llm.qwen-coder` | `qwen-3-coder@alibaba` | qwen | llm | flagship |
+| `llm.qwen-small` | `qwen-3.5-9b@local` | qwen | llm | nano |
+| `llm.kimi` | `kimi-k2.6@moonshot` | kimi | llm | flagship |
+| `llm.kimi-thinking` | `kimi-k2-thinking@moonshot` | kimi | llm | flagship |
+| `llm.glm` | `glm-5.1@zai` | glm | llm | flagship |
+| `llm.glm-flash` | `glm-5-flash@zai` | glm | llm | nano |
 
 **Reasoning 角色专属**:`llm.reason` 默认只挂载支持强 reasoning / thinking 的逻辑挂点,如 `llm.gemini-deepthink`、`llm.opus`、OpenAI GPT Pro 直接挂载、`llm.grok-heavy`、`llm.deepseek-reasoner`、`llm.kimi-thinking`。具体物理型号由对应 Provider 挂点解析。
 

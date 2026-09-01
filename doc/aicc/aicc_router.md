@@ -357,7 +357,7 @@ Provider inventory 中的 `logical_mounts` 是 Provider 对“自己的真实模
 ```text
 LogicalModelDefinition
   path                 # 逻辑模型路径，如 llm.plan
-  api_type             # 绑定的 API 形态，如 llm.chat
+  api_type             # 绑定的 API 形态，如 llm
   min_line             # ModelRequirement：硬能力门限（admission gate）
   disable_line         # ModelDisable：本次路由禁用的能力
   default_options      # 默认 provider 调用参数
@@ -414,7 +414,7 @@ models:
     exact_model: gpt-5.2@openai_primary
     parameter_scale: unknown
     api_types:
-      - llm.chat
+      - llm
     logical_mounts:
       - llm.gpt5
     capabilities:
@@ -630,7 +630,7 @@ Fallback 分为解析期 fallback 和运行时 failover。
 ```json
 {
   "model": "llm.code",
-  "api_type": "llm.chat"
+  "api_type": "llm"
 }
 ```
 
@@ -669,7 +669,7 @@ logical_tree:
 ```json
 {
   "model": "gpt5@openai",
-  "api_type": "llm.chat"
+  "api_type": "llm"
 }
 ```
 
@@ -1014,7 +1014,7 @@ Request 级配置不应发明独立的 override 语义，而应使用和系统�
 
 ```json
 {
-  "api_type": "llm.chat",
+  "api_type": "llm",
   "model": "llm.plan",
   "session_overlay": {
     "global_exact_model_weights": {
@@ -1393,7 +1393,7 @@ providers:
       - provider_model_id: gpt-5.2
         exact_model: gpt-5.2@openai_primary
         parameter_scale: unknown
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.gpt5]
         capabilities:
           tool_call: true
@@ -1414,7 +1414,7 @@ providers:
       - provider_model_id: gpt-5.2
         exact_model: gpt-5.2@openai_backup
         parameter_scale: unknown
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.gpt5]
         capabilities:
           tool_call: true
@@ -1435,7 +1435,7 @@ providers:
       - provider_model_id: claude-sonnet
         exact_model: claude-sonnet@anthropic
         parameter_scale: unknown
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.claude]
         capabilities:
           tool_call: true
@@ -1455,7 +1455,7 @@ providers:
       - provider_model_id: qwen3
         exact_model: qwen3@local
         parameter_scale: 32B
-        api_types: [llm.chat]
+        api_types: [llm]
         logical_mounts: [llm.local]
         capabilities:
           tool_call: false

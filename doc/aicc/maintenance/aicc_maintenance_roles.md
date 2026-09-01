@@ -57,7 +57,7 @@ metadata 基线和运营策略都有两种分发形态：
 - `aicc.cost.openai.gpt-4.1.estimate`
 - `aicc.regression.routing.global-exact-model-weights`
 
-如果测试框架支持 tags，应同时维护 tags，例如 `provider:openai`、`model:gpt-4.1`、`api_type:llm.chat`、`logical:llm.chat`、`update:metadata`、`update:routing`。如果 tags 机制尚未落地，至少要用命名约定保证可以通过关键字筛选相关用例。
+如果测试框架支持 tags，应同时维护 tags，例如 `provider:openai`、`model:gpt-4.1`、`api_type:llm`、`logical:llm.chat`、`update:metadata`、`update:routing`。如果 tags 机制尚未落地，至少要用命名约定保证可以通过关键字筛选相关用例。
 
 ## 1. BuckyOS 项目方
 

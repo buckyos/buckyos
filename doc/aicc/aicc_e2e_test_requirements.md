@@ -131,7 +131,7 @@ unknown model 不得通过模型名猜测获得高风险能力。兼容接口偶
 
 | namespace | canonical api_type / method |
 |---|---|
-| LLM | `llm`；对应 `llm.chat` |
+| LLM | `llm`；对应 `chat.completions.create` |
 | Embedding | `embedding.text`、`embedding.multimodal` |
 | Rerank | `rerank` |
 | Image | `image.txt2img`、`image.img2img`、`image.inpaint`、`image.upscale`、`image.bg_remove` |
@@ -431,9 +431,9 @@ T2 按模型官方能力覆盖：
 
 当前 canonical API type 的行为组合必须逐项覆盖：
 
-`chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口。Beta 2.2 不保留或测试 `llm.chat`、`llm.completion` 等旧式 all-in-one 接口；底层 Responses、Chat Completions、Messages、Interactions 等 wire API 由 Provider Instance 已解析的 Adapter 决定。自定义 Provider 接入测试必须验证“新接口优先、已注册历史接口其次”，用户不提供版本；解析后的新旧 Adapter 分别测试，推理调用失败后不能隐式切换。
+`chat.completions.create` 是 AICC 的 provider-neutral LLM typed inference 接口，也是 LLM typed inference 的唯一 kRPC method。底层 Responses、Chat Completions、Messages、Interactions 等 wire API 由 Provider Instance 已解析的 Adapter 决定。自定义 Provider 接入测试必须分别验证每个已注册 Adapter；推理调用失败后不能隐式切换 Adapter。
 
-- `llm.chat`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
+- `chat.completions.create`：单轮或多轮文本、代码、文档、图片、音频或视频输入到文本、JSON schema 和 tool call；具体输入模态按官方模型能力生成矩阵。
 - `embedding.text`：单文本、批量文本、代码、文档 chunk 和 resource 文档到向量。
 - `embedding.multimodal`：文本、图片和文本图片配对到同一 embedding space 的向量。
 - `rerank`：query 与内联/resource documents 到有序 document ID、index 和 score。

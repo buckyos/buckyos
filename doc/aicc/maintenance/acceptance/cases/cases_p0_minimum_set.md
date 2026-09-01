@@ -22,14 +22,14 @@
 | `l1_request_overlay_override_route` | L1 | request overlay 覆盖系统配置并改变最终物理路由 |
 | `l1_request_overlay_stateless` | L1 | 不同 request overlay 互不污染，AICC 不保存 session config |
 | `l1_security_local_only_rejects_cloud` | L1 | `local_only` 硬过滤云端 Provider |
-| `l1_provider_openai_chat_success` | L1 | OpenAI-like `llm.chat` 协议转换成功 |
+| `l1_provider_openai_chat_success` | L1 | OpenAI-like `chat.completions.create` 协议转换成功 |
 | `l1_provider_openai_stream_merge` | L1 | Provider streaming chunks 聚合为最终 summary |
 | `l1_resource_ref_json_tags` | L1 | `url`、`base64`、`named_object` JSON tag 正确 |
 | `l1_task_immediate_success` | L1 | 同步成功任务写入 result |
 | `l1_task_async_success` | L1 | 异步任务 running 到 succeeded 闭环 |
 | `l1_usage_success_write_once` | L1 | 成功调用写入 exactly one usage event |
 | `l1_usage_missing_usage_rejected` | L1 | 成功响应缺 usage 被判为协议错误 |
-| `l2_client_llm_chat_success` | L2 | AiccClient 调用 `llm.chat` 成功 |
+| `l2_client_llm_chat_success` | L2 | `AiccClient::chat_completions_create` 调用成功 |
 | `l2_client_idempotency_conflict` | L2 | 同 key 不同 body 返回 idempotency conflict |
 | `l2_client_cancel_unknown_task` | L2 | 取消不存在任务返回可判断错误 |
 
@@ -39,8 +39,8 @@
 |---|---|---|
 | `l3_settings_reload_mock_openai` | L3 | 写入 Mock settings 后 reload 生效 |
 | `l3_models_list_mock_inventory` | L3 | `models.list` 可看到 Mock Provider inventory |
-| `l3_krpc_llm_chat_text_success` | L3 | kRPC `llm.chat` 纯文本成功 |
-| `l3_krpc_llm_chat_json_schema_success` | L3 | JSON schema 输出可解析 |
+| `l3_krpc_chat_completions_create_text_success` | L3 | kRPC `chat.completions.create` 纯文本成功 |
+| `l3_krpc_chat_completions_create_json_schema_success` | L3 | JSON schema 输出可解析 |
 | `l3_krpc_resource_base64_image` | L3 | base64 图片资源输入成功 |
 | `l3_krpc_resource_named_object_artifact` | L3 | named_object artifact 输出可读取 |
 | `l3_krpc_stream_progress_and_final` | L3 | streaming 中间态写 task data，最终 summary 正确 |

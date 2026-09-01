@@ -20,7 +20,6 @@ pub mod ai_methods {
     pub const HELPER_LLM_CHAT: &str = "helper.llm_chat";
     pub const HELPER_TEXT_TO_IMAGE: &str = "helper.text_to_image";
 
-    pub const LLM_CHAT: &str = "llm.chat";
     pub const EMBEDDING_TEXT: &str = "embedding.text";
     pub const EMBEDDING_MULTIMODAL: &str = "embedding.multimodal";
     pub const RERANK: &str = "rerank";
@@ -56,8 +55,7 @@ pub mod ai_methods {
     pub fn is_ai_method(method: &str) -> bool {
         matches!(
             method,
-            LLM_CHAT
-                | EMBEDDING_TEXT
+            EMBEDDING_TEXT
                 | EMBEDDING_MULTIMODAL
                 | RERANK
                 | IMAGE_TXT2IMG
@@ -2716,7 +2714,7 @@ mod tests {
 
         let request = sample_method_request();
         let method_result = client
-            .call_method(ai_methods::LLM_CHAT, request.clone())
+            .call_method(ai_methods::EMBEDDING_TEXT, request.clone())
             .await
             .unwrap();
         assert_eq!(method_result.task_id, "task-001");
@@ -2734,7 +2732,7 @@ mod tests {
         assert!(cancel_result.accepted);
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.method.as_deref(), Some(ai_methods::LLM_CHAT));
+        assert_eq!(calls.method.as_deref(), Some(ai_methods::EMBEDDING_TEXT));
         assert_eq!(calls.request, Some(request));
         assert_eq!(calls.cancel_task_id.as_deref(), Some("task-001"));
     }
@@ -2769,7 +2767,7 @@ mod tests {
 
         let request = sample_method_request();
         let method_req = RPCRequest {
-            method: ai_methods::LLM_CHAT.to_string(),
+            method: ai_methods::EMBEDDING_TEXT.to_string(),
             params: serde_json::to_value(&request).unwrap(),
             seq: 9,
             token: None,
@@ -2836,7 +2834,7 @@ mod tests {
         }
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.method.as_deref(), Some(ai_methods::LLM_CHAT));
+        assert_eq!(calls.method.as_deref(), Some(ai_methods::EMBEDDING_TEXT));
         assert_eq!(calls.request, Some(request));
         assert_eq!(calls.cancel_task_id.as_deref(), Some("task-001"));
     }

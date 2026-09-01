@@ -118,16 +118,16 @@ impl SmokeClient {
                     .ok_or_else(|| format!("rpc result missing: {payload}"))
             }
             SmokeClient::Local { center } => match method {
-                "llm.chat" => {
+                "helper.llm_chat" => {
                     let req: AiMethodRequest = serde_json::from_value(params)
-                        .map_err(|err| format!("invalid llm.chat params: {err}"))?;
+                        .map_err(|err| format!("invalid helper.llm_chat params: {err}"))?;
                     let ctx = rpc_ctx_with_tenant(None);
                     let resp = center
-                        .complete(req, ctx)
+                        .helper_llm_chat(req, ctx)
                         .await
-                        .map_err(|err| format!("local llm.chat failed: {err}"))?;
+                        .map_err(|err| format!("local helper.llm_chat failed: {err}"))?;
                     serde_json::to_value(resp)
-                        .map_err(|err| format!("serialize llm.chat result failed: {err}"))
+                        .map_err(|err| format!("serialize helper.llm_chat result failed: {err}"))
                 }
                 "cancel" => {
                     let task_id = params
@@ -224,7 +224,7 @@ async fn smoke_01_complete_basic_succeeds_on_assigned_url() {
     let client = SmokeClient::from_env_or_local().await;
     let result = client
         .call_rpc(
-            "llm.chat",
+            "helper.llm_chat",
             complete_params(
                 "Reply in one short sentence that smoke_01 passed.",
                 vec![],
@@ -267,7 +267,7 @@ async fn smoke_02_json_output_path_succeeds_on_assigned_url() {
     };
     let result = client
         .call_rpc(
-            "llm.chat",
+            "helper.llm_chat",
             complete_params(
                 "Return JSON only: {\"ok\": true, \"source\": \"aicc\"}",
                 must_features,
@@ -318,7 +318,7 @@ async fn smoke_04_stream_poll_basic_path_on_assigned_url() {
     let client = SmokeClient::from_env_or_local().await;
     let result = client
         .call_rpc(
-            "llm.chat",
+            "helper.llm_chat",
             complete_params(
                 "stream smoke test",
                 vec![],
@@ -351,7 +351,7 @@ async fn smoke_05_monitor_alarm_trigger_and_recovery() {
     // Trigger phase: force a routing/config failure with an unknown alias.
     let trigger = client
         .call_rpc(
-            "llm.chat",
+            "helper.llm_chat",
             complete_params_with_alias(
                 "smoke.invalid.alias",
                 "trigger monitor smoke path",
@@ -386,7 +386,7 @@ async fn smoke_05_monitor_alarm_trigger_and_recovery() {
     // Recovery phase: switch back to the configured alias and verify success.
     let recover_result = client
         .call_rpc(
-            "llm.chat",
+            "helper.llm_chat",
             complete_params(
                 "smoke recovery path",
                 vec![],
@@ -417,7 +417,12 @@ async fn smoke_06_bug_context_capture_template_complete() {
         json!({"temperature": 0.1, "max_tokens": 32}),
     );
     let trigger = client
-        .call_rpc("llm.chat", req_params.clone(), now_seq(), Some(trace_id))
+        .call_rpc(
+            "helper.llm_chat",
+            req_params.clone(),
+            now_seq(),
+            Some(trace_id),
+        )
         .await;
     let (error_message, task_id) = match trigger {
         Err(rpc_err) => {
@@ -460,7 +465,7 @@ async fn smoke_06_bug_context_capture_template_complete() {
 
     let context = json!({
         "request": {
-            "method": "llm.chat",
+            "method": "helper.llm_chat",
             "trace_id": trace_id,
             "tenant": env::var("AICC_RPC_TOKEN").ok().unwrap_or_else(|| "local-default".to_string()),
             "idempotency_key": req_params.get("idempotency_key").and_then(|v| v.as_str()).unwrap_or(""),
@@ -480,7 +485,7 @@ async fn smoke_06_bug_context_capture_template_complete() {
 
     assert_eq!(
         context.pointer("/request/method").and_then(|v| v.as_str()),
-        Some("llm.chat")
+        Some("helper.llm_chat")
     );
     assert_eq!(
         context

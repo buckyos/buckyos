@@ -22,7 +22,7 @@ use std::sync::Arc;
 use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use buckyos_api::{
-    ai_methods, features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
+    features, get_buckyos_api_runtime, value_to_object_map, AiMethodRequest,
     AiMethodStatus, AiPayload, AiResponse, AiToolCall, AiToolSpec, AiccClient, Capability,
     KEventClient, ModelSpec, MsgCenterClient, Requirements, RespFormat, TaskDispatcherClient,
     TaskManagerClient, TaskOutcome, TypedTaskData,
@@ -51,7 +51,7 @@ use crate::worklog::{WorklogAppendCtx, WorklogService};
 // =====================================================================
 
 /// `LlmClient` over `AiccClient`. One `infer()` acquires one short-session
-/// client and performs one `llm.chat` round-trip; adapter retry / fallback
+/// client and performs one `helper.llm_chat` round-trip; adapter retry / fallback
 /// happens inside aicc, not here.
 pub struct AiccLlmClient {
     aicc: Option<Arc<AiccClient>>,
@@ -183,7 +183,7 @@ impl LlmClient for AiccLlmClient {
 
         let aicc = self.client().await.map_err(provider_error_from_rpc)?;
         let resp = aicc
-            .call_method(ai_methods::LLM_CHAT, request)
+            .helper_llm_chat(request)
             .await
             .map_err(provider_error_from_rpc)?;
 

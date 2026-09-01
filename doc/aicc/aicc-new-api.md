@@ -79,7 +79,7 @@ client.llm_chat({
 实际展开为：
 
 ```text
-route.resolve(api_type="llm.chat", logical_model="llm.chat", requirements, disable, policy)
+route.resolve(api_type="llm", logical_model="llm.chat", requirements, disable, policy)
 chat.completions.create(exact_model=route.selected_exact_model, messages)
 ```
 

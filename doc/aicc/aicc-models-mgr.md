@@ -454,7 +454,7 @@ ModelMetadata {
 
 当前实现对未知模型会使用 conservative fallback：
 
-- 默认 `api_types` 可能回落到 `llm.chat`；
+- 默认 `api_types` 可能回落到 `llm`；
 - 不声明 `tool_call`、`json_schema`、`vision`、`web_search` 等能力；
 - 使用保守的成本、延迟、质量估计；
 - 生成泛化挂载，例如 `llm.chat`、`llm.<driver>`、`llm.<driver>.<model>`。
@@ -795,7 +795,7 @@ policy:
 ### 8.1 输入
 
 ```text
-api_type = llm.chat
+api_type = llm
 model = llm.chat
 session_id = s1
 policy = balanced

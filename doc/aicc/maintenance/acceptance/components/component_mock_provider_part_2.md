@@ -48,8 +48,8 @@ case_set = {
 
 矩阵来源：
 
-1. `canonical ApiType` 以 `src/frame/aicc/src/model_types.rs` 中的 `ApiType` 序列化值为准。当前 `llm` 是 canonical api_type，`llm.chat` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
-2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat`、`llm.chat` 中适用的调用形态。
+1. `canonical ApiType` 以 `aicc_api设计.md` 定义的目标协议为准。`llm` 是 canonical api_type，`chat.completions.create` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
+2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat` 中适用的调用形态。
 3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
 4. `enabled_official_providers` 发布强覆盖默认至少包含 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider`；如果官方配置或本次发布基线新增 Provider driver，必须自动纳入矩阵或在报告中标记为未覆盖缺口。
 5. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名、provider instance、`api_types`、`logical_mounts`、capabilities、health 和 pricing 摘要。
@@ -58,7 +58,7 @@ case_set = {
 
 1. runner 必须先生成 `api_type × method × logical_path × provider × model` 的候选矩阵，再按模型实际能力、逻辑目录 `min_line`、`disable_line`、`mount_mode`、health、quota、policy 和 key 可用性决定 `planned` / `skipped` / `not_applicable`。
 2. `skipped` 只用于环境缺失或凭据缺失；模型不支持该 api_type、未挂载到该逻辑目录或不满足 `min_line` 时，应记录为 `not_applicable`，不能混入 skipped 通过率。
-3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起路由或 helper/legacy 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference / exact model 调用，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
+3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起 `route.resolve` 或 Helper 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
 4. typed inference 只允许 exact model；逻辑模型段必须调用 `route.resolve(logical_model)`，再把结果传给 typed method。Helper 的逻辑模型调用作为独立组合链路验收。
 5. 同一个 Provider 下同一个物理模型如果支持多个 `api_types`，不得只用一条“代表性 workflow”替代全部 api_type 覆盖；可以把昂贵能力合并到同一 workflow 中执行，但报告必须保留每个 `api_type × method × logical_path × provider × model` 维度的覆盖状态。
 6. Provider 已启用但没有任何可用模型时，生成一个 `skipped` 诊断用例，原因记为 `provider_has_no_models`。
@@ -78,7 +78,7 @@ Mock Provider 必须提供统一、确定、低成本的行为控制能力。
 - 所有非确定行为必须由测试显式配置。
 - 支持 provider health、quota、pricing、capabilities 的动态切换。
 - 支持非结构化输出策略：小结果 inline，大结果 `named_object` artifact。
-- 支持 Provider-native streaming 模拟：按固定 chunk 输出，Adapter 聚合后写最终 `AiResponseSummary`，中间 progress 写 task data。
+- 支持 Provider-native streaming 模拟：按固定 chunk 输出，Adapter 聚合后写对应 method 的 typed response，中间 progress 写 task data。
 
 ### 2.2 行为控制
 
@@ -158,7 +158,7 @@ Mock Provider 需要提供测试管理接口：
 
 | Method | Path | 覆盖能力 |
 |---|---|---|
-| `POST` | `/v1/messages` | `llm.chat`、content block、tool use、vision |
+| `POST` | `/v1/messages` | `chat.completions.create`、content block、tool use、vision |
 | `POST` | `/v1/messages?stream=true` | SSE streaming |
 | `POST` | `/v1/complete` | 可选 `claude-completions` contract |
 
@@ -169,7 +169,7 @@ Mock Provider 需要提供测试管理接口：
 | Method | Path | 覆盖能力 |
 |---|---|---|
 | `POST` | `<interactions-endpoint>` | `gemini-interactions` contract；实际路径由 Adapter contract 固定 |
-| `POST` | `/v1beta/models/{model}:generateContent` | `llm.chat`、multimodal parts、function call |
+| `POST` | `/v1beta/models/{model}:generateContent` | `chat.completions.create`、multimodal parts、function call |
 | `POST` | `/v1beta/models/{model}:streamGenerateContent` | streaming |
 | `POST` | `/v1beta/models/{model}:embedContent` | `embedding.text`、`embedding.multimodal` |
 | `GET` | `/v1beta/operations/{operation}` | video / long running operation |
@@ -186,4 +186,3 @@ Mock Provider 需要提供测试管理接口：
 | `POST` | `/fal-ai/video-upscaler` | `video.upscale` |
 | `GET` | `/queue/requests/{request_id}/status` | 异步状态 |
 | `GET` | `/queue/requests/{request_id}` | 异步结果 |
-

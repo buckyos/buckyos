@@ -48,8 +48,8 @@ case_set = {
 
 矩阵来源：
 
-1. `canonical ApiType` 以 `src/frame/aicc/src/model_types.rs` 中的 `ApiType` 序列化值为准。当前 `llm` 是 canonical api_type，`llm.chat` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
-2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat`、`llm.chat` 中适用的调用形态。
+1. `canonical ApiType` 以 `aicc_api设计.md` 定义的目标协议为准。`llm` 是 canonical api_type，`chat.completions.create` 是 method；`vision.ocr`、`vision.caption`、`vision.detect`、`vision.segment` 是 api_type，但其标准逻辑目录路径在内置树中是 `image.ocr`、`image.caption`、`image.detect`、`image.segment`。
+2. `methods_supporting(api_type)` 以本文件 §7 Method 验收清单和 `aicc_api设计.md` 为准。一个 api_type 可以对应多个 method，例如 `llm` 需要覆盖 `route.resolve`、`chat.completions.create`、`helper.llm_chat` 中适用的调用形态。
 3. `standard_logical_paths` 以当前运行版本加载的 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准；该配置默认来自 `build_builtin_local_logical_tree_config()`，并可被 system_config 中的官方 routing 配置叠加。runner 必须把最终生效的标准逻辑目录路径写入报告，并标明每个路径的来源、继承到的 api_type、items、fallback 和 admission 结果。
 4. `enabled_official_providers` 发布强覆盖默认至少包含 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider`；如果官方配置或本次发布基线新增 Provider driver，必须自动纳入矩阵或在报告中标记为未覆盖缺口。
 5. `supported_models` 以 AICC 实际注册并可被 `models.list` 观察到的模型为准，包含精确模型名、provider instance、`api_types`、`logical_mounts`、capabilities、health 和 pricing 摘要。
@@ -58,7 +58,7 @@ case_set = {
 
 1. runner 必须先生成 `api_type × method × logical_path × provider × model` 的候选矩阵，再按模型实际能力、逻辑目录 `min_line`、`disable_line`、`mount_mode`、health、quota、policy 和 key 可用性决定 `planned` / `skipped` / `not_applicable`。
 2. `skipped` 只用于环境缺失或凭据缺失；模型不支持该 api_type、未挂载到该逻辑目录或不满足 `min_line` 时，应记录为 `not_applicable`，不能混入 skipped 通过率。
-3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起路由或 helper/legacy 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference / exact model 调用，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
+3. 每个 `planned` 用例必须执行两段验证：逻辑模型段用 `logical_path` 发起 `route.resolve` 或 Helper 调用，断言 route trace 中的 `requested_model_type=logical`、`resolved_logical_path`、`selected_exact_model` 和 provider；物理模型段使用同一个 `selected_exact_model` 或矩阵中的 exact model 发起 typed inference，断言 `requested_model_type=exact`、不发生隐式 fallback、usage 和 trace 正确。
 4. typed inference 只允许 exact model；逻辑模型段必须调用 `route.resolve(logical_model)`，再把结果传给 typed method。Helper 的逻辑模型调用作为独立组合链路验收。
 5. 同一个 Provider 下同一个物理模型如果支持多个 `api_types`，不得只用一条“代表性 workflow”替代全部 api_type 覆盖；可以把昂贵能力合并到同一 workflow 中执行，但报告必须保留每个 `api_type × method × logical_path × provider × model` 维度的覆盖状态。
 6. Provider 已启用但没有任何可用模型时，生成一个 `skipped` 诊断用例，原因记为 `provider_has_no_models`。
@@ -96,11 +96,11 @@ case_set = {
 
 | Provider | Workflow |
 |---|---|
-| OpenAI | 每个模型执行 `llm.chat` 多轮 + JSON schema + tool call + image/audio 或 embedding 子步骤 |
-| Claude | 每个模型执行多模态 `llm.chat` + tool use + vision caption/OCR fallback |
-| Google Gemini | 每个模型执行多模态 `llm.chat` + embedding/multimodal 或 image/video operation |
+| OpenAI | 每个模型执行 `chat.completions.create` 多轮 + JSON schema + tool call + image/audio 或 embedding 子步骤 |
+| Claude | 每个模型执行多模态 `chat.completions.create` + tool use + vision caption/OCR fallback |
+| Google Gemini | 每个模型执行多模态 `chat.completions.create` + embedding/multimodal 或 image/video operation |
 | fal | 每个模型执行 `image.upscale` / `image.bg_remove` / `audio.enhance` / `video.upscale` 中匹配能力的异步任务 + artifact 读取 |
-| OpenRouter | 每个模型执行 `llm.chat` 复杂 JSON 输出 + OpenAI-compatible 兼容字段检查 |
+| OpenRouter | 每个模型执行 `chat.completions.create` 复杂 JSON 输出 + OpenAI-compatible 兼容字段检查 |
 | SN AI Provider | 每个模型分别执行 API Key 和动态登录 workflow，验证 token 刷新、Provider 归因、usage、trace 和 free credit 归因 |
 
 ## 3. 发布验收标准
@@ -132,16 +132,16 @@ case_set = {
 | 新增非兼容 Provider adapter 或新 API type | 版本包、adapter、schema、metadata 基线、默认路由策略 | 新 adapter 的协议转换、错误映射、streaming / task 语义、usage、fallback 和 helper / typed inference 链路通过相关用例 |
 | 仅更新运营策略 | 策略配置、成本 / quota / health / 权重 / 熔断 / 灰度规则 | 不改变模型事实；route trace 显示策略命中；回滚策略后路由恢复；不需要回滚 metadata |
 | 随版本内置缓存更新 | 版本包内 builtin metadata / 默认策略 | 新安装或无云端更新环境中仍能识别发布时已知模型，并生成可用默认路由 |
-| 云端 metadata 更新 | 严格递增的 manifest `revision_seq`、客户端兼容范围与分组目标；NDN 当前文件和 `metadata_target_seq`；Provider `metadata_applied_seq` | 新旧客户端获得各自兼容版本；非法发布被拒绝；新文件就绪前 target seq 不推进；Provider 真正完成库存刷新后才推进自己的 applied seq；两个触发点均收敛全部落后 Provider |
+| 云端 metadata 更新 | 严格递增的 manifest `revision_seq`、客户端兼容范围与分组目标；NDN 当前文件和 `metadata_target_seq`；Provider `metadata_applied_seq` | 每个受支持客户端版本获得对应的兼容发布；非法发布被拒绝；新文件就绪前 target seq 不推进；Provider 真正完成库存刷新后才推进自己的 applied seq；两个触发点均收敛全部落后 Provider |
 | 人工运行时覆盖 | `$BUCKYOS_ROOT/etc/aicc/driver_metadata/local/<driver>.json` 或 `system-config/<driver>.json` | `reload_settings` 后生效；优先级高于 NDN 当前云端 metadata；损坏配置被拒绝且不破坏可用基线 |
 
 统一验收顺序：
 
-1. 准备更新说明，列出 provider、model、api type、逻辑目录、模型事实变更、运营策略变更、routing 变更、是否需要 adapter 发版，以及影响的旧用例族。
+1. 准备更新说明，列出 provider、model、api type、逻辑目录、模型事实变更、运营策略变更、routing 变更、是否需要 adapter 发版，以及影响的现有用例族。
 2. 新增或更新命名可检索的相关用例，并在 manifest tags 中标明更新类型、provider、model、api type 和逻辑目录。
 3. 在测试环境发布云端配置、运行时覆盖文件或版本包，触发 `reload_settings`。
-4. 先执行本次新增用例和受影响旧用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
-5. 相关用例通过后执行 AICC 全量用例，确认旧 Provider、旧模型和旧路由策略未回归。
+4. 先执行本次新增用例和受影响的现有用例，覆盖 inventory、metadata 解析、exact model、logical model、fallback、成本估算、禁用策略和错误返回。
+5. 相关用例通过后执行 AICC 全量用例，对全部受支持 Provider、模型和路由策略执行回归验证。
 6. 发布环境上线后重复相关用例，再执行发布环境全量用例；发布环境的授权、网络、Provider 实际状态和报告摘要必须可诊断。
 7. 如本次支持回滚，至少执行一次目标回滚用例：模型事实错误时回滚 metadata / override；路由错误时优先回滚运营策略或 routing_config；回滚后重新 `reload_settings`，确认 `models.list`、route trace 和关键调用恢复预期。
 
@@ -174,7 +174,7 @@ case_set = {
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
 | `l1_usage_log_*` | P0 | 成功写 usage、幂等去重、缺 usage 报错、查询聚合 |
-| `l1_method_api_type_canonical_*` | P0 | `method` 与 `api_type` 边界、`llm` vs `llm.chat`、非正式 api_type 拒绝或降级诊断 |
+| `l1_method_api_type_canonical_*` | P0 | `api_type=llm` 与 `method=chat.completions.create` 的边界、非正式 api_type 拒绝 |
 | `l1_control_method_*` | P0 | cancel、reload、models list、usage/quota/provider 查询的 schema 和权限边界 |
 | `l1_security_*` | P0 | `local_only`、`proxy_unknown`、locked policy、trace 脱敏 |
 | `l1_concurrency_*` | P1 | session patch 并发、幂等并发、异步任务并发完成 |
@@ -183,7 +183,7 @@ case_set = {
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l2_client_llm_chat_success` | P0 | AiccClient 构造标准 `llm.chat` 请求并解析成功响应 |
+| `l2_client_llm_chat_success` | P0 | `AiccClient::chat_completions_create` 构造 typed 请求并解析成功响应 |
 | `l2_client_exact_model_no_fallback` | P0 | 精确模型不可用时透传可判断错误 |
 | `l2_client_idempotency_*` | P0 | running / succeeded / failed / conflict 语义 |
 | `l2_client_async_task_*` | P0 | running response、event_ref、最终 task 查询 |
@@ -200,14 +200,13 @@ case_set = {
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
-| `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
+| `l3_krpc_chat_completions_create_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 4.4 L4 Gateway 真实模型验收
 
@@ -229,7 +228,7 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 
 | 类型 | 可稳定断言 | 不应断言 |
 |---|---|---|
-| `llm.chat` | status、非空 text 或 tool_calls、usage、finish_reason、route trace | 回答全文、具体措辞 |
+| `chat.completions.create` | status、非空 text 或 tool_calls、usage、finish_reason、route trace | 回答全文、具体措辞 |
 | JSON schema | JSON 可解析、包含 required 字段、字段类型正确 | 字段内容完全一致 |
 | tool call | tool name 在允许集合内、args 可解析、required args 存在 | args 的自然语言细节完全一致 |
 | image/audio/video artifact | artifact 存在、media type 正确、可读取、size > 0 | 视觉/听觉内容完全一致 |
@@ -259,4 +258,3 @@ L4 用例 ID 中的 `<model>` 必须使用稳定可读的 slug，由精确模型
 4. 三次 attempt 全部失败时，该 case 最终状态为 `failed`，主失败原因取最后一次 attempt，同时保留全部 attempt 明细。
 5. `skipped` 不重试；preflight / 配置错误不重试；明显安全失败不重试。
 6. 对已经返回 `running` 或已提交异步任务的 attempt，不允许在同一个 task 上静默重复提交；重试必须创建新的 case attempt id，并在报告中记录可能产生的真实费用。
-

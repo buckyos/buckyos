@@ -122,7 +122,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
 | `l1_usage_log_*` | P0 | 成功写 usage、幂等去重、缺 usage 报错、查询聚合 |
-| `l1_method_api_type_canonical_*` | P0 | `method` 与 `api_type` 边界、`llm` vs `llm.chat`、非正式 api_type 拒绝或降级诊断 |
+| `l1_method_api_type_canonical_*` | P0 | `api_type=llm` 与 `method=chat.completions.create` 的边界、非正式 api_type 拒绝 |
 | `l1_control_method_*` | P0 | cancel、reload、models list、usage/quota/provider 查询的 schema 和权限边界 |
 | `l1_security_*` | P0 | `local_only`、`proxy_unknown`、locked policy、trace 脱敏 |
 | `l1_concurrency_*` | P1 | session patch 并发、幂等并发、异步任务并发完成 |
@@ -131,7 +131,7 @@ test/aicc_test/reports/acceptance/<run_id>/
 
 | 用例族 | 优先级 | 覆盖点 |
 |---|---|---|
-| `l2_client_llm_chat_success` | P0 | AiccClient 构造标准 `llm.chat` 请求并解析成功响应 |
+| `l2_client_llm_chat_success` | P0 | `AiccClient::chat_completions_create` 构造 typed 请求并解析成功响应 |
 | `l2_client_exact_model_no_fallback` | P0 | 精确模型不可用时透传可判断错误 |
 | `l2_client_idempotency_*` | P0 | running / succeeded / failed / conflict 语义 |
 | `l2_client_async_task_*` | P0 | running response、event_ref、最终 task 查询 |
@@ -148,14 +148,13 @@ test/aicc_test/reports/acceptance/<run_id>/
 | `l3_provider_admin_*` | P0 | provider.validate/add/delete/refresh_models 的 system_config 写入、reload、回滚，以及停止/禁用/删除/替换时库存定时循环的 `Stop` 与优雅退出语义 |
 | `l3_models_list_*` | P0 | `models.list` inventory、完整身份链、逻辑目录、operations、health 脱敏诊断 |
 | `l3_quota_query_*` | P1 | `quota.query` 按 tenant、capability、method 返回预算状态和拒绝路径 |
-| `l3_krpc_llm_chat_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
+| `l3_krpc_chat_completions_create_*` | P0 | 纯文本、多模态 content part、tool call、JSON schema |
 | `l3_krpc_resource_*` | P0 | `url`、`base64`、`named_object` 输入和 artifact 输出 |
 | `l3_krpc_stream_*` | P0 | Mock streaming chunks、task data progress、final summary |
 | `l3_krpc_async_*` | P0 | image/audio/video 类异步 task 状态闭环 |
 | `l3_krpc_usage_*` | P0 | usage event 写入和查询 |
 | `l3_krpc_failover_*` | P0 | Provider timeout / 5xx / quota exhausted 后 failover |
 | `l3_krpc_security_*` | P0 | local_only、跨用户访问拒绝、脱敏扫描 |
-| `l3_krpc_removed_api_*` | P1 | 已删除 method、旧字段和别名必须被稳定拒绝 |
 
 ### 5.4 L4 Gateway 真实模型验收
 
@@ -277,7 +276,7 @@ SN 动态登录用例不要求 API Key，但 SN API Key 用例必须显式提供
 | 2 | 增加 fixture manifest 和最小 fixture | `test/aicc_test/fixtures` |
 | 3 | 实现 TS Mock Provider 管理接口和 OpenAI-like 最小接口 | `test/aicc_test` |
 | 4 | 实现 L3 runner preflight、settings reload、models.list | `test/aicc_test` |
-| 5 | 增加 L3 `llm.chat`、resource、usage、trace P0 用例 | `test/aicc_test` |
+| 5 | 增加 L3 `chat.completions.create`、resource、usage、trace P0 用例 | `test/aicc_test` |
 | 6 | 增加 L2 `aicc_client_test.rs` | `src/kernel/buckyos-api/tests` |
 | 7 | 对齐 Rust Mock Provider 与 TS Mock scenario 契约 | `src/frame/aicc/tests`、`test/aicc_test` |
 | 8 | 增加 Provider-specific protocol P0 用例 | `src/frame/aicc/tests` |
@@ -309,4 +308,3 @@ SN 动态登录用例不要求 API Key，但 SN API Key 用例必须显式提供
 10. 是否更新需求追踪矩阵或 manifest。
 11. 是否需要同步更新 `doc/aicc` 其它协议文档。
 12. 是否会引入新的依赖；如需要，应先单独确认。
-

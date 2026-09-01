@@ -91,7 +91,7 @@
       "id": "summarize_review",
       "name": "Summarize Review",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "skippable": false,
       "input": {
@@ -208,7 +208,7 @@
       "id": "rejected_marker",
       "name": "Rejected Marker",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "skippable": false,
       "input": {
@@ -237,7 +237,7 @@
       "id": "completed_marker",
       "name": "Completed Marker",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "skippable": false,
       "input": {

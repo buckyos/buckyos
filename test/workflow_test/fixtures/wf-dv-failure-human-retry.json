@@ -34,7 +34,7 @@
       "id": "echo_caption",
       "name": "Echo Caption",
       "type": "autonomous",
-      "executor": "service::aicc.llm.chat",
+      "executor": "service::aicc.helper.llm_chat",
       "idempotent": true,
       "input": {
         "model": "llm.chat",

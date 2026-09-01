@@ -15,7 +15,7 @@
 
 本文定义 AICC 面向调用方、Provider Adapter、Router、Control Panel 和 Agent Runtime 的标准 API 设计。目标是覆盖 `aicc 逻辑模型目录.md` 中规划的所有已知 AI 调用方法。
 
-> **Beta 2.2 breaking-change 基线**：AICC 只保留控制面、typed inference 数据面和 Helper 三层 API。删除 `AiMethodRequest`、`model.alias`、`must_features`、`requirements.extra.disable_capabilities`、legacy all-in-one method 和管理接口兼容别名。Provider Profile、Protocol Adapter、Model Driver、Provider Rules 和 Pricing 使用独立身份与 schema，不读取旧 `provider_driver`。
+> **Beta 2.2 协议基线**：AICC 对外提供控制面、typed inference 数据面和 Helper 三层 canonical API。typed method 使用独立 request/response schema；Provider Profile、Protocol Adapter、Model Driver、Provider Rules 和 Pricing 使用独立身份与 schema。
 
 ---
 
@@ -45,7 +45,7 @@ POST /kapi/aicc
 
 ### 1.2 `method` 决定 schema，`Capability` 只做粗分组
 
-`method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。`api_type` 是路由能力类型，例如 `llm.chat`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
+`method` 是 AICC 的请求 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。`api_type` 是路由能力类型，例如 `llm`、`image.txt2img`、`audio.asr`；它不等于 RPC method，也不决定 Provider endpoint。
 
 `chat.completions.create` 是 AICC 的 provider-neutral typed method 名，不表示底层必须调用 OpenAI Chat Completions。Provider Rules 可以把它映射到 `openai-responses`、`claude-messages`、`gemini-interactions` 或显式兼容 Adapter。Adapter ID 和 operation 才决定实际 wire API。
 
@@ -58,7 +58,7 @@ Provider 不能自定义方法名，只能声明自己支持标准集合中的�
 2. fallback 不得改变 method，只能在同一 method 的候选模型内切换。
 3. `logical_model` 只存在于 `route.resolve` 和 Helper；typed inference 只接受 `exact_model`。
 4. `Capability` 可用于 RBAC 边界、UI tab 分组和粗粒度 quota 桶，但不能作为 schema discriminator。
-5. RBAC / quota 支持直接挂在 method namespace 上，例如 `audio.*`、`image.*`、`llm.chat`。
+5. RBAC / quota 支持直接挂在 method namespace 上，例如 `audio.*`、`image.*`、`chat.completions.*`。
 
 标准 capability 粒度：
 
@@ -126,7 +126,7 @@ AICC 不定义私有 Job API。长任务使用 `task-manager`：
 
 ## 2. 顶层协议
 
-调用方按三层接入（见 §1.3）。本节只定义控制面、数据面和 Helper 三类 canonical 形态。Beta 2.2 不定义 legacy 兼容请求。
+调用方按三层接入（见 §1.3）。本节定义控制面、数据面和 Helper 三类 canonical 请求。
 
 ### 2.1 `route.resolve`（控制面）
 
@@ -138,7 +138,7 @@ Request：
 {
   "method": "route.resolve",
   "params": {
-    "api_type": "llm.chat",
+    "api_type": "llm",
     "logical_model": "llm.plan",
     "requirements": { "tool_call": true, "json_schema": true, "min_context_tokens": 200000 },
     "disable": { "web_search": true },
@@ -267,7 +267,7 @@ Helper 使用与对应 typed inference 相同的业务字段，只把 `exact_mod
 }
 ```
 
-其语义严格等价于 `route.resolve(api_type="llm.chat", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。
+其语义严格等价于 `route.resolve(api_type="llm", logical_model="llm.plan", ...)` 后调用 `chat.completions.create(exact_model=route.selected_exact_model, messages=...)`。Helper 不接收 `model.alias`、`must_features`、`payload` 或 `provider_options`。
 ### 2.4 typed inference 通用响应约束
 
 每个 typed inference method 使用独立的请求和响应结构，不再通过通用 `AiMethodRequest`、`AiPayload` 或 `AiResponseSummary` 承载业务字段。所有响应共享以下 envelope 字段：
@@ -394,7 +394,7 @@ Response：
 {
   "method": "provider.list",
   "params": {
-    "method": "llm.chat"
+    "method": "chat.completions.create"
   }
 }
 ```
@@ -635,7 +635,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 
 | typed method | api_type | 默认逻辑目录 | 默认任务模式 |
 |---|---|---|---|
-| `chat.completions.create` | `llm.chat` | `llm.chat` / `llm.*` | sync 或 async |
+| `chat.completions.create` | `llm` | `llm.chat` / `llm.*` | sync 或 async |
 | `embeddings.create` | `embedding.text` / `embedding.multimodal` | `embedding.*` | sync 或 async |
 | `rerank.create` | `rerank` | `rerank.general` | sync |
 | `images.generate` | `image.txt2img` | `image.txt2img` | sync 或 async |
@@ -1047,7 +1047,7 @@ Image fallback：
 
 ## 9. Vision API
 
-Vision API 用于结构化图像理解。自由文本 VQA 使用 `llm.chat`，并在 message content 中传 image resource。
+Vision API 用于结构化图像理解。自由文本 VQA 使用 `chat.completions.create`，并在 message content 中传 image resource。
 
 ### 9.1 `vision.ocr`
 
@@ -1616,7 +1616,7 @@ Fallback：
       "model_driver_id": "openai",
       "origin_model_id": "gpt-5.5",
       "exact_model": "gpt-5.5@openai_primary",
-      "api_types": ["llm.chat"],
+      "api_types": ["llm"],
       "operations": { "chat.completions.create": "responses.create" },
       "logical_mounts": ["llm.gpt5", "llm.plan", "llm.code", "llm.vision"],
       "capabilities": {
@@ -1798,7 +1798,7 @@ AICC 错误 payload schema：
 
 优先级建议：
 
-1. `llm.chat` 多模态和 tool schema。
+1. `chat.completions.create` 多模态和 tool schema。
 2. `image.txt2img` / `image.img2img`。
 3. `audio.asr` / `audio.tts`。
 4. `embedding.text` / `rerank`。

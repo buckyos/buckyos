@@ -18,8 +18,8 @@
 6. 路由、Provider、协议、任务、权限、预算、资源、配置等异常路径。
 7. 低成本、确定性 Mock 模型前期测试，以及真实模型的 gateway 验收。
 8. gateway 发布强覆盖验收必须覆盖 `openai`、`fal`、`google-gemini`、`claude`、`openrouter`、`sn-ai-provider` 六类 Provider；SN 必须覆盖 `api_key` 和 `dynamic_login` 两种认证模式。普通开发验收可按所选模式缺少的凭据将真实 Provider 用例标记为 skipped。
-9. gateway 真实模型验收必须按 `api_type × method × 标准逻辑目录路径 × Provider × model` 的笛卡尔积生成用例；`api_type` 以代码中 canonical `ApiType` 枚举为准，标准逻辑目录路径以当前生效 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准，Provider 与 model 以实际 inventory 中可观察到的可用模型为准。
-10. 每个矩阵用例必须同时覆盖逻辑模型和实际物理模型两种调用方式：先用逻辑目录路径执行 `route.resolve` 并断言选中的 `selected_exact_model`，再用该精确模型名执行 typed inference 或 legacy method，报告中必须保留 requested logical path 与 exact model 的对应关系。
+9. gateway 真实模型验收必须按 `api_type × method × 标准逻辑目录路径 × Provider × model` 的笛卡尔积生成用例；`api_type` 以 `aicc_api设计.md` 定义的 canonical 值域为准，标准逻辑目录路径以当前生效 `LocalLogicalTreeConfig.logical_definitions`、`SessionConfig.logical_tree` 全部可寻址节点和 `models.list` 暴露的逻辑目录为准，Provider 与 model 以实际 inventory 中可观察到的可用模型为准。
+10. 每个矩阵用例必须同时覆盖逻辑模型和实际物理模型两种调用方式：先用逻辑目录路径执行 `route.resolve` 并断言选中的 `selected_exact_model`，再用该精确模型名执行 typed inference，报告中必须保留 requested logical path 与 exact model 的对应关系。
 11. 新模型、新 Provider、新逻辑目录挂载、metadata / 运营策略 / routing 更新的维护验收闭环，覆盖测试环境相关用例、测试环境全量用例、发布环境相关用例、发布环境全量用例，以及必要的回滚验证。
 
 ## 2. 设计依据
@@ -42,8 +42,8 @@
 
 关键协议约束：
 
-- kRPC `method` 是 schema discriminator，例如 `llm.chat`、`image.txt2img`、`audio.asr`。
-- 正式 request body 放在 `payload.input_json`，`payload.resources` 只用于资源复用或旧调用方兼容。
+- kRPC `method` 是 schema discriminator，例如 `chat.completions.create`、`images.generate`、`audio.transcriptions.create`。
+- 正式 request body 使用对应 typed method 的业务字段，资源输入统一使用 `ResourceRef`。
 - `ResourceRef` JSON tag 使用 `url`、`base64`、`named_object`。
 - AICC 不暴露独立 streaming 协议；长任务、进度、Provider streaming 中间态统一通过 task-manager event / task data 观察。
 - AI method response 只有 `succeeded`、`running`、`failed` 三类状态；失败细节写入 task event / task data。
@@ -86,7 +86,7 @@ Mock 阶段必须保证执行环境确定：
 | Mock 与真实 Provider 差异过大 | Mock 通过但真实失败 | Mock 按 Provider 原生协议构造请求/响应，不只 mock AICC 内部 trait |
 | Streaming 语义混乱 | UI 或 task 状态不一致 | AICC 协议只验最终 summary；中间态只验 task data / event |
 | 使用量重复写入 | 账单和统计错误 | 幂等并发测试、usage 唯一约束测试 |
-| 配置 reload 破坏旧状态 | 服务不可用 | 非法 settings reload 失败后必须保留上一版配置 |
+| 非法配置 reload 覆盖有效状态 | 服务不可用 | settings reload 失败后必须保留当前有效配置 |
 | trace 泄露敏感信息 | 安全风险 | 脱敏扫描作为 P0 |
 | 并发测试偶发失败 | CI 不稳定 | 固定 Mock 行为、短 timeout、失败输出足够诊断信息 |
 
@@ -106,4 +106,3 @@ Mock 阶段必须保证执行环境确定：
 10. 不要求所有视频、音乐等高成本能力在 Mock 阶段之外真实执行。
 11. 不引入新的通用测试框架或依赖，除非先单独确认。
 12. 不在验收 runner 中自动修改生产环境真实 Provider 配置，除非配置文件显式允许。
-

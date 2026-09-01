@@ -178,7 +178,7 @@ function cacheEvidence(value: unknown): Record<string, unknown> {
 function chooseModel(provider: ProviderEntry): string {
   if (MODEL_ALIAS_OVERRIDE) return MODEL_ALIAS_OVERRIDE;
   for (const model of provider.models ?? []) {
-    if (model.api_types?.includes("llm.chat")) {
+    if (model.api_types?.includes("llm")) {
       const logical = model.logical_mounts?.find((item) =>
         item.startsWith("llm."),
       );
